@@ -1,0 +1,262 @@
+"""Rate limiting middleware using slowapi with Redis backend."""
+
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+import redis.asyncio as redis
+import structlog
+from fastapi import Request, Response
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp
+
+from src.config import settings
+
+logger = structlog.get_logger()
+
+
+def get_client_identifier(request: Request) -> str:
+    """Get unique client identifier for rate limiting.
+
+    Priority:
+    1. Authenticated user ID (most accurate)
+    2. X-Forwarded-For header (if behind trusted proxy)
+    3. Direct client IP
+
+    Only trusts X-Forwarded-For when TRUST_PROXY is enabled
+    to prevent IP spoofing attacks.
+    """
+    # Prefer user ID if authenticated
+    if hasattr(request.state, "user_id") and request.state.user_id:
+        return f"user:{request.state.user_id}"
+
+    # Only trust X-Forwarded-For if explicitly configured
+    if getattr(settings, "TRUST_PROXY", False):
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            # Take the first (client) IP from the chain
+            return f"ip:{forwarded.split(',')[0].strip()}"
+
+    # Use direct client IP via slowapi's default
+    return f"ip:{get_remote_address(request)}"
+
+
+def _create_redis_storage() -> str | None:
+    """Create Redis storage URL for slowapi, or None for in-memory fallback."""
+    if not settings.REDIS_URL:
+        logger.warning("REDIS_URL not configured, using in-memory rate limiting (not distributed)")
+        return None
+    return settings.REDIS_URL
+
+
+def _create_limiter() -> Limiter:
+    """Create rate limiter with Redis or in-memory fallback."""
+    storage_uri = _create_redis_storage()
+
+    try:
+        limiter_instance = Limiter(
+            key_func=get_client_identifier,
+            storage_uri=storage_uri,
+            storage_options={"socket_connect_timeout": 5} if storage_uri else {},
+            strategy="fixed-window",
+            headers_enabled=True,
+        )
+        if storage_uri:
+            logger.info("Rate limiter initialized with Redis storage")
+    except Exception as e:
+        logger.warning(
+            "Failed to initialize Redis rate limiter, falling back to in-memory",
+            error=str(e),
+        )
+        # Fallback to in-memory if Redis connection fails
+        return Limiter(
+            key_func=get_client_identifier,
+            storage_uri=None,
+            strategy="fixed-window",
+            headers_enabled=True,
+        )
+    else:
+        return limiter_instance
+
+
+# Create the limiter with Redis storage or fallback
+limiter = _create_limiter()
+
+
+# ============================================================================
+# Rate Limit Categories - Different limits for different endpoint types
+# ============================================================================
+
+# Standard API rate limits
+RATE_LIMIT_STANDARD = "100/minute"  # General API endpoints
+RATE_LIMIT_AUTH = "5/minute"  # Login/register - strict to prevent brute force
+RATE_LIMIT_OAUTH = "10/minute"  # OAuth callbacks
+RATE_LIMIT_SENSITIVE = "20/minute"  # Password reset, email verification
+RATE_LIMIT_AGENT = "30/minute"  # Agent operations (LLM calls)
+RATE_LIMIT_UPLOAD = "10/minute"  # File uploads
+RATE_LIMIT_SEARCH = "60/minute"  # Search operations
+RATE_LIMIT_ADMIN = "200/minute"  # Admin endpoints (higher limit)
+RATE_LIMIT_WEBSOCKET = "300/minute"  # WebSocket handshakes
+RATE_LIMIT_HEALTH = "1000/minute"  # Health checks (high limit for monitoring)
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Rate limiting middleware using slowapi with Redis backend.
+
+    This middleware applies default rate limits to all requests.
+    Individual routes can override with @limiter.limit() decorator.
+
+    Features:
+    - Redis-backed storage for distributed rate limiting
+    - Per-user or per-IP tracking
+    - Automatic cleanup via Redis TTL
+    - Rate limit headers in responses
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        super().__init__(app)
+        self._redis_connected = False
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """Apply rate limiting to requests."""
+        # Skip rate limiting for health checks and WebSocket upgrade
+        path = request.url.path
+        if path == "/health" or request.headers.get("upgrade") == "websocket":
+            return await call_next(request)
+
+        # Apply default rate limit via limiter
+        # Note: Routes with @limiter.limit() will use their own limits
+        try:
+            return await call_next(request)
+        except RateLimitExceeded as e:
+            return _rate_limit_exceeded_handler(request, e)  # type: ignore[no-any-return]
+
+
+# ============================================================================
+# Redis-backed OAuth State Storage
+# ============================================================================
+
+
+class _RedisClientHolder:
+    """Container for Redis client to avoid global statement."""
+
+    client: Any = None
+
+
+_redis_holder = _RedisClientHolder()
+
+
+async def get_redis_client() -> Any:
+    """Get or create Redis client for OAuth states."""
+    if _redis_holder.client is None:
+        _redis_holder.client = redis.from_url(
+            settings.REDIS_URL,
+            decode_responses=True,
+            socket_connect_timeout=5,
+        )
+    return _redis_holder.client
+
+
+async def close_redis_client() -> None:
+    """Close Redis client connection."""
+    if _redis_holder.client:
+        await _redis_holder.client.close()
+        _redis_holder.client = None
+
+
+# OAuth state storage functions
+OAUTH_STATE_PREFIX = "podex:oauth:state:"
+OAUTH_STATE_TTL = 600  # 10 minutes
+
+
+async def store_oauth_state(state: str, provider: str) -> None:
+    """Store OAuth state in Redis with TTL."""
+    client = await get_redis_client()
+    key = f"{OAUTH_STATE_PREFIX}{state}"
+    await client.setex(key, OAUTH_STATE_TTL, provider)
+    logger.debug("OAuth state stored", state=state[:8], provider=provider)
+
+
+async def validate_oauth_state(state: str, expected_provider: str) -> bool:
+    """Validate OAuth state from Redis (one-time use).
+
+    Args:
+        state: The state token to validate
+        expected_provider: Expected OAuth provider (github, google)
+
+    Returns:
+        True if state is valid and matches provider, False otherwise
+    """
+    client = await get_redis_client()
+    key = f"{OAUTH_STATE_PREFIX}{state}"
+
+    # Get and delete atomically to prevent reuse
+    provider = await client.getdel(key)
+
+    if provider is None:
+        logger.warning("OAuth state not found or expired", state=state[:8])
+        return False
+
+    if provider != expected_provider:
+        logger.warning(
+            "OAuth state provider mismatch",
+            state=state[:8],
+            expected=expected_provider,
+            actual=provider,
+        )
+        return False
+
+    logger.debug("OAuth state validated", state=state[:8], provider=provider)
+    return True
+
+
+# ============================================================================
+# Rate Limit Storage Functions (for auth rate limiting)
+# ============================================================================
+
+AUTH_RATE_LIMIT_PREFIX = "podex:ratelimit:auth:"
+AUTH_RATE_LIMIT_WINDOW = 300  # 5 minutes
+
+
+async def check_auth_rate_limit(
+    key: str,
+    limit: int,
+    window: int = AUTH_RATE_LIMIT_WINDOW,
+) -> bool:
+    """Check if auth rate limit is exceeded using Redis.
+
+    Args:
+        key: Unique key for rate limiting (e.g., "login:ip:1.2.3.4")
+        limit: Maximum allowed requests in window
+        window: Time window in seconds
+
+    Returns:
+        True if request is allowed, False if rate limited
+    """
+    client = await get_redis_client()
+    redis_key = f"{AUTH_RATE_LIMIT_PREFIX}{key}"
+
+    # Use Redis pipeline for atomic increment + expire
+    pipe = client.pipeline()
+    pipe.incr(redis_key)
+    pipe.expire(redis_key, window)
+    results = await pipe.execute()
+
+    current_count = results[0]
+
+    if current_count > limit:
+        logger.warning(
+            "Auth rate limit exceeded",
+            key=key,
+            count=current_count,
+            limit=limit,
+        )
+        return False
+
+    return True

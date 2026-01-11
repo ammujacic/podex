@@ -1,0 +1,170 @@
+# Pre-commit hooks for Podex monorepo
+# Install: pip install pre-commit && pre-commit install
+
+repos:
+  # General hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  # Frontend (TypeScript/JavaScript)
+  - repo: local
+    hooks:
+      - id: frontend-lint
+        name: Frontend Lint (ESLint)
+        entry: pnpm lint
+        language: system
+        files: \.(js|jsx|ts|tsx)$
+        pass_filenames: false
+
+      - id: frontend-typecheck
+        name: Frontend Type Check
+        entry: pnpm typecheck
+        language: system
+        files: \.(ts|tsx)$
+        pass_filenames: false
+
+      - id: frontend-format
+        name: Frontend Format (Prettier)
+        entry: pnpm format
+        language: system
+        files: \.(js|jsx|ts|tsx|json|md)$
+        pass_filenames: false
+
+  # Backend (Python) - Ruff linting for all services
+  - repo: local
+    hooks:
+      - id: ruff-api
+        name: Ruff Lint (api)
+        entry: bash -c 'cd services/api && uv run ruff check src/'
+        language: system
+        files: ^services/api/
+        types: [python]
+        pass_filenames: false
+
+      - id: ruff-agent
+        name: Ruff Lint (agent)
+        entry: bash -c 'cd services/agent && uv run ruff check src/'
+        language: system
+        files: ^services/agent/
+        types: [python]
+        pass_filenames: false
+
+      - id: ruff-compute
+        name: Ruff Lint (compute)
+        entry: bash -c 'cd services/compute && uv run ruff check src/'
+        language: system
+        files: ^services/compute/
+        types: [python]
+        pass_filenames: false
+
+      - id: ruff-shared
+        name: Ruff Lint (shared)
+        entry: bash -c 'cd services/shared && uv run ruff check src/'
+        language: system
+        files: ^services/shared/
+        types: [python]
+        pass_filenames: false
+
+      - id: ruff-local-pod
+        name: Ruff Lint (local-pod)
+        entry: bash -c 'cd services/local-pod && uv run ruff check src/'
+        language: system
+        files: ^services/local-pod/
+        types: [python]
+        pass_filenames: false
+
+      # Ruff format (auto-formatter)
+      - id: ruff-format-api
+        name: Ruff Format (api)
+        entry: bash -c 'cd services/api && uv run ruff format src/'
+        language: system
+        files: ^services/api/
+        types: [python]
+        pass_filenames: false
+
+      - id: ruff-format-agent
+        name: Ruff Format (agent)
+        entry: bash -c 'cd services/agent && uv run ruff format src/'
+        language: system
+        files: ^services/agent/
+        types: [python]
+        pass_filenames: false
+
+      - id: ruff-format-compute
+        name: Ruff Format (compute)
+        entry: bash -c 'cd services/compute && uv run ruff format src/'
+        language: system
+        files: ^services/compute/
+        types: [python]
+        pass_filenames: false
+
+      - id: ruff-format-shared
+        name: Ruff Format (shared)
+        entry: bash -c 'cd services/shared && uv run ruff format src/'
+        language: system
+        files: ^services/shared/
+        types: [python]
+        pass_filenames: false
+
+      - id: ruff-format-local-pod
+        name: Ruff Format (local-pod)
+        entry: bash -c 'cd services/local-pod && uv run ruff format src/'
+        language: system
+        files: ^services/local-pod/
+        types: [python]
+        pass_filenames: false
+
+      # mypy type checks
+      - id: mypy-api
+        name: mypy (api)
+        entry: bash -c 'cd services/api && uv run mypy src/'
+        language: system
+        files: ^services/api/
+        types: [python]
+        pass_filenames: false
+
+      - id: mypy-agent
+        name: mypy (agent)
+        entry: bash -c 'cd services/agent && uv run mypy src/'
+        language: system
+        files: ^services/agent/
+        types: [python]
+        pass_filenames: false
+
+      - id: mypy-compute
+        name: mypy (compute)
+        entry: bash -c 'cd services/compute && uv run mypy src/'
+        language: system
+        files: ^services/compute/
+        types: [python]
+        pass_filenames: false
+
+      - id: mypy-shared
+        name: mypy (shared)
+        entry: bash -c 'cd services/shared && uv run mypy src/'
+        language: system
+        files: ^services/shared/
+        types: [python]
+        pass_filenames: false
+
+      - id: mypy-local-pod
+        name: mypy (local-pod)
+        entry: bash -c 'cd services/local-pod && uv run mypy src/'
+        language: system
+        files: ^services/local-pod/
+        types: [python]
+        pass_filenames: false
+
+# CI configuration
+ci:
+  autofix_prs: false
+  autoupdate_schedule: weekly

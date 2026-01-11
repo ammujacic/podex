@@ -1,0 +1,56 @@
+name: code_review
+description: Perform a comprehensive code review on changes
+version: "1.0.0"
+author: system
+tags:
+  - reviewer
+  - code-quality
+  - git
+triggers:
+  - review
+  - code review
+  - check code
+  - review changes
+  - pull request review
+required_tools:
+  - git_diff
+  - read_file
+  - search_code
+required_context:
+  - workspace_path
+system_prompt: |
+  You are a senior code reviewer. Focus on:
+  - Code correctness and logic errors
+  - Security vulnerabilities
+  - Performance issues
+  - Code style and best practices
+  - Test coverage
+examples:
+  - input: "Review the latest changes"
+    output: "I'll analyze the git diff and review the changes..."
+  - input: "Check this pull request"
+    output: "Let me examine the changes in this PR..."
+steps:
+  - name: get_diff
+    description: Get the current git diff
+    tool: git_diff
+    parameters:
+      workspace_path: "{{workspace_path}}"
+  - name: analyze_changes
+    description: Analyze changed files for issues
+    tool: search_code
+    parameters:
+      workspace_path: "{{workspace_path}}"
+      pattern: "TODO|FIXME|HACK|BUG"
+    required: false
+  - name: check_tests
+    description: Verify test files exist for changes
+    tool: list_directory
+    parameters:
+      path: "{{workspace_path}}/tests"
+    condition: "has_tests == true"
+    required: false
+metadata:
+  category: quality
+  estimated_duration: 60
+  requires_approval: false

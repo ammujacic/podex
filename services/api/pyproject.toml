@@ -1,0 +1,210 @@
+[project]
+name = "podex-api"
+version = "0.1.0"
+description = "Podex API Gateway Service"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "python-socketio>=5.11.0",
+    "pydantic[email]>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "sqlalchemy[asyncio]>=2.0.25",
+    "asyncpg>=0.29.0",
+    "redis>=5.0.1",
+    "hiredis>=2.3.2",
+    "httpx>=0.26.0",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "bcrypt>=4.0.0,<4.1.0",
+    "boto3>=1.34.0",
+    "structlog>=24.1.0",
+    "aioboto3>=12.3.0",
+    "podex-shared",
+    "alembic>=1.13.0",
+    "anthropic>=0.40.0",
+    "slowapi>=0.1.9",
+    "stripe>=7.0.0",
+    "pyotp>=2.9.0",
+    "qrcode[pil]>=7.4.0",
+    "python-multipart>=0.0.6",
+    # Local voice services (dev mode uses these instead of AWS)
+    "openai-whisper>=20231117",
+    "pyttsx3>=2.90",
+    "pytesseract>=0.3.10",
+]
+
+[tool.uv.sources]
+podex-shared = { path = "../shared", editable = true }
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "httpx>=0.26.0",
+    "ruff>=0.1.14",
+    "mypy>=1.8.0",
+    "types-redis>=4.6.0",
+    "types-passlib>=1.7.7",
+    "respx>=0.20.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+    "TCH",    # flake8-type-checking
+    "PTH",    # flake8-use-pathlib
+    "ERA",    # eradicate
+    "PL",     # pylint
+    "RUF",    # ruff-specific
+    "S",      # bandit (security)
+    "N",      # pep8-naming
+    "ANN",    # flake8-annotations
+    "ASYNC",  # flake8-async
+    "A",      # flake8-builtins
+    "COM",    # flake8-commas
+    "DTZ",    # flake8-datetimez
+    "T10",    # flake8-debugger
+    "DJ",     # flake8-django
+    "EXE",    # flake8-executable
+    "ISC",    # flake8-implicit-str-concat
+    "ICN",    # flake8-import-conventions
+    "LOG",    # flake8-logging
+    "G",      # flake8-logging-format
+    "PIE",    # flake8-pie
+    "PYI",    # flake8-pyi
+    "PT",     # flake8-pytest-style
+    "Q",      # flake8-quotes
+    "RSE",    # flake8-raise
+    "RET",    # flake8-return
+    "SLF",    # flake8-self
+    "SLOT",   # flake8-slots
+    "TID",    # flake8-tidy-imports
+    "INT",    # flake8-gettext
+    "FBT",    # flake8-boolean-trap
+    "PERF",   # perflint
+    "FURB",   # refurb
+    "TRY",    # tryceratops
+    "FLY",    # flynt
+]
+ignore = [
+    "ANN401",  # Any is required for JSON APIs and httpx kwargs
+    "COM812",  # Conflicts with formatter - trailing comma detection
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src", "podex_shared"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files: allow assert statements (S101) and magic values like HTTP status codes (PLR2004)
+"tests/**/*.py" = ["S101", "PLR2004"]
+# Admin routes: allow FastAPI patterns (unused request for decorators, boolean params, many args)
+"src/routes/admin/**/*.py" = ["ARG001", "FBT002", "PLR0913", "PLR2004"]
+# Route files: request parameter needed for rate limiting decorator but not used in function body
+# Also allow boolean params (FBT002), many args (PLR0913), and too many statements (PLR0915)
+"src/routes/auth.py" = ["ARG001"]
+"src/routes/mfa.py" = ["ARG001"]
+"src/routes/oauth.py" = ["ARG001"]
+"src/routes/sessions.py" = ["ARG001", "FBT002"]
+"src/routes/agent_templates.py" = ["ARG001"]
+"src/routes/knowledge.py" = ["ARG001", "PLR0913"]
+"src/routes/local_pods.py" = ["ARG001"]
+"src/routes/mcp.py" = ["ARG001"]
+"src/routes/plans.py" = ["ARG001", "PLR0913"]
+"src/routes/templates.py" = ["ARG001"]
+# Billing routes: complex billing logic requires many branches/statements/arguments
+"src/routes/billing.py" = ["ARG001", "PLR0912", "PLR0913", "PLR0915", "PLR2004", "E501", "F841"]
+# Webhooks: complex stripe event handling, many args for helper
+"src/routes/webhooks.py" = ["PLR0913", "E501"]
+# Workspaces: file operations need extra params
+"src/routes/workspaces.py" = ["PLR0913"]
+# Agents: message handling needs extra params
+"src/routes/agents.py" = ["PLR0913"]
+# Email service: complex email rendering with many params
+"src/services/email.py" = ["PLR0913", "E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+show_column_numbers = true
+pretty = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = [
+    "socketio.*",
+    "redis.*",
+    "aioboto3.*",
+    "boto3.*",
+    "botocore.*",
+    "structlog.*",
+    "passlib.*",
+    "jose.*",
+    "jwt.*",
+    "podex_shared",
+    "podex_shared.*",
+    "types_aiobotocore_s3",
+    "types_aiobotocore_s3.*",
+    "stripe",
+    "stripe.*",
+    "slowapi",
+    "slowapi.*",
+    "pyotp",
+    "pyotp.*",
+    "qrcode",
+    "qrcode.*",
+    "whisper",
+    "whisper.*",
+    "pyttsx3",
+    "pyttsx3.*",
+    "pytesseract",
+    "pytesseract.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["src.websocket.hub", "src.websocket.local_pod_hub", "src.routes.*", "src.middleware.rate_limit"]
+disallow_untyped_decorators = false
+# socketio.AsyncNamespace has type Any due to missing stubs
+disallow_subclassing_any = false
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+[tool.pytest.ini_options]
+addopts = "--cov=src --cov-report=term-missing --cov-fail-under=90"
+testpaths = ["tests"]
+asyncio_mode = "auto"

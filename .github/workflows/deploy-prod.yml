@@ -1,0 +1,95 @@
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and push API image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/podex/api-prod:$IMAGE_TAG -t $ECR_REGISTRY/podex/api-prod:latest \
+            --target production \
+            ./services/api
+          docker push $ECR_REGISTRY/podex/api-prod:$IMAGE_TAG
+          docker push $ECR_REGISTRY/podex/api-prod:latest
+
+      - name: Build and push Agent image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/podex/agent-prod:$IMAGE_TAG -t $ECR_REGISTRY/podex/agent-prod:latest \
+            --target production \
+            ./services/agent
+          docker push $ECR_REGISTRY/podex/agent-prod:$IMAGE_TAG
+          docker push $ECR_REGISTRY/podex/agent-prod:latest
+
+      - name: Deploy CDK
+        working-directory: infra
+        run: |
+          pnpm install --frozen-lockfile
+          npx cdk deploy --all -c environment=prod --require-approval=broadening
+
+      - name: Update ECS services
+        run: |
+          aws ecs update-service --cluster podex-prod --service podex-api-prod --force-new-deployment
+          aws ecs update-service --cluster podex-prod --service podex-agent-prod --force-new-deployment
+
+      - name: Notify deployment
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "Production deployment completed!",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Production Deployment Complete* :rocket:\n*Commit:* ${{ github.sha }}\n*Author:* ${{ github.actor }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

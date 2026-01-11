@@ -1,0 +1,76 @@
+name: Deploy to Dev
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy:
+    name: Deploy to Development
+    runs-on: ubuntu-latest
+    environment: development
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and push API image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/podex/api-dev:$IMAGE_TAG -t $ECR_REGISTRY/podex/api-dev:latest \
+            --target production \
+            ./services/api
+          docker push $ECR_REGISTRY/podex/api-dev:$IMAGE_TAG
+          docker push $ECR_REGISTRY/podex/api-dev:latest
+
+      - name: Build and push Agent image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/podex/agent-dev:$IMAGE_TAG -t $ECR_REGISTRY/podex/agent-dev:latest \
+            --target production \
+            ./services/agent
+          docker push $ECR_REGISTRY/podex/agent-dev:$IMAGE_TAG
+          docker push $ECR_REGISTRY/podex/agent-dev:latest
+
+      - name: Deploy CDK
+        working-directory: infra
+        run: |
+          pnpm install --frozen-lockfile
+          npx cdk deploy --all -c environment=dev --require-approval=never
+
+      - name: Update ECS services
+        run: |
+          aws ecs update-service --cluster podex-dev --service podex-api-dev --force-new-deployment
+          aws ecs update-service --cluster podex-dev --service podex-agent-dev --force-new-deployment

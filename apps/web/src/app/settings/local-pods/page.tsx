@@ -1,0 +1,741 @@
+'use client';
+
+import { useEffect, useState, useCallback } from 'react';
+import {
+  Server,
+  Plus,
+  Trash2,
+  RefreshCw,
+  Copy,
+  Check,
+  X,
+  AlertCircle,
+  CheckCircle,
+  Loader2,
+  ChevronDown,
+  ChevronRight,
+  HardDrive,
+  Cpu,
+  Activity,
+  Terminal,
+  Eye,
+  EyeOff,
+  ExternalLink,
+  Laptop,
+  Cloud,
+  Zap,
+  Info,
+  Key,
+} from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { useLocalPodsStore, selectIsDeleting, selectIsRegenerating } from '@/stores/localPods';
+import type { LocalPod, CreateLocalPodRequest } from '@/lib/api';
+import { toast } from 'sonner';
+
+// ============================================================================
+// STATUS BADGE
+// ============================================================================
+
+function StatusBadge({ status }: { status: LocalPod['status'] }) {
+  const config = {
+    online: { color: 'bg-success/20 text-success', label: 'Online', icon: CheckCircle },
+    offline: { color: 'bg-text-muted/20 text-text-muted', label: 'Offline', icon: X },
+    busy: { color: 'bg-warning/20 text-warning', label: 'Busy', icon: Activity },
+    error: { color: 'bg-error/20 text-error', label: 'Error', icon: AlertCircle },
+  };
+
+  const { color, label, icon: Icon } = config[status];
+
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium',
+        color
+      )}
+    >
+      <Icon className="h-3 w-3" />
+      {label}
+    </span>
+  );
+}
+
+// ============================================================================
+// TOKEN DISPLAY (shown once after create/regenerate)
+// ============================================================================
+
+interface TokenDisplayProps {
+  token: string;
+  onDismiss: () => void;
+}
+
+function TokenDisplay({ token, onDismiss }: TokenDisplayProps) {
+  const [copied, setCopied] = useState(false);
+  const [visible, setVisible] = useState(false);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(token);
+    setCopied(true);
+    toast.success('Token copied to clipboard');
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="p-4 rounded-lg bg-warning/10 border border-warning/30">
+      <div className="flex items-start gap-3">
+        <Key className="h-5 w-5 text-warning mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <h4 className="text-sm font-semibold text-warning">Save Your Pod Token</h4>
+          <p className="text-xs text-warning/80 mt-1">
+            This token will only be shown once. Use it to connect your local pod to Podex.
+          </p>
+
+          <div className="mt-3 flex items-center gap-2">
+            <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded bg-void border border-warning/30 font-mono text-xs">
+              <code className="flex-1 truncate text-text-primary">
+                {visible ? token : '••••••••••••••••••••••••••••••••'}
+              </code>
+              <button
+                onClick={() => setVisible(!visible)}
+                className="p-1 hover:bg-warning/20 rounded text-warning/80 hover:text-warning"
+              >
+                {visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+            <button
+              onClick={handleCopy}
+              className="flex items-center gap-1.5 px-3 py-2 rounded bg-warning/20 text-warning hover:bg-warning/30 text-xs font-medium"
+            >
+              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+              {copied ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
+
+          <div className="mt-3 p-3 rounded bg-void/50 border border-border-subtle">
+            <p className="text-xs text-text-secondary font-medium mb-2">Quick Start:</p>
+            <code className="text-xs text-text-muted font-mono block">
+              podex-local-pod start --token {visible ? token : 'pdx_pod_...'}
+            </code>
+          </div>
+        </div>
+        <button
+          onClick={onDismiss}
+          className="p-1 hover:bg-warning/20 rounded text-warning/60 hover:text-warning"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// ADD POD MODAL
+// ============================================================================
+
+interface AddPodModalProps {
+  onSubmit: (data: CreateLocalPodRequest) => Promise<void>;
+  onClose: () => void;
+  isLoading: boolean;
+}
+
+function AddPodModal({ onSubmit, onClose, isLoading }: AddPodModalProps) {
+  const [name, setName] = useState('');
+  const [maxWorkspaces, setMaxWorkspaces] = useState(3);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) {
+      setError('Name is required');
+      return;
+    }
+
+    try {
+      await onSubmit({
+        name: name.trim(),
+        max_workspaces: maxWorkspaces,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create pod');
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-void/80">
+      <div className="w-full max-w-md mx-4 rounded-lg border border-border-default bg-surface shadow-xl">
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border-subtle">
+          <div className="flex items-center gap-2">
+            <Server className="h-5 w-5 text-accent-primary" />
+            <h3 className="text-lg font-semibold text-text-primary">Add Local Pod</h3>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1 rounded hover:bg-overlay text-text-muted hover:text-text-primary"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Form */}
+        <form onSubmit={handleSubmit} className="p-4 space-y-4">
+          {error && (
+            <div className="p-3 rounded bg-error/10 border border-error/30 text-error text-sm flex items-center gap-2">
+              <AlertCircle className="h-4 w-4" />
+              {error}
+            </div>
+          )}
+
+          <div>
+            <label className="text-sm font-medium text-text-secondary">Pod Name *</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g., My MacBook Pro"
+              className="w-full mt-1 px-3 py-2 text-sm rounded bg-void border border-border-default text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:ring-1 focus:ring-accent-primary"
+              autoFocus
+            />
+            <p className="text-xs text-text-muted mt-1">A friendly name to identify this machine</p>
+          </div>
+
+          <div>
+            <label className="text-sm font-medium text-text-secondary">
+              Max Concurrent Workspaces
+            </label>
+            <select
+              value={maxWorkspaces}
+              onChange={(e) => setMaxWorkspaces(Number(e.target.value))}
+              className="w-full mt-1 px-3 py-2 text-sm rounded bg-void border border-border-default text-text-primary"
+            >
+              {[1, 2, 3, 4, 5, 6, 8, 10].map((n) => (
+                <option key={n} value={n}>
+                  {n} workspace{n > 1 ? 's' : ''}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-text-muted mt-1">
+              Limit how many workspaces can run simultaneously on this pod
+            </p>
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-sm font-medium rounded bg-overlay text-text-secondary hover:text-text-primary"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isLoading || !name.trim()}
+              className="px-4 py-2 text-sm font-medium rounded bg-accent-primary text-void hover:bg-accent-primary/90 disabled:opacity-50 flex items-center gap-2"
+            >
+              {isLoading && <Loader2 className="h-4 w-4 animate-spin" />}
+              {isLoading ? 'Creating...' : 'Create Pod'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// POD CARD
+// ============================================================================
+
+interface PodCardProps {
+  pod: LocalPod;
+  isExpanded: boolean;
+  onToggleExpand: () => void;
+  onDelete: () => void;
+  onRegenerateToken: () => void;
+}
+
+function PodCard({ pod, isExpanded, onToggleExpand, onDelete, onRegenerateToken }: PodCardProps) {
+  const isDeleting = useLocalPodsStore((s) => selectIsDeleting(s, pod.id));
+  const isRegenerating = useLocalPodsStore((s) => selectIsRegenerating(s, pod.id));
+
+  const formatDate = (date: string | null) => {
+    if (!date) return 'Never';
+    return new Date(date).toLocaleString();
+  };
+
+  const formatMemory = (mb: number | null) => {
+    if (!mb) return 'Unknown';
+    if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+    return `${mb} MB`;
+  };
+
+  const handleDelete = () => {
+    if (confirm(`Delete pod "${pod.name}"? This will invalidate the pod token.`)) {
+      onDelete();
+    }
+  };
+
+  const handleRegenerateToken = () => {
+    if (
+      confirm(`Regenerate token for "${pod.name}"? The old token will stop working immediately.`)
+    ) {
+      onRegenerateToken();
+    }
+  };
+
+  return (
+    <div
+      className={cn(
+        'rounded-lg border transition-all',
+        pod.status === 'online'
+          ? 'border-success/30 bg-success/5'
+          : pod.status === 'error'
+            ? 'border-error/30 bg-error/5'
+            : 'border-border-subtle bg-elevated'
+      )}
+    >
+      {/* Header */}
+      <div className="p-4">
+        <div className="flex items-start gap-3">
+          {/* Icon */}
+          <div
+            className={cn(
+              'p-2 rounded-lg',
+              pod.status === 'online'
+                ? 'bg-success/20 text-success'
+                : pod.status === 'error'
+                  ? 'bg-error/20 text-error'
+                  : 'bg-overlay text-text-muted'
+            )}
+          >
+            <Laptop className="h-5 w-5" />
+          </div>
+
+          {/* Content */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <h4 className="text-sm font-medium text-text-primary">{pod.name}</h4>
+              <StatusBadge status={pod.status} />
+            </div>
+
+            {/* Quick stats */}
+            <div className="flex items-center gap-4 mt-2 text-xs text-text-muted">
+              {pod.os_info && (
+                <span className="flex items-center gap-1">
+                  <HardDrive className="h-3 w-3" />
+                  {pod.os_info}
+                </span>
+              )}
+              {pod.total_cpu_cores && (
+                <span className="flex items-center gap-1">
+                  <Cpu className="h-3 w-3" />
+                  {pod.total_cpu_cores} cores
+                </span>
+              )}
+              {pod.total_memory_mb && (
+                <span className="flex items-center gap-1">
+                  <Activity className="h-3 w-3" />
+                  {formatMemory(pod.total_memory_mb)}
+                </span>
+              )}
+            </div>
+
+            {/* Workspaces */}
+            <div className="flex items-center gap-2 mt-2">
+              <span className="text-xs text-text-muted">
+                Workspaces: {pod.current_workspaces}/{pod.max_workspaces}
+              </span>
+              <div className="flex-1 h-1.5 bg-overlay rounded-full overflow-hidden max-w-24">
+                <div
+                  className={cn(
+                    'h-full rounded-full transition-all',
+                    pod.current_workspaces === pod.max_workspaces
+                      ? 'bg-warning'
+                      : 'bg-accent-primary'
+                  )}
+                  style={{ width: `${(pod.current_workspaces / pod.max_workspaces) * 100}%` }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={onToggleExpand}
+              className="p-1.5 rounded hover:bg-overlay text-text-muted hover:text-text-primary transition-colors"
+            >
+              {isExpanded ? (
+                <ChevronDown className="h-4 w-4" />
+              ) : (
+                <ChevronRight className="h-4 w-4" />
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Last error */}
+        {pod.last_error && (
+          <div className="mt-3 p-2 rounded bg-error/10 border border-error/20 text-xs text-error flex items-center gap-2">
+            <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" />
+            {pod.last_error}
+          </div>
+        )}
+      </div>
+
+      {/* Expanded content */}
+      {isExpanded && (
+        <div className="px-4 pb-4 pt-0 border-t border-border-subtle mt-0">
+          <div className="pt-4 space-y-4">
+            {/* Details grid */}
+            <div className="grid grid-cols-2 gap-4 text-xs">
+              <div>
+                <span className="text-text-muted">Architecture</span>
+                <p className="text-text-primary font-medium">{pod.architecture || 'Unknown'}</p>
+              </div>
+              <div>
+                <span className="text-text-muted">Docker Version</span>
+                <p className="text-text-primary font-medium">{pod.docker_version || 'Unknown'}</p>
+              </div>
+              <div>
+                <span className="text-text-muted">Token Prefix</span>
+                <p className="text-text-primary font-mono">{pod.token_prefix}...</p>
+              </div>
+              <div>
+                <span className="text-text-muted">Last Heartbeat</span>
+                <p className="text-text-primary font-medium">
+                  {pod.last_heartbeat ? new Date(pod.last_heartbeat).toLocaleString() : 'Never'}
+                </p>
+              </div>
+              <div>
+                <span className="text-text-muted">Created</span>
+                <p className="text-text-primary font-medium">{formatDate(pod.created_at)}</p>
+              </div>
+              <div>
+                <span className="text-text-muted">Last Updated</span>
+                <p className="text-text-primary font-medium">{formatDate(pod.updated_at)}</p>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="flex items-center gap-2 pt-2 border-t border-border-subtle">
+              <button
+                onClick={handleRegenerateToken}
+                disabled={isRegenerating}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded bg-overlay text-text-secondary hover:text-text-primary disabled:opacity-50"
+              >
+                {isRegenerating ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" />
+                )}
+                Regenerate Token
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={isDeleting}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded hover:bg-error/20 text-text-muted hover:text-error disabled:opacity-50"
+              >
+                {isDeleting ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3.5 w-3.5" />
+                )}
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// MAIN COMPONENT
+// ============================================================================
+
+export default function LocalPodsSettingsPage() {
+  const {
+    pods,
+    isLoading,
+    isCreating,
+    error,
+    newToken,
+    loadPods,
+    createPod,
+    deletePod,
+    regenerateToken,
+    clearNewToken,
+    clearError,
+  } = useLocalPodsStore();
+
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [expandedPods, setExpandedPods] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    loadPods();
+  }, [loadPods]);
+
+  const handleCreatePod = async (data: CreateLocalPodRequest) => {
+    await createPod(data);
+    setIsAddModalOpen(false);
+    toast.success('Local pod created! Save the token shown below.');
+  };
+
+  const handleDeletePod = useCallback(
+    async (podId: string) => {
+      try {
+        await deletePod(podId);
+        toast.success('Local pod deleted');
+      } catch {
+        toast.error('Failed to delete pod');
+      }
+    },
+    [deletePod]
+  );
+
+  const handleRegenerateToken = useCallback(
+    async (podId: string) => {
+      try {
+        await regenerateToken(podId);
+        toast.success('Token regenerated! Save the new token.');
+      } catch {
+        toast.error('Failed to regenerate token');
+      }
+    },
+    [regenerateToken]
+  );
+
+  const toggleExpand = (podId: string) => {
+    setExpandedPods((prev) => {
+      const next = new Set(prev);
+      if (next.has(podId)) {
+        next.delete(podId);
+      } else {
+        next.add(podId);
+      }
+      return next;
+    });
+  };
+
+  const onlinePods = pods.filter((p) => p.status === 'online');
+  const offlinePods = pods.filter((p) => p.status !== 'online');
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="flex items-center justify-between px-6 py-4 border-b border-border-subtle">
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-lg bg-accent-primary/10">
+            <Server className="h-5 w-5 text-accent-primary" />
+          </div>
+          <div>
+            <h2 className="text-lg font-semibold text-text-primary">Local Pods</h2>
+            <p className="text-xs text-text-muted">
+              Self-hosted compute for faster local development
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={() => setIsAddModalOpen(true)}
+          className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg bg-accent-primary text-void hover:bg-accent-primary/90"
+        >
+          <Plus className="h-4 w-4" />
+          Add Pod
+        </button>
+      </div>
+
+      {/* Error banner */}
+      {error && (
+        <div className="mx-6 mt-4 p-3 rounded-lg bg-error/10 border border-error/30 text-error text-sm flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-4 w-4" />
+            {error}
+          </div>
+          <button onClick={clearError} className="text-error hover:text-error/80">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {/* New token display */}
+      {newToken && (
+        <div className="mx-6 mt-4">
+          <TokenDisplay token={newToken.token} onDismiss={clearNewToken} />
+        </div>
+      )}
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        {/* Loading state */}
+        {isLoading && (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="h-8 w-8 animate-spin text-accent-primary" />
+          </div>
+        )}
+
+        {!isLoading && (
+          <>
+            {/* Info banner */}
+            <div className="p-4 rounded-lg bg-info/10 border border-info/30">
+              <div className="flex items-start gap-3">
+                <Info className="h-5 w-5 text-info mt-0.5" />
+                <div className="flex-1">
+                  <h4 className="text-sm font-medium text-info">What are Local Pods?</h4>
+                  <p className="text-xs text-info/80 mt-1">
+                    Local pods let you run workspaces on your own machine. Get faster performance,
+                    full GPU access, and keep your code on-premises. Install the agent with{' '}
+                    <code className="px-1 py-0.5 rounded bg-info/20 font-mono text-[11px]">
+                      pip install podex-local-pod
+                    </code>
+                  </p>
+                  <a
+                    href="https://docs.podex.dev/local-pods"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 mt-2 text-xs font-medium text-info hover:underline"
+                  >
+                    View Documentation
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </div>
+              </div>
+            </div>
+
+            {/* Empty state */}
+            {pods.length === 0 && (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <div className="p-4 rounded-full bg-overlay mb-4">
+                  <Server className="h-8 w-8 text-text-muted" />
+                </div>
+                <h3 className="text-lg font-medium text-text-primary mb-2">No local pods yet</h3>
+                <p className="text-sm text-text-muted max-w-md mb-6">
+                  Add a local pod to run workspaces on your own machine. You'll get a token to
+                  authenticate your machine with Podex.
+                </p>
+                <button
+                  onClick={() => setIsAddModalOpen(true)}
+                  className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg bg-accent-primary text-void hover:bg-accent-primary/90"
+                >
+                  <Plus className="h-4 w-4" />
+                  Add Your First Pod
+                </button>
+              </div>
+            )}
+
+            {/* Pod lists */}
+            {pods.length > 0 && (
+              <>
+                {/* Online pods */}
+                {onlinePods.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-2 mb-3">
+                      <Zap className="h-4 w-4 text-success" />
+                      <h3 className="text-sm font-medium text-text-primary">
+                        Online ({onlinePods.length})
+                      </h3>
+                    </div>
+                    <div className="space-y-3">
+                      {onlinePods.map((pod) => (
+                        <PodCard
+                          key={pod.id}
+                          pod={pod}
+                          isExpanded={expandedPods.has(pod.id)}
+                          onToggleExpand={() => toggleExpand(pod.id)}
+                          onDelete={() => handleDeletePod(pod.id)}
+                          onRegenerateToken={() => handleRegenerateToken(pod.id)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Offline pods */}
+                {offlinePods.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-2 mb-3">
+                      <Cloud className="h-4 w-4 text-text-muted" />
+                      <h3 className="text-sm font-medium text-text-primary">
+                        Offline ({offlinePods.length})
+                      </h3>
+                    </div>
+                    <div className="space-y-3">
+                      {offlinePods.map((pod) => (
+                        <PodCard
+                          key={pod.id}
+                          pod={pod}
+                          isExpanded={expandedPods.has(pod.id)}
+                          onToggleExpand={() => toggleExpand(pod.id)}
+                          onDelete={() => handleDeletePod(pod.id)}
+                          onRegenerateToken={() => handleRegenerateToken(pod.id)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Quick start guide */}
+            {pods.length > 0 && (
+              <div className="border border-border-subtle rounded-lg overflow-hidden">
+                <div className="px-4 py-3 bg-elevated border-b border-border-subtle">
+                  <h3 className="text-sm font-medium text-text-primary flex items-center gap-2">
+                    <Terminal className="h-4 w-4" />
+                    Quick Start
+                  </h3>
+                </div>
+                <div className="p-4 space-y-3">
+                  <div className="flex items-start gap-3">
+                    <span className="flex items-center justify-center w-6 h-6 rounded-full bg-accent-primary/20 text-accent-primary text-xs font-bold">
+                      1
+                    </span>
+                    <div>
+                      <p className="text-sm text-text-primary font-medium">Install the agent</p>
+                      <code className="text-xs text-text-muted font-mono block mt-1 p-2 rounded bg-void">
+                        pip install podex-local-pod
+                      </code>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <span className="flex items-center justify-center w-6 h-6 rounded-full bg-accent-primary/20 text-accent-primary text-xs font-bold">
+                      2
+                    </span>
+                    <div>
+                      <p className="text-sm text-text-primary font-medium">Start the pod</p>
+                      <code className="text-xs text-text-muted font-mono block mt-1 p-2 rounded bg-void">
+                        podex-local-pod start --token pdx_pod_...
+                      </code>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <span className="flex items-center justify-center w-6 h-6 rounded-full bg-accent-primary/20 text-accent-primary text-xs font-bold">
+                      3
+                    </span>
+                    <div>
+                      <p className="text-sm text-text-primary font-medium">Create a workspace</p>
+                      <p className="text-xs text-text-muted mt-1">
+                        Select your local pod when creating a new workspace in Podex
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Add pod modal */}
+      {isAddModalOpen && (
+        <AddPodModal
+          onSubmit={handleCreatePod}
+          onClose={() => setIsAddModalOpen(false)}
+          isLoading={isCreating}
+        />
+      )}
+    </div>
+  );
+}

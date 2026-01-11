@@ -1,0 +1,151 @@
+"""Authentication middleware for JWT validation."""
+
+from collections.abc import Awaitable, Callable
+
+import structlog
+from fastapi import HTTPException, Request, Response
+from jose import JWTError, jwt
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from src.config import settings
+
+logger = structlog.get_logger()
+
+# Paths that don't require authentication
+# Use tuples: (path, is_prefix) where is_prefix=True allows subpaths
+PUBLIC_PATHS: list[tuple[str, bool]] = [
+    ("/health", False),
+    ("/api/docs", False),
+    ("/api/redoc", False),
+    ("/api/openapi.json", False),
+    ("/api/auth/login", False),
+    ("/api/auth/register", False),
+    ("/api/auth/refresh", False),
+    ("/api/auth/password/check", False),  # Public password strength check
+    ("/api/oauth/github", True),  # OAuth callbacks have query params
+    ("/api/oauth/google", True),
+    ("/api/preview", True),  # Preview endpoints have subpaths
+    ("/api/templates", True),  # Template listing
+    ("/api/webhooks", True),  # Stripe webhooks (has own auth)
+    ("/api/admin/settings/public", True),  # Public platform settings
+    ("/socket.io", True),  # Socket.IO has subpaths
+]
+
+
+def _is_public_path(request_path: str) -> bool:
+    """Check if the request path is public.
+
+    Uses exact matching or prefix matching with proper boundary checks
+    to prevent path traversal bypasses.
+    """
+    for path, is_prefix in PUBLIC_PATHS:
+        if is_prefix:
+            # For prefix paths, ensure proper boundary (exact match, trailing /, or query)
+            if request_path == path or request_path.startswith((path + "/", path + "?")):
+                return True
+        # Exact match only
+        elif request_path == path:
+            return True
+    return False
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """JWT authentication middleware."""
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """Process request and validate JWT token."""
+        # Skip auth for CORS preflight requests
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
+        # Skip auth for public paths
+        if _is_public_path(request.url.path):
+            return await call_next(request)
+
+        # Extract token from Authorization header
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return Response(
+                content='{"detail": "Missing or invalid authorization header"}',
+                status_code=401,
+                media_type="application/json",
+            )
+
+        parts = auth_header.split(" ")
+        if len(parts) != 2:  # noqa: PLR2004
+            return Response(
+                content='{"detail": "Invalid authorization header format"}',
+                status_code=401,
+                media_type="application/json",
+            )
+        token = parts[1]
+
+        try:
+            # Decode and validate JWT
+            payload = jwt.decode(
+                token,
+                settings.JWT_SECRET_KEY,
+                algorithms=[settings.JWT_ALGORITHM],
+            )
+
+            # Add user info to request state
+            request.state.user_id = payload.get("sub")
+            request.state.user_role = payload.get("role", "member")
+
+        except JWTError as e:
+            logger.warning("JWT validation failed", error=str(e))
+            return Response(
+                content='{"detail": "Invalid or expired token"}',
+                status_code=401,
+                media_type="application/json",
+            )
+
+        return await call_next(request)
+
+
+def get_current_user_id(request: Request) -> str:
+    """Get current user ID from request state.
+
+    This is a simple helper for routes that just need the user ID.
+
+    Args:
+        request: The FastAPI request object
+
+    Returns:
+        The authenticated user's ID
+
+    Raises:
+        HTTPException: If user is not authenticated
+    """
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return str(user_id)
+
+
+async def get_current_user(request: Request) -> dict[str, str | None]:
+    """Get current user info from request state.
+
+    This is a dependency for routes that need user information.
+
+    Args:
+        request: The FastAPI request object
+
+    Returns:
+        Dictionary with user_id and role
+
+    Raises:
+        HTTPException: If user is not authenticated
+    """
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    return {
+        "id": str(user_id),
+        "role": getattr(request.state, "user_role", "member"),
+    }

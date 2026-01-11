@@ -1,0 +1,430 @@
+"""Socket.IO WebSocket hub for local pod connections.
+
+This module handles WebSocket connections from self-hosted local pod agents.
+Pods connect via outbound WebSocket and receive RPC commands for workspace management.
+"""
+
+import asyncio
+import contextlib
+import hashlib
+from datetime import UTC, datetime
+from typing import Any
+from uuid import uuid4
+
+import socketio
+import structlog
+from sqlalchemy import select, update
+
+from src.database.connection import async_session_factory
+from src.database.models import LocalPod
+
+logger = structlog.get_logger()
+
+# Track connected pods: pod_id -> {sid, user_id, name, connected_at}
+_connected_pods: dict[str, dict[str, Any]] = {}
+
+# Reverse mapping: sid -> pod_id
+_sid_to_pod: dict[str, str] = {}
+
+# Pending RPC calls: call_id -> {future, timeout_task}
+_pending_calls: dict[str, dict[str, Any]] = {}
+
+# RPC timeout in seconds
+DEFAULT_RPC_TIMEOUT = 30.0
+
+
+async def _verify_pod_token(token: str) -> LocalPod | None:
+    """Verify pod token and return the pod if valid."""
+    if not token or not token.startswith("pdx_pod_"):
+        return None
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(LocalPod).where(LocalPod.token_hash == token_hash),
+        )
+        return result.scalar_one_or_none()
+
+
+async def _update_pod_status(
+    pod_id: str,
+    status: str,
+    *,
+    last_error: str | None = None,
+) -> None:
+    """Update pod status in database."""
+    async with async_session_factory() as db:
+        values: dict[str, Any] = {
+            "status": status,
+            "updated_at": datetime.now(UTC),
+        }
+        if status == "online":
+            values["last_heartbeat"] = datetime.now(UTC)
+            values["last_error"] = None
+        elif last_error:
+            values["last_error"] = last_error
+
+        await db.execute(
+            update(LocalPod).where(LocalPod.id == pod_id).values(**values),
+        )
+        await db.commit()
+
+
+async def _update_pod_capabilities(pod_id: str, capabilities: dict[str, Any]) -> None:
+    """Update pod capabilities in database."""
+    async with async_session_factory() as db:
+        await db.execute(
+            update(LocalPod)
+            .where(LocalPod.id == pod_id)
+            .values(
+                os_info=capabilities.get("os_info"),
+                architecture=capabilities.get("architecture"),
+                docker_version=capabilities.get("docker_version"),
+                total_memory_mb=capabilities.get("total_memory_mb"),
+                total_cpu_cores=capabilities.get("cpu_cores"),
+                updated_at=datetime.now(UTC),
+            ),
+        )
+        await db.commit()
+
+
+async def _update_pod_heartbeat(pod_id: str, current_workspaces: int) -> None:
+    """Update pod heartbeat in database."""
+    async with async_session_factory() as db:
+        await db.execute(
+            update(LocalPod)
+            .where(LocalPod.id == pod_id)
+            .values(
+                last_heartbeat=datetime.now(UTC),
+                current_workspaces=current_workspaces,
+                updated_at=datetime.now(UTC),
+            ),
+        )
+        await db.commit()
+
+
+class LocalPodNamespace(socketio.AsyncNamespace):
+    """Socket.IO namespace for local pod connections."""
+
+    def __init__(self) -> None:
+        super().__init__("/local-pod")
+
+    async def on_connect(
+        self,
+        sid: str,
+        _environ: dict[str, Any],
+        auth: dict[str, str] | None,
+    ) -> bool:
+        """Handle pod connection with token authentication.
+
+        Args:
+            sid: Socket ID
+            environ: WSGI environ dict
+            auth: Authentication data containing 'token'
+
+        Returns:
+            True if connection is accepted, False to reject
+        """
+        token = auth.get("token") if auth else None
+        if not token:
+            logger.warning("Local pod connection without token", sid=sid)
+            return False
+
+        pod = await _verify_pod_token(token)
+        if not pod:
+            logger.warning("Invalid local pod token", sid=sid)
+            return False
+
+        # Check if pod is already connected (prevent duplicate connections)
+        if pod.id in _connected_pods:
+            old_sid = _connected_pods[pod.id]["sid"]
+            logger.info(
+                "Local pod reconnecting, disconnecting old session",
+                pod_id=pod.id,
+                old_sid=old_sid,
+            )
+            # Clean up old connection
+            _sid_to_pod.pop(old_sid, None)
+            with contextlib.suppress(Exception):
+                await self.disconnect(old_sid)
+
+        # Register pod connection
+        _connected_pods[pod.id] = {
+            "sid": sid,
+            "user_id": pod.user_id,
+            "name": pod.name,
+            "connected_at": datetime.now(UTC),
+        }
+        _sid_to_pod[sid] = pod.id
+
+        # Update pod status in database
+        await _update_pod_status(pod.id, "online")
+
+        # Store pod_id in session for later use
+        await self.save_session(sid, {"pod_id": pod.id, "user_id": pod.user_id})
+
+        logger.info("Local pod connected", pod_id=pod.id, name=pod.name, sid=sid)
+        return True
+
+    async def on_disconnect(self, sid: str) -> None:
+        """Handle pod disconnection."""
+        pod_id = _sid_to_pod.pop(sid, None)
+
+        if pod_id and pod_id in _connected_pods:
+            pod_info = _connected_pods.pop(pod_id)
+
+            # Update pod status in database
+            await _update_pod_status(pod_id, "offline")
+
+            # Cancel any pending RPC calls to this pod
+            for call_id, pending in list(_pending_calls.items()):
+                if pending.get("pod_id") == pod_id:
+                    pending["timeout_task"].cancel()
+                    pending["future"].set_exception(
+                        ConnectionError(f"Pod {pod_id} disconnected"),
+                    )
+                    _pending_calls.pop(call_id, None)
+
+            logger.info(
+                "Local pod disconnected",
+                pod_id=pod_id,
+                name=pod_info.get("name"),
+                sid=sid,
+            )
+
+    async def on_capabilities(self, sid: str, data: dict[str, Any]) -> None:
+        """Handle pod capabilities report (sent on connect).
+
+        Pods send their system capabilities after connecting.
+        """
+        pod_id = _sid_to_pod.get(sid)
+        if not pod_id:
+            return
+
+        await _update_pod_capabilities(pod_id, data)
+        logger.info("Local pod capabilities received", pod_id=pod_id, data=data)
+
+    async def on_heartbeat(self, sid: str, data: dict[str, Any]) -> None:
+        """Handle pod heartbeat with system stats.
+
+        Pods send heartbeats every 30 seconds with their current stats.
+        """
+        pod_id = _sid_to_pod.get(sid)
+        if not pod_id:
+            return
+
+        current_workspaces = data.get("active_workspaces", 0)
+        await _update_pod_heartbeat(pod_id, current_workspaces)
+
+        # Update in-memory tracking
+        if pod_id in _connected_pods:
+            _connected_pods[pod_id]["last_heartbeat"] = datetime.now(UTC)
+            _connected_pods[pod_id]["active_workspaces"] = current_workspaces
+
+    async def on_rpc_response(self, _sid: str, data: dict[str, Any]) -> None:
+        """Handle RPC response from pod.
+
+        Pods send responses to RPC calls initiated by the cloud.
+        """
+        call_id = data.get("call_id")
+        if not call_id or call_id not in _pending_calls:
+            logger.warning("Received response for unknown RPC call", call_id=call_id)
+            return
+
+        pending = _pending_calls.pop(call_id)
+        pending["timeout_task"].cancel()
+
+        if data.get("error"):
+            pending["future"].set_exception(Exception(data["error"]))
+        else:
+            pending["future"].set_result(data.get("result"))
+
+    async def on_workspace_event(self, sid: str, data: dict[str, Any]) -> None:
+        """Handle workspace event from pod.
+
+        Pods can emit events like workspace status changes, errors, etc.
+        """
+        pod_id = _sid_to_pod.get(sid)
+        if not pod_id:
+            return
+
+        event_type = data.get("type")
+        workspace_id = data.get("workspace_id")
+
+        logger.info(
+            "Workspace event from local pod",
+            pod_id=pod_id,
+            event_type=event_type,
+            workspace_id=workspace_id,
+            data=data,
+        )
+
+        # Forward events to session/workspace subscribers
+        if workspace_id and event_type:
+            # Import here to avoid circular imports
+            from src.websocket.hub import emit_to_session  # noqa: PLC0415
+
+            # Get session ID for this workspace from the database
+            async with async_session_factory() as db:
+                from src.database.models import Session as SessionModel  # noqa: PLC0415
+
+                result = await db.execute(
+                    select(SessionModel.id).where(SessionModel.workspace_id == workspace_id)
+                )
+                session_id = result.scalar_one_or_none()
+
+                if session_id:
+                    # Forward to all clients subscribed to this session
+                    await emit_to_session(
+                        session_id,
+                        "workspace_event",
+                        {
+                            "workspace_id": workspace_id,
+                            "event_type": event_type,
+                            "pod_id": pod_id,
+                            **data,
+                        },
+                    )
+                    logger.debug(
+                        "Forwarded workspace event to session",
+                        session_id=session_id,
+                        workspace_id=workspace_id,
+                        event_type=event_type,
+                    )
+
+
+# Create namespace instance
+local_pod_namespace = LocalPodNamespace()
+
+
+# ============== Public API for calling pods ==============
+
+
+def is_pod_online(pod_id: str) -> bool:
+    """Check if a pod is currently connected."""
+    return pod_id in _connected_pods
+
+
+def get_online_pods_for_user(user_id: str) -> list[str]:
+    """Get list of connected pod IDs for a user."""
+    return [pid for pid, info in _connected_pods.items() if info.get("user_id") == user_id]
+
+
+class PodNotConnectedError(ValueError):
+    """Raised when attempting to call a pod that is not connected."""
+
+    def __init__(self, pod_id: str) -> None:
+        super().__init__(f"Pod {pod_id} is not connected")
+        self.pod_id = pod_id
+
+
+async def call_pod(
+    pod_id: str,
+    method: str,
+    params: dict[str, Any],
+    rpc_timeout: float = DEFAULT_RPC_TIMEOUT,
+) -> object:
+    """Make an RPC call to a pod and wait for response.
+
+    Args:
+        pod_id: ID of the pod to call
+        method: RPC method name (e.g., "workspace.create")
+        params: Parameters to pass to the method
+        rpc_timeout: Timeout in seconds
+
+    Returns:
+        The result from the pod
+
+    Raises:
+        PodNotConnectedError: If pod is not connected
+        TimeoutError: If call times out
+        Exception: If pod returns an error
+    """
+    if pod_id not in _connected_pods:
+        raise PodNotConnectedError(pod_id)
+
+    sid = _connected_pods[pod_id]["sid"]
+    call_id = f"{pod_id}:{method}:{uuid4().hex[:8]}"
+
+    # Create future for response
+    loop = asyncio.get_event_loop()
+    future: asyncio.Future[object] = loop.create_future()
+
+    # Setup timeout
+    async def handle_rpc_timeout() -> None:
+        await asyncio.sleep(rpc_timeout)
+        if call_id in _pending_calls:
+            _pending_calls.pop(call_id)
+            if not future.done():
+                future.set_exception(TimeoutError(f"RPC call {method} timed out"))
+
+    rpc_timeout_task = asyncio.create_task(handle_rpc_timeout())
+
+    _pending_calls[call_id] = {
+        "future": future,
+        "pod_id": pod_id,
+        "timeout_task": rpc_timeout_task,
+    }
+
+    # Send RPC request to pod
+    await local_pod_namespace.emit(
+        "rpc_request",
+        {"call_id": call_id, "method": method, "params": params},
+        to=sid,
+    )
+
+    logger.debug("RPC call sent to pod", pod_id=pod_id, method=method, call_id=call_id)
+
+    return await future
+
+
+async def broadcast_to_pod(pod_id: str, event: str, data: dict[str, Any]) -> None:
+    """Send an event to a pod without waiting for response.
+
+    Args:
+        pod_id: ID of the pod
+        event: Event name
+        data: Event data
+    """
+    if pod_id not in _connected_pods:
+        return
+
+    sid = _connected_pods[pod_id]["sid"]
+    await local_pod_namespace.emit(event, data, to=sid)
+
+
+# ============== RPC Method Names ==============
+
+
+class RPCMethods:
+    """RPC method names for pod communication."""
+
+    # Workspace lifecycle
+    WORKSPACE_CREATE = "workspace.create"
+    WORKSPACE_STOP = "workspace.stop"
+    WORKSPACE_DELETE = "workspace.delete"
+    WORKSPACE_GET = "workspace.get"
+    WORKSPACE_LIST = "workspace.list"
+    WORKSPACE_HEARTBEAT = "workspace.heartbeat"
+
+    # Command execution
+    WORKSPACE_EXEC = "workspace.exec"
+
+    # File operations
+    WORKSPACE_READ_FILE = "workspace.read_file"
+    WORKSPACE_WRITE_FILE = "workspace.write_file"
+    WORKSPACE_LIST_FILES = "workspace.list_files"
+
+    # Terminal
+    TERMINAL_CREATE = "terminal.create"
+    TERMINAL_INPUT = "terminal.input"
+    TERMINAL_RESIZE = "terminal.resize"
+    TERMINAL_CLOSE = "terminal.close"
+
+    # Preview/ports
+    WORKSPACE_GET_PORTS = "workspace.get_ports"
+    WORKSPACE_PROXY = "workspace.proxy"
+
+    # Health
+    HEALTH_CHECK = "health.check"

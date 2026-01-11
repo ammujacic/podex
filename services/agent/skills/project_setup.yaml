@@ -1,0 +1,79 @@
+name: project_setup
+description: Set up a new project with standard structure and tooling
+version: "1.0.0"
+author: system
+tags:
+  - architect
+  - coder
+  - setup
+  - initialization
+triggers:
+  - create project
+  - setup project
+  - initialize project
+  - new project
+  - scaffold
+required_tools:
+  - write_file
+  - run_command
+  - list_directory
+required_context:
+  - workspace_path
+  - project_name
+  - project_type
+system_prompt: |
+  You are setting up a new project. Follow best practices for the project type.
+  Create a clean, well-organized structure with proper configuration files.
+examples:
+  - input: "Create a new React project"
+    output: "I'll set up a React project with TypeScript, ESLint, and testing..."
+  - input: "Initialize a Python package"
+    output: "Setting up a Python package with pyproject.toml, tests, and CI..."
+steps:
+  - name: create_structure
+    description: Create project directory structure
+    tool: run_command
+    parameters:
+      workspace_path: "{{workspace_path}}"
+      command: "mkdir -p src tests docs"
+  - name: init_git
+    description: Initialize git repository
+    tool: run_command
+    parameters:
+      workspace_path: "{{workspace_path}}"
+      command: "git init"
+  - name: create_readme
+    description: Create README file
+    tool: write_file
+    parameters:
+      file_path: "{{workspace_path}}/README.md"
+      content: |
+        # {{project_name}}
+
+        ## Getting Started
+
+        TODO: Add getting started instructions
+
+        ## Development
+
+        TODO: Add development instructions
+  - name: create_gitignore
+    description: Create .gitignore file
+    tool: write_file
+    parameters:
+      file_path: "{{workspace_path}}/.gitignore"
+      content: |
+        node_modules/
+        __pycache__/
+        .env
+        .env.local
+        dist/
+        build/
+        *.pyc
+        .pytest_cache/
+        coverage/
+        .coverage
+metadata:
+  category: setup
+  estimated_duration: 120
+  requires_approval: true

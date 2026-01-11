@@ -1,0 +1,58 @@
+name: bug_fix
+description: Diagnose and fix a bug in the codebase
+version: "1.0.0"
+author: system
+tags:
+  - coder
+  - debugging
+  - fix
+triggers:
+  - fix bug
+  - debug
+  - fix error
+  - resolve issue
+  - troubleshoot
+required_tools:
+  - search_code
+  - read_file
+  - write_file
+  - run_command
+required_context:
+  - workspace_path
+  - error_message
+system_prompt: |
+  You are debugging an issue. Follow a systematic approach:
+  1. Understand the error message and symptoms
+  2. Locate the source of the problem
+  3. Analyze the root cause
+  4. Implement a fix
+  5. Verify the fix works
+examples:
+  - input: "Fix the TypeError in login"
+    output: "Let me search for the login code and understand the type error..."
+  - input: "Debug the null reference error"
+    output: "I'll trace the code path to find where the null reference occurs..."
+steps:
+  - name: search_error
+    description: Search for error-related code
+    tool: search_code
+    parameters:
+      workspace_path: "{{workspace_path}}"
+      pattern: "{{error_keyword}}"
+  - name: read_context
+    description: Read surrounding code for context
+    tool: read_file
+    parameters:
+      file_path: "{{error_file}}"
+    condition: "error_file != none"
+  - name: run_tests
+    description: Run tests to verify the fix
+    tool: run_command
+    parameters:
+      workspace_path: "{{workspace_path}}"
+      command: "npm test"
+    on_failure: analyze_failure
+metadata:
+  category: maintenance
+  estimated_duration: 300
+  requires_approval: false
