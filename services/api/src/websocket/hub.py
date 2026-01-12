@@ -18,7 +18,6 @@ from src.database.models import Session as SessionModel
 from src.database.models import SessionShare
 from src.session_sync.manager import session_sync_manager
 from src.session_sync.models import SharingMode, SyncAction, SyncActionType
-from src.streaming import get_stream_subscriber
 from src.terminal.manager import terminal_manager
 from src.websocket.local_pod_hub import local_pod_namespace
 
@@ -410,6 +409,9 @@ async def session_join(sid: str, data: dict[str, str]) -> None:
         await sio.emit("session_sync", full_sync, to=sid)
 
     # Subscribe to agent streaming events for this session
+    # Import here to avoid circular import with streaming.subscriber
+    from src.streaming import get_stream_subscriber  # noqa: PLC0415
+
     stream_subscriber = get_stream_subscriber()
     await stream_subscriber.subscribe_session(session_id)
 
@@ -446,6 +448,9 @@ async def session_leave(sid: str, data: dict[str, str]) -> None:
         _pending_session_cleanup[session_id] = cleanup_task
 
         # Unsubscribe from agent streaming events when room is empty
+        # Import here to avoid circular import with streaming.subscriber
+        from src.streaming import get_stream_subscriber  # noqa: PLC0415
+
         stream_subscriber = get_stream_subscriber()
         await stream_subscriber.unsubscribe_session(session_id)
 
