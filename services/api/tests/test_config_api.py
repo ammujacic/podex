@@ -18,9 +18,14 @@ class TestSettingsDefaults:
 
     def test_environment_default(self) -> None:
         """Test default environment."""
-        with patch.dict(os.environ, {"ENVIRONMENT": ""}, clear=False):
+        # Must actually remove the key, not just set to empty string
+        env_backup = os.environ.pop("ENVIRONMENT", None)
+        try:
             settings = Settings()
             assert settings.ENVIRONMENT == "development"
+        finally:
+            if env_backup is not None:
+                os.environ["ENVIRONMENT"] = env_backup
 
     def test_port_default(self) -> None:
         """Test default port."""
