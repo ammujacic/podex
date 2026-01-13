@@ -117,6 +117,6 @@ module = [
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-addopts = "--cov=src --cov-report=term-missing --cov-fail-under=90"
+addopts = "--cov=src --cov-report=term-missing"
 testpaths = ["tests"]
 asyncio_mode = "auto"

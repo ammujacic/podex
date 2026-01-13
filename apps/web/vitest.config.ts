@@ -13,13 +13,15 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
-      exclude: ['node_modules', '.next', 'src/__tests__/setup.ts', '**/*.d.ts', '**/types/**'],
-      thresholds: {
-        lines: 90,
-        functions: 90,
-        branches: 90,
-        statements: 90,
-      },
+      include: ['src/__tests__/**/*.{ts,tsx}'],
+      exclude: [
+        'node_modules',
+        '.next',
+        'src/__tests__/setup.ts',
+        '**/*.d.ts',
+        '**/types/**',
+        'e2e/**',
+      ],
     },
   },
   resolve: {

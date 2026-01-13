@@ -669,8 +669,8 @@ class DockerComputeManager(ComputeManager):
 
         for _ in range(needed):
             try:
-                container: Container = await asyncio.to_thread(  # type: ignore[arg-type]
-                    self.client.containers.run,
+                container: Container = await asyncio.to_thread(
+                    self.client.containers.run,  # type: ignore[arg-type]
                     settings.workspace_image,
                     detach=True,
                     name=f"podex-warm-{uuid.uuid4().hex[:8]}",
