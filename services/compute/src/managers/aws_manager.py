@@ -10,11 +10,15 @@ import aioboto3
 import httpx
 import structlog
 
+from podex_shared import ComputeUsageParams, get_usage_tracker
 from podex_shared.models.workspace import (
     HARDWARE_SPECS,
     AcceleratorType,
     Architecture,
     GPUType,
+)
+from podex_shared.models.workspace import (
+    WorkspaceTier as SharedTier,
 )
 from src.config import settings
 from src.managers.base import ComputeManager, ProxyRequest
@@ -470,6 +474,7 @@ class AWSComputeManager(ComputeManager):
             # Wait for task to be running (simplified - should use waiters)
             # In production, this would poll until the task is RUNNING
 
+            now = datetime.now(UTC)
             workspace_info = WorkspaceInfo(
                 id=workspace_id,
                 user_id=user_id,
@@ -480,9 +485,12 @@ class AWSComputeManager(ComputeManager):
                 port=3000,
                 container_id=task_arn,
                 repos=config.repos,
-                created_at=datetime.now(UTC),
-                last_activity=datetime.now(UTC),
-                metadata={"task_arn": task_arn},
+                created_at=now,
+                last_activity=now,
+                metadata={
+                    "task_arn": task_arn,
+                    "last_billing_timestamp": now.isoformat(),
+                },
             )
 
             self._workspaces[workspace_id] = workspace_info
@@ -515,6 +523,96 @@ class AWSComputeManager(ComputeManager):
         workspace.status = WorkspaceStatus.STOPPED
         workspace.last_activity = datetime.now(UTC)
         logger.info("AWS workspace stopped", workspace_id=workspace_id)
+
+    async def _track_compute_usage(
+        self,
+        workspace: WorkspaceInfo,
+        duration_seconds: int,
+    ) -> None:
+        """Track compute usage for billing."""
+        tracker = get_usage_tracker()
+        if not tracker:
+            logger.debug("Usage tracker not initialized, skipping compute usage recording")
+            return
+
+        try:
+            # Get hourly rate for this tier
+            tier_enum = SharedTier(workspace.tier.value)
+            hardware_spec = HARDWARE_SPECS.get(tier_enum)
+            # Default to $0.05/hr if hardware spec not found
+            default_rate_cents = 5
+            hourly_rate_cents = (
+                int(hardware_spec.hourly_rate * 100) if hardware_spec else default_rate_cents
+            )
+
+            params = ComputeUsageParams(
+                user_id=workspace.user_id,
+                tier=workspace.tier.value,
+                duration_seconds=duration_seconds,
+                session_id=workspace.session_id,
+                workspace_id=workspace.id,
+                hourly_rate_cents=hourly_rate_cents,
+                metadata={
+                    "task_arn": workspace.container_id,
+                },
+            )
+            await tracker.record_compute_usage(params)
+            logger.debug(
+                "Recorded compute usage",
+                workspace_id=workspace.id,
+                duration_seconds=duration_seconds,
+                tier=workspace.tier.value,
+            )
+        except Exception:
+            # Don't fail the stop if usage tracking fails
+            logger.exception("Failed to track compute usage")
+
+    async def track_running_workspaces_usage(self) -> None:
+        """Track compute usage for all running workspaces (called periodically)."""
+        now = datetime.now(UTC)
+
+        for workspace in list(self._workspaces.values()):
+            if workspace.status != WorkspaceStatus.RUNNING:
+                continue
+
+            try:
+                # Get last billing timestamp from metadata
+                last_billing_str = workspace.metadata.get("last_billing_timestamp")
+                if not last_billing_str:
+                    # Use workspace creation time as starting point for first billing cycle
+                    # This ensures we track usage from when the workspace started running
+                    last_billing = workspace.created_at
+                else:
+                    # Parse last billing timestamp
+                    last_billing = datetime.fromisoformat(last_billing_str)
+
+                # Ensure last_billing is timezone-aware
+                if last_billing.tzinfo is None:
+                    last_billing = last_billing.replace(tzinfo=UTC)
+
+                # Calculate duration since last billing
+                duration = (now - last_billing).total_seconds()
+
+                # Only track if at least 30 seconds have passed (avoid too frequent tracking)
+                if duration >= 30:  # noqa: PLR2004
+                    duration_seconds = int(duration)
+
+                    # Track the usage
+                    await self._track_compute_usage(workspace, duration_seconds)
+
+                    # Update last billing timestamp
+                    workspace.metadata["last_billing_timestamp"] = now.isoformat()
+
+                    logger.debug(
+                        "Tracked periodic compute usage",
+                        workspace_id=workspace.id,
+                        duration_seconds=duration_seconds,
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to track periodic usage for workspace",
+                    workspace_id=workspace.id,
+                )
 
     async def delete_workspace(self, workspace_id: str, preserve_files: bool = True) -> None:
         """Delete a workspace (stop task and cleanup).

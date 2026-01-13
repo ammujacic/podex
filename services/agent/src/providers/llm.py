@@ -76,6 +76,18 @@ class LLMProvider:
         self._ollama_client: AsyncOpenAI | None = None
         self._boto_session: aioboto3.Session | None = None
 
+    def _estimate_tokens(self, text: str) -> int:
+        """Estimate token count from text length.
+
+        Args:
+            text: Text to estimate tokens for
+
+        Returns:
+            Estimated token count (roughly 1 token per 4 characters)
+        """
+        # Rough estimation: 1 token ~= 4 characters for English text
+        return max(1, len(text) // 4)
+
     @property
     def anthropic_client(self) -> AsyncAnthropic:
         """Get or create Anthropic client."""
@@ -558,13 +570,32 @@ class LLMProvider:
                     },
                 )
 
+        # Get usage stats or estimate if not provided
+        input_tokens = response.usage.prompt_tokens if response.usage else 0
+        output_tokens = response.usage.completion_tokens if response.usage else 0
+        total_tokens = response.usage.total_tokens if response.usage else 0
+
+        # Fallback: estimate tokens if Ollama didn't provide usage stats
+        if total_tokens == 0:
+            # Estimate input tokens from messages
+            total_message_text = " ".join(msg.get("content", "") for msg in messages)
+            input_tokens = self._estimate_tokens(total_message_text)
+            # Estimate output tokens from content
+            output_tokens = self._estimate_tokens(content)
+            total_tokens = input_tokens + output_tokens
+            logger.warning(
+                "Ollama didn't provide usage stats, using estimation",
+                estimated_input=input_tokens,
+                estimated_output=output_tokens,
+            )
+
         return {
             "content": content,
             "tool_calls": tool_calls,
             "usage": {
-                "input_tokens": response.usage.prompt_tokens if response.usage else 0,
-                "output_tokens": response.usage.completion_tokens if response.usage else 0,
-                "total_tokens": response.usage.total_tokens if response.usage else 0,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
             },
             "stop_reason": choice.finish_reason,
         }
@@ -957,6 +988,7 @@ class LLMProvider:
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": True,
+            "stream_options": {"include_usage": True},  # Request usage stats
         }
 
         if openai_tools:
@@ -968,6 +1000,7 @@ class LLMProvider:
         finish_reason: str | None = None
         prompt_tokens = 0
         completion_tokens = 0
+        accumulated_content = ""  # Track content for token estimation fallback
 
         stream = await self.ollama_client.chat.completions.create(**request_params)
 
@@ -987,6 +1020,7 @@ class LLMProvider:
 
             # Handle text content
             if delta.content:
+                accumulated_content += delta.content
                 yield StreamEvent(type="token", content=delta.content)
 
             # Handle tool calls
@@ -1020,6 +1054,19 @@ class LLMProvider:
                 tool_call_id=tc_data["id"],
                 tool_name=tc_data["name"],
                 tool_input=tool_input,
+            )
+
+        # Fallback: estimate tokens if Ollama didn't provide usage stats
+        if prompt_tokens == 0 and completion_tokens == 0:
+            # Estimate input tokens from messages
+            total_message_text = " ".join(msg.get("content", "") for msg in messages)
+            prompt_tokens = self._estimate_tokens(total_message_text)
+            # Estimate output tokens from accumulated content
+            completion_tokens = self._estimate_tokens(accumulated_content)
+            logger.warning(
+                "Ollama didn't provide usage stats, using estimation",
+                estimated_input=prompt_tokens,
+                estimated_output=completion_tokens,
             )
 
         yield StreamEvent(

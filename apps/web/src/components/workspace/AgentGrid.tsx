@@ -173,7 +173,7 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
   return (
     <GridProvider gridRef={gridRef}>
       <div className="h-full p-4 overflow-auto" data-tour="agent-grid">
-        <div ref={gridRef} className="grid gap-4 grid-cols-1 md:grid-cols-2 auto-rows-min">
+        <div ref={gridRef} className="grid gap-4 grid-cols-1 md:grid-cols-2 auto-rows-[300px]">
           {agents.map((agent) => (
             <ResizableGridCard key={agent.id} agent={agent} sessionId={sessionId} maxCols={2} />
           ))}

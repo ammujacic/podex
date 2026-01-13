@@ -85,6 +85,7 @@ class SessionCreate(BaseModel):
     git_url: str | None = None
     branch: str = "main"
     template_id: str | None = None
+    tier: str | None = None  # Hardware tier (starter, pro, etc.)
 
 
 class SessionResponse(BaseModel):
@@ -185,6 +186,7 @@ async def build_workspace_config(
     db: AsyncSession,
     template_id: str | None,
     git_url: str | None,
+    tier: str | None = None,
 ) -> dict[str, Any]:
     """Build workspace configuration from template and git URL.
 
@@ -192,12 +194,14 @@ async def build_workspace_config(
         db: Database session
         template_id: Optional template ID to fetch configuration from
         git_url: Optional git URL to clone
+        tier: Optional hardware tier (defaults to "starter")
 
     Returns:
         Workspace configuration dict for the compute service
     """
     config: dict[str, Any] = {
         "repos": [git_url] if git_url else [],
+        "tier": tier or "starter",  # Default to starter tier if not specified
     }
 
     if template_id:
@@ -252,7 +256,11 @@ async def create_session(
     await db.flush()
 
     try:
-        # Create session
+        # Create session with tier in settings
+        settings = {}
+        if data.tier:
+            settings["tier"] = data.tier
+
         session = SessionModel(
             name=data.name,
             owner_id=user_id,
@@ -261,6 +269,7 @@ async def create_session(
             branch=data.branch,
             template_id=data.template_id,
             status="active",
+            settings=settings if settings else None,
         )
         db.add(session)
         await db.commit()
@@ -272,18 +281,18 @@ async def create_session(
         raise HTTPException(status_code=500, detail="Failed to create session") from None
 
     # Build workspace config from template
-    workspace_config = await build_workspace_config(db, data.template_id, data.git_url)
+    workspace_config = await build_workspace_config(db, data.template_id, data.git_url, data.tier)
 
     # Provision workspace in compute service
     try:
-        await compute_client.create_workspace(
+        workspace_info = await compute_client.create_workspace(
             session_id=str(session.id),
             user_id=user_id,
             workspace_id=str(workspace.id),
             config=workspace_config,
         )
-        # Update workspace status to active
-        workspace.status = "active"
+        # Update workspace status from compute service response
+        workspace.status = workspace_info.get("status", "running")
         await db.commit()
     except ComputeClientError as e:
         logger.warning(
@@ -1162,9 +1171,16 @@ async def ensure_workspace_provisioned(  # noqa: PLR0912
 
     # Build workspace config from template if db session is available
     if db and session.template_id:
-        workspace_config = await build_workspace_config(db, session.template_id, session.git_url)
+        tier = session.settings.get("tier") if session.settings else None
+        workspace_config = await build_workspace_config(
+            db, session.template_id, session.git_url, tier
+        )
     else:
-        workspace_config = {"repos": [session.git_url] if session.git_url else []}
+        tier = session.settings.get("tier", "starter") if session.settings else "starter"
+        workspace_config = {
+            "repos": [session.git_url] if session.git_url else [],
+            "tier": tier,
+        }
 
     # Workspace doesn't exist, acquire lock before provisioning
     # This prevents multiple concurrent requests from trying to create

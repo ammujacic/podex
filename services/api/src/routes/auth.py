@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.database.connection import get_db
-from src.database.models import User
+from src.database.models import SubscriptionPlan, User, UserSubscription
 from src.middleware.rate_limit import RATE_LIMIT_AUTH, RATE_LIMIT_SENSITIVE, limiter
 from src.services.mfa import get_mfa_service
 from src.utils.password_validator import get_password_strength, validate_password
@@ -227,6 +227,26 @@ async def register(
     db.add(user)
     await db.commit()
     await db.refresh(user)
+
+    # Auto-assign Free plan subscription
+    free_plan_result = await db.execute(
+        select(SubscriptionPlan).where(SubscriptionPlan.slug == "free")
+    )
+    free_plan = free_plan_result.scalar_one_or_none()
+
+    if free_plan:
+        # Create subscription for this user
+        now = datetime.now(UTC)
+        subscription = UserSubscription(
+            user_id=user.id,
+            plan_id=free_plan.id,
+            status="active",
+            billing_cycle="monthly",
+            current_period_start=now,
+            current_period_end=now + timedelta(days=30),
+        )
+        db.add(subscription)
+        await db.commit()
 
     # Get user role (will be "member" for new users)
     user_role = getattr(user, "role", "member") or "member"

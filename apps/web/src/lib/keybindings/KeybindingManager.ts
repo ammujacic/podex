@@ -153,6 +153,7 @@ class KeybindingManager {
   };
   private chordState: string | null = null;
   private chordTimeout: ReturnType<typeof setTimeout> | null = null;
+  private pendingCommand: (() => void) | null = null;
   private listeners: Set<() => void> = new Set();
 
   constructor() {
@@ -253,7 +254,13 @@ class KeybindingManager {
       if (handler) {
         event.preventDefault();
         event.stopPropagation();
-        handler();
+
+        // If this key is also a chord starter, delay execution to allow chord sequences
+        if (isChordStarter && !this.chordState) {
+          this.startChordWithPendingCommand(normalizedKey, handler);
+        } else {
+          handler();
+        }
         return;
       }
     }
@@ -282,8 +289,21 @@ class KeybindingManager {
     }, 2000);
   }
 
+  private startChordWithPendingCommand(key: string, command: CommandHandler) {
+    this.chordState = key;
+    this.pendingCommand = command;
+    // Wait 500ms for second keypress, otherwise execute the pending command
+    this.chordTimeout = setTimeout(() => {
+      if (this.pendingCommand) {
+        this.pendingCommand();
+      }
+      this.clearChord();
+    }, 500);
+  }
+
   private clearChord() {
     this.chordState = null;
+    this.pendingCommand = null;
     if (this.chordTimeout) {
       clearTimeout(this.chordTimeout);
       this.chordTimeout = null;
@@ -326,6 +346,14 @@ class KeybindingManager {
         this.bindings.set(key, filtered);
       }
     }
+    this.notifyListeners();
+  }
+
+  /**
+   * Clear all keybindings
+   */
+  clearAllKeybindings() {
+    this.bindings.clear();
     this.notifyListeners();
   }
 

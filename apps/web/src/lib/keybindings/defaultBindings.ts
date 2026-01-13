@@ -15,9 +15,16 @@ export const defaultKeybindings: Keybinding[] = [
   },
   {
     id: 'commandPalette',
-    key: 'mod+shift+p',
+    key: 'mod+k',
     command: 'commandPalette.toggle',
     description: 'Open command palette',
+    category: 'Navigation',
+  },
+  {
+    id: 'commandPaletteAlt',
+    key: 'mod+shift+p',
+    command: 'commandPalette.toggle',
+    description: 'Open command palette (alternative)',
     category: 'Navigation',
   },
   {

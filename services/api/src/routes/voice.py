@@ -994,7 +994,7 @@ class LocalSynthesizeResponse(BaseModel):
     voice_used: str
 
 
-async def _pyttsx3_synthesize(
+async def _pyttsx3_synthesize(  # noqa: PLR0915
     text: str,
     voice_id: str | None = None,
     rate: int = 150,
@@ -1002,6 +1002,8 @@ async def _pyttsx3_synthesize(
 ) -> LocalSynthesizeResponse:
     """Synthesize speech using pyttsx3."""
     import asyncio  # noqa: PLC0415
+    import os  # noqa: PLC0415
+    import sys  # noqa: PLC0415
     import tempfile  # noqa: PLC0415
     from pathlib import Path  # noqa: PLC0415
 
@@ -1023,29 +1025,46 @@ async def _pyttsx3_synthesize(
             nonlocal voice_used
             engine = pyttsx3.init()
 
-            # Set properties
-            engine.setProperty("rate", rate)
-            engine.setProperty("volume", volume)
+            try:
+                # Set properties
+                engine.setProperty("rate", rate)
+                engine.setProperty("volume", volume)
 
-            # Set voice if specified
-            if voice_id:
-                voices = engine.getProperty("voices")
-                for voice in voices:
-                    if voice.id == voice_id or voice_id in voice.id:
-                        engine.setProperty("voice", voice.id)
-                        voice_used = voice.name
-                        break
-            else:
-                # Get default voice name
-                voices = engine.getProperty("voices")
-                if voices:
-                    voice_used = voices[0].name
+                # Set voice if specified
+                if voice_id:
+                    voices = engine.getProperty("voices")
+                    for voice in voices:
+                        if voice.id == voice_id or voice_id in voice.id:
+                            engine.setProperty("voice", voice.id)
+                            voice_used = voice.name
+                            break
+                else:
+                    # Get default voice name
+                    voices = engine.getProperty("voices")
+                    if voices:
+                        voice_used = voices[0].name
 
-            # Save to file
-            engine.save_to_file(text, temp_path)
-            engine.runAndWait()
+                # Save to file
+                engine.save_to_file(text, temp_path)
 
-            return voice_used
+                # Suppress stderr to hide pyttsx3 espeak ReferenceError warnings
+                # These errors are harmless but noisy - they occur in espeak's C callbacks
+                stderr_backup = sys.stderr
+                try:
+                    sys.stderr = open(os.devnull, "w")  # noqa: SIM115, PTH123
+                    engine.runAndWait()
+                finally:
+                    sys.stderr.close()
+                    sys.stderr = stderr_backup
+
+                return voice_used
+            finally:
+                # Properly cleanup engine to prevent weak reference errors
+                try:  # noqa: SIM105
+                    engine.stop()
+                except Exception:  # noqa: S110
+                    pass  # Ignore cleanup errors
+                del engine
 
         voice_used = await loop.run_in_executor(None, _synthesize)
 

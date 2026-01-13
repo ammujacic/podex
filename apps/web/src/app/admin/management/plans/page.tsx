@@ -91,8 +91,10 @@ function PlanCard({ plan, onEdit, onToggleActive }: PlanCardProps) {
             </span>
           </div>
           <div className="flex justify-between">
-            <span className="text-text-muted">Compute Hours</span>
-            <span className="text-text-secondary">{plan.compute_hours_included}h</span>
+            <span className="text-text-muted">Compute Credits</span>
+            <span className="text-text-secondary">
+              ${(plan.compute_credits_cents_included / 100).toFixed(0)}
+            </span>
           </div>
           <div className="flex justify-between">
             <span className="text-text-muted">Storage</span>
@@ -111,7 +113,7 @@ function PlanCard({ plan, onEdit, onToggleActive }: PlanCardProps) {
             <span className="text-text-secondary">{plan.max_sessions}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-text-muted">Team Members</span>
+            <span className="text-text-muted">Live Collaborators</span>
             <span className="text-text-secondary">{plan.max_team_members}</span>
           </div>
         </div>
@@ -145,7 +147,7 @@ function EditPlanModal({ plan, onClose, onSave }: EditPlanModalProps) {
     price_monthly_cents: plan?.price_monthly_cents || 0,
     price_yearly_cents: plan?.price_yearly_cents || 0,
     tokens_included: plan?.tokens_included || 0,
-    compute_hours_included: plan?.compute_hours_included || 0,
+    compute_credits_cents_included: plan?.compute_credits_cents_included || 0,
     storage_gb_included: plan?.storage_gb_included || 0,
     max_agents: plan?.max_agents || 1,
     max_sessions: plan?.max_sessions || 1,
@@ -242,14 +244,14 @@ function EditPlanModal({ plan, onClose, onSave }: EditPlanModalProps) {
               />
             </div>
             <div>
-              <label className="block text-sm text-text-muted mb-1">Compute Hours</label>
+              <label className="block text-sm text-text-muted mb-1">Compute Credits (cents)</label>
               <input
                 type="number"
-                value={formData.compute_hours_included}
+                value={formData.compute_credits_cents_included}
                 onChange={(e) =>
                   setFormData({
                     ...formData,
-                    compute_hours_included: parseInt(e.target.value) || 0,
+                    compute_credits_cents_included: parseInt(e.target.value) || 0,
                   })
                 }
                 className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
@@ -297,7 +299,7 @@ function EditPlanModal({ plan, onClose, onSave }: EditPlanModalProps) {
               />
             </div>
             <div>
-              <label className="block text-sm text-text-muted mb-1">Team Members</label>
+              <label className="block text-sm text-text-muted mb-1">Live Collaborators</label>
               <input
                 type="number"
                 value={formData.max_team_members}

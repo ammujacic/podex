@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.cache import cache_delete, cache_get, cache_set, user_config_key
 from src.config import settings
 from src.database.connection import get_db
-from src.database.models import UserConfig
+from src.database.models import User, UserConfig
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 from src.storage.s3 import get_storage
 
@@ -38,6 +38,11 @@ CONFIG_FIELD_MAP = [
     "theme",
     "editor_theme",
     "default_standby_timeout_minutes",
+    "custom_keybindings",
+    "editor_settings",
+    "ui_preferences",
+    "voice_preferences",
+    "agent_preferences",
 ]
 
 
@@ -149,6 +154,11 @@ class UserConfigResponse(BaseModel):
     theme: str
     editor_theme: str
     default_standby_timeout_minutes: int | None  # None = Never
+    custom_keybindings: dict[str, Any] | None
+    editor_settings: dict[str, Any] | None
+    ui_preferences: dict[str, Any] | None
+    voice_preferences: dict[str, Any] | None
+    agent_preferences: dict[str, Any] | None
 
 
 class UpdateUserConfigRequest(BaseModel):
@@ -165,6 +175,11 @@ class UpdateUserConfigRequest(BaseModel):
     theme: str | None = None
     editor_theme: str | None = None
     default_standby_timeout_minutes: int | None = None
+    custom_keybindings: dict[str, Any] | None = None
+    editor_settings: dict[str, Any] | None = None
+    ui_preferences: dict[str, Any] | None = None
+    voice_preferences: dict[str, Any] | None = None
+    agent_preferences: dict[str, Any] | None = None
 
 
 class DotfileContent(BaseModel):
@@ -204,6 +219,15 @@ async def get_user_config(
 
     # Create default config if not exists
     if not config:
+        # Verify user exists before creating config
+        user_result = await db.execute(select(User).where(User.id == user_id))
+        user = user_result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid authentication token - user not found",
+            )
+
         config = UserConfig(
             user_id=user_id,
             dotfiles_paths=DEFAULT_DOTFILES,
@@ -227,6 +251,11 @@ async def get_user_config(
         theme=config.theme,
         editor_theme=config.editor_theme,
         default_standby_timeout_minutes=config.default_standby_timeout_minutes,
+        custom_keybindings=config.custom_keybindings,
+        editor_settings=config.editor_settings,
+        ui_preferences=config.ui_preferences,
+        voice_preferences=config.voice_preferences,
+        agent_preferences=config.agent_preferences,
     )
 
     # Cache the result
@@ -253,6 +282,15 @@ async def update_user_config(
 
     # Create if not exists
     if not config:
+        # Verify user exists before creating config
+        user_result = await db.execute(select(User).where(User.id == user_id))
+        user = user_result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid authentication token - user not found",
+            )
+
         config = UserConfig(
             user_id=user_id,
             dotfiles_paths=DEFAULT_DOTFILES,
@@ -289,6 +327,11 @@ async def update_user_config(
         theme=config.theme,
         editor_theme=config.editor_theme,
         default_standby_timeout_minutes=config.default_standby_timeout_minutes,
+        custom_keybindings=config.custom_keybindings,
+        editor_settings=config.editor_settings,
+        ui_preferences=config.ui_preferences,
+        voice_preferences=config.voice_preferences,
+        agent_preferences=config.agent_preferences,
     )
 
     # Cache the new value

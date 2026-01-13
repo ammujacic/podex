@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { getUserConfig, updateUserConfig } from '@/lib/api/user-config';
 
 // ============================================================================
 // Types
@@ -66,6 +67,13 @@ export const defaultKeybindings: Keybinding[] = [
     id: 'nav.commandPalette',
     command: 'nav.commandPalette',
     label: 'Command Palette',
+    category: 'Navigation',
+    keys: ['Cmd+K'],
+  },
+  {
+    id: 'nav.commandPaletteAlt',
+    command: 'nav.commandPalette',
+    label: 'Command Palette (Alt)',
     category: 'Navigation',
     keys: ['Cmd+Shift+P'],
   },
@@ -459,19 +467,28 @@ export const defaultKeybindings: Keybinding[] = [
 interface KeybindingsState {
   keybindings: Keybinding[];
   customOverrides: Record<string, string[]>;
+  isLoading: boolean;
+  lastSyncedAt: number | null;
 
   updateKeybinding: (id: string, keys: string[]) => void;
   resetKeybinding: (id: string) => void;
   resetAll: () => void;
   addCustomKeybinding: (keybinding: Keybinding) => void;
   removeCustomKeybinding: (id: string) => void;
+  loadFromServer: () => Promise<void>;
+  syncToServer: () => Promise<void>;
 }
+
+// Debounce helper
+let syncTimeout: NodeJS.Timeout | null = null;
 
 export const useKeybindingsStore = create<KeybindingsState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       keybindings: defaultKeybindings.map((k) => ({ ...k, isDefault: true })),
       customOverrides: {},
+      isLoading: false,
+      lastSyncedAt: null,
 
       updateKeybinding: (id, keys) => {
         set((state) => ({
@@ -480,6 +497,12 @@ export const useKeybindingsStore = create<KeybindingsState>()(
             k.id === id ? { ...k, keys, isCustom: true } : k
           ),
         }));
+
+        // Debounced sync to server (500ms)
+        if (syncTimeout) clearTimeout(syncTimeout);
+        syncTimeout = setTimeout(() => {
+          get().syncToServer().catch(console.error);
+        }, 500);
       },
 
       resetKeybinding: (id) => {
@@ -515,10 +538,73 @@ export const useKeybindingsStore = create<KeybindingsState>()(
         set((state) => ({
           keybindings: state.keybindings.filter((k) => k.id !== id || k.isDefault),
         }));
+
+        // Sync to server
+        if (syncTimeout) clearTimeout(syncTimeout);
+        syncTimeout = setTimeout(() => {
+          get().syncToServer().catch(console.error);
+        }, 500);
+      },
+
+      loadFromServer: async () => {
+        set({ isLoading: true });
+        try {
+          const config = await getUserConfig();
+
+          // If null (not authenticated), silently use localStorage defaults
+          if (!config) {
+            set({ isLoading: false });
+            return;
+          }
+
+          const serverOverrides = config.custom_keybindings || {};
+
+          // Merge server overrides with defaults
+          const mergedKeybindings = defaultKeybindings.map((k) => {
+            const serverKeys = serverOverrides[k.id];
+            if (serverKeys) {
+              return { ...k, keys: serverKeys, isCustom: true };
+            }
+            return { ...k, isDefault: true };
+          });
+
+          set({
+            keybindings: mergedKeybindings,
+            customOverrides: serverOverrides,
+            lastSyncedAt: Date.now(),
+            isLoading: false,
+          });
+        } catch (error) {
+          console.error('Failed to load keybindings from server:', error);
+          set({ isLoading: false });
+        }
+      },
+
+      syncToServer: async () => {
+        const { customOverrides } = get();
+        try {
+          const result = await updateUserConfig({ custom_keybindings: customOverrides });
+          // If null, user is not authenticated - silently skip
+          if (result !== null) {
+            set({ lastSyncedAt: Date.now() });
+          }
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } catch (error: any) {
+          // Silently ignore auth errors (401/403) and network errors (503)
+          if (error?.status === 401 || error?.status === 403 || error?.status === 503) {
+            console.warn('Skipping keybindings sync - user not authenticated or network error');
+            return;
+          }
+          console.error('Failed to sync keybindings to server:', error);
+        }
       },
     }),
     {
       name: 'podex-keybindings',
+      partialize: (state) => ({
+        customOverrides: state.customOverrides,
+        keybindings: state.keybindings,
+      }),
     }
   )
 );

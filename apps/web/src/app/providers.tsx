@@ -10,6 +10,7 @@ import { initializeAuth } from '@/lib/api';
 import { OnboardingTourProvider } from '@/components/ui/OnboardingTour';
 import { MobileNav } from '@/components/ui/MobileNav';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
+import { useSettingsSync } from '@/hooks/useSettingsSync';
 
 interface ProvidersProps {
   children: ReactNode;
@@ -107,6 +108,9 @@ function AuthInitializer({ children }: { children: ReactNode }) {
       Sentry.setUser(null);
     }
   }, [user]);
+
+  // Load all user settings from server after auth
+  useSettingsSync();
 
   // Show nothing until hydrated to prevent hydration mismatch
   if (!hydrated) {

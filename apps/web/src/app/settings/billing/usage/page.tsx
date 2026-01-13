@@ -5,7 +5,7 @@ import Link from 'next/link';
 import {
   getUsageSummary,
   getBillingUsageHistory,
-  type UsageSummaryResponse,
+  type UsageSummary,
   type UsageRecordResponse,
 } from '@/lib/api';
 
@@ -42,7 +42,7 @@ const usageTypeLabels: Record<string, string> = {
 
 export default function UsagePage() {
   const [period, setPeriod] = useState<'current' | 'last_month' | 'all_time'>('current');
-  const [summary, setSummary] = useState<UsageSummaryResponse | null>(null);
+  const [summary, setSummary] = useState<UsageSummary | null>(null);
   const [history, setHistory] = useState<UsageRecordResponse[]>([]);
   const [loading, setLoading] = useState(true);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -145,42 +145,42 @@ export default function UsagePage() {
             <div className="p-4 bg-neutral-800/50 rounded-xl border border-neutral-700">
               <p className="text-sm text-neutral-400">Input Tokens</p>
               <p className="text-xl font-semibold text-white mt-1">
-                {formatNumber(summary.tokens_input)}
+                {formatNumber(summary.tokensInput)}
               </p>
             </div>
             <div className="p-4 bg-neutral-800/50 rounded-xl border border-neutral-700">
               <p className="text-sm text-neutral-400">Output Tokens</p>
               <p className="text-xl font-semibold text-white mt-1">
-                {formatNumber(summary.tokens_output)}
+                {formatNumber(summary.tokensOutput)}
               </p>
             </div>
             <div className="p-4 bg-neutral-800/50 rounded-xl border border-neutral-700">
               <p className="text-sm text-neutral-400">Compute Credits</p>
               <p className="text-xl font-semibold text-white mt-1">
-                {formatCurrency(summary.compute_credits_used)}
+                {formatCurrency(summary.computeCreditsUsed)}
               </p>
-              {summary.compute_credits_included > 0 && (
+              {summary.computeCreditsIncluded > 0 && (
                 <p className="text-xs text-neutral-500 mt-1">
-                  of {formatCurrency(summary.compute_credits_included)} included
+                  of {formatCurrency(summary.computeCreditsIncluded)} included
                 </p>
               )}
             </div>
             <div className="p-4 bg-neutral-800/50 rounded-xl border border-neutral-700">
               <p className="text-sm text-neutral-400">Storage Used</p>
               <p className="text-xl font-semibold text-white mt-1">
-                {summary.storage_gb.toFixed(2)} GB
+                {summary.storageGb.toFixed(2)} GB
               </p>
             </div>
             <div className="p-4 bg-neutral-800/50 rounded-xl border border-neutral-700">
               <p className="text-sm text-neutral-400">Total Cost</p>
               <p className="text-xl font-semibold text-emerald-400 mt-1">
-                {formatCurrency(summary.total_cost)}
+                {formatCurrency(summary.totalCost)}
               </p>
             </div>
           </div>
 
           {/* Usage by Model */}
-          {Object.keys(summary.usage_by_model).length > 0 && (
+          {Object.keys(summary.usageByModel).length > 0 && (
             <div className="bg-neutral-800/50 rounded-xl border border-neutral-700 p-6">
               <h2 className="text-lg font-semibold text-white mb-4">Usage by Model</h2>
               <div className="overflow-x-auto">
@@ -194,7 +194,7 @@ export default function UsagePage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-700">
-                    {Object.entries(summary.usage_by_model).map(([model, data]) => (
+                    {Object.entries(summary.usageByModel).map(([model, data]) => (
                       <tr key={model} className="text-sm">
                         <td className="py-3 text-white font-mono">{model}</td>
                         <td className="py-3 text-neutral-300 text-right">
@@ -220,20 +220,20 @@ export default function UsagePage() {
             <div className="space-y-3">
               <div className="flex justify-between items-center">
                 <span className="text-neutral-400">Token Usage</span>
-                <span className="text-white">{formatCurrency(summary.tokens_cost)}</span>
+                <span className="text-white">{formatCurrency(summary.tokensCost)}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-neutral-400">Compute</span>
-                <span className="text-white">{formatCurrency(summary.compute_cost)}</span>
+                <span className="text-white">{formatCurrency(summary.computeCost)}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-neutral-400">Storage</span>
-                <span className="text-white">{formatCurrency(summary.storage_cost)}</span>
+                <span className="text-white">{formatCurrency(summary.storageCost)}</span>
               </div>
               <div className="pt-3 border-t border-neutral-700 flex justify-between items-center">
                 <span className="text-white font-medium">Total</span>
                 <span className="text-emerald-400 font-semibold">
-                  {formatCurrency(summary.total_cost)}
+                  {formatCurrency(summary.totalCost)}
                 </span>
               </div>
             </div>

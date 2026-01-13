@@ -169,6 +169,9 @@ services:
       # Mock API key for testing
       ANTHROPIC_API_KEY: sk-ant-test-mock-key
       OPENAI_API_KEY: sk-test-mock-key
+      # API Service (for usage tracking)
+      API_BASE_URL: http://api-test:3001
+      INTERNAL_SERVICE_TOKEN: test-internal-service-token
     volumes:
       - ./services/agent/src:/app/services/agent/src
       - ./services/shared/src:/app/services/shared/src
@@ -208,6 +211,9 @@ services:
       COMPUTE_S3_PREFIX: workspaces
       COMPUTE_INTERNAL_API_KEY: test-internal-key
       COMPUTE_CORS_ORIGINS: '["http://localhost:3000", "http://localhost:3010"]'
+      # API Service (for usage tracking)
+      COMPUTE_API_BASE_URL: http://api-test:3001
+      COMPUTE_INTERNAL_SERVICE_TOKEN: test-internal-service-token
     volumes:
       - ./services/compute/src:/app/services/compute/src
       - ./services/shared/src:/app/services/shared/src
@@ -328,6 +334,9 @@ services:
       S3_ENDPOINT_URL: http://localstack-test:4566
       LLM_PROVIDER: mock
       ANTHROPIC_API_KEY: sk-ant-test-mock-key
+      # API Service (for usage tracking)
+      API_BASE_URL: http://api-test:3001
+      INTERNAL_SERVICE_TOKEN: test-internal-service-token
     volumes:
       - ./services/agent:/app/services/agent
       - ./services/shared:/app/services/shared

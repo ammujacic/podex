@@ -54,25 +54,25 @@ export function PlanCard({
 
   return (
     <div
-      className={`relative bg-neutral-800/50 rounded-xl border p-6 transition-all ${
+      className={`relative bg-surface rounded-xl border p-6 transition-all flex flex-col ${
         isPopular
-          ? 'border-blue-500 ring-1 ring-blue-500/20'
+          ? 'border-accent-primary ring-1 ring-accent-primary/20'
           : isCurrent
-            ? 'border-emerald-500 ring-1 ring-emerald-500/20'
-            : 'border-neutral-700 hover:border-neutral-600'
+            ? 'border-accent-success ring-1 ring-accent-success/20'
+            : 'border-border-default hover:border-border-hover'
       }`}
     >
       {/* Badge */}
       {isPopular && (
         <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-          <span className="px-3 py-1 bg-blue-500 text-white text-xs font-medium rounded-full">
+          <span className="px-3 py-1 bg-accent-primary text-white text-xs font-medium rounded-full">
             Most Popular
           </span>
         </div>
       )}
       {isCurrent && !isPopular && (
         <div className="absolute -top-3 left-1/2 -translate-x-1/2">
-          <span className="px-3 py-1 bg-emerald-500 text-white text-xs font-medium rounded-full">
+          <span className="px-3 py-1 bg-accent-success text-white text-xs font-medium rounded-full">
             Current Plan
           </span>
         </div>
@@ -80,40 +80,45 @@ export function PlanCard({
 
       {/* Plan name and description */}
       <div className="text-center mb-4">
-        <h3 className="text-xl font-bold text-white">{name}</h3>
-        {description && <p className="text-sm text-neutral-400 mt-1">{description}</p>}
+        <h3 className="text-xl font-bold text-text-primary">{name}</h3>
+        {description && <p className="text-sm text-text-muted mt-1">{description}</p>}
       </div>
 
       {/* Price */}
       <div className="text-center mb-6">
         {isEnterprise ? (
-          <div className="text-2xl font-bold text-white">Custom</div>
+          <div className="text-2xl font-bold text-text-primary">Custom</div>
         ) : (
           <>
             <div className="flex items-baseline justify-center gap-1">
-              <span className="text-4xl font-bold text-white">{formatCurrency(displayPrice)}</span>
-              <span className="text-neutral-400">/mo</span>
+              <span className="text-4xl font-bold text-text-primary">
+                {formatCurrency(displayPrice)}
+              </span>
+              <span className="text-text-muted">/mo</span>
             </div>
             {billingCycle === 'yearly' && savings > 0 && (
-              <p className="text-sm text-emerald-400 mt-1">Save {savings}% with yearly billing</p>
+              <p className="text-sm text-accent-success mt-1">
+                Save {savings}% with yearly billing
+              </p>
             )}
           </>
         )}
       </div>
 
       {/* Features */}
-      <ul className="space-y-3 mb-6">
+      <ul className="space-y-3 mb-6 flex-grow">
         {features.map((feature, index) => (
           <li key={index} className="flex items-start gap-3">
             {feature.included ? (
-              <Check className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
+              <Check className="w-5 h-5 text-accent-success flex-shrink-0 mt-0.5" />
             ) : (
-              <X className="w-5 h-5 text-neutral-500 flex-shrink-0 mt-0.5" />
+              <X className="w-5 h-5 text-text-muted flex-shrink-0 mt-0.5" />
             )}
-            <span className={feature.included ? 'text-neutral-300' : 'text-neutral-500'}>
+            <span className={feature.included ? 'text-text-secondary' : 'text-text-muted'}>
               {feature.value ? (
                 <>
-                  <span className="font-medium text-white">{feature.value}</span> {feature.name}
+                  <span className="font-medium text-text-primary">{feature.value}</span>{' '}
+                  {feature.name}
                 </>
               ) : (
                 feature.name
@@ -129,12 +134,12 @@ export function PlanCard({
         disabled={disabled || isCurrent}
         className={`w-full py-3 rounded-lg font-medium transition-colors ${
           isCurrent
-            ? 'bg-emerald-500/20 text-emerald-400 cursor-default'
+            ? 'bg-accent-success/20 text-accent-success cursor-default'
             : isPopular
-              ? 'bg-blue-500 hover:bg-blue-600 text-white'
+              ? 'bg-accent-primary hover:bg-accent-primary/90 text-white'
               : isDowngrade
-                ? 'bg-neutral-700 hover:bg-neutral-600 text-neutral-300'
-                : 'bg-neutral-700 hover:bg-neutral-600 text-white'
+                ? 'bg-elevated hover:bg-overlay text-text-secondary'
+                : 'bg-elevated hover:bg-overlay text-text-primary'
         } disabled:opacity-50 disabled:cursor-not-allowed`}
       >
         {isCurrent

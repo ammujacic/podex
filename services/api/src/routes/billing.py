@@ -1486,6 +1486,7 @@ class UsageAggregation:
     api_calls: int = 0
     usage_by_model: dict[str, dict[str, Any]] | None = None
     usage_by_agent: dict[str, dict[str, Any]] | None = None
+    usage_by_tier: dict[str, dict[str, Any]] | None = None
 
 
 def _aggregate_token_usage(
@@ -1524,6 +1525,15 @@ def _aggregate_other_usage(
     if record.usage_type == "compute_seconds":
         agg.compute_seconds += record.quantity
         agg.compute_cost += cost_dollars
+        # Aggregate by tier
+        if agg.usage_by_tier is None:
+            agg.usage_by_tier = {}
+        tier = record.tier or "unknown"
+        if tier not in agg.usage_by_tier:
+            agg.usage_by_tier[tier] = {"seconds": 0, "minutes": 0.0, "cost": 0.0}
+        agg.usage_by_tier[tier]["seconds"] += record.quantity
+        agg.usage_by_tier[tier]["minutes"] = round(agg.usage_by_tier[tier]["seconds"] / 60, 1)
+        agg.usage_by_tier[tier]["cost"] += cost_dollars
     elif record.usage_type == "storage_gb":
         agg.storage_gb = max(agg.storage_gb, record.quantity / 1024)  # Convert MB to GB
         agg.storage_cost += cost_dollars
@@ -1549,7 +1559,7 @@ def _aggregate_agent_usage(
 
 def _aggregate_usage_records(records: list[UsageRecord]) -> UsageAggregation:
     """Aggregate a list of usage records."""
-    agg = UsageAggregation(usage_by_model={}, usage_by_agent={})
+    agg = UsageAggregation(usage_by_model={}, usage_by_agent={}, usage_by_tier={})
 
     for record in records:
         cost_dollars = cents_to_dollars(record.total_cost_cents)
@@ -1655,6 +1665,7 @@ async def get_usage_summary(
         total_cost=agg.tokens_cost + agg.compute_cost + agg.storage_cost,
         usage_by_model=agg.usage_by_model or {},
         usage_by_agent=agg.usage_by_agent or {},
+        usage_by_tier=agg.usage_by_tier or {},
     )
 
 
@@ -2223,7 +2234,11 @@ async def _record_single_event(
         is_overage = False
 
         # Determine usage type for database
-        if event.usage_type == "tokens":
+        if event.usage_type in (
+            "tokens",
+            "tokens_input",
+            "tokens_output",
+        ) or event.usage_type.startswith("tokens"):
             # Check token quota first
             quota_result = await db.execute(
                 select(UsageQuota)
@@ -2322,7 +2337,7 @@ async def _record_single_event(
                 .values(current_usage=UsageQuota.current_usage + event.quantity),
             )
 
-        elif event.usage_type == "compute":
+        elif event.usage_type in ("compute", "compute_seconds"):
             # Check compute quota first
             quota_result = await db.execute(
                 select(UsageQuota)
@@ -2459,7 +2474,7 @@ async def record_usage_events(
             if error:
                 errors.append(f"Event {event.id}: {error}")
 
-    await db.flush()
+    await db.commit()
 
     logger.info(
         "Recorded usage events",

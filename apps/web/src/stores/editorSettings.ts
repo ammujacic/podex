@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { getUserConfig, updateUserConfig } from '@/lib/api/user-config';
 
 // ============================================================================
 // Editor Settings Store
@@ -98,19 +99,113 @@ const defaultSettings: EditorSettings = {
 };
 
 interface EditorSettingsState extends EditorSettings {
+  isLoading: boolean;
+  lastSyncedAt: number | null;
   updateSetting: <K extends keyof EditorSettings>(key: K, value: EditorSettings[K]) => void;
   resetToDefaults: () => void;
+  loadFromServer: () => Promise<void>;
+  syncToServer: () => Promise<void>;
 }
+
+// Debounce helper
+let editorSyncTimeout: NodeJS.Timeout | null = null;
 
 export const useEditorSettingsStore = create<EditorSettingsState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       ...defaultSettings,
-      updateSetting: (key, value) => set({ [key]: value }),
-      resetToDefaults: () => set(defaultSettings),
+      isLoading: false,
+      lastSyncedAt: null,
+
+      updateSetting: (key, value) => {
+        set({ [key]: value });
+
+        // Debounced sync to server (500ms)
+        if (editorSyncTimeout) clearTimeout(editorSyncTimeout);
+        editorSyncTimeout = setTimeout(() => {
+          get().syncToServer().catch(console.error);
+        }, 500);
+      },
+
+      resetToDefaults: () => {
+        set(defaultSettings);
+        // Sync to server
+        if (editorSyncTimeout) clearTimeout(editorSyncTimeout);
+        editorSyncTimeout = setTimeout(() => {
+          get().syncToServer().catch(console.error);
+        }, 500);
+      },
+
+      loadFromServer: async () => {
+        set({ isLoading: true });
+        try {
+          const config = await getUserConfig();
+
+          // If null (not authenticated), silently use localStorage defaults
+          if (!config) {
+            set({ isLoading: false });
+            return;
+          }
+
+          const serverSettings = config.editor_settings || {};
+
+          // Merge server settings with defaults
+          set({
+            ...defaultSettings,
+            ...serverSettings,
+            lastSyncedAt: Date.now(),
+            isLoading: false,
+          });
+        } catch (error) {
+          console.error('Failed to load editor settings from server:', error);
+          set({ isLoading: false });
+        }
+      },
+
+      syncToServer: async () => {
+        const state = get();
+        const {
+          isLoading: _isLoading,
+          lastSyncedAt: _lastSyncedAt,
+          updateSetting: _updateSetting,
+          resetToDefaults: _resetToDefaults,
+          loadFromServer: _loadFromServer,
+          syncToServer: _syncToServer,
+          ...settingsToSync
+        } = state;
+
+        try {
+          const result = await updateUserConfig({ editor_settings: settingsToSync });
+          // If null, user is not authenticated - silently skip
+          if (result !== null) {
+            set({ lastSyncedAt: Date.now() });
+          }
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } catch (error: any) {
+          // Silently ignore auth errors (401/403) and network errors (503)
+          if (error?.status === 401 || error?.status === 403 || error?.status === 503) {
+            console.warn('Skipping editor settings sync - user not authenticated or network error');
+            return;
+          }
+          console.error('Failed to sync editor settings to server:', error);
+        }
+      },
     }),
     {
       name: 'podex-editor-settings',
+      partialize: (state) => {
+        // Exclude loading state and methods from persistence
+        const {
+          isLoading: _isLoading,
+          lastSyncedAt: _lastSyncedAt,
+          updateSetting: _updateSetting,
+          resetToDefaults: _resetToDefaults,
+          loadFromServer: _loadFromServer,
+          syncToServer: _syncToServer,
+          ...settings
+        } = state;
+        return settings;
+      },
     }
   )
 );

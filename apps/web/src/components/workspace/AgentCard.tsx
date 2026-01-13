@@ -684,7 +684,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       <div
         ref={messagesContainerRef}
         className={cn(
-          'flex-1 overflow-y-auto p-4 space-y-4 min-h-[200px] selection:bg-accent-primary/30 selection:text-text-primary',
+          'flex-1 overflow-y-auto p-4 space-y-4 min-h-0 selection:bg-accent-primary/30 selection:text-text-primary',
           !expanded && 'max-h-[300px]'
         )}
       >

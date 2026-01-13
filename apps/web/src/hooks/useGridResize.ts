@@ -46,9 +46,9 @@ export function useGridResize({
     const cols = gridStyle.gridTemplateColumns.split(' ').length;
     const cellWidth = (gridRect.width - gap * (cols - 1)) / cols;
 
-    // Estimate row height from first child or use default
-    const firstChild = gridRef.current.firstElementChild as HTMLElement;
-    const cellHeight = firstChild?.offsetHeight || 300;
+    // Get row height from grid auto-rows style (e.g., "300px" from auto-rows-[300px])
+    const autoRows = gridStyle.gridAutoRows;
+    const cellHeight = parseFloat(autoRows) || 300;
 
     return { cellWidth, cellHeight, gap };
   }, [gridRef]);

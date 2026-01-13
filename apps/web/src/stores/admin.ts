@@ -55,7 +55,7 @@ export interface UsageMetrics {
   tokens_by_model: Array<{ model: string; tokens: number }>;
   tokens_by_provider: Array<{ provider: string; tokens: number }>;
   total_compute_hours: number;
-  compute_by_tier: Array<{ tier: string; hours: number }>;
+  compute_by_tier: Array<{ tier: string; minutes: number }>;
   total_storage_gb: number;
   daily_usage: Array<{ date: string; tokens: number }>;
 }

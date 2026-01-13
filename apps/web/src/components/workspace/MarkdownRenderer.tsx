@@ -443,20 +443,20 @@ export function MarkdownRenderer({ content, className }: MarkdownRendererProps) 
               6: 'text-xs font-medium text-text-secondary',
             };
             const HeadingElement = ({ children }: { children: React.ReactNode }) => {
-              const props = { key: index, className: cn(headingSizes[level], 'mt-3 first:mt-0') };
+              const className = cn(headingSizes[level], 'mt-3 first:mt-0');
               switch (level) {
                 case 1:
-                  return <h1 {...props}>{children}</h1>;
+                  return <h1 className={className}>{children}</h1>;
                 case 2:
-                  return <h2 {...props}>{children}</h2>;
+                  return <h2 className={className}>{children}</h2>;
                 case 3:
-                  return <h3 {...props}>{children}</h3>;
+                  return <h3 className={className}>{children}</h3>;
                 case 4:
-                  return <h4 {...props}>{children}</h4>;
+                  return <h4 className={className}>{children}</h4>;
                 case 5:
-                  return <h5 {...props}>{children}</h5>;
+                  return <h5 className={className}>{children}</h5>;
                 default:
-                  return <h6 {...props}>{children}</h6>;
+                  return <h6 className={className}>{children}</h6>;
               }
             };
             return (

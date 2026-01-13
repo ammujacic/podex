@@ -88,10 +88,30 @@ class UsageDataPoint(BaseModel):
     cost: float
 
 
+class PodUsageDataPoint(BaseModel):
+    """Per-pod usage data point for charts."""
+
+    date: str
+    tokens: int
+    api_calls: int
+    cost: float
+    compute_minutes: float = 0.0  # Actual compute usage in minutes
+
+
+class PodUsageSeries(BaseModel):
+    """Usage series for a specific pod."""
+
+    session_id: str
+    session_name: str
+    data: list[PodUsageDataPoint]
+    color: str  # Hex color code for the chart
+
+
 class UsageHistoryResponse(BaseModel):
     """Usage history response."""
 
     daily: list[UsageDataPoint]
+    by_pod: list[PodUsageSeries]
     period_start: str
     period_end: str
 
@@ -291,7 +311,7 @@ async def get_activity_feed(
 
 @router.get("/usage-history", response_model=UsageHistoryResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def get_usage_history(
+async def get_usage_history(  # noqa: PLR0912, PLR0915
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
@@ -306,7 +326,7 @@ async def get_usage_history(
     period_end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
     period_start = (now - timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
 
-    # Get daily usage aggregates
+    # Get daily usage aggregates (total across all pods)
     daily_usage_result = await db.execute(
         select(
             func.date(UsageRecord.created_at).label("date"),
@@ -354,8 +374,152 @@ async def get_usage_history(
             )
         current_date += timedelta(days=1)
 
+    # Get per-pod token usage aggregates
+    pod_usage_result = await db.execute(
+        select(
+            func.date(UsageRecord.created_at).label("date"),
+            UsageRecord.session_id,
+            Session.name.label("session_name"),
+            func.coalesce(func.sum(UsageRecord.quantity), 0).label("tokens"),
+            func.count(UsageRecord.id).label("calls"),
+            func.coalesce(func.sum(UsageRecord.total_cost_cents), 0).label("cost_cents"),
+        )
+        .join(Session, UsageRecord.session_id == Session.id, isouter=False)
+        .where(
+            UsageRecord.user_id == user_id,
+            UsageRecord.created_at >= period_start,
+            UsageRecord.created_at <= period_end,
+            UsageRecord.session_id.isnot(None),
+            UsageRecord.usage_type.in_(["tokens_input", "tokens_output"]),
+        )
+        .group_by(func.date(UsageRecord.created_at), UsageRecord.session_id, Session.name)
+        .order_by(func.date(UsageRecord.created_at), UsageRecord.session_id)
+    )
+    pod_usage_rows = pod_usage_result.all()
+
+    # Get per-pod compute usage aggregates
+    compute_usage_result = await db.execute(
+        select(
+            func.date(UsageRecord.created_at).label("date"),
+            UsageRecord.session_id,
+            Session.name.label("session_name"),
+            func.coalesce(func.sum(UsageRecord.quantity), 0).label("compute_seconds"),
+        )
+        .join(Session, UsageRecord.session_id == Session.id, isouter=False)
+        .where(
+            UsageRecord.user_id == user_id,
+            UsageRecord.created_at >= period_start,
+            UsageRecord.created_at <= period_end,
+            UsageRecord.session_id.isnot(None),
+            UsageRecord.usage_type == "compute_seconds",
+        )
+        .group_by(func.date(UsageRecord.created_at), UsageRecord.session_id, Session.name)
+        .order_by(func.date(UsageRecord.created_at), UsageRecord.session_id)
+    )
+    compute_usage_rows = compute_usage_result.all()
+
+    # Organize by pod
+    pods_data: dict[str, dict[str, Any]] = {}
+
+    # Add token usage data
+    for row in pod_usage_rows:
+        if row.session_id not in pods_data:
+            pods_data[row.session_id] = {
+                "session_id": row.session_id,
+                "session_name": row.session_name or "Unnamed Pod",
+                "data_map": {},
+            }
+        date_str = row.date.isoformat()
+        if date_str not in pods_data[row.session_id]["data_map"]:
+            pods_data[row.session_id]["data_map"][date_str] = {
+                "tokens": 0,
+                "api_calls": 0,
+                "cost": 0.0,
+                "compute_minutes": 0.0,
+            }
+        pods_data[row.session_id]["data_map"][date_str]["tokens"] = int(row.tokens)
+        pods_data[row.session_id]["data_map"][date_str]["api_calls"] = int(row.calls)
+        pods_data[row.session_id]["data_map"][date_str]["cost"] = float(row.cost_cents) / 100.0
+
+    # Add compute usage data
+    for row in compute_usage_rows:
+        if row.session_id not in pods_data:
+            pods_data[row.session_id] = {
+                "session_id": row.session_id,
+                "session_name": row.session_name or "Unnamed Pod",
+                "data_map": {},
+            }
+        date_str = row.date.isoformat()
+        if date_str not in pods_data[row.session_id]["data_map"]:
+            pods_data[row.session_id]["data_map"][date_str] = {
+                "tokens": 0,
+                "api_calls": 0,
+                "cost": 0.0,
+                "compute_minutes": 0.0,
+            }
+        # Convert seconds to minutes
+        pods_data[row.session_id]["data_map"][date_str]["compute_minutes"] = round(
+            float(row.compute_seconds) / 60.0, 1
+        )
+
+    # Generate colors for pods (using a predefined color palette)
+    color_palette = [
+        "#3b82f6",  # Blue
+        "#8b5cf6",  # Purple
+        "#ec4899",  # Pink
+        "#f59e0b",  # Amber
+        "#10b981",  # Green
+        "#06b6d4",  # Cyan
+        "#f97316",  # Orange
+        "#6366f1",  # Indigo
+        "#14b8a6",  # Teal
+        "#84cc16",  # Lime
+    ]
+
+    # Build per-pod series with complete date range
+    by_pod: list[PodUsageSeries] = []
+    for idx, (session_id, pod_info) in enumerate(pods_data.items()):
+        data_map = pod_info["data_map"]
+        pod_data: list[PodUsageDataPoint] = []
+
+        current_date = period_start.date()
+        while current_date <= end_date:
+            date_str = current_date.isoformat()
+            if date_str in data_map:
+                point_data = data_map[date_str]
+                pod_data.append(
+                    PodUsageDataPoint(
+                        date=date_str,
+                        tokens=point_data["tokens"],
+                        api_calls=point_data["api_calls"],
+                        cost=point_data["cost"],
+                        compute_minutes=point_data.get("compute_minutes", 0.0),
+                    )
+                )
+            else:
+                pod_data.append(
+                    PodUsageDataPoint(
+                        date=date_str,
+                        tokens=0,
+                        api_calls=0,
+                        cost=0.0,
+                        compute_minutes=0.0,
+                    )
+                )
+            current_date += timedelta(days=1)
+
+        by_pod.append(
+            PodUsageSeries(
+                session_id=session_id,
+                session_name=pod_info["session_name"],
+                data=pod_data,
+                color=color_palette[idx % len(color_palette)],
+            )
+        )
+
     return UsageHistoryResponse(
         daily=daily,
+        by_pod=by_pod,
         period_start=period_start.isoformat(),
         period_end=period_end.isoformat(),
     )

@@ -8,6 +8,7 @@ import subprocess
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import socketio
 import structlog
@@ -81,6 +82,7 @@ class _BackgroundTasks:
 
     quota_reset: asyncio.Task[None] | None = None
     standby_check: asyncio.Task[None] | None = None
+    workspace_provision: asyncio.Task[None] | None = None
 
 
 _tasks = _BackgroundTasks()
@@ -212,6 +214,129 @@ async def standby_background_task() -> None:  # noqa: PLR0912
             await asyncio.sleep(60)  # Wait before retrying
 
 
+async def workspace_provision_background_task() -> None:
+    """Background task to ensure workspaces are provisioned for active sessions.
+
+    Runs every 60 seconds to check for active sessions that should have
+    running workspaces but don't (e.g., after compute service restart).
+    This ensures compute usage tracking works for all active pods.
+    """
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from src.compute_client import compute_client  # noqa: PLC0415
+    from src.database.models import Session as SessionModel  # noqa: PLC0415
+    from src.database.models import Workspace  # noqa: PLC0415
+    from src.exceptions import ComputeServiceHTTPError  # noqa: PLC0415
+
+    while True:
+        try:
+            await asyncio.sleep(60)  # Check every minute
+
+            async for db in get_db():
+                try:
+                    provisioned_count = 0
+
+                    # Find active sessions with workspaces that should be running
+                    # Include pending/running/creating statuses (not stopped/standby)
+                    query = (
+                        select(SessionModel, Workspace)
+                        .join(Workspace, SessionModel.workspace_id == Workspace.id)
+                        .where(
+                            SessionModel.status == "active",
+                            Workspace.status.in_(["running", "creating", "pending"]),
+                        )
+                    )
+
+                    result = await db.execute(query)
+                    rows = result.all()
+
+                    for session, workspace in rows:
+                        try:
+                            # Check if workspace exists in compute service
+                            existing = await compute_client.get_workspace(
+                                workspace.id, session.owner_id
+                            )
+                            if existing:
+                                continue  # Workspace exists, nothing to do
+
+                        except ComputeServiceHTTPError as e:
+                            if e.status_code != 404:  # noqa: PLR2004
+                                logger.warning(
+                                    "Error checking workspace existence",
+                                    workspace_id=workspace.id,
+                                    error=str(e),
+                                )
+                                continue
+
+                        # Workspace doesn't exist in compute service, provision it
+                        try:
+                            # Use the existing build_workspace_config function
+                            from src.routes.sessions import (  # noqa: PLC0415
+                                build_workspace_config,
+                            )
+
+                            # Determine tier from session settings
+                            tier = (
+                                session.settings.get("tier", "starter")
+                                if session.settings
+                                else "starter"
+                            )
+
+                            # Build workspace config using the helper
+                            workspace_config = await build_workspace_config(
+                                db,
+                                session.template_id,
+                                session.git_url,
+                                tier,
+                            )
+
+                            logger.info(
+                                "Auto-provisioning workspace for active session",
+                                workspace_id=workspace.id,
+                                session_id=str(session.id),
+                                session_name=session.name,
+                            )
+
+                            await compute_client.create_workspace(
+                                session_id=str(session.id),
+                                user_id=session.owner_id,
+                                workspace_id=workspace.id,
+                                config=workspace_config,
+                            )
+
+                            # Update last activity
+                            workspace.last_activity = datetime.now(UTC)
+                            provisioned_count += 1
+
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to auto-provision workspace",
+                                workspace_id=workspace.id,
+                                session_id=str(session.id),
+                                error=str(e),
+                            )
+
+                    if provisioned_count > 0:
+                        await db.commit()
+                        logger.info(
+                            "Auto-provisioned workspaces for active sessions",
+                            count=provisioned_count,
+                        )
+
+                except Exception as e:
+                    await db.rollback()
+                    logger.exception("Failed to check workspace provisioning", error=str(e))
+
+        except asyncio.CancelledError:
+            logger.info("Workspace provision task cancelled")
+            break
+        except Exception as e:
+            logger.exception("Error in workspace provision task", error=str(e))
+            await asyncio.sleep(60)  # Wait before retrying
+
+
 def _init_sentry() -> None:
     """Initialize Sentry with the configured settings."""
     sentry_config = SentryConfig(
@@ -309,7 +434,7 @@ async def seed_dev_admin() -> None:
     """Seed development users if they don't exist.
 
     Only runs in development mode when DEV_SEED_ADMIN is True.
-    Creates both admin and regular test users.
+    Creates both admin and regular test users with Pro subscriptions.
     """
     if settings.ENVIRONMENT != "development" or not settings.DEV_SEED_ADMIN:
         return
@@ -317,7 +442,11 @@ async def seed_dev_admin() -> None:
     from passlib.context import CryptContext  # noqa: PLC0415
     from sqlalchemy import select  # noqa: PLC0415
 
-    from src.database.models import User  # noqa: PLC0415
+    from src.database.models import (  # noqa: PLC0415
+        SubscriptionPlan,
+        User,
+        UserSubscription,
+    )
 
     pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -328,24 +457,54 @@ async def seed_dev_admin() -> None:
             "password": os.environ.get("ADMIN_PASSWORD", "AdminPassword123!"),
             "name": "Admin User",
             "role": "admin",
+            "plan_slug": "pro",
         },
         {
             "email": os.environ.get("TEST_EMAIL", "user@podex.dev"),
             "password": os.environ.get("TEST_PASSWORD", "UserPassword123!"),
             "name": "Test User",
             "role": "member",
+            "plan_slug": "free",
         },
     ]
 
     async for db in get_db():
         try:
+            # Get all plans
+            plans_result = await db.execute(
+                select(SubscriptionPlan).where(SubscriptionPlan.slug.in_(["pro", "free"]))
+            )
+            plans = {plan.slug: plan for plan in plans_result.scalars().all()}
+
+            if not plans:
+                logger.warning("Plans not found, dev users will be created without subscriptions")
+
             for user_data in dev_users:
+                plan_slug = user_data.get("plan_slug", "free")
+                plan = plans.get(plan_slug)
+
                 # Check if user already exists
                 result = await db.execute(select(User).where(User.email == user_data["email"]))
                 existing_user = result.scalar_one_or_none()
 
                 if existing_user:
                     logger.debug("Dev user already exists", email=user_data["email"])
+                    # Check if user has a subscription
+                    if plan:
+                        sub_result = await db.execute(
+                            select(UserSubscription).where(
+                                UserSubscription.user_id == existing_user.id
+                            )
+                        )
+                        existing_sub = sub_result.scalar_one_or_none()
+                        if not existing_sub:
+                            logger.info(
+                                "Creating subscription for existing dev user",
+                                email=user_data["email"],
+                                plan=plan_slug,
+                            )
+                            # Create subscription and quotas for existing user
+                            await _create_dev_subscription(db, existing_user.id, plan)
                     continue
 
                 # Create user
@@ -357,17 +516,80 @@ async def seed_dev_admin() -> None:
                     is_active=True,
                 )
                 db.add(user)
+                await db.flush()  # Flush to get user.id
+
                 logger.info(
                     "Created dev user",
                     email=user_data["email"],
                     role=user_data["role"],
                 )
 
+                # Create subscription for the user
+                if plan:
+                    await _create_dev_subscription(db, user.id, plan)
+                    logger.info(
+                        "Created subscription for dev user",
+                        email=user_data["email"],
+                        plan=plan_slug,
+                    )
+
             await db.commit()
 
         except Exception as e:
             await db.rollback()
             logger.warning("Failed to seed dev users", error=str(e))
+
+
+async def _create_dev_subscription(
+    db: Any,  # AsyncSession
+    user_id: str,
+    plan: Any,  # SubscriptionPlan
+) -> None:
+    """Create a subscription and quotas for a development user.
+
+    Args:
+        db: Database session
+        user_id: User ID to create subscription for
+        plan: Subscription plan to use
+    """
+    from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+    from src.database.models import UsageQuota, UserSubscription  # noqa: PLC0415
+
+    # Calculate subscription period (1 year for dev users)
+    now = datetime.now(UTC)
+    period_end = now + timedelta(days=365)
+
+    # Create subscription
+    subscription = UserSubscription(
+        user_id=user_id,
+        plan_id=plan.id,
+        status="active",
+        billing_cycle="yearly",
+        current_period_start=now,
+        current_period_end=period_end,
+    )
+    db.add(subscription)
+
+    # Create quotas
+    quota_types = [
+        ("tokens", plan.tokens_included),
+        ("compute_credits", plan.compute_credits_cents_included),
+        ("storage_gb", plan.storage_gb_included),
+        ("sessions", plan.max_sessions),
+        ("agents", plan.max_agents),
+    ]
+
+    for quota_type, limit in quota_types:
+        quota = UsageQuota(
+            user_id=user_id,
+            quota_type=quota_type,
+            limit_value=limit,
+            current_usage=0,
+            reset_at=period_end if quota_type in ["tokens", "compute_credits"] else None,
+            overage_allowed=plan.overage_allowed,
+        )
+        db.add(quota)
 
 
 @asynccontextmanager
@@ -403,6 +625,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     _tasks.standby_check = asyncio.create_task(standby_background_task())
     logger.info("Standby check background task started")
 
+    # Start background task for workspace provisioning
+    _tasks.workspace_provision = asyncio.create_task(workspace_provision_background_task())
+    logger.info("Workspace provision background task started")
+
     yield
 
     # Cleanup
@@ -421,6 +647,13 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         with contextlib.suppress(asyncio.CancelledError):
             await _tasks.standby_check
         logger.info("Standby check background task stopped")
+
+    # Cancel workspace provision task
+    if _tasks.workspace_provision:
+        _tasks.workspace_provision.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _tasks.workspace_provision
+        logger.info("Workspace provision background task stopped")
 
     await cleanup_session_sync()
     await close_database()

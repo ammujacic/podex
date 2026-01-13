@@ -62,7 +62,7 @@ const plans = [
     color: 'accent-secondary',
     features: [
       'Everything in Team',
-      'Unlimited team members',
+      'Unlimited live collaborators',
       'Custom agent templates',
       'SSO & SAML',
       'Audit logs',

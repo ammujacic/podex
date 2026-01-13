@@ -192,6 +192,11 @@ class ApiClient {
       const err = new Error(message) as Error & { status: number };
       err.status = response.status;
 
+      // Auto-logout on 401 (invalid/expired token)
+      if (response.status === 401) {
+        useAuthStore.getState().logout();
+      }
+
       // Report API errors to Sentry (skip 401/403 as they're expected auth errors)
       if (
         response.status >= 500 ||
@@ -1504,8 +1509,24 @@ export interface UsageDataPoint {
   cost: number;
 }
 
+export interface PodUsageDataPoint {
+  date: string;
+  tokens: number;
+  api_calls: number;
+  cost: number;
+  compute_minutes: number;
+}
+
+export interface PodUsageSeries {
+  session_id: string;
+  session_name: string;
+  data: PodUsageDataPoint[];
+  color: string;
+}
+
 export interface UsageHistoryResponse {
   daily: UsageDataPoint[];
+  by_pod: PodUsageSeries[];
   period_start: string;
   period_end: string;
 }
@@ -1836,10 +1857,84 @@ export async function cancelSubscription(reason?: string): Promise<SubscriptionR
 }
 
 // Usage
+// Transform API response to camelCase for consistency with other stores
+export interface UsageSummary {
+  periodStart: string;
+  periodEnd: string;
+  tokensInput: number;
+  tokensOutput: number;
+  tokensTotal: number;
+  tokensCost: number;
+  computeSeconds: number;
+  computeHours: number;
+  computeCreditsUsed: number;
+  computeCreditsIncluded: number;
+  computeCost: number;
+  storageGb: number;
+  storageCost: number;
+  apiCalls: number;
+  totalCost: number;
+  usageByModel: Record<string, { input: number; output: number; cost: number }>;
+  usageByAgent: Record<string, { tokens: number; cost: number }>;
+  usageByTier: Record<string, { seconds: number; cost: number }>;
+}
+
+export interface Quota {
+  id: string;
+  quotaType: string;
+  limitValue: number;
+  currentUsage: number;
+  usagePercentage: number;
+  resetAt: string | null;
+  overageAllowed: boolean;
+  isExceeded: boolean;
+  isWarning: boolean;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function transformUsageSummary(data: any): UsageSummary {
+  return {
+    periodStart: data.period_start,
+    periodEnd: data.period_end,
+    tokensInput: data.tokens_input ?? 0,
+    tokensOutput: data.tokens_output ?? 0,
+    tokensTotal: data.tokens_total ?? 0,
+    tokensCost: data.tokens_cost ?? 0,
+    computeSeconds: data.compute_seconds ?? 0,
+    computeHours: data.compute_hours ?? 0,
+    computeCreditsUsed: data.compute_credits_used ?? 0,
+    computeCreditsIncluded: data.compute_credits_included ?? 0,
+    computeCost: data.compute_cost ?? 0,
+    storageGb: data.storage_gb ?? 0,
+    storageCost: data.storage_cost ?? 0,
+    apiCalls: data.api_calls ?? 0,
+    totalCost: data.total_cost ?? 0,
+    usageByModel: data.usage_by_model ?? {},
+    usageByAgent: data.usage_by_agent ?? {},
+    usageByTier: data.usage_by_tier ?? {},
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function transformQuota(data: any): Quota {
+  return {
+    id: data.id,
+    quotaType: data.quota_type,
+    limitValue: data.limit_value ?? 0,
+    currentUsage: data.current_usage ?? 0,
+    usagePercentage: data.usage_percentage ?? 0,
+    resetAt: data.reset_at ?? null,
+    overageAllowed: data.overage_allowed ?? false,
+    isExceeded: data.is_exceeded ?? false,
+    isWarning: data.is_warning ?? false,
+  };
+}
+
 export async function getUsageSummary(
   period: 'current' | 'last_month' | 'all_time' = 'current'
-): Promise<UsageSummaryResponse> {
-  return api.get<UsageSummaryResponse>(`/api/billing/usage?period=${period}`);
+): Promise<UsageSummary> {
+  const response = await api.get<UsageSummaryResponse>(`/api/billing/usage?period=${period}`);
+  return transformUsageSummary(response);
 }
 
 export async function getBillingUsageHistory(
@@ -1858,8 +1953,9 @@ export async function getBillingUsageHistory(
 }
 
 // Quotas
-export async function getQuotas(): Promise<QuotaResponse[]> {
-  return api.get<QuotaResponse[]>('/api/billing/quotas');
+export async function getQuotas(): Promise<Quota[]> {
+  const response = await api.get<QuotaResponse[]>('/api/billing/quotas');
+  return response.map(transformQuota);
 }
 
 // Credits

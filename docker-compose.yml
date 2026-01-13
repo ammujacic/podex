@@ -175,6 +175,9 @@ services:
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-1.0}
       SENTRY_PROFILES_SAMPLE_RATE: ${SENTRY_PROFILES_SAMPLE_RATE:-1.0}
+      # API Service (for usage tracking)
+      API_BASE_URL: http://api:3001
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-service-token}
     volumes:
       - ./services/agent/src:/app/services/agent/src
       - ./services/shared/src:/app/services/shared/src
@@ -222,6 +225,9 @@ services:
       COMPUTE_INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
       # CORS
       COMPUTE_CORS_ORIGINS: '["http://localhost:3000"]'
+      # API Service (for usage tracking)
+      COMPUTE_API_BASE_URL: http://api:3001
+      COMPUTE_INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-service-token}
       # Sentry (uses SENTRY_ prefix, not COMPUTE_)
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-1.0}

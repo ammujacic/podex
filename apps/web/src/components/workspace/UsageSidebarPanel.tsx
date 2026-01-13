@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
+import Link from 'next/link';
 import {
   BarChart3,
   DollarSign,
@@ -20,6 +21,10 @@ import {
   formatTokens as formatTokensUtil,
 } from '@/stores/cost';
 import { useSessionStore } from '@/stores/session';
+import { useUsageTracking } from '@/hooks/useUsageTracking';
+import { api } from '@/lib/api';
+import { getUsageSummary, getQuotas } from '@/lib/api';
+import type { UsageSummary, Quota } from '@/lib/api';
 
 interface UsageSidebarPanelProps {
   sessionId: string;
@@ -44,7 +49,41 @@ function formatCost(cost: number): string {
 
 export function UsageSidebarPanel({ sessionId }: UsageSidebarPanelProps) {
   const [expandedAgents, setExpandedAgents] = useState(false);
+  const [monthlyUsage, setMonthlyUsage] = useState<UsageSummary | null>(null);
+  const [tokenQuota, setTokenQuota] = useState<Quota | null>(null);
   const { openModal } = useUIStore();
+
+  // Fetch and track usage data
+  useUsageTracking({
+    sessionId,
+    enabled: true,
+    pollingInterval: 30000, // Poll every 30 seconds
+  });
+
+  // Fetch monthly usage summary
+  useEffect(() => {
+    async function fetchMonthlyUsage() {
+      try {
+        const [summary, quotas] = await Promise.all([
+          getUsageSummary('current').catch(() => null),
+          getQuotas().catch(() => []),
+        ]);
+        setMonthlyUsage(summary);
+        // Find token quota
+        const tokensQuota = quotas.find((q) => q.quotaType === 'tokens');
+        setTokenQuota(tokensQuota || null);
+      } catch (error) {
+        console.error('Failed to fetch monthly usage:', error);
+      }
+    }
+
+    // Fetch immediately on mount
+    fetchMonthlyUsage();
+
+    // Then refresh every 30 seconds to stay in sync with current session
+    const interval = setInterval(fetchMonthlyUsage, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Get cost data from the store
   const sessionCosts = useCostStore((state) => state.sessionCosts);
@@ -83,11 +122,97 @@ export function UsageSidebarPanel({ sessionId }: UsageSidebarPanelProps) {
     };
   }, [sessionCosts, sessionId, session?.agents]);
 
-  const handleRefresh = useCallback(() => {
-    // Cost updates come via WebSocket, so just trigger a visual refresh
-    useCostStore.getState().setLoading(true);
-    setTimeout(() => useCostStore.getState().setLoading(false), 300);
-  }, []);
+  const handleRefresh = useCallback(async () => {
+    try {
+      useCostStore.getState().setLoading(true);
+
+      // Refresh monthly usage as well
+      const [summary, quotas] = await Promise.all([
+        getUsageSummary('current').catch(() => null),
+        getQuotas().catch(() => []),
+      ]);
+      setMonthlyUsage(summary);
+      const tokensQuota = quotas.find((q) => q.quotaType === 'tokens');
+      setTokenQuota(tokensQuota || null);
+
+      // API returns array directly (max page_size is 100)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const records = await api.get<any[]>(
+        `/api/billing/usage/history?session_id=${sessionId}&page_size=100`
+      );
+
+      // Aggregate usage by model and agent
+      const costBreakdown = {
+        totalCost: 0,
+        inputCost: 0,
+        outputCost: 0,
+        cachedInputCost: 0,
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedInputTokens: 0,
+        callCount: 0,
+        byModel: {} as Record<string, { inputTokens: number; outputTokens: number; cost: number }>,
+        byAgent: {} as Record<string, { tokens: number; cost: number }>,
+      };
+
+      const apiCallRecords = new Set();
+
+      for (const record of records) {
+        const quantity = record.quantity || 0;
+        const cost = record.cost || 0;
+        const usageType = record.usage_type;
+
+        if (usageType === 'tokens_input') {
+          costBreakdown.inputTokens += quantity;
+          costBreakdown.inputCost += cost;
+          costBreakdown.totalTokens += quantity;
+        } else if (usageType === 'tokens_output') {
+          costBreakdown.outputTokens += quantity;
+          costBreakdown.outputCost += cost;
+          costBreakdown.totalTokens += quantity;
+        } else if (usageType === 'tokens_cached') {
+          costBreakdown.cachedInputTokens += quantity;
+          costBreakdown.cachedInputCost += cost;
+          costBreakdown.totalTokens += quantity;
+        } else if (usageType.startsWith('tokens')) {
+          costBreakdown.totalTokens += quantity;
+        }
+
+        costBreakdown.totalCost += cost;
+
+        if (record.id) {
+          apiCallRecords.add(record.id.split('-')[0]);
+        }
+
+        const model = record.model || 'unknown';
+        if (!costBreakdown.byModel[model]) {
+          costBreakdown.byModel[model] = { inputTokens: 0, outputTokens: 0, cost: 0 };
+        }
+        if (usageType === 'tokens_input') {
+          costBreakdown.byModel[model].inputTokens += quantity;
+        } else if (usageType === 'tokens_output') {
+          costBreakdown.byModel[model].outputTokens += quantity;
+        }
+        costBreakdown.byModel[model].cost += cost;
+
+        const agentId = record.agent_id || 'unknown';
+        if (!costBreakdown.byAgent[agentId]) {
+          costBreakdown.byAgent[agentId] = { tokens: 0, cost: 0 };
+        }
+        costBreakdown.byAgent[agentId].tokens += quantity;
+        costBreakdown.byAgent[agentId].cost += cost;
+      }
+
+      costBreakdown.callCount = apiCallRecords.size || records.length;
+
+      useCostStore.getState().setSessionCost(sessionId, costBreakdown);
+    } catch (error) {
+      console.error('Failed to refresh usage:', error);
+    } finally {
+      useCostStore.getState().setLoading(false);
+    }
+  }, [sessionId]);
 
   if (loading) {
     return (
@@ -110,6 +235,61 @@ export function UsageSidebarPanel({ sessionId }: UsageSidebarPanelProps) {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
+      {/* Monthly Usage Summary */}
+      {monthlyUsage && (
+        <div className="px-3 py-3 border-b border-border-subtle">
+          <div className="mb-3 p-3 rounded bg-surface border border-border-default">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-medium text-text-muted">This Month</span>
+              <Link href="/settings/usage">
+                <button className="text-xs text-accent-primary hover:underline flex items-center gap-1">
+                  View All
+                  <ExternalLink className="h-3 w-3" />
+                </button>
+              </Link>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-center mb-2">
+              <div>
+                <div className="text-lg font-semibold text-text-primary">
+                  {formatTokens(monthlyUsage.tokensTotal)}
+                </div>
+                <div className="text-[10px] text-text-muted">Tokens</div>
+              </div>
+              <div>
+                <div className="text-lg font-semibold text-text-primary">
+                  {formatCost(monthlyUsage.totalCost)}
+                </div>
+                <div className="text-[10px] text-text-muted">Cost</div>
+              </div>
+            </div>
+
+            {/* Quota Progress Bar */}
+            {tokenQuota && (
+              <div className="mt-2">
+                <div className="flex justify-between text-[10px] text-text-muted mb-1">
+                  <span>Token Quota</span>
+                  <span>{tokenQuota.usagePercentage.toFixed(0)}%</span>
+                </div>
+                <div className="h-1.5 bg-void rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${
+                      tokenQuota.isExceeded
+                        ? 'bg-accent-error'
+                        : tokenQuota.isWarning
+                          ? 'bg-accent-warning'
+                          : 'bg-accent-success'
+                    }`}
+                    style={{ width: `${Math.min(tokenQuota.usagePercentage, 100)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="text-xs font-medium text-text-muted mb-2">Current Session</div>
+        </div>
+      )}
+
       {/* Summary stats */}
       <div className="px-3 py-2 border-b border-border-subtle">
         <div className="grid grid-cols-3 gap-2">

@@ -55,6 +55,33 @@ test:
 	@echo ""
 	@echo "$(GREEN)All tests complete!$(NC)"
 
+## Run comprehensive agent integration tests (local only, requires running services)
+test-agent:
+	@echo "$(CYAN)Starting Podex Agent Integration Test Suite$(NC)"
+	@echo "$(YELLOW)⚠️  This test runs against local services with Ollama$(NC)"
+	@echo ""
+	@# Check if SKIP_AGENT_TESTS is set (for CI)
+	@if [ "$$SKIP_AGENT_TESTS" = "true" ]; then \
+		echo "$(YELLOW)Skipping agent tests (SKIP_AGENT_TESTS=true)$(NC)"; \
+		exit 0; \
+	fi
+	@# Check if services are running, if not start them
+	@if ! curl -s http://localhost:3001/health > /dev/null 2>&1; then \
+		echo "$(YELLOW)Services not running, starting them...$(NC)"; \
+		$(MAKE) run; \
+		echo "$(CYAN)Waiting for services to be ready (30s)...$(NC)"; \
+		sleep 30; \
+	else \
+		echo "$(GREEN)Services already running$(NC)"; \
+	fi
+	@# Run the test runner script
+	@echo ""
+	@echo "$(CYAN)Running agent integration tests...$(NC)"
+	@chmod +x scripts/test-agent-runner.sh
+	@./scripts/test-agent-runner.sh
+	@echo ""
+	@echo "$(GREEN)Agent integration tests complete!$(NC)"
+
 # ============================================
 # CHECK
 # ============================================
@@ -201,18 +228,27 @@ help:
 	@echo ""
 	@echo "$(CYAN)Podex Development Commands$(NC)"
 	@echo ""
-	@echo "$(GREEN)make build$(NC)   Install all dependencies and build Docker images"
-	@echo "$(GREEN)make test$(NC)    Run all tests with coverage (frontend + all Python services)"
-	@echo "$(GREEN)make check$(NC)   Run pre-commit hooks (installs hooks if needed)"
-	@echo "$(GREEN)make run$(NC)     Start local development (requires Ollama with a model)"
-	@echo "$(GREEN)make stop$(NC)    Stop running services"
-	@echo "$(GREEN)make logs$(NC)    Watch logs from all services"
-	@echo "$(GREEN)make clean$(NC)   Stop all services, remove volumes, kill workspaces"
-	@echo "$(GREEN)make help$(NC)    Show this help message"
+	@echo "$(GREEN)make build$(NC)        Install all dependencies and build Docker images"
+	@echo "$(GREEN)make test$(NC)         Run all tests with coverage (frontend + all Python services)"
+	@echo "$(GREEN)make test-agent$(NC)   Run comprehensive agent integration tests (local only, requires Ollama)"
+	@echo "$(GREEN)make check$(NC)        Run pre-commit hooks (installs hooks if needed)"
+	@echo "$(GREEN)make run$(NC)          Start local development (requires Ollama with a model)"
+	@echo "$(GREEN)make stop$(NC)         Stop running services"
+	@echo "$(GREEN)make logs$(NC)         Watch logs from all services"
+	@echo "$(GREEN)make clean$(NC)        Stop all services, remove volumes, kill workspaces"
+	@echo "$(GREEN)make help$(NC)         Show this help message"
 	@echo ""
 	@echo "$(YELLOW)Prerequisites:$(NC)"
 	@echo "  - Docker and Docker Compose"
 	@echo "  - Node.js 20+ and pnpm"
 	@echo "  - Python 3.11+ and uv"
 	@echo "  - Ollama with at least one model installed"
+	@echo ""
+	@echo "$(CYAN)Agent Integration Tests:$(NC)"
+	@echo "  The 'test-agent' target runs comprehensive tests against real Ollama models"
+	@echo "  - Tests all agent types, modes, and UI integration"
+	@echo "  - Monitors Docker logs for errors"
+	@echo "  - Takes 15-25 minutes to complete"
+	@echo "  - Generates detailed reports in test-logs/"
+	@echo "  - Automatically skipped in CI (local only)"
 	@echo ""

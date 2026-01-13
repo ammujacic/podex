@@ -5,9 +5,12 @@ from collections.abc import Awaitable, Callable
 import structlog
 from fastapi import HTTPException, Request, Response
 from jose import JWTError, jwt
+from sqlalchemy import select
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.config import settings
+from src.database.connection import get_db
+from src.database.models import User
 
 logger = structlog.get_logger()
 
@@ -27,6 +30,7 @@ PUBLIC_PATHS: list[tuple[str, bool]] = [
     ("/api/preview", True),  # Preview endpoints have subpaths
     ("/api/templates", True),  # Template listing
     ("/api/webhooks", True),  # Stripe webhooks (has own auth)
+    ("/api/billing/usage/record", False),  # Internal service endpoint (has own auth)
     ("/api/admin/settings/public", True),  # Public platform settings
     ("/socket.io", True),  # Socket.IO has subpaths
 ]
@@ -52,7 +56,7 @@ def _is_public_path(request_path: str) -> bool:
 class AuthMiddleware(BaseHTTPMiddleware):
     """JWT authentication middleware."""
 
-    async def dispatch(
+    async def dispatch(  # noqa: PLR0911
         self,
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
@@ -92,9 +96,39 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 algorithms=[settings.JWT_ALGORITHM],
             )
 
-            # Add user info to request state
-            request.state.user_id = payload.get("sub")
-            request.state.user_role = payload.get("role", "member")
+            user_id = payload.get("sub")
+            if not user_id:
+                logger.warning("JWT payload missing user ID")
+                return Response(
+                    content='{"detail": "Invalid token - missing user ID"}',
+                    status_code=401,
+                    media_type="application/json",
+                )
+
+            # Verify user exists in database
+            async for db in get_db():
+                try:
+                    result = await db.execute(select(User).where(User.id == user_id))
+                    user = result.scalar_one_or_none()
+
+                    if not user:
+                        logger.warning(
+                            "User not found in database",
+                            user_id=user_id,
+                        )
+                        return Response(
+                            content='{"detail": "Invalid token - user not found"}',
+                            status_code=401,
+                            media_type="application/json",
+                        )
+
+                    # Add user info to request state
+                    request.state.user_id = user_id
+                    request.state.user_role = payload.get("role", "member")
+                    break
+                finally:
+                    # Clean up database session
+                    await db.close()
 
         except JWTError as e:
             logger.warning("JWT validation failed", error=str(e))

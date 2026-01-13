@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
+import { getUserConfig, updateUserConfig } from '@/lib/api/user-config';
 
 export type Theme = 'dark' | 'light' | 'system';
 
@@ -66,6 +67,12 @@ interface UIState {
   // Hydration tracking
   _hasHydrated: boolean;
   setHasHydrated: (state: boolean) => void;
+
+  // Server sync
+  isLoading: boolean;
+  lastSyncedAt: number | null;
+  loadFromServer: () => Promise<void>;
+  syncToServer: () => Promise<void>;
 
   // Theme
   theme: Theme;
@@ -156,6 +163,15 @@ function applyTheme(theme: 'dark' | 'light') {
   document.documentElement.setAttribute('data-theme', theme);
 }
 
+// Debounce helper
+let uiSyncTimeout: NodeJS.Timeout | null = null;
+const debouncedSync = (get: () => UIState) => {
+  if (uiSyncTimeout) clearTimeout(uiSyncTimeout);
+  uiSyncTimeout = setTimeout(() => {
+    get().syncToServer().catch(console.error);
+  }, 500);
+};
+
 export const useUIStore = create<UIState>()(
   devtools(
     persist(
@@ -164,6 +180,95 @@ export const useUIStore = create<UIState>()(
         _hasHydrated: false,
         setHasHydrated: (state: boolean) => set({ _hasHydrated: state }),
 
+        // Server sync
+        isLoading: false,
+        lastSyncedAt: null,
+
+        loadFromServer: async () => {
+          set({ isLoading: true });
+          try {
+            const config = await getUserConfig();
+
+            // If null (not authenticated), silently use localStorage defaults
+            if (!config) {
+              set({ isLoading: false });
+              return;
+            }
+
+            const serverPrefs = config.ui_preferences || {};
+
+            // Merge server preferences with current state
+            const updates: Partial<UIState> = {
+              isLoading: false,
+              lastSyncedAt: Date.now(),
+            };
+
+            if (serverPrefs.theme) {
+              const resolved =
+                serverPrefs.theme === 'system' ? getSystemTheme() : serverPrefs.theme;
+              applyTheme(resolved);
+              updates.theme = serverPrefs.theme;
+              updates.resolvedTheme = resolved;
+            }
+
+            if (serverPrefs.sidebarLayout) {
+              updates.sidebarLayout = serverPrefs.sidebarLayout;
+            }
+
+            if (serverPrefs.terminalHeight !== undefined) {
+              updates.terminalHeight = serverPrefs.terminalHeight;
+            }
+
+            if (serverPrefs.panelHeight !== undefined) {
+              updates.panelHeight = serverPrefs.panelHeight;
+            }
+
+            if (serverPrefs.prefersReducedMotion !== undefined) {
+              updates.prefersReducedMotion = serverPrefs.prefersReducedMotion;
+            }
+
+            if (serverPrefs.focusMode !== undefined) {
+              updates.focusMode = serverPrefs.focusMode;
+            }
+
+            set(updates);
+          } catch (error) {
+            console.error('Failed to load UI preferences from server:', error);
+            set({ isLoading: false });
+          }
+        },
+
+        syncToServer: async () => {
+          const state = get();
+
+          const prefsToSync = {
+            theme: state.theme,
+            sidebarLayout: state.sidebarLayout,
+            terminalHeight: state.terminalHeight,
+            panelHeight: state.panelHeight,
+            prefersReducedMotion: state.prefersReducedMotion,
+            focusMode: state.focusMode,
+          };
+
+          try {
+            const result = await updateUserConfig({ ui_preferences: prefsToSync });
+            // If null, user is not authenticated - silently skip
+            if (result !== null) {
+              set({ lastSyncedAt: Date.now() });
+            }
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } catch (error: any) {
+            // Silently ignore auth errors (401/403) and network errors (503)
+            // User has been logged out automatically by the API client
+            if (error?.status === 401 || error?.status === 403 || error?.status === 503) {
+              console.warn('Skipping UI sync - user not authenticated or network error');
+              return;
+            }
+            // Log other errors but don't throw to avoid breaking the UI
+            console.error('Failed to sync UI preferences to server:', error);
+          }
+        },
+
         // Theme
         theme: 'dark' as Theme,
         resolvedTheme: 'dark' as 'dark' | 'light',
@@ -171,6 +276,7 @@ export const useUIStore = create<UIState>()(
           const resolved = theme === 'system' ? getSystemTheme() : theme;
           applyTheme(resolved);
           set({ theme, resolvedTheme: resolved });
+          debouncedSync(get);
         },
 
         // Command palette
@@ -241,6 +347,7 @@ export const useUIStore = create<UIState>()(
           get().announce(
             `${side === 'left' ? 'Left' : 'Right'} sidebar ${newCollapsed ? 'collapsed' : 'expanded'}`
           );
+          debouncedSync(get);
         },
 
         setSidebarCollapsed: (side: SidebarSide, collapsed: boolean) => {
@@ -251,6 +358,7 @@ export const useUIStore = create<UIState>()(
               [side]: { ...layout[side], collapsed },
             },
           });
+          debouncedSync(get);
         },
 
         setSidebarWidth: (side: SidebarSide, width: number) => {
@@ -261,6 +369,7 @@ export const useUIStore = create<UIState>()(
               [side]: { ...layout[side], width: Math.max(200, Math.min(500, width)) },
             },
           });
+          debouncedSync(get);
         },
 
         setSidebarPanelHeight: (side: SidebarSide, panelIndex: number, height: number) => {
@@ -284,6 +393,7 @@ export const useUIStore = create<UIState>()(
               [side]: { ...layout[side], panels: normalized },
             },
           });
+          debouncedSync(get);
         },
 
         movePanel: (panelId: PanelId, toSide: SidebarSide) => {
@@ -365,8 +475,10 @@ export const useUIStore = create<UIState>()(
           get().announce(newState ? 'Terminal opened' : 'Terminal closed');
         },
         setTerminalVisible: (visible) => set({ terminalVisible: visible }),
-        setTerminalHeight: (height) =>
-          set({ terminalHeight: Math.max(100, Math.min(600, height)) }),
+        setTerminalHeight: (height) => {
+          set({ terminalHeight: Math.max(100, Math.min(600, height)) });
+          debouncedSync(get);
+        },
 
         // Bottom panel
         panelVisible: false,
@@ -374,7 +486,10 @@ export const useUIStore = create<UIState>()(
         activePanel: 'output',
         togglePanel: () => set((state) => ({ panelVisible: !state.panelVisible })),
         setPanelVisible: (visible) => set({ panelVisible: visible }),
-        setPanelHeight: (height) => set({ panelHeight: Math.max(100, Math.min(400, height)) }),
+        setPanelHeight: (height) => {
+          set({ panelHeight: Math.max(100, Math.min(400, height)) });
+          debouncedSync(get);
+        },
         setActivePanel: (panel) => set({ activePanel: panel, panelVisible: true }),
 
         // Modals
@@ -406,6 +521,7 @@ export const useUIStore = create<UIState>()(
           const newState = !get().focusMode;
           set({ focusMode: newState });
           get().announce(newState ? 'Focus mode enabled' : 'Focus mode disabled');
+          debouncedSync(get);
         },
       }),
       {

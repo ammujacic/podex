@@ -258,14 +258,20 @@ export const useCostStore = create<CostState>()(
 );
 
 // Utility functions
-export function formatCost(cost: number): string {
+export function formatCost(cost: number | undefined | null): string {
+  if (cost == null || cost === undefined) {
+    return '$0.00';
+  }
   if (cost < 0.01) {
-    return `$${cost.toFixed(4)}`;
+    return `$${cost.toFixed(1)}`;
   }
   return `$${cost.toFixed(2)}`;
 }
 
-export function formatTokens(tokens: number): string {
+export function formatTokens(tokens: number | undefined | null): string {
+  if (tokens == null || tokens === undefined) {
+    return '0';
+  }
   if (tokens >= 1000000) {
     return `${(tokens / 1000000).toFixed(1)}M`;
   }

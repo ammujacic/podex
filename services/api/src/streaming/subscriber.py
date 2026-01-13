@@ -77,13 +77,12 @@ class StreamSubscriber:
 
             await self.connect()
 
-            # Stop listener before modifying subscriptions to avoid concurrent reads
-            await self._stop_listener()
-
+            # Create pubsub if it doesn't exist
             if self._pubsub is None and self._redis is not None:
                 self._pubsub = self._redis.pubsub()
 
             # Subscribe to pattern for all agents in this session
+            # Redis pubsub supports subscribing while listening, no need to stop/restart
             pattern = f"agent_stream:{session_id}:*"
             if self._pubsub is not None:
                 await self._pubsub.psubscribe(pattern)
@@ -91,8 +90,9 @@ class StreamSubscriber:
 
             logger.info("Subscribed to session stream", session_id=session_id, pattern=pattern)
 
-            # Start listener after subscription change
-            self._start_listener()
+            # Start listener if not already running
+            if not self._running:
+                self._start_listener()
 
     async def unsubscribe_session(self, session_id: str) -> None:
         """Unsubscribe from streaming events for a session.
@@ -104,9 +104,8 @@ class StreamSubscriber:
             if session_id not in self._subscribed_sessions:
                 return
 
-            # Stop listener before modifying subscriptions to avoid concurrent reads
-            await self._stop_listener()
-
+            # Unsubscribe from pattern
+            # Redis pubsub supports unsubscribing while listening
             if self._pubsub:
                 pattern = f"agent_stream:{session_id}:*"
                 await self._pubsub.punsubscribe(pattern)
@@ -114,9 +113,9 @@ class StreamSubscriber:
             self._subscribed_sessions.discard(session_id)
             logger.info("Unsubscribed from session stream", session_id=session_id)
 
-            # Restart listener if there are still subscriptions
-            if self._subscribed_sessions:
-                self._start_listener()
+            # Stop listener if no more subscriptions
+            if not self._subscribed_sessions:
+                await self._stop_listener()
 
     async def _stop_listener(self) -> None:
         """Stop the listener task if running."""

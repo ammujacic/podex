@@ -141,7 +141,7 @@ async def check_agent_quota(db: AsyncSession, user_id: str, session_id: str) -> 
         session_id: Session ID where agent will be created
 
     Raises:
-        HTTPException: If user has exceeded their agent quota
+        HTTPException: If user has exceeded their agent quota or lacks a valid subscription
     """
     # Get user's active subscription and plan
     sub_query = (
@@ -155,15 +155,24 @@ async def check_agent_quota(db: AsyncSession, user_id: str, session_id: str) -> 
     subscription = sub_result.scalar_one_or_none()
 
     if not subscription:
-        # No active subscription - use free tier limits (2 agents per session)
-        max_agents = 2
-    else:
-        # Get plan limits
-        plan_result = await db.execute(
-            select(SubscriptionPlan).where(SubscriptionPlan.id == subscription.plan_id)
+        raise HTTPException(
+            status_code=403,
+            detail="No active subscription found. Please contact support.",
         )
-        plan = plan_result.scalar_one_or_none()
-        max_agents = plan.max_agents if plan else 2
+
+    # Get plan limits
+    plan_result = await db.execute(
+        select(SubscriptionPlan).where(SubscriptionPlan.id == subscription.plan_id)
+    )
+    plan = plan_result.scalar_one_or_none()
+
+    if not plan:
+        raise HTTPException(
+            status_code=500,
+            detail="Subscription plan not found. Please contact support.",
+        )
+
+    max_agents = plan.max_agents
 
     # Count current agents in this session
     count_query = (
@@ -687,6 +696,7 @@ class ResponseProcessingContext:
     auto_play: bool
     tool_calls: list[dict[str, Any]] | None = None
     streamed: bool = False  # If True, skip agent_message emit (frontend got it via streaming)
+    message_id: str | None = None  # Optional message ID for streaming (to match frontend ID)
 
 
 async def _process_and_emit_response(
@@ -703,7 +713,9 @@ async def _process_and_emit_response(
     tts_result = generate_tts_summary(response_content)
     tts_summary = tts_result.summary if tts_result.was_summarized else None
 
+    # Use the provided message_id if available (for streaming), otherwise let DB generate one
     assistant_message = MessageModel(
+        id=processing_ctx.message_id,  # Will be None for non-streaming, triggering auto-generation
         agent_id=ctx.agent_id,
         role="assistant",
         content=response_content,
@@ -847,6 +859,7 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0
 
             # Process and emit the response with tool calls
             # Set streamed=True since we use streaming - frontend already has message via Redis
+            # Pass stream_message_id so DB message has same ID sent to frontend
             processing_ctx = ResponseProcessingContext(
                 db=db,
                 ctx=ctx,
@@ -855,6 +868,7 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0
                 auto_play=auto_play,
                 tool_calls=tool_calls,
                 streamed=True,  # Streaming is always enabled now
+                message_id=stream_message_id,  # Use the same ID that was sent to frontend
             )
             await _process_and_emit_response(processing_ctx)
 

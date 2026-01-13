@@ -70,7 +70,9 @@ export function DockedFilePreviewCard({
       style={{
         gridColumn: `span ${displaySpan.colSpan}`,
         gridRow: `span ${displaySpan.rowSpan}`,
-        minHeight: displaySpan.rowSpan === 1 ? '300px' : '600px',
+        minHeight: displaySpan.rowSpan === 1 ? '300px' : '616px',
+        maxHeight: displaySpan.rowSpan === 1 ? '300px' : '616px',
+        height: displaySpan.rowSpan === 1 ? '300px' : '616px',
       }}
     >
       {/* Size indicator during resize */}

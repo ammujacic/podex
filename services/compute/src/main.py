@@ -56,11 +56,19 @@ logger = structlog.get_logger()
 
 
 async def cleanup_task() -> None:
-    """Background task to cleanup idle workspaces."""
+    """Background task to cleanup idle workspaces and track compute usage."""
     while True:
         try:
             await asyncio.sleep(60)  # Check every minute
             manager = get_compute_manager()
+
+            # Track compute usage for running workspaces (billing every minute)
+            try:
+                await manager.track_running_workspaces_usage()
+            except Exception:
+                logger.exception("Error tracking workspace usage")
+
+            # Cleanup idle workspaces
             cleaned = await manager.cleanup_idle_workspaces(settings.workspace_timeout)
             if cleaned:
                 logger.info("Cleaned up idle workspaces", count=len(cleaned))
@@ -81,6 +89,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Initialize compute manager
     await init_compute_manager()
+
+    # Discover existing workspace containers (for recovery after restart)
+    manager = get_compute_manager()
+    await manager.discover_existing_workspaces()
 
     # Initialize usage tracker for billing
     await init_usage_tracker(

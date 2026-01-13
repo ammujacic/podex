@@ -514,21 +514,20 @@ async def get_usage_analytics(
     compute_seconds = compute_result.scalar() or 0
     total_compute_hours = compute_seconds / 3600
 
-    # Compute by tier
-    tier_expr = UsageRecord.record_metadata["tier"].astext
+    # Compute by tier (ordered by most to least used, returned in minutes)
     compute_by_tier_result = await db.execute(
         select(
-            tier_expr.label("tier"),
+            UsageRecord.tier.label("tier"),
             func.sum(UsageRecord.quantity).label("seconds"),
         )
         .select_from(UsageRecord)
         .where(UsageRecord.usage_type == "compute_seconds")
         .where(UsageRecord.created_at >= start_date)
-        .group_by(tier_expr)
+        .group_by(UsageRecord.tier)
         .order_by(func.sum(UsageRecord.quantity).desc())
     )
     compute_by_tier = [
-        {"tier": row.tier or "unknown", "hours": (row.seconds or 0) / 3600}
+        {"tier": row.tier or "unknown", "minutes": round((row.seconds or 0) / 60, 1)}
         for row in compute_by_tier_result
     ]
 
@@ -541,7 +540,7 @@ async def get_usage_analytics(
     storage_bytes = storage_result.scalar() or 0
     total_storage_gb = storage_bytes / (1024**3)
 
-    # Daily token usage trend
+    # Daily token usage trend - fill in missing days with zeros
     daily_usage_result = await db.execute(
         select(
             func.date(UsageRecord.created_at).label("date"),
@@ -553,7 +552,18 @@ async def get_usage_analytics(
         .group_by(func.date(UsageRecord.created_at))
         .order_by(func.date(UsageRecord.created_at))
     )
-    daily_usage = [{"date": str(row.date), "tokens": row.tokens} for row in daily_usage_result]
+
+    # Create a map of dates with data
+    date_map = {row.date: row.tokens for row in daily_usage_result}
+
+    # Fill in all dates in range with zeros for missing days
+    daily_usage = []
+    current_date = start_date.date()
+    end_date = datetime.now(UTC).date()
+
+    while current_date <= end_date:
+        daily_usage.append({"date": str(current_date), "tokens": date_map.get(current_date, 0)})
+        current_date += timedelta(days=1)
 
     return UsageMetrics(
         total_tokens=total_tokens,

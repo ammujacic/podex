@@ -68,6 +68,95 @@ class DockerComputeManager(ComputeManager):
             workspace_image=settings.workspace_image,
         )
 
+    async def discover_existing_workspaces(self) -> None:
+        """Discover and re-register existing workspace containers.
+
+        Called on startup to recover from service restarts without losing
+        track of running workspaces. This ensures billing continuity.
+        """
+        try:
+            # Find all containers with podex workspace labels
+            containers = await asyncio.to_thread(
+                self.client.containers.list,
+                filters={"label": "podex.workspace_id"},
+            )
+
+            for container in containers:
+                try:
+                    labels = container.labels
+                    workspace_id = labels.get("podex.workspace_id")
+                    user_id = labels.get("podex.user_id")
+                    session_id = labels.get("podex.session_id")
+                    tier_str = labels.get("podex.tier", "starter")
+
+                    if not workspace_id or not user_id or not session_id:
+                        logger.warning(
+                            "Container missing required labels",
+                            container_id=container.id[:12],
+                        )
+                        continue
+
+                    # Parse tier
+                    try:
+                        tier = WorkspaceTier(tier_str)
+                    except ValueError:
+                        tier = WorkspaceTier.STARTER
+                        logger.warning(
+                            "Invalid tier in container label, using STARTER",
+                            tier_str=tier_str,
+                            workspace_id=workspace_id,
+                        )
+
+                    # Get container IP
+                    container.reload()
+                    container_ip = self._get_container_ip(container)
+
+                    # Create workspace info
+                    now = datetime.now(UTC)
+                    workspace_info = WorkspaceInfo(
+                        id=workspace_id,
+                        user_id=user_id,
+                        session_id=session_id,
+                        status=WorkspaceStatus.RUNNING,
+                        tier=tier,
+                        host=container_ip or container.name or "localhost",
+                        port=3000,
+                        container_id=container.id or "",
+                        repos=[],
+                        created_at=now,  # We don't know actual creation time
+                        last_activity=now,
+                        metadata={
+                            "container_name": container.name or "",
+                            "last_billing_timestamp": now.isoformat(),
+                            "rediscovered": True,
+                        },
+                    )
+
+                    self._workspaces[workspace_id] = workspace_info
+
+                    logger.info(
+                        "Rediscovered existing workspace",
+                        workspace_id=workspace_id,
+                        container_id=container.id[:12],
+                        tier=tier.value,
+                    )
+                except Exception as e:
+                    logger.exception(
+                        "Failed to rediscover workspace container",
+                        container_id=container.id[:12] if container.id else "unknown",
+                        error=str(e),
+                    )
+
+            logger.info(
+                "Workspace discovery complete",
+                rediscovered_count=len(
+                    [w for w in self._workspaces.values() if w.metadata.get("rediscovered")]
+                ),
+                total_workspaces=len(self._workspaces),
+            )
+        except Exception:
+            logger.exception("Failed to discover existing workspaces")
+
     def set_file_sync(self, file_sync: FileSync) -> None:
         """Set the file sync service for S3 synchronization."""
         self._file_sync = file_sync
@@ -194,6 +283,7 @@ class DockerComputeManager(ComputeManager):
             container.reload()
             container_ip = self._get_container_ip(container)
 
+            now = datetime.now(UTC)
             workspace_info = WorkspaceInfo(
                 id=workspace_id,
                 user_id=user_id,
@@ -204,9 +294,12 @@ class DockerComputeManager(ComputeManager):
                 port=3000,  # Default dev server port
                 container_id=container.id or "",
                 repos=config.repos,
-                created_at=datetime.now(UTC),
-                last_activity=datetime.now(UTC),
-                metadata={"container_name": container.name or ""},
+                created_at=now,
+                last_activity=now,
+                metadata={
+                    "container_name": container.name or "",
+                    "last_billing_timestamp": now.isoformat(),
+                },
             )
 
             self._workspaces[workspace_id] = workspace_info
@@ -460,6 +553,53 @@ class DockerComputeManager(ComputeManager):
         except Exception:
             # Don't fail the stop if usage tracking fails
             logger.exception("Failed to track compute usage")
+
+    async def track_running_workspaces_usage(self) -> None:
+        """Track compute usage for all running workspaces (called periodically)."""
+        now = datetime.now(UTC)
+
+        for workspace in list(self._workspaces.values()):
+            if workspace.status != WorkspaceStatus.RUNNING:
+                continue
+
+            try:
+                # Get last billing timestamp from metadata
+                last_billing_str = workspace.metadata.get("last_billing_timestamp")
+                if not last_billing_str:
+                    # Use workspace creation time as starting point for first billing cycle
+                    # This ensures we track usage from when the workspace started running
+                    last_billing = workspace.created_at
+                else:
+                    # Parse last billing timestamp
+                    last_billing = datetime.fromisoformat(last_billing_str)
+
+                # Ensure last_billing is timezone-aware
+                if last_billing.tzinfo is None:
+                    last_billing = last_billing.replace(tzinfo=UTC)
+
+                # Calculate duration since last billing
+                duration = (now - last_billing).total_seconds()
+
+                # Only track if at least 30 seconds have passed (avoid too frequent tracking)
+                if duration >= 30:  # noqa: PLR2004
+                    duration_seconds = int(duration)
+
+                    # Track the usage
+                    await self._track_compute_usage(workspace, duration_seconds)
+
+                    # Update last billing timestamp
+                    workspace.metadata["last_billing_timestamp"] = now.isoformat()
+
+                    logger.debug(
+                        "Tracked periodic compute usage",
+                        workspace_id=workspace.id,
+                        duration_seconds=duration_seconds,
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to track periodic usage for workspace",
+                    workspace_id=workspace.id,
+                )
 
     async def delete_workspace(self, workspace_id: str, preserve_files: bool = True) -> None:
         """Delete a workspace and its container.

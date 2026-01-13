@@ -89,29 +89,161 @@ interface DailyChartProps {
 
 function DailyUsageChart({ data }: DailyChartProps) {
   const maxTokens = Math.max(...data.map((d) => d.tokens));
+  const totalTokens = data.reduce((sum, d) => sum + d.tokens, 0);
+  const avgTokens = totalTokens / data.filter((d) => d.tokens > 0).length || 0;
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+
+  // Debug: Uncomment to see chart rendering data
+  // console.log('DailyUsageChart rendering:', {
+  //   dataLength: data.length,
+  //   data: data,
+  //   maxTokens,
+  // });
+
+  if (data.length === 0) {
+    return (
+      <div className="h-48 flex items-center justify-center text-text-muted">No data available</div>
+    );
+  }
+
+  const formatDate = (dateStr: string) => {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
+  const formatDateShort = (dateStr: string) => {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' });
+  };
+
+  // Determine which dates to show as labels (show ~5-7 labels max)
+  const labelInterval = Math.max(1, Math.floor(data.length / 6));
+  const shouldShowLabel = (index: number) => {
+    return index === 0 || index === data.length - 1 || index % labelInterval === 0;
+  };
 
   return (
-    <div className="h-48 flex items-end gap-1">
-      {data.map((item, i) => (
-        <div key={i} className="flex-1 flex flex-col items-center gap-1">
-          <div
-            className="w-full bg-yellow-500 rounded-t transition-all hover:bg-yellow-400"
-            style={{ height: `${maxTokens > 0 ? (item.tokens / maxTokens) * 100 : 0}%` }}
-            title={`${item.date}: ${formatNumber(item.tokens)} tokens`}
-          />
+    <div className="space-y-4">
+      {/* Hover info display */}
+      <div className="h-20 flex items-center justify-center border-b border-border-subtle pb-4">
+        {hoveredIndex !== null && data[hoveredIndex] ? (
+          <div className="text-center space-y-1">
+            <div className="text-3xl font-bold text-yellow-500">
+              {formatNumber(data[hoveredIndex].tokens)}
+            </div>
+            <div className="text-sm text-text-primary font-medium">
+              {formatDate(data[hoveredIndex].date)}
+            </div>
+            <div className="text-xs text-text-muted flex items-center justify-center gap-3">
+              <span>
+                {totalTokens > 0 ? ((data[hoveredIndex].tokens / totalTokens) * 100).toFixed(1) : 0}
+                % of total
+              </span>
+              <span>•</span>
+              <span>
+                {data[hoveredIndex].tokens > avgTokens
+                  ? `${(((data[hoveredIndex].tokens - avgTokens) / avgTokens) * 100).toFixed(0)}% above avg`
+                  : `${(((avgTokens - data[hoveredIndex].tokens) / avgTokens) * 100).toFixed(0)}% below avg`}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="text-center space-y-1">
+            <div className="text-3xl font-bold text-text-primary">{formatNumber(totalTokens)}</div>
+            <div className="text-sm text-text-muted">
+              Total tokens • Avg {formatNumber(Math.round(avgTokens))}/day
+            </div>
+            <div className="text-xs text-text-muted">Hover over bars for details</div>
+          </div>
+        )}
+      </div>
+
+      {/* Chart */}
+      <div className="relative">
+        <div className="h-56 flex items-end gap-1 relative">
+          {data.map((item, i) => {
+            const heightPercent = maxTokens > 0 ? (item.tokens / maxTokens) * 100 : 0;
+            const isHovered = hoveredIndex === i;
+            const hasData = item.tokens > 0;
+            const isAboveAvg = item.tokens > avgTokens;
+
+            return (
+              <div
+                key={i}
+                className="flex-1 flex flex-col items-center justify-end gap-1 h-full group relative"
+                onMouseEnter={() => setHoveredIndex(i)}
+                onMouseLeave={() => setHoveredIndex(null)}
+              >
+                {/* Bar */}
+                <div
+                  className={cn(
+                    'w-full rounded-t transition-all duration-200 cursor-pointer relative',
+                    hasData
+                      ? isHovered
+                        ? 'bg-yellow-400 shadow-lg scale-105'
+                        : isAboveAvg
+                          ? 'bg-yellow-500 hover:bg-yellow-400'
+                          : 'bg-yellow-600 hover:bg-yellow-500'
+                      : 'bg-elevated'
+                  )}
+                  style={{
+                    height: `${Math.max(heightPercent, hasData ? 2 : 0)}%`,
+                    minHeight: hasData ? '6px' : '0px',
+                  }}
+                >
+                  {/* Token count label on bar (show for larger bars or on hover) */}
+                  {hasData && (heightPercent > 20 || isHovered) && (
+                    <div
+                      className={cn(
+                        'absolute inset-x-0 top-2 text-center text-[10px] font-bold transition-all duration-200',
+                        isHovered
+                          ? 'text-yellow-900 opacity-100 scale-110'
+                          : 'text-yellow-900 opacity-60'
+                      )}
+                      style={{
+                        writingMode: data.length > 30 ? 'vertical-rl' : 'horizontal-tb',
+                        transform: data.length > 30 ? 'rotate(180deg)' : undefined,
+                      }}
+                    >
+                      {formatNumber(item.tokens)}
+                    </div>
+                  )}
+
+                  {/* Hover indicator */}
+                  {isHovered && (
+                    <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
-      ))}
+
+        {/* Date labels */}
+        <div className="flex items-start gap-1 mt-2">
+          {data.map((item, i) => (
+            <div key={i} className="flex-1 flex justify-center">
+              {shouldShowLabel(i) && (
+                <span className="text-[10px] text-text-muted transform -rotate-45 origin-top-left whitespace-nowrap">
+                  {formatDateShort(item.date)}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
 
 export default function UsageAnalytics() {
-  const [days, setDays] = useState(30);
+  const [days, setDays] = useState(7);
   const { usageMetrics, analyticsLoading, fetchUsageMetrics, error } = useAdminStore();
 
   useEffect(() => {
     fetchUsageMetrics(days);
-  }, [days, fetchUsageMetrics]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [days]);
 
   if (analyticsLoading && !usageMetrics) {
     return (
@@ -203,12 +335,41 @@ export default function UsageAnalytics() {
           {/* Daily Usage Chart */}
           {usageMetrics.daily_usage.length > 0 && (
             <div className="bg-surface rounded-xl p-6 border border-border-subtle">
-              <h2 className="text-lg font-semibold text-text-primary mb-6">Daily Token Usage</h2>
-              <DailyUsageChart data={usageMetrics.daily_usage} />
-              <div className="flex justify-between text-xs text-text-muted mt-2">
-                <span>{usageMetrics.daily_usage[0]?.date}</span>
-                <span>{usageMetrics.daily_usage[usageMetrics.daily_usage.length - 1]?.date}</span>
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h2 className="text-lg font-semibold text-text-primary">Daily Token Usage</h2>
+                  <p className="text-sm text-text-muted mt-1">
+                    Usage trends over the selected time period
+                  </p>
+                </div>
+                {/* Top model and provider badges */}
+                <div className="flex flex-wrap gap-2">
+                  {usageMetrics.tokens_by_model.length > 0 && usageMetrics.tokens_by_model[0] && (
+                    <div className="flex items-center gap-2 px-3 py-1.5 bg-elevated rounded-lg">
+                      <span className="text-xs text-text-muted">Top Model:</span>
+                      <span className="text-xs font-semibold text-yellow-500">
+                        {usageMetrics.tokens_by_model[0].model}
+                      </span>
+                      <span className="text-xs text-text-muted">
+                        ({formatNumber(usageMetrics.tokens_by_model[0].tokens)})
+                      </span>
+                    </div>
+                  )}
+                  {usageMetrics.tokens_by_provider.length > 0 &&
+                    usageMetrics.tokens_by_provider[0] && (
+                      <div className="flex items-center gap-2 px-3 py-1.5 bg-elevated rounded-lg">
+                        <span className="text-xs text-text-muted">Top Provider:</span>
+                        <span className="text-xs font-semibold text-blue-500">
+                          {usageMetrics.tokens_by_provider[0].provider}
+                        </span>
+                        <span className="text-xs text-text-muted">
+                          ({formatNumber(usageMetrics.tokens_by_provider[0].tokens)})
+                        </span>
+                      </div>
+                    )}
+                </div>
               </div>
+              <DailyUsageChart data={usageMetrics.daily_usage} />
             </div>
           )}
 
@@ -249,13 +410,25 @@ export default function UsageAnalytics() {
 
           {/* Compute Breakdown */}
           <div className="bg-surface rounded-xl p-6 border border-border-subtle">
-            <h2 className="text-lg font-semibold text-text-primary mb-6">Compute Usage by Tier</h2>
+            <h2 className="text-lg font-semibold text-text-primary mb-6">
+              Compute Usage by Instance Type
+            </h2>
             {usageMetrics.compute_by_tier.length > 0 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                {usageMetrics.compute_by_tier.map((tier, i) => (
-                  <div key={i} className="bg-elevated rounded-xl p-4 text-center">
-                    <p className="text-text-muted text-sm mb-2">{tier.tier}</p>
-                    <p className="text-2xl font-bold text-text-primary">{tier.hours.toFixed(1)}h</p>
+              <div className="space-y-3">
+                {usageMetrics.compute_by_tier.map((item, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center justify-between p-4 bg-elevated rounded-xl"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center justify-center w-8 h-8 rounded-full bg-blue-500/10 text-blue-500 font-bold text-sm">
+                        {i + 1}
+                      </div>
+                      <span className="text-text-primary font-medium">{item.tier}</span>
+                    </div>
+                    <span className="text-2xl font-bold text-text-primary">
+                      {item.minutes.toFixed(1)} min
+                    </span>
                   </div>
                 ))}
               </div>

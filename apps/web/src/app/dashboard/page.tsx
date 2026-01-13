@@ -11,6 +11,7 @@ import {
   GitBranch,
   MoreVertical,
   Play,
+  Pause,
   Trash2,
   Loader2,
   Server,
@@ -56,15 +57,19 @@ import {
   pinSession,
   unpinSession,
   getUsageHistory,
+  pauseWorkspace,
+  resumeWorkspace,
   type Session,
   type PodTemplate,
   type DashboardStats,
   type ActivityItem,
   type Notification,
   type UsageDataPoint,
+  type PodUsageSeries,
 } from '@/lib/api';
 import { useUser, useAuthStore } from '@/stores/auth';
 import { DashboardSkeleton } from '@/components/ui/Skeleton';
+import { TimeRangeSelector, getDaysFromValue } from '@/components/dashboard/TimeRangeSelector';
 
 // Status colors and labels
 const defaultStatus = {
@@ -89,6 +94,12 @@ const statusConfig: Record<
     bg: 'bg-overlay',
     label: 'Stopped',
     icon: <Circle className="w-2 h-2" />,
+  },
+  standby: {
+    color: 'text-accent-warning',
+    bg: 'bg-accent-warning/10',
+    label: 'Standby',
+    icon: <Circle className="w-2 h-2 fill-current" />,
   },
   creating: {
     color: 'text-accent-warning',
@@ -194,6 +205,7 @@ export default function DashboardPage() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [usageHistory, setUsageHistory] = useState<UsageDataPoint[]>([]);
+  const [podUsageData, setPodUsageData] = useState<PodUsageSeries[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
@@ -204,6 +216,11 @@ export default function DashboardPage() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [pinningSession, setPinningSession] = useState<string | null>(null);
+  const [pausingSession, setPausingSession] = useState<string | null>(null);
+  const [resumingSession, setResumingSession] = useState<string | null>(null);
+  const [selectedPeriod, setSelectedPeriod] = useState('30d');
+  const [loadingUsage, setLoadingUsage] = useState(false);
+  const [visiblePods, setVisiblePods] = useState<Set<string>>(new Set());
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Keyboard shortcuts
@@ -258,14 +275,13 @@ export default function DashboardPage() {
     async function loadData() {
       try {
         setLoadError(null);
-        const [sessionsData, templatesData, statsData, activityData, notificationsData, usageData] =
+        const [sessionsData, templatesData, statsData, activityData, notificationsData] =
           await Promise.all([
             listSessions(1, 50),
             listTemplates(true).catch(() => []),
             getDashboardStats().catch(() => null),
             getActivityFeed(10).catch(() => ({ items: [], has_more: false })),
             getNotifications().catch(() => ({ items: [], unread_count: 0 })),
-            getUsageHistory(14).catch(() => ({ daily: [], period_start: '', period_end: '' })),
           ]);
         setSessions(sessionsData.items);
         setTemplates(templatesData);
@@ -273,7 +289,6 @@ export default function DashboardPage() {
         setActivities(activityData.items);
         setNotifications(notificationsData.items);
         setUnreadCount(notificationsData.unread_count);
-        setUsageHistory(usageData.daily);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to load dashboard data';
         setLoadError(message);
@@ -285,9 +300,59 @@ export default function DashboardPage() {
     loadData();
   }, [user, router, isInitialized]);
 
+  // Load usage history when period changes
+  useEffect(() => {
+    if (!user) return;
+
+    async function loadUsageData() {
+      try {
+        setLoadingUsage(true);
+        const days = getDaysFromValue(selectedPeriod);
+        const usageData = await getUsageHistory(days).catch((err) => {
+          console.error('Failed to fetch usage history:', err);
+          return {
+            daily: [],
+            by_pod: [],
+            period_start: '',
+            period_end: '',
+          };
+        });
+        // Debug: Uncomment to see usage data loading
+        // console.log('Usage history loaded:', {
+        //   period: selectedPeriod,
+        //   days,
+        //   dataPoints: usageData.daily.length,
+        //   totalTokens: usageData.daily.reduce((sum, p) => sum + p.tokens, 0),
+        // });
+        setUsageHistory(usageData.daily);
+        setPodUsageData(usageData.by_pod);
+        // Initialize all pods as visible
+        setVisiblePods(new Set(usageData.by_pod.map((p) => p.session_id)));
+      } catch (error) {
+        console.error('Failed to load usage history:', error);
+      } finally {
+        setLoadingUsage(false);
+      }
+    }
+
+    loadUsageData();
+  }, [selectedPeriod, user]);
+
   const getTemplateForSession = (session: Session): PodTemplate | undefined => {
     if (!session.template_id) return undefined;
     return templates.find((t) => t.id === session.template_id);
+  };
+
+  const togglePodVisibility = (sessionId: string) => {
+    setVisiblePods((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(sessionId)) {
+        newSet.delete(sessionId);
+      } else {
+        newSet.add(sessionId);
+      }
+      return newSet;
+    });
   };
 
   const formatDate = (dateStr: string) => {
@@ -408,6 +473,34 @@ export default function DashboardPage() {
       // Handle error
     } finally {
       setDeleting(null);
+      setOpenMenuId(null);
+    }
+  };
+
+  const handlePauseSession = async (sessionId: string, workspaceId: string) => {
+    setPausingSession(sessionId);
+    try {
+      await pauseWorkspace(workspaceId);
+      setSessions((prev) =>
+        prev.map((s) => (s.id === sessionId ? { ...s, status: 'stopped' } : s))
+      );
+    } catch (error) {
+      console.error('Failed to pause session:', error);
+    } finally {
+      setPausingSession(null);
+      setOpenMenuId(null);
+    }
+  };
+
+  const handleResumeSession = async (sessionId: string, workspaceId: string) => {
+    setResumingSession(sessionId);
+    try {
+      await resumeWorkspace(workspaceId);
+      setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, status: 'active' } : s)));
+    } catch (error) {
+      console.error('Failed to resume session:', error);
+    } finally {
+      setResumingSession(null);
       setOpenMenuId(null);
     }
   };
@@ -991,6 +1084,38 @@ export default function DashboardPage() {
                                   <Play className="w-4 h-4" />
                                   Open
                                 </Link>
+                                {session.status === 'active' && session.workspace_id && (
+                                  <button
+                                    onClick={() =>
+                                      handlePauseSession(session.id, session.workspace_id!)
+                                    }
+                                    disabled={pausingSession === session.id}
+                                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-overlay"
+                                  >
+                                    {pausingSession === session.id ? (
+                                      <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                      <Pause className="w-4 h-4" />
+                                    )}
+                                    Pause
+                                  </button>
+                                )}
+                                {session.status === 'stopped' && session.workspace_id && (
+                                  <button
+                                    onClick={() =>
+                                      handleResumeSession(session.id, session.workspace_id!)
+                                    }
+                                    disabled={resumingSession === session.id}
+                                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-overlay"
+                                  >
+                                    {resumingSession === session.id ? (
+                                      <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                      <Play className="w-4 h-4" />
+                                    )}
+                                    Resume
+                                  </button>
+                                )}
                                 <button
                                   onClick={() => {
                                     handlePinSession(session.id, !!session.pinned);
@@ -1137,6 +1262,40 @@ export default function DashboardPage() {
                                     <Play className="w-4 h-4" />
                                   </Button>
                                 </Link>
+                                {session.status === 'active' && session.workspace_id && (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() =>
+                                      handlePauseSession(session.id, session.workspace_id!)
+                                    }
+                                    disabled={pausingSession === session.id}
+                                    title="Pause session"
+                                  >
+                                    {pausingSession === session.id ? (
+                                      <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                      <Pause className="w-4 h-4 text-yellow-500" />
+                                    )}
+                                  </Button>
+                                )}
+                                {session.status === 'stopped' && session.workspace_id && (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() =>
+                                      handleResumeSession(session.id, session.workspace_id!)
+                                    }
+                                    disabled={resumingSession === session.id}
+                                    title="Resume session"
+                                  >
+                                    {resumingSession === session.id ? (
+                                      <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                      <Play className="w-4 h-4 text-green-500" />
+                                    )}
+                                  </Button>
+                                )}
                                 <Button
                                   variant="ghost"
                                   size="sm"
@@ -1162,129 +1321,337 @@ export default function DashboardPage() {
           </>
         )}
 
-        {/* Usage (Last 14 Days) */}
-        {usageHistory.length > 0 && (
+        {/* Usage Charts */}
+        {(usageHistory.length > 0 || loadingUsage) && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.3 }}
             className="mt-10"
           >
-            <h2 className="text-lg font-semibold text-text-primary mb-4">Usage (Last 14 Days)</h2>
-            <div className="grid gap-6 lg:grid-cols-2">
-              {/* Token Usage */}
-              <div className="bg-surface border border-border-default rounded-xl p-5">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-sm font-medium text-text-primary">Token Usage</h3>
-                  <div className="flex items-center gap-1.5 text-xs text-text-muted">
-                    <div className="w-3 h-3 rounded bg-accent-primary/60" />
-                    <span>Tokens</span>
-                  </div>
-                </div>
-                <div className="h-32 flex items-end gap-1">
-                  {usageHistory.map((point, index) => {
-                    const maxTokens = Math.max(...usageHistory.map((p) => p.tokens), 1);
-                    const height = (point.tokens / maxTokens) * 100;
-                    return (
-                      <div key={index} className="flex-1 group relative">
-                        <div
-                          className="w-full bg-accent-primary/20 hover:bg-accent-primary/40 rounded-t transition-colors"
-                          style={{ height: `${Math.max(height, 4)}%` }}
-                        />
-                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-elevated border border-border-default rounded text-xs text-text-primary opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-10">
-                          {formatNumber(point.tokens)} tokens
-                          <br />
-                          <span className="text-text-muted">
-                            {new Date(point.date).toLocaleDateString('en-US', {
-                              month: 'short',
-                              day: 'numeric',
-                            })}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="flex justify-between mt-2 text-xs text-text-muted">
-                  <span>
-                    {usageHistory[0]
-                      ? new Date(usageHistory[0].date).toLocaleDateString('en-US', {
-                          month: 'short',
-                          day: 'numeric',
-                        })
-                      : ''}
-                  </span>
-                  <span>
-                    {(() => {
-                      const last = usageHistory[usageHistory.length - 1];
-                      return last
-                        ? new Date(last.date).toLocaleDateString('en-US', {
-                            month: 'short',
-                            day: 'numeric',
-                          })
-                        : '';
-                    })()}
-                  </span>
-                </div>
-              </div>
-
-              {/* Compute Usage */}
-              <div className="bg-surface border border-border-default rounded-xl p-5">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-sm font-medium text-text-primary">Compute Usage</h3>
-                  <div className="flex items-center gap-1.5 text-xs text-text-muted">
-                    <div className="w-3 h-3 rounded bg-accent-secondary/60" />
-                    <span>Minutes</span>
-                  </div>
-                </div>
-                <div className="h-32 flex items-end gap-1">
-                  {usageHistory.map((point, index) => {
-                    const computeMinutes = point.api_calls * 2;
-                    const maxMinutes = Math.max(...usageHistory.map((p) => p.api_calls * 2), 1);
-                    const height = (computeMinutes / maxMinutes) * 100;
-                    return (
-                      <div key={index} className="flex-1 group relative">
-                        <div
-                          className="w-full bg-accent-secondary/40 hover:bg-accent-secondary/60 rounded-t transition-colors"
-                          style={{ height: `${Math.max(height, 4)}%` }}
-                        />
-                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-elevated border border-border-default rounded text-xs text-text-primary opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-10">
-                          {computeMinutes} minutes
-                          <br />
-                          <span className="text-text-muted">
-                            {new Date(point.date).toLocaleDateString('en-US', {
-                              month: 'short',
-                              day: 'numeric',
-                            })}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="flex justify-between mt-2 text-xs text-text-muted">
-                  <span>
-                    {usageHistory[0]
-                      ? new Date(usageHistory[0].date).toLocaleDateString('en-US', {
-                          month: 'short',
-                          day: 'numeric',
-                        })
-                      : ''}
-                  </span>
-                  <span>
-                    {(() => {
-                      const last = usageHistory[usageHistory.length - 1];
-                      return last
-                        ? new Date(last.date).toLocaleDateString('en-US', {
-                            month: 'short',
-                            day: 'numeric',
-                          })
-                        : '';
-                    })()}
-                  </span>
-                </div>
-              </div>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-text-primary">Usage</h2>
+              <TimeRangeSelector value={selectedPeriod} onChange={setSelectedPeriod} />
             </div>
+            {loadingUsage ? (
+              <div className="flex items-center justify-center h-64">
+                <Loader2 className="w-8 h-8 animate-spin text-accent-primary" />
+              </div>
+            ) : (
+              <div className="grid gap-6 lg:grid-cols-2">
+                {/* Token Usage */}
+                <div className="bg-surface border border-border-default rounded-xl p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-sm font-medium text-text-primary">Token Usage</h3>
+                    <span className="text-xs text-text-muted">Tokens</span>
+                  </div>
+
+                  {/* Stacked Bar Chart */}
+                  <div className="h-40 flex items-end gap-1">
+                    {usageHistory.length > 0 &&
+                      usageHistory.map((point, dateIndex) => {
+                        // Calculate total tokens for this date across all visible pods
+                        const visiblePodsData = podUsageData.filter((p) =>
+                          visiblePods.has(p.session_id)
+                        );
+                        const totalTokens = visiblePodsData.reduce(
+                          (sum, pod) => sum + (pod.data[dateIndex]?.tokens || 0),
+                          0
+                        );
+                        const maxTokens = Math.max(
+                          ...usageHistory.map((_, i) =>
+                            visiblePodsData.reduce(
+                              (sum, pod) => sum + (pod.data[i]?.tokens || 0),
+                              0
+                            )
+                          ),
+                          1
+                        );
+                        const barHeightPercent = (totalTokens / maxTokens) * 100;
+
+                        // Calculate cumulative heights for proper stacking
+                        let cumulativePercent = 0;
+                        const segments = visiblePodsData
+                          .map((pod) => {
+                            const podTokens = pod.data[dateIndex]?.tokens || 0;
+                            const segmentPercent =
+                              totalTokens > 0 ? (podTokens / totalTokens) * 100 : 0;
+                            const segment = {
+                              pod,
+                              tokens: podTokens,
+                              heightPercent: segmentPercent,
+                              bottomPercent: cumulativePercent,
+                            };
+                            cumulativePercent += segmentPercent;
+                            return segment;
+                          })
+                          .filter((s) => s.tokens > 0);
+
+                        return (
+                          <div key={dateIndex} className="flex-1 relative h-full">
+                            {/* Bar container */}
+                            <div
+                              className="absolute bottom-0 left-0 right-0 w-full"
+                              style={{ height: `${Math.max(barHeightPercent, 2)}%` }}
+                            >
+                              {segments.map((segment, segmentIndex) => (
+                                <div
+                                  key={segment.pod.session_id}
+                                  className="absolute left-0 right-0 w-full group/segment"
+                                  style={{
+                                    bottom: `${segment.bottomPercent}%`,
+                                    height: `${segment.heightPercent}%`,
+                                  }}
+                                >
+                                  <div
+                                    className={`w-full h-full hover:brightness-110 transition-all ${segmentIndex === segments.length - 1 ? 'rounded-t' : ''}`}
+                                    style={{
+                                      backgroundColor: segment.pod.color,
+                                    }}
+                                  />
+                                  {/* Per-segment tooltip */}
+                                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1.5 bg-elevated border border-border-default rounded text-xs opacity-0 group-hover/segment:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-20 shadow-lg">
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <div
+                                        className="w-2 h-2 rounded-sm"
+                                        style={{ backgroundColor: segment.pod.color }}
+                                      />
+                                      <span className="text-text-primary font-medium truncate max-w-[100px]">
+                                        {segment.pod.session_name}
+                                      </span>
+                                    </div>
+                                    <div className="text-text-primary">
+                                      {formatNumber(segment.tokens)} tokens
+                                    </div>
+                                    <div className="text-text-muted text-[10px] mt-0.5">
+                                      {new Date(point.date).toLocaleDateString('en-US', {
+                                        month: 'short',
+                                        day: 'numeric',
+                                      })}
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+
+                  {/* Legend */}
+                  {podUsageData.length > 0 && (
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      {podUsageData.map((pod) => (
+                        <button
+                          key={pod.session_id}
+                          onClick={() => togglePodVisibility(pod.session_id)}
+                          className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+                        >
+                          <div
+                            className="w-3 h-3 rounded transition-opacity"
+                            style={{
+                              backgroundColor: pod.color,
+                              opacity: visiblePods.has(pod.session_id) ? 1 : 0.3,
+                            }}
+                          />
+                          <span
+                            className="text-xs truncate max-w-[120px]"
+                            style={{
+                              color: visiblePods.has(pod.session_id)
+                                ? 'var(--text-muted)'
+                                : 'var(--text-disabled)',
+                              textDecoration: visiblePods.has(pod.session_id)
+                                ? 'none'
+                                : 'line-through',
+                            }}
+                          >
+                            {pod.session_name}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="flex justify-between mt-2 text-xs text-text-muted">
+                    <span>
+                      {usageHistory[0]
+                        ? new Date(usageHistory[0].date).toLocaleDateString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                          })
+                        : ''}
+                    </span>
+                    <span>
+                      {(() => {
+                        const last = usageHistory[usageHistory.length - 1];
+                        return last
+                          ? new Date(last.date).toLocaleDateString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                            })
+                          : '';
+                      })()}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Compute Usage */}
+                <div className="bg-surface border border-border-default rounded-xl p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-sm font-medium text-text-primary">Compute Usage</h3>
+                    <span className="text-xs text-text-muted">Minutes</span>
+                  </div>
+
+                  {/* Stacked Bar Chart */}
+                  <div className="h-40 flex items-end gap-1">
+                    {usageHistory.length > 0 &&
+                      usageHistory.map((point, dateIndex) => {
+                        // Calculate total compute minutes for this date across all visible pods
+                        const visiblePodsData = podUsageData.filter((p) =>
+                          visiblePods.has(p.session_id)
+                        );
+                        const totalMinutes = visiblePodsData.reduce(
+                          (sum, pod) => sum + (pod.data[dateIndex]?.compute_minutes || 0),
+                          0
+                        );
+                        const maxMinutes = Math.max(
+                          ...usageHistory.map((_, i) =>
+                            visiblePodsData.reduce(
+                              (sum, pod) => sum + (pod.data[i]?.compute_minutes || 0),
+                              0
+                            )
+                          ),
+                          1
+                        );
+                        const barHeightPercent = (totalMinutes / maxMinutes) * 100;
+
+                        // Calculate cumulative heights for proper stacking
+                        let cumulativePercent = 0;
+                        const segments = visiblePodsData
+                          .map((pod) => {
+                            const podMinutes = pod.data[dateIndex]?.compute_minutes || 0;
+                            const segmentPercent =
+                              totalMinutes > 0 ? (podMinutes / totalMinutes) * 100 : 0;
+                            const segment = {
+                              pod,
+                              minutes: podMinutes,
+                              heightPercent: segmentPercent,
+                              bottomPercent: cumulativePercent,
+                            };
+                            cumulativePercent += segmentPercent;
+                            return segment;
+                          })
+                          .filter((s) => s.minutes > 0);
+
+                        return (
+                          <div key={dateIndex} className="flex-1 relative h-full">
+                            {/* Bar container */}
+                            <div
+                              className="absolute bottom-0 left-0 right-0 w-full"
+                              style={{ height: `${Math.max(barHeightPercent, 2)}%` }}
+                            >
+                              {segments.map((segment, segmentIndex) => (
+                                <div
+                                  key={segment.pod.session_id}
+                                  className="absolute left-0 right-0 w-full group/segment"
+                                  style={{
+                                    bottom: `${segment.bottomPercent}%`,
+                                    height: `${segment.heightPercent}%`,
+                                  }}
+                                >
+                                  <div
+                                    className={`w-full h-full hover:brightness-110 transition-all ${segmentIndex === segments.length - 1 ? 'rounded-t' : ''}`}
+                                    style={{
+                                      backgroundColor: segment.pod.color,
+                                    }}
+                                  />
+                                  {/* Per-segment tooltip */}
+                                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1.5 bg-elevated border border-border-default rounded text-xs opacity-0 group-hover/segment:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-20 shadow-lg">
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <div
+                                        className="w-2 h-2 rounded-sm"
+                                        style={{ backgroundColor: segment.pod.color }}
+                                      />
+                                      <span className="text-text-primary font-medium truncate max-w-[100px]">
+                                        {segment.pod.session_name}
+                                      </span>
+                                    </div>
+                                    <div className="text-text-primary">
+                                      {segment.minutes} minutes
+                                    </div>
+                                    <div className="text-text-muted text-[10px] mt-0.5">
+                                      {new Date(point.date).toLocaleDateString('en-US', {
+                                        month: 'short',
+                                        day: 'numeric',
+                                      })}
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+
+                  {/* Legend */}
+                  {podUsageData.length > 0 && (
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      {podUsageData.map((pod) => (
+                        <button
+                          key={pod.session_id}
+                          onClick={() => togglePodVisibility(pod.session_id)}
+                          className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+                        >
+                          <div
+                            className="w-3 h-3 rounded transition-opacity"
+                            style={{
+                              backgroundColor: pod.color,
+                              opacity: visiblePods.has(pod.session_id) ? 1 : 0.3,
+                            }}
+                          />
+                          <span
+                            className="text-xs truncate max-w-[120px]"
+                            style={{
+                              color: visiblePods.has(pod.session_id)
+                                ? 'var(--text-muted)'
+                                : 'var(--text-disabled)',
+                              textDecoration: visiblePods.has(pod.session_id)
+                                ? 'none'
+                                : 'line-through',
+                            }}
+                          >
+                            {pod.session_name}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="flex justify-between mt-2 text-xs text-text-muted">
+                    <span>
+                      {usageHistory[0]
+                        ? new Date(usageHistory[0].date).toLocaleDateString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                          })
+                        : ''}
+                    </span>
+                    <span>
+                      {(() => {
+                        const last = usageHistory[usageHistory.length - 1];
+                        return last
+                          ? new Date(last.date).toLocaleDateString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                            })
+                          : '';
+                      })()}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
           </motion.div>
         )}
       </main>

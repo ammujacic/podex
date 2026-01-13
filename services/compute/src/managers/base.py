@@ -212,3 +212,21 @@ class ComputeManager(ABC):
         Returns:
             List of dicts with port info: {port, pid, process_name}
         """
+
+    @abstractmethod
+    async def track_running_workspaces_usage(self) -> None:
+        """Track compute usage for all running workspaces.
+
+        This method should be called periodically (e.g., every minute) to
+        record compute usage for billing purposes. It tracks the time since
+        the last billing event for each running workspace.
+        """
+
+    async def discover_existing_workspaces(self) -> None:  # noqa: B027
+        """Discover and re-register existing workspaces after service restart.
+
+        This is an optional method that implementations can override to
+        recover workspace state after a service restart. The default
+        implementation does nothing.
+        """
+        pass

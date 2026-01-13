@@ -4,21 +4,16 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import {
   getSubscription,
-  listSubscriptionPlans,
-  getUsageSummary,
-  getQuotas,
   getCreditBalance,
-  createSubscription,
   cancelSubscription,
+  listInvoices,
+  getInvoice,
   type SubscriptionResponse,
-  type SubscriptionPlanResponse,
-  type UsageSummaryResponse,
-  type QuotaResponse,
   type CreditBalanceResponse,
+  type InvoiceResponse,
 } from '@/lib/api';
-import { useBillingStore } from '@/stores/billing';
+import { CreditCard, Download } from 'lucide-react';
 
-// Helper to format currency
 const formatCurrency = (amount: number, currency = 'USD') => {
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
@@ -27,275 +22,60 @@ const formatCurrency = (amount: number, currency = 'USD') => {
   }).format(amount);
 };
 
-// Helper to format numbers
-const formatNumber = (num: number) => {
-  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
-  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+const formatDate = (dateStr: string) => {
+  return new Date(dateStr).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+};
+
+const formatNumber = (num: number): string => {
+  if (num >= 1_000_000) {
+    return `${(num / 1_000_000).toFixed(1)}M`;
+  }
+  if (num >= 1_000) {
+    return `${(num / 1_000).toFixed(1)}K`;
+  }
   return num.toLocaleString();
 };
 
-// Progress bar component
-function QuotaProgressBar({
-  label,
-  current,
-  max,
-  unit,
-  isWarning,
-  isExceeded,
-}: {
-  label: string;
-  current: number;
-  max: number;
-  unit: string;
-  isWarning: boolean;
-  isExceeded: boolean;
-}) {
-  const percentage = max > 0 ? Math.min((current / max) * 100, 100) : 0;
-
-  return (
-    <div className="space-y-2">
-      <div className="flex justify-between text-sm">
-        <span className="text-neutral-400">{label}</span>
-        <span
-          className={
-            isExceeded ? 'text-red-400' : isWarning ? 'text-amber-400' : 'text-neutral-300'
-          }
-        >
-          {formatNumber(current)} / {formatNumber(max)} {unit}
-        </span>
-      </div>
-      <div className="h-2 bg-neutral-700 rounded-full overflow-hidden">
-        <div
-          className={`h-full transition-all duration-300 ${
-            isExceeded ? 'bg-red-500' : isWarning ? 'bg-amber-500' : 'bg-emerald-500'
-          }`}
-          style={{ width: `${percentage}%` }}
-        />
-      </div>
-    </div>
-  );
-}
-
-// Plan card component
-function PlanCard({
-  plan,
-  currentPlanSlug,
-  billingCycle,
-  onSelect,
-  isLoading,
-}: {
-  plan: SubscriptionPlanResponse;
-  currentPlanSlug?: string;
-  billingCycle: 'monthly' | 'yearly';
-  onSelect: (slug: string) => void;
-  isLoading: boolean;
-}) {
-  const isCurrentPlan = plan.slug === currentPlanSlug;
-  const price = billingCycle === 'yearly' ? plan.price_yearly / 12 : plan.price_monthly;
-  const yearlyDiscount =
-    plan.price_monthly > 0
-      ? Math.round((1 - plan.price_yearly / 12 / plan.price_monthly) * 100)
-      : 0;
-
-  return (
-    <div
-      className={`relative rounded-xl border p-6 ${
-        plan.is_popular
-          ? 'border-blue-500 bg-blue-500/5'
-          : isCurrentPlan
-            ? 'border-emerald-500 bg-emerald-500/5'
-            : 'border-neutral-700 bg-neutral-800/50'
-      }`}
-    >
-      {plan.is_popular && (
-        <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 bg-blue-500 text-white text-xs font-medium rounded-full">
-          Most Popular
-        </div>
-      )}
-      {isCurrentPlan && (
-        <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 bg-emerald-500 text-white text-xs font-medium rounded-full">
-          Current Plan
-        </div>
-      )}
-
-      <div className="space-y-4">
-        <div>
-          <h3 className="text-xl font-semibold text-white">{plan.name}</h3>
-          <p className="text-sm text-neutral-400 mt-1">{plan.description}</p>
-        </div>
-
-        <div className="flex items-baseline gap-1">
-          <span className="text-3xl font-bold text-white">
-            {plan.price_monthly === 0 ? 'Free' : formatCurrency(price)}
-          </span>
-          {plan.price_monthly > 0 && <span className="text-neutral-400">/month</span>}
-          {billingCycle === 'yearly' && yearlyDiscount > 0 && (
-            <span className="ml-2 text-sm text-emerald-400">-{yearlyDiscount}%</span>
-          )}
-        </div>
-
-        <ul className="space-y-2 text-sm">
-          <li className="flex items-center gap-2 text-neutral-300">
-            <svg className="w-4 h-4 text-emerald-400" fill="currentColor" viewBox="0 0 20 20">
-              <path
-                fillRule="evenodd"
-                d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                clipRule="evenodd"
-              />
-            </svg>
-            {formatNumber(plan.tokens_included)} tokens/month
-          </li>
-          <li className="flex items-center gap-2 text-neutral-300">
-            <svg className="w-4 h-4 text-emerald-400" fill="currentColor" viewBox="0 0 20 20">
-              <path
-                fillRule="evenodd"
-                d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                clipRule="evenodd"
-              />
-            </svg>
-            {formatCurrency(plan.compute_credits_included)} compute credits/month
-          </li>
-          <li className="flex items-center gap-2 text-neutral-300">
-            <svg className="w-4 h-4 text-emerald-400" fill="currentColor" viewBox="0 0 20 20">
-              <path
-                fillRule="evenodd"
-                d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                clipRule="evenodd"
-              />
-            </svg>
-            {plan.storage_gb_included} GB storage
-          </li>
-          <li className="flex items-center gap-2 text-neutral-300">
-            <svg className="w-4 h-4 text-emerald-400" fill="currentColor" viewBox="0 0 20 20">
-              <path
-                fillRule="evenodd"
-                d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                clipRule="evenodd"
-              />
-            </svg>
-            {plan.max_agents} AI agents
-          </li>
-          <li className="flex items-center gap-2 text-neutral-300">
-            <svg className="w-4 h-4 text-emerald-400" fill="currentColor" viewBox="0 0 20 20">
-              <path
-                fillRule="evenodd"
-                d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                clipRule="evenodd"
-              />
-            </svg>
-            {plan.max_sessions} concurrent sessions
-          </li>
-          {plan.features.gpu_access && (
-            <li className="flex items-center gap-2 text-neutral-300">
-              <svg className="w-4 h-4 text-emerald-400" fill="currentColor" viewBox="0 0 20 20">
-                <path
-                  fillRule="evenodd"
-                  d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                  clipRule="evenodd"
-                />
-              </svg>
-              GPU access
-            </li>
-          )}
-          {plan.features.team_collaboration && (
-            <li className="flex items-center gap-2 text-neutral-300">
-              <svg className="w-4 h-4 text-emerald-400" fill="currentColor" viewBox="0 0 20 20">
-                <path
-                  fillRule="evenodd"
-                  d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                  clipRule="evenodd"
-                />
-              </svg>
-              Team collaboration ({plan.max_team_members} members)
-            </li>
-          )}
-        </ul>
-
-        {!plan.is_enterprise ? (
-          <button
-            onClick={() => onSelect(plan.slug)}
-            disabled={isCurrentPlan || isLoading}
-            className={`w-full py-2 px-4 rounded-lg font-medium transition-colors ${
-              isCurrentPlan
-                ? 'bg-neutral-700 text-neutral-400 cursor-not-allowed'
-                : plan.is_popular
-                  ? 'bg-blue-500 hover:bg-blue-600 text-white'
-                  : 'bg-neutral-700 hover:bg-neutral-600 text-white'
-            }`}
-          >
-            {isCurrentPlan ? 'Current Plan' : isLoading ? 'Processing...' : 'Select Plan'}
-          </button>
-        ) : (
-          <Link
-            href="/contact"
-            className="block w-full py-2 px-4 rounded-lg font-medium text-center bg-neutral-700 hover:bg-neutral-600 text-white transition-colors"
-          >
-            Contact Sales
-          </Link>
-        )}
-      </div>
-    </div>
-  );
-}
+const statusColors: Record<string, string> = {
+  draft: 'bg-text-muted/20 text-text-muted',
+  open: 'bg-amber-500/20 text-amber-400',
+  paid: 'bg-accent-success/20 text-accent-success',
+  void: 'bg-text-muted/20 text-text-muted',
+  uncollectible: 'bg-accent-error/20 text-accent-error',
+};
 
 export default function BillingPage() {
   const [subscription, setSubscription] = useState<SubscriptionResponse | null>(null);
-  const [plans, setPlans] = useState<SubscriptionPlanResponse[]>([]);
-  const [usage, setUsage] = useState<UsageSummaryResponse | null>(null);
-  const [quotas, setQuotas] = useState<QuotaResponse[]>([]);
   const [credits, setCredits] = useState<CreditBalanceResponse | null>(null);
+  const [invoices, setInvoices] = useState<InvoiceResponse[]>([]);
+  const [selectedInvoice, setSelectedInvoice] = useState<InvoiceResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
-  const [billingCycle, setBillingCycle] = useState<'monthly' | 'yearly'>('monthly');
+  const [detailLoading, setDetailLoading] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Load billing data
   useEffect(() => {
     async function loadData() {
       try {
         setLoading(true);
-        const [subData, plansData, usageData, quotasData, creditsData] = await Promise.all([
+        const [subData, creditsData, invoicesData] = await Promise.all([
           getSubscription().catch(() => null),
-          listSubscriptionPlans(),
-          getUsageSummary().catch(() => null),
-          getQuotas().catch(() => []),
           getCreditBalance().catch(() => null),
+          listInvoices(1, 10).catch(() => []),
         ]);
 
-        setSubscription(subData);
-        setPlans(plansData);
-        setUsage(usageData);
-        setQuotas(quotasData);
-        setCredits(creditsData);
+        console.warn('BillingPage - Subscription data:', subData);
+        console.warn('BillingPage - Has plan?:', !!subData?.plan);
+        console.warn('BillingPage - Plan name:', subData?.plan?.name);
 
-        // Update store
-        const store = useBillingStore.getState();
-        store.setPlans(
-          plansData.map((p) => ({
-            id: p.id,
-            name: p.name,
-            slug: p.slug,
-            description: p.description,
-            priceMonthly: p.price_monthly,
-            priceYearly: p.price_yearly,
-            currency: p.currency,
-            tokensIncluded: p.tokens_included,
-            computeHoursIncluded: p.compute_hours_included,
-            computeCreditsIncluded: p.compute_credits_included,
-            storageGbIncluded: p.storage_gb_included,
-            maxAgents: p.max_agents,
-            maxSessions: p.max_sessions,
-            maxTeamMembers: p.max_team_members,
-            overageAllowed: p.overage_allowed,
-            overageTokenRate: p.overage_token_rate,
-            overageComputeRate: p.overage_compute_rate,
-            overageStorageRate: p.overage_storage_rate,
-            features: p.features,
-            isPopular: p.is_popular,
-            isEnterprise: p.is_enterprise,
-          }))
-        );
+        setSubscription(subData);
+        setCredits(creditsData);
+        setInvoices(invoicesData);
       } catch (err) {
         setError('Failed to load billing data');
         console.error(err);
@@ -306,27 +86,6 @@ export default function BillingPage() {
 
     loadData();
   }, []);
-
-  const handleSelectPlan = async (slug: string) => {
-    try {
-      setActionLoading(true);
-      setError(null);
-
-      if (subscription) {
-        // Update existing subscription
-        // For now, we'll need to cancel and create new (Stripe handles prorations)
-        await cancelSubscription();
-      }
-
-      const newSub = await createSubscription(slug, billingCycle);
-      setSubscription(newSub);
-    } catch (err) {
-      setError('Failed to update subscription');
-      console.error(err);
-    } finally {
-      setActionLoading(false);
-    }
-  };
 
   const handleCancelSubscription = async () => {
     try {
@@ -344,263 +103,479 @@ export default function BillingPage() {
     }
   };
 
+  const handleViewInvoice = async (invoiceId: string) => {
+    try {
+      setDetailLoading(true);
+      const data = await getInvoice(invoiceId);
+      setSelectedInvoice(data);
+    } catch (err) {
+      console.error('Failed to load invoice:', err);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
   if (loading) {
     return (
-      <div className="p-6 space-y-6">
-        <div className="animate-pulse space-y-4">
-          <div className="h-8 bg-neutral-700 rounded w-1/4" />
-          <div className="h-40 bg-neutral-700 rounded" />
-          <div className="grid grid-cols-4 gap-4">
-            {[1, 2, 3, 4].map((i) => (
-              <div key={i} className="h-64 bg-neutral-700 rounded" />
-            ))}
-          </div>
+      <div className="max-w-6xl mx-auto px-8 py-8">
+        <div className="animate-pulse space-y-6">
+          <div className="h-8 bg-surface rounded w-1/4" />
+          <div className="h-40 bg-surface rounded" />
+          <div className="h-64 bg-surface rounded" />
         </div>
       </div>
     );
   }
 
   return (
-    <div className="p-6 space-y-8 max-w-6xl mx-auto">
-      <div>
-        <h1 className="text-2xl font-bold text-white">Billing & Usage</h1>
-        <p className="text-neutral-400 mt-1">
-          Manage your subscription, view usage, and purchase credits
-        </p>
+    <div className="max-w-6xl mx-auto px-8 py-8">
+      {/* Header */}
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold text-text-primary mb-2">Billing</h1>
+        <p className="text-text-muted">Manage your subscription and billing information</p>
       </div>
 
       {error && (
-        <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400">
+        <div className="p-4 bg-accent-error/10 border border-accent-error/20 rounded-lg text-accent-error mb-6">
           {error}
         </div>
       )}
 
-      {/* Current Subscription Summary */}
-      {subscription && (
-        <div className="bg-neutral-800/50 rounded-xl border border-neutral-700 p-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-semibold text-white">
-                Current Plan: {subscription.plan.name}
-              </h2>
-              <p className="text-neutral-400 text-sm mt-1">
+      {/* Current Plan */}
+      {subscription?.plan ? (
+        <div className="bg-surface border border-border-default rounded-xl p-6 mb-8">
+          <div className="flex items-start justify-between">
+            <div className="flex-1">
+              <div className="flex items-center gap-3 mb-2">
+                <h2 className="text-xl font-semibold text-text-primary">
+                  {subscription.plan.name || 'Unknown Plan'}
+                </h2>
+                <span className="px-3 py-1 bg-accent-success/20 text-accent-success text-xs font-medium rounded-full">
+                  Current Plan
+                </span>
+              </div>
+              {subscription.plan.description && (
+                <p className="text-sm text-text-muted mb-4">{subscription.plan.description}</p>
+              )}
+              <p className="text-sm text-text-secondary mb-4">
                 {subscription.billing_cycle === 'yearly' ? 'Annual' : 'Monthly'} billing
                 {subscription.cancel_at_period_end && (
                   <span className="ml-2 text-amber-400">(Canceling at period end)</span>
                 )}
               </p>
+
+              {/* Plan Features Grid */}
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mt-4">
+                <div>
+                  <div className="text-xl font-semibold text-text-primary">
+                    {formatNumber(subscription.plan.tokens_included || 0)}
+                  </div>
+                  <div className="text-xs text-text-muted">Tokens/month</div>
+                </div>
+                <div>
+                  <div className="text-xl font-semibold text-text-primary">
+                    ${((subscription.plan.compute_credits_included || 0) / 100).toFixed(0)}
+                  </div>
+                  <div className="text-xs text-text-muted">Compute Credits</div>
+                </div>
+                <div>
+                  <div className="text-xl font-semibold text-text-primary">
+                    {subscription.plan.storage_gb_included || 0}GB
+                  </div>
+                  <div className="text-xs text-text-muted">Storage</div>
+                </div>
+                <div>
+                  <div className="text-xl font-semibold text-text-primary">
+                    {subscription.plan.max_sessions || 0}
+                  </div>
+                  <div className="text-xs text-text-muted">Sessions</div>
+                </div>
+                <div>
+                  <div className="text-xl font-semibold text-text-primary">
+                    {subscription.plan.max_agents || 0}
+                  </div>
+                  <div className="text-xs text-text-muted">Agents</div>
+                </div>
+                <div>
+                  <div className="text-xl font-semibold text-text-primary">
+                    {(subscription.plan.max_team_members || 0) > 0
+                      ? subscription.plan.max_team_members
+                      : '-'}
+                  </div>
+                  <div className="text-xs text-text-muted">Live Collaborators</div>
+                </div>
+              </div>
             </div>
-            <div className="text-right">
-              <p className="text-2xl font-bold text-white">
-                {formatCurrency(
-                  subscription.billing_cycle === 'yearly'
-                    ? subscription.plan.price_yearly
-                    : subscription.plan.price_monthly
-                )}
-                <span className="text-sm text-neutral-400 font-normal">
-                  /{subscription.billing_cycle === 'yearly' ? 'year' : 'month'}
-                </span>
-              </p>
-              <p className="text-sm text-neutral-400">
-                Renews {new Date(subscription.current_period_end).toLocaleDateString()}
-              </p>
+
+            <div className="text-right ml-6">
+              <div className="text-3xl font-bold text-text-primary">
+                {subscription.plan.is_enterprise
+                  ? 'Custom'
+                  : formatCurrency(
+                      subscription.billing_cycle === 'yearly'
+                        ? (subscription.plan.price_yearly || 0) / 100
+                        : (subscription.plan.price_monthly || 0) / 100
+                    )}
+              </div>
+              <div className="text-sm text-text-muted mb-2">
+                per {subscription.billing_cycle === 'yearly' ? 'year' : 'month'}
+              </div>
+              <div className="text-xs text-text-secondary">
+                Renews {formatDate(subscription.current_period_end)}
+              </div>
             </div>
           </div>
 
-          {!subscription.cancel_at_period_end && subscription.plan.slug !== 'free' && (
-            <button
-              onClick={() => setShowCancelModal(true)}
-              className="mt-4 text-sm text-red-400 hover:text-red-300 transition-colors"
-            >
-              Cancel subscription
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Usage Overview */}
-      {usage && (
-        <div className="bg-neutral-800/50 rounded-xl border border-neutral-700 p-6 space-y-6">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-white">Usage This Period</h2>
+          <div className="mt-6 pt-6 border-t border-border-subtle flex items-center gap-3">
             <Link
-              href="/settings/billing/usage"
-              className="text-sm text-blue-400 hover:text-blue-300"
+              href="/settings/plans"
+              className="px-4 py-2 bg-accent-primary hover:bg-accent-primary/90 text-white rounded-lg transition-colors font-medium"
             >
-              View details
+              Change Plan
             </Link>
+            {!subscription.cancel_at_period_end && subscription.plan.slug !== 'free' && (
+              <button
+                onClick={() => setShowCancelModal(true)}
+                className="px-4 py-2 text-sm text-accent-error hover:text-accent-error/80 transition-colors font-medium"
+              >
+                Cancel subscription
+              </button>
+            )}
           </div>
-
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="p-4 bg-neutral-700/30 rounded-lg">
-              <p className="text-sm text-neutral-400">Tokens Used</p>
-              <p className="text-xl font-semibold text-white mt-1">
-                {formatNumber(usage.tokens_total)}
-              </p>
-              <p className="text-xs text-neutral-500">{formatCurrency(usage.tokens_cost)}</p>
-            </div>
-            <div className="p-4 bg-neutral-700/30 rounded-lg">
-              <p className="text-sm text-neutral-400">Compute Hours</p>
-              <p className="text-xl font-semibold text-white mt-1">
-                {usage.compute_hours.toFixed(1)}h
-              </p>
-              <p className="text-xs text-neutral-500">{formatCurrency(usage.compute_cost)}</p>
-            </div>
-            <div className="p-4 bg-neutral-700/30 rounded-lg">
-              <p className="text-sm text-neutral-400">Storage</p>
-              <p className="text-xl font-semibold text-white mt-1">
-                {usage.storage_gb.toFixed(1)} GB
-              </p>
-              <p className="text-xs text-neutral-500">{formatCurrency(usage.storage_cost)}</p>
-            </div>
-            <div className="p-4 bg-neutral-700/30 rounded-lg">
-              <p className="text-sm text-neutral-400">Total Cost</p>
-              <p className="text-xl font-semibold text-white mt-1">
-                {formatCurrency(usage.total_cost)}
-              </p>
-              <p className="text-xs text-neutral-500">This period</p>
-            </div>
-          </div>
-
-          {/* Quota Progress Bars */}
-          {quotas.length > 0 && (
-            <div className="space-y-4 pt-4 border-t border-neutral-700">
-              {quotas.map((quota) => (
-                <QuotaProgressBar
-                  key={quota.id}
-                  label={quota.quota_type
-                    .replace(/_/g, ' ')
-                    .replace(/\b\w/g, (l) => l.toUpperCase())}
-                  current={quota.current_usage}
-                  max={quota.limit_value}
-                  unit=""
-                  isWarning={quota.is_warning}
-                  isExceeded={quota.is_exceeded}
-                />
-              ))}
-            </div>
-          )}
+        </div>
+      ) : (
+        <div className="bg-surface border border-border-default rounded-xl p-6 mb-8">
+          <p className="text-sm text-text-muted mb-4">
+            No active subscription. Choose a plan to get started.
+          </p>
+          <Link
+            href="/settings/plans"
+            className="px-4 py-2 bg-accent-primary hover:bg-accent-primary/90 text-white rounded-lg transition-colors font-medium inline-flex items-center"
+          >
+            View Plans
+          </Link>
         </div>
       )}
 
-      {/* Credit Balance */}
-      {credits && (
-        <div className="bg-neutral-800/50 rounded-xl border border-neutral-700 p-6">
+      {/* Credit Balance - Only show if overage is allowed */}
+      {credits && subscription?.plan?.overage_allowed && (
+        <div className="bg-surface border border-border-default rounded-xl p-6 mb-8">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-white">Credit Balance</h2>
-              <p className="text-2xl font-bold text-emerald-400 mt-1">
-                {formatCurrency(credits.balance)}
+              <h2 className="text-lg font-semibold text-text-primary">Credit Balance</h2>
+              <p className="text-3xl font-bold text-accent-success mt-1">
+                {formatCurrency(credits.balance / 100)}
+              </p>
+              {credits.expiring_soon > 0 && (
+                <p className="text-sm text-amber-400 mt-2">
+                  {formatCurrency(credits.expiring_soon / 100)} expiring in 30 days
+                </p>
+              )}
+              <p className="text-xs text-text-muted mt-2">
+                Used for pay-as-you-go when you exceed plan limits
               </p>
             </div>
             <Link
               href="/settings/billing/credits"
-              className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors"
+              className="px-4 py-2 bg-accent-primary hover:bg-accent-primary/90 text-white rounded-lg transition-colors font-medium"
             >
               Add Credits
             </Link>
           </div>
-          {credits.expiring_soon > 0 && (
-            <p className="text-sm text-amber-400 mt-2">
-              {formatCurrency(credits.expiring_soon)} expiring in the next 30 days
-            </p>
-          )}
         </div>
       )}
 
-      {/* Plans */}
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">Available Plans</h2>
-          <div className="flex items-center gap-2 p-1 bg-neutral-700 rounded-lg">
-            <button
-              onClick={() => setBillingCycle('monthly')}
-              className={`px-3 py-1 rounded-md text-sm transition-colors ${
-                billingCycle === 'monthly'
-                  ? 'bg-neutral-600 text-white'
-                  : 'text-neutral-400 hover:text-white'
-              }`}
-            >
-              Monthly
-            </button>
-            <button
-              onClick={() => setBillingCycle('yearly')}
-              className={`px-3 py-1 rounded-md text-sm transition-colors ${
-                billingCycle === 'yearly'
-                  ? 'bg-neutral-600 text-white'
-                  : 'text-neutral-400 hover:text-white'
-              }`}
-            >
-              Yearly
-              <span className="ml-1 text-emerald-400">Save up to 17%</span>
-            </button>
+      {/* Payment Methods */}
+      <div className="bg-surface border border-border-default rounded-xl p-6 mb-8">
+        <div className="flex items-center gap-3 mb-4">
+          <CreditCard className="w-5 h-5 text-text-muted" />
+          <h2 className="text-lg font-semibold text-text-primary">Payment Methods</h2>
+        </div>
+        <p className="text-sm text-text-muted mb-4">
+          Manage your payment methods and billing details.
+        </p>
+        <button className="px-4 py-2 bg-elevated hover:bg-overlay text-text-primary rounded-lg transition-colors font-medium">
+          Add Payment Method
+        </button>
+      </div>
+
+      {/* Past Invoices */}
+      <div className="bg-surface border border-border-default rounded-xl p-6">
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center gap-3">
+            <Download className="w-5 h-5 text-text-muted" />
+            <h2 className="text-lg font-semibold text-text-primary">Past Invoices</h2>
           </div>
+          {invoices.length > 5 && (
+            <Link
+              href="/settings/billing/invoices"
+              className="text-sm text-accent-primary hover:text-accent-primary/80"
+            >
+              View all
+            </Link>
+          )}
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {plans.map((plan) => (
-            <PlanCard
-              key={plan.id}
-              plan={plan}
-              currentPlanSlug={subscription?.plan.slug}
-              billingCycle={billingCycle}
-              onSelect={handleSelectPlan}
-              isLoading={actionLoading}
-            />
-          ))}
-        </div>
+        {invoices.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="text-left text-sm text-text-muted border-b border-border-subtle">
+                  <th className="py-3 px-4 font-medium">Invoice</th>
+                  <th className="py-3 px-4 font-medium">Date</th>
+                  <th className="py-3 px-4 font-medium">Amount</th>
+                  <th className="py-3 px-4 font-medium">Status</th>
+                  <th className="py-3 px-4 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border-subtle">
+                {invoices.slice(0, 5).map((invoice) => (
+                  <tr key={invoice.id} className="text-sm hover:bg-overlay">
+                    <td className="py-3 px-4">
+                      <span className="text-text-primary font-mono text-xs">
+                        {invoice.invoice_number}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 text-text-secondary">
+                      {formatDate(invoice.created_at)}
+                    </td>
+                    <td className="py-3 px-4 text-text-primary font-medium">
+                      {formatCurrency(invoice.total / 100)}
+                    </td>
+                    <td className="py-3 px-4">
+                      <span
+                        className={`px-2 py-1 rounded text-xs font-medium ${
+                          statusColors[invoice.status] || 'bg-text-muted/20 text-text-muted'
+                        }`}
+                      >
+                        {invoice.status.charAt(0).toUpperCase() + invoice.status.slice(1)}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4">
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={() => handleViewInvoice(invoice.id)}
+                          className="text-accent-primary hover:text-accent-primary/80 text-xs font-medium"
+                        >
+                          View
+                        </button>
+                        {invoice.pdf_url && (
+                          <a
+                            href={invoice.pdf_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-text-secondary hover:text-text-primary text-xs"
+                          >
+                            PDF
+                          </a>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-center text-text-muted py-8">No invoices yet</p>
+        )}
       </div>
 
       {/* Quick Links */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-8">
         <Link
-          href="/settings/billing/usage"
-          className="p-4 bg-neutral-800/50 rounded-xl border border-neutral-700 hover:border-neutral-600 transition-colors"
+          href="/settings/plans"
+          className="p-4 bg-surface border border-border-default rounded-xl hover:border-border-hover transition-colors"
         >
-          <h3 className="font-medium text-white">Usage History</h3>
-          <p className="text-sm text-neutral-400 mt-1">View detailed usage breakdown</p>
+          <h3 className="font-medium text-text-primary">Plans</h3>
+          <p className="text-sm text-text-muted mt-1">View and change your subscription plan</p>
         </Link>
         <Link
-          href="/settings/billing/invoices"
-          className="p-4 bg-neutral-800/50 rounded-xl border border-neutral-700 hover:border-neutral-600 transition-colors"
+          href="/settings/usage"
+          className="p-4 bg-surface border border-border-default rounded-xl hover:border-border-hover transition-colors"
         >
-          <h3 className="font-medium text-white">Invoices</h3>
-          <p className="text-sm text-neutral-400 mt-1">Download past invoices</p>
-        </Link>
-        <Link
-          href="/settings/billing/credits"
-          className="p-4 bg-neutral-800/50 rounded-xl border border-neutral-700 hover:border-neutral-600 transition-colors"
-        >
-          <h3 className="font-medium text-white">Credits</h3>
-          <p className="text-sm text-neutral-400 mt-1">Purchase and manage credits</p>
+          <h3 className="font-medium text-text-primary">Usage</h3>
+          <p className="text-sm text-text-muted mt-1">Track your resource consumption</p>
         </Link>
       </div>
+
+      {/* Invoice Detail Modal */}
+      {selectedInvoice && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-surface rounded-xl border border-border-default max-w-2xl w-full max-h-[80vh] overflow-auto">
+            <div className="p-6 border-b border-border-subtle flex items-center justify-between sticky top-0 bg-surface">
+              <div>
+                <h2 className="text-lg font-semibold text-text-primary">
+                  Invoice {selectedInvoice.invoice_number}
+                </h2>
+                <p className="text-sm text-text-muted mt-1">
+                  {formatDate(selectedInvoice.created_at)}
+                </p>
+              </div>
+              <button
+                onClick={() => setSelectedInvoice(null)}
+                className="text-text-muted hover:text-text-primary"
+              >
+                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </div>
+
+            <div className="p-6 space-y-6">
+              {/* Status */}
+              <div className="flex items-center justify-between">
+                <span className="text-text-muted">Status</span>
+                <span
+                  className={`px-3 py-1 rounded-full text-sm font-medium ${
+                    statusColors[selectedInvoice.status] || 'bg-text-muted/20 text-text-muted'
+                  }`}
+                >
+                  {selectedInvoice.status.charAt(0).toUpperCase() + selectedInvoice.status.slice(1)}
+                </span>
+              </div>
+
+              {/* Period */}
+              <div className="flex items-center justify-between">
+                <span className="text-text-muted">Billing Period</span>
+                <span className="text-text-primary">
+                  {formatDate(selectedInvoice.period_start)} -{' '}
+                  {formatDate(selectedInvoice.period_end)}
+                </span>
+              </div>
+
+              {/* Line Items */}
+              <div>
+                <h3 className="text-sm font-medium text-text-muted mb-3">Line Items</h3>
+                <div className="bg-elevated rounded-lg overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-text-muted border-b border-border-subtle">
+                        <th className="p-3 font-medium">Description</th>
+                        <th className="p-3 font-medium text-right">Qty</th>
+                        <th className="p-3 font-medium text-right">Unit Price</th>
+                        <th className="p-3 font-medium text-right">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border-subtle">
+                      {selectedInvoice.line_items.map((item, idx) => (
+                        <tr key={idx}>
+                          <td className="p-3 text-text-primary">{item.description}</td>
+                          <td className="p-3 text-text-secondary text-right">{item.quantity}</td>
+                          <td className="p-3 text-text-secondary text-right">
+                            {formatCurrency(item.unit_price / 100)}
+                          </td>
+                          <td className="p-3 text-text-primary text-right">
+                            {formatCurrency(item.total / 100)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Totals */}
+              <div className="space-y-2 pt-4 border-t border-border-subtle">
+                <div className="flex justify-between text-sm">
+                  <span className="text-text-muted">Subtotal</span>
+                  <span className="text-text-primary">
+                    {formatCurrency(selectedInvoice.subtotal / 100)}
+                  </span>
+                </div>
+                {selectedInvoice.discount > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-text-muted">Discount</span>
+                    <span className="text-accent-success">
+                      -{formatCurrency(selectedInvoice.discount / 100)}
+                    </span>
+                  </div>
+                )}
+                {selectedInvoice.tax > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-text-muted">Tax</span>
+                    <span className="text-text-primary">
+                      {formatCurrency(selectedInvoice.tax / 100)}
+                    </span>
+                  </div>
+                )}
+                <div className="flex justify-between text-lg font-semibold pt-2">
+                  <span className="text-text-primary">Total</span>
+                  <span className="text-text-primary">
+                    {formatCurrency(selectedInvoice.total / 100)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Payment Info */}
+              {selectedInvoice.paid_at && (
+                <div className="text-sm text-text-muted">
+                  Paid on {formatDate(selectedInvoice.paid_at)}
+                  {selectedInvoice.payment_method && ` via ${selectedInvoice.payment_method}`}
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="flex gap-3 pt-4">
+                {selectedInvoice.pdf_url && (
+                  <a
+                    href={selectedInvoice.pdf_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 py-2 px-4 bg-accent-primary hover:bg-accent-primary/90 text-white text-center rounded-lg transition-colors font-medium"
+                  >
+                    Download PDF
+                  </a>
+                )}
+                <button
+                  onClick={() => setSelectedInvoice(null)}
+                  className="flex-1 py-2 px-4 bg-elevated hover:bg-overlay text-text-primary rounded-lg transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Cancel Modal */}
       {showCancelModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-neutral-800 rounded-xl border border-neutral-700 p-6 max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold text-white">Cancel Subscription</h3>
-            <p className="text-neutral-400 mt-2">
+          <div className="bg-surface rounded-xl border border-border-default p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold text-text-primary">Cancel Subscription</h3>
+            <p className="text-text-muted mt-2">
               Are you sure you want to cancel your subscription? You'll retain access until the end
               of your current billing period.
             </p>
             <div className="flex gap-3 mt-6">
               <button
                 onClick={() => setShowCancelModal(false)}
-                className="flex-1 py-2 px-4 bg-neutral-700 hover:bg-neutral-600 text-white rounded-lg transition-colors"
+                className="flex-1 py-2 px-4 bg-elevated hover:bg-overlay text-text-primary rounded-lg transition-colors"
               >
                 Keep Subscription
               </button>
               <button
                 onClick={handleCancelSubscription}
                 disabled={actionLoading}
-                className="flex-1 py-2 px-4 bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors disabled:opacity-50"
+                className="flex-1 py-2 px-4 bg-accent-error hover:bg-accent-error/90 text-white rounded-lg transition-colors disabled:opacity-50"
               >
                 {actionLoading ? 'Canceling...' : 'Cancel'}
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Loading overlay for invoice detail */}
+      {detailLoading && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-accent-primary" />
         </div>
       )}
     </div>

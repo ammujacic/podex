@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.database.connection import get_db
-from src.database.models import User
+from src.database.models import SubscriptionPlan, User, UserSubscription
 from src.middleware.rate_limit import (
     RATE_LIMIT_OAUTH,
     limiter,
@@ -262,6 +262,8 @@ async def _link_or_create_user(db: AsyncSession, user_info: OAuthUserInfo) -> Us
     result = await db.execute(select(User).where(User.email == user_info.email))
     existing_user = result.scalar_one_or_none()
 
+    is_new_user = existing_user is None
+
     if existing_user:
         existing_user.oauth_provider = user_info.provider
         existing_user.oauth_id = user_info.oauth_id
@@ -290,6 +292,29 @@ async def _link_or_create_user(db: AsyncSession, user_info: OAuthUserInfo) -> Us
         if not found_user:
             raise HTTPException(status_code=500, detail="Failed to create user") from None
         user = found_user
+        is_new_user = False
+
+    # Auto-assign Free plan subscription for new users
+    if is_new_user:
+        free_plan_result = await db.execute(
+            select(SubscriptionPlan).where(SubscriptionPlan.slug == "free")
+        )
+        free_plan = free_plan_result.scalar_one_or_none()
+
+        if free_plan:
+            from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+
+            now = datetime.now(UTC)
+            subscription = UserSubscription(
+                user_id=user.id,
+                plan_id=free_plan.id,
+                status="active",
+                billing_cycle="monthly",
+                current_period_start=now,
+                current_period_end=now + timedelta(days=30),
+            )
+            db.add(subscription)
+            await db.commit()
 
     return user
 

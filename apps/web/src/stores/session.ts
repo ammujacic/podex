@@ -437,7 +437,7 @@ export const useSessionStore = create<SessionState>()(
                     language: getLanguageFromPath(pathOrPreview),
                     pinned: false,
                     position: { x: 100, y: 100 },
-                    docked: true,
+                    docked: session.viewMode !== 'freeform',
                   }
                 : pathOrPreview;
 

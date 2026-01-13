@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { getUserConfig, updateUserConfig } from '@/lib/api/user-config';
 
 // ============================================================================
 // Types
@@ -42,6 +43,8 @@ interface AgentSettingsState {
   maxConcurrentAgents: number;
   autoApproveChanges: boolean;
   showTokenUsage: boolean;
+  isLoading: boolean;
+  lastSyncedAt: number | null;
 
   addApiKey: (key: Omit<APIKey, 'id'>) => void;
   removeApiKey: (id: string) => void;
@@ -51,6 +54,8 @@ interface AgentSettingsState {
   setMaxConcurrentAgents: (value: number) => void;
   setAutoApproveChanges: (value: boolean) => void;
   setShowTokenUsage: (value: boolean) => void;
+  loadFromServer: () => Promise<void>;
+  syncToServer: () => Promise<void>;
 }
 
 const defaultAgentConfigs: AgentConfig[] = [
@@ -84,9 +89,12 @@ const defaultAgentConfigs: AgentConfig[] = [
   },
 ];
 
+// Debounce helper
+let agentSyncTimeout: NodeJS.Timeout | null = null;
+
 export const useAgentSettingsStore = create<AgentSettingsState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       apiKeys: [],
       agentConfigs: defaultAgentConfigs,
       preferredProvider: 'anthropic',
@@ -94,6 +102,8 @@ export const useAgentSettingsStore = create<AgentSettingsState>()(
       maxConcurrentAgents: 3,
       autoApproveChanges: false,
       showTokenUsage: true,
+      isLoading: false,
+      lastSyncedAt: null,
 
       addApiKey: (key) =>
         set((state) => ({
@@ -105,19 +115,131 @@ export const useAgentSettingsStore = create<AgentSettingsState>()(
           apiKeys: state.apiKeys.filter((k) => k.id !== id),
         })),
 
-      updateAgentConfig: (id, config) =>
+      updateAgentConfig: (id, config) => {
         set((state) => ({
           agentConfigs: state.agentConfigs.map((c) => (c.id === id ? { ...c, ...config } : c)),
-        })),
+        }));
 
-      setPreferredProvider: (provider) => set({ preferredProvider: provider }),
-      setUseLocalFirst: (value) => set({ useLocalFirst: value }),
-      setMaxConcurrentAgents: (value) => set({ maxConcurrentAgents: value }),
-      setAutoApproveChanges: (value) => set({ autoApproveChanges: value }),
-      setShowTokenUsage: (value) => set({ showTokenUsage: value }),
+        // Sync to server
+        if (agentSyncTimeout) clearTimeout(agentSyncTimeout);
+        agentSyncTimeout = setTimeout(() => {
+          get().syncToServer().catch(console.error);
+        }, 500);
+      },
+
+      setPreferredProvider: (provider) => {
+        set({ preferredProvider: provider });
+        if (agentSyncTimeout) clearTimeout(agentSyncTimeout);
+        agentSyncTimeout = setTimeout(() => {
+          get().syncToServer().catch(console.error);
+        }, 500);
+      },
+
+      setUseLocalFirst: (value) => {
+        set({ useLocalFirst: value });
+        if (agentSyncTimeout) clearTimeout(agentSyncTimeout);
+        agentSyncTimeout = setTimeout(() => {
+          get().syncToServer().catch(console.error);
+        }, 500);
+      },
+
+      setMaxConcurrentAgents: (value) => {
+        set({ maxConcurrentAgents: value });
+        if (agentSyncTimeout) clearTimeout(agentSyncTimeout);
+        agentSyncTimeout = setTimeout(() => {
+          get().syncToServer().catch(console.error);
+        }, 500);
+      },
+
+      setAutoApproveChanges: (value) => {
+        set({ autoApproveChanges: value });
+        if (agentSyncTimeout) clearTimeout(agentSyncTimeout);
+        agentSyncTimeout = setTimeout(() => {
+          get().syncToServer().catch(console.error);
+        }, 500);
+      },
+
+      setShowTokenUsage: (value) => {
+        set({ showTokenUsage: value });
+        if (agentSyncTimeout) clearTimeout(agentSyncTimeout);
+        agentSyncTimeout = setTimeout(() => {
+          get().syncToServer().catch(console.error);
+        }, 500);
+      },
+
+      loadFromServer: async () => {
+        set({ isLoading: true });
+        try {
+          const config = await getUserConfig();
+
+          // If null (not authenticated), silently use localStorage defaults
+          if (!config) {
+            set({ isLoading: false });
+            return;
+          }
+
+          const serverPrefs = config.agent_preferences || {};
+
+          // Merge server preferences (excluding API keys for security)
+          set({
+            agentConfigs: serverPrefs.agentConfigs || defaultAgentConfigs,
+            preferredProvider: serverPrefs.preferredProvider || 'anthropic',
+            useLocalFirst: serverPrefs.useLocalFirst ?? false,
+            maxConcurrentAgents: serverPrefs.maxConcurrentAgents ?? 3,
+            autoApproveChanges: serverPrefs.autoApproveChanges ?? false,
+            showTokenUsage: serverPrefs.showTokenUsage ?? true,
+            lastSyncedAt: Date.now(),
+            isLoading: false,
+          });
+        } catch (error) {
+          console.error('Failed to load agent settings from server:', error);
+          set({ isLoading: false });
+        }
+      },
+
+      syncToServer: async () => {
+        const state = get();
+
+        // Only sync preferences, NOT API keys (security)
+        const prefsToSync = {
+          agentConfigs: state.agentConfigs,
+          preferredProvider: state.preferredProvider,
+          useLocalFirst: state.useLocalFirst,
+          maxConcurrentAgents: state.maxConcurrentAgents,
+          autoApproveChanges: state.autoApproveChanges,
+          showTokenUsage: state.showTokenUsage,
+        };
+
+        try {
+          const result = await updateUserConfig({ agent_preferences: prefsToSync });
+          // If null, user is not authenticated - silently skip
+          if (result !== null) {
+            set({ lastSyncedAt: Date.now() });
+          }
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } catch (error: any) {
+          // Silently ignore auth errors (401/403) and network errors (503)
+          if (error?.status === 401 || error?.status === 403 || error?.status === 503) {
+            console.warn('Skipping agent settings sync - user not authenticated or network error');
+            return;
+          }
+          console.error('Failed to sync agent settings to server:', error);
+        }
+      },
     }),
     {
       name: 'podex-agent-settings',
+      partialize: (state) => ({
+        // API keys stay in localStorage only (not synced to server for security)
+        apiKeys: state.apiKeys,
+        // Other settings are synced to server but also cached locally
+        agentConfigs: state.agentConfigs,
+        preferredProvider: state.preferredProvider,
+        useLocalFirst: state.useLocalFirst,
+        maxConcurrentAgents: state.maxConcurrentAgents,
+        autoApproveChanges: state.autoApproveChanges,
+        showTokenUsage: state.showTokenUsage,
+      }),
     }
   )
 );

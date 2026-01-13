@@ -604,6 +604,23 @@ class UserConfig(Base):
         Integer, default=60, nullable=True
     )
 
+    # User preferences - synced across devices
+    custom_keybindings: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, default=dict
+    )  # Custom keybinding overrides
+    editor_settings: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, default=dict
+    )  # Editor preferences (font, tabs, etc.)
+    ui_preferences: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, default=dict
+    )  # UI layout, sidebar, theme, etc.
+    voice_preferences: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, default=dict
+    )  # Voice/TTS/STT settings
+    agent_preferences: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, default=dict
+    )  # Agent configs and settings (no API keys)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
