@@ -92,7 +92,7 @@ class DockerComputeManager(ComputeManager):
                     if not workspace_id or not user_id or not session_id:
                         logger.warning(
                             "Container missing required labels",
-                            container_id=container.id[:12],
+                            container_id=container.id[:12] if container.id else "unknown",
                         )
                         continue
 
@@ -137,7 +137,7 @@ class DockerComputeManager(ComputeManager):
                     logger.info(
                         "Rediscovered existing workspace",
                         workspace_id=workspace_id,
-                        container_id=container.id[:12],
+                        container_id=container.id[:12] if container.id else "unknown",
                         tier=tier.value,
                     )
                 except Exception as e:
