@@ -49,7 +49,7 @@ class RedisClient:
         if self._client is not None:
             return
 
-        self._client = redis.from_url(
+        self._client = redis.from_url(  # type: ignore[no-untyped-call]
             self._url,
             decode_responses=self._decode_responses,
         )

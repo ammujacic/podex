@@ -55,6 +55,7 @@
     "zustand": "^5.0.3"
   },
   "devDependencies": {
+    "@eslint/js": "^9.18.0",
     "@next/eslint-plugin-next": "^15.1.4",
     "@playwright/test": "^1.57.0",
     "@podex/shared": "workspace:*",
