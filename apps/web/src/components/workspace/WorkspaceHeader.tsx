@@ -26,8 +26,6 @@ import { cn } from '@/lib/utils';
 import { GitPanel } from './GitPanel';
 import { PresencePanel, usePresenceStore } from './PresencePanel';
 import { Logo } from '@/components/ui/Logo';
-import { MiniCostCounter } from './SessionCostCounter';
-import { AlertBell } from './BudgetAlertDialog';
 
 interface WorkspaceHeaderProps {
   sessionId: string;
@@ -344,15 +342,6 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
             ⌘K
           </kbd>
         </button>
-
-        {/* Session cost counter */}
-        <div className="flex items-center gap-1 px-2 py-1 rounded-md bg-elevated border border-border-default">
-          <span className="text-xs text-text-muted">Cost:</span>
-          <MiniCostCounter sessionId={sessionId} className="text-text-primary" />
-        </div>
-
-        {/* Budget alerts */}
-        <AlertBell />
 
         {/* Notifications */}
         <button

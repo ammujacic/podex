@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import {
   BarChart3,
   DollarSign,
@@ -14,6 +14,12 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { useUIStore } from '@/stores/ui';
+import {
+  useCostStore,
+  formatCost as formatCostUtil,
+  formatTokens as formatTokensUtil,
+} from '@/stores/cost';
+import { useSessionStore } from '@/stores/session';
 
 interface UsageSidebarPanelProps {
   sessionId: string;
@@ -28,86 +34,59 @@ interface AgentUsageCompact {
   calls: number;
 }
 
-interface SessionUsageCompact {
-  totalTokens: number;
-  totalCost: number;
-  totalCalls: number;
-  agents: AgentUsageCompact[];
-}
-
 function formatTokens(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
-  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
-  return tokens.toString();
+  return formatTokensUtil(tokens);
 }
 
 function formatCost(cost: number): string {
-  if (cost >= 1) return `$${cost.toFixed(2)}`;
-  if (cost >= 0.01) return `$${cost.toFixed(3)}`;
-  return `$${cost.toFixed(4)}`;
+  return formatCostUtil(cost);
 }
 
 export function UsageSidebarPanel({ sessionId }: UsageSidebarPanelProps) {
-  const [loading, setLoading] = useState(true);
-  const [usage, setUsage] = useState<SessionUsageCompact | null>(null);
   const [expandedAgents, setExpandedAgents] = useState(false);
   const { openModal } = useUIStore();
 
-  useEffect(() => {
-    async function loadUsage() {
-      setLoading(true);
-      try {
-        // In real implementation, fetch from API
-        await new Promise((resolve) => setTimeout(resolve, 300));
+  // Get cost data from the store
+  const sessionCosts = useCostStore((state) => state.sessionCosts);
+  const loading = useCostStore((state) => state.loading);
 
-        const mockUsage: SessionUsageCompact = {
-          totalTokens: 125000,
-          totalCost: 2.45,
-          totalCalls: 47,
-          agents: [
-            {
-              agentId: '1',
-              agentName: 'Architect',
-              model: 'opus-4.5',
-              tokens: 50000,
-              cost: 1.65,
-              calls: 12,
-            },
-            {
-              agentId: '2',
-              agentName: 'Coder',
-              model: 'sonnet-4',
-              tokens: 65000,
-              cost: 0.65,
-              calls: 28,
-            },
-            {
-              agentId: '3',
-              agentName: 'Reviewer',
-              model: 'sonnet-4',
-              tokens: 10000,
-              cost: 0.15,
-              calls: 7,
-            },
-          ],
+  // Get agents from the current session to map agent IDs to names
+  const session = useSessionStore((state) => state.sessions[sessionId]);
+  const agents = session?.agents || [];
+
+  // Derive usage data from cost store
+  const usage = useMemo(() => {
+    const costData = sessionCosts[sessionId];
+    if (!costData) return null;
+
+    // Build agent breakdown
+    const agentUsage: AgentUsageCompact[] = Object.entries(costData.byAgent || {}).map(
+      ([agentId, data]) => {
+        const agent = agents.find((a: { id: string }) => a.id === agentId);
+        return {
+          agentId,
+          agentName: agent?.name || `Agent ${agentId.slice(0, 8)}`,
+          model: agent?.model || 'unknown',
+          tokens: data.tokens || 0,
+          cost: data.cost || 0,
+          calls: 0, // Not tracked per-agent yet
         };
-
-        setUsage(mockUsage);
-      } catch (error) {
-        console.error('Failed to load usage:', error);
-      } finally {
-        setLoading(false);
       }
-    }
+    );
 
-    loadUsage();
-  }, [sessionId]);
+    return {
+      totalTokens: costData.totalTokens,
+      totalCost: costData.totalCost,
+      totalCalls: costData.callCount,
+      agents: agentUsage,
+    };
+  }, [sessionCosts, sessionId, agents]);
 
-  const handleRefresh = () => {
-    setLoading(true);
-    // Trigger reload
-    setTimeout(() => setLoading(false), 300);
-  };
+  const handleRefresh = useCallback(() => {
+    // Cost updates come via WebSocket, so just trigger a visual refresh
+    useCostStore.getState().setLoading(true);
+    setTimeout(() => useCostStore.getState().setLoading(false), 300);
+  }, []);
 
   if (loading) {
     return (

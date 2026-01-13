@@ -2228,22 +2228,22 @@ export async function shareSession(
   sessionId: string,
   data: ShareSessionRequest
 ): Promise<SessionShareResponse> {
-  return api.post<SessionShareResponse>(`/api/sharing/${sessionId}/share`, data);
+  return api.post<SessionShareResponse>(`/api/sessions/${sessionId}/share`, data);
 }
 
 export async function createSessionShareLink(
   sessionId: string,
   data: ShareLinkRequest = {}
 ): Promise<ShareLinkResponse> {
-  return api.post<ShareLinkResponse>(`/api/sharing/${sessionId}/share-link`, data);
+  return api.post<ShareLinkResponse>(`/api/sessions/${sessionId}/share-link`, data);
 }
 
 export async function revokeSessionShareLink(sessionId: string): Promise<{ message: string }> {
-  return api.delete<{ message: string }>(`/api/sharing/${sessionId}/share-link`);
+  return api.delete<{ message: string }>(`/api/sessions/${sessionId}/share-link`);
 }
 
 export async function listSessionShares(sessionId: string): Promise<SessionSharesListResponse> {
-  return api.get<SessionSharesListResponse>(`/api/sharing/${sessionId}/shares`);
+  return api.get<SessionSharesListResponse>(`/api/sessions/${sessionId}/shares`);
 }
 
 export async function updateSessionShare(
@@ -2251,7 +2251,7 @@ export async function updateSessionShare(
   shareId: string,
   sharingMode: SharingMode
 ): Promise<SessionShareResponse> {
-  return api.put<SessionShareResponse>(`/api/sharing/${sessionId}/shares/${shareId}`, {
+  return api.put<SessionShareResponse>(`/api/sessions/${sessionId}/shares/${shareId}`, {
     sharing_mode: sharingMode,
   });
 }
@@ -2260,11 +2260,11 @@ export async function revokeSessionShare(
   sessionId: string,
   shareId: string
 ): Promise<{ message: string }> {
-  return api.delete<{ message: string }>(`/api/sharing/${sessionId}/shares/${shareId}`);
+  return api.delete<{ message: string }>(`/api/sessions/${sessionId}/shares/${shareId}`);
 }
 
 export async function joinSessionViaLink(shareCode: string): Promise<JoinSessionResponse> {
-  return api.get<JoinSessionResponse>(`/api/sharing/join/${shareCode}`);
+  return api.get<JoinSessionResponse>(`/api/sessions/join/${shareCode}`);
 }
 
 // ==================== Checkpoints ====================
