@@ -1,35 +1,42 @@
-"""Reviewer agent for code review."""
+"""Security agent for vulnerability scanning and security reviews."""
 
 from src.agents.base import BaseAgent, Tool
 
 
-class ReviewerAgent(BaseAgent):
-    """Reviewer agent specializing in code review."""
+class SecurityAgent(BaseAgent):
+    """Security agent specializing in security vulnerability detection."""
 
     def _get_system_prompt(self) -> str:
-        """Get reviewer system prompt."""
-        return """You are an expert code reviewer. Your role is to:
+        """Get security system prompt."""
+        return """You are a security expert agent. Your role is to:
 
-1. **Review Code Quality**: Check for clean code principles, readability, and maintainability.
+1. **Identify Vulnerabilities**: Scan code for security issues including:
+   - SQL injection, XSS, CSRF, and other injection attacks
+   - Authentication and authorization flaws
+   - Insecure cryptography and data storage
+   - API security issues
+   - Dependency vulnerabilities
 
-2. **Identify Bugs**: Find potential bugs, logic errors, and edge cases.
+2. **Access Control Review**: Verify proper authentication and authorization mechanisms.
 
-3. **Security Review**: Look for security vulnerabilities and unsafe practices.
+3. **Data Protection**: Ensure sensitive data is properly encrypted and handled.
 
-4. **Performance**: Identify performance issues and optimization opportunities.
+4. **Security Best Practices**: Recommend security improvements and hardening measures.
 
-5. **Best Practices**: Ensure code follows project conventions and industry standards.
+5. **Compliance**: Check adherence to security standards (OWASP Top 10, CWE, etc.).
 
-When reviewing code, provide:
-- Clear, constructive feedback
-- Specific suggestions for improvement
-- Examples when helpful
-- Priority (critical, important, suggestion)
+When reviewing code:
+- Categorize findings by severity (critical, important, suggestion)
+- Provide specific remediation steps with examples
+- Reference security standards (OWASP, CWE) when applicable
+- Explain the potential impact of each vulnerability
+- Be thorough but avoid false positives
 
-Be respectful and focus on the code, not the author. Explain the "why" behind your suggestions."""
+Use the add_comment tool to document security findings with appropriate severity levels.
+Focus on security-specific issues rather than general code quality."""
 
     def _get_tools(self) -> list[Tool]:
-        """Get reviewer tools."""
+        """Get security tools."""
         return [
             Tool(
                 name="read_file",
@@ -58,18 +65,6 @@ Be respectful and focus on the code, not the author. Explain the "why" behind yo
                 },
             ),
             Tool(
-                name="git_diff",
-                description="Get git diff for recent changes",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "base": {"type": "string", "description": "Base commit/branch"},
-                        "head": {"type": "string", "description": "Head commit/branch"},
-                    },
-                    "required": [],
-                },
-            ),
-            Tool(
                 name="list_directory",
                 description="List files in a directory",
                 parameters={
@@ -84,8 +79,20 @@ Be respectful and focus on the code, not the author. Explain the "why" behind yo
                 },
             ),
             Tool(
+                name="git_diff",
+                description="Get git diff for recent changes",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "base": {"type": "string", "description": "Base commit/branch"},
+                        "head": {"type": "string", "description": "Head commit/branch"},
+                    },
+                    "required": [],
+                },
+            ),
+            Tool(
                 name="add_comment",
-                description="Add a review comment to a file",
+                description="Add a security finding comment to a file",
                 parameters={
                     "type": "object",
                     "properties": {
@@ -94,7 +101,10 @@ Be respectful and focus on the code, not the author. Explain the "why" behind yo
                             "description": "Relative path (e.g., 'src/main.py')",
                         },
                         "line": {"type": "integer", "description": "Line number"},
-                        "comment": {"type": "string", "description": "Review comment"},
+                        "comment": {
+                            "type": "string",
+                            "description": "Security finding description",
+                        },
                         "severity": {
                             "type": "string",
                             "enum": ["critical", "important", "suggestion"],

@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 
 from src.agents.base import AgentConfig, BaseAgent, Tool
 from src.mcp.registry import MCPToolRegistry
-from src.tools.executor import ToolExecutor
 
 if TYPE_CHECKING:
     from src.providers.llm import LLMProvider
@@ -47,15 +46,9 @@ class AgentBuilderAgent(BaseAgent):
             workspace_path=config.workspace_path,
             session_id=config.session_id,
             mcp_registry=mcp_registry,
+            user_id=config.user_id,
         )
         super().__init__(agent_config)
-        # Re-create tool executor with user_id
-        if config.workspace_path:
-            self.tool_executor = ToolExecutor(
-                workspace_path=config.workspace_path,
-                session_id=config.session_id or config.agent_id,
-                user_id=config.user_id,
-            )
 
     def _get_system_prompt(self) -> str:
         """Get the Agent Builder system prompt."""

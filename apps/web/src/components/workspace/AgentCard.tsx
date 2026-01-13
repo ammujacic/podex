@@ -5,24 +5,31 @@ import {
   Bell,
   Bot,
   ChevronDown,
+  ChevronRight,
   Code2,
   Copy,
   Eye,
+  FileText,
   HelpCircle,
+  Lightbulb,
   Loader2,
+  MessageCircle,
   Mic,
   MoreVertical,
   Pencil,
   RefreshCw,
   Send,
+  Server,
   Settings2,
   Shield,
   ShieldOff,
+  StopCircle,
   TestTube2,
   Trash2,
   Volume2,
   VolumeX,
   Workflow,
+  X,
   Zap,
 } from 'lucide-react';
 import {
@@ -41,10 +48,13 @@ import {
 import { type Agent, type AgentMode, useSessionStore } from '@/stores/session';
 import { useAttentionStore } from '@/stores/attention';
 import { useApprovalsStore } from '@/stores/approvals';
-import { cn, formatTimestamp } from '@/lib/utils';
+import { useWorktreesStore } from '@/stores/worktrees';
+import { cn, formatTimestamp, cleanStreamingContent, getFriendlyErrorMessage } from '@/lib/utils';
 import {
   sendAgentMessage,
   deleteAgent as deleteAgentApi,
+  duplicateAgent as duplicateAgentApi,
+  deleteAgentMessage as deleteAgentMessageApi,
   synthesizeMessage,
   abortAgent,
   approvePlan,
@@ -59,7 +69,8 @@ import { PlanApprovalActions } from './PlanApprovalActions';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ContextUsageRing } from './ContextUsageRing';
 import { CompactionDialog } from './CompactionDialog';
-import { PlanResultDisplay } from './PlanResultDisplay';
+import { ToolResultDisplay } from './ToolResultDisplay';
+import { WorktreeStatus } from './WorktreeStatus';
 import { compactAgentContext } from '@/lib/api';
 
 export interface AgentCardProps {
@@ -75,6 +86,10 @@ const roleIcons = {
   tester: TestTube2,
   agent_builder: Settings2,
   orchestrator: Workflow,
+  chat: MessageCircle,
+  security: Shield,
+  devops: Server,
+  documentator: FileText,
   custom: Bot,
 };
 
@@ -100,7 +115,11 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   const [message, setMessage] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isDuplicating, setIsDuplicating] = useState(false);
   const [isAborting, setIsAborting] = useState(false);
+  const [showAbortedMessage, setShowAbortedMessage] = useState(false);
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
+  const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
   const [synthesizingMessageId, setSynthesizingMessageId] = useState<string | null>(null);
   const [voiceSettingsOpen, setVoiceSettingsOpen] = useState(false);
   const [modeSettingsOpen, setModeSettingsOpen] = useState(false);
@@ -111,7 +130,18 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const { removeAgent, updateAgent, addAgentMessage, streamingMessages } = useSessionStore();
+  const {
+    removeAgent,
+    updateAgent,
+    addAgent,
+    addAgentMessage,
+    deleteAgentMessage,
+    streamingMessages,
+  } = useSessionStore();
+  const { getAgentWorktree } = useWorktreesStore();
+
+  // Get worktree for this agent (if it exists)
+  const agentWorktree = getAgentWorktree(sessionId, agent.id);
 
   // Find active streaming message for this agent
   const streamingMessage = Object.values(streamingMessages).find(
@@ -141,6 +171,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       await abortAgent(sessionId, agent.id);
       setIsSending(false);
       updateAgent(sessionId, agent.id, { status: 'idle' });
+      setShowAbortedMessage(true);
     } catch (error) {
       console.error('Failed to abort agent:', error);
     } finally {
@@ -164,6 +195,15 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     card.addEventListener('keydown', handleKeyDown);
     return () => card.removeEventListener('keydown', handleKeyDown);
   }, [agent.status, isSending, handleAbort]);
+
+  // Clear aborted message after a short delay
+  useEffect(() => {
+    if (!showAbortedMessage) return;
+    const timer = setTimeout(() => {
+      setShowAbortedMessage(false);
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [showAbortedMessage]);
 
   // Attention state for this agent
   const { getAttentionsForAgent, getHighestPriorityAttention, openPanel } = useAttentionStore();
@@ -301,10 +341,54 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     }
   }, [agent.name, agent.id, sessionId, updateAgent]);
 
-  const handleDuplicate = useCallback(() => {
-    // For now, just show an alert - full implementation would create a new agent
-    alert(`Duplicating agent "${agent.name}" - feature coming soon!`);
-  }, [agent.name]);
+  const handleDuplicate = useCallback(async () => {
+    if (isDuplicating) return;
+
+    setIsDuplicating(true);
+    try {
+      const newAgentData = await duplicateAgentApi(sessionId, agent.id);
+      // Transform API response to store format and add to store
+      addAgent(sessionId, {
+        id: newAgentData.id,
+        name: newAgentData.name,
+        role: newAgentData.role as Agent['role'],
+        model: newAgentData.model,
+        status: 'idle',
+        color: agent.color, // Copy color from original
+        messages: [],
+        mode: (newAgentData.mode || 'ask') as AgentMode,
+      });
+    } catch (error) {
+      console.error('Failed to duplicate agent:', error);
+      alert('Failed to duplicate agent. Please try again.');
+    } finally {
+      setIsDuplicating(false);
+    }
+  }, [sessionId, agent.id, agent.color, isDuplicating, addAgent]);
+
+  const handleDeleteMessage = useCallback(
+    async (messageId: string) => {
+      if (deletingMessageId) return;
+
+      setDeletingMessageId(messageId);
+      try {
+        await deleteAgentMessageApi(sessionId, agent.id, messageId);
+        deleteAgentMessage(sessionId, agent.id, messageId);
+      } catch (error) {
+        console.error('Failed to delete message:', error);
+      } finally {
+        setDeletingMessageId(null);
+      }
+    },
+    [sessionId, agent.id, deletingMessageId, deleteAgentMessage]
+  );
+
+  const toggleThinking = useCallback((messageId: string) => {
+    setExpandedThinking((prev) => ({
+      ...prev,
+      [messageId]: !prev[messageId],
+    }));
+  }, []);
 
   const handleDelete = useCallback(async () => {
     if (!confirm(`Are you sure you want to delete "${agent.name}"?`)) return;
@@ -358,7 +442,10 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
           playAudioUrl(messageId, result.audio_url);
         }
       } catch (error) {
-        console.error('Failed to synthesize speech:', error);
+        // Provide user-friendly error context
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        const friendlyMessage = getFriendlyErrorMessage('Play Audio', errorMessage);
+        console.error(`[Play Audio] ${friendlyMessage}:`, error);
       } finally {
         setSynthesizingMessageId(null);
       }
@@ -508,6 +595,8 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                   {agentAttentions.length}
                 </button>
               )}
+              {/* Worktree status badge */}
+              <WorktreeStatus worktree={agentWorktree} />
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -574,9 +663,13 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
               <Shield className="mr-2 h-4 w-4" />
               Mode Settings
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={handleDuplicate}>
-              <Copy className="mr-2 h-4 w-4" />
-              Duplicate
+            <DropdownMenuItem onClick={handleDuplicate} disabled={isDuplicating}>
+              {isDuplicating ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Copy className="mr-2 h-4 w-4" />
+              )}
+              {isDuplicating ? 'Duplicating...' : 'Duplicate'}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={handleDelete} className="text-red-400 focus:text-red-400">
@@ -592,7 +685,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         ref={messagesContainerRef}
         className={cn(
           'flex-1 overflow-y-auto p-4 space-y-4 min-h-[200px] selection:bg-accent-primary/30 selection:text-text-primary',
-          expanded ? 'max-h-[500px]' : 'max-h-[300px]'
+          !expanded && 'max-h-[300px]'
         )}
       >
         {agent.messages.length === 0 ? (
@@ -601,61 +694,158 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
           </div>
         ) : (
           agent.messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={cn('flex gap-3', msg.role === 'user' && 'flex-row-reverse')}
-            >
-              <div
-                className={cn(
-                  'rounded-lg px-3 py-2 text-sm max-w-[85%]',
-                  msg.role === 'user'
-                    ? 'bg-accent-primary text-text-inverse'
-                    : 'bg-elevated text-text-primary'
-                )}
-              >
-                {msg.role === 'assistant' ? (
-                  <MarkdownRenderer content={msg.content} />
-                ) : (
-                  <p className="whitespace-pre-wrap">{msg.content}</p>
-                )}
-                <div className="mt-1 flex items-center justify-between gap-2">
-                  <span className="text-xs opacity-60">{formatTimestamp(msg.timestamp)}</span>
-                  {/* TTS playback buttons for assistant messages */}
-                  {msg.role === 'assistant' && (
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => handlePlayMessage(msg.id)}
-                        disabled={synthesizingMessageId === msg.id}
-                        className={cn(
-                          'rounded p-1 transition-colors hover:bg-overlay',
-                          playingMessageId === msg.id && 'text-accent-primary',
-                          synthesizingMessageId === msg.id && 'opacity-50'
-                        )}
-                        title={playingMessageId === msg.id ? 'Stop playback' : 'Play message'}
-                      >
-                        {synthesizingMessageId === msg.id ? (
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                        ) : playingMessageId === msg.id ? (
-                          <VolumeX className="h-3 w-3" />
-                        ) : (
-                          <Volume2 className="h-3 w-3" />
-                        )}
-                      </button>
-                      <button
-                        onClick={() => handlePlayMessage(msg.id, true)}
-                        disabled={synthesizingMessageId === msg.id}
-                        className={cn(
-                          'rounded p-1 transition-colors hover:bg-overlay text-text-muted hover:text-text-secondary',
-                          synthesizingMessageId === msg.id && 'opacity-50'
-                        )}
-                        title="Regenerate audio summary"
-                      >
-                        <RefreshCw className="h-3 w-3" />
-                      </button>
+            <div key={msg.id} className="space-y-2 group/message">
+              {/* Thinking block - collapsible for assistant messages */}
+              {msg.role === 'assistant' && msg.thinking && (
+                <div className="ml-0 max-w-[85%]">
+                  <button
+                    onClick={() => toggleThinking(msg.id)}
+                    className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text-secondary transition-colors"
+                  >
+                    {expandedThinking[msg.id] ? (
+                      <ChevronDown className="h-3 w-3" />
+                    ) : (
+                      <ChevronRight className="h-3 w-3" />
+                    )}
+                    <Lightbulb className="h-3 w-3" />
+                    <span>Thinking</span>
+                  </button>
+                  {expandedThinking[msg.id] && (
+                    <div className="mt-1.5 p-2 rounded-md bg-surface border border-border-subtle text-xs text-text-secondary whitespace-pre-wrap max-h-[200px] overflow-y-auto">
+                      {msg.thinking}
                     </div>
                   )}
                 </div>
+              )}
+              <div className={cn('flex gap-3', msg.role === 'user' && 'flex-row-reverse')}>
+                <div
+                  className={cn(
+                    'rounded-lg px-3 py-2 text-sm max-w-[85%] relative',
+                    msg.role === 'user'
+                      ? 'bg-accent-primary text-text-inverse'
+                      : 'bg-elevated text-text-primary'
+                  )}
+                >
+                  {msg.role === 'assistant' ? (
+                    <MarkdownRenderer content={msg.content} />
+                  ) : (
+                    <p className="whitespace-pre-wrap">{msg.content}</p>
+                  )}
+                  <div className="mt-1 flex items-center justify-between gap-2">
+                    <span className="text-xs opacity-60">{formatTimestamp(msg.timestamp)}</span>
+                    <div className="flex items-center gap-1">
+                      {/* Delete message button - visible on hover */}
+                      <button
+                        onClick={() => handleDeleteMessage(msg.id)}
+                        disabled={deletingMessageId === msg.id}
+                        className={cn(
+                          'rounded p-1 transition-colors opacity-0 group-hover/message:opacity-100',
+                          msg.role === 'user'
+                            ? 'hover:bg-white/20 text-text-inverse/60 hover:text-text-inverse'
+                            : 'hover:bg-overlay text-text-muted hover:text-red-400',
+                          deletingMessageId === msg.id && 'opacity-50'
+                        )}
+                        title="Delete message"
+                      >
+                        {deletingMessageId === msg.id ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <X className="h-3 w-3" />
+                        )}
+                      </button>
+                      {/* TTS playback buttons for assistant messages */}
+                      {msg.role === 'assistant' && (
+                        <>
+                          <button
+                            onClick={() => handlePlayMessage(msg.id)}
+                            disabled={synthesizingMessageId === msg.id}
+                            className={cn(
+                              'rounded p-1 transition-colors hover:bg-overlay',
+                              playingMessageId === msg.id && 'text-accent-primary',
+                              synthesizingMessageId === msg.id && 'opacity-50'
+                            )}
+                            title={playingMessageId === msg.id ? 'Stop playback' : 'Play message'}
+                          >
+                            {synthesizingMessageId === msg.id ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : playingMessageId === msg.id ? (
+                              <VolumeX className="h-3 w-3" />
+                            ) : (
+                              <Volume2 className="h-3 w-3" />
+                            )}
+                          </button>
+                          <button
+                            onClick={() => handlePlayMessage(msg.id, true)}
+                            disabled={synthesizingMessageId === msg.id}
+                            className={cn(
+                              'rounded p-1 transition-colors hover:bg-overlay text-text-muted hover:text-text-secondary',
+                              synthesizingMessageId === msg.id && 'opacity-50'
+                            )}
+                            title="Regenerate audio summary"
+                          >
+                            <RefreshCw className="h-3 w-3" />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
+              {/* Inline tool calls for this message */}
+              {msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0 && (
+                <div className="space-y-2">
+                  {msg.toolCalls.map((tool) => (
+                    <div key={tool.id}>
+                      {/* Show tool result with proper formatting */}
+                      {tool.status === 'completed' && tool.result && (
+                        <ToolResultDisplay
+                          toolName={tool.name}
+                          result={tool.result}
+                          onPlanApprove={async (planId) => {
+                            if (planId) {
+                              try {
+                                await approvePlan(sessionId, planId);
+                              } catch (error) {
+                                console.error('Failed to approve plan:', error);
+                              }
+                            }
+                          }}
+                          onPlanReject={async (planId) => {
+                            if (planId) {
+                              try {
+                                await rejectPlan(sessionId, planId, 'User rejected');
+                              } catch (error) {
+                                console.error('Failed to reject plan:', error);
+                              }
+                            }
+                          }}
+                        />
+                      )}
+                      {/* Show running/pending indicator */}
+                      {(tool.status === 'running' || tool.status === 'pending') && (
+                        <div className="mt-2 p-2 rounded-md bg-elevated border border-border-subtle flex items-center gap-2">
+                          <span
+                            className={cn(
+                              'h-2 w-2 rounded-full shrink-0',
+                              tool.status === 'running' && 'bg-accent-warning animate-pulse',
+                              tool.status === 'pending' && 'bg-text-muted'
+                            )}
+                          />
+                          <span className="text-xs text-text-secondary">
+                            {tool.status === 'running' ? 'Running' : 'Pending'}...
+                          </span>
+                        </div>
+                      )}
+                      {/* Show error message */}
+                      {tool.status === 'error' && tool.result && (
+                        <div className="mt-2 p-2 rounded-md bg-accent-error/10 border border-accent-error/20 text-accent-error text-xs">
+                          {String(tool.result)}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           ))
         )}
@@ -665,16 +855,42 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
           <div className="flex gap-3">
             <div className="rounded-lg px-3 py-2 text-sm bg-elevated text-text-primary max-w-[85%]">
               {streamingMessage && streamingMessage.content ? (
-                <>
-                  <MarkdownRenderer content={streamingMessage.content} />
-                  <span className="inline-block w-2 h-4 bg-accent-primary animate-pulse ml-0.5 align-middle" />
-                </>
+                (() => {
+                  const { displayContent, isToolCallJson } = cleanStreamingContent(
+                    streamingMessage.content
+                  );
+                  return (
+                    <>
+                      {isToolCallJson ? (
+                        <div className="flex items-center gap-2 text-text-secondary">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <span>{displayContent}</span>
+                        </div>
+                      ) : (
+                        <MarkdownRenderer content={displayContent} />
+                      )}
+                      <span className="inline-block w-2 h-4 bg-accent-primary animate-pulse ml-0.5 align-middle" />
+                    </>
+                  );
+                })()
               ) : (
                 <div className="flex items-center gap-2 text-text-secondary">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   <span>Thinking...</span>
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Stopped message when task was aborted */}
+        {showAbortedMessage && agent.status === 'idle' && (
+          <div className="flex gap-3">
+            <div className="rounded-lg px-3 py-2 text-sm bg-elevated text-text-secondary max-w-[85%]">
+              <div className="flex items-center gap-2">
+                <StopCircle className="h-4 w-4" />
+                <span>Stopped</span>
+              </div>
             </div>
           </div>
         )}
@@ -720,127 +936,6 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
 
         {/* Scroll anchor */}
         <div ref={messagesEndRef} />
-
-        {/* Tool calls display - only show most recent tools */}
-        {agent.messages.length > 0 &&
-        agent.messages[agent.messages.length - 1]?.toolCalls?.length ? (
-          <div className="rounded-lg border border-border-subtle bg-elevated/50 overflow-hidden">
-            <div className="px-3 py-2 bg-elevated border-b border-border-subtle flex items-center gap-2">
-              <Settings2 className="h-3 w-3 text-text-muted" />
-              <span className="text-xs font-medium text-text-secondary">Tool Executions</span>
-            </div>
-            <div className="p-2 space-y-1">
-              {(agent.messages[agent.messages.length - 1]?.toolCalls ?? []).map((tool) => (
-                <div
-                  key={tool.id}
-                  className={cn(
-                    'rounded-md px-2 py-1.5 text-xs font-mono border',
-                    tool.status === 'completed' && 'bg-accent-success/5 border-accent-success/20',
-                    tool.status === 'running' && 'bg-accent-warning/5 border-accent-warning/20',
-                    tool.status === 'pending' && 'bg-surface border-border-subtle',
-                    tool.status === 'error' && 'bg-accent-error/5 border-accent-error/20'
-                  )}
-                >
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={cn(
-                        'h-2 w-2 rounded-full shrink-0',
-                        tool.status === 'completed' && 'bg-accent-success',
-                        tool.status === 'running' && 'bg-accent-warning animate-pulse',
-                        tool.status === 'pending' && 'bg-text-muted',
-                        tool.status === 'error' && 'bg-accent-error'
-                      )}
-                    />
-                    <span className="font-semibold text-text-primary">{tool.name}</span>
-                    <span className="text-text-muted ml-auto capitalize">{tool.status}</span>
-                  </div>
-                  {/* Show args summary for running/pending tools */}
-                  {(tool.status === 'running' || tool.status === 'pending') &&
-                    tool.args &&
-                    Object.keys(tool.args).length > 0 && (
-                      <div className="mt-1 pl-4 text-text-muted truncate">
-                        {Object.entries(tool.args)
-                          .slice(0, 2)
-                          .map(([key, value]) => (
-                            <span key={key} className="mr-2">
-                              {key}:{' '}
-                              <span className="text-text-secondary">
-                                {String(value).slice(0, 30)}
-                                {String(value).length > 30 ? '...' : ''}
-                              </span>
-                            </span>
-                          ))}
-                      </div>
-                    )}
-                  {/* Show error message */}
-                  {tool.status === 'error' && tool.result && (
-                    <div className="mt-1 pl-4 text-accent-error text-xs truncate">
-                      {tool.result}
-                    </div>
-                  )}
-                  {/* Show result for completed tools */}
-                  {tool.status === 'completed' &&
-                    tool.result &&
-                    (tool.name === 'create_execution_plan' && typeof tool.result === 'object' ? (
-                      <div className="mt-2">
-                        <PlanResultDisplay
-                          result={
-                            tool.result as {
-                              success: boolean;
-                              plan_id?: string;
-                              title?: string;
-                              description?: string;
-                              steps?: Array<{
-                                order: number;
-                                action_type: string;
-                                description: string;
-                                confidence: number;
-                              }>;
-                              confidence_score?: number;
-                              status?: string;
-                              auto_execute?: boolean;
-                              error?: string;
-                            }
-                          }
-                          onApprove={async () => {
-                            const planId = (tool.result as { plan_id?: string })?.plan_id;
-                            if (planId) {
-                              try {
-                                await approvePlan(sessionId, planId);
-                              } catch (error) {
-                                console.error('Failed to approve plan:', error);
-                              }
-                            }
-                          }}
-                          onReject={async () => {
-                            const planId = (tool.result as { plan_id?: string })?.plan_id;
-                            if (planId) {
-                              try {
-                                await rejectPlan(sessionId, planId, 'User rejected');
-                              } catch (error) {
-                                console.error('Failed to reject plan:', error);
-                              }
-                            }
-                          }}
-                        />
-                      </div>
-                    ) : (
-                      <details className="mt-1 pl-4">
-                        <summary className="text-text-muted cursor-pointer hover:text-text-secondary text-xs">
-                          View result
-                        </summary>
-                        <pre className="mt-1 p-2 rounded bg-void/50 text-text-secondary text-xs overflow-x-auto max-h-40 overflow-y-auto whitespace-pre-wrap break-words">
-                          {typeof tool.result === 'string'
-                            ? tool.result
-                            : JSON.stringify(tool.result, null, 2)}
-                        </pre>
-                      </details>
-                    ))}
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
       </div>
 
       {/* Input area */}

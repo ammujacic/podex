@@ -1,37 +1,45 @@
-"""Coder agent for writing and modifying code."""
+"""DevOps agent for infrastructure and deployment automation."""
 
 from src.agents.base import BaseAgent, Tool
 
 
-class CoderAgent(BaseAgent):
-    """Coder agent specializing in writing code."""
+class DevOpsAgent(BaseAgent):
+    """DevOps agent specializing in infrastructure and deployment."""
 
     def _get_system_prompt(self) -> str:
-        """Get coder system prompt."""
-        return """You are an expert software developer. Your role is to:
+        """Get devops system prompt."""
+        return """You are a DevOps and infrastructure expert. Your role is to:
 
-1. **Write Clean Code**: Produce well-structured, readable, and maintainable code.
+1. **Infrastructure as Code**: Design and implement infrastructure using:
+   - Docker and Docker Compose
+   - Kubernetes manifests and Helm charts
+   - Terraform, CloudFormation, or similar IaC tools
+   - Configuration management (Ansible, Chef, etc.)
 
-2. **Follow Best Practices**: Adhere to language-specific conventions and project guidelines.
+2. **CI/CD Pipelines**: Create and optimize continuous integration and deployment workflows:
+   - GitHub Actions, GitLab CI, Jenkins, CircleCI
+   - Build automation and testing pipelines
+   - Deployment strategies (blue-green, canary, rolling)
 
-3. **Implement Features**: Build features based on specifications from the Architect.
+3. **Container Orchestration**: Configure containerized applications and orchestration.
 
-4. **Refactor**: Improve existing code without changing its behavior.
+4. **Monitoring & Observability**: Set up logging, metrics, tracing, and alerting systems.
 
-5. **Document**: Add appropriate comments and documentation.
+5. **Cloud Platforms**: Work with AWS, GCP, Azure services and configurations.
 
-When writing code:
-- Use meaningful variable and function names
-- Keep functions small and focused
-- Handle errors appropriately
-- Consider edge cases
-- Write code that is easy to test
+6. **Automation**: Write scripts and tools to automate operations tasks.
 
-Always explain your changes and reasoning. If you're unsure about something,
-ask for clarification rather than making assumptions."""
+When implementing infrastructure:
+- Follow infrastructure-as-code best practices
+- Implement security hardening and least privilege principles
+- Use version control for all configurations
+- Document dependencies and deployment procedures
+- Consider scalability, reliability, and cost optimization
+- Prefer declarative over imperative configurations
+- Include health checks and monitoring"""
 
     def _get_tools(self) -> list[Tool]:
-        """Get coder tools."""
+        """Get devops tools."""
         return [
             Tool(
                 name="read_file",
@@ -75,18 +83,6 @@ ask for clarification rather than making assumptions."""
                 },
             ),
             Tool(
-                name="run_command",
-                description="Run a shell command in the workspace",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string", "description": "Command to run"},
-                        "cwd": {"type": "string", "description": "Working directory"},
-                    },
-                    "required": ["command"],
-                },
-            ),
-            Tool(
                 name="list_directory",
                 description="List files in a directory",
                 parameters={
@@ -98,6 +94,18 @@ ask for clarification rather than making assumptions."""
                         },
                     },
                     "required": ["path"],
+                },
+            ),
+            Tool(
+                name="run_command",
+                description="Run a shell command in the workspace",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "Command to run"},
+                        "cwd": {"type": "string", "description": "Working directory"},
+                    },
+                    "required": ["command"],
                 },
             ),
         ]

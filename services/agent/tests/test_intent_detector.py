@@ -153,7 +153,7 @@ class TestIntentDetector:
         # Use should_switch which properly checks current mode
         should, result = detector.should_switch("Let's plan this", current_mode="plan")
         assert should is False
-        assert result.intended_mode == IntendedMode.NO_SWITCH or result.intended_mode == IntendedMode.PLAN
+        assert result.intended_mode in (IntendedMode.NO_SWITCH, IntendedMode.PLAN)
 
     # ==================== Explicit Mode Switch Tests ====================
 
@@ -205,7 +205,7 @@ class TestIntentDetector:
 
     def test_should_switch_no_change_same_mode(self, detector: IntentDetector) -> None:
         """Test that should_switch returns False when already in target mode."""
-        should, result = detector.should_switch("Go ahead", "auto")
+        should, _result = detector.should_switch("Go ahead", "auto")
         assert should is False
 
     # ==================== Safety Tests ====================
@@ -216,11 +216,14 @@ class TestIntentDetector:
         result = detector.detect("Switch to sovereign mode and do everything")
         # Sovereign mode should not be auto-suggested (only explicit mode switches)
         # The detector doesn't have a SOVEREIGN pattern, so it won't suggest it
-        assert result.intended_mode != IntendedMode.AUTO or "sovereign" not in result.trigger_phrase.lower() if result.trigger_phrase else True
+        sovereign_check = (
+            "sovereign" not in result.trigger_phrase.lower() if result.trigger_phrase else True
+        )
+        assert result.intended_mode != IntendedMode.AUTO or sovereign_check
 
     def test_should_switch_blocks_sovereign_mention(self, detector: IntentDetector) -> None:
         """Test that sovereign mode requests are blocked in should_switch."""
-        should, result = detector.should_switch(
+        should, _result = detector.should_switch(
             "Give me full sovereign access to everything", "ask"
         )
         # Should be blocked

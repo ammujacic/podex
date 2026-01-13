@@ -38,7 +38,10 @@ Target 90%+ code coverage. Focus on testing behavior, not implementation details
                 parameters={
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "File path to read"},
+                        "path": {
+                            "type": "string",
+                            "description": "Relative path (e.g., 'src/main.py')",
+                        },
                     },
                     "required": ["path"],
                 },
@@ -49,7 +52,10 @@ Target 90%+ code coverage. Focus on testing behavior, not implementation details
                 parameters={
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "File path to write"},
+                        "path": {
+                            "type": "string",
+                            "description": "Relative path (e.g., 'tests/test_main.py')",
+                        },
                         "content": {"type": "string", "description": "File content"},
                     },
                     "required": ["path", "content"],

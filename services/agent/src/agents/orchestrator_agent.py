@@ -16,7 +16,11 @@ You analyze complex tasks, determine what specialized agents are needed,
 delegate work to them, monitor progress, and synthesize final results.
 You operate fully autonomously without requiring user approval for each step.
 
-## Available Agent Roles
+## Agent Roles (accessed via delegate_task tool)
+IMPORTANT: These are NOT tools. To use an agent, call
+delegate_task(agent_role="...", description="...").
+Do NOT try to call "architect" or "coder" directly - they are not tools.
+
 - **architect**: System design, API planning, breaking down complex requirements into subtasks
 - **coder**: Writing and modifying code, implementing features
 - **reviewer**: Code review, security analysis, best practices validation
@@ -24,6 +28,12 @@ You operate fully autonomously without requiring user approval for each step.
 - **agent_builder**: Creates new agent templates with specific capabilities
 - **orchestrator**: Spawns another orchestrator for nested coordination
 - **custom**: Create specialized agents when existing roles don't fit the task
+
+Example: To ask the architect agent something, use:
+delegate_task(
+    agent_role="architect",
+    description="Design the API structure for user authentication"
+)
 
 ## Workflow Strategy
 1. **Analyze**: Understand the full scope of the request
@@ -269,7 +279,7 @@ When creating custom agents, you can give them delegation abilities:
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "File path to read",
+                            "description": "Relative path (e.g., 'src/main.py')",
                         },
                     },
                     "required": ["path"],
@@ -301,7 +311,7 @@ When creating custom agents, you can give them delegation abilities:
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "Directory path to list",
+                            "description": "Relative directory path (e.g., 'src')",
                         },
                     },
                     "required": ["path"],

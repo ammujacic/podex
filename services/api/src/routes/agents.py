@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any
+from uuid import uuid4
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
@@ -28,7 +29,12 @@ from src.exceptions import (
 )
 from src.mcp_config import get_effective_mcp_config
 from src.middleware.rate_limit import RATE_LIMIT_AGENT, RATE_LIMIT_STANDARD, limiter
-from src.websocket.hub import AgentAttentionInfo, emit_agent_attention, emit_to_session
+from src.websocket.hub import (
+    AgentAttentionInfo,
+    emit_agent_attention,
+    emit_agent_stream_start,
+    emit_to_session,
+)
 
 logger = structlog.get_logger()
 
@@ -64,6 +70,10 @@ class AgentRole(str, Enum):
     TESTER = "tester"
     AGENT_BUILDER = "agent_builder"
     ORCHESTRATOR = "orchestrator"
+    CHAT = "chat"
+    SECURITY = "security"
+    DEVOPS = "devops"
+    DOCUMENTATOR = "documentator"
     CUSTOM = "custom"
 
 
@@ -576,7 +586,10 @@ class AgentMessageContext:
     images: list[dict[str, Any]] | None = None
 
 
-def _build_agent_service_context(ctx: AgentMessageContext) -> dict[str, Any]:
+def _build_agent_service_context(
+    ctx: AgentMessageContext,
+    message_id: str | None = None,
+) -> dict[str, Any]:
     """Build context dictionary for agent service call."""
     agent_context: dict[str, Any] = {
         "role": ctx.agent_role,
@@ -597,6 +610,10 @@ def _build_agent_service_context(ctx: AgentMessageContext) -> dict[str, Any]:
     # Include image attachments for vision models
     if ctx.images:
         agent_context["images"] = ctx.images
+    # Include message_id to enable streaming via Redis Pub/Sub
+    if message_id:
+        agent_context["message_id"] = message_id
+        agent_context["stream"] = True
     return agent_context
 
 
@@ -669,6 +686,7 @@ class ResponseProcessingContext:
     response_content: str
     auto_play: bool
     tool_calls: list[dict[str, Any]] | None = None
+    streamed: bool = False  # If True, skip agent_message emit (frontend got it via streaming)
 
 
 async def _process_and_emit_response(
@@ -698,14 +716,16 @@ async def _process_and_emit_response(
     agent.status = "idle"
     await db.commit()
 
-    await _emit_agent_response(
-        ctx,
-        assistant_message,
-        response_content,
-        tts_summary,
-        auto_play=auto_play,
-        tool_calls=tool_calls,
-    )
+    # Only emit agent_message if NOT streamed (streaming sends message via Redis pub/sub)
+    if not processing_ctx.streamed:
+        await _emit_agent_response(
+            ctx,
+            assistant_message,
+            response_content,
+            tts_summary,
+            auto_play=auto_play,
+            tool_calls=tool_calls,
+        )
     await _notify_agent_status(ctx.session_id, ctx.agent_id, "idle")
 
     attention_type = detect_attention_type(response_content, ctx.agent_role)
@@ -794,8 +814,15 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0
                     )
                     # Continue without MCP - agents can still function
 
+            # Generate a message_id for streaming - tokens will be published to Redis
+            # and the frontend will receive them in real-time via WebSocket
+            stream_message_id = str(uuid4())
+
+            # Notify frontend that streaming is starting
+            await emit_agent_stream_start(ctx.session_id, ctx.agent_id, stream_message_id)
+
             # Build context for agent service and call agent
-            agent_context = _build_agent_service_context(ctx)
+            agent_context = _build_agent_service_context(ctx, message_id=stream_message_id)
             tool_calls: list[dict[str, Any]] | None = None
             tokens_used: int = 0
             try:
@@ -819,6 +846,7 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0
                 tool_calls = None
 
             # Process and emit the response with tool calls
+            # Set streamed=True since we use streaming - frontend already has message via Redis
             processing_ctx = ResponseProcessingContext(
                 db=db,
                 ctx=ctx,
@@ -826,6 +854,7 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0
                 response_content=response_content,
                 auto_play=auto_play,
                 tool_calls=tool_calls,
+                streamed=True,  # Streaming is always enabled now
             )
             await _process_and_emit_response(processing_ctx)
 
@@ -1583,3 +1612,165 @@ async def resume_agent(
         "status": "running",
         "message": "Agent resumed",
     }
+
+
+# ==================== Agent Duplicate ====================
+
+
+class DuplicateAgentRequest(BaseModel):
+    """Request body for duplicating an agent."""
+
+    name: str | None = None  # Optional custom name for the duplicated agent
+
+
+@router.post("/{agent_id}/duplicate", response_model=AgentResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def duplicate_agent(
+    session_id: str,
+    agent_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+    data: DuplicateAgentRequest | None = None,
+) -> AgentResponse:
+    """Duplicate an existing agent.
+
+    Creates a new agent with the same configuration as the original.
+    Messages are not copied - the new agent starts with a clean history.
+    """
+    # Verify user has access to session
+    session = await verify_session_access(session_id, request, db)
+
+    # Check agent quota before creating
+    await check_agent_quota(db, session.owner_id, session_id)
+
+    # Get the original agent
+    agent_query = select(AgentModel).where(
+        AgentModel.id == agent_id,
+        AgentModel.session_id == session_id,
+    )
+    agent_result = await db.execute(agent_query)
+    original_agent = agent_result.scalar_one_or_none()
+
+    if not original_agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Generate new name
+    new_name = data.name if data and data.name else f"{original_agent.name} (Copy)"
+
+    # Count existing agents for color assignment
+    count_query = (
+        select(func.count()).select_from(AgentModel).where(AgentModel.session_id == session_id)
+    )
+    count_result = await db.execute(count_query)
+    agent_count = count_result.scalar() or 0
+    color = AGENT_COLORS[agent_count % len(AGENT_COLORS)]
+
+    # Copy config and update color
+    new_config = dict(original_agent.config) if original_agent.config else {}
+    new_config["color"] = color
+
+    # Create the duplicate agent
+    new_agent = AgentModel(
+        session_id=session_id,
+        name=new_name,
+        role=original_agent.role,
+        model=original_agent.model,
+        status="idle",
+        mode=original_agent.mode,
+        command_allowlist=original_agent.command_allowlist,
+        config=new_config,
+        template_id=original_agent.template_id,
+        voice_config=original_agent.voice_config,
+    )
+    db.add(new_agent)
+    await db.commit()
+    await db.refresh(new_agent)
+
+    logger.info(
+        "Agent duplicated",
+        original_agent_id=agent_id,
+        new_agent_id=new_agent.id,
+        session_id=session_id,
+    )
+
+    return AgentResponse(
+        id=new_agent.id,
+        session_id=new_agent.session_id,
+        name=new_agent.name,
+        role=new_agent.role,
+        model=new_agent.model,
+        status=new_agent.status,
+        mode=new_agent.mode,
+        command_allowlist=new_agent.command_allowlist,
+        config=new_agent.config,
+        template_id=new_agent.template_id,
+        created_at=new_agent.created_at,
+    )
+
+
+# ==================== Message Delete ====================
+
+
+@router.delete("/{agent_id}/messages/{message_id}")
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def delete_message(
+    session_id: str,
+    agent_id: str,
+    message_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> dict[str, str]:
+    """Delete a specific message from an agent's conversation history.
+
+    This removes the message from both the database and the frontend display.
+    """
+    # Verify user has access to session
+    await verify_session_access(session_id, request, db)
+
+    # Verify agent exists in session
+    agent_query = select(AgentModel).where(
+        AgentModel.id == agent_id,
+        AgentModel.session_id == session_id,
+    )
+    agent_result = await db.execute(agent_query)
+    agent = agent_result.scalar_one_or_none()
+
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Get the message
+    message_query = select(MessageModel).where(
+        MessageModel.id == message_id,
+        MessageModel.agent_id == agent_id,
+    )
+    message_result = await db.execute(message_query)
+    message = message_result.scalar_one_or_none()
+
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    # Delete the message
+    await db.delete(message)
+    await db.commit()
+
+    # Notify via WebSocket
+    await emit_to_session(
+        session_id,
+        "message_deleted",
+        {
+            "message_id": message_id,
+            "agent_id": agent_id,
+            "session_id": session_id,
+        },
+    )
+
+    logger.info(
+        "Message deleted",
+        message_id=message_id,
+        agent_id=agent_id,
+        session_id=session_id,
+    )
+
+    return {"message": "Message deleted"}

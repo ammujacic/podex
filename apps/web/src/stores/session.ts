@@ -20,7 +20,18 @@ export type AgentMode = 'plan' | 'ask' | 'auto' | 'sovereign';
 export interface Agent {
   id: string;
   name: string;
-  role: 'architect' | 'coder' | 'reviewer' | 'tester' | 'agent_builder' | 'orchestrator' | 'custom';
+  role:
+    | 'architect'
+    | 'coder'
+    | 'reviewer'
+    | 'tester'
+    | 'agent_builder'
+    | 'orchestrator'
+    | 'chat'
+    | 'security'
+    | 'devops'
+    | 'documentator'
+    | 'custom';
   model: string;
   status: 'idle' | 'active' | 'error';
   color: string;
@@ -38,6 +49,7 @@ export interface AgentMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  thinking?: string; // Agent's thinking/reasoning process (collapsible)
   timestamp: Date;
   toolCalls?: ToolCall[];
 }
@@ -56,6 +68,7 @@ export interface StreamingMessage {
   agentId: string;
   sessionId: string;
   content: string; // Accumulated tokens
+  thinkingContent: string; // Accumulated thinking tokens
   isStreaming: boolean;
   startedAt: Date;
 }
@@ -108,6 +121,7 @@ interface SessionState {
   updateAgent: (sessionId: string, agentId: string, updates: Partial<Agent>) => void;
   setActiveAgent: (sessionId: string, agentId: string | null) => void;
   addAgentMessage: (sessionId: string, agentId: string, message: AgentMessage) => void;
+  deleteAgentMessage: (sessionId: string, agentId: string, messageId: string) => void;
   updateMessageId: (sessionId: string, agentId: string, oldId: string, newId: string) => void;
   updateAgentPosition: (
     sessionId: string,
@@ -151,7 +165,12 @@ interface SessionState {
   // Streaming message actions
   startStreamingMessage: (sessionId: string, agentId: string, messageId: string) => void;
   appendStreamingToken: (messageId: string, token: string) => void;
-  finalizeStreamingMessage: (messageId: string, fullContent: string) => void;
+  appendThinkingToken: (messageId: string, thinking: string) => void;
+  finalizeStreamingMessage: (
+    messageId: string,
+    fullContent: string,
+    toolCalls?: ToolCall[]
+  ) => void;
   getStreamingMessage: (messageId: string) => StreamingMessage | undefined;
 }
 
@@ -301,6 +320,27 @@ export const useSessionStore = create<SessionState>()(
                         ? newMessages.slice(-MAX_MESSAGES_PER_AGENT)
                         : newMessages;
                     return { ...a, messages: limitedMessages };
+                  }),
+                },
+              },
+            };
+          }),
+
+        deleteAgentMessage: (sessionId, agentId, messageId) =>
+          set((state) => {
+            const session = state.sessions[sessionId];
+            if (!session) return state;
+            return {
+              sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                  ...session,
+                  agents: session.agents.map((a) => {
+                    if (a.id !== agentId) return a;
+                    return {
+                      ...a,
+                      messages: a.messages.filter((m) => m.id !== messageId),
+                    };
                   }),
                 },
               },
@@ -586,6 +626,7 @@ export const useSessionStore = create<SessionState>()(
                 agentId,
                 sessionId,
                 content: '',
+                thinkingContent: '',
                 isStreaming: true,
                 startedAt: new Date(),
               },
@@ -607,7 +648,22 @@ export const useSessionStore = create<SessionState>()(
             };
           }),
 
-        finalizeStreamingMessage: (messageId, fullContent) =>
+        appendThinkingToken: (messageId, thinking) =>
+          set((state) => {
+            const existing = state.streamingMessages[messageId];
+            if (!existing) return state;
+            return {
+              streamingMessages: {
+                ...state.streamingMessages,
+                [messageId]: {
+                  ...existing,
+                  thinkingContent: existing.thinkingContent + thinking,
+                },
+              },
+            };
+          }),
+
+        finalizeStreamingMessage: (messageId, fullContent, toolCalls) =>
           set((state) => {
             const streaming = state.streamingMessages[messageId];
             if (!streaming) return state;
@@ -625,7 +681,9 @@ export const useSessionStore = create<SessionState>()(
               id: messageId,
               role: 'assistant',
               content: fullContent,
+              thinking: streaming.thinkingContent || undefined, // Include thinking if present
               timestamp: new Date(),
+              toolCalls: toolCalls, // Include tool calls from streaming
             };
 
             return {

@@ -6,6 +6,10 @@ import {
   Bot,
   Code,
   Eye,
+  FileText,
+  MessageCircle,
+  Server,
+  Shield,
   TestTube,
   Wrench,
   Sparkles,
@@ -49,6 +53,10 @@ type AgentRole =
   | 'tester'
   | 'agent_builder'
   | 'orchestrator'
+  | 'chat'
+  | 'security'
+  | 'devops'
+  | 'documentator'
   | 'custom';
 type AgentStatus = 'idle' | 'active' | 'error';
 
@@ -123,6 +131,46 @@ const BUILTIN_AGENTS: AgentOption[] = [
     icon: Workflow,
     color: '#06b6d4',
     description: 'Coordinates multiple agents, delegates tasks, and synthesizes results',
+    model: 'claude-sonnet-4-20250514',
+    isCustom: false,
+  },
+  {
+    id: 'chat',
+    role: 'chat',
+    name: 'Chat',
+    icon: MessageCircle,
+    color: '#8b5cf6',
+    description: 'Conversational assistant for discussions with no file or command access',
+    model: 'claude-sonnet-4-20250514',
+    isCustom: false,
+  },
+  {
+    id: 'security',
+    role: 'security',
+    name: 'Security',
+    icon: Shield,
+    color: '#ef4444',
+    description: 'Identifies security vulnerabilities and recommends fixes',
+    model: 'claude-sonnet-4-20250514',
+    isCustom: false,
+  },
+  {
+    id: 'devops',
+    role: 'devops',
+    name: 'DevOps',
+    icon: Server,
+    color: '#10b981',
+    description: 'Designs and implements infrastructure and deployment pipelines',
+    model: 'claude-sonnet-4-20250514',
+    isCustom: false,
+  },
+  {
+    id: 'documentator',
+    role: 'documentator',
+    name: 'Documentator',
+    icon: FileText,
+    color: '#f59e0b',
+    description: 'Writes comprehensive code documentation and guides',
     model: 'claude-sonnet-4-20250514',
     isCustom: false,
   },

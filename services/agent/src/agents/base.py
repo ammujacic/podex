@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from podex_shared import TokenUsageParams, get_usage_tracker
 from src.database.connection import get_db_context
 from src.database.conversation import (
     MessageData,
@@ -575,27 +576,38 @@ Be thorough in your explanations so users can make informed decisions about appr
             "auto": """
 ## Operating Mode: Auto (Autonomous with Limits)
 
-You are in AUTO mode. You can automatically edit files without approval.
+You are in AUTO mode. You can automatically edit files and call tools without approval.
+
+IMPORTANT - ACT, DON'T ANNOUNCE:
+- DO NOT say "I will use X tool" - just use it directly
+- DO NOT announce your intentions before acting - just act
+- Call tools immediately when needed instead of describing what you plan to do
+- Be efficient: tool calls execute automatically, so use them without preamble
 
 COMMAND EXECUTION:
 - Some commands are pre-approved and will execute automatically
 - New or unrecognized commands will require user approval
-- When a command needs approval, the user may choose to add it to your allowlist for future use
+- When a command needs approval, the user may choose to add it to your allowlist
 
-Work efficiently but be mindful that unexpected commands will pause for user review.
+Work efficiently and take action directly. The user chose Auto mode because they
+want things done, not described.
 """,
             "sovereign": """
 ## Operating Mode: Sovereign (Full Autonomy)
 
 You are in SOVEREIGN mode with full autonomy. You can:
 - Read and modify any files
-- Execute any commands
-- Make decisions independently
+- Execute any commands without approval
+- Make decisions and take action independently
+
+IMPORTANT - ACT, DON'T ANNOUNCE:
+- DO NOT say "I will use X tool" - just use it directly
+- Call tools immediately when needed instead of describing intentions
+- Be efficient: all tools execute automatically, so use them without preamble
 
 Use this power responsibly:
-- Still explain your reasoning to the user
 - Be careful with destructive operations
-- Consider the consequences of your actions
+- After completing actions, briefly summarize what was done
 - Keep the user informed of significant changes
 """,
         }
@@ -799,7 +811,28 @@ Use this power responsibly:
 
             content = response.get("content", "")
             tool_calls = response.get("tool_calls", [])
-            tokens_used = response.get("usage", {}).get("total_tokens", 0)
+            usage = response.get("usage", {})
+            tokens_used = usage.get("total_tokens", 0)
+            input_tokens = usage.get("input_tokens", 0)
+            output_tokens = usage.get("output_tokens", 0)
+
+            # Track usage for billing (works for all providers including local)
+            if self.user_id and (input_tokens > 0 or output_tokens > 0):
+                tracker = get_usage_tracker()
+                if tracker:
+                    try:
+                        params = TokenUsageParams(
+                            user_id=self.user_id,
+                            model=self.model,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            session_id=self.session_id,
+                            agent_id=self.agent_id,
+                            metadata={"streaming": False},
+                        )
+                        await tracker.record_token_usage(params)
+                    except Exception:
+                        logger.exception("Failed to track non-streaming usage")
 
             # Check for JSON tool calls in content (some models like Ollama
             # output JSON directly instead of using proper tool_calls)
@@ -817,10 +850,11 @@ Use this power responsibly:
 
             # Process tool calls if any
             processed_tool_calls = []
-            for tool_call in tool_calls:
+            for i, tool_call in enumerate(tool_calls):
                 result = await self._execute_tool(tool_call)
                 processed_tool_calls.append(
                     {
+                        "id": tool_call.get("id", f"tc-{i}"),
                         "name": tool_call.get("name"),
                         "arguments": tool_call.get("arguments"),
                         "result": result,
@@ -941,8 +975,11 @@ Use this power responsibly:
 
             # Accumulate content and tool calls during streaming
             content_parts: list[str] = []
+            thinking_parts: list[str] = []  # Accumulate thinking tokens separately
             tool_calls: list[dict[str, Any]] = []
             tokens_used = 0
+            input_tokens = 0
+            output_tokens = 0
             current_tool_calls: dict[str, dict[str, Any]] = {}  # Track in-progress tool calls
 
             # Stream from LLM
@@ -956,6 +993,16 @@ Use this power responsibly:
                         event=event,
                     )
                     content_parts.append(event.content or "")
+
+                elif event.type == "thinking":
+                    # Emit thinking token to Redis
+                    await publisher.publish_stream_event(
+                        session_id=self.session_id or "",
+                        agent_id=self.agent_id,
+                        message_id=message_id,
+                        event=event,
+                    )
+                    thinking_parts.append(event.content or "")
 
                 elif event.type == "tool_call_start":
                     # Track tool call and emit start event
@@ -988,6 +1035,26 @@ Use this power responsibly:
                     # Capture usage stats
                     if event.usage:
                         tokens_used = event.usage.get("total_tokens", 0)
+                        input_tokens = event.usage.get("input_tokens", 0)
+                        output_tokens = event.usage.get("output_tokens", 0)
+
+                    # Track usage for billing (works for all providers including local)
+                    if self.user_id and (input_tokens > 0 or output_tokens > 0):
+                        tracker = get_usage_tracker()
+                        if tracker:
+                            try:
+                                params = TokenUsageParams(
+                                    user_id=self.user_id,
+                                    model=self.model,
+                                    input_tokens=input_tokens,
+                                    output_tokens=output_tokens,
+                                    session_id=self.session_id,
+                                    agent_id=self.agent_id,
+                                    metadata={"streaming": True},
+                                )
+                                await tracker.record_token_usage(params)
+                            except Exception:
+                                logger.exception("Failed to track streaming usage")
 
                 elif event.type == "error":
                     # Emit error and raise
@@ -1017,10 +1084,11 @@ Use this power responsibly:
 
             # Process tool calls if any
             processed_tool_calls = []
-            for tool_call in tool_calls:
+            for i, tool_call in enumerate(tool_calls):
                 result = await self._execute_tool(tool_call)
                 processed_tool_calls.append(
                     {
+                        "id": tool_call.get("id", f"tc-{i}"),
                         "name": tool_call.get("name"),
                         "arguments": tool_call.get("arguments"),
                         "result": result,
@@ -1041,13 +1109,14 @@ Use this power responsibly:
             if reverted and revert_announcement:
                 final_content = f"{final_content}{revert_announcement}"
 
-            # Emit stream done with full content
+            # Emit stream done with full content and tool calls
             await publisher.publish_done(
                 session_id=self.session_id or "",
                 agent_id=self.agent_id,
                 message_id=message_id,
                 full_content=final_content,
                 usage={"total_tokens": tokens_used},
+                tool_calls=processed_tool_calls if processed_tool_calls else None,
             )
 
             # Add assistant response to history

@@ -525,7 +525,18 @@ export async function handleOAuthCallback(
 // Agent types
 export interface AgentCreateRequest {
   name: string;
-  role: 'architect' | 'coder' | 'reviewer' | 'tester' | 'agent_builder' | 'orchestrator' | 'custom';
+  role:
+    | 'architect'
+    | 'coder'
+    | 'reviewer'
+    | 'tester'
+    | 'agent_builder'
+    | 'orchestrator'
+    | 'chat'
+    | 'security'
+    | 'devops'
+    | 'documentator'
+    | 'custom';
   model: string;
   config?: Record<string, unknown>;
   template_id?: string; // Reference to custom agent template
@@ -571,6 +582,24 @@ export async function getAgent(sessionId: string, agentId: string): Promise<Agen
 
 export async function deleteAgent(sessionId: string, agentId: string): Promise<void> {
   await api.delete(`/api/sessions/${sessionId}/agents/${agentId}`);
+}
+
+export async function duplicateAgent(
+  sessionId: string,
+  agentId: string,
+  newName?: string
+): Promise<AgentResponse> {
+  return api.post<AgentResponse>(`/api/sessions/${sessionId}/agents/${agentId}/duplicate`, {
+    name: newName,
+  });
+}
+
+export async function deleteAgentMessage(
+  sessionId: string,
+  agentId: string,
+  messageId: string
+): Promise<void> {
+  await api.delete(`/api/sessions/${sessionId}/agents/${agentId}/messages/${messageId}`);
 }
 
 export async function sendAgentMessage(
@@ -2337,6 +2366,74 @@ export async function restoreCheckpoint(checkpointId: string): Promise<RestoreCh
     `/api/checkpoints/checkpoints/${checkpointId}/restore`,
     {}
   );
+}
+
+// ==================== Worktrees ====================
+
+export interface WorktreeResponse {
+  id: string;
+  agent_id: string;
+  session_id: string;
+  worktree_path: string;
+  branch_name: string;
+  status: string;
+  created_at: string;
+  merged_at: string | null;
+}
+
+export interface WorktreeListResponse {
+  worktrees: WorktreeResponse[];
+  total: number;
+  active: number;
+  merged: number;
+  conflicts: number;
+}
+
+export interface MergeWorktreeResponse {
+  success: boolean;
+  worktree_id: string;
+  message: string;
+}
+
+export interface DeleteWorktreeResponse {
+  success: boolean;
+  worktree_id: string;
+  message: string;
+}
+
+export interface ConflictFile {
+  path: string;
+  conflict_markers: number;
+}
+
+export interface ConflictsResponse {
+  has_conflicts: boolean;
+  files: ConflictFile[];
+}
+
+export async function getSessionWorktrees(sessionId: string): Promise<WorktreeListResponse> {
+  return api.get<WorktreeListResponse>(`/api/worktrees/sessions/${sessionId}/worktrees`);
+}
+
+export async function getWorktree(worktreeId: string): Promise<WorktreeResponse> {
+  return api.get<WorktreeResponse>(`/api/worktrees/worktrees/${worktreeId}`);
+}
+
+export async function mergeWorktree(
+  worktreeId: string,
+  options?: { deleteAfterMerge?: boolean }
+): Promise<MergeWorktreeResponse> {
+  return api.post<MergeWorktreeResponse>(`/api/worktrees/worktrees/${worktreeId}/merge`, {
+    delete_after_merge: options?.deleteAfterMerge ?? true,
+  });
+}
+
+export async function deleteWorktree(worktreeId: string): Promise<DeleteWorktreeResponse> {
+  return api.delete<DeleteWorktreeResponse>(`/api/worktrees/worktrees/${worktreeId}`);
+}
+
+export async function checkWorktreeConflicts(worktreeId: string): Promise<ConflictsResponse> {
+  return api.get<ConflictsResponse>(`/api/worktrees/worktrees/${worktreeId}/conflicts`);
 }
 
 // ==================== Changes ====================

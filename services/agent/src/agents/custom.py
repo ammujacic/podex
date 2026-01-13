@@ -19,7 +19,10 @@ AVAILABLE_TOOLS: dict[str, Tool] = {
         parameters={
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path to read"},
+                "path": {
+                    "type": "string",
+                    "description": "Relative path (e.g., 'src/main.py')",
+                },
             },
             "required": ["path"],
         },
@@ -30,7 +33,10 @@ AVAILABLE_TOOLS: dict[str, Tool] = {
         parameters={
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path to write"},
+                "path": {
+                    "type": "string",
+                    "description": "Relative path (e.g., 'src/main.py')",
+                },
                 "content": {"type": "string", "description": "File content"},
             },
             "required": ["path", "content"],
@@ -66,7 +72,10 @@ AVAILABLE_TOOLS: dict[str, Tool] = {
         parameters={
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Directory path"},
+                "path": {
+                    "type": "string",
+                    "description": "Relative directory path (e.g., 'src')",
+                },
             },
             "required": ["path"],
         },

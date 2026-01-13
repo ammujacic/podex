@@ -1,37 +1,57 @@
-"""Coder agent for writing and modifying code."""
+"""Documentator agent for writing technical documentation."""
 
 from src.agents.base import BaseAgent, Tool
 
 
-class CoderAgent(BaseAgent):
-    """Coder agent specializing in writing code."""
+class DocumentatorAgent(BaseAgent):
+    """Documentator agent specializing in technical documentation."""
 
     def _get_system_prompt(self) -> str:
-        """Get coder system prompt."""
-        return """You are an expert software developer. Your role is to:
+        """Get documentator system prompt."""
+        return """You are a technical documentation specialist. Your role is to:
 
-1. **Write Clean Code**: Produce well-structured, readable, and maintainable code.
+1. **Code Documentation**: Write clear inline documentation:
+   - Docstrings for functions, classes, and modules
+   - Inline comments for complex logic
+   - Type hints and annotations
+   - Follow language conventions (JSDoc, Python docstrings, Javadoc, etc.)
 
-2. **Follow Best Practices**: Adhere to language-specific conventions and project guidelines.
+2. **API Documentation**: Create comprehensive API reference documentation:
+   - Endpoint descriptions
+   - Request/response examples
+   - Parameter specifications
+   - Error codes and handling
 
-3. **Implement Features**: Build features based on specifications from the Architect.
+3. **User Guides**: Write tutorials, how-tos, and user-facing documentation:
+   - Getting started guides
+   - Feature explanations
+   - Troubleshooting sections
+   - Best practices
 
-4. **Refactor**: Improve existing code without changing its behavior.
+4. **README Files**: Create and maintain project README files:
+   - Project overview and purpose
+   - Installation instructions
+   - Usage examples
+   - Configuration options
+   - Contributing guidelines
 
-5. **Document**: Add appropriate comments and documentation.
+5. **Architecture Documentation**: Document system design and decisions:
+   - Architecture diagrams (Mermaid, PlantUML)
+   - Design decisions and rationale
+   - Component relationships
+   - Data flow documentation
 
-When writing code:
-- Use meaningful variable and function names
-- Keep functions small and focused
-- Handle errors appropriately
-- Consider edge cases
-- Write code that is easy to test
-
-Always explain your changes and reasoning. If you're unsure about something,
-ask for clarification rather than making assumptions."""
+When writing documentation:
+- Use clear, concise language appropriate for the target audience
+- Include practical examples where helpful
+- Keep documentation up-to-date with code changes
+- Structure content logically with proper headings and sections
+- Use markdown formatting for readability
+- Add diagrams where they improve understanding
+- Link related documentation sections"""
 
     def _get_tools(self) -> list[Tool]:
-        """Get coder tools."""
+        """Get documentator tools."""
         return [
             Tool(
                 name="read_file",
@@ -72,18 +92,6 @@ ask for clarification rather than making assumptions."""
                         "file_pattern": {"type": "string", "description": "File pattern"},
                     },
                     "required": ["query"],
-                },
-            ),
-            Tool(
-                name="run_command",
-                description="Run a shell command in the workspace",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string", "description": "Command to run"},
-                        "cwd": {"type": "string", "description": "Working directory"},
-                    },
-                    "required": ["command"],
                 },
             ),
             Tool(

@@ -13,9 +13,13 @@ import structlog
 from src.agents.agent_builder import AgentBuilderAgent, AgentBuilderConfig
 from src.agents.architect import ArchitectAgent
 from src.agents.base import AgentConfig, BaseAgent
+from src.agents.chat import ChatAgent
 from src.agents.coder import CoderAgent
+from src.agents.devops import DevOpsAgent
+from src.agents.documentator import DocumentatorAgent
 from src.agents.orchestrator_agent import OrchestratorAgent
 from src.agents.reviewer import ReviewerAgent
+from src.agents.security import SecurityAgent
 from src.agents.tester import TesterAgent
 from src.config import settings
 from src.mcp.integration import UserMCPConfig, UserMCPServerConfig
@@ -417,6 +421,10 @@ class AgentOrchestrator:
                     "reviewer": ReviewerAgent,
                     "tester": TesterAgent,
                     "orchestrator": OrchestratorAgent,
+                    "chat": ChatAgent,
+                    "security": SecurityAgent,
+                    "devops": DevOpsAgent,
+                    "documentator": DocumentatorAgent,
                 }
                 agent_class = agent_classes.get(params.role, CoderAgent)
 
@@ -445,7 +453,23 @@ class AgentOrchestrator:
         # Update agent activity timestamp
         self._agent_last_activity[params.agent_id] = time.time()
 
-        return self.agents[params.agent_id]
+        # Update mode and command_allowlist if they changed (agent may have been cached)
+        agent = self.agents[params.agent_id]
+        if agent.mode != params.mode:
+            logger.info(
+                "Updating agent mode",
+                agent_id=params.agent_id,
+                old_mode=agent.mode,
+                new_mode=params.mode,
+            )
+            agent.mode = params.mode
+            agent._update_mode_context()
+        if params.command_allowlist and agent.command_allowlist != params.command_allowlist:
+            agent.command_allowlist = params.command_allowlist
+            if agent.tool_executor:
+                agent.tool_executor.command_allowlist = params.command_allowlist
+
+        return agent
 
     async def submit_task(self, task: AgentTask) -> str:
         """Submit a task for execution."""
@@ -535,11 +559,28 @@ class AgentOrchestrator:
             )
             agent = self.get_or_create_agent(agent_params, mcp_lifecycle)
 
-            # Execute agent
-            response = await agent.execute(
-                message=task.message,
-                _context=task.context,
-            )
+            # Execute agent - use streaming if message_id is provided
+            stream_enabled = task.context.get("stream", False)
+            message_id = task.context.get("message_id")
+
+            if stream_enabled and message_id:
+                # Stream tokens to Redis for real-time delivery
+                logger.info(
+                    "Executing agent with streaming",
+                    agent_id=task.agent_id,
+                    message_id=message_id,
+                )
+                response = await agent.execute_streaming(
+                    message=task.message,
+                    message_id=message_id,
+                    _context=task.context,
+                )
+            else:
+                # Non-streaming execution
+                response = await agent.execute(
+                    message=task.message,
+                    _context=task.context,
+                )
 
             # Update agent activity timestamp after execution completes
             self._agent_last_activity[task.agent_id] = time.time()
