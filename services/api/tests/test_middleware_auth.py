@@ -239,10 +239,27 @@ class TestAuthMiddleware:
         )
         assert response.status_code == 401
 
-    def test_valid_jwt_token(self, client: TestClient) -> None:
+    def test_valid_jwt_token(self, client: TestClient, mocker: Any) -> None:
         """Test valid JWT token allows access."""
-        # Create a valid JWT token
+        from unittest.mock import AsyncMock, MagicMock
+
         from src.config import settings
+
+        # Mock the database lookup to return a valid user
+        mock_user = MagicMock()
+        mock_user.id = "user-123"
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_user
+
+        mock_db = AsyncMock()
+        mock_db.execute = AsyncMock(return_value=mock_result)
+        mock_db.close = AsyncMock()
+
+        async def mock_get_db() -> Any:
+            yield mock_db
+
+        mocker.patch("src.middleware.auth.get_db", mock_get_db)
 
         token = jose_jwt.encode(
             {"sub": "user-123", "role": "admin"},
@@ -300,7 +317,7 @@ class TestAuthMiddleware:
         assert response.status_code == 401
 
     def test_jwt_without_sub_claim(self, client: TestClient) -> None:
-        """Test JWT without sub claim sets None user_id."""
+        """Test JWT without sub claim is rejected."""
         from src.config import settings
 
         token = jose_jwt.encode(
@@ -313,13 +330,31 @@ class TestAuthMiddleware:
             "/api/sessions",
             headers={"Authorization": f"Bearer {token}"},
         )
-        # Request goes through but user_id will be None
-        assert response.status_code == 200
-        assert response.json()["user_id"] is None
+        # Middleware rejects tokens without a user ID (sub claim)
+        assert response.status_code == 401
+        assert "missing user ID" in response.json()["detail"]
 
-    def test_jwt_default_role(self, client: TestClient) -> None:
+    def test_jwt_default_role(self, client: TestClient, mocker: Any) -> None:
         """Test JWT without role claim gets default role."""
+        from unittest.mock import AsyncMock, MagicMock
+
         from src.config import settings
+
+        # Mock the database lookup to return a valid user
+        mock_user = MagicMock()
+        mock_user.id = "user-123"
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_user
+
+        mock_db = AsyncMock()
+        mock_db.execute = AsyncMock(return_value=mock_result)
+        mock_db.close = AsyncMock()
+
+        async def mock_get_db() -> Any:
+            yield mock_db
+
+        mocker.patch("src.middleware.auth.get_db", mock_get_db)
 
         token = jose_jwt.encode(
             {"sub": "user-123"},  # No 'role' claim
