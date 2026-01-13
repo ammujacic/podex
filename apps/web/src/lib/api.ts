@@ -216,11 +216,23 @@ class ApiClient {
   }
 
   async get<T>(path: string, includeAuth = true): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      method: 'GET',
-      headers: this.getHeaders(includeAuth),
-    });
-    return this.handleResponse<T>(response);
+    try {
+      const response = await fetch(`${this.baseUrl}${path}`, {
+        method: 'GET',
+        headers: this.getHeaders(includeAuth),
+      });
+      return this.handleResponse<T>(response);
+    } catch (error) {
+      // Handle network errors (e.g., server not running, CORS issues)
+      if (error instanceof TypeError && error.message === 'Failed to fetch') {
+        const err = new Error(
+          'Unable to connect to the API server. Please ensure the backend is running.'
+        ) as Error & { status: number };
+        err.status = 503; // Service Unavailable
+        throw err;
+      }
+      throw error;
+    }
   }
 
   /**
@@ -257,38 +269,82 @@ class ApiClient {
   }
 
   async post<T>(path: string, data: unknown, includeAuth = true): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      method: 'POST',
-      headers: this.getHeaders(includeAuth),
-      body: JSON.stringify(data),
-    });
-    return this.handleResponse<T>(response);
+    try {
+      const response = await fetch(`${this.baseUrl}${path}`, {
+        method: 'POST',
+        headers: this.getHeaders(includeAuth),
+        body: JSON.stringify(data),
+      });
+      return this.handleResponse<T>(response);
+    } catch (error) {
+      if (error instanceof TypeError && error.message === 'Failed to fetch') {
+        const err = new Error(
+          'Unable to connect to the API server. Please ensure the backend is running.'
+        ) as Error & { status: number };
+        err.status = 503;
+        throw err;
+      }
+      throw error;
+    }
   }
 
   async put<T>(path: string, data: unknown): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      method: 'PUT',
-      headers: this.getHeaders(),
-      body: JSON.stringify(data),
-    });
-    return this.handleResponse<T>(response);
+    try {
+      const response = await fetch(`${this.baseUrl}${path}`, {
+        method: 'PUT',
+        headers: this.getHeaders(),
+        body: JSON.stringify(data),
+      });
+      return this.handleResponse<T>(response);
+    } catch (error) {
+      if (error instanceof TypeError && error.message === 'Failed to fetch') {
+        const err = new Error(
+          'Unable to connect to the API server. Please ensure the backend is running.'
+        ) as Error & { status: number };
+        err.status = 503;
+        throw err;
+      }
+      throw error;
+    }
   }
 
   async delete<T>(path: string): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      method: 'DELETE',
-      headers: this.getHeaders(),
-    });
-    return this.handleResponse<T>(response);
+    try {
+      const response = await fetch(`${this.baseUrl}${path}`, {
+        method: 'DELETE',
+        headers: this.getHeaders(),
+      });
+      return this.handleResponse<T>(response);
+    } catch (error) {
+      if (error instanceof TypeError && error.message === 'Failed to fetch') {
+        const err = new Error(
+          'Unable to connect to the API server. Please ensure the backend is running.'
+        ) as Error & { status: number };
+        err.status = 503;
+        throw err;
+      }
+      throw error;
+    }
   }
 
   async patch<T>(path: string, data: unknown): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      method: 'PATCH',
-      headers: this.getHeaders(),
-      body: JSON.stringify(data),
-    });
-    return this.handleResponse<T>(response);
+    try {
+      const response = await fetch(`${this.baseUrl}${path}`, {
+        method: 'PATCH',
+        headers: this.getHeaders(),
+        body: JSON.stringify(data),
+      });
+      return this.handleResponse<T>(response);
+    } catch (error) {
+      if (error instanceof TypeError && error.message === 'Failed to fetch') {
+        const err = new Error(
+          'Unable to connect to the API server. Please ensure the backend is running.'
+        ) as Error & { status: number };
+        err.status = 503;
+        throw err;
+      }
+      throw error;
+    }
   }
 
   // Auth methods

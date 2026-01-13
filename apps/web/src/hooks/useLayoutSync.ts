@@ -147,7 +147,13 @@ export function useLayoutSync({ sessionId, enabled = true }: UseLayoutSyncOption
 
         isApplyingRemote.current = false;
       } catch (error) {
-        console.error('[LayoutSync] Failed to load layout from server:', error);
+        // Silently fail on connection errors - we'll work with local state
+        const err = error as Error & { status?: number };
+        if (err.status === 503) {
+          console.warn('[LayoutSync] API server unavailable, using local state');
+        } else {
+          console.error('[LayoutSync] Failed to load layout from server:', error);
+        }
         isApplyingRemote.current = false;
       }
     };

@@ -52,12 +52,13 @@ export function UsageSidebarPanel({ sessionId }: UsageSidebarPanelProps) {
 
   // Get agents from the current session to map agent IDs to names
   const session = useSessionStore((state) => state.sessions[sessionId]);
-  const agents = session?.agents || [];
 
   // Derive usage data from cost store
   const usage = useMemo(() => {
     const costData = sessionCosts[sessionId];
     if (!costData) return null;
+
+    const agents = session?.agents || [];
 
     // Build agent breakdown
     const agentUsage: AgentUsageCompact[] = Object.entries(costData.byAgent || {}).map(
@@ -80,7 +81,7 @@ export function UsageSidebarPanel({ sessionId }: UsageSidebarPanelProps) {
       totalCalls: costData.callCount,
       agents: agentUsage,
     };
-  }, [sessionCosts, sessionId, agents]);
+  }, [sessionCosts, sessionId, session?.agents]);
 
   const handleRefresh = useCallback(() => {
     // Cost updates come via WebSocket, so just trigger a visual refresh

@@ -169,9 +169,13 @@ export const useMCPStore = create<MCPState>()(
             isLoadingDefaults: false,
           });
         } catch (err) {
-          const message = err instanceof Error ? err.message : 'Failed to load MCP defaults';
+          const error = err as Error & { status?: number };
+          const message =
+            error.status === 503
+              ? 'API server unavailable. Please start the backend.'
+              : error.message || 'Failed to load MCP defaults';
           set({ error: message, isLoadingDefaults: false });
-          throw err;
+          // Don't re-throw - let the component handle the error state gracefully
         }
       },
 
@@ -181,9 +185,13 @@ export const useMCPStore = create<MCPState>()(
           const servers = await listMCPServers();
           set({ userServers: servers, isLoadingUserServers: false });
         } catch (err) {
-          const message = err instanceof Error ? err.message : 'Failed to load MCP servers';
+          const error = err as Error & { status?: number };
+          const message =
+            error.status === 503
+              ? 'API server unavailable. Please start the backend.'
+              : error.message || 'Failed to load MCP servers';
           set({ error: message, isLoadingUserServers: false });
-          throw err;
+          // Don't re-throw - let the component handle the error state gracefully
         }
       },
 
@@ -204,10 +212,9 @@ export const useMCPStore = create<MCPState>()(
         try {
           await Promise.all([get().loadDefaults(), get().loadUserServers()]);
           set({ isLoading: false });
-        } catch (err) {
+        } catch {
           set({ isLoading: false });
-          // Error already set by individual loaders
-          throw err;
+          // Error already set by individual loaders, don't re-throw
         }
       },
 
