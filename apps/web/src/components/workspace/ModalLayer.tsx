@@ -267,9 +267,20 @@ function CreateAgentModal({ sessionId, onClose }: { sessionId: string; onClose: 
 
       addAgent(sessionId, agent);
       onClose();
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Failed to create agent:', err);
-      setError(err instanceof Error ? err.message : 'Failed to create agent');
+
+      // Extract error message from different error types
+      let errorMessage = 'Failed to create agent';
+      if (err instanceof Error) {
+        errorMessage = err.message;
+      } else if (typeof err === 'object' && err !== null && 'detail' in err) {
+        errorMessage = String((err as { detail: unknown }).detail);
+      } else if (typeof err === 'string') {
+        errorMessage = err;
+      }
+
+      setError(errorMessage);
     } finally {
       setIsCreating(false);
     }
@@ -550,13 +561,31 @@ function CreateAgentModal({ sessionId, onClose }: { sessionId: string; onClose: 
               />
             </div>
           )}
-
-          {error && (
-            <div className="mt-4 p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
-              {error}
-            </div>
-          )}
         </div>
+
+        {/* Error Display - Fixed position above footer */}
+        {error && (
+          <div className="px-6 py-4 border-t border-border-subtle shrink-0 bg-surface">
+            <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/20">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <h4 className="text-sm font-semibold text-red-300 mb-1">
+                    {error.includes('quota') || error.includes('exceeded')
+                      ? 'Agent Limit Reached'
+                      : 'Failed to Create Agent'}
+                  </h4>
+                  <p className="text-sm text-red-400/90">{error}</p>
+                  {(error.includes('quota') || error.includes('exceeded')) && (
+                    <p className="text-xs text-red-400/70 mt-2">
+                      Remove an existing agent or upgrade your plan to add more agents.
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Footer */}
         <div className="flex items-center justify-between gap-3 border-t border-border-subtle px-6 py-4 shrink-0">
