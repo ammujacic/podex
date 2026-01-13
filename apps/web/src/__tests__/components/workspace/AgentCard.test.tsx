@@ -14,6 +14,8 @@ vi.mock('@/stores/session', async () => {
     useSessionStore: () => ({
       removeAgent: vi.fn(),
       updateAgent: vi.fn(),
+      addAgentMessage: vi.fn(),
+      streamingMessages: {},
     }),
   };
 });

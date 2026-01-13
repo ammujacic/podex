@@ -173,8 +173,8 @@ class DockerComputeManager(ComputeManager):
         try:
             # Run container - use sh as command since stdin_open=True and tty=True
             # will keep it waiting for input. sh exists in virtually all images.
-            container: Container = await asyncio.to_thread(  # type: ignore[arg-type]
-                self.client.containers.run,
+            container: Container = await asyncio.to_thread(
+                self.client.containers.run,  # type: ignore[arg-type]
                 container_image,
                 command="/bin/sh",
                 detach=True,

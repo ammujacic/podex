@@ -59,7 +59,7 @@ def _create_limiter() -> Limiter:
         limiter_instance = Limiter(
             key_func=get_client_identifier,
             storage_uri=storage_uri,
-            storage_options={"socket_connect_timeout": 5} if storage_uri else {},  # type: ignore[arg-type]
+            storage_options={"socket_connect_timeout": 5} if storage_uri else {},  # type: ignore[dict-item]
             strategy="fixed-window",
             headers_enabled=True,
         )
