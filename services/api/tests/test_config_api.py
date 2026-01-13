@@ -18,8 +18,9 @@ class TestSettingsDefaults:
 
     def test_environment_default(self) -> None:
         """Test default environment."""
-        settings = Settings()
-        assert settings.ENVIRONMENT == "development"
+        with patch.dict(os.environ, {"ENVIRONMENT": ""}, clear=False):
+            settings = Settings()
+            assert settings.ENVIRONMENT == "development"
 
     def test_port_default(self) -> None:
         """Test default port."""
@@ -290,7 +291,11 @@ class TestJWTSecretValidation:
     def test_valid_secret_accepted_in_production(self) -> None:
         """Test valid JWT secret is accepted in production."""
         long_secret = "x" * MIN_JWT_SECRET_LENGTH
-        with patch.dict(os.environ, {"ENVIRONMENT": "production"}, clear=False):
+        with patch.dict(
+            os.environ,
+            {"ENVIRONMENT": "production", "COMPUTE_INTERNAL_API_KEY": "test-key"},
+            clear=False,
+        ):
             settings = Settings(JWT_SECRET_KEY=long_secret)
             assert settings.JWT_SECRET_KEY == long_secret
 

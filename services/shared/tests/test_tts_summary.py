@@ -219,11 +219,12 @@ class TestGenerateTTSSummaryLongText:
 
     def test_long_text_truncation(self) -> None:
         """Test that very long text is truncated."""
-        # Text with no sentence breaks
-        text = "word " * 100
+        # Text with no sentence breaks - must exceed MAX_DIRECT_TTS_LENGTH (500)
+        text = "word " * 110  # 550 chars > 500 threshold
         result = generate_tts_summary(text)
         assert result.was_summarized is True
-        assert "..." in result.summary
+        # Long text summary includes this phrase
+        assert "Please read my full response" in result.summary
 
 
 class TestGenerateTTSSummaryMarkdownCleaning:
