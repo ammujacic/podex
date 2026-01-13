@@ -407,7 +407,7 @@ class ComputeClient:
         workspace_id: str,
         user_id: str,
         branch_name: str,
-        delete_branch: bool = True,
+        delete_branch: bool = True,  # noqa: FBT001, FBT002
     ) -> dict[str, Any]:
         """Merge a worktree branch to main branch."""
         try:
@@ -518,7 +518,7 @@ class ComputeClient:
             with contextlib.suppress(Exception):
                 await self.exec_command(workspace_id, user_id, f"git branch -D {branch_name}")
 
-            return {
+            return {  # noqa: TRY300
                 "success": True,
                 "message": "Worktree deleted successfully",
             }

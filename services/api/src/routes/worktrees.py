@@ -205,7 +205,7 @@ async def merge_worktree(
     try:
         # Perform actual git merge via compute service
         if not session.workspace_id:
-            raise HTTPException(status_code=400, detail="Session workspace_id is required")
+            raise HTTPException(status_code=400, detail="Session workspace_id is required")  # noqa: TRY301
 
         merge_result = await compute_client.git_worktree_merge(
             session.workspace_id,
@@ -263,7 +263,7 @@ async def merge_worktree(
             },
         )
 
-        raise HTTPException(status_code=500, detail=merge_result.get("message", "Merge failed"))
+        raise HTTPException(status_code=500, detail=merge_result.get("message", "Merge failed"))  # noqa: TRY301
 
     except HTTPException:
         raise
@@ -320,7 +320,7 @@ async def delete_worktree(
     try:
         # Delete the worktree via compute service
         if not session.workspace_id:
-            raise HTTPException(status_code=400, detail="Session workspace_id is required")
+            raise HTTPException(status_code=400, detail="Session workspace_id is required")  # noqa: TRY301
 
         delete_result = await compute_client.git_worktree_delete(
             session.workspace_id,
@@ -351,7 +351,7 @@ async def delete_worktree(
                 worktree_id=worktree_id,
                 message="Worktree deleted successfully",
             )
-        raise HTTPException(
+        raise HTTPException(  # noqa: TRY301
             status_code=500,
             detail=delete_result.get("message", "Failed to delete worktree"),
         )
@@ -405,7 +405,7 @@ async def check_worktree_conflicts(
     try:
         # Check for conflicts via compute service
         if not session.workspace_id:
-            raise HTTPException(status_code=400, detail="Session workspace_id is required")
+            raise HTTPException(status_code=400, detail="Session workspace_id is required")  # noqa: TRY301
 
         conflicts_result = await compute_client.git_worktree_check_conflicts(
             session.workspace_id,
