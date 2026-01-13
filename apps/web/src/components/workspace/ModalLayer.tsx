@@ -268,8 +268,6 @@ function CreateAgentModal({ sessionId, onClose }: { sessionId: string; onClose: 
       addAgent(sessionId, agent);
       onClose();
     } catch (err: unknown) {
-      console.error('Failed to create agent:', err);
-
       // Extract error message from different error types
       let errorMessage = 'Failed to create agent';
       if (err instanceof Error) {
