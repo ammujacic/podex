@@ -44,6 +44,9 @@ export { CompactionDialog } from './CompactionDialog';
 export { CheckpointTimeline, CheckpointTimelineCompact } from './CheckpointTimeline';
 export { CheckpointRestoreDialog } from './CheckpointRestoreDialog';
 
+// Worktree components
+export { WorktreeStatus } from './WorktreeStatus';
+
 // Diff/Change review components
 export { AggregatedDiffModal } from './AggregatedDiffModal';
 export { SplitDiffView, StandaloneSplitDiff } from './SplitDiffView';

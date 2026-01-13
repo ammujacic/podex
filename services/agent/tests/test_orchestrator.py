@@ -80,7 +80,7 @@ class TestOrchestratorFlow:
     @pytest.mark.asyncio
     async def test_orchestrator_initialization(self) -> None:
         """Test orchestrator can be initialized."""
-        from src.orchestrator import AgentOrchestrator  # noqa: PLC0415
+        from src.orchestrator import AgentOrchestrator
 
         # Mock LLMProvider to avoid actual initialization
         with patch("src.orchestrator.LLMProvider"):
@@ -93,7 +93,7 @@ class TestOrchestratorFlow:
     @pytest.mark.asyncio
     async def test_orchestrator_has_llm_provider(self) -> None:
         """Test orchestrator initializes with LLM provider."""
-        from src.orchestrator import AgentOrchestrator  # noqa: PLC0415
+        from src.orchestrator import AgentOrchestrator
 
         with patch("src.orchestrator.LLMProvider") as mock_llm_class:
             mock_provider = MagicMock()
@@ -105,7 +105,7 @@ class TestOrchestratorFlow:
     @pytest.mark.asyncio
     async def test_task_dataclass(self) -> None:
         """Test AgentTask dataclass."""
-        from src.orchestrator import AgentTask  # noqa: PLC0415
+        from src.orchestrator import AgentTask
 
         task = AgentTask(
             session_id="session-123",
@@ -120,7 +120,7 @@ class TestOrchestratorFlow:
     @pytest.mark.asyncio
     async def test_task_result_dataclass(self) -> None:
         """Test TaskResult dataclass."""
-        from src.orchestrator import TaskResult, TaskStatus  # noqa: PLC0415
+        from src.orchestrator import TaskResult, TaskStatus
 
         result = TaskResult(status=TaskStatus.COMPLETED, response="Done")
         assert result.status == TaskStatus.COMPLETED
@@ -140,14 +140,14 @@ class TestToolExecution:
     @pytest.mark.asyncio
     async def test_tool_executor_class_exists(self) -> None:
         """Test ToolExecutor class exists."""
-        from src.tools.executor import ToolExecutor  # noqa: PLC0415
+        from src.tools.executor import ToolExecutor
 
         assert ToolExecutor is not None
 
     @pytest.mark.asyncio
     async def test_tool_executor_initialization(self, tmp_path: Any) -> None:
         """Test ToolExecutor can be initialized."""
-        from src.tools.executor import ToolExecutor  # noqa: PLC0415
+        from src.tools.executor import ToolExecutor
 
         workspace = tmp_path / "workspace"
         workspace.mkdir()
@@ -166,7 +166,7 @@ class TestTaskStatus:
 
     def test_task_status_values(self) -> None:
         """Test TaskStatus enum values."""
-        from src.orchestrator import TaskStatus  # noqa: PLC0415
+        from src.orchestrator import TaskStatus
 
         assert TaskStatus.PENDING == "pending"
         assert TaskStatus.RUNNING == "running"
@@ -184,7 +184,7 @@ class TestAgentCreationParams:
 
     def test_agent_creation_params(self) -> None:
         """Test AgentCreationParams dataclass."""
-        from src.orchestrator import AgentCreationParams  # noqa: PLC0415
+        from src.orchestrator import AgentCreationParams
 
         params = AgentCreationParams(
             agent_id="agent-123",

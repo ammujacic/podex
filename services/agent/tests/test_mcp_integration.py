@@ -83,14 +83,14 @@ class TestMCPClient:
     @pytest.mark.asyncio
     async def test_mcp_client_exists(self) -> None:
         """Test MCPClient class exists."""
-        from src.mcp.client import MCPClient  # noqa: PLC0415
+        from src.mcp.client import MCPClient
 
         assert MCPClient is not None
 
     @pytest.mark.asyncio
     async def test_mcp_transport_enum(self) -> None:
         """Test MCPTransport enum."""
-        from src.mcp.client import MCPTransport  # noqa: PLC0415
+        from src.mcp.client import MCPTransport
 
         assert MCPTransport.STDIO == "stdio"
         assert MCPTransport.SSE == "sse"
@@ -98,7 +98,7 @@ class TestMCPClient:
     @pytest.mark.asyncio
     async def test_mcp_server_config_dataclass(self) -> None:
         """Test MCPServerConfig dataclass."""
-        from src.mcp.client import MCPServerConfig, MCPTransport  # noqa: PLC0415
+        from src.mcp.client import MCPServerConfig, MCPTransport
 
         config = MCPServerConfig(
             id="server-123",
@@ -115,7 +115,7 @@ class TestMCPClient:
     @pytest.mark.asyncio
     async def test_mcp_tool_definition_dataclass(self) -> None:
         """Test MCPToolDefinition dataclass."""
-        from src.mcp.client import MCPToolDefinition  # noqa: PLC0415
+        from src.mcp.client import MCPToolDefinition
 
         tool = MCPToolDefinition(
             name="test-tool",
@@ -139,7 +139,7 @@ class TestMCPIntegration:
     @pytest.mark.asyncio
     async def test_is_mcp_tool_name(self) -> None:
         """Test is_mcp_tool_name helper."""
-        from src.mcp.integration import is_mcp_tool_name  # noqa: PLC0415
+        from src.mcp.integration import is_mcp_tool_name
 
         # MCP tools start with 'mcp:' prefix
         assert is_mcp_tool_name("mcp:server__tool_name") is True
@@ -148,7 +148,7 @@ class TestMCPIntegration:
     @pytest.mark.asyncio
     async def test_extract_mcp_qualified_name(self) -> None:
         """Test extract_mcp_qualified_name helper."""
-        from src.mcp.integration import extract_mcp_qualified_name  # noqa: PLC0415
+        from src.mcp.integration import extract_mcp_qualified_name
 
         # Returns qualified name without "mcp:" prefix
         qualified = extract_mcp_qualified_name("mcp:server:tool")
@@ -161,7 +161,7 @@ class TestMCPIntegration:
     @pytest.mark.asyncio
     async def test_user_mcp_server_config(self) -> None:
         """Test UserMCPServerConfig class."""
-        from src.mcp.integration import UserMCPServerConfig  # noqa: PLC0415
+        from src.mcp.integration import UserMCPServerConfig
 
         config = UserMCPServerConfig(
             id="server-123",
@@ -177,7 +177,7 @@ class TestMCPIntegration:
     @pytest.mark.asyncio
     async def test_user_mcp_config(self) -> None:
         """Test UserMCPConfig class."""
-        from src.mcp.integration import UserMCPConfig, UserMCPServerConfig  # noqa: PLC0415
+        from src.mcp.integration import UserMCPConfig, UserMCPServerConfig
 
         server = UserMCPServerConfig(
             id="test-123",
@@ -212,14 +212,14 @@ class TestToolDiscovery:
     @pytest.mark.asyncio
     async def test_mcp_tool_registry_exists(self) -> None:
         """Test MCPToolRegistry class exists."""
-        from src.mcp.registry import MCPToolRegistry  # noqa: PLC0415
+        from src.mcp.registry import MCPToolRegistry
 
         assert MCPToolRegistry is not None
 
     @pytest.mark.asyncio
     async def test_mcp_tool_dataclass(self) -> None:
         """Test MCPTool dataclass structure."""
-        from src.mcp.registry import MCPTool  # noqa: PLC0415
+        from src.mcp.registry import MCPTool
 
         # MCPTool requires a definition and client
         # Just verify the class exists and has expected properties
@@ -267,20 +267,20 @@ class TestMCPLifecycle:
     @pytest.mark.asyncio
     async def test_lifecycle_manager_exists(self) -> None:
         """Test MCPLifecycleManager class exists."""
-        from src.mcp.lifecycle import MCPLifecycleManager  # noqa: PLC0415
+        from src.mcp.lifecycle import MCPLifecycleManager
 
         assert MCPLifecycleManager is not None
 
     @pytest.mark.asyncio
     async def test_lifecycle_store_exists(self) -> None:
         """Test MCPLifecycleStore class exists."""
-        from src.mcp.lifecycle import MCPLifecycleStore  # noqa: PLC0415
+        from src.mcp.lifecycle import MCPLifecycleStore
 
         assert MCPLifecycleStore is not None
 
     @pytest.mark.asyncio
     async def test_registry_holder_exists(self) -> None:
         """Test MCPRegistryHolder class exists."""
-        from src.mcp.registry import MCPRegistryHolder  # noqa: PLC0415
+        from src.mcp.registry import MCPRegistryHolder
 
         assert MCPRegistryHolder is not None

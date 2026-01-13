@@ -13,6 +13,7 @@ import {
   type AgentStatusEvent,
   type AgentStreamStartEvent,
   type AgentTokenEvent,
+  type AgentThinkingTokenEvent,
   type AgentStreamEndEvent,
   type AgentAutoModeSwitchEvent,
 } from '@/lib/socket';
@@ -37,6 +38,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
   // Streaming refs
   const startStreamingMessageRef = useRef(useSessionStore.getState().startStreamingMessage);
   const appendStreamingTokenRef = useRef(useSessionStore.getState().appendStreamingToken);
+  const appendThinkingTokenRef = useRef(useSessionStore.getState().appendThinkingToken);
   const finalizeStreamingMessageRef = useRef(useSessionStore.getState().finalizeStreamingMessage);
 
   // Keep refs updated
@@ -47,6 +49,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       handleAutoModeSwitchRef.current = state.handleAutoModeSwitch;
       startStreamingMessageRef.current = state.startStreamingMessage;
       appendStreamingTokenRef.current = state.appendStreamingToken;
+      appendThinkingTokenRef.current = state.appendThinkingToken;
       finalizeStreamingMessageRef.current = state.finalizeStreamingMessage;
     });
     return unsubscribe;
@@ -80,6 +83,22 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
         );
         if (existingByContent) {
           // Replace temp message with real one (update ID)
+          const { updateMessageId } = useSessionStore.getState();
+          if (updateMessageId) {
+            updateMessageId(sessionId, data.agent_id, existingByContent.id, data.id);
+          }
+          return; // Don't add duplicate
+        }
+      }
+
+      // For assistant messages, check by content (streaming messages might have different IDs)
+      // This fixes the "Message not found" error when trying to play audio
+      if (data.role === 'assistant') {
+        const existingByContent = agent?.messages.find(
+          (m) => m.role === 'assistant' && m.content === data.content && m.id !== data.id
+        );
+        if (existingByContent) {
+          // Replace streaming message ID with real database ID
           const { updateMessageId } = useSessionStore.getState();
           if (updateMessageId) {
             updateMessageId(sessionId, data.agent_id, existingByContent.id, data.id);
@@ -158,10 +177,24 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       appendStreamingTokenRef.current(data.message_id, data.token);
     });
 
+    // Handle streaming: thinking tokens (for collapsible thinking display)
+    const unsubThinkingToken = onSocketEvent(
+      'agent_thinking_token',
+      (data: AgentThinkingTokenEvent) => {
+        if (data.session_id !== sessionId) return;
+        appendThinkingTokenRef.current(data.message_id, data.thinking);
+      }
+    );
+
     // Handle streaming: stream end
     const unsubStreamEnd = onSocketEvent('agent_stream_end', (data: AgentStreamEndEvent) => {
       if (data.session_id !== sessionId) return;
-      finalizeStreamingMessageRef.current(data.message_id, data.full_content || '');
+      // Include tool_calls when finalizing the streaming message
+      finalizeStreamingMessageRef.current(
+        data.message_id,
+        data.full_content || '',
+        data.tool_calls || undefined
+      );
       // Set agent status to idle when streaming ends
       updateAgentRef.current(sessionId, data.agent_id, { status: 'idle' });
     });
@@ -173,6 +206,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       unsubModeSwitch();
       unsubStreamStart();
       unsubStreamToken();
+      unsubThinkingToken();
       unsubStreamEnd();
       leaveSession(sessionId, userId);
     };

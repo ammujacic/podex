@@ -692,6 +692,29 @@ async def emit_agent_token(
     )
 
 
+async def emit_agent_thinking_token(
+    session_id: str,
+    agent_id: str,
+    thinking: str,
+    message_id: str | None = None,
+) -> None:
+    """Emit a thinking token from an agent's reasoning process.
+
+    This allows real-time display of agent thinking in a collapsible UI.
+    """
+    await sio.emit(
+        "agent_thinking_token",
+        {
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "thinking": thinking,
+            "message_id": message_id,
+            "timestamp": datetime.now(UTC).isoformat(),
+        },
+        room=f"session:{session_id}",
+    )
+
+
 async def emit_agent_stream_start(
     session_id: str,
     agent_id: str,
@@ -715,8 +738,22 @@ async def emit_agent_stream_end(
     agent_id: str,
     message_id: str,
     full_content: str | None = None,
+    tool_calls: list[dict[str, Any]] | None = None,
 ) -> None:
     """Emit event when agent finishes streaming a response."""
+    # Format tool calls for frontend
+    formatted_tool_calls = None
+    if tool_calls:
+        formatted_tool_calls = [
+            {
+                "id": tc.get("id", f"tc-{i}"),
+                "name": tc.get("name", "unknown"),
+                "args": tc.get("arguments", tc.get("args", {})),
+                "result": tc.get("result"),
+                "status": "completed" if tc.get("result") else "pending",
+            }
+            for i, tc in enumerate(tool_calls)
+        ]
     await sio.emit(
         "agent_stream_end",
         {
@@ -724,6 +761,7 @@ async def emit_agent_stream_end(
             "agent_id": agent_id,
             "message_id": message_id,
             "full_content": full_content,
+            "tool_calls": formatted_tool_calls,
             "timestamp": datetime.now(UTC).isoformat(),
         },
         room=f"session:{session_id}",

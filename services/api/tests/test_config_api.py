@@ -302,7 +302,7 @@ class TestJWTSecretValidation:
             clear=False,
         ):
             settings = Settings(JWT_SECRET_KEY=long_secret)
-            assert settings.JWT_SECRET_KEY == long_secret
+            assert long_secret == settings.JWT_SECRET_KEY
 
 
 class TestCustomSettings:

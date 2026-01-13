@@ -14,6 +14,21 @@ MAX_READ_FILE_SIZE = 1_000_000  # 1MB
 MAX_SEARCH_FILE_SIZE = 500_000  # 500KB
 
 
+def _normalize_path(path: str) -> str:
+    """Normalize a path by stripping leading slashes.
+
+    This handles the common LLM mistake of passing absolute paths like "/README.md"
+    instead of relative paths like "README.md".
+
+    Args:
+        path: Path string that may have leading slashes.
+
+    Returns:
+        Normalized path without leading slashes.
+    """
+    return path.lstrip("/")
+
+
 def _validate_path_within_workspace(workspace_path: Path, target_path: Path) -> bool:
     """Validate that target_path is within workspace_path, protecting against symlink attacks.
 
@@ -76,6 +91,8 @@ async def read_file(workspace_path: Path, path: str) -> dict[str, Any]:
         Dictionary with content or error.
     """
     try:
+        # Normalize path to handle absolute paths passed by LLM
+        path = _normalize_path(path)
         file_path = (workspace_path / path).resolve()
 
         # Validate file is readable
@@ -114,6 +131,8 @@ async def write_file(workspace_path: Path, path: str, content: str) -> dict[str,
         Dictionary with success status or error.
     """
     try:
+        # Normalize path to handle absolute paths passed by LLM
+        path = _normalize_path(path)
         # Resolve both paths to handle symlinks safely
         resolved_workspace = workspace_path.resolve()
         file_path = (workspace_path / path).resolve()
@@ -154,6 +173,8 @@ async def list_directory(workspace_path: Path, path: str = ".") -> dict[str, Any
         Dictionary with file listing or error.
     """
     try:
+        # Normalize path to handle absolute paths passed by LLM
+        path = _normalize_path(path) or "."
         # Resolve both paths to handle symlinks safely
         resolved_workspace = workspace_path.resolve()
         dir_path = (workspace_path / path).resolve()

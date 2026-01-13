@@ -12,6 +12,7 @@ from src.config import settings
 from src.websocket.hub import (
     emit_agent_stream_end,
     emit_agent_stream_start,
+    emit_agent_thinking_token,
     emit_agent_token,
     emit_tool_call_end,
     emit_tool_call_start,
@@ -36,6 +37,7 @@ class StreamSubscriber:
         self._listen_task: asyncio.Task[None] | None = None
         self._running = False
         self._subscribed_sessions: set[str] = set()
+        self._lock = asyncio.Lock()
 
     async def connect(self) -> None:
         """Connect to Redis."""
@@ -50,13 +52,7 @@ class StreamSubscriber:
 
     async def disconnect(self) -> None:
         """Disconnect from Redis and stop listening."""
-        self._running = False
-
-        if self._listen_task:
-            self._listen_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._listen_task
-            self._listen_task = None
+        await self._stop_listener()
 
         if self._pubsub:
             await self._pubsub.close()
@@ -75,26 +71,28 @@ class StreamSubscriber:
         Args:
             session_id: The session to subscribe to.
         """
-        if session_id in self._subscribed_sessions:
-            return
+        async with self._lock:
+            if session_id in self._subscribed_sessions:
+                return
 
-        await self.connect()
+            await self.connect()
 
-        if self._pubsub is None and self._redis is not None:
-            self._pubsub = self._redis.pubsub()
+            # Stop listener before modifying subscriptions to avoid concurrent reads
+            await self._stop_listener()
 
-        # Subscribe to pattern for all agents in this session
-        pattern = f"agent_stream:{session_id}:*"
-        if self._pubsub is not None:
-            await self._pubsub.psubscribe(pattern)
-        self._subscribed_sessions.add(session_id)
+            if self._pubsub is None and self._redis is not None:
+                self._pubsub = self._redis.pubsub()
 
-        logger.info("Subscribed to session stream", session_id=session_id, pattern=pattern)
+            # Subscribe to pattern for all agents in this session
+            pattern = f"agent_stream:{session_id}:*"
+            if self._pubsub is not None:
+                await self._pubsub.psubscribe(pattern)
+            self._subscribed_sessions.add(session_id)
 
-        # Start listener if not already running
-        if not self._running:
-            self._running = True
-            self._listen_task = asyncio.create_task(self._listen())
+            logger.info("Subscribed to session stream", session_id=session_id, pattern=pattern)
+
+            # Start listener after subscription change
+            self._start_listener()
 
     async def unsubscribe_session(self, session_id: str) -> None:
         """Unsubscribe from streaming events for a session.
@@ -102,19 +100,38 @@ class StreamSubscriber:
         Args:
             session_id: The session to unsubscribe from.
         """
-        if session_id not in self._subscribed_sessions:
-            return
+        async with self._lock:
+            if session_id not in self._subscribed_sessions:
+                return
 
-        if self._pubsub:
-            pattern = f"agent_stream:{session_id}:*"
-            await self._pubsub.punsubscribe(pattern)
+            # Stop listener before modifying subscriptions to avoid concurrent reads
+            await self._stop_listener()
 
-        self._subscribed_sessions.discard(session_id)
-        logger.info("Unsubscribed from session stream", session_id=session_id)
+            if self._pubsub:
+                pattern = f"agent_stream:{session_id}:*"
+                await self._pubsub.punsubscribe(pattern)
 
-        # Stop listener if no more subscriptions
-        if not self._subscribed_sessions:
+            self._subscribed_sessions.discard(session_id)
+            logger.info("Unsubscribed from session stream", session_id=session_id)
+
+            # Restart listener if there are still subscriptions
+            if self._subscribed_sessions:
+                self._start_listener()
+
+    async def _stop_listener(self) -> None:
+        """Stop the listener task if running."""
+        if self._listen_task and not self._listen_task.done():
             self._running = False
+            self._listen_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._listen_task
+            self._listen_task = None
+
+    def _start_listener(self) -> None:
+        """Start the listener task if not already running."""
+        if not self._running and self._subscribed_sessions:
+            self._running = True
+            self._listen_task = asyncio.create_task(self._listen())
 
     async def _listen(self) -> None:
         """Listen for Redis messages and forward to WebSocket."""
@@ -174,6 +191,14 @@ class StreamSubscriber:
                 message_id=message_id,
             )
 
+        elif event_type == "thinking":
+            await emit_agent_thinking_token(
+                session_id=session_id,
+                agent_id=agent_id,
+                thinking=data.get("content", ""),
+                message_id=message_id,
+            )
+
         elif event_type == "tool_call_start":
             await emit_tool_call_start(
                 session_id=session_id,
@@ -197,6 +222,7 @@ class StreamSubscriber:
                 agent_id=agent_id,
                 message_id=message_id,
                 full_content=data.get("content"),
+                tool_calls=data.get("tool_calls"),
             )
 
         elif event_type == "error":

@@ -47,7 +47,15 @@ class UsageTrackingContext:
 class StreamEvent:
     """Event emitted during streaming completion."""
 
-    type: Literal["token", "tool_call_start", "tool_call_input", "tool_call_end", "done", "error"]
+    type: Literal[
+        "token",
+        "thinking",
+        "tool_call_start",
+        "tool_call_input",
+        "tool_call_end",
+        "done",
+        "error",
+    ]
     content: str | None = None
     tool_call_id: str | None = None
     tool_name: str | None = None
@@ -623,11 +631,19 @@ class LLMProvider:
                             tool_call_id=block.id,
                             tool_name=block.name,
                         )
+                    elif block.type == "thinking":
+                        # Starting a thinking block
+                        pass
+                    elif block.type == "text":
+                        pass
 
                 elif event.type == "content_block_delta":
                     delta = event.delta
                     if delta.type == "text_delta":
                         yield StreamEvent(type="token", content=delta.text)
+                    elif delta.type == "thinking_delta":
+                        # Stream thinking tokens
+                        yield StreamEvent(type="thinking", content=delta.thinking)
                     elif delta.type == "input_json_delta" and current_tool_call:
                         # Accumulate tool input JSON
                         current_tool_call["input_json"] += delta.partial_json

@@ -71,7 +71,7 @@ class TestFileTools:
     @pytest.mark.asyncio
     async def test_read_file_tool_exists(self) -> None:
         """Test read_file tool exists."""
-        from src.tools.file_tools import read_file  # noqa: PLC0415
+        from src.tools.file_tools import read_file
 
         assert read_file is not None
         assert callable(read_file)
@@ -79,7 +79,7 @@ class TestFileTools:
     @pytest.mark.asyncio
     async def test_write_file_tool_exists(self) -> None:
         """Test write_file tool exists."""
-        from src.tools.file_tools import write_file  # noqa: PLC0415
+        from src.tools.file_tools import write_file
 
         assert write_file is not None
         assert callable(write_file)
@@ -87,7 +87,7 @@ class TestFileTools:
     @pytest.mark.asyncio
     async def test_list_directory_tool_exists(self) -> None:
         """Test list_directory tool exists."""
-        from src.tools.file_tools import list_directory  # noqa: PLC0415
+        from src.tools.file_tools import list_directory
 
         assert list_directory is not None
         assert callable(list_directory)
@@ -95,7 +95,7 @@ class TestFileTools:
     @pytest.mark.asyncio
     async def test_search_code_tool_exists(self) -> None:
         """Test search_code tool exists."""
-        from src.tools.file_tools import search_code  # noqa: PLC0415
+        from src.tools.file_tools import search_code
 
         assert search_code is not None
         assert callable(search_code)
@@ -112,7 +112,7 @@ class TestGitTools:
     @pytest.mark.asyncio
     async def test_git_status_tool(self) -> None:
         """Test git_status tool exists."""
-        from src.tools.git_tools import git_status  # noqa: PLC0415
+        from src.tools.git_tools import git_status
 
         assert git_status is not None
         assert callable(git_status)
@@ -120,7 +120,7 @@ class TestGitTools:
     @pytest.mark.asyncio
     async def test_git_commit_tool(self) -> None:
         """Test git_commit tool exists."""
-        from src.tools.git_tools import git_commit  # noqa: PLC0415
+        from src.tools.git_tools import git_commit
 
         assert git_commit is not None
         assert callable(git_commit)
@@ -128,7 +128,7 @@ class TestGitTools:
     @pytest.mark.asyncio
     async def test_git_branch_tool(self) -> None:
         """Test git_branch tool exists."""
-        from src.tools.git_tools import git_branch  # noqa: PLC0415
+        from src.tools.git_tools import git_branch
 
         assert git_branch is not None
         assert callable(git_branch)
@@ -136,7 +136,7 @@ class TestGitTools:
     @pytest.mark.asyncio
     async def test_git_diff_tool(self) -> None:
         """Test git_diff tool exists."""
-        from src.tools.git_tools import git_diff  # noqa: PLC0415
+        from src.tools.git_tools import git_diff
 
         assert git_diff is not None
         assert callable(git_diff)
@@ -144,7 +144,7 @@ class TestGitTools:
     @pytest.mark.asyncio
     async def test_git_log_tool(self) -> None:
         """Test git_log tool exists."""
-        from src.tools.git_tools import git_log  # noqa: PLC0415
+        from src.tools.git_tools import git_log
 
         assert git_log is not None
         assert callable(git_log)
@@ -161,14 +161,14 @@ class TestCommandTools:
     @pytest.mark.asyncio
     async def test_run_command_tool_exists(self) -> None:
         """Test run_command tool exists."""
-        from src.tools.command_tools import run_command  # noqa: PLC0415
+        from src.tools.command_tools import run_command
 
         assert run_command is not None
         assert callable(run_command)
 
     def test_validate_command_helper(self) -> None:
         """Test _validate_command helper function."""
-        from src.tools.command_tools import _validate_command  # noqa: PLC0415
+        from src.tools.command_tools import _validate_command
 
         # Test valid command
         is_valid, message = _validate_command("ls -la")
@@ -177,7 +177,7 @@ class TestCommandTools:
 
     def test_check_dangerous_patterns(self) -> None:
         """Test _check_dangerous_patterns helper."""
-        from src.tools.command_tools import _check_dangerous_patterns  # noqa: PLC0415
+        from src.tools.command_tools import _check_dangerous_patterns
 
         # Test that rm -rf / is flagged as dangerous
         is_safe, message = _check_dangerous_patterns("rm -rf /")
@@ -196,7 +196,7 @@ class TestWebTools:
     @pytest.mark.asyncio
     async def test_fetch_url_tool_exists(self) -> None:
         """Test fetch_url tool exists."""
-        from src.tools.web_tools import fetch_url  # noqa: PLC0415
+        from src.tools.web_tools import fetch_url
 
         assert fetch_url is not None
         assert callable(fetch_url)
@@ -204,7 +204,7 @@ class TestWebTools:
     @pytest.mark.asyncio
     async def test_search_web_tool_exists(self) -> None:
         """Test search_web tool exists."""
-        from src.tools.web_tools import search_web  # noqa: PLC0415
+        from src.tools.web_tools import search_web
 
         assert search_web is not None
         assert callable(search_web)
@@ -221,7 +221,7 @@ class TestMemoryTools:
     @pytest.mark.asyncio
     async def test_store_memory_tool_exists(self) -> None:
         """Test store_memory tool exists."""
-        from src.tools.memory_tools import store_memory  # noqa: PLC0415
+        from src.tools.memory_tools import store_memory
 
         assert store_memory is not None
         assert callable(store_memory)
@@ -229,7 +229,7 @@ class TestMemoryTools:
     @pytest.mark.asyncio
     async def test_recall_memory_tool_exists(self) -> None:
         """Test recall_memory tool exists."""
-        from src.tools.memory_tools import recall_memory  # noqa: PLC0415
+        from src.tools.memory_tools import recall_memory
 
         assert recall_memory is not None
         assert callable(recall_memory)
@@ -237,7 +237,7 @@ class TestMemoryTools:
     @pytest.mark.asyncio
     async def test_delete_memory_tool_exists(self) -> None:
         """Test delete_memory tool exists."""
-        from src.tools.memory_tools import delete_memory  # noqa: PLC0415
+        from src.tools.memory_tools import delete_memory
 
         assert delete_memory is not None
         assert callable(delete_memory)
@@ -245,14 +245,14 @@ class TestMemoryTools:
     @pytest.mark.asyncio
     async def test_get_session_memories_tool_exists(self) -> None:
         """Test get_session_memories tool exists."""
-        from src.tools.memory_tools import get_session_memories  # noqa: PLC0415
+        from src.tools.memory_tools import get_session_memories
 
         assert get_session_memories is not None
         assert callable(get_session_memories)
 
     def test_store_memory_params_dataclass(self) -> None:
         """Test StoreMemoryParams dataclass."""
-        from src.tools.memory_tools import StoreMemoryParams  # noqa: PLC0415
+        from src.tools.memory_tools import StoreMemoryParams
 
         params = StoreMemoryParams(
             content="Test memory",
@@ -265,7 +265,7 @@ class TestMemoryTools:
 
     def test_recall_memory_params_dataclass(self) -> None:
         """Test RecallMemoryParams dataclass."""
-        from src.tools.memory_tools import RecallMemoryParams  # noqa: PLC0415
+        from src.tools.memory_tools import RecallMemoryParams
 
         params = RecallMemoryParams(
             query="find test",
@@ -288,7 +288,7 @@ class TestTaskTools:
     @pytest.mark.asyncio
     async def test_create_task_tool_exists(self) -> None:
         """Test create_task tool exists."""
-        from src.tools.task_tools import create_task  # noqa: PLC0415
+        from src.tools.task_tools import create_task
 
         assert create_task is not None
         assert callable(create_task)
@@ -296,7 +296,7 @@ class TestTaskTools:
     @pytest.mark.asyncio
     async def test_complete_task_tool_exists(self) -> None:
         """Test complete_task tool exists."""
-        from src.tools.task_tools import complete_task  # noqa: PLC0415
+        from src.tools.task_tools import complete_task
 
         assert complete_task is not None
         assert callable(complete_task)
@@ -304,7 +304,7 @@ class TestTaskTools:
     @pytest.mark.asyncio
     async def test_get_task_tool_exists(self) -> None:
         """Test get_task tool exists."""
-        from src.tools.task_tools import get_task  # noqa: PLC0415
+        from src.tools.task_tools import get_task
 
         assert get_task is not None
         assert callable(get_task)
@@ -312,14 +312,14 @@ class TestTaskTools:
     @pytest.mark.asyncio
     async def test_cancel_task_tool_exists(self) -> None:
         """Test cancel_task tool exists."""
-        from src.tools.task_tools import cancel_task  # noqa: PLC0415
+        from src.tools.task_tools import cancel_task
 
         assert cancel_task is not None
         assert callable(cancel_task)
 
     def test_task_config_dataclass(self) -> None:
         """Test TaskConfig dataclass."""
-        from src.tools.task_tools import TaskConfig  # noqa: PLC0415
+        from src.tools.task_tools import TaskConfig
 
         config = TaskConfig(
             session_id="session-123",
@@ -342,7 +342,7 @@ class TestVisionTools:
     @pytest.mark.asyncio
     async def test_analyze_screenshot_tool_exists(self) -> None:
         """Test analyze_screenshot tool exists."""
-        from src.tools.vision_tools import analyze_screenshot  # noqa: PLC0415
+        from src.tools.vision_tools import analyze_screenshot
 
         assert analyze_screenshot is not None
         assert callable(analyze_screenshot)
@@ -350,7 +350,7 @@ class TestVisionTools:
     @pytest.mark.asyncio
     async def test_design_to_code_tool_exists(self) -> None:
         """Test design_to_code tool exists."""
-        from src.tools.vision_tools import design_to_code  # noqa: PLC0415
+        from src.tools.vision_tools import design_to_code
 
         assert design_to_code is not None
         assert callable(design_to_code)
@@ -358,7 +358,7 @@ class TestVisionTools:
     @pytest.mark.asyncio
     async def test_visual_diff_tool_exists(self) -> None:
         """Test visual_diff tool exists."""
-        from src.tools.vision_tools import visual_diff  # noqa: PLC0415
+        from src.tools.vision_tools import visual_diff
 
         assert visual_diff is not None
         assert callable(visual_diff)
@@ -366,7 +366,7 @@ class TestVisionTools:
     @pytest.mark.asyncio
     async def test_analyze_accessibility_tool_exists(self) -> None:
         """Test analyze_accessibility tool exists."""
-        from src.tools.vision_tools import analyze_accessibility  # noqa: PLC0415
+        from src.tools.vision_tools import analyze_accessibility
 
         assert analyze_accessibility is not None
         assert callable(analyze_accessibility)

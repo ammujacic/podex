@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { useUIStore, type PanelId, type SidebarSide } from '@/stores/ui';
 import { cn } from '@/lib/utils';
+import { useSidebarBadges } from '@/hooks/useSidebarBadges';
 import { FilesPanel } from './FilesPanel';
 import { AgentsPanel } from './AgentsPanel';
 import { GitPanel } from './GitPanel';
@@ -50,6 +51,18 @@ const leftPanelIds: PanelId[] = ['files', 'search', 'git', 'problems'];
 
 // Right sidebar: AI-related and utility panels
 const rightPanelIds: PanelId[] = ['agents', 'mcp', 'extensions', 'usage', 'preview'];
+
+// Panels that show badge counts
+const badgePanelIds: PanelId[] = ['agents', 'mcp', 'problems'];
+
+function SidebarBadge({ count }: { count: number | undefined }) {
+  if (!count || count <= 0) return null;
+  return (
+    <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent-primary px-1 text-[10px] font-medium text-white">
+      {count > 99 ? '99+' : count}
+    </span>
+  );
+}
 
 interface PanelHeaderProps {
   panelId: PanelId;
@@ -289,6 +302,7 @@ export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
   const { sidebarLayout, toggleSidebar, addPanel, removePanel, toggleTerminal, terminalVisible } =
     useUIStore();
   const config = sidebarLayout[side];
+  const badgeCounts = useSidebarBadges(sessionId);
 
   const handleIconClick = (panelId: PanelId) => {
     const isOnThisSide = config.panels.some((p) => p.panelId === panelId);
@@ -319,6 +333,7 @@ export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
             const panelConf = panelConfig[panelId];
             const Icon = panelConf.icon;
             const isActive = config.panels.some((p) => p.panelId === panelId);
+            const showBadge = badgePanelIds.includes(panelId);
             return (
               <button
                 key={panelId}
@@ -330,6 +345,7 @@ export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
                 title={panelConf.label}
               >
                 <Icon className="h-5 w-5" />
+                {showBadge && <SidebarBadge count={badgeCounts[panelId]} />}
               </button>
             );
           })}
@@ -381,6 +397,7 @@ export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
             const panelConf = panelConfig[panelId];
             const Icon = panelConf.icon;
             const isActive = config.panels.some((p) => p.panelId === panelId);
+            const showBadge = badgePanelIds.includes(panelId);
             return (
               <button
                 key={panelId}
@@ -392,6 +409,7 @@ export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
                 title={panelConf.label}
               >
                 <Icon className="h-5 w-5" />
+                {showBadge && <SidebarBadge count={badgeCounts[panelId]} />}
                 <span className="absolute left-full ml-2 hidden whitespace-nowrap rounded bg-elevated px-2 py-1 text-xs text-text-primary shadow-panel group-hover:block z-50">
                   {panelConf.label}
                 </span>

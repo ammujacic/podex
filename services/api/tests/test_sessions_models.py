@@ -1,13 +1,9 @@
 """Comprehensive tests for session routes models and utilities."""
 
-import os
-from pathlib import PurePath
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import HTTPException, Request
-from pydantic import ValidationError
 
 from src.routes.sessions import (
     CreateFileRequest,

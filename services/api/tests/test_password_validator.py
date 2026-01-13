@@ -2,8 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.utils.password_validator import (
     LENGTH_LONG,
     LENGTH_MEDIUM,

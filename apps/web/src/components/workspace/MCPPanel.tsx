@@ -154,32 +154,22 @@ export function MCPPanel({ sessionId: _sessionId }: MCPPanelProps) {
   } = useMCPStore();
 
   const { openModal } = useUIStore();
-  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
-    new Set(['filesystem', 'version_control'])
-  );
+  const [showAvailable, setShowAvailable] = useState(false);
 
   useEffect(() => {
     loadAll();
   }, [loadAll]);
 
-  const toggleCategory = (categoryId: string) => {
-    setExpandedCategories((prev) => {
-      const next = new Set(prev);
-      if (next.has(categoryId)) {
-        next.delete(categoryId);
-      } else {
-        next.add(categoryId);
-      }
-      return next;
-    });
-  };
-
-  // Count active servers: built-in servers always count, plus user-enabled non-builtin
+  // Separate active vs available servers
   const allDefaults = categories.flatMap((c) => c.servers);
-  const builtinSlugs = new Set(allDefaults.filter((s) => s.is_builtin).map((s) => s.slug));
-  const enabledCount =
-    builtinSlugs.size + allDefaults.filter((s) => !s.is_builtin && s.is_enabled).length;
+  const activeDefaults = allDefaults.filter((s) => s.is_builtin || s.is_enabled);
+  const availableDefaults = allDefaults.filter((s) => !s.is_builtin && !s.is_enabled);
   const customServers = userServers.filter((s) => !s.is_default);
+  const activeCustom = customServers.filter((s) => s.is_enabled);
+  const availableCustom = customServers.filter((s) => !s.is_enabled);
+
+  // Count active servers
+  const enabledCount = activeDefaults.length + activeCustom.length;
 
   // Count total tools from all enabled servers
   const totalTools = userServers
@@ -188,6 +178,9 @@ export function MCPPanel({ sessionId: _sessionId }: MCPPanelProps) {
 
   // Check if any servers have errors
   const serversWithErrors = userServers.filter((s) => s.is_enabled && s.last_error);
+
+  // Total available count
+  const availableCount = availableDefaults.length + availableCustom.length;
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -223,6 +216,13 @@ export function MCPPanel({ sessionId: _sessionId }: MCPPanelProps) {
           </button>
           <button
             onClick={() => openModal('mcp-settings')}
+            className="p-1 rounded text-text-muted hover:text-accent-primary hover:bg-overlay"
+            title="Add custom server"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={() => openModal('mcp-settings')}
             className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-overlay"
             title="MCP Settings"
           >
@@ -239,59 +239,30 @@ export function MCPPanel({ sessionId: _sessionId }: MCPPanelProps) {
           </div>
         ) : (
           <div className="py-2">
-            {/* Default servers by category */}
-            {categories.map((category) => {
-              const enabledInCategory = category.servers.filter(
-                (s) => s.is_builtin || s.is_enabled
-              ).length;
-              return (
-                <div key={category.id} className="px-2">
-                  <button
-                    onClick={() => toggleCategory(category.id)}
-                    className="w-full flex items-center gap-1 px-1 py-1 text-xs font-medium text-text-secondary hover:text-text-primary"
-                  >
-                    {expandedCategories.has(category.id) ? (
-                      <ChevronDown className="h-3 w-3" />
-                    ) : (
-                      <ChevronRight className="h-3 w-3" />
-                    )}
-                    <span className="flex-1 text-left">{category.name}</span>
-                    <span className="text-text-muted">
-                      {enabledInCategory}/{category.servers.length}
-                    </span>
-                  </button>
-
-                  {expandedCategories.has(category.id) && (
-                    <div className="ml-2 space-y-0.5 pb-2">
-                      {category.servers.map((server) => (
-                        <CompactServerCard
-                          key={server.slug}
-                          server={server}
-                          isDefault={true}
-                          onToggle={async () => {
-                            if (server.is_enabled) {
-                              await disableDefault(server.slug);
-                            } else {
-                              await enableDefault(server.slug);
-                            }
-                          }}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-
-            {/* Custom servers */}
-            {customServers.length > 0 && (
-              <div className="px-2 mt-2 pt-2 border-t border-border-subtle">
+            {/* Active Integrations - Always visible */}
+            {enabledCount > 0 ? (
+              <div className="px-2">
                 <div className="px-1 py-1 text-xs font-medium text-text-secondary flex items-center gap-1">
-                  <Plus className="h-3 w-3" />
-                  Custom Servers
+                  <Plug className="h-3 w-3 text-success" />
+                  Active
+                  <span className="text-text-muted ml-auto">{enabledCount}</span>
                 </div>
                 <div className="space-y-0.5">
-                  {customServers.map((server) => (
+                  {activeDefaults.map((server) => (
+                    <CompactServerCard
+                      key={server.slug}
+                      server={server}
+                      isDefault={true}
+                      onToggle={async () => {
+                        if (server.is_enabled) {
+                          await disableDefault(server.slug);
+                        } else {
+                          await enableDefault(server.slug);
+                        }
+                      }}
+                    />
+                  ))}
+                  {activeCustom.map((server) => (
                     <CompactServerCard
                       key={server.id}
                       server={server}
@@ -306,13 +277,74 @@ export function MCPPanel({ sessionId: _sessionId }: MCPPanelProps) {
                   ))}
                 </div>
               </div>
+            ) : (
+              <div className="px-4 py-6 text-center">
+                <Plug className="h-8 w-8 mx-auto mb-2 text-text-muted opacity-50" />
+                <p className="text-xs text-text-muted">No active integrations</p>
+                <p className="text-[10px] text-text-muted mt-1">
+                  Enable integrations below to get started
+                </p>
+              </div>
+            )}
+
+            {/* Available Integrations - Collapsible */}
+            {availableCount > 0 && (
+              <div className="px-2 mt-2 pt-2 border-t border-border-subtle">
+                <button
+                  onClick={() => setShowAvailable(!showAvailable)}
+                  className="w-full flex items-center gap-1 px-1 py-1 text-xs font-medium text-text-secondary hover:text-text-primary"
+                >
+                  {showAvailable ? (
+                    <ChevronDown className="h-3 w-3" />
+                  ) : (
+                    <ChevronRight className="h-3 w-3" />
+                  )}
+                  <span className="flex-1 text-left">Available</span>
+                  <span className="text-text-muted">{availableCount}</span>
+                </button>
+
+                {showAvailable && (
+                  <div className="space-y-0.5 mt-1">
+                    {availableDefaults.map((server) => (
+                      <CompactServerCard
+                        key={server.slug}
+                        server={server}
+                        isDefault={true}
+                        onToggle={async () => {
+                          await enableDefault(server.slug);
+                        }}
+                      />
+                    ))}
+                    {availableCustom.map((server) => (
+                      <CompactServerCard
+                        key={server.id}
+                        server={server}
+                        isDefault={false}
+                        onToggle={async () => {
+                          await updateServer(server.id, { is_enabled: true });
+                        }}
+                        onTest={async () => {
+                          await testConnection(server.id);
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
           </div>
         )}
       </div>
 
       {/* Footer */}
-      <div className="px-3 py-2 border-t border-border-subtle">
+      <div className="px-3 py-2 border-t border-border-subtle space-y-2">
+        <button
+          onClick={() => openModal('mcp-settings')}
+          className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-accent-primary hover:bg-accent-primary/10 rounded-md border border-accent-primary/30 transition-colors"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add Custom Server
+        </button>
         <a
           href="https://modelcontextprotocol.io"
           target="_blank"

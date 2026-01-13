@@ -281,6 +281,51 @@ export interface CheckpointRestoreCompletedEvent {
   files_restored: number;
 }
 
+// Worktree events for parallel agent execution
+export interface WorktreeCreatedEvent {
+  session_id: string;
+  worktree: {
+    id: string;
+    agent_id: string;
+    session_id: string;
+    worktree_path: string;
+    branch_name: string;
+    status: string;
+    created_at: string;
+  };
+}
+
+export interface WorktreeStatusChangedEvent {
+  session_id: string;
+  worktree_id: string;
+  agent_id: string;
+  old_status: string;
+  new_status: string;
+}
+
+export interface WorktreeConflictDetectedEvent {
+  session_id: string;
+  worktree_id: string;
+  agent_id: string;
+  conflicting_files: string[];
+}
+
+export interface WorktreeMergedEvent {
+  session_id: string;
+  worktree_id: string;
+  agent_id: string;
+  merge_result: {
+    success: boolean;
+    message: string;
+  };
+}
+
+export interface WorktreeDeletedEvent {
+  session_id: string;
+  worktree_id: string;
+  agent_id: string;
+}
+
 // Streaming events for real-time token delivery
 export interface AgentStreamStartEvent {
   session_id: string;
@@ -297,11 +342,26 @@ export interface AgentTokenEvent {
   timestamp: string;
 }
 
+export interface AgentThinkingTokenEvent {
+  session_id: string;
+  agent_id: string;
+  thinking: string;
+  message_id: string;
+  timestamp: string;
+}
+
 export interface AgentStreamEndEvent {
   session_id: string;
   agent_id: string;
   message_id: string;
   full_content: string | null;
+  tool_calls?: Array<{
+    id: string;
+    name: string;
+    args: Record<string, unknown>;
+    result?: string;
+    status: 'pending' | 'running' | 'completed' | 'error';
+  }> | null;
   timestamp: string;
 }
 
@@ -362,9 +422,16 @@ export interface SocketEvents {
   checkpoint_created: (data: CheckpointCreatedEvent) => void;
   checkpoint_restore_started: (data: CheckpointRestoreStartedEvent) => void;
   checkpoint_restore_completed: (data: CheckpointRestoreCompletedEvent) => void;
+  // Worktree events
+  worktree_created: (data: WorktreeCreatedEvent) => void;
+  worktree_status_changed: (data: WorktreeStatusChangedEvent) => void;
+  worktree_conflict_detected: (data: WorktreeConflictDetectedEvent) => void;
+  worktree_merged: (data: WorktreeMergedEvent) => void;
+  worktree_deleted: (data: WorktreeDeletedEvent) => void;
   // Streaming events
   agent_stream_start: (data: AgentStreamStartEvent) => void;
   agent_token: (data: AgentTokenEvent) => void;
+  agent_thinking_token: (data: AgentThinkingTokenEvent) => void;
   agent_stream_end: (data: AgentStreamEndEvent) => void;
   tool_call_start: (data: ToolCallStartEvent) => void;
   tool_call_end: (data: ToolCallEndEvent) => void;

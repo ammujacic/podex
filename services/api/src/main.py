@@ -62,6 +62,7 @@ from src.routes import (
     voice,
     webhooks,
     workspaces,
+    worktrees,
 )
 from src.routes.billing import reset_expired_quotas
 from src.websocket.hub import cleanup_session_sync, init_session_sync, sio
@@ -556,6 +557,7 @@ api_v1.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 api_v1.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
 api_v1.include_router(context.router, prefix="/context", tags=["context"])
 api_v1.include_router(checkpoints.router, prefix="/checkpoints", tags=["checkpoints"])
+api_v1.include_router(worktrees.router, prefix="/worktrees", tags=["worktrees"])
 api_v1.include_router(changes.router, prefix="/changes", tags=["changes"])
 api_v1.include_router(subagents.router, tags=["subagents"])
 api_v1.include_router(hooks.router, tags=["hooks"])

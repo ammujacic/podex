@@ -21,11 +21,14 @@ class StreamMessage:
     session_id: str
     agent_id: str
     message_id: str
-    event_type: str  # "start", "token", "tool_call_start", "tool_call_end", "done", "error"
+    event_type: (
+        str  # "start", "token", "thinking", "tool_call_start", "tool_call_end", "done", "error"
+    )
     content: str | None = None
     tool_call_id: str | None = None
     tool_name: str | None = None
     tool_input: dict[str, Any] | None = None
+    tool_calls: list[dict[str, Any]] | None = None  # For done event - complete tool calls
     usage: dict[str, int] | None = None
     stop_reason: str | None = None
     error: str | None = None
@@ -110,6 +113,24 @@ class StreamPublisher:
             )
         )
 
+    async def publish_thinking_token(
+        self,
+        session_id: str,
+        agent_id: str,
+        message_id: str,
+        thinking: str,
+    ) -> None:
+        """Publish a thinking token (for extended thinking/reasoning)."""
+        await self._publish(
+            StreamMessage(
+                session_id=session_id,
+                agent_id=agent_id,
+                message_id=message_id,
+                event_type="thinking",
+                content=thinking,
+            )
+        )
+
     async def publish_tool_call_start(
         self,
         session_id: str,
@@ -172,6 +193,7 @@ class StreamPublisher:
         full_content: str,
         usage: dict[str, int] | None = None,
         stop_reason: str | None = None,
+        tool_calls: list[dict[str, Any]] | None = None,
     ) -> None:
         """Publish stream completion event."""
         await self._publish(
@@ -183,6 +205,7 @@ class StreamPublisher:
                 content=full_content,
                 usage=usage,
                 stop_reason=stop_reason,
+                tool_calls=tool_calls,
             )
         )
         logger.debug(
@@ -191,6 +214,7 @@ class StreamPublisher:
             agent_id=agent_id,
             message_id=message_id,
             content_length=len(full_content),
+            tool_calls_count=len(tool_calls) if tool_calls else 0,
         )
 
     async def publish_error(
@@ -235,6 +259,13 @@ class StreamPublisher:
                 agent_id=agent_id,
                 message_id=message_id,
                 token=event.content or "",
+            )
+        elif event.type == "thinking":
+            await self.publish_thinking_token(
+                session_id=session_id,
+                agent_id=agent_id,
+                message_id=message_id,
+                thinking=event.content or "",
             )
         elif event.type == "tool_call_start":
             await self.publish_tool_call_start(

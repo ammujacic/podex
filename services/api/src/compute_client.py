@@ -99,12 +99,20 @@ class ComputeClient:
 
             return response.json()
         except httpx.HTTPStatusError as e:
-            logger.exception(
-                "Compute service HTTP error",
-                path=path,
-                status_code=e.response.status_code,
-                detail=e.response.text,
-            )
+            # Log 404s at debug level since they're expected for existence checks
+            if e.response.status_code == HTTPStatus.NOT_FOUND:
+                logger.debug(
+                    "Compute service resource not found",
+                    path=path,
+                    status_code=e.response.status_code,
+                )
+            else:
+                logger.exception(
+                    "Compute service HTTP error",
+                    path=path,
+                    status_code=e.response.status_code,
+                    detail=e.response.text,
+                )
             raise ComputeServiceHTTPError(
                 e.response.status_code,
                 e.response.text,
@@ -391,6 +399,134 @@ class ComputeClient:
             f"git checkout {flag} {branch}",
         )
         return {"message": result.get("stdout", "") or result.get("stderr", "")}
+
+    # ==================== Git Worktree Operations ====================
+
+    async def git_worktree_merge(
+        self,
+        workspace_id: str,
+        user_id: str,
+        branch_name: str,
+        delete_branch: bool = True,
+    ) -> dict[str, Any]:
+        """Merge a worktree branch to main branch."""
+        try:
+            # Switch to main branch
+            await self.exec_command(workspace_id, user_id, "git checkout main")
+
+            # Pull latest changes
+            with contextlib.suppress(Exception):
+                await self.exec_command(workspace_id, user_id, "git pull origin main")
+
+            # Merge the branch
+            result = await self.exec_command(
+                workspace_id,
+                user_id,
+                f'git merge --no-ff {branch_name} -m "Merge {branch_name}"',
+            )
+
+            # Delete the branch if requested
+            if delete_branch:
+                with contextlib.suppress(Exception):
+                    await self.exec_command(workspace_id, user_id, f"git branch -d {branch_name}")
+
+            return {
+                "success": True,
+                "message": result.get("stdout", "") or result.get("stderr", ""),
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": str(e),
+            }
+
+    async def git_worktree_check_conflicts(
+        self,
+        workspace_id: str,
+        user_id: str,
+        branch_name: str,
+    ) -> dict[str, Any]:
+        """Check for merge conflicts between branch and main."""
+        try:
+            # Save current branch
+            current_result = await self.exec_command(
+                workspace_id,
+                user_id,
+                "git rev-parse --abbrev-ref HEAD",
+            )
+            current_branch = current_result.get("stdout", "").strip()
+
+            # Switch to main
+            await self.exec_command(workspace_id, user_id, "git checkout main")
+
+            # Try a dry-run merge
+            try:
+                await self.exec_command(
+                    workspace_id,
+                    user_id,
+                    f"git merge --no-commit --no-ff {branch_name}",
+                )
+                # No conflicts
+                await self.exec_command(workspace_id, user_id, "git merge --abort")
+                conflicts = []
+            except Exception:
+                # Check for conflicting files
+                status_result = await self.exec_command(
+                    workspace_id,
+                    user_id,
+                    "git diff --name-only --diff-filter=U",
+                )
+                conflicts = [
+                    line.strip()
+                    for line in status_result.get("stdout", "").split("\n")
+                    if line.strip()
+                ]
+                # Abort the merge
+                await self.exec_command(workspace_id, user_id, "git merge --abort")
+
+            # Return to original branch
+            await self.exec_command(workspace_id, user_id, f"git checkout {current_branch}")
+
+            return {
+                "has_conflicts": len(conflicts) > 0,
+                "files": [{"path": f, "conflict_markers": 1} for f in conflicts],
+            }
+        except Exception as e:
+            logger.exception("Failed to check worktree conflicts", error=str(e))
+            return {
+                "has_conflicts": False,
+                "files": [],
+            }
+
+    async def git_worktree_delete(
+        self,
+        workspace_id: str,
+        user_id: str,
+        worktree_path: str,
+        branch_name: str,
+    ) -> dict[str, Any]:
+        """Remove a git worktree and its branch."""
+        try:
+            # Remove the worktree
+            await self.exec_command(
+                workspace_id,
+                user_id,
+                f"git worktree remove --force {worktree_path}",
+            )
+
+            # Delete the branch
+            with contextlib.suppress(Exception):
+                await self.exec_command(workspace_id, user_id, f"git branch -D {branch_name}")
+
+            return {
+                "success": True,
+                "message": "Worktree deleted successfully",
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": str(e),
+            }
 
     # ==================== Git Parsing Helpers ====================
 

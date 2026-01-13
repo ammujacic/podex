@@ -6,6 +6,8 @@ import { useUser, useAuthStore } from '@/stores/auth';
 import { useKeybindings } from '@/hooks/useKeybindings';
 import { useAgentSocket } from '@/hooks/useAgentSocket';
 import { useContextSocket } from '@/hooks/useContextSocket';
+import { useCheckpointSocket } from '@/hooks/useCheckpointSocket';
+import { useWorktreeSocket } from '@/hooks/useWorktreeSocket';
 import { useSessionStore } from '@/stores/session';
 import { WorkspaceHeader } from './WorkspaceHeader';
 import { SidebarContainer } from './SidebarContainer';
@@ -44,6 +46,12 @@ export function WorkspaceLayout({ sessionId, children }: WorkspaceLayoutProps) {
     sessionId,
     agentIds,
   });
+
+  // Connect to checkpoint events for undo/restore functionality
+  useCheckpointSocket({ sessionId });
+
+  // Connect to worktree events for parallel agent execution
+  useWorktreeSocket({ sessionId });
 
   return (
     <LayoutSyncProvider sessionId={sessionId}>

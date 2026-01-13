@@ -1,8 +1,5 @@
 """Comprehensive tests for WebSocket hub."""
 
-import asyncio
-from datetime import UTC, datetime
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -357,7 +354,7 @@ class TestTerminalEvents:
             await terminal_input("sid-123", {"workspace_id": "ws-456"})
 
             # Should return early without doing anything
-            pass  # No assertion needed, just verify no error
+            # No assertion needed, just verify no error
 
     @pytest.mark.asyncio
     async def test_terminal_input_too_large(self, mock_sio: MagicMock) -> None:

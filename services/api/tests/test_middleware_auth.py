@@ -1,7 +1,7 @@
 """Comprehensive tests for authentication middleware."""
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import FastAPI, HTTPException, Request
@@ -260,8 +260,9 @@ class TestAuthMiddleware:
 
     def test_expired_jwt_token(self, client: TestClient) -> None:
         """Test expired JWT token is rejected."""
-        from src.config import settings
         import time
+
+        from src.config import settings
 
         token = jose_jwt.encode(
             {"sub": "user-123", "exp": int(time.time()) - 3600},  # Expired 1 hour ago
