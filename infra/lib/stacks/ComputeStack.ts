@@ -194,18 +194,19 @@ export class ComputeStack extends cdk.Stack {
 
   private createRepositories() {
     // ECR lifecycle rules - keep recent images, clean up old ones
+    // Note: TagStatus.ANY must have highest rulePriority (lowest precedence)
     const lifecycleRules: ecr.LifecycleRule[] = [
-      {
-        description: 'Keep last 10 images',
-        maxImageCount: 10,
-        rulePriority: 1,
-        tagStatus: ecr.TagStatus.ANY,
-      },
       {
         description: 'Remove untagged images older than 1 day',
         maxImageAge: cdk.Duration.days(1),
-        rulePriority: 2,
+        rulePriority: 1,
         tagStatus: ecr.TagStatus.UNTAGGED,
+      },
+      {
+        description: 'Keep last 10 images',
+        maxImageCount: 10,
+        rulePriority: 2,
+        tagStatus: ecr.TagStatus.ANY,
       },
     ];
 

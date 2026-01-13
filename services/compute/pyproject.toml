@@ -64,6 +64,7 @@ python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+warn_unused_ignores = false
 show_error_codes = true
 
 [[tool.mypy.overrides]]
@@ -79,6 +80,12 @@ module = [
     "sentry_sdk.*",
 ]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["src.managers.*"]
+# Docker SDK has complex overloaded types that don't work well with asyncio.to_thread
+disallow_any_generics = false
+warn_return_any = false
 
 [tool.pytest.ini_options]
 addopts = "--cov=src --cov-report=term-missing --cov-fail-under=90"
