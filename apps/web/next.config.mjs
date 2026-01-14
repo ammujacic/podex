@@ -7,13 +7,6 @@ const nextConfig = {
   experimental: {
     optimizePackageImports: ['lucide-react', '@radix-ui/react-icons'],
   },
-  // ESLint is configured via eslint.config.mjs (flat config format)
-  // Next.js's built-in detection doesn't recognize flat config, but the plugin
-  // IS correctly configured in eslint.config.mjs with all recommended rules.
-  // We skip Next.js's detection to avoid the false-positive warning.
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
   images: {
     remotePatterns: [
       {
@@ -61,8 +54,15 @@ const sentryWebpackPluginOptions = {
     deleteSourcemapsAfterUpload: true,
   },
 
-  // Automatically tree-shake Sentry logger statements
-  disableLogger: true,
+  // Tree-shake Sentry debug logging (Turbopack compatible)
+  webpack: {
+    treeshake: {
+      removeDebugLogging: true,
+    },
+    reactComponentAnnotation: {
+      enabled: true,
+    },
+  },
 
   // Tunnel Sentry requests to avoid ad blockers (optional)
   // tunnelRoute: '/monitoring-tunnel',
@@ -75,11 +75,6 @@ const sentryWebpackPluginOptions = {
 
   // Widen the upload scope for monorepo setups
   widenClientFileUpload: true,
-
-  // Automatically annotate React components with Sentry instrumentation
-  reactComponentAnnotation: {
-    enabled: true,
-  },
 
   // Release name
   release: process.env.NEXT_PUBLIC_SENTRY_RELEASE || 'podex-web@0.1.0',

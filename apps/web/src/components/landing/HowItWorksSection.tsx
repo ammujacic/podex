@@ -89,13 +89,15 @@ function StepCard({
           {step.number}
         </div>
 
-        {/* Icon */}
-        <div className={`inline-flex p-3 rounded-xl bg-${step.color}/10 mb-4`}>
-          <step.icon className={`h-6 w-6 text-${step.color}`} />
+        {/* Icon + Title */}
+        <div className="flex items-center gap-3 mb-4">
+          <div className={`inline-flex p-3 rounded-xl bg-${step.color}/10`}>
+            <step.icon className={`h-6 w-6 text-${step.color}`} />
+          </div>
+          <h3 className="text-xl font-semibold text-text-primary">{step.title}</h3>
         </div>
 
         {/* Content */}
-        <h3 className="text-xl font-semibold text-text-primary mb-2">{step.title}</h3>
         <p className="text-sm text-text-secondary mb-4 flex-grow">{step.description}</p>
 
         {/* Example */}
