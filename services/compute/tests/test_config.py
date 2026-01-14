@@ -27,7 +27,6 @@ class TestSettingsDefaults:
         """Test default Docker settings."""
         settings = Settings()
         assert settings.docker_host == "unix:///var/run/docker.sock"
-        assert settings.warm_pool_size == 2
         assert settings.max_workspaces == 10
         assert settings.workspace_timeout == 3600
         assert settings.workspace_image == "podex/workspace:latest"
@@ -87,11 +86,9 @@ class TestSettingsCustom:
         """Test custom Docker settings."""
         settings = Settings(
             docker_host="tcp://localhost:2375",
-            warm_pool_size=5,
             max_workspaces=20,
         )
         assert settings.docker_host == "tcp://localhost:2375"
-        assert settings.warm_pool_size == 5
         assert settings.max_workspaces == 20
 
     def test_custom_aws_endpoint(self) -> None:

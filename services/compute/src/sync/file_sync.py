@@ -74,7 +74,7 @@ class FileSync:
     async def sync_from_s3(
         self,
         workspace_id: str,
-        target_path: str = "/home/dev/workspace",
+        target_path: str = "/home/project",
     ) -> dict[str, Any]:
         """Sync files from S3 to the workspace container.
 
@@ -170,7 +170,7 @@ class FileSync:
     async def sync_to_s3(
         self,
         workspace_id: str,
-        source_path: str = "/home/dev/workspace",
+        source_path: str = "/home/project",
         exclude_patterns: list[str] | None = None,
     ) -> dict[str, Any]:
         """Sync files from the workspace container to S3.

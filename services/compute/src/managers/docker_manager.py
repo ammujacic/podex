@@ -60,7 +60,6 @@ class DockerComputeManager(ComputeManager):
         """Initialize Docker client and workspace tracking."""
         self.client = docker.from_env()
         self._workspaces: dict[str, WorkspaceInfo] = {}
-        self._warm_pool: list[Container] = []
         self._file_sync: FileSync | None = None
         logger.info(
             "DockerComputeManager initialized",
@@ -796,40 +795,6 @@ class DockerComputeManager(ComputeManager):
                 cleaned_up.append(workspace_id)
 
         return cleaned_up
-
-    async def warm_pool_fill(self) -> None:
-        """Fill the warm pool with pre-created containers."""
-        current_size = len(self._warm_pool)
-        needed = settings.warm_pool_size - current_size
-
-        if needed <= 0:
-            return
-
-        logger.info("Filling warm pool", needed=needed, current=current_size)
-
-        for _ in range(needed):
-            try:
-                container: Container = await asyncio.to_thread(
-                    self.client.containers.run,  # type: ignore[arg-type]
-                    settings.workspace_image,
-                    detach=True,
-                    name=f"podex-warm-{uuid.uuid4().hex[:8]}",
-                    labels={"podex.warm_pool": "true"},
-                    network=settings.docker_network,
-                    **self._get_resource_limits(WorkspaceTier.STARTER),
-                    stdin_open=True,
-                    tty=True,
-                )
-                self._warm_pool.append(container)
-            except Exception:
-                logger.exception("Failed to create warm pool container")
-                break
-
-    async def warm_pool_get(self) -> Container | None:
-        """Get a container from the warm pool."""
-        if not self._warm_pool:
-            return None
-        return self._warm_pool.pop(0)
 
     async def get_preview_url(self, workspace_id: str, port: int) -> str | None:
         """Get the URL to access a dev server running in the workspace.

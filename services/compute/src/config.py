@@ -29,7 +29,6 @@ class Settings(BaseSettings):
 
     # Docker settings (local development)
     docker_host: str = "unix:///var/run/docker.sock"
-    warm_pool_size: int = 2
     max_workspaces: int = 10
     workspace_timeout: int = 3600  # 1 hour idle timeout
     workspace_image: str = "podex/workspace:latest"

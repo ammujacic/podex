@@ -19,10 +19,10 @@ build:
 	@echo "$(CYAN)Installing dependencies...$(NC)"
 	pnpm install
 	@echo "$(CYAN)Installing Python packages...$(NC)"
-	cd services/shared && uv sync --dev
-	cd services/api && uv sync --dev
-	cd services/agent && uv sync --dev
-	cd services/compute && uv sync --dev
+	cd services/shared && uv sync --active --dev --quiet
+	cd services/api && uv sync --active --dev --quiet
+	cd services/agent && uv sync --active --dev --quiet
+	cd services/compute && uv sync --active --dev --quiet
 	cd infra && pnpm install
 	@echo "$(CYAN)Building frontend packages...$(NC)"
 	pnpm build

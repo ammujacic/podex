@@ -1,6 +1,58 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@theme {
+  /* Background colors */
+  --color-void: var(--bg-void);
+  --color-surface: var(--bg-surface);
+  --color-elevated: var(--bg-elevated);
+  --color-overlay: var(--bg-overlay);
+  --color-active: var(--bg-active);
+
+  /* Border colors */
+  --color-border-subtle: var(--border-subtle);
+  --color-border-default: var(--border-default);
+  --color-border-strong: var(--border-strong);
+  --color-border-focus: var(--border-focus);
+
+  /* Text colors */
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+  --color-text-inverse: var(--text-inverse);
+
+  /* Accent colors */
+  --color-accent-primary: var(--accent-primary);
+  --color-accent-primary-hover: var(--accent-primary-hover);
+  --color-accent-secondary: var(--accent-secondary);
+  --color-accent-secondary-hover: var(--accent-secondary-hover);
+  --color-accent-success: var(--accent-success);
+  --color-accent-success-hover: var(--accent-success-hover);
+  --color-accent-warning: var(--accent-warning);
+  --color-accent-warning-hover: var(--accent-warning-hover);
+  --color-accent-error: var(--accent-error);
+  --color-accent-error-hover: var(--accent-error-hover);
+
+  /* Agent colors */
+  --color-agent-1: var(--agent-1);
+  --color-agent-2: var(--agent-2);
+  --color-agent-3: var(--agent-3);
+  --color-agent-4: var(--agent-4);
+  --color-agent-5: var(--agent-5);
+  --color-agent-6: var(--agent-6);
+
+  /* Syntax highlighting colors */
+  --color-syntax-keyword: var(--syntax-keyword);
+  --color-syntax-string: var(--syntax-string);
+  --color-syntax-number: var(--syntax-number);
+  --color-syntax-function: var(--syntax-function);
+  --color-syntax-comment: var(--syntax-comment);
+  --color-syntax-variable: var(--syntax-variable);
+  --color-syntax-type: var(--syntax-type);
+
+  /* Glass colors */
+  --color-glass-bg: var(--glass-bg);
+  --color-glass-border: var(--glass-border);
+}
 
 /* ============================================
    PODEX DESIGN SYSTEM - Terminal Noir Theme
@@ -32,12 +84,16 @@
   --accent-primary-active: #6D28D9;
   --accent-secondary: #06B6D4;
   --accent-secondary-hover: #0891B2;
+  --accent-secondary-active: #0369A1;
   --accent-success: #22c55e;
   --accent-success-hover: #16a34a;
+  --accent-success-active: #15803d;
   --accent-warning: #f59e0b;
   --accent-warning-hover: #d97706;
+  --accent-warning-active: #b45309;
   --accent-error: #ef4444;
   --accent-error-hover: #dc2626;
+  --accent-error-active: #b91c1c;
 
   /* === AGENT PALETTE === */
   --agent-1: #8B5CF6;
@@ -569,7 +625,6 @@
   .mobile-nav {
     @apply fixed bottom-0 inset-x-0 z-50;
     @apply bg-surface border-t border-border-default;
-    @apply safe-area-inset-bottom;
     padding-bottom: env(safe-area-inset-bottom, 0);
   }
 

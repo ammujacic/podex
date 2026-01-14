@@ -96,11 +96,7 @@ def get_compute_manager() -> ComputeManager:
 
 async def init_compute_manager() -> None:
     """Initialize the compute manager on startup."""
-    manager = get_compute_manager()
-
-    # Fill warm pool for Docker mode
-    if settings.compute_mode == "docker" and isinstance(manager, DockerComputeManager):
-        await manager.warm_pool_fill()
+    get_compute_manager()
 
 
 async def cleanup_compute_manager() -> None:

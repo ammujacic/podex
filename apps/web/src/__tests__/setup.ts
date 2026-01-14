@@ -1,5 +1,9 @@
 import '@testing-library/jest-dom';
 import { vi, beforeAll, afterAll } from 'vitest';
+import { GlobalRegistrator } from '@happy-dom/global-registrator';
+
+// Register happy-dom globally
+GlobalRegistrator.register();
 
 // Mock next/navigation
 vi.mock('next/navigation', () => ({

@@ -13,6 +13,7 @@ import {
   Folder,
   Loader2,
   RefreshCw,
+  CloudSync,
 } from 'lucide-react';
 import { useUIStore } from '@/stores/ui';
 import { useSessionStore, type FilePreview } from '@/stores/session';
@@ -40,8 +41,29 @@ interface FileTreeNodeProps {
   onFileClick: (path: string) => void;
 }
 
+// Paths that are NOT auto-synced by Podex (match FileSync exclude patterns)
+const NON_SYNCED_SEGMENTS = [
+  'node_modules',
+  '.git',
+  '__pycache__',
+  '.venv',
+  'venv',
+  '.next',
+  'dist',
+  'build',
+  '.cache',
+];
+
+function isPathAutoSynced(path: string): boolean {
+  // Workspace paths are rooted at /workspace in the UI.
+  // We treat everything under /workspace as synced except common heavy/derived folders.
+  const segments = path.split('/').filter(Boolean);
+  return !segments.some((segment) => NON_SYNCED_SEGMENTS.includes(segment));
+}
+
 function FileTreeNode({ item, depth, onFileClick }: FileTreeNodeProps) {
   const [expanded, setExpanded] = useState(depth === 0);
+  const isSynced = isPathAutoSynced(item.path);
 
   if (item.type === 'directory') {
     return (
@@ -53,7 +75,13 @@ function FileTreeNode({ item, depth, onFileClick }: FileTreeNodeProps) {
         >
           <ChevronRight className={cn('h-3 w-3 transition-transform', expanded && 'rotate-90')} />
           <Folder className="h-4 w-4 text-accent-secondary" />
-          <span className="truncate">{item.name}</span>
+          <span className="truncate flex-1">{item.name}</span>
+          {isSynced && (
+            <CloudSync
+              className="ml-1 h-3 w-3 text-accent-secondary opacity-70"
+              aria-label="Auto-synced by Podex"
+            />
+          )}
         </button>
         {expanded && item.children && (
           <div>
@@ -78,7 +106,13 @@ function FileTreeNode({ item, depth, onFileClick }: FileTreeNodeProps) {
       style={{ paddingLeft: depth * 12 + 20 }}
     >
       <File className="h-4 w-4 text-text-muted" />
-      <span className="truncate">{item.name}</span>
+      <span className="truncate flex-1">{item.name}</span>
+      {isSynced && (
+        <CloudSync
+          className="ml-1 h-3 w-3 text-accent-secondary opacity-70"
+          aria-label="Auto-synced by Podex"
+        />
+      )}
     </button>
   );
 }
