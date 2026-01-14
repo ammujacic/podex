@@ -65,6 +65,7 @@ class UsageHistoryParams:
     page: int = 1
     page_size: int = 50
     usage_type: str | None = None
+    usage_type_prefix: str | None = None
     session_id: str | None = None
 
 
@@ -1699,6 +1700,8 @@ async def get_usage_history(
 
     if params.usage_type:
         query = query.where(UsageRecord.usage_type == params.usage_type)
+    if params.usage_type_prefix:
+        query = query.where(UsageRecord.usage_type.startswith(params.usage_type_prefix))
     if params.session_id:
         query = query.where(UsageRecord.session_id == params.session_id)
 

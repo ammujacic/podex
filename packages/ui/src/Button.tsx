@@ -5,10 +5,10 @@ import { cn } from './utils';
 
 const buttonVariants = cva(
   [
-    'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium',
+    'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium cursor-pointer',
     'transition-all duration-200 ease-out',
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8B5CF6] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0d0d12]',
-    'disabled:pointer-events-none disabled:opacity-50',
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus focus-visible:ring-offset-2 focus-visible:ring-offset-surface',
+    'disabled:pointer-events-none disabled:opacity-50 disabled:cursor-not-allowed',
     'active:scale-[0.98]',
     'select-none touch-manipulation',
   ],
@@ -16,38 +16,42 @@ const buttonVariants = cva(
     variants: {
       variant: {
         primary: [
-          'bg-[#8B5CF6] text-white font-semibold',
+          'bg-accent-primary text-text-inverse font-semibold',
           'shadow-[0_2px_8px_rgba(139,92,246,0.25)]',
-          'hover:bg-[#7C3AED] hover:shadow-[0_4px_16px_rgba(139,92,246,0.35)] hover:-translate-y-0.5',
-          'active:bg-[#6D28D9] active:shadow-[0_2px_8px_rgba(139,92,246,0.25)] active:translate-y-0',
+          'hover:bg-accent-primary-hover hover:shadow-[0_4px_16px_rgba(139,92,246,0.35)] hover:-translate-y-0.5',
+          'active:bg-accent-primary-active active:shadow-[0_2px_8px_rgba(139,92,246,0.25)] active:translate-y-0',
         ],
         secondary: [
-          'bg-[#141419] border border-[#2a2a35] text-[#f0f0f5]',
-          'hover:bg-[#1a1a21] hover:border-[#3a3a48] hover:-translate-y-0.5',
-          'active:bg-[#22222b] active:translate-y-0',
+          'bg-elevated border border-border-default text-text-primary',
+          'hover:bg-overlay hover:border-border-strong hover:-translate-y-0.5',
+          'active:bg-active active:translate-y-0',
         ],
         ghost: [
-          'text-[#9898a8] bg-transparent',
-          'hover:bg-[#1a1a21] hover:text-[#f0f0f5]',
-          'active:bg-[#22222b]',
+          'text-text-secondary bg-transparent',
+          'hover:bg-overlay hover:text-text-primary',
+          'active:bg-active',
         ],
         danger: [
-          'bg-[#ef4444] text-white font-semibold',
+          'bg-accent-error text-white font-semibold',
           'shadow-[0_2px_8px_rgba(239,68,68,0.25)]',
-          'hover:bg-[#dc2626] hover:shadow-[0_4px_16px_rgba(239,68,68,0.35)] hover:-translate-y-0.5',
-          'active:bg-[#b91c1c] active:translate-y-0',
+          'hover:bg-accent-error-hover hover:shadow-[0_4px_16px_rgba(239,68,68,0.35)] hover:-translate-y-0.5',
+          'active:bg-accent-error-active active:shadow-[0_2px_8px_rgba(239,68,68,0.25)] active:translate-y-0',
         ],
         success: [
-          'bg-[#22c55e] text-white font-semibold',
+          'bg-accent-success text-white font-semibold',
           'shadow-[0_2px_8px_rgba(34,197,94,0.25)]',
-          'hover:bg-[#16a34a] hover:shadow-[0_4px_16px_rgba(34,197,94,0.35)] hover:-translate-y-0.5',
-          'active:bg-[#15803d] active:translate-y-0',
+          'hover:bg-accent-success-hover hover:shadow-[0_4px_16px_rgba(34,197,94,0.35)] hover:-translate-y-0.5',
+          'active:bg-accent-success-active active:shadow-[0_2px_8px_rgba(34,197,94,0.25)] active:translate-y-0',
         ],
-        link: ['text-[#8B5CF6] underline-offset-4', 'hover:underline', 'active:text-[#7C3AED]'],
+        link: [
+          'text-accent-primary underline-offset-4',
+          'hover:underline',
+          'active:text-accent-primary-hover',
+        ],
         outline: [
-          'border-2 border-[#8B5CF6] text-[#8B5CF6] bg-transparent',
-          'hover:bg-[#8B5CF6]/10 hover:-translate-y-0.5',
-          'active:bg-[#8B5CF6]/20 active:translate-y-0',
+          'border-2 border-accent-primary text-accent-primary bg-transparent',
+          'hover:bg-accent-primary/10 hover:-translate-y-0.5',
+          'active:bg-accent-primary/20 active:translate-y-0',
         ],
       },
       size: {

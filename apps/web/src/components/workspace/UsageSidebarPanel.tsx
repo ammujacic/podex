@@ -136,9 +136,10 @@ export function UsageSidebarPanel({ sessionId }: UsageSidebarPanelProps) {
       setTokenQuota(tokensQuota || null);
 
       // API returns array directly (max page_size is 100)
+      // Only fetch token usage records for this widget
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const records = await api.get<any[]>(
-        `/api/billing/usage/history?session_id=${sessionId}&page_size=100`
+        `/api/billing/usage/history?session_id=${sessionId}&page_size=100&usage_type_prefix=tokens`
       );
 
       // Aggregate usage by model and agent
@@ -196,12 +197,16 @@ export function UsageSidebarPanel({ sessionId }: UsageSidebarPanelProps) {
         }
         costBreakdown.byModel[model].cost += cost;
 
-        const agentId = record.agent_id || 'unknown';
-        if (!costBreakdown.byAgent[agentId]) {
-          costBreakdown.byAgent[agentId] = { tokens: 0, cost: 0 };
+        // Only include usage records that have a valid agent_id
+        if (record.agent_id) {
+          const agentId = record.agent_id;
+          if (!costBreakdown.byAgent[agentId]) {
+            costBreakdown.byAgent[agentId] = { tokens: 0, cost: 0 };
+          }
+          // Since we only fetch token usage records, all quantities are token quantities
+          costBreakdown.byAgent[agentId].tokens += quantity;
+          costBreakdown.byAgent[agentId].cost += cost;
         }
-        costBreakdown.byAgent[agentId].tokens += quantity;
-        costBreakdown.byAgent[agentId].cost += cost;
       }
 
       costBreakdown.callCount = apiCallRecords.size || records.length;
@@ -286,7 +291,7 @@ export function UsageSidebarPanel({ sessionId }: UsageSidebarPanelProps) {
             )}
           </div>
 
-          <div className="text-xs font-medium text-text-muted mb-2">Current Session</div>
+          <div className="text-xs font-medium text-text-muted mb-2">Current Session Usage</div>
         </div>
       )}
 

@@ -84,12 +84,16 @@
   --accent-primary-active: #6D28D9;
   --accent-secondary: #06B6D4;
   --accent-secondary-hover: #0891B2;
+  --accent-secondary-active: #0369A1;
   --accent-success: #22c55e;
   --accent-success-hover: #16a34a;
+  --accent-success-active: #15803d;
   --accent-warning: #f59e0b;
   --accent-warning-hover: #d97706;
+  --accent-warning-active: #b45309;
   --accent-error: #ef4444;
   --accent-error-hover: #dc2626;
+  --accent-error-active: #b91c1c;
 
   /* === AGENT PALETTE === */
   --agent-1: #8B5CF6;

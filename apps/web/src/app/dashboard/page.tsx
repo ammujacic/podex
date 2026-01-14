@@ -934,7 +934,7 @@ export default function DashboardPage() {
               A pod is your cloud development environment with all the tools you need pre-installed.
             </p>
             <Link href="/session/new">
-              <Button size="lg">
+              <Button size="lg" variant="primary">
                 <Plus className="w-5 h-5 mr-2" />
                 Create Pod
               </Button>

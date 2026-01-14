@@ -1,7 +1,16 @@
 'use client';
 
 import { useState, useCallback, useEffect } from 'react';
-import { ChevronRight, File, Folder, FolderTree, Home, Loader2, RefreshCw } from 'lucide-react';
+import {
+  ChevronRight,
+  File,
+  Folder,
+  FolderTree,
+  Home,
+  Loader2,
+  RefreshCw,
+  CloudSync,
+} from 'lucide-react';
 import { useSessionStore, type FilePreview } from '@/stores/session';
 import { cn } from '@/lib/utils';
 import { getLanguageFromPath } from './CodeEditor';
@@ -17,7 +26,27 @@ interface FileTreeNodeProps {
   onFolderClick: (path: string) => void;
 }
 
+// Match backend FileSync.exclude_patterns for what is *not* auto-synced.
+const NON_SYNCED_SEGMENTS = [
+  'node_modules',
+  '.git',
+  '__pycache__',
+  '.venv',
+  'venv',
+  '.next',
+  'dist',
+  'build',
+  '.cache',
+];
+
+function isPathAutoSynced(path: string): boolean {
+  const segments = path.split('/').filter(Boolean);
+  return !segments.some((segment) => NON_SYNCED_SEGMENTS.includes(segment));
+}
+
 function FileTreeNode({ item, onFileClick, onFolderClick }: FileTreeNodeProps) {
+  const isSynced = isPathAutoSynced(item.path || item.name || '');
+
   if (item.type === 'directory') {
     return (
       <button
@@ -25,7 +54,13 @@ function FileTreeNode({ item, onFileClick, onFolderClick }: FileTreeNodeProps) {
         className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-text-secondary hover:bg-overlay hover:text-text-primary"
       >
         <Folder className="h-4 w-4 text-accent-primary shrink-0" />
-        <span className="truncate">{item.name}</span>
+        <span className="truncate flex-1">{item.name}</span>
+        {isSynced && (
+          <CloudSync
+            className="ml-1 h-3 w-3 text-accent-secondary opacity-70"
+            aria-label="Auto-synced by Podex"
+          />
+        )}
       </button>
     );
   }
@@ -36,7 +71,13 @@ function FileTreeNode({ item, onFileClick, onFolderClick }: FileTreeNodeProps) {
       className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-text-secondary hover:bg-overlay hover:text-text-primary"
     >
       <File className="h-4 w-4 text-text-muted shrink-0" />
-      <span className="truncate">{item.name}</span>
+      <span className="truncate flex-1">{item.name}</span>
+      {isSynced && (
+        <CloudSync
+          className="ml-1 h-3 w-3 text-accent-secondary opacity-70"
+          aria-label="Auto-synced by Podex"
+        />
+      )}
     </button>
   );
 }
