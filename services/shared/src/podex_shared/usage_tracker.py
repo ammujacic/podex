@@ -136,7 +136,7 @@ class UsageTracker:
                 "Content-Type": "application/json",
                 **({"Authorization": f"Bearer {self.service_token}"} if self.service_token else {}),
             },
-            timeout=30.0,
+            timeout=60.0,  # Increased timeout from 30 to 60 seconds
         )
         self._flush_task = asyncio.create_task(self._periodic_flush())
         logger.info("Usage tracker started", api_base_url=self.api_base_url)
@@ -199,23 +199,34 @@ class UsageTracker:
             logger.warning("Usage tracker not started, events will be queued")
             return
 
-        try:
-            response = await self._client.post(
-                "/api/billing/usage/record",
-                json={"events": [e.model_dump(mode="json") for e in events]},
-            )
-            response.raise_for_status()
-            logger.debug("Recorded usage events", count=len(events))
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                "Failed to record usage events",
-                status_code=e.response.status_code,
-                response=e.response.text,
-            )
-            raise
-        except httpx.RequestError as e:
-            logger.error("Request error recording usage events", error=str(e))
-            raise
+        # Retry logic for resilience
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = await self._client.post(
+                    "/api/billing/usage/record",
+                    json={"events": [e.model_dump(mode="json") for e in events]},
+                )
+                response.raise_for_status()
+                logger.debug("Recorded usage events", count=len(events))
+                return
+            except httpx.HTTPStatusError as e:
+                logger.error(
+                    "Failed to record usage events",
+                    status_code=e.response.status_code,
+                    response=e.response.text,
+                    attempt=attempt + 1,
+                )
+                if attempt == max_retries - 1:  # Last attempt
+                    raise
+            except httpx.RequestError as e:
+                logger.error(
+                    "Request error recording usage events", error=str(e), attempt=attempt + 1
+                )
+                if attempt == max_retries - 1:  # Last attempt
+                    raise
+                # Wait before retry (exponential backoff)
+                await asyncio.sleep(2**attempt)
 
     async def record_event(self, event: UsageEvent) -> None:
         """Record a usage event.

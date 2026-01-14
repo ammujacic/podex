@@ -1003,39 +1003,42 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       </div>
 
       {/* Voice Settings Dialog */}
-      <VoiceSettingsDialog
-        open={voiceSettingsOpen}
-        onOpenChange={setVoiceSettingsOpen}
-        sessionId={sessionId}
-        agentId={agent.id}
-        agentName={agent.name}
-      />
+      {voiceSettingsOpen && (
+        <VoiceSettingsDialog
+          onOpenChange={setVoiceSettingsOpen}
+          sessionId={sessionId}
+          agentId={agent.id}
+          agentName={agent.name}
+        />
+      )}
 
       {/* Mode Settings Dialog */}
-      <AgentModeSelector
-        open={modeSettingsOpen}
-        onOpenChange={setModeSettingsOpen}
-        sessionId={sessionId}
-        agentId={agent.id}
-        agentName={agent.name}
-        currentMode={agent.mode || 'ask'}
-        currentAllowlist={agent.commandAllowlist}
-        onModeUpdate={(mode, allowlist) => {
-          updateAgent(sessionId, agent.id, { mode, commandAllowlist: allowlist });
-        }}
-      />
+      {modeSettingsOpen && (
+        <AgentModeSelector
+          onOpenChange={setModeSettingsOpen}
+          sessionId={sessionId}
+          agentId={agent.id}
+          agentName={agent.name}
+          currentMode={agent.mode || 'ask'}
+          currentAllowlist={agent.commandAllowlist}
+          onModeUpdate={(mode, allowlist) => {
+            updateAgent(sessionId, agent.id, { mode, commandAllowlist: allowlist });
+          }}
+        />
+      )}
 
       {/* Context Compaction Dialog */}
-      <CompactionDialog
-        agentId={agent.id}
-        agentName={agent.name}
-        sessionId={sessionId}
-        isOpen={compactionDialogOpen}
-        onClose={() => setCompactionDialogOpen(false)}
-        onCompact={async (instructions) => {
-          await compactAgentContext(agent.id, instructions);
-        }}
-      />
+      {compactionDialogOpen && (
+        <CompactionDialog
+          agentId={agent.id}
+          agentName={agent.name}
+          sessionId={sessionId}
+          onClose={() => setCompactionDialogOpen(false)}
+          onCompact={async (instructions) => {
+            await compactAgentContext(agent.id, instructions);
+          }}
+        />
+      )}
     </div>
   );
 }

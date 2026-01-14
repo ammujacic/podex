@@ -1,15 +1,7 @@
 'use client';
 
 import React, { useState, useCallback } from 'react';
-import { Zap, Settings, History, AlertTriangle, Loader2 } from 'lucide-react';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@podex/ui';
+import { Zap, Settings, History, AlertTriangle, Loader2, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useContextStore, type CompactionSettings } from '@/stores/context';
 
@@ -17,7 +9,6 @@ interface CompactionDialogProps {
   agentId: string;
   agentName: string;
   sessionId: string;
-  isOpen: boolean;
   onClose: () => void;
   onCompact: (instructions?: string) => Promise<void>;
 }
@@ -28,7 +19,6 @@ export function CompactionDialog({
   agentId,
   agentName,
   sessionId,
-  isOpen,
   onClose,
   onCompact,
 }: CompactionDialogProps) {
@@ -73,18 +63,32 @@ export function CompactionDialog({
   ];
 
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-[480px] p-0">
-        <DialogHeader className="px-6 pt-6 pb-4">
-          <DialogTitle className="flex items-center gap-2">
-            <Zap className="w-5 h-5 text-accent-primary" />
-            Context Management
-          </DialogTitle>
-          <DialogDescription>
-            Manage context window for {agentName}. Compact to free up space or configure
-            auto-compaction settings.
-          </DialogDescription>
-        </DialogHeader>
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-void/80 backdrop-blur-sm" onClick={() => onClose()} />
+
+      {/* Modal */}
+      <div className="relative w-full max-w-lg max-h-[85vh] flex flex-col rounded-xl border border-border-default bg-surface shadow-2xl">
+        <div className="flex items-center justify-between border-b border-border-subtle px-6 py-4 shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent-primary/10">
+              <Zap className="h-5 w-5 text-accent-primary" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-text-primary">Context Management</h2>
+              <p className="text-sm text-text-muted">
+                Manage context window for {agentName}. Compact to free up space or configure
+                auto-compaction settings.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-md p-2 text-text-muted hover:bg-overlay hover:text-text-primary"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
 
         {/* Usage Summary */}
         {usage && (
@@ -140,7 +144,7 @@ export function CompactionDialog({
         </div>
 
         {/* Tab Content */}
-        <div className="px-6 py-5 min-h-[200px]">
+        <div className="flex-1 overflow-y-auto p-6">
           {activeTab === 'compact' && (
             <div className="space-y-4">
               <p className="text-sm text-text-muted leading-relaxed">
@@ -314,10 +318,10 @@ export function CompactionDialog({
           )}
         </div>
 
-        <DialogFooter className="px-6 py-4 border-t border-border-subtle">
+        <div className="flex items-center justify-end gap-3 border-t border-border-subtle px-6 py-4 shrink-0">
           <button
             onClick={onClose}
-            className="rounded-md border border-border-default px-4 py-2 text-sm text-text-secondary hover:bg-elevated transition-colors"
+            className="rounded-lg px-4 py-2 text-sm font-medium text-text-secondary hover:bg-overlay hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
           >
             Cancel
           </button>
@@ -326,9 +330,9 @@ export function CompactionDialog({
               onClick={handleCompact}
               disabled={isCompacting}
               className={cn(
-                'rounded-md px-4 py-2 text-sm transition-colors',
+                'rounded-lg px-4 py-2 text-sm font-medium transition-colors',
                 !isCompacting
-                  ? 'bg-accent-primary text-text-inverse hover:bg-opacity-90'
+                  ? 'bg-accent-primary text-text-inverse hover:bg-accent-primary/90'
                   : 'bg-elevated text-text-muted cursor-not-allowed'
               )}
             >
@@ -342,8 +346,8 @@ export function CompactionDialog({
               )}
             </button>
           )}
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </div>
+      </div>
+    </div>
   );
 }

@@ -12,20 +12,11 @@ import {
   Zap,
   X,
 } from 'lucide-react';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@podex/ui';
 import { type AgentMode } from '@/stores/session';
 import { cn } from '@/lib/utils';
 import { updateAgentMode } from '@/lib/api';
 
 interface AgentModeSelectorProps {
-  open: boolean;
   onOpenChange: (open: boolean) => void;
   sessionId: string;
   agentId: string;
@@ -134,7 +125,6 @@ function PermissionBadge({ allowed }: { allowed: boolean | 'approval' | 'allowli
 }
 
 export function AgentModeSelector({
-  open,
   onOpenChange,
   sessionId,
   agentId,
@@ -190,15 +180,35 @@ export function AgentModeSelector({
     (selectedMode === 'auto' && JSON.stringify(allowlist) !== JSON.stringify(currentAllowlist));
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[520px] p-0">
-        <DialogHeader className="px-6 pt-6 pb-4">
-          <DialogTitle>Agent Mode Settings</DialogTitle>
-          <DialogDescription>
-            Configure permissions for {agentName}. This controls what actions the agent can perform
-            automatically.
-          </DialogDescription>
-        </DialogHeader>
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      {/* Backdrop */}
+      <div
+        className="absolute inset-0 bg-void/80 backdrop-blur-sm"
+        onClick={() => onOpenChange(false)}
+      />
+
+      {/* Modal */}
+      <div className="relative w-full max-w-lg max-h-[85vh] flex flex-col rounded-xl border border-border-default bg-surface shadow-2xl">
+        <div className="flex items-center justify-between border-b border-border-subtle px-6 py-4 shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent-primary/10">
+              <Shield className="h-5 w-5 text-accent-primary" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-text-primary">Agent Mode Settings</h2>
+              <p className="text-sm text-text-muted">
+                Configure permissions for {agentName}. This controls what actions the agent can
+                perform automatically.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => onOpenChange(false)}
+            className="rounded-md p-2 text-text-muted hover:bg-overlay hover:text-text-primary"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
 
         <div className="space-y-6 px-6 pb-2">
           {/* Mode Selection */}
@@ -350,10 +360,10 @@ export function AgentModeSelector({
           )}
         </div>
 
-        <DialogFooter className="px-6 py-4 border-t border-border-subtle">
+        <div className="flex items-center justify-end gap-3 border-t border-border-subtle px-6 py-4 shrink-0">
           <button
             onClick={() => onOpenChange(false)}
-            className="rounded-md border border-border-default px-4 py-2 text-sm text-text-secondary hover:bg-elevated transition-colors"
+            className="rounded-lg px-4 py-2 text-sm font-medium text-text-secondary hover:bg-overlay hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
           >
             Cancel
           </button>
@@ -361,9 +371,9 @@ export function AgentModeSelector({
             onClick={handleSave}
             disabled={!hasChanges || isSaving}
             className={cn(
-              'rounded-md px-4 py-2 text-sm transition-colors',
+              'rounded-lg px-4 py-2 text-sm font-medium transition-colors',
               hasChanges && !isSaving
-                ? 'bg-accent-primary text-text-inverse hover:bg-opacity-90'
+                ? 'bg-accent-primary text-text-inverse hover:bg-accent-primary/90'
                 : 'bg-elevated text-text-muted cursor-not-allowed'
             )}
           >
@@ -376,8 +386,8 @@ export function AgentModeSelector({
               'Save Changes'
             )}
           </button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </div>
+      </div>
+    </div>
   );
 }

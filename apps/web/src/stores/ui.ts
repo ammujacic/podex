@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 import { getUserConfig, updateUserConfig } from '@/lib/api/user-config';
+import { useAuthStore } from '@/stores/auth';
 
 export type Theme = 'dark' | 'light' | 'system';
 
@@ -240,6 +241,13 @@ export const useUIStore = create<UIState>()(
 
         syncToServer: async () => {
           const state = get();
+
+          // Check if user is authenticated before attempting to sync
+          const authState = useAuthStore.getState();
+          if (!authState.user || !authState.tokens) {
+            // User is not authenticated, silently skip sync
+            return;
+          }
 
           const prefsToSync = {
             theme: state.theme,
