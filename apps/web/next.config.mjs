@@ -30,14 +30,16 @@ const nextConfig = {
       },
     ],
   },
-  webpack: (config) => {
-    // Handle monaco-editor
-    config.resolve.fallback = {
-      ...config.resolve.fallback,
-      fs: false,
-      path: false,
-    };
-    return config;
+  // Turbopack configuration for Monaco Editor compatibility
+  turbopack: {
+    resolveAlias: {
+      fs: {
+        browser: './empty.ts',
+      },
+      path: {
+        browser: './empty.ts',
+      },
+    },
   },
 };
 
