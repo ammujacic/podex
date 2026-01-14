@@ -63,3 +63,4 @@ pnpm-debug.log*
 *.pem
 .husky/
 .claude/
+apps/web/.env.sentry-build-plugin
