@@ -8,17 +8,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import struct
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import Annotated, Any
 
 import docker
 import structlog
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, status
 
 from src.deps import get_compute_manager
+from src.managers.base import (
+    ComputeManager,  # noqa: TC001 - FastAPI needs this at runtime for Depends()
+)
 from src.models.workspace import WorkspaceStatus
-
-if TYPE_CHECKING:
-    from src.managers.base import ComputeManager
 
 logger = structlog.get_logger()
 
@@ -106,15 +106,25 @@ class TmuxSessionManager:
             for session in sessions:
                 try:
                     session._running = False
+                    # Close the Docker socket to unblock read operations
                     if session.socket:
                         with contextlib.suppress(Exception):
                             session.socket._sock.close()
+                    # Close the WebSocket to unblock websocket.receive()
+                    if session.websocket:
+                        with contextlib.suppress(Exception):
+                            await session.websocket.close(code=1001, reason="Server shutting down")
                 except Exception as e:
                     logger.warning("Error closing terminal session", error=str(e))
 
             # Give WebSocket handlers time to exit cleanly
             await asyncio.sleep(0.5)
             logger.info("Terminal sessions signaled to close")
+
+    def reset(self) -> None:
+        """Reset the manager state - called on startup to clear any stale state."""
+        self._shutdown_event.clear()
+        logger.info("Terminal session manager reset")
 
 
 # Global session manager
@@ -124,6 +134,11 @@ tmux_manager = TmuxSessionManager.get_instance()
 async def shutdown_terminal_sessions() -> None:
     """Shutdown hook to close all active terminal sessions."""
     await tmux_manager.shutdown_all_sessions()
+
+
+def reset_terminal_manager() -> None:
+    """Reset terminal manager state on startup."""
+    tmux_manager.reset()
 
 
 class TmuxTerminalSession:
@@ -142,6 +157,7 @@ class TmuxTerminalSession:
         self.client = docker.from_env()
         self.exec_id: str | None = None
         self.socket: Any = None
+        self.websocket: WebSocket | None = None  # Reference to client WebSocket for shutdown
         self._running = False
 
     async def _exec_in_container(self, cmd: list[str], tty: bool = False) -> tuple[int, str]:
@@ -268,6 +284,9 @@ class TmuxTerminalSession:
             tty=True,
         )
 
+        # Set socket to non-blocking mode once at startup
+        self.socket._sock.setblocking(False)
+
         self._running = True
         self._using_tmux = True
 
@@ -309,6 +328,9 @@ class TmuxTerminalSession:
             socket=True,
             tty=True,
         )
+
+        # Set socket to non-blocking mode once at startup
+        self.socket._sock.setblocking(False)
 
         self._running = True
         self._using_tmux = False
@@ -366,7 +388,8 @@ class TmuxTerminalSession:
             return False
         try:
             sock = self.socket._sock
-            await asyncio.to_thread(sock.sendall, data)
+            loop = asyncio.get_event_loop()
+            await loop.sock_sendall(sock, data)
             return True
         except Exception as e:
             logger.warning(
@@ -382,9 +405,9 @@ class TmuxTerminalSession:
             return None
         try:
             sock = self.socket._sock
-            sock.setblocking(False)
+            loop = asyncio.get_event_loop()
             try:
-                data = await asyncio.get_event_loop().run_in_executor(None, lambda: sock.recv(size))
+                data = await loop.sock_recv(sock, size)
                 return data if data else None
             except BlockingIOError:
                 return b""
@@ -610,6 +633,9 @@ async def terminal_websocket(  # noqa: PLR0915
         )
         return
 
+    # Store websocket reference for shutdown
+    session.websocket = websocket
+
     # Register session for shutdown tracking
     await tmux_manager.register_active_session(session)
 
@@ -718,6 +744,9 @@ async def kill_terminal_session(
             return {"status": "not_found", "message": "Workspace not found"}
     else:
         container_id = workspace.container_id
+
+    if not container_id:
+        return {"status": "not_found", "message": "Workspace container not found"}
 
     tmux_session_name = f"podex-{session_id}"
 

@@ -15,6 +15,7 @@ from src.deps import cleanup_compute_manager, get_compute_manager, init_compute_
 from src.routes import (
     health_router,
     preview_router,
+    reset_terminal_manager,
     shutdown_terminal_sessions,
     terminal_router,
     websocket_router,
@@ -87,6 +88,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         environment=settings.environment,
         compute_mode=settings.compute_mode,
     )
+
+    # Reset terminal manager state (clears any stale shutdown flags from hot reload)
+    reset_terminal_manager()
 
     # Initialize compute manager
     await init_compute_manager()

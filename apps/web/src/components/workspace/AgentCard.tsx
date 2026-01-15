@@ -891,7 +891,12 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                     <p className="whitespace-pre-wrap">{msg.content}</p>
                   )}
                   <div className="mt-1 flex items-center justify-between gap-2">
-                    <span className="text-xs text-text-muted">
+                    <span
+                      className={cn(
+                        'text-xs',
+                        msg.role === 'user' ? 'text-text-inverse/60' : 'text-text-muted'
+                      )}
+                    >
                       {formatTimestamp(msg.timestamp)}
                     </span>
                     <div className="flex items-center gap-1">
