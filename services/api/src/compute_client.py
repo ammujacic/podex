@@ -323,13 +323,17 @@ class ComputeClient:
 
     async def git_stage(self, workspace_id: str, user_id: str, files: list[str]) -> None:
         """Stage files for commit."""
-        files_str = " ".join(f'"{f}"' for f in files)
-        await self.exec_command(workspace_id, user_id, f"git add {files_str}")
+        # Use -- to separate options from paths, and properly escape each file
+        escaped_files = [self._escape_shell_arg(f) for f in files]
+        files_str = " ".join(escaped_files)
+        await self.exec_command(workspace_id, user_id, f"git add -- {files_str}")
 
     async def git_unstage(self, workspace_id: str, user_id: str, files: list[str]) -> None:
         """Unstage files."""
-        files_str = " ".join(f'"{f}"' for f in files)
-        await self.exec_command(workspace_id, user_id, f"git reset HEAD {files_str}")
+        # Use -- to separate options from paths, and properly escape each file
+        escaped_files = [self._escape_shell_arg(f) for f in files]
+        files_str = " ".join(escaped_files)
+        await self.exec_command(workspace_id, user_id, f"git reset HEAD -- {files_str}")
 
     async def git_commit(
         self,
@@ -338,12 +342,12 @@ class ComputeClient:
         message: str,
     ) -> dict[str, str]:
         """Create a git commit."""
-        # Escape message for shell
-        safe_message = message.replace('"', '\\"').replace("$", "\\$")
+        # Use proper shell escaping for the commit message
+        safe_message = self._escape_shell_arg(message)
         result = await self.exec_command(
             workspace_id,
             user_id,
-            f'git commit -m "{safe_message}"',
+            f"git commit -m {safe_message}",
         )
         # Extract commit hash from output
         stdout = result.get("stdout", "")
@@ -527,6 +531,26 @@ class ComputeClient:
                 "success": False,
                 "message": str(e),
             }
+
+    # ==================== Shell Escaping Helpers ====================
+
+    def _escape_shell_arg(self, arg: str) -> str:
+        """Safely escape a string for use as a shell argument.
+
+        Uses single quotes which prevent all shell interpretation.
+        Single quotes within the string are handled by ending the quoted
+        section, adding an escaped single quote, and starting a new section.
+
+        Args:
+            arg: The string to escape.
+
+        Returns:
+            A safely quoted shell argument.
+        """
+        # Replace single quotes with: end quote, escaped quote, start quote
+        # e.g., "it's" becomes 'it'\''s'
+        escaped = arg.replace("'", "'\"'\"'")
+        return f"'{escaped}'"
 
     # ==================== Git Parsing Helpers ====================
 

@@ -912,11 +912,12 @@ class MoveFileRequest(BaseModel):
     dest_path: str
 
 
-def validate_file_path(path: str) -> str:
+def validate_file_path(path: str, max_length: int = 4096) -> str:
     """Validate and normalize a file path to prevent path traversal attacks.
 
     Args:
         path: The file path to validate.
+        max_length: Maximum allowed path length (default 4096).
 
     Returns:
         The normalized, safe path.
@@ -924,8 +925,34 @@ def validate_file_path(path: str) -> str:
     Raises:
         HTTPException: If the path is invalid or attempts path traversal.
     """
+    # Security: Check for null bytes FIRST (can bypass other checks)
+    if "\x00" in path:
+        raise HTTPException(status_code=400, detail="Invalid path: null bytes not allowed")
+
+    # Check path length to prevent DoS
+    if len(path) > max_length:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid path: path too long (max {max_length} characters)",
+        )
+
+    # Reject empty paths
+    if not path or not path.strip():
+        raise HTTPException(status_code=400, detail="Invalid path: path cannot be empty")
+
+    # Check for backslashes (normalize to forward slashes for consistency)
+    # This prevents mixed-separator bypass attempts
+    clean_path = path.replace("\\", "/")
+
+    # Reject URL-encoded traversal attempts (before normalization)
+    if "%2e" in path.lower() or "%2f" in path.lower():
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid path: URL-encoded characters not allowed",
+        )
+
     # Normalize the path to resolve any .. or . components
-    normalized = os.path.normpath(path)
+    normalized = os.path.normpath(clean_path)
 
     # Check for path traversal attempts
     if normalized.startswith(("..", "/")):
@@ -941,10 +968,7 @@ def validate_file_path(path: str) -> str:
             detail="Invalid path: path traversal is not allowed",
         )
 
-    # Reject paths with null bytes (can bypass some checks)
-    if "\x00" in path:
-        raise HTTPException(status_code=400, detail="Invalid path: null bytes not allowed")
-
+    # "." is allowed - it represents the current/root directory for listing
     return normalized
 
 
@@ -1137,7 +1161,7 @@ async def get_session_or_404(
     return session
 
 
-async def ensure_workspace_provisioned(  # noqa: PLR0912
+async def ensure_workspace_provisioned(
     session: SessionModel,
     user_id: str,
     db: AsyncSession | None = None,
@@ -1222,27 +1246,18 @@ async def ensure_workspace_provisioned(  # noqa: PLR0912
                 config=workspace_config,
             )
     except RuntimeError as e:
-        # Lock acquisition failed - this is a fallback, still try to provision
-        logger.warning(
-            "Failed to acquire provisioning lock, attempting without lock",
+        # Lock acquisition failed - do NOT proceed without lock
+        # This prevents race conditions where multiple requests could
+        # try to create the same workspace simultaneously
+        logger.error(
+            "Failed to acquire provisioning lock",
             workspace_id=workspace_id,
             error=str(e),
         )
-        # Check one more time before attempting
-        try:
-            existing = await compute_client.get_workspace(workspace_id, user_id)
-            if existing:
-                return
-        except ComputeServiceHTTPError as e2:
-            if e2.status_code != 404:  # noqa: PLR2004
-                raise
-
-        await compute_client.create_workspace(
-            session_id=str(session.id),
-            user_id=user_id,
-            workspace_id=workspace_id,
-            config=workspace_config,
-        )
+        raise ComputeClientError(
+            f"Workspace provisioning temporarily unavailable. Please retry. Error: {e}",
+            status_code=503,
+        ) from e
 
 
 @router.get("/{session_id}/files", response_model=list[FileNode])

@@ -29,8 +29,9 @@ import {
 } from '@/lib/api';
 import { useUser, useAuthStore } from '@/stores/auth';
 import { useOnboardingTour } from '@/components/ui/OnboardingTour';
+import { ExternalAgentSettings } from '@/components/settings/ExternalAgentSettings';
 
-type TabId = 'general' | 'dotfiles' | 'git' | 'appearance' | 'templates';
+type TabId = 'general' | 'dotfiles' | 'git' | 'appearance' | 'templates' | 'external-agents';
 
 interface Tab {
   id: TabId;
@@ -44,6 +45,7 @@ const tabs: Tab[] = [
   { id: 'git', label: 'Git Config', icon: <GitBranch className="w-4 h-4" /> },
   { id: 'appearance', label: 'Appearance', icon: <Palette className="w-4 h-4" /> },
   { id: 'templates', label: 'Pod Templates', icon: <FileCode className="w-4 h-4" /> },
+  { id: 'external-agents', label: 'External Agents', icon: <Box className="w-4 h-4" /> },
 ];
 
 const shellOptions = [
@@ -617,6 +619,9 @@ export default function SettingsPage() {
                 </Button>
               </div>
             )}
+
+            {/* External Agents Tab */}
+            {activeTab === 'external-agents' && <ExternalAgentSettings />}
           </div>
         </div>
       </div>

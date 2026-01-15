@@ -139,7 +139,8 @@ function SidebarPanel({ panelId, sessionId }: SidebarPanelProps) {
       case 'problems':
         return <DiagnosticsSidebarPanel sessionId={sessionId} />;
       case 'usage':
-        return <UsageSidebarPanel sessionId={sessionId} />;
+        // Usage panel receives isVisible=true since it's only rendered when in the active panels list
+        return <UsageSidebarPanel sessionId={sessionId} isVisible={true} />;
       case 'preview':
         // Preview panel needs workspaceId not sessionId - show placeholder for now
         return (

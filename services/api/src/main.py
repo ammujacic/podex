@@ -58,6 +58,7 @@ from src.routes import (
     sharing,
     subagents,
     templates,
+    terminal_agents,
     uploads,
     user_config,
     voice,
@@ -65,7 +66,12 @@ from src.routes import (
     workspaces,
     worktrees,
 )
-from src.routes.billing import reset_expired_quotas
+from src.routes.billing import (
+    expire_credits,
+    process_subscription_period_ends,
+    reset_expired_quotas,
+    update_expiring_soon_credits,
+)
 from src.websocket.hub import cleanup_session_sync, init_session_sync, sio
 
 
@@ -83,6 +89,7 @@ class _BackgroundTasks:
     quota_reset: asyncio.Task[None] | None = None
     standby_check: asyncio.Task[None] | None = None
     workspace_provision: asyncio.Task[None] | None = None
+    billing_maintenance: asyncio.Task[None] | None = None
 
 
 _tasks = _BackgroundTasks()
@@ -115,6 +122,51 @@ async def quota_reset_background_task() -> None:
             logger.exception("Error in quota reset task", error=str(e))
             # Continue running despite errors
             await asyncio.sleep(60)  # Wait a bit before retrying
+
+
+async def billing_maintenance_background_task() -> None:
+    """Background task for billing maintenance operations.
+
+    Runs every hour to:
+    - Expire credits that have passed their expiration date
+    - Update expiring_soon_cents for credit balances
+    - Process subscriptions that need to be canceled at period end
+    - Handle trials that have ended
+    """
+    while True:
+        try:
+            await asyncio.sleep(3600)  # Run every hour
+
+            async for db in get_db():
+                try:
+                    # Expire credits
+                    expired_count = await expire_credits(db)
+                    if expired_count > 0:
+                        logger.info("Expired credits", count=expired_count)
+
+                    # Update expiring soon counts
+                    expiring_updated = await update_expiring_soon_credits(db)
+                    if expiring_updated > 0:
+                        logger.info("Updated expiring soon balances", count=expiring_updated)
+
+                    # Process subscription period ends
+                    canceled, trial_ended = await process_subscription_period_ends(db)
+                    if canceled > 0:
+                        logger.info("Canceled subscriptions at period end", count=canceled)
+                    if trial_ended > 0:
+                        logger.info("Processed ended trials", count=trial_ended)
+
+                    await db.commit()
+                except Exception as e:
+                    await db.rollback()
+                    logger.exception("Failed in billing maintenance", error=str(e))
+
+        except asyncio.CancelledError:
+            logger.info("Billing maintenance task cancelled")
+            break
+        except Exception as e:
+            logger.exception("Error in billing maintenance task", error=str(e))
+            await asyncio.sleep(300)  # Wait 5 minutes before retrying
 
 
 async def standby_background_task() -> None:  # noqa: PLR0912
@@ -629,10 +681,18 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     _tasks.workspace_provision = asyncio.create_task(workspace_provision_background_task())
     logger.info("Workspace provision background task started")
 
+    # Start background task for billing maintenance
+    _tasks.billing_maintenance = asyncio.create_task(billing_maintenance_background_task())
+    logger.info("Billing maintenance background task started")
+
     yield
 
     # Cleanup
     logger.info("Shutting down Podex API")
+
+    # Close all terminal sessions (terminates PTY processes)
+    await terminal_agents.terminal_session_manager.shutdown()
+    logger.info("Terminal sessions closed")
 
     # Cancel quota reset task
     if _tasks.quota_reset:
@@ -654,6 +714,13 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         with contextlib.suppress(asyncio.CancelledError):
             await _tasks.workspace_provision
         logger.info("Workspace provision background task stopped")
+
+    # Cancel billing maintenance task
+    if _tasks.billing_maintenance:
+        _tasks.billing_maintenance.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _tasks.billing_maintenance
+        logger.info("Billing maintenance background task stopped")
 
     await cleanup_session_sync()
     await close_database()
@@ -794,6 +861,7 @@ api_v1.include_router(worktrees.router, prefix="/worktrees", tags=["worktrees"])
 api_v1.include_router(changes.router, prefix="/changes", tags=["changes"])
 api_v1.include_router(subagents.router, tags=["subagents"])
 api_v1.include_router(hooks.router, tags=["hooks"])
+api_v1.include_router(terminal_agents.router, prefix="/terminal-agents", tags=["terminal-agents"])
 
 # Mount v1 API at /api/v1
 app.include_router(api_v1, prefix="/api/v1")

@@ -38,6 +38,8 @@ export interface EnvironmentConfig {
   alertEmail?: string;
 }
 
+// ALPHA STAGE: All environments use minimal resources to reduce costs
+// Scale up as needed when traffic increases
 const environments: Record<string, EnvironmentConfig> = {
   dev: {
     envName: 'dev',
@@ -45,17 +47,21 @@ const environments: Record<string, EnvironmentConfig> = {
     isProd: false,
     vpcCidr: '10.0.0.0/16',
     maxAzs: 2,
-    databaseInstanceClass: 'db.t4g.medium',
+    // Aurora Serverless v2 minimum (0.5 ACU = ~$0.06/hour when active, scales to 0 when idle)
+    databaseInstanceClass: 'db.t4g.micro',
     databaseMinCapacity: 0.5,
-    databaseMaxCapacity: 2,
+    databaseMaxCapacity: 1,
+    // Single instance for all services
     apiDesiredCount: 1,
     agentDesiredCount: 1,
     computeDesiredCount: 1,
     webDesiredCount: 1,
+    // Smallest cache instance (free tier eligible)
     cacheNodeType: 'cache.t4g.micro',
     cacheNumNodes: 1,
-    sentryTracesSampleRate: 1.0,
-    sentryProfilesSampleRate: 1.0,
+    // Reduced sampling for cost savings
+    sentryTracesSampleRate: 0.1,
+    sentryProfilesSampleRate: 0.1,
   },
   staging: {
     envName: 'staging',
@@ -63,36 +69,45 @@ const environments: Record<string, EnvironmentConfig> = {
     isProd: false,
     vpcCidr: '10.1.0.0/16',
     maxAzs: 2,
-    databaseInstanceClass: 'db.t4g.large',
-    databaseMinCapacity: 1,
-    databaseMaxCapacity: 4,
-    apiDesiredCount: 2,
-    agentDesiredCount: 2,
-    computeDesiredCount: 2,
-    webDesiredCount: 2,
-    cacheNodeType: 'cache.t4g.small',
-    cacheNumNodes: 2,
-    sentryTracesSampleRate: 0.5,
-    sentryProfilesSampleRate: 0.3,
+    // Minimal Aurora Serverless v2
+    databaseInstanceClass: 'db.t4g.micro',
+    databaseMinCapacity: 0.5,
+    databaseMaxCapacity: 2,
+    // Single instance for all services
+    apiDesiredCount: 1,
+    agentDesiredCount: 1,
+    computeDesiredCount: 1,
+    webDesiredCount: 1,
+    // Smallest cache instance
+    cacheNodeType: 'cache.t4g.micro',
+    cacheNumNodes: 1,
+    // Reduced sampling
+    sentryTracesSampleRate: 0.1,
+    sentryProfilesSampleRate: 0.1,
   },
   prod: {
     envName: 'prod',
     region: 'us-east-1',
     isProd: true,
     vpcCidr: '10.2.0.0/16',
-    maxAzs: 3,
-    databaseInstanceClass: 'db.r6g.large',
-    databaseMinCapacity: 2,
-    databaseMaxCapacity: 16,
-    apiDesiredCount: 3,
-    agentDesiredCount: 5,
-    computeDesiredCount: 5,
-    webDesiredCount: 3,
-    cacheNodeType: 'cache.r6g.large',
-    cacheNumNodes: 3,
+    // ALPHA: Use 2 AZs to reduce NAT gateway costs (1 NAT gateway)
+    maxAzs: 2,
+    // ALPHA: Smallest production instance (scales up automatically with Serverless v2)
+    databaseInstanceClass: 'db.t4g.small',
+    databaseMinCapacity: 0.5,
+    databaseMaxCapacity: 4,
+    // ALPHA: Single instance for all services - scale up when traffic increases
+    apiDesiredCount: 1,
+    agentDesiredCount: 1,
+    computeDesiredCount: 1,
+    webDesiredCount: 1,
+    // ALPHA: Smallest cache instance - upgrade to cache.t4g.small when needed
+    cacheNodeType: 'cache.t4g.micro',
+    cacheNumNodes: 1,
     domainName: 'podex.dev',
-    sentryTracesSampleRate: 0.2,
-    sentryProfilesSampleRate: 0.1,
+    // Keep sampling low for cost
+    sentryTracesSampleRate: 0.1,
+    sentryProfilesSampleRate: 0.05,
     // Set this to receive monitoring alerts
     alertEmail: undefined, // Configure in AWS Console or set here: 'alerts@podex.dev'
   },

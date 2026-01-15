@@ -103,6 +103,16 @@ async def get_agent_context_usage(
     """Get context usage for an agent."""
     user_id = get_current_user_id(request)
 
+    # Handle terminal agents (prefixed with "terminal-")
+    # Terminal agents don't track context usage the same way as regular agents
+    if agent_id.startswith("terminal-"):
+        return ContextUsageResponse(
+            agent_id=agent_id,
+            tokens_used=0,
+            tokens_max=0,
+            percentage=0,
+        )
+
     # Verify agent exists and user has access
     agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent = agent_result.scalar_one_or_none()

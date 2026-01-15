@@ -204,7 +204,7 @@ export function AgentModeSelector({
           </div>
           <button
             onClick={() => onOpenChange(false)}
-            className="rounded-md p-2 text-text-muted hover:bg-overlay hover:text-text-primary"
+            className="rounded-md p-2 text-text-muted hover:bg-overlay hover:text-text-primary cursor-pointer"
           >
             <X className="h-5 w-5" />
           </button>
@@ -223,7 +223,7 @@ export function AgentModeSelector({
                     key={mode.value}
                     onClick={() => setSelectedMode(mode.value)}
                     className={cn(
-                      'flex items-start gap-3 rounded-lg border p-4 text-left transition-colors',
+                      'flex items-start gap-3 rounded-lg border p-4 text-left transition-colors cursor-pointer',
                       isSelected
                         ? 'border-accent-primary bg-accent-primary/10'
                         : 'border-border-default hover:border-border-focus hover:bg-elevated'
@@ -286,7 +286,7 @@ export function AgentModeSelector({
                   className={cn(
                     'rounded-md px-3 py-2 transition-colors',
                     newCommand.trim()
-                      ? 'bg-accent-primary text-text-inverse hover:bg-opacity-90'
+                      ? 'bg-accent-primary text-text-inverse hover:bg-opacity-90 cursor-pointer'
                       : 'bg-elevated text-text-muted cursor-not-allowed'
                   )}
                 >
@@ -302,7 +302,7 @@ export function AgentModeSelector({
                       <code className="text-sm text-text-secondary font-mono">{cmd}</code>
                       <button
                         onClick={() => handleRemoveCommand(cmd)}
-                        className="rounded p-1 text-text-muted hover:bg-overlay hover:text-red-400"
+                        className="rounded p-1 text-text-muted hover:bg-overlay hover:text-red-400 cursor-pointer"
                       >
                         <X className="h-3.5 w-3.5" />
                       </button>
@@ -332,7 +332,7 @@ export function AgentModeSelector({
                         'rounded px-2 py-1 text-xs font-mono transition-colors',
                         allowlist.includes(cmd)
                           ? 'bg-elevated text-text-muted cursor-not-allowed'
-                          : 'bg-elevated text-text-secondary hover:bg-overlay hover:text-text-primary'
+                          : 'bg-elevated text-text-secondary hover:bg-overlay hover:text-text-primary cursor-pointer'
                       )}
                     >
                       {cmd}
@@ -363,7 +363,7 @@ export function AgentModeSelector({
         <div className="flex items-center justify-end gap-3 border-t border-border-subtle px-6 py-4 shrink-0">
           <button
             onClick={() => onOpenChange(false)}
-            className="rounded-lg px-4 py-2 text-sm font-medium text-text-secondary hover:bg-overlay hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-lg px-4 py-2 text-sm font-medium text-text-secondary hover:bg-overlay hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
           >
             Cancel
           </button>
@@ -373,7 +373,7 @@ export function AgentModeSelector({
             className={cn(
               'rounded-lg px-4 py-2 text-sm font-medium transition-colors',
               hasChanges && !isSaving
-                ? 'bg-accent-primary text-text-inverse hover:bg-accent-primary/90'
+                ? 'bg-accent-primary text-text-inverse hover:bg-accent-primary/90 cursor-pointer'
                 : 'bg-elevated text-text-muted cursor-not-allowed'
             )}
           >

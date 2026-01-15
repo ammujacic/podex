@@ -63,12 +63,39 @@ class S3Storage:
 
         Returns:
             Full S3 key
+
+        Raises:
+            ValueError: If path attempts to traverse outside workspace boundary.
         """
         # Normalize path - remove leading /workspace prefix if present
         clean_path = path.lstrip("/")
         clean_path = clean_path.removeprefix("workspace/")  # Remove "workspace/"
 
-        return f"{self.prefix}/{workspace_id}/{clean_path}"
+        # Security: Resolve the path and check for traversal attacks
+        # Use PurePosixPath to normalize without filesystem access
+        normalized = PurePosixPath(clean_path)
+
+        # Check for path traversal attempts
+        # After normalization, the path should not start with .. or contain ..
+        resolved_parts: list[str] = []
+        for part in normalized.parts:
+            if part == "..":
+                if resolved_parts:
+                    resolved_parts.pop()
+                # If trying to go above root, this is a traversal attack
+                else:
+                    raise ValueError(f"Path traversal detected: {path}")
+            elif part != ".":
+                resolved_parts.append(part)
+
+        # Reconstruct the safe path
+        safe_path = "/".join(resolved_parts)
+
+        # Additional check: ensure no .. remains after normalization
+        if ".." in safe_path:
+            raise ValueError(f"Path traversal detected: {path}")
+
+        return f"{self.prefix}/{workspace_id}/{safe_path}"
 
     async def _get_client(self) -> AbstractAsyncContextManager[Any]:
         """Get S3 client context manager."""

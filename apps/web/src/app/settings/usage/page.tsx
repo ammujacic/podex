@@ -35,7 +35,17 @@ export default function UsagePage() {
   const handleExportCSV = () => {
     if (!history || history.length === 0) return;
 
-    const headers = ['Date', 'Type', 'Quantity', 'Unit', 'Cost', 'Model', 'Agent ID', 'Session ID'];
+    const headers = [
+      'Date',
+      'Type',
+      'Quantity',
+      'Unit',
+      'Cost',
+      'Model',
+      'Tier',
+      'Agent ID',
+      'Session ID',
+    ];
     const rows = history.map((record) => [
       new Date(record.created_at).toLocaleString(),
       record.usage_type,
@@ -43,6 +53,7 @@ export default function UsagePage() {
       record.unit,
       `$${record.cost.toFixed(4)}`,
       record.model || '',
+      record.tier || '',
       record.agent_id || '',
       record.session_id || '',
     ]);
@@ -281,6 +292,7 @@ export default function UsagePage() {
                     Quantity
                   </th>
                   <th className="text-left py-3 px-4 text-sm font-medium text-text-muted">Model</th>
+                  <th className="text-left py-3 px-4 text-sm font-medium text-text-muted">Tier</th>
                   <th className="text-right py-3 px-4 text-sm font-medium text-text-muted">Cost</th>
                 </tr>
               </thead>
@@ -300,6 +312,7 @@ export default function UsagePage() {
                       {formatNumber(record.quantity)} {record.unit}
                     </td>
                     <td className="py-3 px-4 text-sm text-text-secondary">{record.model || '-'}</td>
+                    <td className="py-3 px-4 text-sm text-text-secondary">{record.tier || '-'}</td>
                     <td className="py-3 px-4 text-sm text-text-primary text-right">
                       ${record.cost.toFixed(4)}
                     </td>

@@ -272,9 +272,20 @@ async def handle_stripe_webhook(request: Request) -> dict[str, str]:
             event = stripe.Webhook.construct_event(
                 payload, sig_header, settings.STRIPE_WEBHOOK_SECRET
             )
-        else:
-            # For development without webhook secret
+        elif settings.ENVIRONMENT == "development":
+            # Only allow unverified webhooks in development
+            logger.warning(
+                "Processing unverified webhook in development mode - "
+                "STRIPE_WEBHOOK_SECRET should be set"
+            )
             event = stripe.Event.construct_from(json_loads(payload), stripe.api_key)
+        else:
+            # In production, webhook secret is required
+            logger.error("STRIPE_WEBHOOK_SECRET not configured in production")
+            raise HTTPException(
+                status_code=503,
+                detail="Webhook verification not configured",
+            )
     except ValueError as e:
         logger.warning("Invalid webhook payload", error=str(e))
         raise HTTPException(status_code=400, detail="Invalid payload") from e
@@ -291,6 +302,22 @@ async def handle_stripe_webhook(request: Request) -> dict[str, str]:
     # Get database session
     async for db in get_db():
         try:
+            # Idempotency check - prevent duplicate event processing
+            # Check if this Stripe event ID was already processed
+
+            existing_event = await db.execute(
+                select(BillingEvent).where(
+                    BillingEvent.event_data["stripe_event_id"].astext == event.id
+                )
+            )
+            if existing_event.scalar_one_or_none():
+                logger.info(
+                    "Skipping duplicate webhook event",
+                    event_type=event.type,
+                    event_id=event.id,
+                )
+                return {"status": "ok", "message": "Event already processed"}
+
             # Route to appropriate handler
             handler = WEBHOOK_HANDLERS.get(event.type)
             if handler:
@@ -358,7 +385,10 @@ async def handle_checkout_session_completed(
             balance.balance_cents += amount_total
             balance.total_purchased_cents += amount_total
 
-            # Create transaction record
+            # Credits expire 1 year from purchase
+            expires_at = datetime.now(UTC) + timedelta(days=365)
+
+            # Create transaction record with expiration
             transaction = CreditTransaction(
                 user_id=user.id,
                 amount_cents=amount_total,
@@ -366,6 +396,7 @@ async def handle_checkout_session_completed(
                 description=f"Stripe checkout: {session.id}",
                 stripe_payment_intent_id=session.payment_intent,
                 balance_after_cents=balance.balance_cents,
+                expires_at=expires_at,
             )
             db.add(transaction)
 
@@ -431,8 +462,42 @@ async def handle_customer_subscription_updated(
 
     subscription = await _sync_subscription_from_stripe(db, user, stripe_subscription, event.id)
 
-    # Check for plan changes and update quotas
     previous_attributes = event.data.get("previous_attributes", {})
+
+    # Check for billing period change (renewal) - reset quotas
+    if "current_period_start" in previous_attributes:
+        # Billing period has changed - this is a renewal, reset usage quotas
+        new_period_end = subscription.current_period_end
+
+        await db.execute(
+            update(UsageQuota)
+            .where(UsageQuota.user_id == user.id)
+            .where(UsageQuota.quota_type.in_(["tokens", "compute_credits"]))
+            .values(
+                current_usage=0,
+                reset_at=new_period_end,
+                warning_sent_at=None,
+            )
+        )
+
+        logger.info(
+            "Reset quotas on subscription renewal",
+            user_id=user.id,
+            new_period_end=new_period_end.isoformat(),
+        )
+
+        await _log_billing_event(
+            db,
+            user_id=user.id,
+            event_type="quotas_reset_renewal",
+            event_data={
+                "new_period_end": new_period_end.isoformat(),
+            },
+            stripe_event_id=event.id,
+            subscription_id=subscription.id,
+        )
+
+    # Check for plan changes and update quotas
     if "items" in previous_attributes:
         # Plan changed - update quotas
         plan_result = await db.execute(
@@ -710,6 +775,161 @@ async def handle_customer_created(
             user.stripe_customer_id = customer.id
 
 
+async def handle_customer_subscription_paused(
+    db: AsyncSession,
+    event: stripe.Event,
+) -> None:
+    """Handle subscription pause event."""
+    stripe_subscription = event.data.object
+    subscription_id = stripe_subscription.id
+
+    result = await db.execute(
+        select(UserSubscription).where(UserSubscription.stripe_subscription_id == subscription_id)
+    )
+    subscription = result.scalar_one_or_none()
+
+    if subscription:
+        subscription.status = "paused"
+
+        await _log_billing_event(
+            db,
+            user_id=subscription.user_id,
+            event_type="subscription_paused",
+            event_data={
+                "reason": "Stripe subscription paused",
+            },
+            stripe_event_id=event.id,
+            subscription_id=subscription.id,
+        )
+
+        logger.info(
+            "Subscription paused",
+            subscription_id=subscription.id,
+            user_id=subscription.user_id,
+        )
+
+
+async def handle_customer_subscription_resumed(
+    db: AsyncSession,
+    event: stripe.Event,
+) -> None:
+    """Handle subscription resume event."""
+    stripe_subscription = event.data.object
+    customer_id = stripe_subscription.customer
+
+    user = await _get_user_by_stripe_customer(db, customer_id)
+    if not user:
+        logger.warning("User not found for customer", customer_id=customer_id)
+        return
+
+    # Re-sync subscription from Stripe (will update status to active)
+    await _sync_subscription_from_stripe(db, user, stripe_subscription, event.id)
+
+    logger.info(
+        "Subscription resumed",
+        stripe_subscription_id=stripe_subscription.id,
+        user_id=user.id,
+    )
+
+
+async def handle_charge_dispute_created(
+    db: AsyncSession,
+    event: stripe.Event,
+) -> None:
+    """Handle dispute/chargeback creation."""
+    dispute = event.data.object
+    charge_id = dispute.charge
+
+    # Get the charge to find the customer
+    try:
+        charge = stripe.Charge.retrieve(charge_id)
+        customer_id = charge.customer
+    except Exception as e:
+        logger.warning("Failed to retrieve charge for dispute", charge_id=charge_id, error=str(e))
+        return
+
+    if not customer_id:
+        return
+
+    user = await _get_user_by_stripe_customer(db, customer_id)
+    if not user:
+        return
+
+    await _log_billing_event(
+        db,
+        user_id=user.id,
+        event_type="charge_dispute_created",
+        event_data={
+            "dispute_id": dispute.id,
+            "charge_id": charge_id,
+            "amount": dispute.amount,
+            "reason": dispute.reason,
+            "status": dispute.status,
+        },
+        stripe_event_id=event.id,
+    )
+
+    logger.warning(
+        "Charge dispute created",
+        user_id=user.id,
+        dispute_id=dispute.id,
+        amount=dispute.amount,
+        reason=dispute.reason,
+    )
+
+    # Send notification email about the dispute
+    if user.email:
+        try:
+            email_service = get_email_service()
+            await email_service.send_email(
+                user.email,
+                EmailTemplate.PAYMENT_FAILED,  # Reuse payment failed template
+                {
+                    "name": user.name or "there",
+                    "amount": dispute.amount / 100,
+                },
+            )
+        except Exception as e:
+            logger.warning("Failed to send dispute email", user_id=user.id, error=str(e))
+
+
+async def handle_invoice_upcoming(
+    db: AsyncSession,
+    event: stripe.Event,
+) -> None:
+    """Handle upcoming invoice notification.
+
+    Stripe sends this ~3 days before the invoice is finalized.
+    Useful for notifying users about upcoming charges.
+    """
+    stripe_invoice = event.data.object
+    customer_id = stripe_invoice.customer
+
+    if not customer_id:
+        return
+
+    user = await _get_user_by_stripe_customer(db, customer_id)
+    if not user:
+        return
+
+    await _log_billing_event(
+        db,
+        user_id=user.id,
+        event_type="invoice_upcoming",
+        event_data={
+            "amount_due": stripe_invoice.amount_due,
+            "next_payment_attempt": stripe_invoice.next_payment_attempt,
+        },
+        stripe_event_id=event.id,
+    )
+
+    logger.info(
+        "Upcoming invoice notification",
+        user_id=user.id,
+        amount_due=stripe_invoice.amount_due,
+    )
+
+
 # =============================================================================
 # WEBHOOK HANDLER REGISTRY
 # =============================================================================
@@ -719,8 +939,12 @@ WEBHOOK_HANDLERS = {
     "customer.subscription.created": handle_customer_subscription_created,
     "customer.subscription.updated": handle_customer_subscription_updated,
     "customer.subscription.deleted": handle_customer_subscription_deleted,
+    "customer.subscription.paused": handle_customer_subscription_paused,
+    "customer.subscription.resumed": handle_customer_subscription_resumed,
     "invoice.paid": handle_invoice_paid,
     "invoice.payment_failed": handle_invoice_payment_failed,
+    "invoice.upcoming": handle_invoice_upcoming,
     "payment_intent.succeeded": handle_payment_intent_succeeded,
     "customer.created": handle_customer_created,
+    "charge.dispute.created": handle_charge_dispute_created,
 }

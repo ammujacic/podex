@@ -28,6 +28,7 @@ import type { UsageSummary, Quota } from '@/lib/api';
 
 interface UsageSidebarPanelProps {
   sessionId: string;
+  isVisible?: boolean;
 }
 
 interface AgentUsageCompact {
@@ -47,20 +48,20 @@ function formatCost(cost: number): string {
   return formatCostUtil(cost);
 }
 
-export function UsageSidebarPanel({ sessionId }: UsageSidebarPanelProps) {
+export function UsageSidebarPanel({ sessionId, isVisible = true }: UsageSidebarPanelProps) {
   const [expandedAgents, setExpandedAgents] = useState(false);
   const [monthlyUsage, setMonthlyUsage] = useState<UsageSummary | null>(null);
   const [tokenQuota, setTokenQuota] = useState<Quota | null>(null);
   const { openModal } = useUIStore();
 
-  // Fetch and track usage data
+  // Fetch and track usage data - only poll when panel is visible
   useUsageTracking({
     sessionId,
-    enabled: true,
+    enabled: isVisible,
     pollingInterval: 30000, // Poll every 30 seconds
   });
 
-  // Fetch monthly usage summary
+  // Fetch monthly usage summary - only poll when panel is visible
   useEffect(() => {
     async function fetchMonthlyUsage() {
       try {
@@ -77,13 +78,16 @@ export function UsageSidebarPanel({ sessionId }: UsageSidebarPanelProps) {
       }
     }
 
-    // Fetch immediately on mount
+    // Only fetch and poll if visible
+    if (!isVisible) return;
+
+    // Fetch immediately when becoming visible
     fetchMonthlyUsage();
 
     // Then refresh every 30 seconds to stay in sync with current session
     const interval = setInterval(fetchMonthlyUsage, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [isVisible]);
 
   // Get cost data from the store
   const sessionCosts = useCostStore((state) => state.sessionCosts);

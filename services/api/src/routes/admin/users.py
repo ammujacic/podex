@@ -139,28 +139,49 @@ async def list_users(
     result = await db.execute(query)
     users = result.scalars().all()
 
-    # Build response with aggregated data
+    if not users:
+        return UserListResponse(
+            items=[],
+            total=total,
+            page=page,
+            page_size=page_size,
+            has_more=False,
+        )
+
+    # Get all user IDs for batch queries
+    user_ids = [user.id for user in users]
+
+    # Batch query: Get session counts for all users in one query
+    session_counts_query = (
+        select(Session.owner_id, func.count(Session.id).label("session_count"))
+        .where(Session.owner_id.in_(user_ids))
+        .group_by(Session.owner_id)
+    )
+    session_counts_result = await db.execute(session_counts_query)
+    session_counts: dict[str, int] = {
+        row.owner_id: int(row.session_count) for row in session_counts_result
+    }
+
+    # Batch query: Get active subscriptions for all users in one query
+    subscriptions_query = (
+        select(UserSubscription)
+        .where(UserSubscription.user_id.in_(user_ids))
+        .where(UserSubscription.status.in_(["active", "trialing"]))
+    )
+    subscriptions_result = await db.execute(subscriptions_query)
+    subscriptions = {sub.user_id: sub for sub in subscriptions_result.scalars()}
+
+    # Batch query: Get credit balances for all users in one query
+    balances_query = select(CreditBalance).where(CreditBalance.user_id.in_(user_ids))
+    balances_result = await db.execute(balances_query)
+    balances = {bal.user_id: bal for bal in balances_result.scalars()}
+
+    # Build response with aggregated data (no N+1 queries)
     items = []
     for user in users:
-        # Get session count
-        session_count_result = await db.execute(
-            select(func.count()).select_from(Session).where(Session.owner_id == user.id)
-        )
-        session_count = session_count_result.scalar() or 0
-
-        # Get subscription info
-        sub_result = await db.execute(
-            select(UserSubscription)
-            .where(UserSubscription.user_id == user.id)
-            .where(UserSubscription.status.in_(["active", "trialing"]))
-        )
-        subscription = sub_result.scalar_one_or_none()
-
-        # Get credit balance
-        balance_result = await db.execute(
-            select(CreditBalance).where(CreditBalance.user_id == user.id)
-        )
-        credit_balance = balance_result.scalar_one_or_none()
+        session_count = session_counts.get(user.id, 0)
+        subscription = subscriptions.get(user.id)
+        credit_balance = balances.get(user.id)
 
         items.append(
             AdminUserResponse(

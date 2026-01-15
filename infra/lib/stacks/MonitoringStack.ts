@@ -1,6 +1,8 @@
 import * as cdk from 'aws-cdk-lib';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cloudwatch_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
+import * as cloudtrail from 'aws-cdk-lib/aws-cloudtrail';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
@@ -27,6 +29,7 @@ export class MonitoringStack extends cdk.Stack {
   public readonly alertTopic: sns.Topic;
   public readonly criticalAlertTopic: sns.Topic;
   public readonly dashboard: cloudwatch.Dashboard;
+  public readonly trail: cloudtrail.Trail;
 
   constructor(scope: Construct, id: string, props: MonitoringStackProps) {
     super(scope, id, props);
@@ -51,6 +54,46 @@ export class MonitoringStack extends cdk.Stack {
         new sns_subscriptions.EmailSubscription(props.alertEmail)
       );
     }
+
+    // CloudTrail for API audit logging
+    const trailBucket = new s3.Bucket(this, 'CloudTrailBucket', {
+      bucketName: `podex-cloudtrail-${config.envName}-${this.account}`,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy: config.isProd ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: !config.isProd,
+      enforceSSL: true,
+      lifecycleRules: [
+        {
+          id: 'DeleteOldLogs',
+          expiration: cdk.Duration.days(config.isProd ? 365 : 90),
+          enabled: true,
+        },
+        {
+          id: 'TransitionToIA',
+          transitions: [
+            {
+              storageClass: s3.StorageClass.INFREQUENT_ACCESS,
+              transitionAfter: cdk.Duration.days(30),
+            },
+          ],
+          enabled: true,
+        },
+      ],
+    });
+
+    this.trail = new cloudtrail.Trail(this, 'CloudTrail', {
+      trailName: `podex-${config.envName}`,
+      bucket: trailBucket,
+      s3KeyPrefix: 'cloudtrail',
+      sendToCloudWatchLogs: true,
+      cloudWatchLogsRetention: config.isProd
+        ? cdk.aws_logs.RetentionDays.ONE_YEAR
+        : cdk.aws_logs.RetentionDays.ONE_MONTH,
+      includeGlobalServiceEvents: true,
+      isMultiRegionTrail: false, // Single region for cost savings in alpha
+      enableFileValidation: true,
+    });
 
     // Create CloudWatch Dashboard
     this.dashboard = new cloudwatch.Dashboard(this, 'Dashboard', {

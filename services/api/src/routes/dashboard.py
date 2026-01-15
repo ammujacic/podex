@@ -156,12 +156,16 @@ async def get_dashboard_stats(
 
     # Get usage records for all-time and this month
     # UsageRecord: quantity (amount), usage_type (tokens_input/output/etc), total_cost_cents
+    # Filter for token types only to get accurate token counts
     total_usage_result = await db.execute(
         select(
             func.coalesce(func.sum(UsageRecord.quantity), 0).label("tokens"),
             func.count(UsageRecord.id).label("calls"),
             func.coalesce(func.sum(UsageRecord.total_cost_cents), 0).label("cost_cents"),
-        ).where(UsageRecord.user_id == user_id)
+        ).where(
+            UsageRecord.user_id == user_id,
+            UsageRecord.usage_type.in_(["tokens_input", "tokens_output"]),
+        )
     )
     total_usage = total_usage_result.one()
 
@@ -172,6 +176,7 @@ async def get_dashboard_stats(
             func.coalesce(func.sum(UsageRecord.total_cost_cents), 0).label("cost_cents"),
         ).where(
             UsageRecord.user_id == user_id,
+            UsageRecord.usage_type.in_(["tokens_input", "tokens_output"]),
             UsageRecord.created_at >= month_start,
         )
     )
@@ -191,12 +196,15 @@ async def get_dashboard_stats(
         )
         active_agents = agents_count_result.scalar() or 0
 
-        # Get session usage
+        # Get session usage (filter for token types only)
         session_usage_result = await db.execute(
             select(
                 func.coalesce(func.sum(UsageRecord.quantity), 0).label("tokens"),
                 func.coalesce(func.sum(UsageRecord.total_cost_cents), 0).label("cost_cents"),
-            ).where(UsageRecord.session_id == session.id)
+            ).where(
+                UsageRecord.session_id == session.id,
+                UsageRecord.usage_type.in_(["tokens_input", "tokens_output"]),
+            )
         )
         session_usage = session_usage_result.one()
 

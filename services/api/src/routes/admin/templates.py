@@ -168,22 +168,43 @@ async def list_templates(
     result = await db.execute(query)
     templates = result.scalars().all()
 
+    if not templates:
+        return TemplateListResponse(
+            items=[],
+            total=total,
+            page=page,
+            page_size=page_size,
+            has_more=False,
+        )
+
+    # Batch query: Get all template IDs for batch lookups
+    template_ids = [template.id for template in templates]
+
+    # Batch query: Get active session counts for all templates in one query
+    session_counts_query = (
+        select(Session.template_id, func.count(Session.id).label("active_count"))
+        .where(Session.template_id.in_(template_ids))
+        .where(Session.status == "running")
+        .group_by(Session.template_id)
+    )
+    session_counts_result = await db.execute(session_counts_query)
+    session_counts: dict[str, int] = {
+        row.template_id: int(row.active_count) for row in session_counts_result
+    }
+
+    # Batch query: Get owner emails for all templates with owners in one query
+    owner_ids = [t.owner_id for t in templates if t.owner_id]
+    owner_emails: dict[str, str] = {}
+    if owner_ids:
+        owners_query = select(User.id, User.email).where(User.id.in_(owner_ids))
+        owners_result = await db.execute(owners_query)
+        owner_emails = {row.id: row.email for row in owners_result}
+
+    # Build response with batched data (no N+1 queries)
     items = []
     for template in templates:
-        # Get active session count
-        active_count_result = await db.execute(
-            select(func.count())
-            .select_from(Session)
-            .where(Session.template_id == template.id)
-            .where(Session.status == "running")
-        )
-        active_session_count = active_count_result.scalar() or 0
-
-        # Get owner email if exists
-        owner_email = None
-        if template.owner_id:
-            owner_result = await db.execute(select(User.email).where(User.id == template.owner_id))
-            owner_email = owner_result.scalar_one_or_none()
+        active_session_count = session_counts.get(template.id, 0)
+        owner_email = owner_emails.get(template.owner_id) if template.owner_id else None
 
         items.append(
             AdminTemplateResponse(

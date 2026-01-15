@@ -1,4 +1,8 @@
-"""Terminal manager that proxies to compute service containers."""
+"""Terminal manager that proxies to compute service containers.
+
+Supports tmux session persistence - sessions survive disconnections
+and can be reconnected.
+"""
 
 import asyncio
 import contextlib
@@ -6,6 +10,7 @@ import struct
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlencode
 
 import structlog
 import websockets
@@ -21,6 +26,7 @@ class TerminalSession:
     """Represents a proxied terminal session to the compute service."""
 
     workspace_id: str
+    session_id: str  # Unique session identifier for tmux
     on_output: Callable[[str, str], Any] | None = None
     running: bool = True
     _websocket: ClientConnection | None = field(default=None, repr=False)
@@ -28,52 +34,93 @@ class TerminalSession:
 
 
 class TerminalManager:
-    """Manages terminal sessions by proxying to compute service containers."""
+    """Manages terminal sessions by proxying to compute service containers.
+
+    Each session is identified by a unique session_id, which maps to a tmux
+    session in the workspace container. This allows:
+    - Multiple independent terminal sessions per workspace
+    - Session persistence across WebSocket reconnections
+    - Running processes survive brief disconnections
+    """
 
     def __init__(self) -> None:
         """Initialize terminal manager."""
+        # Key is session_id (not workspace_id) to support multiple sessions per workspace
         self.sessions: dict[str, TerminalSession] = {}
         self._lock = asyncio.Lock()
 
-    def _get_compute_terminal_url(self, workspace_id: str) -> str:
-        """Get the WebSocket URL for the compute service terminal."""
+    def _get_compute_terminal_url(self, workspace_id: str, session_id: str | None = None) -> str:
+        """Get the WebSocket URL for the compute service terminal.
+
+        Args:
+            workspace_id: ID of the workspace container.
+            session_id: Optional session ID for tmux session persistence.
+
+        Returns:
+            WebSocket URL for the terminal endpoint.
+        """
         # Convert HTTP URL to WebSocket URL
         compute_url = settings.COMPUTE_SERVICE_URL
         if compute_url.startswith("https://"):
             ws_url = compute_url.replace("https://", "wss://")
         else:
             ws_url = compute_url.replace("http://", "ws://")
-        return f"{ws_url}/terminal/{workspace_id}"
+
+        url = f"{ws_url}/terminal/{workspace_id}"
+
+        # Add session_id as query parameter if provided
+        if session_id:
+            params = urlencode({"session_id": session_id})
+            url = f"{url}?{params}"
+
+        return url
 
     async def create_session(
         self,
         workspace_id: str,
         on_output: Callable[[str, str], Any],
+        session_id: str | None = None,
     ) -> TerminalSession:
-        """Create a new terminal session proxied to the compute service.
+        """Create or reconnect to a terminal session.
 
         Args:
             workspace_id: ID of the workspace.
             on_output: Callback function for terminal output.
+            session_id: Optional unique session ID. If provided, creates a named
+                       tmux session that can be reconnected. If not provided,
+                       uses workspace_id as session ID.
 
         Returns:
-            The created terminal session.
+            The created or reconnected terminal session.
 
         Raises:
             RuntimeError: If connection to compute service fails.
         """
+        # Use session_id if provided, otherwise use workspace_id
+        effective_session_id = session_id or workspace_id
+
         async with self._lock:
-            # Check if session already exists
-            if workspace_id in self.sessions:
-                session = self.sessions[workspace_id]
-                session.on_output = on_output
-                return session
+            # Check if we already have a connection for this session
+            if effective_session_id in self.sessions:
+                session = self.sessions[effective_session_id]
+                if session.running and session._websocket:  # noqa: SLF001
+                    session.on_output = on_output
+                    logger.info(
+                        "Reusing existing terminal connection",
+                        workspace_id=workspace_id,
+                        session_id=effective_session_id,
+                    )
+                    return session
+                # Session exists but not running, clean up
+                await self._cleanup_session(session)
+                del self.sessions[effective_session_id]
 
             # Connect to compute service terminal WebSocket
-            terminal_url = self._get_compute_terminal_url(workspace_id)
+            terminal_url = self._get_compute_terminal_url(workspace_id, effective_session_id)
             logger.info(
                 "Connecting to compute terminal",
                 workspace_id=workspace_id,
+                session_id=effective_session_id,
                 url=terminal_url,
             )
 
@@ -88,12 +135,14 @@ class TerminalManager:
                 logger.exception(
                     "Failed to connect to compute terminal",
                     workspace_id=workspace_id,
+                    session_id=effective_session_id,
                     error=str(e),
                 )
                 raise RuntimeError(f"Failed to connect to workspace terminal: {e}") from e  # noqa: TRY003
 
             session = TerminalSession(
                 workspace_id=workspace_id,
+                session_id=effective_session_id,
                 on_output=on_output,
                 _websocket=websocket,
             )
@@ -101,28 +150,40 @@ class TerminalManager:
             # Start read task to forward output from compute service
             session._read_task = asyncio.create_task(self._read_loop(session))  # noqa: SLF001
 
-            self.sessions[workspace_id] = session
+            self.sessions[effective_session_id] = session
 
             logger.info(
-                "Terminal session connected to compute",
+                "Terminal session connected to compute (tmux)",
                 workspace_id=workspace_id,
+                session_id=effective_session_id,
             )
 
             return session
 
-    async def write_input(self, workspace_id: str, data: str) -> bool:
+    async def _cleanup_session(self, session: TerminalSession) -> None:
+        """Clean up a terminal session without removing from dict."""
+        session.running = False
+        if session._read_task:  # noqa: SLF001
+            session._read_task.cancel()  # noqa: SLF001
+            with contextlib.suppress(asyncio.CancelledError):
+                await session._read_task  # noqa: SLF001
+        if session._websocket:  # noqa: SLF001
+            with contextlib.suppress(Exception):
+                await session._websocket.close()  # noqa: SLF001
+
+    async def write_input(self, session_id: str, data: str) -> bool:
         """Write input to a terminal session.
 
         Args:
-            workspace_id: ID of the workspace.
+            session_id: Session ID (or workspace_id if no session_id was provided).
             data: Input data to write.
 
         Returns:
             True if successful, False otherwise.
         """
-        session = self.sessions.get(workspace_id)
+        session = self.sessions.get(session_id)
         if not session or not session.running or not session._websocket:  # noqa: SLF001
-            logger.warning("No active terminal session", workspace_id=workspace_id)
+            logger.warning("No active terminal session", session_id=session_id)
             return False
 
         try:
@@ -130,25 +191,25 @@ class TerminalManager:
         except Exception as e:
             logger.exception(
                 "Failed to write to terminal",
-                workspace_id=workspace_id,
+                session_id=session_id,
                 error=str(e),
             )
             return False
         else:
             return True
 
-    async def resize(self, workspace_id: str, rows: int, cols: int) -> bool:
+    async def resize(self, session_id: str, rows: int, cols: int) -> bool:
         """Resize a terminal session.
 
         Args:
-            workspace_id: ID of the workspace.
+            session_id: Session ID.
             rows: Number of rows.
             cols: Number of columns.
 
         Returns:
             True if successful, False otherwise.
         """
-        session = self.sessions.get(workspace_id)
+        session = self.sessions.get(session_id)
         if not session or not session.running or not session._websocket:  # noqa: SLF001
             return False
 
@@ -158,50 +219,45 @@ class TerminalManager:
             await session._websocket.send(resize_cmd)  # noqa: SLF001
             logger.debug(
                 "Terminal resize sent",
-                workspace_id=workspace_id,
+                session_id=session_id,
                 rows=rows,
                 cols=cols,
             )
         except Exception as e:
             logger.exception(
                 "Failed to resize terminal",
-                workspace_id=workspace_id,
+                session_id=session_id,
                 error=str(e),
             )
             return False
         else:
             return True
 
-    async def close_session(self, workspace_id: str) -> bool:
-        """Close a terminal session.
+    async def close_session(self, session_id: str) -> bool:
+        """Close a terminal session (WebSocket only - tmux keeps running).
+
+        This closes the WebSocket connection but the tmux session in the
+        container keeps running. Call kill_session to fully terminate.
 
         Args:
-            workspace_id: ID of the workspace.
+            session_id: Session ID.
 
         Returns:
             True if successful, False otherwise.
         """
         async with self._lock:
-            session = self.sessions.get(workspace_id)
+            session = self.sessions.get(session_id)
             if not session:
                 return False
 
-            session.running = False
+            await self._cleanup_session(session)
+            del self.sessions[session_id]
 
-            # Cancel read task
-            if session._read_task:  # noqa: SLF001
-                session._read_task.cancel()  # noqa: SLF001
-                with contextlib.suppress(asyncio.CancelledError):
-                    await session._read_task  # noqa: SLF001
-
-            # Close WebSocket connection
-            if session._websocket:  # noqa: SLF001
-                with contextlib.suppress(Exception):
-                    await session._websocket.close()  # noqa: SLF001
-
-            del self.sessions[workspace_id]
-
-            logger.info("Terminal session closed", workspace_id=workspace_id)
+            logger.info(
+                "Terminal session closed (tmux persists)",
+                session_id=session_id,
+                workspace_id=session.workspace_id,
+            )
             return True
 
     async def _read_loop(self, session: TerminalSession) -> None:
@@ -225,18 +281,22 @@ class TerminalManager:
                             output = message.decode("utf-8", errors="replace")
                         else:
                             output = message
-                        await session.on_output(session.workspace_id, output)
+                        await session.on_output(session.session_id, output)
                     except Exception as e:
                         logger.exception("Output callback failed", error=str(e))
 
         except websockets.ConnectionClosed:
-            logger.info("Terminal WebSocket closed", workspace_id=session.workspace_id)
+            logger.info(
+                "Terminal WebSocket closed",
+                session_id=session.session_id,
+                workspace_id=session.workspace_id,
+            )
         except asyncio.CancelledError:
             pass
         except Exception as e:
             logger.exception(
                 "Terminal read loop error",
-                workspace_id=session.workspace_id,
+                session_id=session.session_id,
                 error=str(e),
             )
         finally:

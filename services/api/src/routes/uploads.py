@@ -3,8 +3,10 @@
 import base64
 import hashlib
 import mimetypes
+import os
 from datetime import UTC, datetime
 from io import BytesIO
+from pathlib import PurePath
 from typing import Annotated, Any
 from uuid import uuid4
 
@@ -163,6 +165,61 @@ def compute_checksum(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def validate_upload_path(path: str) -> str:
+    """Validate and normalize upload path to prevent path traversal attacks.
+
+    Args:
+        path: The upload directory path.
+
+    Returns:
+        The normalized, safe path.
+
+    Raises:
+        HTTPException: If the path is invalid or attempts path traversal.
+    """
+    # Check for null bytes
+    if "\x00" in path:
+        raise HTTPException(status_code=400, detail="Invalid path: null bytes not allowed")
+
+    # Check path length
+    if len(path) > 1024:
+        raise HTTPException(status_code=400, detail="Invalid path: path too long")
+
+    # Reject empty paths
+    if not path or not path.strip():
+        path = "uploads"  # Default path
+
+    # Normalize backslashes to forward slashes
+    clean_path = path.replace("\\", "/")
+
+    # Check for URL-encoded traversal
+    if "%2e" in path.lower() or "%2f" in path.lower():
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid path: URL-encoded characters not allowed",
+        )
+
+    # Normalize the path
+    normalized = os.path.normpath(clean_path)
+
+    # Check for path traversal attempts
+    if normalized.startswith(("..", "/")):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid path: absolute paths and path traversal are not allowed",
+        )
+
+    # Check for any remaining .. after normalization
+    if ".." in PurePath(normalized).parts:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid path: path traversal is not allowed",
+        )
+
+    # Ensure path is under uploads or user-specified directory
+    return normalized
+
+
 @router.post("/{session_id}/upload", response_model=UploadResponse)
 @limiter.limit(RATE_LIMIT_UPLOAD)
 async def upload_file(
@@ -186,6 +243,9 @@ async def upload_file(
     session = await verify_session_access(session_id, request, db)
     user_id = get_current_user_id(request)
 
+    # Validate upload path to prevent traversal attacks
+    safe_path = validate_upload_path(path)
+
     # Validate file
     validate_file(file, MAX_FILE_SIZE, ALLOWED_FILE_TYPES)
 
@@ -200,7 +260,7 @@ async def upload_file(
     unique_filename = f"{file_id}.{ext}" if ext else file_id
 
     # Full path in workspace
-    full_path = f"{path.rstrip('/')}/{unique_filename}"
+    full_path = f"{safe_path.rstrip('/')}/{unique_filename}"
 
     # Upload to workspace via compute service
     if session.workspace_id:
@@ -274,6 +334,9 @@ async def upload_image(
     session = await verify_session_access(session_id, request, db)
     user_id = get_current_user_id(request)
 
+    # Validate upload path to prevent traversal attacks
+    safe_path = validate_upload_path(path)
+
     # Validate image
     validate_file(file, MAX_IMAGE_SIZE, ALLOWED_IMAGE_TYPES)
 
@@ -301,7 +364,7 @@ async def upload_image(
     unique_filename = f"{file_id}.{ext}"
 
     # Full path in workspace
-    full_path = f"{path.rstrip('/')}/{unique_filename}"
+    full_path = f"{safe_path.rstrip('/')}/{unique_filename}"
 
     # Upload to workspace
     if session.workspace_id:
@@ -369,6 +432,9 @@ async def upload_files_bulk(
     session = await verify_session_access(session_id, request, db)
     user_id = get_current_user_id(request)
 
+    # Validate upload path to prevent traversal attacks
+    safe_path = validate_upload_path(path)
+
     # Limit number of files
     max_files = 10
     if len(files) > max_files:
@@ -395,7 +461,7 @@ async def upload_files_bulk(
             original_name = file.filename or "unnamed"
             ext = original_name.rsplit(".", 1)[-1] if "." in original_name else ""
             unique_filename = f"{file_id}.{ext}" if ext else file_id
-            full_path = f"{path.rstrip('/')}/{unique_filename}"
+            full_path = f"{safe_path.rstrip('/')}/{unique_filename}"
 
             # Upload to workspace
             if session.workspace_id:
@@ -481,6 +547,9 @@ async def upload_image_base64(
     filename = data.get("filename", "image.png")
     path = data.get("path", "uploads/images")
 
+    # Validate upload path to prevent traversal attacks
+    safe_path = validate_upload_path(path)
+
     # Parse data URL
     if base64_data.startswith("data:"):
         # Format: data:image/png;base64,<data>
@@ -530,7 +599,7 @@ async def upload_image_base64(
     file_id = str(uuid4())
     ext = filename.rsplit(".", 1)[-1] if "." in filename else "png"
     unique_filename = f"{file_id}.{ext}"
-    full_path = f"{path.rstrip('/')}/{unique_filename}"
+    full_path = f"{safe_path.rstrip('/')}/{unique_filename}"
 
     # Upload to workspace
     if session.workspace_id:

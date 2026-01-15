@@ -1,4 +1,4 @@
-import { create } from 'zustand';
+import { create, type StateCreator } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 
 export interface User {
@@ -32,44 +32,47 @@ interface AuthState {
   clearError: () => void;
 }
 
+const authStoreCreator: StateCreator<AuthState> = (set) => ({
+  user: null,
+  tokens: null,
+  isLoading: false,
+  error: null,
+  isInitialized: false,
+
+  setUser: (user) => set({ user }),
+
+  setTokens: (tokens) => set({ tokens }),
+
+  setLoading: (isLoading) => set({ isLoading }),
+
+  setError: (error) => set({ error }),
+
+  setInitialized: (isInitialized) => set({ isInitialized }),
+
+  logout: () =>
+    set({
+      user: null,
+      tokens: null,
+      error: null,
+    }),
+
+  clearError: () => set({ error: null }),
+});
+
+const persistedAuthStore = persist(authStoreCreator, {
+  name: 'podex-auth',
+  partialize: (state) => ({
+    user: state.user,
+    tokens: state.tokens,
+  }),
+});
+
+// Only enable devtools in development to prevent exposing sensitive auth data in production
 export const useAuthStore = create<AuthState>()(
-  devtools(
-    persist(
-      (set) => ({
-        user: null,
-        tokens: null,
-        isLoading: false,
-        error: null,
-        isInitialized: false,
-
-        setUser: (user) => set({ user }),
-
-        setTokens: (tokens) => set({ tokens }),
-
-        setLoading: (isLoading) => set({ isLoading }),
-
-        setError: (error) => set({ error }),
-
-        setInitialized: (isInitialized) => set({ isInitialized }),
-
-        logout: () =>
-          set({
-            user: null,
-            tokens: null,
-            error: null,
-          }),
-
-        clearError: () => set({ error: null }),
-      }),
-      {
-        name: 'podex-auth',
-        partialize: (state) => ({
-          user: state.user,
-          tokens: state.tokens,
-        }),
-      }
-    )
-  )
+  devtools(persistedAuthStore, {
+    name: 'podex-auth',
+    enabled: process.env.NODE_ENV === 'development',
+  })
 );
 
 // Selector hooks for convenience

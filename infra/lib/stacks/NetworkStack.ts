@@ -19,7 +19,9 @@ export class NetworkStack extends cdk.Stack {
     this.vpc = new ec2.Vpc(this, 'Vpc', {
       ipAddresses: ec2.IpAddresses.cidr(config.vpcCidr),
       maxAzs: config.maxAzs,
-      natGateways: config.isProd ? config.maxAzs : 1,
+      // ALPHA: Use single NAT gateway to reduce costs (~$32/month savings per gateway)
+      // Scale to maxAzs NAT gateways when traffic justifies HA
+      natGateways: 1,
       subnetConfiguration: [
         {
           name: 'Public',

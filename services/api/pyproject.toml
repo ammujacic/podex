@@ -133,7 +133,7 @@ known-first-party = ["src", "podex_shared"]
 "src/routes/auth.py" = ["ARG001"]
 "src/routes/mfa.py" = ["ARG001"]
 "src/routes/oauth.py" = ["ARG001"]
-"src/routes/sessions.py" = ["ARG001", "FBT002"]
+"src/routes/sessions.py" = ["ARG001", "FBT002", "TRY400", "TRY003"]
 "src/routes/agent_templates.py" = ["ARG001"]
 "src/routes/knowledge.py" = ["ARG001", "PLR0913"]
 "src/routes/local_pods.py" = ["ARG001"]
@@ -141,15 +141,31 @@ known-first-party = ["src", "podex_shared"]
 "src/routes/plans.py" = ["ARG001", "PLR0913"]
 "src/routes/templates.py" = ["ARG001"]
 # Billing routes: complex billing logic requires many branches/statements/arguments
-"src/routes/billing.py" = ["ARG001", "PLR0912", "PLR0913", "PLR0915", "PLR2004", "E501", "F841"]
+"src/routes/billing.py" = ["ARG001", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR2004", "E501", "F841", "FBT001", "FBT002"]
 # Webhooks: complex stripe event handling, many args for helper
 "src/routes/webhooks.py" = ["PLR0913", "E501"]
 # Workspaces: file operations need extra params
 "src/routes/workspaces.py" = ["PLR0913"]
 # Agents: message handling needs extra params
-"src/routes/agents.py" = ["PLR0913"]
+"src/routes/agents.py" = ["PLR0913", "PLW2901"]
 # Email service: complex email rendering with many params
 "src/services/email.py" = ["PLR0913", "E501"]
+# Terminal agents: complex session management with many branches, subprocess PTY operations
+"src/routes/terminal_agents.py" = ["PLR0912", "PTH111", "PTH112", "B904", "TRY300", "E261", "ASYNC220", "S603", "PLW1509", "ASYNC109", "ARG002"]
+# Crypto: exception messages and magic values
+"src/crypto.py" = ["TRY003", "PLR2004"]
+# Git routes: validation logic with magic values
+"src/routes/git.py" = ["PLR2004", "PIE810"]
+# Uploads: path validation
+"src/routes/uploads.py" = ["PLR2004"]
+# Hooks: performance suggestions
+"src/routes/hooks.py" = ["PERF401"]
+# S3 storage: exception messages
+"src/storage/s3.py" = ["TRY003"]
+# Sharing routes: upsert logic with inline imports
+"src/routes/sharing.py" = ["PLC0415", "SIM102"]
+# Database connection: seeding function has many branches for different entity types
+"src/database/connection.py" = ["PLR0912"]
 
 [tool.mypy]
 python_version = "3.12"

@@ -37,8 +37,8 @@ class TestSettingsDefaults:
         settings = Settings()
         assert settings.aws_region == "us-east-1"
         assert settings.aws_endpoint is None
-        assert settings.ecs_cluster_name == "podex-workspaces"
-        assert settings.ecs_task_definition == "podex-workspace"
+        assert settings.ecs_cluster_name == "podex-dev"
+        assert settings.ecs_task_definition == "podex-workspace-x86-dev"
 
     def test_redis_settings_default(self) -> None:
         """Test default Redis settings."""
@@ -55,18 +55,18 @@ class TestSettingsDefaults:
     def test_tier_cpu_defaults(self) -> None:
         """Test default tier CPU settings."""
         settings = Settings()
-        assert settings.tier_starter_cpu == 2
-        assert settings.tier_pro_cpu == 4
-        assert settings.tier_power_cpu == 8
-        assert settings.tier_enterprise_cpu == 16
+        assert settings.tier_starter_cpu == 1
+        assert settings.tier_pro_cpu == 1
+        assert settings.tier_power_cpu == 1
+        assert settings.tier_enterprise_cpu == 1
 
     def test_tier_memory_defaults(self) -> None:
         """Test default tier memory settings."""
         settings = Settings()
-        assert settings.tier_starter_memory == 4096
-        assert settings.tier_pro_memory == 8192
-        assert settings.tier_power_memory == 16384
-        assert settings.tier_enterprise_memory == 32768
+        assert settings.tier_starter_memory == 512
+        assert settings.tier_pro_memory == 512
+        assert settings.tier_power_memory == 512
+        assert settings.tier_enterprise_memory == 512
 
 
 class TestSettingsCustom:

@@ -324,6 +324,7 @@ class CustomAgentContext:
 
     workspace_path: str | Path | None = None
     session_id: str | None = None
+    user_id: str | None = None
 
 
 @dataclass
@@ -336,6 +337,7 @@ class CustomAgentInitConfig:
     template_config: AgentTemplateConfig
     context: CustomAgentContext | None = None
     mcp_registry: MCPToolRegistry | None = None
+    user_id: str | None = None
 
 
 class CustomAgent(BaseAgent):
@@ -352,6 +354,8 @@ class CustomAgent(BaseAgent):
         context = init_config.context or CustomAgentContext()
         # Use template's model if specified, otherwise use provided model
         effective_model = init_config.template_config.model or init_config.model
+        # Get user_id from init_config or context (prefer init_config)
+        user_id = init_config.user_id or context.user_id
         config = AgentConfig(
             agent_id=init_config.agent_id,
             model=effective_model,
@@ -359,6 +363,7 @@ class CustomAgent(BaseAgent):
             workspace_path=context.workspace_path,
             session_id=context.session_id,
             mcp_registry=init_config.mcp_registry,
+            user_id=user_id,
         )
         super().__init__(config)
 

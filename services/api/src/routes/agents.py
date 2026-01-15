@@ -94,6 +94,113 @@ VALID_AGENT_MODES = {mode.value for mode in AgentMode}
 MIN_SENTENCE_LENGTH = 20  # Minimum characters for a meaningful sentence
 MAX_SNIPPET_LENGTH = 150  # Maximum characters for attention message snippet
 
+# Dangerous command patterns that should never be allowed in command_allowlist
+FORBIDDEN_COMMAND_PATTERNS = {
+    "*",  # Allow everything
+    "/*",  # Allow all absolute paths
+    "sudo *",  # Allow all sudo commands
+    "rm -rf *",  # Allow destructive deletions
+    "rm -rf /",  # Extremely dangerous
+    "rm -rf /*",  # Extremely dangerous
+    "> /dev/*",  # Writing to device files
+    "curl * | *",  # Arbitrary command execution
+    "wget * | *",  # Arbitrary command execution
+    "eval *",  # Arbitrary code execution
+    "exec *",  # Arbitrary code execution
+    "$(*))",  # Command substitution
+    "`*`",  # Command substitution
+}
+
+
+def sanitize_error_for_client(error: Exception | str, max_length: int = 200) -> str:
+    """Sanitize an error message for client consumption.
+
+    Removes potentially sensitive information like:
+    - File paths
+    - Database connection strings
+    - Stack traces
+    - Environment variables
+    - Secrets/tokens
+
+    Args:
+        error: The error to sanitize
+        max_length: Maximum length of returned message
+
+    Returns:
+        A sanitized error message safe for client display
+    """
+    error_str = str(error)
+
+    # Patterns that might contain sensitive info
+    sensitive_patterns = [
+        r"postgresql://[^\s]+",  # Database URLs
+        r"redis://[^\s]+",  # Redis URLs
+        r"https?://[^\s]*:[^\s@]*@",  # URLs with credentials
+        r"/Users/[^\s]+",  # Local file paths
+        r"/home/[^\s]+",  # Linux home paths
+        r"C:\\[^\s]+",  # Windows paths
+        r"(api[_-]?key|secret|password|token)[=:][^\s]+",  # Secrets
+        r"Bearer [A-Za-z0-9._-]+",  # JWT tokens
+        r"Traceback \(most recent call last\):",  # Stack traces
+        r"File \"[^\"]+\", line \d+",  # Stack trace lines
+    ]
+
+    sanitized = error_str
+    for pattern in sensitive_patterns:
+        sanitized = re.sub(pattern, "[REDACTED]", sanitized, flags=re.IGNORECASE)
+
+    # Truncate to max length
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length] + "..."
+
+    # If entirely redacted or empty, return generic message
+    if not sanitized.strip() or sanitized == "[REDACTED]":
+        return "An error occurred while processing your request"
+
+    return sanitized
+
+
+def validate_command_allowlist(allowlist: list[str] | None) -> list[str] | None:
+    """Validate command allowlist patterns for safety.
+
+    Args:
+        allowlist: List of command patterns to validate
+
+    Returns:
+        The validated allowlist
+
+    Raises:
+        ValueError: If any pattern is forbidden or too broad
+    """
+    if not allowlist:
+        return allowlist
+
+    validated = []
+    for pattern in allowlist:
+        pattern = pattern.strip()
+
+        # Check for forbidden patterns
+        if pattern.lower() in {p.lower() for p in FORBIDDEN_COMMAND_PATTERNS}:
+            raise ValueError(  # noqa: TRY003
+                f"Command pattern '{pattern}' is not allowed for security reasons"
+            )
+
+        # Check for overly broad wildcards
+        if pattern == "*" or pattern.startswith("* "):
+            raise ValueError(  # noqa: TRY003
+                "Wildcard-only patterns are not allowed. Please specify more specific commands."
+            )
+
+        # Check for shell injection patterns
+        if any(c in pattern for c in ["|", ";", "&&", "||", "`", "$("]):
+            raise ValueError(  # noqa: TRY003
+                f"Command pattern '{pattern}' contains shell operators which are not allowed"
+            )
+
+        validated.append(pattern)
+
+    return validated
+
 
 def get_current_user_id(request: Request) -> str:
     """Get current user ID from request state.
@@ -135,6 +242,9 @@ async def verify_session_access(
 async def check_agent_quota(db: AsyncSession, user_id: str, session_id: str) -> None:
     """Check if user has reached their agent quota for a session.
 
+    Uses SELECT FOR UPDATE on the session row to prevent race conditions
+    where concurrent requests could exceed the quota.
+
     Args:
         db: Database session
         user_id: User ID to check
@@ -143,6 +253,15 @@ async def check_agent_quota(db: AsyncSession, user_id: str, session_id: str) -> 
     Raises:
         HTTPException: If user has exceeded their agent quota or lacks a valid subscription
     """
+    # Lock the session row to serialize concurrent agent creation requests
+    # This prevents race conditions where multiple requests could exceed the quota
+    session_lock_query = select(SessionModel).where(SessionModel.id == session_id).with_for_update()
+    lock_result = await db.execute(session_lock_query)
+    session = lock_result.scalar_one_or_none()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
     # Get user's active subscription and plan
     sub_query = (
         select(UserSubscription)
@@ -174,7 +293,7 @@ async def check_agent_quota(db: AsyncSession, user_id: str, session_id: str) -> 
 
     max_agents = plan.max_agents
 
-    # Count current agents in this session
+    # Count current agents in this session (within the lock)
     count_query = (
         select(func.count()).select_from(AgentModel).where(AgentModel.session_id == session_id)
     )
@@ -924,7 +1043,7 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0
                     message="Agent processing failed. Please try again.",
                     priority="high",
                     metadata={
-                        "error": str(e)[:500],  # Truncate error message
+                        "error": sanitize_error_for_client(e),  # Sanitized error message
                     },
                 )
                 await emit_agent_attention(error_attention)
@@ -949,10 +1068,16 @@ async def create_agent(
     # Verify session exists and user has access
     session = await verify_session_access(session_id, request, db)
 
+    # Validate command_allowlist for security
+    try:
+        validated_allowlist = validate_command_allowlist(data.command_allowlist)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
     # Check agent quota before creating
     await check_agent_quota(db, session.owner_id, session_id)
 
-    # If template_id provided, verify it exists and increment usage count atomically
+    # If template_id provided, verify it exists (usage count incremented AFTER successful creation)
     template = None
     if data.template_id:
         template_query = select(AgentTemplate).where(AgentTemplate.id == data.template_id)
@@ -961,13 +1086,6 @@ async def create_agent(
 
         if not template:
             raise HTTPException(status_code=404, detail="Agent template not found")
-
-        # Increment usage count atomically to avoid race conditions
-        await db.execute(
-            update(AgentTemplate)
-            .where(AgentTemplate.id == data.template_id)
-            .values(usage_count=AgentTemplate.usage_count + 1),
-        )
 
     # Count existing agents for color assignment - use COUNT() for efficiency
     count_query = (
@@ -1004,13 +1122,23 @@ async def create_agent(
         model=template.model if template else data.model,
         status="idle",
         mode=data.mode,
-        command_allowlist=data.command_allowlist,
+        command_allowlist=validated_allowlist,
         config=config,
         template_id=data.template_id,
     )
     db.add(agent)
     await db.commit()
     await db.refresh(agent)
+
+    # Increment template usage count AFTER successful agent creation
+    # This ensures the count isn't incremented if agent creation fails
+    if data.template_id:
+        await db.execute(
+            update(AgentTemplate)
+            .where(AgentTemplate.id == data.template_id)
+            .values(usage_count=AgentTemplate.usage_count + 1),
+        )
+        await db.commit()
 
     return AgentResponse(
         id=agent.id,

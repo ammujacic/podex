@@ -27,10 +27,13 @@ import {
   Loader2,
   Plug,
 } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { useUIStore } from '@/stores/ui';
 import { useSessionStore, type Agent } from '@/stores/session';
 import { MCPSettings } from '@/components/settings/MCPSettings';
+import { useFocusTrap } from '@/hooks/useFocusTrap';
 import {
+  api,
   createAgent,
   getAgentTemplates,
   createShareLink,
@@ -41,6 +44,22 @@ import {
   clearStandbySettings,
   type AgentTemplate,
 } from '@/lib/api';
+
+interface TerminalAgentType {
+  id: string;
+  name: string;
+  slug: string;
+  logo_url?: string;
+  description?: string;
+  is_enabled: boolean;
+}
+
+interface EnvProfile {
+  id: string;
+  name: string;
+  agent_type_id?: string;
+  env_vars: Record<string, string>;
+}
 
 interface ModalLayerProps {
   sessionId: string;
@@ -177,7 +196,14 @@ const BUILTIN_AGENTS: AgentOption[] = [
 ];
 
 function CreateAgentModal({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
-  const { addAgent } = useSessionStore();
+  const { addAgent, sessions } = useSessionStore();
+  const workspaceId = sessions[sessionId]?.workspaceId ?? '';
+  const [activeTab, setActiveTab] = useState<'podex' | 'external'>('podex');
+
+  // Focus trap for accessibility
+  const modalRef = useFocusTrap<HTMLDivElement>(true);
+
+  // Podex native agent state
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedAgent, setSelectedAgent] = useState<AgentOption | null>(null);
   const [customName, setCustomName] = useState('');
@@ -185,6 +211,16 @@ function CreateAgentModal({ sessionId, onClose }: { sessionId: string; onClose: 
   const [error, setError] = useState<string | null>(null);
   const [customTemplates, setCustomTemplates] = useState<AgentTemplate[]>([]);
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(true);
+
+  // External terminal agent state
+  const [terminalAgentTypes, setTerminalAgentTypes] = useState<TerminalAgentType[]>([]);
+  const [_envProfiles, setEnvProfiles] = useState<EnvProfile[]>([]);
+  const [selectedTerminalAgent, setSelectedTerminalAgent] = useState<TerminalAgentType | null>(
+    null
+  );
+  const [selectedEnvProfile, _setSelectedEnvProfile] = useState<EnvProfile | null>(null);
+  const [isLoadingTerminalAgents, setIsLoadingTerminalAgents] = useState(false);
+  const [_isLoadingEnvProfiles, setIsLoadingEnvProfiles] = useState(false);
 
   // Fetch custom templates on mount
   useEffect(() => {
@@ -200,6 +236,40 @@ function CreateAgentModal({ sessionId, onClose }: { sessionId: string; onClose: 
     };
     fetchTemplates();
   }, []);
+
+  // Fetch terminal agents and env profiles when external tab is active
+  useEffect(() => {
+    if (activeTab === 'external') {
+      const fetchTerminalAgents = async () => {
+        setIsLoadingTerminalAgents(true);
+        try {
+          const data = await api.get<TerminalAgentType[]>(
+            '/api/v1/terminal-agents/terminal-agent-types'
+          );
+          setTerminalAgentTypes(data);
+        } catch (err) {
+          console.error('Failed to fetch terminal agents:', err);
+        } finally {
+          setIsLoadingTerminalAgents(false);
+        }
+      };
+
+      const fetchEnvProfiles = async () => {
+        setIsLoadingEnvProfiles(true);
+        try {
+          const data = await api.get<EnvProfile[]>('/api/v1/terminal-agents/env-profiles');
+          setEnvProfiles(data);
+        } catch (err) {
+          console.error('Failed to fetch env profiles:', err);
+        } finally {
+          setIsLoadingEnvProfiles(false);
+        }
+      };
+
+      fetchTerminalAgents();
+      fetchEnvProfiles();
+    }
+  }, [activeTab]);
 
   // Convert custom templates to AgentOption format
   const customAgentOptions: AgentOption[] = useMemo(() => {
@@ -236,36 +306,69 @@ function CreateAgentModal({ sessionId, onClose }: { sessionId: string; onClose: 
   const customFiltered = filteredAgents.filter((a) => a.isCustom);
 
   const handleCreate = async () => {
-    if (!selectedAgent) return;
-
     setIsCreating(true);
     setError(null);
 
     try {
-      const createdAgent = await createAgent(sessionId, {
-        name: customName || selectedAgent.name,
-        role: selectedAgent.role,
-        model: selectedAgent.model,
-        template_id: selectedAgent.templateId,
-      });
+      if (activeTab === 'podex') {
+        // Create Podex native agent
+        if (!selectedAgent) return;
 
-      const agentColor =
-        typeof createdAgent.config?.color === 'string'
-          ? createdAgent.config.color
-          : selectedAgent.color;
-      const agent: Agent = {
-        id: createdAgent.id,
-        name: createdAgent.name,
-        role: createdAgent.role as AgentRole,
-        model: createdAgent.model,
-        status: (createdAgent.status || 'idle') as AgentStatus,
-        color: agentColor,
-        mode: 'auto',
-        templateId: createdAgent.template_id ?? undefined,
-        messages: [],
-      };
+        const createdAgent = await createAgent(sessionId, {
+          name: customName || selectedAgent.name,
+          role: selectedAgent.role,
+          model: selectedAgent.model,
+          template_id: selectedAgent.templateId,
+        });
 
-      addAgent(sessionId, agent);
+        const agentColor =
+          typeof createdAgent.config?.color === 'string'
+            ? createdAgent.config.color
+            : selectedAgent.color;
+        const agent: Agent = {
+          id: createdAgent.id,
+          name: createdAgent.name,
+          role: createdAgent.role as AgentRole,
+          model: createdAgent.model,
+          status: (createdAgent.status || 'idle') as AgentStatus,
+          color: agentColor,
+          mode: 'auto',
+          templateId: createdAgent.template_id ?? undefined,
+          messages: [],
+        };
+
+        addAgent(sessionId, agent);
+      } else {
+        // Create external terminal agent
+        if (!selectedTerminalAgent) return;
+        if (!workspaceId) {
+          throw new Error('No workspace available. Please ensure the session has a workspace.');
+        }
+
+        const terminalSession = await api.post<{ id: string }>('/api/v1/terminal-agents', {
+          workspace_id: workspaceId,
+          agent_type_id: selectedTerminalAgent.id,
+          env_profile_id: selectedEnvProfile?.id,
+        });
+
+        // Create a placeholder agent in the session store for the terminal
+        const agent: Agent = {
+          id: `terminal-${terminalSession.id}`,
+          name: customName || selectedTerminalAgent.name,
+          role: 'custom' as AgentRole,
+          model: 'terminal',
+          status: 'active' as AgentStatus,
+          color: '#10b981',
+          mode: 'auto',
+          terminalSessionId: terminalSession.id,
+          terminalAgentTypeId: selectedTerminalAgent.id,
+          messages: [],
+          gridSpan: { colSpan: 2, rowSpan: 2 }, // Default to 2x2 for better terminal visibility
+        };
+
+        addAgent(sessionId, agent);
+      }
+
       onClose();
     } catch (err: unknown) {
       // Extract error message from different error types
@@ -453,7 +556,13 @@ function CreateAgentModal({ sessionId, onClose }: { sessionId: string; onClose: 
       />
 
       {/* Modal */}
-      <div className="relative w-full max-w-2xl max-h-[85vh] flex flex-col rounded-xl border border-border-default bg-surface shadow-2xl">
+      <div
+        ref={modalRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="modal-title"
+        className="relative w-full max-w-2xl max-h-[85vh] flex flex-col rounded-xl border border-border-default bg-surface shadow-2xl"
+      >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border-subtle px-6 py-4 shrink-0">
           <div className="flex items-center gap-3">
@@ -461,7 +570,9 @@ function CreateAgentModal({ sessionId, onClose }: { sessionId: string; onClose: 
               <Bot className="h-5 w-5 text-accent-primary" />
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-text-primary">Add Agent</h2>
+              <h2 id="modal-title" className="text-lg font-semibold text-text-primary">
+                Add Agent
+              </h2>
               <p className="text-sm text-text-muted">
                 Choose an AI agent to help with your project
               </p>
@@ -475,88 +586,164 @@ function CreateAgentModal({ sessionId, onClose }: { sessionId: string; onClose: 
           </button>
         </div>
 
-        {/* Search */}
+        {/* Tabs */}
         <div className="px-6 py-3 border-b border-border-subtle shrink-0">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-muted" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search agents..."
-              autoFocus
-              className="w-full rounded-lg border border-border-default bg-elevated pl-10 pr-4 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:outline-none focus:ring-1 focus:ring-accent-primary"
-            />
+          <div className="flex gap-1">
+            <button
+              onClick={() => setActiveTab('podex')}
+              className={cn(
+                'px-4 py-2 text-sm font-medium rounded-lg transition-colors',
+                activeTab === 'podex'
+                  ? 'bg-accent-primary text-text-inverse'
+                  : 'text-text-secondary hover:text-text-primary hover:bg-overlay'
+              )}
+            >
+              Podex Native
+            </button>
+            <button
+              onClick={() => setActiveTab('external')}
+              className={cn(
+                'px-4 py-2 text-sm font-medium rounded-lg transition-colors',
+                activeTab === 'external'
+                  ? 'bg-accent-primary text-text-inverse'
+                  : 'text-text-secondary hover:text-text-primary hover:bg-overlay'
+              )}
+            >
+              External Terminal
+            </button>
           </div>
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6">
-          {isLoadingTemplates ? (
-            <div className="flex items-center justify-center py-8 text-text-muted">
-              Loading agents...
-            </div>
-          ) : filteredAgents.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-8 text-center">
-              <Search className="h-8 w-8 text-text-muted mb-2" />
-              <p className="text-text-secondary">No agents found</p>
-              <p className="text-sm text-text-muted">Try a different search term</p>
+        <div className="flex-1 overflow-y-auto">
+          {activeTab === 'podex' ? (
+            <div className="p-6">
+              {/* Search for Podex agents */}
+              <div className="mb-4">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-muted" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search agents..."
+                    autoFocus
+                    className="w-full rounded-lg border border-border-default bg-elevated pl-10 pr-4 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:outline-none focus:ring-1 focus:ring-accent-primary"
+                  />
+                </div>
+              </div>
+              {isLoadingTemplates ? (
+                <div className="flex items-center justify-center py-8 text-text-muted">
+                  Loading agents...
+                </div>
+              ) : filteredAgents.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-8 text-center">
+                  <Search className="h-8 w-8 text-text-muted mb-2" />
+                  <p className="text-text-secondary">No agents found</p>
+                  <p className="text-sm text-text-muted">Try a different search term</p>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {/* Built-in agents */}
+                  {builtinFiltered.length > 0 && (
+                    <div>
+                      <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-3">
+                        Built-in Agents
+                      </h3>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {builtinFiltered.map((agent) => (
+                          <AgentButton key={agent.id} agent={agent} />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Custom agents */}
+                  {customFiltered.length > 0 && (
+                    <div>
+                      <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-3">
+                        Your Custom Agents
+                      </h3>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {customFiltered.map((agent) => (
+                          <AgentButton key={agent.id} agent={agent} />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* No custom agents hint */}
+                  {customTemplates.length === 0 && !searchQuery && (
+                    <div className="text-center py-4 px-6 rounded-lg bg-elevated border border-border-subtle">
+                      <Sparkles className="h-5 w-5 text-pink-400 mx-auto mb-2" />
+                      <p className="text-sm text-text-secondary">
+                        Create your own agents with the <strong>Agent Builder</strong>
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Custom name input for Podex agents */}
+              {activeTab === 'podex' && selectedAgent && (
+                <div className="mt-6 pt-6 border-t border-border-subtle px-6">
+                  <label className="block text-sm font-medium text-text-secondary mb-2">
+                    Custom Name (optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={customName}
+                    onChange={(e) => setCustomName(e.target.value)}
+                    placeholder={selectedAgent.name}
+                    className="w-full rounded-lg border border-border-default bg-elevated px-4 py-2 text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:outline-none focus:ring-1 focus:ring-accent-primary"
+                  />
+                </div>
+              )}
             </div>
           ) : (
-            <div className="space-y-6">
-              {/* Built-in agents */}
-              {builtinFiltered.length > 0 && (
-                <div>
-                  <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-3">
-                    Built-in Agents
-                  </h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {builtinFiltered.map((agent) => (
-                      <AgentButton key={agent.id} agent={agent} />
-                    ))}
-                  </div>
+            <div className="p-6">
+              {/* External Terminal Agents */}
+              {isLoadingTerminalAgents ? (
+                <div className="flex items-center justify-center py-8 text-text-muted">
+                  <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                  Loading terminal agents...
+                </div>
+              ) : terminalAgentTypes.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-8 text-center">
+                  <Plug className="h-8 w-8 text-text-muted mb-2" />
+                  <p className="text-text-secondary">No terminal agents available</p>
+                  <p className="text-sm text-text-muted">Configure external agents in settings</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {terminalAgentTypes.map((agent) => (
+                    <button
+                      key={agent.id}
+                      onClick={() => setSelectedTerminalAgent(agent)}
+                      className={cn(
+                        'w-full p-4 rounded-lg border text-left transition-colors',
+                        selectedTerminalAgent?.id === agent.id
+                          ? 'border-accent-primary bg-accent-primary/10'
+                          : 'border-border-default hover:border-border-subtle hover:bg-overlay'
+                      )}
+                    >
+                      <div className="flex items-center gap-3">
+                        {agent.logo_url ? (
+                          <img src={agent.logo_url} alt={agent.name} className="h-8 w-8 rounded" />
+                        ) : (
+                          <Plug className="h-8 w-8 text-text-muted" />
+                        )}
+                        <div>
+                          <h4 className="font-medium text-text-primary">{agent.name}</h4>
+                          {agent.description && (
+                            <p className="text-sm text-text-muted">{agent.description}</p>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
                 </div>
               )}
-
-              {/* Custom agents */}
-              {customFiltered.length > 0 && (
-                <div>
-                  <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-3">
-                    Your Custom Agents
-                  </h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {customFiltered.map((agent) => (
-                      <AgentButton key={agent.id} agent={agent} />
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* No custom agents hint */}
-              {customTemplates.length === 0 && !searchQuery && (
-                <div className="text-center py-4 px-6 rounded-lg bg-elevated border border-border-subtle">
-                  <Sparkles className="h-5 w-5 text-pink-400 mx-auto mb-2" />
-                  <p className="text-sm text-text-secondary">
-                    Create your own agents with the <strong>Agent Builder</strong>
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Custom name input */}
-          {selectedAgent && (
-            <div className="mt-6 pt-6 border-t border-border-subtle">
-              <label className="block text-sm font-medium text-text-secondary mb-2">
-                Custom Name (optional)
-              </label>
-              <input
-                type="text"
-                value={customName}
-                onChange={(e) => setCustomName(e.target.value)}
-                placeholder={selectedAgent.name}
-                className="w-full rounded-lg border border-border-default bg-elevated px-4 py-2 text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:outline-none focus:ring-1 focus:ring-accent-primary"
-              />
             </div>
           )}
         </div>
@@ -588,9 +775,15 @@ function CreateAgentModal({ sessionId, onClose }: { sessionId: string; onClose: 
         {/* Footer */}
         <div className="flex items-center justify-between gap-3 border-t border-border-subtle px-6 py-4 shrink-0">
           <div className="text-sm text-text-muted">
-            {selectedAgent && (
+            {activeTab === 'podex' && selectedAgent && (
               <span>
                 Selected: <strong className="text-text-secondary">{selectedAgent.name}</strong>
+              </span>
+            )}
+            {activeTab === 'external' && selectedTerminalAgent && (
+              <span>
+                Selected:{' '}
+                <strong className="text-text-secondary">{selectedTerminalAgent.name}</strong>
               </span>
             )}
           </div>
@@ -604,7 +797,11 @@ function CreateAgentModal({ sessionId, onClose }: { sessionId: string; onClose: 
             </button>
             <button
               onClick={handleCreate}
-              disabled={!selectedAgent || isCreating}
+              disabled={
+                (activeTab === 'podex' && !selectedAgent) ||
+                (activeTab === 'external' && !selectedTerminalAgent) ||
+                isCreating
+              }
               className="rounded-lg bg-accent-primary px-4 py-2 text-sm font-medium text-text-inverse hover:bg-accent-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {isCreating ? 'Creating...' : 'Add Agent'}
@@ -838,6 +1035,9 @@ const TIMEOUT_OPTIONS = [
 ];
 
 function StandbySettingsModal({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
+  // Focus trap for accessibility
+  const modalRef = useFocusTrap<HTMLDivElement>(true);
+
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -891,14 +1091,22 @@ function StandbySettingsModal({ sessionId, onClose }: { sessionId: string; onClo
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-void/80 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-md rounded-xl border border-border-default bg-surface shadow-2xl">
+      <div
+        ref={modalRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="standby-modal-title"
+        className="relative w-full max-w-md rounded-xl border border-border-default bg-surface shadow-2xl"
+      >
         <div className="flex items-center justify-between border-b border-border-subtle px-6 py-4">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent-primary/10">
               <Clock className="h-5 w-5 text-accent-primary" />
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-text-primary">Auto-Standby Settings</h2>
+              <h2 id="standby-modal-title" className="text-lg font-semibold text-text-primary">
+                Auto-Standby Settings
+              </h2>
               <p className="text-sm text-text-muted">Configure idle timeout</p>
             </div>
           </div>
@@ -1008,10 +1216,19 @@ function StandbySettingsModal({ sessionId, onClose }: { sessionId: string; onClo
 }
 
 function MCPSettingsModal({ onClose }: { onClose: () => void }) {
+  // Focus trap for accessibility
+  const modalRef = useFocusTrap<HTMLDivElement>(true);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-void/80 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-3xl max-h-[85vh] flex flex-col rounded-xl border border-border-default bg-surface shadow-2xl">
+      <div
+        ref={modalRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="mcp-modal-title"
+        className="relative w-full max-w-3xl max-h-[85vh] flex flex-col rounded-xl border border-border-default bg-surface shadow-2xl"
+      >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border-subtle px-6 py-4 shrink-0">
           <div className="flex items-center gap-3">
@@ -1019,7 +1236,9 @@ function MCPSettingsModal({ onClose }: { onClose: () => void }) {
               <Plug className="h-5 w-5 text-accent-primary" />
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-text-primary">MCP Integrations</h2>
+              <h2 id="mcp-modal-title" className="text-lg font-semibold text-text-primary">
+                MCP Integrations
+              </h2>
               <p className="text-sm text-text-muted">
                 Configure Model Context Protocol servers and tools
               </p>

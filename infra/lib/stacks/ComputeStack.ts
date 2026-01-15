@@ -108,14 +108,14 @@ export class ComputeStack extends cdk.Stack {
     const { apiTargetGroup, agentTargetGroup, computeTargetGroup, webTargetGroup } =
       this.createTargetGroups();
 
+    // Create workspace resources BEFORE compute service (compute needs workspace task defs for IAM)
+    this.createWorkspaceResources();
+
     // Create services
     this.apiService = this.createApiService(apiRepo, apiTargetGroup);
     this.agentService = this.createAgentService(agentRepo, agentTargetGroup);
     this.computeService = this.createComputeService(computeRepo, computeTargetGroup);
     this.webService = this.createWebService(webRepo, webTargetGroup);
-
-    // Create workspace resources
-    this.createWorkspaceResources();
 
     // Create DNS records if hosted zone provided
     if (props.hostedZone && this.config.domainName) {
@@ -146,6 +146,23 @@ export class ComputeStack extends cdk.Stack {
       'Allow outbound to targets'
     );
 
+    // S3 bucket for ALB access logs
+    const albLogsBucket = new s3.Bucket(this, 'AlbLogsBucket', {
+      bucketName: `podex-alb-logs-${this.config.envName}-${this.account}`,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy: this.config.isProd ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: !this.config.isProd,
+      enforceSSL: true,
+      lifecycleRules: [
+        {
+          id: 'DeleteOldLogs',
+          expiration: cdk.Duration.days(this.config.isProd ? 90 : 30),
+          enabled: true,
+        },
+      ],
+    });
+
     // Application Load Balancer
     this.alb = new elbv2.ApplicationLoadBalancer(this, 'Alb', {
       vpc: this.vpc,
@@ -153,6 +170,9 @@ export class ComputeStack extends cdk.Stack {
       securityGroup: this.albSecurityGroup,
       loadBalancerName: `podex-${this.config.envName}`,
     });
+
+    // Enable ALB access logging
+    this.alb.logAccessLogs(albLogsBucket, `alb-logs/${this.config.envName}`);
 
     // Create listener - HTTPS with cert if available, otherwise HTTP for dev
     let listener: elbv2.ApplicationListener;
@@ -410,9 +430,10 @@ export class ComputeStack extends cdk.Stack {
   ): ecs.FargateService {
     const securityGroup = this.createServiceSecurityGroup('api', 3001, true, true);
 
+    // ALPHA: Minimum Fargate task size (256 CPU, 512 MB)
     const taskDefinition = new ecs.FargateTaskDefinition(this, 'apiTaskDef', {
-      cpu: 512,
-      memoryLimitMiB: 1024,
+      cpu: 256,
+      memoryLimitMiB: 512,
       runtimePlatform: {
         cpuArchitecture: ecs.CpuArchitecture.ARM64,
         operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
@@ -459,9 +480,10 @@ export class ComputeStack extends cdk.Stack {
       image: ecs.ContainerImage.fromEcrRepository(repository, 'latest'),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: 'api',
+        // ALPHA: Reduced log retention for cost savings
         logRetention: this.config.isProd
-          ? logs.RetentionDays.ONE_YEAR
-          : logs.RetentionDays.ONE_MONTH,
+          ? logs.RetentionDays.THREE_MONTHS
+          : logs.RetentionDays.ONE_WEEK,
       }),
       environment: {
         ENVIRONMENT: this.config.envName,
@@ -557,9 +579,10 @@ export class ComputeStack extends cdk.Stack {
   ): ecs.FargateService {
     const securityGroup = this.createServiceSecurityGroup('agent', 3002, true, true);
 
+    // ALPHA: Reduced task size (512 CPU, 1024 MB) - needs more than API for LLM streaming
     const taskDefinition = new ecs.FargateTaskDefinition(this, 'agentTaskDef', {
-      cpu: 1024,
-      memoryLimitMiB: 2048,
+      cpu: 512,
+      memoryLimitMiB: 1024,
       runtimePlatform: {
         cpuArchitecture: ecs.CpuArchitecture.ARM64,
         operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
@@ -581,9 +604,10 @@ export class ComputeStack extends cdk.Stack {
       image: ecs.ContainerImage.fromEcrRepository(repository, 'latest'),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: 'agent',
+        // ALPHA: Reduced log retention for cost savings
         logRetention: this.config.isProd
-          ? logs.RetentionDays.ONE_YEAR
-          : logs.RetentionDays.ONE_MONTH,
+          ? logs.RetentionDays.THREE_MONTHS
+          : logs.RetentionDays.ONE_WEEK,
       }),
       environment: {
         ENVIRONMENT: this.config.envName,
@@ -691,9 +715,10 @@ export class ComputeStack extends cdk.Stack {
   ): ecs.FargateService {
     const securityGroup = this.createServiceSecurityGroup('compute', 3003, false, true);
 
+    // ALPHA: Reduced task size (512 CPU, 1024 MB)
     const taskDefinition = new ecs.FargateTaskDefinition(this, 'computeTaskDef', {
-      cpu: 1024,
-      memoryLimitMiB: 2048,
+      cpu: 512,
+      memoryLimitMiB: 1024,
       runtimePlatform: {
         cpuArchitecture: ecs.CpuArchitecture.ARM64,
         operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
@@ -718,9 +743,10 @@ export class ComputeStack extends cdk.Stack {
       image: ecs.ContainerImage.fromEcrRepository(repository, 'latest'),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: 'compute',
+        // ALPHA: Reduced log retention for cost savings
         logRetention: this.config.isProd
-          ? logs.RetentionDays.ONE_YEAR
-          : logs.RetentionDays.ONE_MONTH,
+          ? logs.RetentionDays.THREE_MONTHS
+          : logs.RetentionDays.ONE_WEEK,
       }),
       environment: {
         COMPUTE_ENVIRONMENT: this.config.envName,
@@ -729,9 +755,12 @@ export class ComputeStack extends cdk.Stack {
         // AWS settings
         COMPUTE_AWS_REGION: this.config.region,
         COMPUTE_ECS_CLUSTER_NAME: this.cluster.clusterName,
-        COMPUTE_ECS_TASK_DEFINITION:
-          this.workspaceTaskDefinition?.taskDefinitionArn ||
-          `podex-workspace-${this.config.envName}`,
+        // Task definitions for different architectures/tiers (using family names)
+        COMPUTE_ECS_TASK_DEFINITION: `podex-workspace-x86-${this.config.envName}`,
+        COMPUTE_ECS_ARM_TASK_DEFINITION: `podex-workspace-${this.config.envName}`,
+        COMPUTE_ECS_GPU_TASK_DEFINITION: `podex-workspace-gpu-${this.config.envName}`,
+        COMPUTE_ECS_ARM_GPU_TASK_DEFINITION: `podex-workspace-arm-gpu-${this.config.envName}`,
+        COMPUTE_ECS_ML_ACCELERATOR_TASK_DEFINITION: `podex-workspace-ml-${this.config.envName}`,
         COMPUTE_WORKSPACE_IMAGE: `${this.workspaceRepo.repositoryUri}:latest`,
         // Redis with TLS
         COMPUTE_REDIS_URL: `rediss://${this.redisEndpoint}:6379`,
@@ -740,15 +769,16 @@ export class ComputeStack extends cdk.Stack {
         COMPUTE_S3_BUCKET: this.workspaceBucket.bucketName,
         COMPUTE_S3_PREFIX: 'workspaces',
         COMPUTE_S3_SYNC_INTERVAL: '30',
-        // Workspace tier configurations
-        COMPUTE_TIER_STARTER_CPU: '2',
-        COMPUTE_TIER_STARTER_MEMORY: '4096',
-        COMPUTE_TIER_PRO_CPU: '4',
-        COMPUTE_TIER_PRO_MEMORY: '8192',
-        COMPUTE_TIER_POWER_CPU: '8',
-        COMPUTE_TIER_POWER_MEMORY: '16384',
-        COMPUTE_TIER_ENTERPRISE_CPU: '16',
-        COMPUTE_TIER_ENTERPRISE_MEMORY: '32768',
+        // ALPHA: Minimum workspace tier configurations
+        // All tiers use minimum resources during alpha - scale up when needed
+        COMPUTE_TIER_STARTER_CPU: '1',
+        COMPUTE_TIER_STARTER_MEMORY: '512',
+        COMPUTE_TIER_PRO_CPU: '1',
+        COMPUTE_TIER_PRO_MEMORY: '512',
+        COMPUTE_TIER_POWER_CPU: '1',
+        COMPUTE_TIER_POWER_MEMORY: '512',
+        COMPUTE_TIER_ENTERPRISE_CPU: '1',
+        COMPUTE_TIER_ENTERPRISE_MEMORY: '512',
         // Sentry (uses SENTRY_ prefix)
         SENTRY_TRACES_SAMPLE_RATE: this.config.sentryTracesSampleRate.toString(),
         SENTRY_PROFILES_SAMPLE_RATE: this.config.sentryProfilesSampleRate.toString(),
@@ -782,12 +812,23 @@ export class ComputeStack extends cdk.Stack {
           `arn:aws:ecs:${this.config.region}:${this.account}:task-definition/podex-workspace-${this.config.envName}:*`,
         ],
       }),
-      // Pass role permission for ECS task execution - scoped to task roles
+      // Pass role permission for ECS task execution - scoped to specific workspace task roles
       new iam.PolicyStatement({
         actions: ['iam:PassRole'],
-        resources: [`arn:aws:iam::${this.account}:role/podex-*`],
+        resources: [
+          this.workspaceTaskDefinition.taskRole.roleArn,
+          this.workspaceTaskDefinition.executionRole?.roleArn || '',
+          this.workspaceTaskDefinitionX86.taskRole.roleArn,
+          this.workspaceTaskDefinitionX86.executionRole?.roleArn || '',
+          this.workspaceTaskDefinitionGpu.taskRole.roleArn,
+          this.workspaceTaskDefinitionGpu.executionRole?.roleArn || '',
+          this.workspaceTaskDefinitionArmGpu.taskRole.roleArn,
+          this.workspaceTaskDefinitionArmGpu.executionRole?.roleArn || '',
+          this.workspaceTaskDefinitionMl.taskRole.roleArn,
+          this.workspaceTaskDefinitionMl.executionRole?.roleArn || '',
+        ].filter((arn) => arn !== ''),
         conditions: {
-          StringLike: { 'iam:PassedToService': 'ecs-tasks.amazonaws.com' },
+          StringEquals: { 'iam:PassedToService': 'ecs-tasks.amazonaws.com' },
         },
       }),
       // SSM permissions for ECS Exec
@@ -868,9 +909,10 @@ export class ComputeStack extends cdk.Stack {
   ): ecs.FargateService {
     const securityGroup = this.createServiceSecurityGroup('web', 3000, false, false);
 
+    // ALPHA: Minimum Fargate task size (256 CPU, 512 MB)
     const taskDefinition = new ecs.FargateTaskDefinition(this, 'webTaskDef', {
-      cpu: 512,
-      memoryLimitMiB: 1024,
+      cpu: 256,
+      memoryLimitMiB: 512,
       runtimePlatform: {
         cpuArchitecture: ecs.CpuArchitecture.ARM64,
         operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
@@ -896,9 +938,10 @@ export class ComputeStack extends cdk.Stack {
       image: ecs.ContainerImage.fromEcrRepository(repository, 'latest'),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: 'web',
+        // ALPHA: Reduced log retention for cost savings
         logRetention: this.config.isProd
-          ? logs.RetentionDays.ONE_YEAR
-          : logs.RetentionDays.ONE_MONTH,
+          ? logs.RetentionDays.THREE_MONTHS
+          : logs.RetentionDays.ONE_WEEK,
       }),
       environment: {
         NODE_ENV: this.config.isProd ? 'production' : 'development',
@@ -1005,9 +1048,10 @@ export class ComputeStack extends cdk.Stack {
     // ========================================
     // 1. ARM64 Fargate Task Definition (default - most cost effective)
     // ========================================
+    // ALPHA: Minimum Fargate size (256 CPU, 512 MB) - scale up via tier config when needed
     this.workspaceTaskDefinition = new ecs.FargateTaskDefinition(this, 'WorkspaceTaskDef', {
-      cpu: 2048,
-      memoryLimitMiB: 4096,
+      cpu: 256,
+      memoryLimitMiB: 512,
       runtimePlatform: {
         cpuArchitecture: ecs.CpuArchitecture.ARM64,
         operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
@@ -1032,9 +1076,10 @@ export class ComputeStack extends cdk.Stack {
     // ========================================
     // 2. x86_64 Fargate Task Definition (for x86 compatibility)
     // ========================================
+    // ALPHA: Minimum Fargate size (256 CPU, 512 MB)
     this.workspaceTaskDefinitionX86 = new ecs.FargateTaskDefinition(this, 'WorkspaceTaskDefX86', {
-      cpu: 2048,
-      memoryLimitMiB: 4096,
+      cpu: 256,
+      memoryLimitMiB: 512,
       runtimePlatform: {
         cpuArchitecture: ecs.CpuArchitecture.X86_64,
         operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,

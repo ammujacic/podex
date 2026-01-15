@@ -4,6 +4,7 @@ These routes provide Git functionality for workspaces. They communicate with
 the compute service to execute Git commands in the workspace container.
 """
 
+import re
 from typing import Annotated, Any
 
 import structlog
@@ -21,6 +22,71 @@ from src.routes.sessions import ensure_workspace_provisioned
 
 logger = structlog.get_logger()
 router = APIRouter()
+
+# Git branch name validation pattern
+# Based on git check-ref-format rules
+_INVALID_BRANCH_CHARS = re.compile(r"[\x00-\x1f\x7f ~^:?*\[\\]")
+_INVALID_BRANCH_PATTERNS = ["..", "@{", "//"]
+
+
+def validate_branch_name(branch: str | None) -> str | None:
+    """Validate a Git branch name to prevent injection attacks.
+
+    Based on git check-ref-format rules:
+    - Cannot contain control chars, space, ~, ^, :, ?, *, [, or backslash
+    - Cannot start with . or end with .lock
+    - Cannot contain .. or @{
+    - Cannot be @ alone
+    - Cannot be empty or only whitespace
+
+    Args:
+        branch: The branch name to validate (can be None).
+
+    Returns:
+        The validated branch name, or None if input was None.
+
+    Raises:
+        HTTPException: If the branch name is invalid.
+    """
+    if branch is None:
+        return None
+
+    # Check for empty/whitespace
+    if not branch or not branch.strip():
+        raise HTTPException(status_code=400, detail="Branch name cannot be empty")
+
+    # Check length
+    if len(branch) > 255:
+        raise HTTPException(status_code=400, detail="Branch name too long (max 255 characters)")
+
+    # Check for invalid characters
+    if _INVALID_BRANCH_CHARS.search(branch):
+        raise HTTPException(
+            status_code=400,
+            detail="Branch name contains invalid characters",
+        )
+
+    # Check for invalid patterns
+    for pattern in _INVALID_BRANCH_PATTERNS:
+        if pattern in branch:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Branch name cannot contain '{pattern}'",
+            )
+
+    # Check start/end rules
+    if branch.startswith(".") or branch.startswith("-"):
+        raise HTTPException(status_code=400, detail="Branch name cannot start with '.' or '-'")
+
+    if branch.endswith(".lock") or branch.endswith("."):
+        raise HTTPException(status_code=400, detail="Branch name cannot end with '.lock' or '.'")
+
+    # Cannot be @ alone
+    if branch == "@":
+        raise HTTPException(status_code=400, detail="Branch name cannot be '@'")
+
+    return branch
+
 
 # Type alias for database session dependency
 DbSession = Annotated[AsyncSession, Depends(get_db)]
@@ -346,12 +412,15 @@ async def push_changes(
     """Push commits to remote."""
     workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
 
+    # Validate branch name if provided
+    safe_branch = validate_branch_name(data.branch)
+
     try:
         result = await compute_client.git_push(
             workspace_id,
             user_id,
             remote=data.remote,
-            branch=data.branch,
+            branch=safe_branch,
         )
     except ComputeClientError as e:
         logger.error(  # noqa: TRY400
@@ -377,12 +446,15 @@ async def pull_changes(
     """Pull changes from remote."""
     workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
 
+    # Validate branch name if provided
+    safe_branch = validate_branch_name(data.branch)
+
     try:
         result = await compute_client.git_pull(
             workspace_id,
             user_id,
             remote=data.remote,
-            branch=data.branch,
+            branch=safe_branch,
         )
     except ComputeClientError as e:
         logger.error(  # noqa: TRY400
@@ -408,11 +480,16 @@ async def checkout_branch(
     """Checkout a branch."""
     workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
 
+    # Validate branch name (required for checkout)
+    safe_branch = validate_branch_name(data.branch)
+    if not safe_branch:
+        raise HTTPException(status_code=400, detail="Branch name is required for checkout")
+
     try:
         result = await compute_client.git_checkout(
             workspace_id,
             user_id,
-            branch=data.branch,
+            branch=safe_branch,
             create=data.create,
         )
     except ComputeClientError as e:

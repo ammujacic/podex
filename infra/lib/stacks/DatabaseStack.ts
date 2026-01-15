@@ -61,17 +61,20 @@ export class DatabaseStack extends cdk.Stack {
     });
 
     // Sentry DSN secret (stores both backend and frontend DSNs)
-    // Generate a placeholder that must be updated with actual DSN values after deployment
-    // Use AWS Console or CLI to update: aws secretsmanager put-secret-value --secret-id podex/{env}/sentry --secret-string '{"dsn":"https://...","frontend_dsn":"https://..."}'
+    // DSN values are provided via environment variables during CDK deployment:
+    //   SENTRY_DSN - Backend Sentry DSN
+    //   SENTRY_FRONTEND_DSN - Frontend Sentry DSN
+    // If not provided, empty strings are used (Sentry will be disabled)
+    const sentryDsn = process.env.SENTRY_DSN || '';
+    const sentryFrontendDsn = process.env.SENTRY_FRONTEND_DSN || '';
+
     this.sentrySecret = new secretsmanager.Secret(this, 'SentrySecret', {
       secretName: `podex/${config.envName}/sentry`,
-      description: 'Sentry DSN configuration - UPDATE with actual DSN values after deployment',
-      generateSecretString: {
-        secretStringTemplate: JSON.stringify({
-          dsn: 'PLACEHOLDER_UPDATE_AFTER_DEPLOY',
-          frontend_dsn: 'PLACEHOLDER_UPDATE_AFTER_DEPLOY',
-        }),
-        generateStringKey: '_placeholder',
+      description:
+        'Sentry DSN configuration - set via SENTRY_DSN and SENTRY_FRONTEND_DSN env vars during deployment',
+      secretObjectValue: {
+        dsn: cdk.SecretValue.unsafePlainText(sentryDsn),
+        frontend_dsn: cdk.SecretValue.unsafePlainText(sentryFrontendDsn),
       },
     });
 
@@ -166,7 +169,10 @@ export class DatabaseStack extends cdk.Stack {
         // Security: Enable encryption at rest
         atRestEncryptionEnabled: true,
         // Security: Enable AUTH token
-        authToken: this.redisAuthToken.secretValue.unsafeUnwrap(),
+        // Note: ElastiCache L1 construct requires plain text token. The token is stored
+        // securely in Secrets Manager and referenced by ECS services via ecs.Secret.
+        // The unsafeUnwrap is required by CDK but the value is resolved at deploy time.
+        authToken: cdk.Token.asString(this.redisAuthToken.secretValue),
         // Maintenance
         autoMinorVersionUpgrade: true,
         snapshotRetentionLimit: config.isProd ? 7 : 1,

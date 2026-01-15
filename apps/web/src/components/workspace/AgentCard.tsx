@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import {
+  AlertTriangle,
   Bell,
   Bot,
   ChevronDown,
@@ -32,6 +33,7 @@ import {
   X,
   Zap,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -72,6 +74,142 @@ import { CompactionDialog } from './CompactionDialog';
 import { ToolResultDisplay } from './ToolResultDisplay';
 import { WorktreeStatus } from './WorktreeStatus';
 import { compactAgentContext } from '@/lib/api';
+
+// Confirmation dialog component
+function ConfirmDialog({
+  isOpen,
+  title,
+  message,
+  confirmLabel = 'Confirm',
+  confirmVariant = 'danger',
+  onConfirm,
+  onCancel,
+}: {
+  isOpen: boolean;
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  confirmVariant?: 'danger' | 'primary';
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-void/80 backdrop-blur-sm" onClick={onCancel} />
+      <div className="relative w-full max-w-md rounded-xl border border-border-default bg-surface shadow-2xl p-6">
+        <div className="flex items-start gap-4">
+          <div
+            className={cn(
+              'flex h-10 w-10 items-center justify-center rounded-full shrink-0',
+              confirmVariant === 'danger' ? 'bg-red-500/10' : 'bg-accent-primary/10'
+            )}
+          >
+            <AlertTriangle
+              className={cn(
+                'h-5 w-5',
+                confirmVariant === 'danger' ? 'text-red-400' : 'text-accent-primary'
+              )}
+            />
+          </div>
+          <div className="flex-1">
+            <h3 className="text-lg font-semibold text-text-primary">{title}</h3>
+            <p className="mt-2 text-sm text-text-secondary">{message}</p>
+          </div>
+        </div>
+        <div className="flex justify-end gap-3 mt-6">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 text-sm font-medium text-text-secondary hover:bg-overlay rounded-lg transition-colors cursor-pointer"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className={cn(
+              'px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors cursor-pointer',
+              confirmVariant === 'danger'
+                ? 'bg-red-500 hover:bg-red-600'
+                : 'bg-accent-primary hover:bg-accent-primary/90'
+            )}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Prompt dialog component
+function PromptDialog({
+  isOpen,
+  title,
+  message,
+  defaultValue,
+  placeholder,
+  onConfirm,
+  onCancel,
+}: {
+  isOpen: boolean;
+  title: string;
+  message: string;
+  defaultValue?: string;
+  placeholder?: string;
+  onConfirm: (value: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(defaultValue || '');
+
+  useEffect(() => {
+    if (isOpen) {
+      setValue(defaultValue || '');
+    }
+  }, [isOpen, defaultValue]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-void/80 backdrop-blur-sm" onClick={onCancel} />
+      <div className="relative w-full max-w-md rounded-xl border border-border-default bg-surface shadow-2xl p-6">
+        <h3 className="text-lg font-semibold text-text-primary">{title}</h3>
+        <p className="mt-2 text-sm text-text-secondary">{message}</p>
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder={placeholder}
+          className="mt-4 w-full px-3 py-2 bg-elevated border border-border-default rounded-lg text-sm text-text-primary placeholder:text-text-muted focus:border-border-focus focus:outline-none"
+          autoFocus
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && value.trim()) {
+              onConfirm(value.trim());
+            } else if (e.key === 'Escape') {
+              onCancel();
+            }
+          }}
+        />
+        <div className="flex justify-end gap-3 mt-6">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 text-sm font-medium text-text-secondary hover:bg-overlay rounded-lg transition-colors cursor-pointer"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => value.trim() && onConfirm(value.trim())}
+            disabled={!value.trim()}
+            className="px-4 py-2 text-sm font-medium bg-accent-primary text-white rounded-lg hover:bg-accent-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export interface AgentCardProps {
   agent: Agent;
@@ -126,6 +264,9 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   const [compactionDialogOpen, setCompactionDialogOpen] = useState(false);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [savedInput, setSavedInput] = useState('');
+  // Dialog states for replacing native confirm/prompt/alert
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -334,12 +475,19 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     }
   };
 
-  const handleRename = useCallback(() => {
-    const newName = prompt('Enter new name for agent:', agent.name);
-    if (newName && newName.trim() && newName !== agent.name) {
-      updateAgent(sessionId, agent.id, { name: newName.trim() });
-    }
-  }, [agent.name, agent.id, sessionId, updateAgent]);
+  const handleRenameClick = useCallback(() => {
+    setRenameDialogOpen(true);
+  }, []);
+
+  const handleRenameConfirm = useCallback(
+    (newName: string) => {
+      if (newName !== agent.name) {
+        updateAgent(sessionId, agent.id, { name: newName });
+      }
+      setRenameDialogOpen(false);
+    },
+    [agent.name, agent.id, sessionId, updateAgent]
+  );
 
   const handleDuplicate = useCallback(async () => {
     if (isDuplicating) return;
@@ -358,9 +506,10 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         messages: [],
         mode: (newAgentData.mode || 'ask') as AgentMode,
       });
+      toast.success(`Agent duplicated as "${newAgentData.name}"`);
     } catch (error) {
       console.error('Failed to duplicate agent:', error);
-      alert('Failed to duplicate agent. Please try again.');
+      toast.error('Failed to duplicate agent. Please try again.');
     } finally {
       setIsDuplicating(false);
     }
@@ -390,16 +539,19 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     }));
   }, []);
 
-  const handleDelete = useCallback(async () => {
-    if (!confirm(`Are you sure you want to delete "${agent.name}"?`)) return;
+  const handleDeleteClick = useCallback(() => {
+    setDeleteDialogOpen(true);
+  }, []);
 
+  const handleDeleteConfirm = useCallback(async () => {
+    setDeleteDialogOpen(false);
     setIsDeleting(true);
     try {
       await deleteAgentApi(sessionId, agent.id);
       removeAgent(sessionId, agent.id);
     } catch (error) {
       console.error('Failed to delete agent:', error);
-      alert('Failed to delete agent. Please try again.');
+      toast.error('Failed to delete agent. Please try again.');
     } finally {
       setIsDeleting(false);
     }
@@ -550,7 +702,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
               <button
                 onClick={() => setModeSettingsOpen(true)}
                 className={cn(
-                  'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-elevated hover:bg-overlay transition-colors',
+                  'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-elevated hover:bg-overlay transition-colors cursor-pointer',
                   currentModeConfig.color
                 )}
                 title={`Mode: ${currentModeConfig.label}`}
@@ -580,7 +732,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                 <button
                   onClick={openPanel}
                   className={cn(
-                    'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium animate-pulse',
+                    'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium animate-pulse cursor-pointer',
                     highestPriorityAttention?.type === 'error' && 'bg-red-500/20 text-red-400',
                     highestPriorityAttention?.type === 'needs_approval' &&
                       'bg-yellow-500/20 text-yellow-400',
@@ -600,7 +752,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary">
+                <button className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary cursor-pointer">
                   {getModelDisplayName(agent.model)}
                   <ChevronDown className="h-3 w-3" />
                 </button>
@@ -636,7 +788,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
           <DropdownMenuContent align="end" className="w-48">
             <DropdownMenuLabel>Agent Settings</DropdownMenuLabel>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={handleRename}>
+            <DropdownMenuItem onClick={handleRenameClick} className="cursor-pointer">
               <Pencil className="mr-2 h-4 w-4" />
               Rename
             </DropdownMenuItem>
@@ -655,15 +807,19 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                 </DropdownMenuRadioGroup>
               </DropdownMenuSubContent>
             </DropdownMenuSub>
-            <DropdownMenuItem onClick={() => setVoiceSettingsOpen(true)}>
+            <DropdownMenuItem onClick={() => setVoiceSettingsOpen(true)} className="cursor-pointer">
               <Volume2 className="mr-2 h-4 w-4" />
               Voice Settings
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setModeSettingsOpen(true)}>
+            <DropdownMenuItem onClick={() => setModeSettingsOpen(true)} className="cursor-pointer">
               <Shield className="mr-2 h-4 w-4" />
               Mode Settings
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={handleDuplicate} disabled={isDuplicating}>
+            <DropdownMenuItem
+              onClick={handleDuplicate}
+              disabled={isDuplicating}
+              className="cursor-pointer"
+            >
               {isDuplicating ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
@@ -672,7 +828,10 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
               {isDuplicating ? 'Duplicating...' : 'Duplicate'}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={handleDelete} className="text-red-400 focus:text-red-400">
+            <DropdownMenuItem
+              onClick={handleDeleteClick}
+              className="text-red-400 focus:text-red-400 cursor-pointer"
+            >
               <Trash2 className="mr-2 h-4 w-4" />
               Delete
             </DropdownMenuItem>
@@ -700,7 +859,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                 <div className="ml-0 max-w-[85%]">
                   <button
                     onClick={() => toggleThinking(msg.id)}
-                    className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text-secondary transition-colors"
+                    className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text-secondary transition-colors cursor-pointer"
                   >
                     {expandedThinking[msg.id] ? (
                       <ChevronDown className="h-3 w-3" />
@@ -732,14 +891,17 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                     <p className="whitespace-pre-wrap">{msg.content}</p>
                   )}
                   <div className="mt-1 flex items-center justify-between gap-2">
-                    <span className="text-xs opacity-60">{formatTimestamp(msg.timestamp)}</span>
+                    <span className="text-xs text-text-muted">
+                      {formatTimestamp(msg.timestamp)}
+                    </span>
                     <div className="flex items-center gap-1">
                       {/* Delete message button - visible on hover */}
                       <button
                         onClick={() => handleDeleteMessage(msg.id)}
                         disabled={deletingMessageId === msg.id}
+                        aria-label="Delete message"
                         className={cn(
-                          'rounded p-1 transition-colors opacity-0 group-hover/message:opacity-100',
+                          'rounded p-1 transition-colors opacity-0 group-hover/message:opacity-100 cursor-pointer',
                           msg.role === 'user'
                             ? 'hover:bg-white/20 text-text-inverse/60 hover:text-text-inverse'
                             : 'hover:bg-overlay text-text-muted hover:text-red-400',
@@ -759,8 +921,11 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                           <button
                             onClick={() => handlePlayMessage(msg.id)}
                             disabled={synthesizingMessageId === msg.id}
+                            aria-label={
+                              playingMessageId === msg.id ? 'Stop playback' : 'Play message'
+                            }
                             className={cn(
-                              'rounded p-1 transition-colors hover:bg-overlay',
+                              'rounded p-1 transition-colors hover:bg-overlay cursor-pointer',
                               playingMessageId === msg.id && 'text-accent-primary',
                               synthesizingMessageId === msg.id && 'opacity-50'
                             )}
@@ -777,8 +942,9 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                           <button
                             onClick={() => handlePlayMessage(msg.id, true)}
                             disabled={synthesizingMessageId === msg.id}
+                            aria-label="Regenerate audio summary"
                             className={cn(
-                              'rounded p-1 transition-colors hover:bg-overlay text-text-muted hover:text-text-secondary',
+                              'rounded p-1 transition-colors hover:bg-overlay text-text-muted hover:text-text-secondary cursor-pointer',
                               synthesizingMessageId === msg.id && 'opacity-50'
                             )}
                             title="Regenerate audio summary"
@@ -923,6 +1089,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                   sendAgentMessage(sessionId, agent.id, feedback).catch((error) => {
                     console.error('Failed to send refinement:', error);
                     updateAgent(sessionId, agent.id, { status: 'error' });
+                    toast.error('Failed to send refinement. Please try again.');
                   });
                   setMessage('');
                 }, 0);
@@ -989,7 +1156,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
             className={cn(
               'rounded-md p-2 transition-colors',
               message.trim() && !isSending && !isRecording
-                ? 'bg-accent-primary text-text-inverse hover:bg-opacity-90'
+                ? 'bg-accent-primary text-text-inverse hover:bg-opacity-90 cursor-pointer'
                 : 'bg-elevated text-text-muted cursor-not-allowed'
             )}
           >
@@ -1039,6 +1206,28 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
           }}
         />
       )}
+
+      {/* Delete Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={deleteDialogOpen}
+        title="Delete Agent"
+        message={`Are you sure you want to delete "${agent.name}"? This action cannot be undone.`}
+        confirmLabel="Delete"
+        confirmVariant="danger"
+        onConfirm={handleDeleteConfirm}
+        onCancel={() => setDeleteDialogOpen(false)}
+      />
+
+      {/* Rename Prompt Dialog */}
+      <PromptDialog
+        isOpen={renameDialogOpen}
+        title="Rename Agent"
+        message="Enter a new name for this agent:"
+        defaultValue={agent.name}
+        placeholder="Agent name"
+        onConfirm={handleRenameConfirm}
+        onCancel={() => setRenameDialogOpen(false)}
+      />
     </div>
   );
 }

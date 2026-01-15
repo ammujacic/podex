@@ -16,6 +16,7 @@ import {
   TrendingUp,
   DollarSign,
   Activity,
+  Terminal,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUser, useAuthLoading } from '@/stores/auth';
@@ -41,6 +42,7 @@ const adminNavItems = [
       { href: '/admin/management/plans', label: 'Subscription Plans', icon: CreditCard },
       { href: '/admin/management/hardware', label: 'Hardware Specs', icon: Server },
       { href: '/admin/management/templates', label: 'Pod Templates', icon: Box },
+      { href: '/admin/management/terminal-agents', label: 'Terminal Agents', icon: Terminal },
       { href: '/admin/management/settings', label: 'Platform Settings', icon: Settings },
     ],
   },

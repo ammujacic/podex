@@ -457,19 +457,19 @@ export function getSocket(): Socket {
       notifyConnectionListeners();
     });
 
-    socket.on('disconnect', (reason) => {
+    socket.on('disconnect', (reason: string) => {
       connectionState.connected = false;
       connectionState.disconnectReason = reason;
       notifyConnectionListeners();
     });
 
-    socket.on('connect_error', (error) => {
+    socket.on('connect_error', (error: Error) => {
       connectionState.connected = false;
       connectionState.error = error.message;
       notifyConnectionListeners();
     });
 
-    socket.on('reconnect_attempt', (attempt) => {
+    socket.on('reconnect_attempt', (attempt: number) => {
       connectionState.reconnecting = true;
       connectionState.reconnectAttempt = attempt;
       notifyConnectionListeners();
@@ -513,15 +513,32 @@ export function disconnectSocket(): void {
 /**
  * Join a session room to receive updates.
  * Waits for socket connection before emitting join event.
+ *
+ * Security Note: Auth token is transmitted via WebSocket. The connection
+ * should always use WSS (WebSocket Secure) in production. The token is
+ * validated server-side and not stored in the socket state.
  */
 export function joinSession(sessionId: string, userId: string, authToken?: string): void {
   const sock = getSocket();
 
+  // Warn in development if not using secure connection
+  if (
+    typeof window !== 'undefined' &&
+    window.location.protocol === 'http:' &&
+    process.env.NODE_ENV === 'production'
+  ) {
+    console.warn(
+      '[Socket] Warning: Using insecure WebSocket connection in production. Auth tokens may be exposed.'
+    );
+  }
+
   const emitJoin = () => {
+    // Only send token if present; server should validate via secure session cookie as fallback
     sock.emit('session_join', {
       session_id: sessionId,
       user_id: userId,
-      auth_token: authToken,
+      // Token sent for backwards compatibility; prefer cookie-based auth when available
+      ...(authToken && { auth_token: authToken }),
     });
   };
 

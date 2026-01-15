@@ -373,6 +373,7 @@ class AgentOrchestrator:
                 context = CustomAgentContext(
                     workspace_path=workspace_path,
                     session_id=params.session_id,
+                    user_id=params.user_id,
                 )
                 init_config = CustomAgentInitConfig(
                     agent_id=params.agent_id,
@@ -381,6 +382,7 @@ class AgentOrchestrator:
                     template_config=params.template_config,
                     context=context,
                     mcp_registry=mcp_registry,
+                    user_id=params.user_id,
                 )
                 self.agents[params.agent_id] = CustomAgent(init_config)
                 logger.info(
@@ -388,6 +390,7 @@ class AgentOrchestrator:
                     agent_id=params.agent_id,
                     template_name=params.template_config.name,
                     model=params.template_config.model or params.model,
+                    user_id=params.user_id,
                     workspace=str(workspace_path),
                     mcp_tools=mcp_lifecycle.get_tool_count() if mcp_lifecycle else 0,
                 )

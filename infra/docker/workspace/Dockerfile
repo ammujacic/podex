@@ -5,10 +5,11 @@ FROM ubuntu:22.04
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Create dev user
+# Create dev user with sudo access
 RUN useradd -m -s /bin/bash -u 1000 dev && \
     mkdir -p /home/dev && \
-    chown -R dev:dev /home/dev
+    chown -R dev:dev /home/dev && \
+    echo "dev ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Install base dependencies and add deadsnakes PPA for Python 3.12
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -23,10 +24,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     unzip \
     zip \
+    sudo \
     ca-certificates \
     gnupg \
     lsb-release \
     software-properties-common \
+    # Terminal multiplexer for session persistence
+    tmux \
     # Build essentials
     build-essential \
     pkg-config \
@@ -118,6 +122,10 @@ USER dev
 # Create common directories
 RUN mkdir -p /home/dev/.cache /home/dev/.local /home/dev/projects
 
+# Configure npm to use user-local directory for global packages (avoids permission issues)
+RUN mkdir -p /home/dev/.npm-global && \
+    npm config set prefix '/home/dev/.npm-global'
+
 # Set environment variables
 ENV HOME=/home/dev
 ENV USER=dev
@@ -125,9 +133,11 @@ ENV SHELL=/bin/bash
 ENV TERM=xterm-256color
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
+ENV PATH="/home/dev/.npm-global/bin:${PATH}"
 
 # Default shell configuration
 RUN echo 'export PS1="\[\033[01;32m\]\u@podex\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ "' >> ~/.bashrc && \
+    echo 'export PATH="/home/dev/.npm-global/bin:$PATH"' >> ~/.bashrc && \
     echo 'alias ll="ls -la"' >> ~/.bashrc && \
     echo 'alias la="ls -A"' >> ~/.bashrc && \
     echo 'alias l="ls -CF"' >> ~/.bashrc

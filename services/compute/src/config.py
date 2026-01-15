@@ -47,17 +47,19 @@ class Settings(BaseSettings):
     aws_endpoint: str | None = None  # For LocalStack
 
     # ECS cluster and task definitions
-    ecs_cluster_name: str = "podex-workspaces"
-    ecs_task_definition: str = "podex-workspace"  # Fargate x86_64 task definition
-    ecs_arm_task_definition: str = "podex-workspace-arm"  # Fargate ARM64 (Graviton) task definition
+    # Names must match CDK-created task definition families: podex-workspace-{type}-{env}
+    # These are overridden by COMPUTE_ECS_* env vars in production
+    ecs_cluster_name: str = "podex-dev"
+    ecs_task_definition: str = "podex-workspace-x86-dev"  # Fargate x86_64 task definition
+    ecs_arm_task_definition: str = "podex-workspace-dev"  # Fargate ARM64 (Graviton) - default
     ecs_gpu_task_definition: str = (
-        "podex-workspace-gpu"  # EC2 x86 GPU task definition (NVIDIA T4/A10G/A100)
+        "podex-workspace-gpu-dev"  # EC2 x86 GPU task definition (NVIDIA T4/A10G/A100)
     )
     ecs_arm_gpu_task_definition: str = (
-        "podex-workspace-arm-gpu"  # EC2 ARM GPU task definition (Graviton2 + T4G)
+        "podex-workspace-arm-gpu-dev"  # EC2 ARM GPU task definition (Graviton2 + T4G)
     )
     ecs_ml_accelerator_task_definition: str = (
-        "podex-workspace-ml"  # EC2 ML accelerator (Inferentia/Trainium)
+        "podex-workspace-ml-dev"  # EC2 ML accelerator (Inferentia/Trainium)
     )
     ecs_subnets: list[str] = []
     ecs_security_groups: list[str] = []
@@ -83,14 +85,16 @@ class Settings(BaseSettings):
     s3_sync_interval: int = 30  # Seconds between background syncs
 
     # Workspace tiers (vCPU, memory in MB)
-    tier_starter_cpu: int = 2
-    tier_starter_memory: int = 4096
-    tier_pro_cpu: int = 4
-    tier_pro_memory: int = 8192
-    tier_power_cpu: int = 8
-    tier_power_memory: int = 16384
-    tier_enterprise_cpu: int = 16
-    tier_enterprise_memory: int = 32768
+    # ALPHA: All tiers use minimum resources - scale up when needed
+    # These are overridden by COMPUTE_TIER_* env vars in production
+    tier_starter_cpu: int = 1
+    tier_starter_memory: int = 512
+    tier_pro_cpu: int = 1
+    tier_pro_memory: int = 512
+    tier_power_cpu: int = 1
+    tier_power_memory: int = 512
+    tier_enterprise_cpu: int = 1
+    tier_enterprise_memory: int = 512
 
     # Sentry (reads from SENTRY_ env vars, not COMPUTE_)
     sentry_dsn: str | None = Field(default=None, validation_alias="SENTRY_DSN")

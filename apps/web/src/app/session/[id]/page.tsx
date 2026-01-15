@@ -21,6 +21,7 @@ import {
   getSession,
   listAgents,
   getAgentMessages,
+  createAgent,
   type Session,
   type AgentResponse,
 } from '@/lib/api';
@@ -147,9 +148,27 @@ export default function SessionPage() {
 
         setSession(data);
 
+        // Create a default Chat agent if no agents exist (needed for onboarding)
+        let agents = agentsData;
+        if (agents.length === 0) {
+          try {
+            const defaultAgent = await createAgent(sessionId, {
+              name: 'Chat',
+              role: 'chat',
+              model: 'claude-sonnet-4-20250514',
+            });
+            agents = [defaultAgent];
+          } catch {
+            // If agent creation fails, continue without default agent
+            console.warn('Failed to create default Chat agent');
+          }
+        }
+
+        if (isCancelled) return;
+
         // Fetch messages for each agent
         const agentsWithMessages: Agent[] = await Promise.all(
-          agentsData.map(async (agentResponse: AgentResponse, index: number) => {
+          agents.map(async (agentResponse: AgentResponse, index: number) => {
             try {
               const messagesData = await getAgentMessages(sessionId, agentResponse.id);
               const messages: AgentMessage[] = messagesData.map((msg) => ({

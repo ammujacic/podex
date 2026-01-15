@@ -218,6 +218,13 @@ class Agent(Base):
         UUID(as_uuid=False),
         ForeignKey("agent_templates.id", ondelete="SET NULL"),
     )
+    # Agent kind: podex_native, terminal_external
+    kind: Mapped[str] = mapped_column(String(20), default="podex_native", nullable=False)
+    # Reference to terminal-integrated agent type (for terminal_external agents)
+    terminal_agent_type_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("terminal_integrated_agent_types.id", ondelete="SET NULL"),
+    )
     # Voice configuration for TTS (tts_enabled, auto_play, voice_id, speed, language)
     voice_config: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     # Context window tracking
@@ -245,6 +252,9 @@ class Agent(Base):
     template: Mapped["AgentTemplate | None"] = relationship(
         "AgentTemplate",
         back_populates="agents",
+    )
+    terminal_agent_type: Mapped["TerminalIntegratedAgentType | None"] = relationship(
+        "TerminalIntegratedAgentType",
     )
     pending_approvals: Mapped[list["AgentPendingApproval"]] = relationship(
         "AgentPendingApproval",
@@ -2062,3 +2072,155 @@ class AgentWorktree(Base):
         nullable=False,
     )
     merged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TerminalIntegratedAgentType(Base):
+    """Admin-configurable terminal-integrated agent types."""
+
+    __tablename__ = "terminal_integrated_agent_types"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    logo_url: Mapped[str | None] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
+
+    # Command definitions (stored as JSON arrays of strings)
+    check_installed_command: Mapped[list[str] | None] = mapped_column(JSONB)
+    version_command: Mapped[list[str] | None] = mapped_column(JSONB)
+    install_command: Mapped[list[str] | None] = mapped_column(JSONB)
+    update_command: Mapped[list[str] | None] = mapped_column(JSONB)
+    run_command: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+
+    # Optional suggested environment variables (keys only)
+    default_env_template: Mapped[dict[str, str] | None] = mapped_column(JSONB)
+
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_by_admin_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="SET NULL"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    # Relationships
+    created_by_admin: Mapped["User | None"] = relationship("User")
+    sessions: Mapped[list["TerminalAgentSession"]] = relationship(
+        "TerminalAgentSession",
+        back_populates="agent_type",
+        cascade="all, delete-orphan",
+    )
+    env_profiles: Mapped[list["ExternalAgentEnvProfile"]] = relationship(
+        "ExternalAgentEnvProfile",
+        back_populates="agent_type",
+        cascade="all, delete-orphan",
+    )
+
+
+class TerminalAgentSession(Base):
+    """Active terminal-integrated agent sessions."""
+
+    __tablename__ = "terminal_agent_sessions"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(255),  # Compute service workspace ID
+        nullable=False,
+        index=True,
+    )
+    agent_type_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("terminal_integrated_agent_types.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    env_profile_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("external_agent_env_profiles.id", ondelete="SET NULL"),
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), default="starting", nullable=False
+    )  # starting, running, installing, exited, error
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    last_heartbeat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    # Relationships
+    user: Mapped["User"] = relationship("User")
+    agent_type: Mapped["TerminalIntegratedAgentType"] = relationship(
+        "TerminalIntegratedAgentType",
+        back_populates="sessions",
+    )
+    env_profile: Mapped["ExternalAgentEnvProfile | None"] = relationship(
+        "ExternalAgentEnvProfile",
+        back_populates="sessions",
+    )
+
+
+class ExternalAgentEnvProfile(Base):
+    """User-managed environment profiles for external agents."""
+
+    __tablename__ = "external_agent_env_profiles"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
+    user_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+    )
+    # org_id reserved for future organization support (no FK until organizations table exists)
+    org_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    agent_type_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("terminal_integrated_agent_types.id", ondelete="CASCADE"),
+    )
+    # Encrypted environment variables as JSON
+    env_vars: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    # Relationships
+    user: Mapped["User | None"] = relationship("User")
+    agent_type: Mapped["TerminalIntegratedAgentType | None"] = relationship(
+        "TerminalIntegratedAgentType",
+        back_populates="env_profiles",
+    )
+    sessions: Mapped[list["TerminalAgentSession"]] = relationship(
+        "TerminalAgentSession",
+        back_populates="env_profile",
+    )

@@ -579,8 +579,10 @@ class DockerComputeManager(ComputeManager):
                 # Calculate duration since last billing
                 duration = (now - last_billing).total_seconds()
 
-                # Only track if at least 30 seconds have passed (avoid too frequent tracking)
-                if duration >= 30:  # noqa: PLR2004
+                # Only track if at least 10 minutes have passed to avoid too many small entries
+                # This also helps with cost precision since per-minute billing at low rates
+                # results in sub-cent costs that round to $0
+                if duration >= 600:  # noqa: PLR2004
                     duration_seconds = int(duration)
 
                     # Track the usage
@@ -642,6 +644,11 @@ class DockerComputeManager(ComputeManager):
     async def get_workspace(self, workspace_id: str) -> WorkspaceInfo | None:
         """Get workspace information."""
         workspace = self._workspaces.get(workspace_id)
+
+        # If not in registry, try to find container directly and re-register
+        if not workspace:
+            workspace = await self._discover_workspace_by_id(workspace_id)
+
         if not workspace:
             return None
 
@@ -660,6 +667,86 @@ class DockerComputeManager(ComputeManager):
                 workspace.status = WorkspaceStatus.ERROR
 
         return workspace
+
+    async def _discover_workspace_by_id(self, workspace_id: str) -> WorkspaceInfo | None:
+        """Try to find and re-register a workspace container by ID.
+
+        This handles cases where the compute service was restarted but the
+        container is still running.
+        """
+        try:
+            container_name = f"podex-workspace-{workspace_id}"
+            container = await asyncio.to_thread(
+                self.client.containers.get,
+                container_name,
+            )
+
+            # Get labels
+            labels = container.labels
+            user_id = labels.get("podex.user_id")
+            session_id = labels.get("podex.session_id")
+            tier_str = labels.get("podex.tier", "starter")
+
+            if not user_id or not session_id:
+                logger.warning(
+                    "Container missing required labels, cannot re-register",
+                    workspace_id=workspace_id,
+                )
+                return None
+
+            # Parse tier
+            try:
+                tier = WorkspaceTier(tier_str)
+            except ValueError:
+                tier = WorkspaceTier.STARTER
+
+            # Get container IP
+            container.reload()
+            container_ip = self._get_container_ip(container)
+
+            # Create workspace info
+            now = datetime.now(UTC)
+            workspace_info = WorkspaceInfo(
+                id=workspace_id,
+                user_id=user_id,
+                session_id=session_id,
+                status=WorkspaceStatus.RUNNING
+                if container.status == "running"
+                else WorkspaceStatus.STOPPED,
+                tier=tier,
+                host=container_ip or container.name or "localhost",
+                port=3000,
+                container_id=container.id or "",
+                repos=[],
+                created_at=now,
+                last_activity=now,
+                metadata={
+                    "container_name": container.name or "",
+                    "last_billing_timestamp": now.isoformat(),
+                    "rediscovered": True,
+                },
+            )
+
+            # Re-register in memory
+            self._workspaces[workspace_id] = workspace_info
+
+            logger.info(
+                "Re-discovered workspace container on-demand",
+                workspace_id=workspace_id,
+                container_id=container.id[:12] if container.id else "unknown",
+            )
+
+            return workspace_info
+
+        except NotFound:
+            return None
+        except Exception as e:
+            logger.warning(
+                "Failed to discover workspace container",
+                workspace_id=workspace_id,
+                error=str(e),
+            )
+            return None
 
     async def list_workspaces(
         self,
@@ -684,7 +771,8 @@ class DockerComputeManager(ComputeManager):
         timeout: int = 30,  # noqa: ARG002
     ) -> WorkspaceExecResponse:
         """Execute a command in the workspace container."""
-        workspace = self._workspaces.get(workspace_id)
+        # Use get_workspace which handles on-demand discovery of containers
+        workspace = await self.get_workspace(workspace_id)
         if not workspace or not workspace.container_id:
             msg = f"Workspace {workspace_id} not found"
             raise ValueError(msg)

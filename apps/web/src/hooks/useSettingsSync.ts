@@ -32,9 +32,7 @@ export function useSettingsSync() {
       loadVoiceSettings().catch((err) => console.error('Failed to load voice settings:', err)),
       loadAgentSettings().catch((err) => console.error('Failed to load agent settings:', err)),
       loadUIPreferences().catch((err) => console.error('Failed to load UI preferences:', err)),
-    ]).then(() => {
-      console.warn('✅ All user settings loaded from server');
-    });
+    ]);
   }, [
     isAuthenticated,
     loadKeybindings,

@@ -83,20 +83,39 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 
     def _validate_origin(self, request: Request, request_origin: str | None) -> Response | None:
         """Validate the request origin. Returns error response if invalid, None if valid."""
-        # No origin but has Authorization header - allow (non-browser API clients)
+        # No origin header - need additional verification for non-browser clients
         if not request_origin:
-            if request.headers.get("Authorization"):
+            # For non-browser API clients without Origin header, require BOTH:
+            # 1. Authorization header (will be validated later by auth middleware)
+            # 2. X-Requested-With header set to "XMLHttpRequest" or similar
+            #    (this header cannot be set by HTML forms, providing CSRF protection)
+            has_auth = request.headers.get("Authorization")
+            has_xhr_header = request.headers.get("X-Requested-With")
+
+            if has_auth and has_xhr_header:
+                # Non-browser client with proper headers
+                return None
+
+            # Also allow if Content-Type is application/json (can't be set by forms)
+            content_type = request.headers.get("Content-Type", "")
+            if has_auth and "application/json" in content_type:
                 return None
 
             logger.warning(
-                "CSRF: No Origin header for state-changing request",
+                "CSRF: No Origin header and missing required headers",
                 method=request.method,
                 path=request.url.path,
+                has_auth=bool(has_auth),
+                has_xhr=bool(has_xhr_header),
+                content_type=content_type,
                 client_ip=request.client.host if request.client else "unknown",
             )
             return JSONResponse(
                 status_code=403,
-                content={"detail": "Missing Origin header"},
+                content={
+                    "detail": "Missing Origin header. API clients must include "
+                    "X-Requested-With header or use application/json content type."
+                },
             )
 
         # Validate origin against allowed origins

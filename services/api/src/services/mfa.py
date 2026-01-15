@@ -11,6 +11,8 @@ import pyotp
 import qrcode
 import structlog
 
+from src.crypto import decrypt_if_needed, encrypt_string
+
 logger = structlog.get_logger()
 
 # Number of backup codes to generate
@@ -23,7 +25,8 @@ TOTP_CODE_LENGTH = 6
 class MFASetupResult:
     """Result of MFA setup initialization."""
 
-    secret: str
+    secret: str  # Plaintext secret (for QR code display, not stored)
+    encrypted_secret: str  # Encrypted secret for database storage
     qr_code_base64: str
     provisioning_uri: str
     backup_codes: list[str]
@@ -47,6 +50,30 @@ class MFAService:
     def __init__(self) -> None:
         """Initialize the MFA service."""
         self._issuer = self._ISSUER
+
+    def encrypt_secret(self, secret: str) -> str:
+        """Encrypt an MFA secret for storage.
+
+        Args:
+            secret: Plaintext TOTP secret.
+
+        Returns:
+            Encrypted secret for database storage.
+        """
+        return encrypt_string(secret)
+
+    def decrypt_secret(self, encrypted_secret: str) -> str:
+        """Decrypt an MFA secret from storage.
+
+        Handles both encrypted and legacy plaintext secrets.
+
+        Args:
+            encrypted_secret: Encrypted (or plaintext) TOTP secret from DB.
+
+        Returns:
+            Plaintext TOTP secret.
+        """
+        return decrypt_if_needed(encrypted_secret)
 
     def generate_secret(self) -> str:
         """Generate a new TOTP secret.
@@ -128,15 +155,17 @@ class MFAService:
             email: User's email address.
 
         Returns:
-            MFASetupResult with secret, QR code, and backup codes.
+            MFASetupResult with secret, encrypted_secret, QR code, and backup codes.
         """
         secret = self.generate_secret()
+        encrypted_secret = self.encrypt_secret(secret)
         provisioning_uri = self.generate_provisioning_uri(secret, email)
         qr_code = self.generate_qr_code(provisioning_uri)
         backup_codes = self.generate_backup_codes()
 
         return MFASetupResult(
             secret=secret,
+            encrypted_secret=encrypted_secret,
             qr_code_base64=qr_code,
             provisioning_uri=provisioning_uri,
             backup_codes=backup_codes,

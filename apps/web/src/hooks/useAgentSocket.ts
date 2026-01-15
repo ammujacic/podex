@@ -68,17 +68,46 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
 
       // Check if message already exists (avoid duplicates from optimistic updates)
       const session = useSessionStore.getState().sessions[sessionId];
-      const agent = session?.agents.find((a) => a.id === data.agent_id);
+
+      // Guard against missing session - may happen during initial load
+      if (!session) {
+        // Session not yet loaded, still add the message as the store will handle missing session
+        const message: AgentMessage = {
+          id: data.id,
+          role: data.role,
+          content: data.content,
+          timestamp: new Date(data.created_at),
+          toolCalls: data.tool_calls || undefined,
+        };
+        addAgentMessageRef.current(sessionId, data.agent_id, message);
+        return;
+      }
+
+      const agent = session.agents.find((a) => a.id === data.agent_id);
+
+      // Guard against missing agent - may happen if agent was just created
+      if (!agent) {
+        // Agent not found in store yet, add message anyway
+        const message: AgentMessage = {
+          id: data.id,
+          role: data.role,
+          content: data.content,
+          timestamp: new Date(data.created_at),
+          toolCalls: data.tool_calls || undefined,
+        };
+        addAgentMessageRef.current(sessionId, data.agent_id, message);
+        return;
+      }
 
       // Check by ID first
-      const existingById = agent?.messages.find((m) => m.id === data.id);
+      const existingById = agent.messages.find((m) => m.id === data.id);
       if (existingById) {
         return; // Skip duplicate
       }
 
       // For user messages, also check by content (optimistic messages have temp-xxx IDs)
       if (data.role === 'user') {
-        const existingByContent = agent?.messages.find(
+        const existingByContent = agent.messages.find(
           (m) => m.role === 'user' && m.content === data.content && m.id.startsWith('temp-')
         );
         if (existingByContent) {
@@ -94,7 +123,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       // For assistant messages, check by content (streaming messages might have different IDs)
       // This fixes the "Message not found" error when trying to play audio
       if (data.role === 'assistant') {
-        const existingByContent = agent?.messages.find(
+        const existingByContent = agent.messages.find(
           (m) => m.role === 'assistant' && m.content === data.content && m.id !== data.id
         );
         if (existingByContent) {

@@ -266,22 +266,16 @@ class AWSComputeManager(ComputeManager):
 
         Returns CPU units, memory, and GPU requirements based on the tier.
         For GPU tiers, also includes the GPU resource requirements for ECS.
-        """
-        # Try to get from hardware specs first
-        spec = HARDWARE_SPECS.get(tier)
-        if spec:
-            config: dict[str, Any] = {
-                "cpu": str(spec.vcpu * 1024),  # ECS uses CPU units (1024 = 1 vCPU)
-                "memory": str(spec.memory_mb),
-            }
-            # Add GPU requirements for GPU tiers
-            if spec.gpu_type != GPUType.NONE:
-                config["gpu_count"] = 1  # Can be extended for multi-GPU
-                config["gpu_type"] = spec.gpu_type
-            return config
 
-        # Fallback to settings-based configs for backward compatibility
-        configs = {
+        Resource resolution priority:
+        1. Environment-based settings (COMPUTE_TIER_*) - allows runtime override for alpha/scaling
+        2. HARDWARE_SPECS - product tier definitions with full specs
+        3. Default fallback - starter tier minimums
+        """
+        # Settings-based configs - these override HARDWARE_SPECS for CPU-only tiers
+        # This allows us to run with minimal resources during alpha while HARDWARE_SPECS
+        # defines the "product" tier specifications for pricing and display
+        tier_settings = {
             WorkspaceTier.STARTER: {
                 "cpu": str(settings.tier_starter_cpu * 1024),
                 "memory": str(settings.tier_starter_memory),
@@ -299,7 +293,27 @@ class AWSComputeManager(ComputeManager):
                 "memory": str(settings.tier_enterprise_memory),
             },
         }
-        return configs.get(tier, configs[WorkspaceTier.STARTER])
+
+        # For standard CPU tiers, use settings-based config (allows alpha overrides)
+        if tier in tier_settings:
+            return tier_settings[tier]
+
+        # For GPU, ARM, and ML accelerator tiers, use HARDWARE_SPECS
+        # These tiers have fixed EC2 instance requirements and can't be arbitrarily sized
+        spec = HARDWARE_SPECS.get(tier)
+        if spec:
+            config: dict[str, Any] = {
+                "cpu": str(spec.vcpu * 1024),  # ECS uses CPU units (1024 = 1 vCPU)
+                "memory": str(spec.memory_mb),
+            }
+            # Add GPU requirements for GPU tiers
+            if spec.gpu_type != GPUType.NONE:
+                config["gpu_count"] = 1  # Can be extended for multi-GPU
+                config["gpu_type"] = spec.gpu_type
+            return config
+
+        # Default fallback - use starter tier minimums
+        return tier_settings[WorkspaceTier.STARTER]
 
     async def create_workspace(  # noqa: PLR0915
         self,
@@ -593,8 +607,10 @@ class AWSComputeManager(ComputeManager):
                 # Calculate duration since last billing
                 duration = (now - last_billing).total_seconds()
 
-                # Only track if at least 30 seconds have passed (avoid too frequent tracking)
-                if duration >= 30:  # noqa: PLR2004
+                # Only track if at least 10 minutes have passed to avoid too many small entries
+                # This also helps with cost precision since per-minute billing at low rates
+                # results in sub-cent costs that round to $0
+                if duration >= 600:  # noqa: PLR2004
                     duration_seconds = int(duration)
 
                     # Track the usage

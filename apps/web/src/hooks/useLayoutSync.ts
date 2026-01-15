@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback, useRef, useMemo } from 'react';
 import { useSessionStore, type GridSpan, type AgentPosition } from '@/stores/session';
 import { useAuthStore } from '@/stores/auth';
 import {
@@ -304,24 +304,50 @@ export function useLayoutSync({ sessionId, enabled = true }: UseLayoutSyncOption
     [saveLayout, emitChange]
   );
 
+  // Keep a ref to the current sessionId so debounced functions can access it
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
+
+  // Debounced API calls for resize operations (300ms delay)
+  const debouncedApiUpdateAgentLayout = useMemo(
+    () =>
+      debounce((agentId: string, data: Parameters<typeof apiUpdateAgentLayout>[2]) => {
+        apiUpdateAgentLayout(sessionIdRef.current, agentId, data).catch(console.error);
+      }, 300),
+    []
+  );
+
+  const debouncedApiUpdateFilePreviewLayout = useMemo(
+    () =>
+      debounce(
+        (previewId: string, payload: Partial<FilePreviewLayoutState> & Record<string, unknown>) => {
+          apiUpdateFilePreviewLayout(sessionIdRef.current, previewId, payload).catch(console.error);
+        },
+        300
+      ),
+    []
+  );
+
   const syncAgentGridSpan = useCallback(
     (agentId: string, gridSpan: GridSpan) => {
       if (isApplyingRemote.current) return;
       const apiSpan = toApiGridSpan(gridSpan);
-      apiUpdateAgentLayout(sessionId, agentId, { grid_span: apiSpan }).catch(console.error);
+      // Use debounced API call to prevent rate limiting during resize
+      debouncedApiUpdateAgentLayout(agentId, { grid_span: apiSpan });
       emitChange('agent_layout', { agent_id: agentId, grid_span: apiSpan });
     },
-    [sessionId, emitChange]
+    [emitChange, debouncedApiUpdateAgentLayout]
   );
 
   const syncAgentPosition = useCallback(
     (agentId: string, position: AgentPosition) => {
       if (isApplyingRemote.current) return;
       const apiPos = toApiPosition(position);
-      apiUpdateAgentLayout(sessionId, agentId, { position: apiPos }).catch(console.error);
+      // Use debounced API call to prevent rate limiting during drag
+      debouncedApiUpdateAgentLayout(agentId, { position: apiPos });
       emitChange('agent_layout', { agent_id: agentId, position: apiPos });
     },
-    [sessionId, emitChange]
+    [emitChange, debouncedApiUpdateAgentLayout]
   );
 
   const syncFilePreviewLayout = useCallback(
@@ -345,10 +371,11 @@ export function useLayoutSync({ sessionId, enabled = true }: UseLayoutSyncOption
       if (updates.path) {
         payload.path = updates.path;
       }
-      apiUpdateFilePreviewLayout(sessionId, previewId, payload).catch(console.error);
+      // Use debounced API call to prevent rate limiting during resize
+      debouncedApiUpdateFilePreviewLayout(previewId, payload);
       emitChange('file_preview_layout', payload);
     },
-    [sessionId, emitChange]
+    [emitChange, debouncedApiUpdateFilePreviewLayout]
   );
 
   return {

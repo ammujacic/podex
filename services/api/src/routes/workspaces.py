@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.database.connection import get_db
-from src.database.models import PodTemplate, Session, Workspace
+from src.database.models import PodTemplate, Session, SessionShare, Workspace
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, RATE_LIMIT_UPLOAD, limiter
 from src.storage.s3 import S3Storage, get_storage
 
@@ -29,6 +29,10 @@ async def verify_workspace_access(
     db: AsyncSession,
 ) -> Workspace:
     """Verify user has access to the workspace.
+
+    Access is granted if the user:
+    1. Owns the session associated with the workspace, OR
+    2. Has been shared access via SessionShare
 
     Args:
         workspace_id: The workspace ID to check.
@@ -56,14 +60,28 @@ async def verify_workspace_access(
     session_result = await db.execute(select(Session).where(Session.workspace_id == workspace_id))
     session = session_result.scalar_one_or_none()
 
-    if session and session.owner_id != user_id:
-        raise HTTPException(status_code=403, detail="Not authorized to access this workspace")
-
     # If no session is linked, this is an orphaned workspace - deny access
     if not session:
         raise HTTPException(status_code=403, detail="Workspace has no associated session")
 
-    return workspace
+    # Owner always has access
+    if session.owner_id == user_id:
+        return workspace
+
+    # Check if user has been shared access to this session
+    share_result = await db.execute(
+        select(SessionShare)
+        .where(SessionShare.session_id == session.id)
+        .where(SessionShare.shared_with_id == user_id)
+    )
+    share = share_result.scalar_one_or_none()
+
+    if share:
+        # User has shared access
+        return workspace
+
+    # No access - not owner and not shared
+    raise HTTPException(status_code=403, detail="Not authorized to access this workspace")
 
 
 class WorkspaceResponse(BaseModel):

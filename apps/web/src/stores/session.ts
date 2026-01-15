@@ -1,4 +1,4 @@
-import { create } from 'zustand';
+import { create, type StateCreator } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 
 export interface AgentPosition {
@@ -39,6 +39,8 @@ export interface Agent {
   position?: AgentPosition;
   gridSpan?: GridSpan;
   templateId?: string; // Reference to custom agent template
+  terminalSessionId?: string; // For terminal-integrated agents
+  terminalAgentTypeId?: string; // The type ID of the terminal agent (for restarts)
   // Agent mode and command permissions
   mode: AgentMode;
   previousMode?: AgentMode; // For auto-revert tracking when mode is auto-switched
@@ -217,524 +219,526 @@ const MAX_MESSAGES_PER_AGENT = 100;
 // Maximum number of recent files to keep
 const MAX_RECENT_FILES = 50;
 
-export const useSessionStore = create<SessionState>()(
-  devtools(
-    persist(
-      (set, get) => ({
-        sessions: {},
-        currentSessionId: null,
-        recentFiles: [],
-        streamingMessages: {},
+const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
+  sessions: {},
+  currentSessionId: null,
+  recentFiles: [],
+  streamingMessages: {},
 
-        createSession: (session) =>
-          set((state) => ({
-            sessions: { ...state.sessions, [session.id]: session },
-            currentSessionId: session.id,
-          })),
+  createSession: (session) =>
+    set((state) => ({
+      sessions: { ...state.sessions, [session.id]: session },
+      currentSessionId: session.id,
+    })),
 
-        deleteSession: (sessionId) =>
-          set((state) => {
-            const { [sessionId]: _deleted, ...remaining } = state.sessions;
-            return {
-              sessions: remaining,
-              currentSessionId:
-                state.currentSessionId === sessionId ? null : state.currentSessionId,
-            };
-          }),
+  deleteSession: (sessionId) =>
+    set((state) => {
+      const { [sessionId]: _deleted, ...remaining } = state.sessions;
+      return {
+        sessions: remaining,
+        currentSessionId: state.currentSessionId === sessionId ? null : state.currentSessionId,
+      };
+    }),
 
-        setCurrentSession: (sessionId) => set({ currentSessionId: sessionId }),
+  setCurrentSession: (sessionId) => set({ currentSessionId: sessionId }),
 
-        addAgent: (sessionId, agent) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...session,
-                  agents: [...session.agents, agent],
-                },
-              },
-            };
-          }),
+  addAgent: (sessionId, agent) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            agents: [...session.agents, agent],
+          },
+        },
+      };
+    }),
 
-        removeAgent: (sessionId, agentId) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...session,
-                  agents: session.agents.filter((a) => a.id !== agentId),
-                  activeAgentId: session.activeAgentId === agentId ? null : session.activeAgentId,
-                },
-              },
-            };
-          }),
+  removeAgent: (sessionId, agentId) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            agents: session.agents.filter((a) => a.id !== agentId),
+            activeAgentId: session.activeAgentId === agentId ? null : session.activeAgentId,
+          },
+        },
+      };
+    }),
 
-        updateAgent: (sessionId, agentId, updates) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...session,
-                  agents: session.agents.map((a) => (a.id === agentId ? { ...a, ...updates } : a)),
-                },
-              },
-            };
-          }),
+  updateAgent: (sessionId, agentId, updates) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            agents: session.agents.map((a) => (a.id === agentId ? { ...a, ...updates } : a)),
+          },
+        },
+      };
+    }),
 
-        setActiveAgent: (sessionId, agentId) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: { ...session, activeAgentId: agentId },
-              },
-            };
-          }),
+  setActiveAgent: (sessionId, agentId) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: { ...session, activeAgentId: agentId },
+        },
+      };
+    }),
 
-        addAgentMessage: (sessionId, agentId, message) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...session,
-                  agents: session.agents.map((a) => {
-                    if (a.id !== agentId) return a;
-                    // Add message and enforce limit to prevent localStorage overflow
-                    const newMessages = [...a.messages, message];
-                    const limitedMessages =
-                      newMessages.length > MAX_MESSAGES_PER_AGENT
-                        ? newMessages.slice(-MAX_MESSAGES_PER_AGENT)
-                        : newMessages;
-                    return { ...a, messages: limitedMessages };
-                  }),
-                },
-              },
-            };
-          }),
+  addAgentMessage: (sessionId, agentId, message) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            agents: session.agents.map((a) => {
+              if (a.id !== agentId) return a;
+              // Add message and enforce limit to prevent localStorage overflow
+              const newMessages = [...a.messages, message];
+              const limitedMessages =
+                newMessages.length > MAX_MESSAGES_PER_AGENT
+                  ? newMessages.slice(-MAX_MESSAGES_PER_AGENT)
+                  : newMessages;
+              return { ...a, messages: limitedMessages };
+            }),
+          },
+        },
+      };
+    }),
 
-        deleteAgentMessage: (sessionId, agentId, messageId) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...session,
-                  agents: session.agents.map((a) => {
-                    if (a.id !== agentId) return a;
-                    return {
-                      ...a,
-                      messages: a.messages.filter((m) => m.id !== messageId),
-                    };
-                  }),
-                },
-              },
-            };
-          }),
+  deleteAgentMessage: (sessionId, agentId, messageId) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            agents: session.agents.map((a) => {
+              if (a.id !== agentId) return a;
+              return {
+                ...a,
+                messages: a.messages.filter((m) => m.id !== messageId),
+              };
+            }),
+          },
+        },
+      };
+    }),
 
-        updateMessageId: (sessionId, agentId, oldId, newId) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...session,
-                  agents: session.agents.map((a) => {
-                    if (a.id !== agentId) return a;
-                    return {
-                      ...a,
-                      messages: a.messages.map((m) => (m.id === oldId ? { ...m, id: newId } : m)),
-                    };
-                  }),
-                },
-              },
-            };
-          }),
+  updateMessageId: (sessionId, agentId, oldId, newId) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            agents: session.agents.map((a) => {
+              if (a.id !== agentId) return a;
+              return {
+                ...a,
+                messages: a.messages.map((m) => (m.id === oldId ? { ...m, id: newId } : m)),
+              };
+            }),
+          },
+        },
+      };
+    }),
 
-        updateAgentPosition: (sessionId, agentId, position) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...session,
-                  agents: session.agents.map((a) =>
-                    a.id === agentId
-                      ? { ...a, position: { ...a.position, ...position } as AgentPosition }
-                      : a
-                  ),
-                },
-              },
-            };
-          }),
+  updateAgentPosition: (sessionId, agentId, position) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            agents: session.agents.map((a) =>
+              a.id === agentId
+                ? { ...a, position: { ...a.position, ...position } as AgentPosition }
+                : a
+            ),
+          },
+        },
+      };
+    }),
 
-        updateAgentGridSpan: (sessionId, agentId, gridSpan) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...session,
-                  agents: session.agents.map((a) => (a.id === agentId ? { ...a, gridSpan } : a)),
-                },
-              },
-            };
-          }),
+  updateAgentGridSpan: (sessionId, agentId, gridSpan) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            agents: session.agents.map((a) => (a.id === agentId ? { ...a, gridSpan } : a)),
+          },
+        },
+      };
+    }),
 
-        bringAgentToFront: (sessionId, agentId) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            const maxZ = Math.max(...session.agents.map((a) => a.position?.zIndex ?? 0));
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...session,
-                  agents: session.agents.map((a) =>
-                    a.id === agentId
-                      ? { ...a, position: { ...a.position, zIndex: maxZ + 1 } as AgentPosition }
-                      : a
-                  ),
-                },
-              },
-            };
-          }),
+  bringAgentToFront: (sessionId, agentId) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      const maxZ = Math.max(...session.agents.map((a) => a.position?.zIndex ?? 0));
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            agents: session.agents.map((a) =>
+              a.id === agentId
+                ? { ...a, position: { ...a.position, zIndex: maxZ + 1 } as AgentPosition }
+                : a
+            ),
+          },
+        },
+      };
+    }),
 
-        openFilePreview: (sessionId, pathOrPreview) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
+  openFilePreview: (sessionId, pathOrPreview) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
 
-            // Handle string path or FilePreview object
-            const preview: FilePreview =
-              typeof pathOrPreview === 'string'
-                ? {
-                    id: `preview-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-                    path: pathOrPreview,
-                    content: '', // Content will be loaded separately
-                    language: getLanguageFromPath(pathOrPreview),
-                    pinned: false,
-                    position: { x: 100, y: 100 },
-                    docked: session.viewMode !== 'freeform',
-                  }
-                : pathOrPreview;
-
-            const existing = session.filePreviews.find((p) => p.path === preview.path);
-            if (existing) return state;
-
-            // Add to recent files
-            const newRecentFiles = [
-              preview.path,
-              ...state.recentFiles.filter((p) => p !== preview.path),
-            ].slice(0, 20); // Keep last 20
-
-            return {
-              recentFiles: newRecentFiles,
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...session,
-                  filePreviews: [...session.filePreviews, preview],
-                },
-              },
-            };
-          }),
-
-        closeFilePreview: (sessionId, previewId) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...session,
-                  filePreviews: session.filePreviews.filter((p) => p.id !== previewId),
-                },
-              },
-            };
-          }),
-
-        updateFilePreview: (sessionId, previewId, updates) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...session,
-                  filePreviews: session.filePreviews.map((p) =>
-                    p.id === previewId ? { ...p, ...updates } : p
-                  ),
-                },
-              },
-            };
-          }),
-
-        pinFilePreview: (sessionId, previewId, pinned) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...session,
-                  filePreviews: session.filePreviews.map((p) =>
-                    p.id === previewId ? { ...p, pinned } : p
-                  ),
-                },
-              },
-            };
-          }),
-
-        dockFilePreview: (sessionId, previewId, docked) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...session,
-                  filePreviews: session.filePreviews.map((p) =>
-                    p.id === previewId ? { ...p, docked } : p
-                  ),
-                },
-              },
-            };
-          }),
-
-        updateFilePreviewGridSpan: (sessionId, previewId, gridSpan) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...session,
-                  filePreviews: session.filePreviews.map((p) =>
-                    p.id === previewId ? { ...p, gridSpan } : p
-                  ),
-                },
-              },
-            };
-          }),
-
-        addRecentFile: (path) =>
-          set((state) => ({
-            recentFiles: [path, ...state.recentFiles.filter((p) => p !== path)].slice(0, 20),
-          })),
-
-        clearRecentFiles: () => set({ recentFiles: [] }),
-
-        setViewMode: (sessionId, mode) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: { ...session, viewMode: mode },
-              },
-            };
-          }),
-
-        setWorkspaceStatus: (sessionId, status, standbyAt = null) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...session,
-                  workspaceStatus: status,
-                  standbyAt: standbyAt ?? null,
-                },
-              },
-            };
-          }),
-
-        setStandbySettings: (sessionId, settings) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: { ...session, standbySettings: settings },
-              },
-            };
-          }),
-
-        handleAutoModeSwitch: (sessionId, agentId, newMode, previousMode) =>
-          set((state) => {
-            const session = state.sessions[sessionId];
-            if (!session) return state;
-            return {
-              sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                  ...session,
-                  agents: session.agents.map((a) =>
-                    a.id === agentId
-                      ? {
-                          ...a,
-                          mode: newMode,
-                          // Store previous mode for auto-revert, or clear it if this is a revert
-                          previousMode: previousMode ?? undefined,
-                        }
-                      : a
-                  ),
-                },
-              },
-            };
-          }),
-
-        // Streaming message actions
-        startStreamingMessage: (sessionId, agentId, messageId) =>
-          set((state) => ({
-            streamingMessages: {
-              ...state.streamingMessages,
-              [messageId]: {
-                messageId,
-                agentId,
-                sessionId,
-                content: '',
-                thinkingContent: '',
-                isStreaming: true,
-                startedAt: new Date(),
-              },
-            },
-          })),
-
-        appendStreamingToken: (messageId, token) =>
-          set((state) => {
-            const existing = state.streamingMessages[messageId];
-            if (!existing) return state;
-            return {
-              streamingMessages: {
-                ...state.streamingMessages,
-                [messageId]: {
-                  ...existing,
-                  content: existing.content + token,
-                },
-              },
-            };
-          }),
-
-        appendThinkingToken: (messageId, thinking) =>
-          set((state) => {
-            const existing = state.streamingMessages[messageId];
-            if (!existing) return state;
-            return {
-              streamingMessages: {
-                ...state.streamingMessages,
-                [messageId]: {
-                  ...existing,
-                  thinkingContent: existing.thinkingContent + thinking,
-                },
-              },
-            };
-          }),
-
-        finalizeStreamingMessage: (messageId, fullContent, toolCalls) =>
-          set((state) => {
-            const streaming = state.streamingMessages[messageId];
-            if (!streaming) return state;
-
-            // Remove from streaming messages
-            const { [messageId]: _removed, ...remainingStreaming } = state.streamingMessages;
-
-            // Add as a completed message to the agent
-            const session = state.sessions[streaming.sessionId];
-            if (!session) {
-              return { streamingMessages: remainingStreaming };
+      // Handle string path or FilePreview object
+      const preview: FilePreview =
+        typeof pathOrPreview === 'string'
+          ? {
+              id: `preview-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+              path: pathOrPreview,
+              content: '', // Content will be loaded separately
+              language: getLanguageFromPath(pathOrPreview),
+              pinned: false,
+              position: { x: 100, y: 100 },
+              docked: session.viewMode !== 'freeform',
             }
+          : pathOrPreview;
 
-            const newMessage: AgentMessage = {
-              id: messageId,
-              role: 'assistant',
-              content: fullContent,
-              thinking: streaming.thinkingContent || undefined, // Include thinking if present
-              timestamp: new Date(),
-              toolCalls: toolCalls, // Include tool calls from streaming
-            };
+      const existing = session.filePreviews.find((p) => p.path === preview.path);
+      if (existing) return state;
 
-            return {
-              streamingMessages: remainingStreaming,
-              sessions: {
-                ...state.sessions,
-                [streaming.sessionId]: {
-                  ...session,
-                  agents: session.agents.map((a) => {
-                    if (a.id !== streaming.agentId) return a;
-                    // Add message and enforce limit
-                    const newMessages = [...a.messages, newMessage];
-                    const limitedMessages =
-                      newMessages.length > MAX_MESSAGES_PER_AGENT
-                        ? newMessages.slice(-MAX_MESSAGES_PER_AGENT)
-                        : newMessages;
-                    return { ...a, messages: limitedMessages };
-                  }),
-                },
-              },
-            };
-          }),
+      // Add to recent files
+      const newRecentFiles = [
+        preview.path,
+        ...state.recentFiles.filter((p) => p !== preview.path),
+      ].slice(0, 20); // Keep last 20
 
-        getStreamingMessage: (messageId) => get().streamingMessages[messageId],
-      }),
-      {
-        name: 'podex-sessions',
-        partialize: (state) => ({
-          currentSessionId: state.currentSessionId,
-          // Limit persisted data to prevent localStorage overflow
-          sessions: Object.fromEntries(
-            Object.entries(state.sessions).map(([id, session]) => [
-              id,
-              {
-                ...session,
-                // Limit messages per agent for persistence
-                agents: session.agents.map((agent) => ({
-                  ...agent,
-                  messages: agent.messages.slice(-MAX_MESSAGES_PER_AGENT),
-                })),
-                // Limit file previews (don't persist content, just metadata)
-                filePreviews: session.filePreviews.slice(0, 20).map((fp) => ({
-                  ...fp,
-                  content: '', // Don't persist file content
-                })),
-              },
-            ])
-          ),
-          recentFiles: state.recentFiles.slice(0, MAX_RECENT_FILES),
-        }),
+      return {
+        recentFiles: newRecentFiles,
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            filePreviews: [...session.filePreviews, preview],
+          },
+        },
+      };
+    }),
+
+  closeFilePreview: (sessionId, previewId) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            filePreviews: session.filePreviews.filter((p) => p.id !== previewId),
+          },
+        },
+      };
+    }),
+
+  updateFilePreview: (sessionId, previewId, updates) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            filePreviews: session.filePreviews.map((p) =>
+              p.id === previewId ? { ...p, ...updates } : p
+            ),
+          },
+        },
+      };
+    }),
+
+  pinFilePreview: (sessionId, previewId, pinned) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            filePreviews: session.filePreviews.map((p) =>
+              p.id === previewId ? { ...p, pinned } : p
+            ),
+          },
+        },
+      };
+    }),
+
+  dockFilePreview: (sessionId, previewId, docked) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            filePreviews: session.filePreviews.map((p) =>
+              p.id === previewId ? { ...p, docked } : p
+            ),
+          },
+        },
+      };
+    }),
+
+  updateFilePreviewGridSpan: (sessionId, previewId, gridSpan) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            filePreviews: session.filePreviews.map((p) =>
+              p.id === previewId ? { ...p, gridSpan } : p
+            ),
+          },
+        },
+      };
+    }),
+
+  addRecentFile: (path) =>
+    set((state) => ({
+      recentFiles: [path, ...state.recentFiles.filter((p) => p !== path)].slice(0, 20),
+    })),
+
+  clearRecentFiles: () => set({ recentFiles: [] }),
+
+  setViewMode: (sessionId, mode) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: { ...session, viewMode: mode },
+        },
+      };
+    }),
+
+  setWorkspaceStatus: (sessionId, status, standbyAt = null) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            workspaceStatus: status,
+            standbyAt: standbyAt ?? null,
+          },
+        },
+      };
+    }),
+
+  setStandbySettings: (sessionId, settings) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: { ...session, standbySettings: settings },
+        },
+      };
+    }),
+
+  handleAutoModeSwitch: (sessionId, agentId, newMode, previousMode) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            agents: session.agents.map((a) =>
+              a.id === agentId
+                ? {
+                    ...a,
+                    mode: newMode,
+                    // Store previous mode for auto-revert, or clear it if this is a revert
+                    previousMode: previousMode ?? undefined,
+                  }
+                : a
+            ),
+          },
+        },
+      };
+    }),
+
+  // Streaming message actions
+  startStreamingMessage: (sessionId, agentId, messageId) =>
+    set((state) => ({
+      streamingMessages: {
+        ...state.streamingMessages,
+        [messageId]: {
+          messageId,
+          agentId,
+          sessionId,
+          content: '',
+          thinkingContent: '',
+          isStreaming: true,
+          startedAt: new Date(),
+        },
+      },
+    })),
+
+  appendStreamingToken: (messageId, token) =>
+    set((state) => {
+      const existing = state.streamingMessages[messageId];
+      if (!existing) return state;
+      return {
+        streamingMessages: {
+          ...state.streamingMessages,
+          [messageId]: {
+            ...existing,
+            content: existing.content + token,
+          },
+        },
+      };
+    }),
+
+  appendThinkingToken: (messageId, thinking) =>
+    set((state) => {
+      const existing = state.streamingMessages[messageId];
+      if (!existing) return state;
+      return {
+        streamingMessages: {
+          ...state.streamingMessages,
+          [messageId]: {
+            ...existing,
+            thinkingContent: existing.thinkingContent + thinking,
+          },
+        },
+      };
+    }),
+
+  finalizeStreamingMessage: (messageId, fullContent, toolCalls) =>
+    set((state) => {
+      const streaming = state.streamingMessages[messageId];
+      if (!streaming) return state;
+
+      // Remove from streaming messages
+      const { [messageId]: _removed, ...remainingStreaming } = state.streamingMessages;
+
+      // Add as a completed message to the agent
+      const session = state.sessions[streaming.sessionId];
+      if (!session) {
+        return { streamingMessages: remainingStreaming };
       }
-    )
-  )
+
+      const newMessage: AgentMessage = {
+        id: messageId,
+        role: 'assistant',
+        content: fullContent,
+        thinking: streaming.thinkingContent || undefined, // Include thinking if present
+        timestamp: new Date(),
+        toolCalls: toolCalls, // Include tool calls from streaming
+      };
+
+      return {
+        streamingMessages: remainingStreaming,
+        sessions: {
+          ...state.sessions,
+          [streaming.sessionId]: {
+            ...session,
+            agents: session.agents.map((a) => {
+              if (a.id !== streaming.agentId) return a;
+              // Add message and enforce limit
+              const newMessages = [...a.messages, newMessage];
+              const limitedMessages =
+                newMessages.length > MAX_MESSAGES_PER_AGENT
+                  ? newMessages.slice(-MAX_MESSAGES_PER_AGENT)
+                  : newMessages;
+              return { ...a, messages: limitedMessages };
+            }),
+          },
+        },
+      };
+    }),
+
+  getStreamingMessage: (messageId) => get().streamingMessages[messageId],
+});
+
+const persistedSessionStore = persist(sessionStoreCreator, {
+  name: 'podex-sessions',
+  partialize: (state) => ({
+    currentSessionId: state.currentSessionId,
+    // Limit persisted data to prevent localStorage overflow
+    sessions: Object.fromEntries(
+      Object.entries(state.sessions).map(([id, session]) => [
+        id,
+        {
+          ...session,
+          // Limit messages per agent for persistence
+          agents: session.agents.map((agent) => ({
+            ...agent,
+            messages: agent.messages.slice(-MAX_MESSAGES_PER_AGENT),
+          })),
+          // Limit file previews (don't persist content, just metadata)
+          filePreviews: session.filePreviews.slice(0, 20).map((fp) => ({
+            ...fp,
+            content: '', // Don't persist file content
+          })),
+        },
+      ])
+    ),
+    recentFiles: state.recentFiles.slice(0, MAX_RECENT_FILES),
+  }),
+});
+
+// Only enable devtools in development to prevent exposing message data in production
+export const useSessionStore = create<SessionState>()(
+  devtools(persistedSessionStore, {
+    name: 'podex-sessions',
+    enabled: process.env.NODE_ENV === 'development',
+  })
 );

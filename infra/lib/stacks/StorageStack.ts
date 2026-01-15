@@ -52,7 +52,17 @@ export class StorageStack extends cdk.Stack {
           allowedOrigins: config.isProd
             ? [`https://${config.domainName}`, `https://app.${config.domainName}`]
             : ['http://localhost:3000'],
-          allowedHeaders: ['*'],
+          allowedHeaders: [
+            'Authorization',
+            'Content-Type',
+            'Content-Length',
+            'Content-MD5',
+            'Cache-Control',
+            'X-Amz-Content-Sha256',
+            'X-Amz-Date',
+            'X-Amz-Security-Token',
+            'X-Amz-User-Agent',
+          ],
           exposedHeaders: ['ETag'],
         },
       ],

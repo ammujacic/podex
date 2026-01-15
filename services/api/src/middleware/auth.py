@@ -122,9 +122,25 @@ class AuthMiddleware(BaseHTTPMiddleware):
                             media_type="application/json",
                         )
 
+                    # Check if user account is active
+                    if not user.is_active:
+                        logger.warning(
+                            "Deactivated user attempted access",
+                            user_id=user_id,
+                        )
+                        return Response(
+                            content='{"detail": "Account deactivated. Please contact support."}',
+                            status_code=403,
+                            media_type="application/json",
+                        )
+
                     # Add user info to request state
                     request.state.user_id = user_id
-                    request.state.user_role = payload.get("role", "member")
+
+                    # Validate and set user role (defense in depth - don't trust JWT role blindly)
+                    jwt_role = payload.get("role", "member")
+                    valid_roles = {"member", "admin", "super_admin"}
+                    request.state.user_role = jwt_role if jwt_role in valid_roles else "member"
                     break
                 finally:
                     # Clean up database session

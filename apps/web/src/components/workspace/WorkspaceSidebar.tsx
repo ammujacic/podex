@@ -126,6 +126,7 @@ export function WorkspaceSidebar({ collapsed, sessionId }: WorkspaceSidebarProps
   const [filesError, setFilesError] = useState<string | null>(null);
   const session = sessions[sessionId];
   const agents = session?.agents || [];
+  const viewMode = session?.viewMode ?? 'grid';
 
   // Fetch files when files panel is opened
   const loadFiles = useCallback(async () => {
@@ -157,6 +158,9 @@ export function WorkspaceSidebar({ collapsed, sessionId }: WorkspaceSidebarProps
 
   const handleFileClick = useCallback(
     async (path: string) => {
+      // Dock files in grid/focus mode, float in freeform mode
+      const shouldDock = viewMode !== 'freeform';
+
       try {
         const fileContent = await getFileContent(sessionId, path);
 
@@ -167,7 +171,7 @@ export function WorkspaceSidebar({ collapsed, sessionId }: WorkspaceSidebarProps
           language: fileContent.language,
           pinned: false,
           position: { x: 100 + Math.random() * 200, y: 100 + Math.random() * 100 },
-          docked: false, // Start as floating overlay
+          docked: shouldDock,
         };
 
         openFilePreview(sessionId, preview);
@@ -181,12 +185,12 @@ export function WorkspaceSidebar({ collapsed, sessionId }: WorkspaceSidebarProps
           language: getLanguageFromPath(path),
           pinned: false,
           position: { x: 100 + Math.random() * 200, y: 100 + Math.random() * 100 },
-          docked: false,
+          docked: shouldDock,
         };
         openFilePreview(sessionId, preview);
       }
     },
-    [sessionId, openFilePreview]
+    [sessionId, openFilePreview, viewMode]
   );
 
   return (

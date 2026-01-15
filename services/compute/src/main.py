@@ -15,6 +15,7 @@ from src.deps import cleanup_compute_manager, get_compute_manager, init_compute_
 from src.routes import (
     health_router,
     preview_router,
+    shutdown_terminal_sessions,
     terminal_router,
     websocket_router,
     workspaces_router,
@@ -110,6 +111,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Shutdown
     logger.info("Shutting down Podex Compute Service")
+
+    # Close active terminal sessions first to unblock WebSocket handlers
+    await shutdown_terminal_sessions()
+    logger.info("Terminal sessions closed")
+
     cleanup.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await cleanup

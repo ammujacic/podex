@@ -1,4 +1,4 @@
-import { create } from 'zustand';
+import { create, type StateCreator } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 import { getUserConfig, updateUserConfig } from '@/lib/api/user-config';
 import { useAuthStore } from '@/stores/auth';
@@ -173,402 +173,404 @@ const debouncedSync = (get: () => UIState) => {
   }, 500);
 };
 
-export const useUIStore = create<UIState>()(
-  devtools(
-    persist(
-      (set, get) => ({
-        // Hydration tracking
-        _hasHydrated: false,
-        setHasHydrated: (state: boolean) => set({ _hasHydrated: state }),
+const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> = (set, get) => ({
+  // Hydration tracking
+  _hasHydrated: false,
+  setHasHydrated: (state: boolean) => set({ _hasHydrated: state }),
 
-        // Server sync
-        isLoading: false,
-        lastSyncedAt: null,
+  // Server sync
+  isLoading: false,
+  lastSyncedAt: null,
 
-        loadFromServer: async () => {
-          set({ isLoading: true });
-          try {
-            const config = await getUserConfig();
+  loadFromServer: async () => {
+    set({ isLoading: true });
+    try {
+      const config = await getUserConfig();
 
-            // If null (not authenticated), silently use localStorage defaults
-            if (!config) {
-              set({ isLoading: false });
-              return;
-            }
-
-            const serverPrefs = config.ui_preferences || {};
-
-            // Merge server preferences with current state
-            const updates: Partial<UIState> = {
-              isLoading: false,
-              lastSyncedAt: Date.now(),
-            };
-
-            if (serverPrefs.theme) {
-              const resolved =
-                serverPrefs.theme === 'system' ? getSystemTheme() : serverPrefs.theme;
-              applyTheme(resolved);
-              updates.theme = serverPrefs.theme;
-              updates.resolvedTheme = resolved;
-            }
-
-            if (serverPrefs.sidebarLayout) {
-              updates.sidebarLayout = serverPrefs.sidebarLayout;
-            }
-
-            if (serverPrefs.terminalHeight !== undefined) {
-              updates.terminalHeight = serverPrefs.terminalHeight;
-            }
-
-            if (serverPrefs.panelHeight !== undefined) {
-              updates.panelHeight = serverPrefs.panelHeight;
-            }
-
-            if (serverPrefs.prefersReducedMotion !== undefined) {
-              updates.prefersReducedMotion = serverPrefs.prefersReducedMotion;
-            }
-
-            if (serverPrefs.focusMode !== undefined) {
-              updates.focusMode = serverPrefs.focusMode;
-            }
-
-            set(updates);
-          } catch (error) {
-            console.error('Failed to load UI preferences from server:', error);
-            set({ isLoading: false });
-          }
-        },
-
-        syncToServer: async () => {
-          const state = get();
-
-          // Check if user is authenticated before attempting to sync
-          const authState = useAuthStore.getState();
-          if (!authState.user || !authState.tokens) {
-            // User is not authenticated, silently skip sync
-            return;
-          }
-
-          const prefsToSync = {
-            theme: state.theme,
-            sidebarLayout: state.sidebarLayout,
-            terminalHeight: state.terminalHeight,
-            panelHeight: state.panelHeight,
-            prefersReducedMotion: state.prefersReducedMotion,
-            focusMode: state.focusMode,
-          };
-
-          try {
-            const result = await updateUserConfig({ ui_preferences: prefsToSync });
-            // If null, user is not authenticated - silently skip
-            if (result !== null) {
-              set({ lastSyncedAt: Date.now() });
-            }
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          } catch (error: any) {
-            // Silently ignore auth errors (401/403) and network errors (503)
-            // User has been logged out automatically by the API client
-            if (error?.status === 401 || error?.status === 403 || error?.status === 503) {
-              console.warn('Skipping UI sync - user not authenticated or network error');
-              return;
-            }
-            // Log other errors but don't throw to avoid breaking the UI
-            console.error('Failed to sync UI preferences to server:', error);
-          }
-        },
-
-        // Theme
-        theme: 'dark' as Theme,
-        resolvedTheme: 'dark' as 'dark' | 'light',
-        setTheme: (theme) => {
-          const resolved = theme === 'system' ? getSystemTheme() : theme;
-          applyTheme(resolved);
-          set({ theme, resolvedTheme: resolved });
-          debouncedSync(get);
-        },
-
-        // Command palette
-        commandPaletteOpen: false,
-        openCommandPalette: () =>
-          set({
-            commandPaletteOpen: true,
-            quickOpenOpen: false,
-            globalSearchOpen: false,
-          }),
-        closeCommandPalette: () => set({ commandPaletteOpen: false }),
-        toggleCommandPalette: () =>
-          set((state) => ({
-            commandPaletteOpen: !state.commandPaletteOpen,
-            quickOpenOpen: false,
-            globalSearchOpen: false,
-          })),
-
-        // Quick open
-        quickOpenOpen: false,
-        openQuickOpen: () =>
-          set({
-            quickOpenOpen: true,
-            commandPaletteOpen: false,
-            globalSearchOpen: false,
-          }),
-        closeQuickOpen: () => set({ quickOpenOpen: false }),
-        toggleQuickOpen: () =>
-          set((state) => ({
-            quickOpenOpen: !state.quickOpenOpen,
-            commandPaletteOpen: false,
-            globalSearchOpen: false,
-          })),
-
-        // Global search
-        globalSearchOpen: false,
-        openGlobalSearch: () =>
-          set({
-            globalSearchOpen: true,
-            commandPaletteOpen: false,
-            quickOpenOpen: false,
-          }),
-        closeGlobalSearch: () => set({ globalSearchOpen: false }),
-        toggleGlobalSearch: () =>
-          set((state) => ({
-            globalSearchOpen: !state.globalSearchOpen,
-            commandPaletteOpen: false,
-            quickOpenOpen: false,
-          })),
-
-        // Sidebar layout
-        sidebarLayout: DEFAULT_SIDEBAR_LAYOUT,
-
-        // Legacy compatibility getter - must be safe during rehydration
-        get sidebarCollapsed() {
-          return get()?.sidebarLayout?.left?.collapsed ?? false;
-        },
-
-        toggleSidebar: (side: SidebarSide) => {
-          const layout = get().sidebarLayout;
-          const newCollapsed = !layout[side].collapsed;
-          set({
-            sidebarLayout: {
-              ...layout,
-              [side]: { ...layout[side], collapsed: newCollapsed },
-            },
-          });
-          get().announce(
-            `${side === 'left' ? 'Left' : 'Right'} sidebar ${newCollapsed ? 'collapsed' : 'expanded'}`
-          );
-          debouncedSync(get);
-        },
-
-        setSidebarCollapsed: (side: SidebarSide, collapsed: boolean) => {
-          const layout = get().sidebarLayout;
-          set({
-            sidebarLayout: {
-              ...layout,
-              [side]: { ...layout[side], collapsed },
-            },
-          });
-          debouncedSync(get);
-        },
-
-        setSidebarWidth: (side: SidebarSide, width: number) => {
-          const layout = get().sidebarLayout;
-          set({
-            sidebarLayout: {
-              ...layout,
-              [side]: { ...layout[side], width: Math.max(200, Math.min(500, width)) },
-            },
-          });
-          debouncedSync(get);
-        },
-
-        setSidebarPanelHeight: (side: SidebarSide, panelIndex: number, height: number) => {
-          const layout = get().sidebarLayout;
-          const panels = [...layout[side].panels];
-          const panel = panels[panelIndex];
-          if (!panel) return;
-
-          // Update the height of the target panel
-          panels[panelIndex] = {
-            panelId: panel.panelId,
-            height: Math.max(10, Math.min(90, height)),
-          };
-
-          // Normalize heights to sum to 100
-          const normalized = normalizePanelHeights(panels);
-
-          set({
-            sidebarLayout: {
-              ...layout,
-              [side]: { ...layout[side], panels: normalized },
-            },
-          });
-          debouncedSync(get);
-        },
-
-        movePanel: (panelId: PanelId, toSide: SidebarSide) => {
-          const layout = get().sidebarLayout;
-          const fromSide = layout.left.panels.some((p) => p.panelId === panelId) ? 'left' : 'right';
-
-          if (fromSide === toSide) return; // No-op if already on target side
-
-          // Remove from current location
-          const newFromPanels = layout[fromSide].panels.filter((p) => p.panelId !== panelId);
-
-          // Add to new sidebar at the bottom with equal share
-          const newToPanels = [...layout[toSide].panels, { panelId, height: 100 }];
-
-          set({
-            sidebarLayout: {
-              ...layout,
-              [fromSide]: {
-                ...layout[fromSide],
-                panels: normalizePanelHeights(newFromPanels),
-              },
-              [toSide]: {
-                ...layout[toSide],
-                panels: normalizePanelHeights(newToPanels),
-              },
-            },
-          });
-          get().announce(`${panelId} moved to ${toSide} sidebar`);
-        },
-
-        removePanel: (panelId: PanelId) => {
-          const layout = get().sidebarLayout;
-          const side = layout.left.panels.some((p) => p.panelId === panelId) ? 'left' : 'right';
-          const newPanels = layout[side].panels.filter((p) => p.panelId !== panelId);
-
-          set({
-            sidebarLayout: {
-              ...layout,
-              [side]: { ...layout[side], panels: normalizePanelHeights(newPanels) },
-            },
-          });
-          get().announce(`${panelId} panel closed`);
-        },
-
-        addPanel: (panelId: PanelId, side: SidebarSide) => {
-          const layout = get().sidebarLayout;
-
-          // First remove from any existing location
-          let leftPanels = layout.left.panels.filter((p) => p.panelId !== panelId);
-          let rightPanels = layout.right.panels.filter((p) => p.panelId !== panelId);
-
-          // Add to target sidebar at the bottom
-          if (side === 'left') {
-            leftPanels = [...leftPanels, { panelId, height: 100 }];
-          } else {
-            rightPanels = [...rightPanels, { panelId, height: 100 }];
-          }
-
-          set({
-            sidebarLayout: {
-              left: { ...layout.left, panels: normalizePanelHeights(leftPanels) },
-              right: { ...layout.right, panels: normalizePanelHeights(rightPanels) },
-            },
-          });
-          get().announce(`${panelId} added to ${side} sidebar`);
-        },
-
-        resetSidebarLayout: () => {
-          set({ sidebarLayout: DEFAULT_SIDEBAR_LAYOUT });
-          get().announce('Sidebar layout reset to default');
-        },
-
-        // Terminal
-        terminalVisible: false,
-        terminalHeight: 300,
-        toggleTerminal: () => {
-          const newState = !get().terminalVisible;
-          set({ terminalVisible: newState });
-          get().announce(newState ? 'Terminal opened' : 'Terminal closed');
-        },
-        setTerminalVisible: (visible) => set({ terminalVisible: visible }),
-        setTerminalHeight: (height) => {
-          set({ terminalHeight: Math.max(100, Math.min(600, height)) });
-          debouncedSync(get);
-        },
-
-        // Bottom panel
-        panelVisible: false,
-        panelHeight: 200,
-        activePanel: 'output',
-        togglePanel: () => set((state) => ({ panelVisible: !state.panelVisible })),
-        setPanelVisible: (visible) => set({ panelVisible: visible }),
-        setPanelHeight: (height) => {
-          set({ panelHeight: Math.max(100, Math.min(400, height)) });
-          debouncedSync(get);
-        },
-        setActivePanel: (panel) => set({ activePanel: panel, panelVisible: true }),
-
-        // Modals
-        activeModal: null,
-        modalData: {},
-        openModal: (modalId, data = {}) => set({ activeModal: modalId, modalData: data }),
-        closeModal: () => set({ activeModal: null, modalData: {} }),
-
-        // Announcements (for screen readers)
-        announcement: '',
-        announce: (message) => {
-          set({ announcement: message });
-          // Clear after a short delay to allow re-announcement of same message
-          setTimeout(() => set({ announcement: '' }), 1000);
-        },
-
-        // Mobile
-        isMobileMenuOpen: false,
-        setMobileMenuOpen: (open) => set({ isMobileMenuOpen: open }),
-        toggleMobileMenu: () => set((state) => ({ isMobileMenuOpen: !state.isMobileMenuOpen })),
-
-        // Reduced motion preference
-        prefersReducedMotion: false,
-        setPrefersReducedMotion: (prefers) => set({ prefersReducedMotion: prefers }),
-
-        // Focus mode
-        focusMode: false,
-        toggleFocusMode: () => {
-          const newState = !get().focusMode;
-          set({ focusMode: newState });
-          get().announce(newState ? 'Focus mode enabled' : 'Focus mode disabled');
-          debouncedSync(get);
-        },
-      }),
-      {
-        name: 'podex-ui-settings',
-        partialize: (state) => ({
-          theme: state.theme,
-          sidebarLayout: state.sidebarLayout,
-          terminalVisible: state.terminalVisible,
-          terminalHeight: state.terminalHeight,
-          panelVisible: state.panelVisible,
-          panelHeight: state.panelHeight,
-          activePanel: state.activePanel,
-          prefersReducedMotion: state.prefersReducedMotion,
-          focusMode: state.focusMode,
-        }),
-        onRehydrateStorage: () => (state) => {
-          state?.setHasHydrated(true);
-        },
-        // Migration from old sidebarCollapsed to new sidebarLayout
-        migrate: (persistedState: unknown, _version: number) => {
-          const state = persistedState as Record<string, unknown>;
-          if (state.sidebarCollapsed !== undefined && !state.sidebarLayout) {
-            return {
-              ...state,
-              sidebarLayout: {
-                ...DEFAULT_SIDEBAR_LAYOUT,
-                left: {
-                  ...DEFAULT_SIDEBAR_LAYOUT.left,
-                  collapsed: state.sidebarCollapsed as boolean,
-                },
-              },
-            };
-          }
-          return state;
-        },
-        version: 1,
+      // If null (not authenticated), silently use localStorage defaults
+      if (!config) {
+        set({ isLoading: false });
+        return;
       }
-    )
-  )
+
+      const serverPrefs = config.ui_preferences || {};
+
+      // Merge server preferences with current state
+      const updates: Partial<UIState> = {
+        isLoading: false,
+        lastSyncedAt: Date.now(),
+      };
+
+      if (serverPrefs.theme) {
+        const resolved = serverPrefs.theme === 'system' ? getSystemTheme() : serverPrefs.theme;
+        applyTheme(resolved);
+        updates.theme = serverPrefs.theme;
+        updates.resolvedTheme = resolved;
+      }
+
+      if (serverPrefs.sidebarLayout) {
+        updates.sidebarLayout = serverPrefs.sidebarLayout;
+      }
+
+      if (serverPrefs.terminalHeight !== undefined) {
+        updates.terminalHeight = serverPrefs.terminalHeight;
+      }
+
+      if (serverPrefs.panelHeight !== undefined) {
+        updates.panelHeight = serverPrefs.panelHeight;
+      }
+
+      if (serverPrefs.prefersReducedMotion !== undefined) {
+        updates.prefersReducedMotion = serverPrefs.prefersReducedMotion;
+      }
+
+      if (serverPrefs.focusMode !== undefined) {
+        updates.focusMode = serverPrefs.focusMode;
+      }
+
+      set(updates);
+    } catch (error) {
+      console.error('Failed to load UI preferences from server:', error);
+      set({ isLoading: false });
+    }
+  },
+
+  syncToServer: async () => {
+    const state = get();
+
+    // Check if user is authenticated before attempting to sync
+    const authState = useAuthStore.getState();
+    if (!authState.user || !authState.tokens) {
+      // User is not authenticated, silently skip sync
+      return;
+    }
+
+    const prefsToSync = {
+      theme: state.theme,
+      sidebarLayout: state.sidebarLayout,
+      terminalHeight: state.terminalHeight,
+      panelHeight: state.panelHeight,
+      prefersReducedMotion: state.prefersReducedMotion,
+      focusMode: state.focusMode,
+    };
+
+    try {
+      const result = await updateUserConfig({ ui_preferences: prefsToSync });
+      // If null, user is not authenticated - silently skip
+      if (result !== null) {
+        set({ lastSyncedAt: Date.now() });
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } catch (error: any) {
+      // Silently ignore auth errors (401/403) and network errors (503)
+      // User has been logged out automatically by the API client
+      if (error?.status === 401 || error?.status === 403 || error?.status === 503) {
+        console.warn('Skipping UI sync - user not authenticated or network error');
+        return;
+      }
+      // Log other errors but don't throw to avoid breaking the UI
+      console.error('Failed to sync UI preferences to server:', error);
+    }
+  },
+
+  // Theme
+  theme: 'dark' as Theme,
+  resolvedTheme: 'dark' as 'dark' | 'light',
+  setTheme: (theme) => {
+    const resolved = theme === 'system' ? getSystemTheme() : theme;
+    applyTheme(resolved);
+    set({ theme, resolvedTheme: resolved });
+    debouncedSync(get);
+  },
+
+  // Command palette
+  commandPaletteOpen: false,
+  openCommandPalette: () =>
+    set({
+      commandPaletteOpen: true,
+      quickOpenOpen: false,
+      globalSearchOpen: false,
+    }),
+  closeCommandPalette: () => set({ commandPaletteOpen: false }),
+  toggleCommandPalette: () =>
+    set((state) => ({
+      commandPaletteOpen: !state.commandPaletteOpen,
+      quickOpenOpen: false,
+      globalSearchOpen: false,
+    })),
+
+  // Quick open
+  quickOpenOpen: false,
+  openQuickOpen: () =>
+    set({
+      quickOpenOpen: true,
+      commandPaletteOpen: false,
+      globalSearchOpen: false,
+    }),
+  closeQuickOpen: () => set({ quickOpenOpen: false }),
+  toggleQuickOpen: () =>
+    set((state) => ({
+      quickOpenOpen: !state.quickOpenOpen,
+      commandPaletteOpen: false,
+      globalSearchOpen: false,
+    })),
+
+  // Global search
+  globalSearchOpen: false,
+  openGlobalSearch: () =>
+    set({
+      globalSearchOpen: true,
+      commandPaletteOpen: false,
+      quickOpenOpen: false,
+    }),
+  closeGlobalSearch: () => set({ globalSearchOpen: false }),
+  toggleGlobalSearch: () =>
+    set((state) => ({
+      globalSearchOpen: !state.globalSearchOpen,
+      commandPaletteOpen: false,
+      quickOpenOpen: false,
+    })),
+
+  // Sidebar layout
+  sidebarLayout: DEFAULT_SIDEBAR_LAYOUT,
+
+  // Legacy compatibility getter - must be safe during rehydration
+  get sidebarCollapsed() {
+    return get()?.sidebarLayout?.left?.collapsed ?? false;
+  },
+
+  toggleSidebar: (side: SidebarSide) => {
+    const layout = get().sidebarLayout;
+    const newCollapsed = !layout[side].collapsed;
+    set({
+      sidebarLayout: {
+        ...layout,
+        [side]: { ...layout[side], collapsed: newCollapsed },
+      },
+    });
+    get().announce(
+      `${side === 'left' ? 'Left' : 'Right'} sidebar ${newCollapsed ? 'collapsed' : 'expanded'}`
+    );
+    debouncedSync(get);
+  },
+
+  setSidebarCollapsed: (side: SidebarSide, collapsed: boolean) => {
+    const layout = get().sidebarLayout;
+    set({
+      sidebarLayout: {
+        ...layout,
+        [side]: { ...layout[side], collapsed },
+      },
+    });
+    debouncedSync(get);
+  },
+
+  setSidebarWidth: (side: SidebarSide, width: number) => {
+    const layout = get().sidebarLayout;
+    set({
+      sidebarLayout: {
+        ...layout,
+        [side]: { ...layout[side], width: Math.max(200, Math.min(500, width)) },
+      },
+    });
+    debouncedSync(get);
+  },
+
+  setSidebarPanelHeight: (side: SidebarSide, panelIndex: number, height: number) => {
+    const layout = get().sidebarLayout;
+    const panels = [...layout[side].panels];
+    const panel = panels[panelIndex];
+    if (!panel) return;
+
+    // Update the height of the target panel
+    panels[panelIndex] = {
+      panelId: panel.panelId,
+      height: Math.max(10, Math.min(90, height)),
+    };
+
+    // Normalize heights to sum to 100
+    const normalized = normalizePanelHeights(panels);
+
+    set({
+      sidebarLayout: {
+        ...layout,
+        [side]: { ...layout[side], panels: normalized },
+      },
+    });
+    debouncedSync(get);
+  },
+
+  movePanel: (panelId: PanelId, toSide: SidebarSide) => {
+    const layout = get().sidebarLayout;
+    const fromSide = layout.left.panels.some((p) => p.panelId === panelId) ? 'left' : 'right';
+
+    if (fromSide === toSide) return; // No-op if already on target side
+
+    // Remove from current location
+    const newFromPanels = layout[fromSide].panels.filter((p) => p.panelId !== panelId);
+
+    // Add to new sidebar at the bottom with equal share
+    const newToPanels = [...layout[toSide].panels, { panelId, height: 100 }];
+
+    set({
+      sidebarLayout: {
+        ...layout,
+        [fromSide]: {
+          ...layout[fromSide],
+          panels: normalizePanelHeights(newFromPanels),
+        },
+        [toSide]: {
+          ...layout[toSide],
+          panels: normalizePanelHeights(newToPanels),
+        },
+      },
+    });
+    get().announce(`${panelId} moved to ${toSide} sidebar`);
+  },
+
+  removePanel: (panelId: PanelId) => {
+    const layout = get().sidebarLayout;
+    const side = layout.left.panels.some((p) => p.panelId === panelId) ? 'left' : 'right';
+    const newPanels = layout[side].panels.filter((p) => p.panelId !== panelId);
+
+    set({
+      sidebarLayout: {
+        ...layout,
+        [side]: { ...layout[side], panels: normalizePanelHeights(newPanels) },
+      },
+    });
+    get().announce(`${panelId} panel closed`);
+  },
+
+  addPanel: (panelId: PanelId, side: SidebarSide) => {
+    const layout = get().sidebarLayout;
+
+    // First remove from any existing location
+    let leftPanels = layout.left.panels.filter((p) => p.panelId !== panelId);
+    let rightPanels = layout.right.panels.filter((p) => p.panelId !== panelId);
+
+    // Add to target sidebar at the bottom
+    if (side === 'left') {
+      leftPanels = [...leftPanels, { panelId, height: 100 }];
+    } else {
+      rightPanels = [...rightPanels, { panelId, height: 100 }];
+    }
+
+    set({
+      sidebarLayout: {
+        left: { ...layout.left, panels: normalizePanelHeights(leftPanels) },
+        right: { ...layout.right, panels: normalizePanelHeights(rightPanels) },
+      },
+    });
+    get().announce(`${panelId} added to ${side} sidebar`);
+  },
+
+  resetSidebarLayout: () => {
+    set({ sidebarLayout: DEFAULT_SIDEBAR_LAYOUT });
+    get().announce('Sidebar layout reset to default');
+  },
+
+  // Terminal
+  terminalVisible: false,
+  terminalHeight: 300,
+  toggleTerminal: () => {
+    const newState = !get().terminalVisible;
+    set({ terminalVisible: newState });
+    get().announce(newState ? 'Terminal opened' : 'Terminal closed');
+  },
+  setTerminalVisible: (visible) => set({ terminalVisible: visible }),
+  setTerminalHeight: (height) => {
+    set({ terminalHeight: Math.max(100, Math.min(600, height)) });
+    debouncedSync(get);
+  },
+
+  // Bottom panel
+  panelVisible: false,
+  panelHeight: 200,
+  activePanel: 'output',
+  togglePanel: () => set((state) => ({ panelVisible: !state.panelVisible })),
+  setPanelVisible: (visible) => set({ panelVisible: visible }),
+  setPanelHeight: (height) => {
+    set({ panelHeight: Math.max(100, Math.min(400, height)) });
+    debouncedSync(get);
+  },
+  setActivePanel: (panel) => set({ activePanel: panel, panelVisible: true }),
+
+  // Modals
+  activeModal: null,
+  modalData: {},
+  openModal: (modalId, data = {}) => set({ activeModal: modalId, modalData: data }),
+  closeModal: () => set({ activeModal: null, modalData: {} }),
+
+  // Announcements (for screen readers)
+  announcement: '',
+  announce: (message) => {
+    set({ announcement: message });
+    // Clear after a short delay to allow re-announcement of same message
+    setTimeout(() => set({ announcement: '' }), 1000);
+  },
+
+  // Mobile
+  isMobileMenuOpen: false,
+  setMobileMenuOpen: (open) => set({ isMobileMenuOpen: open }),
+  toggleMobileMenu: () => set((state) => ({ isMobileMenuOpen: !state.isMobileMenuOpen })),
+
+  // Reduced motion preference
+  prefersReducedMotion: false,
+  setPrefersReducedMotion: (prefers) => set({ prefersReducedMotion: prefers }),
+
+  // Focus mode
+  focusMode: false,
+  toggleFocusMode: () => {
+    const newState = !get().focusMode;
+    set({ focusMode: newState });
+    get().announce(newState ? 'Focus mode enabled' : 'Focus mode disabled');
+    debouncedSync(get);
+  },
+});
+
+const persistedUIStore = persist(uiStoreCreator, {
+  name: 'podex-ui-settings',
+  partialize: (state) => ({
+    theme: state.theme,
+    sidebarLayout: state.sidebarLayout,
+    terminalVisible: state.terminalVisible,
+    terminalHeight: state.terminalHeight,
+    panelVisible: state.panelVisible,
+    panelHeight: state.panelHeight,
+    activePanel: state.activePanel,
+    prefersReducedMotion: state.prefersReducedMotion,
+    focusMode: state.focusMode,
+  }),
+  onRehydrateStorage: () => (state) => {
+    state?.setHasHydrated(true);
+  },
+  // Migration from old sidebarCollapsed to new sidebarLayout
+  migrate: (persistedState: unknown, _version: number) => {
+    const state = persistedState as Record<string, unknown>;
+    if (state.sidebarCollapsed !== undefined && !state.sidebarLayout) {
+      return {
+        ...state,
+        sidebarLayout: {
+          ...DEFAULT_SIDEBAR_LAYOUT,
+          left: {
+            ...DEFAULT_SIDEBAR_LAYOUT.left,
+            collapsed: state.sidebarCollapsed as boolean,
+          },
+        },
+      };
+    }
+    return state;
+  },
+  version: 1,
+});
+
+// Only enable devtools in development to prevent exposing state in production
+export const useUIStore = create<UIState>()(
+  devtools(persistedUIStore, {
+    name: 'podex-ui',
+    enabled: process.env.NODE_ENV === 'development',
+  })
 );
 
 // Initialize theme on load

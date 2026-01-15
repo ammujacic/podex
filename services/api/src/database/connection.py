@@ -19,6 +19,7 @@ from src.database.models import (
     PlatformSetting,
     PodTemplate,
     SubscriptionPlan,
+    TerminalIntegratedAgentType,
 )
 
 logger = structlog.get_logger()
@@ -103,9 +104,11 @@ async def seed_database() -> None:
     """Seed the database with default data.
 
     This function is idempotent - it will only create records that don't already exist.
-    It seeds: subscription plans, hardware specs, pod templates, and platform settings.
+    It seeds: subscription plans, hardware specs, pod templates, platform settings,
+    and terminal-integrated agent types.
     """
-    # Import default data from admin routes
+    # Import default data from admin routes and seed data
+    from src.database.seed_data import DEFAULT_TERMINAL_AGENTS  # noqa: PLC0415
     from src.routes.admin.hardware import DEFAULT_HARDWARE_SPECS  # noqa: PLC0415
     from src.routes.admin.plans import DEFAULT_PLANS  # noqa: PLC0415
     from src.routes.admin.settings import DEFAULT_SETTINGS  # noqa: PLC0415
@@ -113,7 +116,13 @@ async def seed_database() -> None:
 
     async with async_session_factory() as db:
         try:
-            totals = {"plans": 0, "hardware": 0, "templates": 0, "settings": 0}
+            totals = {
+                "plans": 0,
+                "hardware": 0,
+                "templates": 0,
+                "settings": 0,
+                "terminal_agents": 0,
+            }
 
             # Seed subscription plans
             for plan_data in DEFAULT_PLANS:
@@ -159,6 +168,32 @@ async def seed_database() -> None:
                     )
                     totals["settings"] += 1
 
+            # Seed terminal-integrated agent types
+            for agent_data in DEFAULT_TERMINAL_AGENTS:
+                result = await db.execute(
+                    select(TerminalIntegratedAgentType).where(
+                        TerminalIntegratedAgentType.slug == agent_data["slug"]
+                    )
+                )
+                if not result.scalar_one_or_none():
+                    db.add(
+                        TerminalIntegratedAgentType(
+                            name=agent_data["name"],
+                            slug=agent_data["slug"],
+                            logo_url=agent_data.get("logo_url"),
+                            description=agent_data.get("description"),
+                            check_installed_command=agent_data.get("check_installed_command"),
+                            version_command=agent_data.get("version_command"),
+                            install_command=agent_data.get("install_command"),
+                            update_command=agent_data.get("update_command"),
+                            run_command=agent_data["run_command"],
+                            default_env_template=agent_data.get("default_env_template", {}),
+                            is_enabled=agent_data.get("is_enabled", True),
+                            created_by_admin_id=None,
+                        )
+                    )
+                    totals["terminal_agents"] += 1
+
             await db.commit()
 
             if any(totals.values()):
@@ -168,9 +203,8 @@ async def seed_database() -> None:
                     hardware=totals["hardware"],
                     templates=totals["templates"],
                     settings=totals["settings"],
+                    terminal_agents=totals["terminal_agents"],
                 )
-            else:
-                logger.debug("Database already seeded, skipping")
 
         except Exception as e:
             await db.rollback()
