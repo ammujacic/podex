@@ -34,6 +34,7 @@ WRITE_TOOLS = {
     "write_file",
     "create_file",
     "delete_file",
+    "apply_patch",
     "git_commit",
     "git_push",
     "create_pr",
@@ -43,6 +44,9 @@ READ_TOOLS = {
     "read_file",
     "list_directory",
     "search_code",
+    "glob_files",
+    "grep",
+    "fetch_url",
     "git_status",
     "git_diff",
     "git_log",
@@ -76,7 +80,18 @@ from src.tools.deploy_tools import (  # noqa: E402
     run_e2e_tests,
     stop_preview,
 )
-from src.tools.file_tools import list_directory, read_file, search_code, write_file  # noqa: E402
+from src.tools.file_tools import (  # noqa: E402
+    apply_patch,
+    glob_files,
+    grep,
+    list_directory,
+    read_file,
+    search_code,
+    write_file,
+)
+from src.tools.file_tools import (  # noqa: E402
+    fetch_url as file_fetch_url,
+)
 from src.tools.git_tools import (  # noqa: E402
     create_pr,
     git_branch,
@@ -431,6 +446,10 @@ class ToolExecutor:
             "list_directory": self._handle_file_tools,
             "search_code": self._handle_file_tools,
             "run_command": self._handle_file_tools,
+            "glob_files": self._handle_file_tools,
+            "grep": self._handle_file_tools,
+            "apply_patch": self._handle_file_tools,
+            "file_fetch_url": self._handle_file_tools,
             # Task and agent builder tools
             "create_task": self._handle_task_tools,
             "create_agent_template": self._handle_agent_builder_tools,
@@ -514,6 +533,35 @@ class ToolExecutor:
                 workspace_path=self.workspace_path,
                 command=arguments.get("command", ""),
                 cwd=arguments.get("cwd"),
+            )
+        if tool_name == "glob_files":
+            return await glob_files(
+                workspace_path=self.workspace_path,
+                pattern=arguments.get("pattern", ""),
+                path=arguments.get("path", "."),
+                include_hidden=arguments.get("include_hidden", False),
+            )
+        if tool_name == "grep":
+            return await grep(
+                workspace_path=self.workspace_path,
+                pattern=arguments.get("pattern", ""),
+                path=arguments.get("path", "."),
+                file_pattern=arguments.get("file_pattern"),
+                ignore_case=arguments.get("ignore_case", False),
+                context_lines=arguments.get("context_lines", 2),
+            )
+        if tool_name == "apply_patch":
+            return await apply_patch(
+                workspace_path=self.workspace_path,
+                path=arguments.get("path", ""),
+                patch=arguments.get("patch", ""),
+                reverse=arguments.get("reverse", False),
+            )
+        if tool_name == "file_fetch_url":
+            return await file_fetch_url(
+                url=arguments.get("url", ""),
+                extract_text=arguments.get("extract_text", True),
+                max_length=arguments.get("max_length", 50000),
             )
         return {"success": False, "error": f"Unknown file tool: {tool_name}"}
 

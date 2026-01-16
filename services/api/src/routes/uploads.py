@@ -222,10 +222,10 @@ def validate_upload_path(path: str) -> str:
 
 @router.post("/{session_id}/upload", response_model=UploadResponse)
 @limiter.limit(RATE_LIMIT_UPLOAD)
-async def upload_file(
+async def upload_file(  # noqa: PLR0913
     session_id: str,
     request: Request,
-    _response: Response,
+    response: Response,  # noqa: ARG001
     db: DbSession,
     file: UploadFile = File(...),  # noqa: B008
     path: str = Query(default="uploads", description="Target directory path in workspace"),
@@ -310,10 +310,10 @@ async def upload_file(
 
 @router.post("/{session_id}/upload/image", response_model=ImageUploadResponse)
 @limiter.limit(RATE_LIMIT_UPLOAD)
-async def upload_image(
+async def upload_image(  # noqa: PLR0913
     session_id: str,
     request: Request,
-    _response: Response,
+    response: Response,  # noqa: ARG001
     db: DbSession,
     file: UploadFile = File(...),  # noqa: B008
     path: str = Query(default="uploads/images", description="Target directory path"),
@@ -411,10 +411,10 @@ async def upload_image(
 
 @router.post("/{session_id}/upload/bulk", response_model=BulkUploadResponse)
 @limiter.limit(RATE_LIMIT_UPLOAD)
-async def upload_files_bulk(
+async def upload_files_bulk(  # noqa: PLR0913
     session_id: str,
     request: Request,
-    _response: Response,
+    response: Response,  # noqa: ARG001
     db: DbSession,
     files: list[UploadFile] = File(...),  # noqa: B008
     path: str = Query(default="uploads", description="Target directory path"),
@@ -522,7 +522,7 @@ async def upload_files_bulk(
 async def upload_image_base64(
     session_id: str,
     request: Request,
-    _response: Response,
+    response: Response,  # noqa: ARG001
     db: DbSession,
     data: dict[str, Any],
 ) -> ImageUploadResponse:

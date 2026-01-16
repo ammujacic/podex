@@ -36,14 +36,22 @@ logger = structlog.get_logger()
 WORKSPACE_BASE_PATH = Path(settings.WORKSPACE_BASE_PATH)
 
 # Task retention settings
-TASK_TTL_SECONDS = 3600  # 1 hour - tasks older than this will be cleaned up
-MAX_TASKS = 10000  # Maximum number of tasks before forced cleanup
-CLEANUP_INTERVAL_SECONDS = 60  # Minimum time between cleanup runs
+TASK_TTL_SECONDS = (
+    1800  # 30 minutes - tasks older than this will be cleaned up (reduced from 1 hour)
+)
+MAX_TASKS = 5000  # Maximum number of tasks before forced cleanup (reduced from 10000)
+CLEANUP_INTERVAL_SECONDS = 30  # Minimum time between cleanup runs (reduced from 60)
 
 # Agent lifecycle settings
-AGENT_IDLE_TTL_SECONDS = 1800  # 30 minutes - idle agents older than this will be cleaned up
-MAX_AGENTS = 1000  # Maximum number of agents before forced cleanup
+AGENT_IDLE_TTL_SECONDS = (
+    900  # 15 minutes - idle agents older than this will be cleaned up (reduced from 30 min)
+)
+MAX_AGENTS = 500  # Maximum number of agents before forced cleanup (reduced from 1000)
 MCP_CONNECT_TIMEOUT_SECONDS = 30  # Maximum time to wait for MCP connection
+
+# Memory warning thresholds
+TASK_WARNING_THRESHOLD = 3000  # Log warning when tasks exceed this
+AGENT_WARNING_THRESHOLD = 300  # Log warning when agents exceed this
 
 
 class TaskStatus(str, Enum):
@@ -120,6 +128,10 @@ class AgentOrchestrator:
         self._agent_last_activity: dict[str, float] = {}  # Track agent last activity time
         self._last_cleanup = time.time()
         self._last_agent_cleanup = time.time()
+        # Lock for task operations to prevent race conditions
+        self._task_lock = asyncio.Lock()
+        # Lock for agent operations
+        self._agent_lock = asyncio.Lock()
 
     def _cleanup_old_tasks(self) -> None:
         """Remove old completed/failed tasks to prevent memory leaks.
@@ -135,6 +147,16 @@ class AgentOrchestrator:
             return
 
         self._last_cleanup = current_time
+
+        # Log warning if approaching memory limits
+        task_count = len(self.tasks)
+        if task_count > TASK_WARNING_THRESHOLD:
+            logger.warning(
+                "Task count approaching limit - consider scaling or increasing cleanup frequency",
+                task_count=task_count,
+                warning_threshold=TASK_WARNING_THRESHOLD,
+                max_tasks=MAX_TASKS,
+            )
 
         # Find tasks that are completed/failed and older than TTL
         tasks_to_remove = []
@@ -194,6 +216,16 @@ class AgentOrchestrator:
 
         self._last_agent_cleanup = current_time
 
+        # Log warning if approaching memory limits
+        agent_count = len(self.agents)
+        if agent_count > AGENT_WARNING_THRESHOLD:
+            logger.warning(
+                "Agent count approaching limit - consider scaling or increasing cleanup frequency",
+                agent_count=agent_count,
+                warning_threshold=AGENT_WARNING_THRESHOLD,
+                max_agents=MAX_AGENTS,
+            )
+
         # Find agents that are idle for too long
         agents_to_remove: list[str] = []
         sessions_to_cleanup: set[str] = set()
@@ -223,9 +255,24 @@ class AgentOrchestrator:
                 if session_id:
                     sessions_to_cleanup.add(session_id)
 
-        # Perform agent cleanup
+        # Perform agent cleanup with resource cleanup
         for agent_id in agents_to_remove:
             if agent_id in self.agents:
+                agent = self.agents[agent_id]
+                # Cleanup tool executor resources if present
+                if agent.tool_executor:
+                    try:
+                        # Close any open connections/resources in tool executor
+                        if hasattr(agent.tool_executor, "cleanup"):
+                            await agent.tool_executor.cleanup()
+                        elif hasattr(agent.tool_executor, "close"):
+                            await agent.tool_executor.close()
+                    except Exception as cleanup_error:
+                        logger.warning(
+                            "Failed to cleanup tool executor for agent",
+                            agent_id=agent_id,
+                            error=str(cleanup_error),
+                        )
                 del self.agents[agent_id]
             if agent_id in self._agent_last_activity:
                 del self._agent_last_activity[agent_id]
@@ -289,6 +336,20 @@ class AgentOrchestrator:
                     timeout_seconds=MCP_CONNECT_TIMEOUT_SECONDS,
                     server_count=server_count,
                 )
+                # Clean up any partial connections that may have been established
+                # before the timeout to prevent resource leaks
+                try:
+                    await lifecycle_manager.disconnect_all()
+                    logger.info(
+                        "Cleaned up partial MCP connections after timeout",
+                        session_id=session_id,
+                    )
+                except Exception as cleanup_error:
+                    logger.warning(
+                        "Failed to cleanup partial MCP connections after timeout",
+                        session_id=session_id,
+                        error=str(cleanup_error),
+                    )
                 mcp_status = MCPConnectionStatus(
                     connected=False,
                     servers_attempted=server_count,
@@ -340,6 +401,43 @@ class AgentOrchestrator:
             )
             return None, mcp_status
 
+    def _force_cleanup_idle_agents_sync(self) -> int:
+        """Synchronously force cleanup of idle agents.
+
+        Returns:
+            Number of agents removed.
+        """
+        current_time = time.time()
+        agents_to_remove: list[str] = []
+
+        # Sort agents by activity time (oldest first)
+        agent_activity = [(aid, self._agent_last_activity.get(aid, 0)) for aid in self.agents]
+        sorted_agents = sorted(agent_activity, key=lambda x: x[1])
+
+        # Remove oldest idle agents until under limit
+        excess = len(self.agents) - MAX_AGENTS + 50  # Leave headroom
+        for agent_id, last_activity in sorted_agents[: max(0, excess)]:
+            idle_time = current_time - last_activity
+            # Only remove if idle for at least 60 seconds
+            if idle_time > 60:
+                agents_to_remove.append(agent_id)
+
+        # Perform cleanup (without async MCP cleanup to keep it sync)
+        for agent_id in agents_to_remove:
+            if agent_id in self.agents:
+                del self.agents[agent_id]
+            if agent_id in self._agent_last_activity:
+                del self._agent_last_activity[agent_id]
+
+        if agents_to_remove:
+            logger.info(
+                "Force cleaned up idle agents (sync)",
+                removed_count=len(agents_to_remove),
+                remaining_count=len(self.agents),
+            )
+
+        return len(agents_to_remove)
+
     def get_or_create_agent(
         self,
         params: AgentCreationParams,
@@ -353,11 +451,26 @@ class AgentOrchestrator:
 
         Returns:
             Agent instance.
+
+        Raises:
+            RuntimeError: If agent limit is exceeded and cleanup cannot free space.
         """
         # Get MCP registry from lifecycle manager if available
         mcp_registry = mcp_lifecycle.registry if mcp_lifecycle else None
 
         if params.agent_id not in self.agents:
+            # Check agent limit before creating new agent
+            if len(self.agents) >= MAX_AGENTS:
+                removed = self._force_cleanup_idle_agents_sync()
+                if removed == 0 or len(self.agents) >= MAX_AGENTS:
+                    logger.error(
+                        "Agent limit exceeded and cleanup could not free space",
+                        current_count=len(self.agents),
+                        max_agents=MAX_AGENTS,
+                    )
+                    raise RuntimeError(
+                        f"Agent limit exceeded ({MAX_AGENTS}). Too many concurrent agents."
+                    )
             # Create workspace path for this session
             workspace_path = WORKSPACE_BASE_PATH / params.session_id
             workspace_path.mkdir(parents=True, exist_ok=True)
@@ -474,16 +587,86 @@ class AgentOrchestrator:
 
         return agent
 
-    async def submit_task(self, task: AgentTask) -> str:
-        """Submit a task for execution."""
-        # Run periodic cleanup to prevent memory leaks
-        self._cleanup_old_tasks()
-        await self._cleanup_idle_agents()
+    def _force_cleanup_old_tasks(self) -> int:
+        """Force immediate cleanup of old tasks, ignoring time interval.
 
-        self.tasks[task.task_id] = task
-        self.results[task.task_id] = TaskResult(status=TaskStatus.PENDING)
-        logger.info("Task submitted", task_id=task.task_id, agent_id=task.agent_id)
-        return task.task_id
+        Returns:
+            Number of tasks removed.
+        """
+        current_time = time.time()
+        tasks_to_remove = []
+
+        # Find completed/failed tasks, prioritizing oldest
+        completed_tasks = [
+            (tid, self.tasks[tid].created_at)
+            for tid in self.tasks
+            if self.results.get(tid)
+            and self.results[tid].status in (TaskStatus.COMPLETED, TaskStatus.FAILED)
+        ]
+        completed_tasks.sort(key=lambda x: x[1])  # Sort by created_at (oldest first)
+
+        # Remove oldest tasks until we're under the limit
+        excess = len(self.tasks) - MAX_TASKS + 100  # Leave some headroom
+        for task_id, _ in completed_tasks[: max(0, excess)]:
+            tasks_to_remove.append(task_id)
+
+        # Also remove tasks older than TTL
+        for task_id, task in self.tasks.items():
+            if task_id in tasks_to_remove:
+                continue
+            result = self.results.get(task_id)
+            age = current_time - task.created_at
+            if (
+                result
+                and result.status in (TaskStatus.COMPLETED, TaskStatus.FAILED)
+                and age > TASK_TTL_SECONDS
+            ):
+                tasks_to_remove.append(task_id)
+
+        # Perform cleanup
+        for task_id in tasks_to_remove:
+            del self.tasks[task_id]
+            if task_id in self.results:
+                del self.results[task_id]
+
+        if tasks_to_remove:
+            logger.info(
+                "Force cleaned up old tasks",
+                removed_count=len(tasks_to_remove),
+                remaining_count=len(self.tasks),
+            )
+
+        return len(tasks_to_remove)
+
+    async def submit_task(self, task: AgentTask) -> str:
+        """Submit a task for execution.
+
+        Raises:
+            RuntimeError: If task limit is exceeded and cleanup cannot free space.
+        """
+        async with self._task_lock:
+            # Run periodic cleanup to prevent memory leaks
+            self._cleanup_old_tasks()
+            await self._cleanup_idle_agents()
+
+            # Hard limit enforcement - if at limit, force cleanup
+            if len(self.tasks) >= MAX_TASKS:
+                removed = self._force_cleanup_old_tasks()
+                if removed == 0 or len(self.tasks) >= MAX_TASKS:
+                    # Still at limit after cleanup - all tasks are pending/running
+                    logger.error(
+                        "Task limit exceeded and cleanup could not free space",
+                        current_count=len(self.tasks),
+                        max_tasks=MAX_TASKS,
+                    )
+                    raise RuntimeError(
+                        f"Task limit exceeded ({MAX_TASKS}). Too many concurrent tasks."
+                    )
+
+            self.tasks[task.task_id] = task
+            self.results[task.task_id] = TaskResult(status=TaskStatus.PENDING)
+            logger.info("Task submitted", task_id=task.task_id, agent_id=task.agent_id)
+            return task.task_id
 
     async def process_task(self, task_id: str) -> TaskResult:
         """Process a submitted task."""

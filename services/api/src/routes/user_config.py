@@ -704,3 +704,162 @@ async def reset_all_tours(
     await cache_delete(user_config_key(user_id))
 
     return CompletedToursResponse(completed_tours=[])
+
+
+# ============================================================================
+# LLM API Keys Management
+# ============================================================================
+
+# Valid provider names for API keys
+# Cloud providers: openai, anthropic, google, mistral, cohere
+# Local providers: ollama, lmstudio
+VALID_LLM_PROVIDERS = {"openai", "anthropic", "google", "mistral", "cohere", "ollama", "lmstudio"}
+
+
+class LLMApiKeysResponse(BaseModel):
+    """Response with list of configured LLM providers (not the actual keys)."""
+
+    providers: list[str]  # List of provider names that have keys configured
+
+
+class SetLLMApiKeyRequest(BaseModel):
+    """Request to set an LLM API key for a provider."""
+
+    provider: str
+    api_key: str
+
+
+class RemoveLLMApiKeyRequest(BaseModel):
+    """Request to remove an LLM API key."""
+
+    provider: str
+
+
+@router.get("/llm-api-keys")
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def get_llm_api_keys(
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> LLMApiKeysResponse:
+    """Get list of LLM providers with configured API keys.
+
+    Returns the provider names only, not the actual keys (security).
+    """
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+    config = result.scalar_one_or_none()
+
+    if not config or not config.llm_api_keys:
+        return LLMApiKeysResponse(providers=[])
+
+    # Return only provider names, not the actual keys
+    providers = list(config.llm_api_keys.keys())
+    return LLMApiKeysResponse(providers=providers)
+
+
+@router.post("/llm-api-keys")
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def set_llm_api_key(
+    data: SetLLMApiKeyRequest,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> LLMApiKeysResponse:
+    """Set an LLM API key for a provider.
+
+    The key is stored encrypted in the database.
+    """
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    # Validate provider
+    if data.provider.lower() not in VALID_LLM_PROVIDERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid provider. Must be one of: {', '.join(sorted(VALID_LLM_PROVIDERS))}",
+        )
+
+    # Validate API key format (basic validation)
+    min_api_key_length = 10
+    if not data.api_key or len(data.api_key) < min_api_key_length:
+        raise HTTPException(status_code=400, detail="Invalid API key format")
+
+    result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+    config = result.scalar_one_or_none()
+
+    if not config:
+        # Create config with the API key
+        config = UserConfig(
+            user_id=user_id,
+            dotfiles_paths=DEFAULT_DOTFILES,
+            s3_dotfiles_path=f"users/{user_id}/dotfiles",
+            llm_api_keys={data.provider.lower(): data.api_key},
+        )
+        db.add(config)
+    else:
+        # Update existing config
+        current_keys = config.llm_api_keys or {}
+        current_keys[data.provider.lower()] = data.api_key
+        config.llm_api_keys = current_keys
+
+    await db.commit()
+    await db.refresh(config)
+
+    # Invalidate cache
+    await cache_delete(user_config_key(user_id))
+
+    logger.info(
+        "User set LLM API key",
+        user_id=user_id,
+        provider=data.provider.lower(),
+    )
+
+    providers = list(config.llm_api_keys.keys()) if config.llm_api_keys else []
+    return LLMApiKeysResponse(providers=providers)
+
+
+@router.delete("/llm-api-keys/{provider}")
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def remove_llm_api_key(
+    provider: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> LLMApiKeysResponse:
+    """Remove an LLM API key for a provider."""
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    provider_lower = provider.lower()
+
+    result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+    config = result.scalar_one_or_none()
+
+    if not config or not config.llm_api_keys:
+        return LLMApiKeysResponse(providers=[])
+
+    # Remove the key
+    current_keys = config.llm_api_keys or {}
+    if provider_lower in current_keys:
+        del current_keys[provider_lower]
+        config.llm_api_keys = current_keys if current_keys else None
+        await db.commit()
+        await db.refresh(config)
+
+    # Invalidate cache
+    await cache_delete(user_config_key(user_id))
+
+    logger.info(
+        "User removed LLM API key",
+        user_id=user_id,
+        provider=provider_lower,
+    )
+
+    providers = list(config.llm_api_keys.keys()) if config.llm_api_keys else []
+    return LLMApiKeysResponse(providers=providers)

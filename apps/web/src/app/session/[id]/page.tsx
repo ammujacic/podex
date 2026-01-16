@@ -149,13 +149,13 @@ export default function SessionPage() {
         setSession(data);
 
         // Create a default Chat agent if no agents exist (needed for onboarding)
+        // Backend will use the platform default model for the 'chat' role
         let agents = agentsData;
         if (agents.length === 0) {
           try {
             const defaultAgent = await createAgent(sessionId, {
               name: 'Chat',
               role: 'chat',
-              model: 'claude-sonnet-4-20250514',
             });
             agents = [defaultAgent];
           } catch {
@@ -183,6 +183,7 @@ export default function SessionPage() {
                 name: agentResponse.name,
                 role: agentResponse.role as Agent['role'],
                 model: agentResponse.model,
+                modelDisplayName: agentResponse.model_display_name ?? undefined,
                 status: agentResponse.status as Agent['status'],
                 color: agentColors[index % agentColors.length] ?? 'agent-1',
                 messages,
@@ -195,6 +196,7 @@ export default function SessionPage() {
                 name: agentResponse.name,
                 role: agentResponse.role as Agent['role'],
                 model: agentResponse.model,
+                modelDisplayName: agentResponse.model_display_name ?? undefined,
                 status: agentResponse.status as Agent['status'],
                 color: agentColors[index % agentColors.length] ?? 'agent-1',
                 messages: [],

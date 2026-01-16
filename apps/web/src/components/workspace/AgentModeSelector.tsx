@@ -213,7 +213,6 @@ export function AgentModeSelector({
         <div className="space-y-6 px-6 pb-2">
           {/* Mode Selection */}
           <div className="space-y-3">
-            <label className="text-sm font-medium text-text-primary">Mode</label>
             <div className="grid gap-3">
               {modeOptions.map((mode) => {
                 const Icon = mode.icon;

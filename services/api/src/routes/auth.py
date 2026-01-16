@@ -1,7 +1,7 @@
 """Authentication routes."""
 
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from jose import JWTError, jwt
@@ -24,6 +24,57 @@ DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 # OAuth2 token type constant - standard OAuth2 token type identifier
 _OAUTH2_TYPE_STR = "bearer"  # not a password, standard OAuth2 type identifier
+
+# Cookie names for httpOnly auth tokens (not passwords, just cookie names)
+COOKIE_ACCESS_TOKEN = "podex_access"  # noqa: S105
+COOKIE_REFRESH_TOKEN = "podex_refresh"  # noqa: S105
+
+
+def set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
+    """Set httpOnly cookies for authentication tokens.
+
+    These cookies are:
+    - httpOnly: Not accessible via JavaScript (XSS protection)
+    - secure: Only sent over HTTPS (in production)
+    - sameSite: Lax for CSRF protection while allowing normal navigation
+    """
+    # Access token cookie - used for API requests
+    response.set_cookie(
+        key=COOKIE_ACCESS_TOKEN,
+        value=access_token,
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite=cast("Literal['lax', 'strict', 'none']", settings.COOKIE_SAMESITE),
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/api",
+        domain=settings.COOKIE_DOMAIN,
+    )
+
+    # Refresh token cookie - restricted to auth refresh endpoint
+    response.set_cookie(
+        key=COOKIE_REFRESH_TOKEN,
+        value=refresh_token,
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite=cast("Literal['lax', 'strict', 'none']", settings.COOKIE_SAMESITE),
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        path="/api/auth",  # Restrict to auth endpoints only
+        domain=settings.COOKIE_DOMAIN,
+    )
+
+
+def clear_auth_cookies(response: Response) -> None:
+    """Clear authentication cookies on logout."""
+    response.delete_cookie(
+        key=COOKIE_ACCESS_TOKEN,
+        path="/api",
+        domain=settings.COOKIE_DOMAIN,
+    )
+    response.delete_cookie(
+        key=COOKIE_REFRESH_TOKEN,
+        path="/api/auth",
+        domain=settings.COOKIE_DOMAIN,
+    )
 
 
 class LoginRequest(BaseModel):
@@ -175,8 +226,13 @@ async def login(
     user_role = getattr(user, "role", "member") or "member"
 
     access_token = create_access_token(user.id, role=user_role)
-    refresh_token = create_refresh_token(user.id)
+    refresh_token_value = create_refresh_token(user.id)
 
+    # Set httpOnly cookies for secure token storage
+    set_auth_cookies(response, access_token, refresh_token_value)
+
+    # Also return tokens in response body for backward compatibility
+    # Frontend can migrate to cookie-only auth over time
     return AuthResponse(
         user=UserResponse(
             id=user.id,
@@ -186,7 +242,7 @@ async def login(
             role=user_role,
         ),
         access_token=access_token,
-        refresh_token=refresh_token,
+        refresh_token=refresh_token_value,
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
 
@@ -252,7 +308,10 @@ async def register(
     user_role = getattr(user, "role", "member") or "member"
 
     access_token = create_access_token(user.id, role=user_role)
-    refresh_token = create_refresh_token(user.id)
+    refresh_token_value = create_refresh_token(user.id)
+
+    # Set httpOnly cookies for secure token storage
+    set_auth_cookies(response, access_token, refresh_token_value)
 
     return AuthResponse(
         user=UserResponse(
@@ -263,29 +322,46 @@ async def register(
             role=user_role,
         ),
         access_token=access_token,
-        refresh_token=refresh_token,
+        refresh_token=refresh_token_value,
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
 
 
 class RefreshRequest(BaseModel):
-    """Refresh token request."""
+    """Refresh token request.
 
-    refresh_token: str
+    The refresh_token can be provided in the request body OR via httpOnly cookie.
+    Cookie-based refresh is preferred for security.
+    """
+
+    refresh_token: str | None = None  # Optional - can use cookie instead
 
 
 @router.post("/refresh", response_model=TokenResponse)
 @limiter.limit(RATE_LIMIT_SENSITIVE)
 async def refresh_token(
-    body: RefreshRequest,
     request: Request,
     response: Response,
     db: DbSession,
+    body: RefreshRequest | None = None,
 ) -> TokenResponse:
-    """Refresh access token using refresh token."""
+    """Refresh access token using refresh token.
+
+    The refresh token can be provided via:
+    1. httpOnly cookie (preferred, more secure)
+    2. Request body (for backward compatibility)
+    """
+    # Get refresh token from cookie first, then body
+    token = request.cookies.get(COOKIE_REFRESH_TOKEN)
+    if not token and body and body.refresh_token:
+        token = body.refresh_token
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Refresh token required")
+
     try:
         payload = jwt.decode(
-            body.refresh_token,
+            token,
             settings.JWT_SECRET_KEY,
             algorithms=[settings.JWT_ALGORITHM],
         )
@@ -308,13 +384,36 @@ async def refresh_token(
         # This ensures role changes are reflected on token refresh
         user_role = getattr(user, "role", "member") or "member"
 
+        new_access_token = create_access_token(str(user_id), role=user_role)
+        new_refresh_token = create_refresh_token(str(user_id))
+
+        # Set new httpOnly cookies
+        set_auth_cookies(response, new_access_token, new_refresh_token)
+
         return TokenResponse(
-            access_token=create_access_token(str(user_id), role=user_role),
-            refresh_token=create_refresh_token(str(user_id)),
+            access_token=new_access_token,
+            refresh_token=new_refresh_token,
             expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         )
     except JWTError as e:
         raise HTTPException(status_code=401, detail="Invalid or expired token") from e
+
+
+class LogoutResponse(BaseModel):
+    """Logout response."""
+
+    message: str = "Logged out successfully"
+
+
+@router.post("/logout", response_model=LogoutResponse)
+async def logout(response: Response) -> LogoutResponse:
+    """Log out user by clearing authentication cookies.
+
+    This endpoint clears the httpOnly cookies that store auth tokens.
+    The frontend should also clear any locally stored tokens.
+    """
+    clear_auth_cookies(response)
+    return LogoutResponse()
 
 
 @router.get("/me", response_model=UserResponse)

@@ -86,7 +86,6 @@ type AgentOption = {
   icon: typeof Bot;
   color: string;
   description: string;
-  model: string;
   isCustom: boolean;
   templateId?: string;
   shareToken?: string | null;
@@ -100,7 +99,6 @@ const BUILTIN_AGENTS: AgentOption[] = [
     icon: Wrench,
     color: '#a855f7',
     description: 'Plans system architecture and makes high-level design decisions',
-    model: 'claude-sonnet-4-20250514',
     isCustom: false,
   },
   {
@@ -110,7 +108,6 @@ const BUILTIN_AGENTS: AgentOption[] = [
     icon: Code,
     color: '#22c55e',
     description: 'Writes and modifies code based on requirements',
-    model: 'claude-sonnet-4-20250514',
     isCustom: false,
   },
   {
@@ -120,7 +117,6 @@ const BUILTIN_AGENTS: AgentOption[] = [
     icon: Eye,
     color: '#f59e0b',
     description: 'Reviews code for quality, bugs, and best practices',
-    model: 'claude-sonnet-4-20250514',
     isCustom: false,
   },
   {
@@ -130,7 +126,6 @@ const BUILTIN_AGENTS: AgentOption[] = [
     icon: TestTube,
     color: '#00e5ff',
     description: 'Writes and runs tests to ensure code quality',
-    model: 'claude-sonnet-4-20250514',
     isCustom: false,
   },
   {
@@ -140,7 +135,6 @@ const BUILTIN_AGENTS: AgentOption[] = [
     icon: Sparkles,
     color: '#ec4899',
     description: 'Create custom AI agents through conversation',
-    model: 'claude-sonnet-4-20250514',
     isCustom: false,
   },
   {
@@ -150,7 +144,6 @@ const BUILTIN_AGENTS: AgentOption[] = [
     icon: Workflow,
     color: '#06b6d4',
     description: 'Coordinates multiple agents, delegates tasks, and synthesizes results',
-    model: 'claude-sonnet-4-20250514',
     isCustom: false,
   },
   {
@@ -160,7 +153,6 @@ const BUILTIN_AGENTS: AgentOption[] = [
     icon: MessageCircle,
     color: '#8b5cf6',
     description: 'Conversational assistant for discussions with no file or command access',
-    model: 'claude-sonnet-4-20250514',
     isCustom: false,
   },
   {
@@ -170,7 +162,6 @@ const BUILTIN_AGENTS: AgentOption[] = [
     icon: Shield,
     color: '#ef4444',
     description: 'Identifies security vulnerabilities and recommends fixes',
-    model: 'claude-sonnet-4-20250514',
     isCustom: false,
   },
   {
@@ -180,7 +171,6 @@ const BUILTIN_AGENTS: AgentOption[] = [
     icon: Server,
     color: '#10b981',
     description: 'Designs and implements infrastructure and deployment pipelines',
-    model: 'claude-sonnet-4-20250514',
     isCustom: false,
   },
   {
@@ -190,7 +180,6 @@ const BUILTIN_AGENTS: AgentOption[] = [
     icon: FileText,
     color: '#f59e0b',
     description: 'Writes comprehensive code documentation and guides',
-    model: 'claude-sonnet-4-20250514',
     isCustom: false,
   },
 ];
@@ -317,7 +306,6 @@ function CreateAgentModal({ sessionId, onClose }: { sessionId: string; onClose: 
         const createdAgent = await createAgent(sessionId, {
           name: customName || selectedAgent.name,
           role: selectedAgent.role,
-          model: selectedAgent.model,
           template_id: selectedAgent.templateId,
         });
 

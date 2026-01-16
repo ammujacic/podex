@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from podex_shared import TokenUsageParams, get_usage_tracker
+from src.context.manager import get_context_manager
 from src.database.connection import get_db_context
 from src.database.conversation import (
     MessageData,
@@ -398,7 +399,8 @@ class BaseAgent(ABC):
         """Determine if mode should revert based on task completion.
 
         Checks if the response indicates the mode-specific task is complete
-        and the agent should revert to the previous mode.
+        and the agent should revert to the previous mode. Uses regex patterns
+        anchored to sentence boundaries to reduce false positives.
 
         Args:
             response_content: The assistant's response content.
@@ -412,38 +414,43 @@ class BaseAgent(ABC):
         content_lower = response_content.lower()
 
         # Plan mode: revert after presenting a plan
+        # Use regex to match at sentence boundaries (start of line or after punctuation)
         if self.mode == "plan":
-            plan_indicators = [
-                "here's my plan",
-                "here is my plan",
-                "implementation plan",
-                "here's the plan",
-                "here is the plan",
-                "i propose the following",
-                "my recommended approach",
-                "step 1:",
-                "## plan",
-                "# plan",
-                "proposed solution",
+            plan_patterns = [
+                # Plan presentation phrases at sentence start
+                r"(?:^|[.!?]\s*)here(?:'s| is) (?:my |the )?plan\b",
+                r"(?:^|[.!?]\s*)(?:implementation|proposed) plan\b",
+                r"(?:^|[.!?]\s*)i propose the following\b",
+                r"(?:^|[.!?]\s*)my recommended approach\b",
+                r"(?:^|[.!?]\s*)proposed solution\b",
+                # Numbered steps (strong indicator of plan)
+                r"(?:^|[.!?\n]\s*)(?:step|phase) 1[.:]\s",
+                # Markdown headers indicating plan
+                r"(?:^|\n)#{1,3}\s*plan\b",
+                r"(?:^|\n)#{1,3}\s*implementation plan\b",
             ]
-            if any(ind in content_lower for ind in plan_indicators):
-                return True
+            for pattern in plan_patterns:
+                if re.search(pattern, content_lower, re.MULTILINE | re.IGNORECASE):
+                    return True
 
         # Auto mode: revert after implementation complete
+        # Be more conservative - look for explicit completion statements
         if self.mode == "auto":
-            completion_indicators = [
-                "changes have been made",
-                "implementation complete",
-                "successfully implemented",
-                "all done",
-                "changes are complete",
-                "i've made the changes",
-                "i have made the changes",
-                "finished implementing",
-                "implementation is complete",
+            completion_patterns = [
+                # Explicit completion statements at sentence start
+                r"(?:^|[.!?]\s*)(?:the )?changes have been (?:made|applied|committed)\b",
+                r"(?:^|[.!?]\s*)implementation (?:is )?complete\b",
+                r"(?:^|[.!?]\s*)successfully (?:implemented|completed|applied)\b",
+                r"(?:^|[.!?]\s*)(?:all done|all changes (?:are )?complete)\b",
+                r"(?:^|[.!?]\s*)i(?:'ve| have) (?:made|completed|finished|applied) "
+                r"(?:the |all )?changes\b",
+                r"(?:^|[.!?]\s*)finished implementing\b",
+                # Strong completion signals
+                r"(?:^|[.!?]\s*)everything (?:is )?(?:set up|configured|ready|complete)\b",
             ]
-            if any(ind in content_lower for ind in completion_indicators):
-                return True
+            for pattern in completion_patterns:
+                if re.search(pattern, content_lower, re.MULTILINE | re.IGNORECASE):
+                    return True
 
         return False
 
@@ -790,6 +797,27 @@ Use this power responsibly:
             *self.conversation_history,
         ]
 
+        # Use context manager to prepare messages (handle trimming/summarization)
+        context_manager = get_context_manager()
+        if context_manager:
+            try:
+                messages, _total_tokens = await context_manager.prepare_context(
+                    agent_id=self.agent_id,
+                    messages=self.conversation_history,
+                    system_prompt=self.system_prompt,
+                )
+                # Re-add system prompt as first message (prepare_context returns just conversation)
+                messages = [
+                    {"role": "system", "content": self.system_prompt},
+                    *messages,
+                ]
+            except Exception as ctx_err:
+                logger.warning(
+                    "Context preparation failed, using full history",
+                    agent_id=self.agent_id,
+                    error=str(ctx_err),
+                )
+
         # Convert tools to API format
         tools_api = [
             {
@@ -845,8 +873,8 @@ Use this power responsibly:
                         agent_id=self.agent_id,
                         tool_count=len(extracted_calls),
                     )
-                    # Keep any remaining non-JSON content
-                    content = remaining_content
+                    # Keep non-JSON content, or empty string if entirely JSON tool calls
+                    content = remaining_content if remaining_content.strip() else ""
 
             # Process tool calls if any
             processed_tool_calls = []
@@ -948,6 +976,27 @@ Use this power responsibly:
             *self.conversation_history,
         ]
 
+        # Use context manager to prepare messages (handle trimming/summarization)
+        context_manager = get_context_manager()
+        if context_manager:
+            try:
+                messages, _total_tokens = await context_manager.prepare_context(
+                    agent_id=self.agent_id,
+                    messages=self.conversation_history,
+                    system_prompt=self.system_prompt,
+                )
+                # Re-add system prompt as first message (prepare_context returns just conversation)
+                messages = [
+                    {"role": "system", "content": self.system_prompt},
+                    *messages,
+                ]
+            except Exception as ctx_err:
+                logger.warning(
+                    "Context preparation failed, using full history",
+                    agent_id=self.agent_id,
+                    error=str(ctx_err),
+                )
+
         # Convert tools to API format
         tools_api = [
             {
@@ -982,25 +1031,45 @@ Use this power responsibly:
             output_tokens = 0
             current_tool_calls: dict[str, dict[str, Any]] = {}  # Track in-progress tool calls
 
-            # Stream from LLM
-            async for event in self.llm_provider.complete_stream(request):
-                if event.type == "token":
-                    # Emit token to Redis
-                    await publisher.publish_stream_event(
-                        session_id=self.session_id or "",
+            # Stream from LLM with resilient Redis publishing
+            # Redis failures should not crash the entire streaming operation
+            async def _safe_publish(event_data: dict[str, Any]) -> None:
+                """Publish to Redis, logging errors but not failing the stream."""
+                try:
+                    await publisher.publish_stream_event(**event_data)
+                except Exception as publish_error:
+                    event_obj = event_data.get("event")
+                    event_type = getattr(event_obj, "type", "unknown") if event_obj else "unknown"
+                    logger.warning(
+                        "Failed to publish stream event to Redis, continuing",
                         agent_id=self.agent_id,
                         message_id=message_id,
-                        event=event,
+                        event_type=event_type,
+                        error=str(publish_error),
+                    )
+
+            async for event in self.llm_provider.complete_stream(request):
+                if event.type == "token":
+                    # Emit token to Redis (best-effort, don't fail on Redis errors)
+                    await _safe_publish(
+                        {
+                            "session_id": self.session_id or "",
+                            "agent_id": self.agent_id,
+                            "message_id": message_id,
+                            "event": event,
+                        }
                     )
                     content_parts.append(event.content or "")
 
                 elif event.type == "thinking":
-                    # Emit thinking token to Redis
-                    await publisher.publish_stream_event(
-                        session_id=self.session_id or "",
-                        agent_id=self.agent_id,
-                        message_id=message_id,
-                        event=event,
+                    # Emit thinking token to Redis (best-effort)
+                    await _safe_publish(
+                        {
+                            "session_id": self.session_id or "",
+                            "agent_id": self.agent_id,
+                            "message_id": message_id,
+                            "event": event,
+                        }
                     )
                     thinking_parts.append(event.content or "")
 
@@ -1012,11 +1081,13 @@ Use this power responsibly:
                             "name": event.tool_name,
                             "arguments": {},
                         }
-                    await publisher.publish_stream_event(
-                        session_id=self.session_id or "",
-                        agent_id=self.agent_id,
-                        message_id=message_id,
-                        event=event,
+                    await _safe_publish(
+                        {
+                            "session_id": self.session_id or "",
+                            "agent_id": self.agent_id,
+                            "message_id": message_id,
+                            "event": event,
+                        }
                     )
 
                 elif event.type == "tool_call_end":
@@ -1024,11 +1095,13 @@ Use this power responsibly:
                     if event.tool_call_id and event.tool_call_id in current_tool_calls:
                         current_tool_calls[event.tool_call_id]["arguments"] = event.tool_input
                         tool_calls.append(current_tool_calls[event.tool_call_id])
-                    await publisher.publish_stream_event(
-                        session_id=self.session_id or "",
-                        agent_id=self.agent_id,
-                        message_id=message_id,
-                        event=event,
+                    await _safe_publish(
+                        {
+                            "session_id": self.session_id or "",
+                            "agent_id": self.agent_id,
+                            "message_id": message_id,
+                            "event": event,
+                        }
                     )
 
                 elif event.type == "done":
@@ -1080,7 +1153,8 @@ Use this power responsibly:
                         agent_id=self.agent_id,
                         tool_count=len(extracted_calls),
                     )
-                    content = remaining_content
+                    # Keep non-JSON content, or empty string if entirely JSON tool calls
+                    content = remaining_content if remaining_content.strip() else ""
 
             # Process tool calls if any
             processed_tool_calls = []

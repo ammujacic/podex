@@ -9,7 +9,7 @@ from fastapi import FastAPI
 
 from podex_shared import SentryConfig, init_sentry, init_usage_tracker, shutdown_usage_tracker
 from podex_shared.redis_client import get_redis_client
-from src.config import settings
+from src.config import refresh_model_capabilities, settings
 from src.context.manager import ContextWindowManager, set_context_manager
 from src.providers.llm import LLMProvider
 from src.queue.task_queue import TaskQueue
@@ -107,6 +107,12 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Initialize services
     await ServiceManager.init_services()
+
+    # Load model capabilities from API (async)
+    try:
+        await refresh_model_capabilities(force=True)
+    except Exception as e:
+        logger.warning("Failed to load model capabilities on startup, using fallback", error=str(e))
 
     yield
 

@@ -4,13 +4,17 @@ import React, { useState, useCallback } from 'react';
 import { Zap, Settings, History, AlertTriangle, Loader2, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useContextStore, type CompactionSettings } from '@/stores/context';
+import { updateCompactionSettings } from '@/lib/api';
 
 interface CompactionDialogProps {
   agentId: string;
   agentName: string;
   sessionId: string;
   onClose: () => void;
-  onCompact: (instructions?: string) => Promise<void>;
+  onCompact: (options?: {
+    customInstructions?: string;
+    preserveRecentMessages?: number;
+  }) => Promise<void>;
 }
 
 type TabId = 'compact' | 'settings' | 'history';
@@ -42,16 +46,30 @@ export function CompactionDialog({
     setIsCompacting(true);
     setCompacting(agentId, true);
     try {
-      await onCompact(customInstructions || undefined);
+      await onCompact({
+        customInstructions: customInstructions || undefined,
+        preserveRecentMessages: settings.preserveRecentMessages,
+      });
     } finally {
       setIsCompacting(false);
       setCompacting(agentId, false);
     }
-  }, [agentId, customInstructions, onCompact, setCompacting]);
+  }, [agentId, customInstructions, onCompact, setCompacting, settings.preserveRecentMessages]);
 
   const handleSettingsChange = useCallback(
     (updates: Partial<CompactionSettings>) => {
+      // Update local state immediately for responsive UI
       updateSessionSettings(sessionId, updates);
+
+      // Persist to database (fire and forget, with error logging)
+      updateCompactionSettings(sessionId, {
+        auto_compact_enabled: updates.autoCompactEnabled,
+        auto_compact_threshold_percent: updates.autoCompactThresholdPercent,
+        custom_compaction_instructions: updates.customCompactionInstructions,
+        preserve_recent_messages: updates.preserveRecentMessages,
+      }).catch((err) => {
+        console.error('Failed to save compaction settings:', err);
+      });
     },
     [sessionId, updateSessionSettings]
   );

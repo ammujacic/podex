@@ -80,45 +80,27 @@ export const DEFAULT_AGENTS = {
 } as const;
 
 // ==========================================
-// LLM Model Information
+// Attachment & Image Constants
 // ==========================================
 
-export const LLM_MODELS = {
-  'claude-opus-4-5-20251101': {
-    provider: 'anthropic',
-    name: 'Claude Opus 4.5',
-    contextWindow: 200000,
-    maxOutput: 8192,
-    capabilities: ['code', 'analysis', 'planning'],
-  },
-  'claude-sonnet-4-20250514': {
-    provider: 'anthropic',
-    name: 'Claude Sonnet 4',
-    contextWindow: 200000,
-    maxOutput: 8192,
-    capabilities: ['code', 'analysis'],
-  },
-  'claude-3-5-haiku-20241022': {
-    provider: 'anthropic',
-    name: 'Claude 3.5 Haiku',
-    contextWindow: 200000,
-    maxOutput: 8192,
-    capabilities: ['code', 'fast'],
-  },
-  'gpt-4o': {
-    provider: 'openai',
-    name: 'GPT-4o',
-    contextWindow: 128000,
-    maxOutput: 4096,
-    capabilities: ['code', 'analysis', 'multimodal'],
-  },
-  'gpt-4-turbo': {
-    provider: 'openai',
-    name: 'GPT-4 Turbo',
-    contextWindow: 128000,
-    maxOutput: 4096,
-    capabilities: ['code', 'analysis'],
-  },
+/**
+ * Supported image types for vision models
+ */
+export const SUPPORTED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+
+/**
+ * Maximum file size for attachments (20MB)
+ */
+export const MAX_ATTACHMENT_SIZE_MB = 20;
+
+/**
+ * Extended thinking presets
+ */
+export const THINKING_PRESETS = {
+  low: { label: 'Low', tokens: 1024 },
+  medium: { label: 'Medium', tokens: 8000 },
+  high: { label: 'High', tokens: 16000 },
+  max: { label: 'Max', tokens: 32000 },
 } as const;
 
 // ==========================================

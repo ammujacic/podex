@@ -1,6 +1,9 @@
 import { create, type StateCreator } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 
+import { isCriticallyFull, isNearQuota, cleanupByPrefix } from '@/lib/storageQuota';
+import type { ThinkingConfig } from '@podex/shared';
+
 export interface AgentPosition {
   x: number;
   y: number;
@@ -33,6 +36,7 @@ export interface Agent {
     | 'documentator'
     | 'custom';
   model: string;
+  modelDisplayName?: string; // User-friendly model name from backend
   status: 'idle' | 'active' | 'error';
   color: string;
   messages: AgentMessage[];
@@ -45,6 +49,8 @@ export interface Agent {
   mode: AgentMode;
   previousMode?: AgentMode; // For auto-revert tracking when mode is auto-switched
   commandAllowlist?: string[]; // Allowed commands for Auto mode (glob patterns)
+  // Extended thinking configuration
+  thinkingConfig?: ThinkingConfig;
 }
 
 export interface AgentMessage {
@@ -163,6 +169,9 @@ interface SessionState {
     newMode: AgentMode,
     previousMode: AgentMode | null
   ) => void;
+
+  // Extended thinking config action
+  updateAgentThinking: (sessionId: string, agentId: string, thinkingConfig: ThinkingConfig) => void;
 
   // Streaming message actions
   startStreamingMessage: (sessionId: string, agentId: string, messageId: string) => void;
@@ -614,6 +623,21 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
       };
     }),
 
+  updateAgentThinking: (sessionId, agentId, thinkingConfig) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            agents: session.agents.map((a) => (a.id === agentId ? { ...a, thinkingConfig } : a)),
+          },
+        },
+      };
+    }),
+
   // Streaming message actions
   startStreamingMessage: (sessionId, agentId, messageId) =>
     set((state) => ({
@@ -708,8 +732,140 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
   getStreamingMessage: (messageId) => get().streamingMessages[messageId],
 });
 
+// Debounced storage adapter to prevent excessive localStorage writes
+// Uses requestIdleCallback when available for better performance
+// Compatible with Zustand's persist middleware StorageValue format
+type StorageValue<T> = { state: T; version?: number };
+type PersistStorage<T> = {
+  getItem: (name: string) => StorageValue<T> | null | Promise<StorageValue<T> | null>;
+  setItem: (name: string, value: StorageValue<T>) => void | Promise<void>;
+  removeItem: (name: string) => void | Promise<void>;
+};
+
+type PartializedSessionState = {
+  currentSessionId: string | null;
+  sessions: Record<string, Session>;
+  recentFiles: string[];
+};
+
+const createDebouncedStorage = (
+  debounceMs: number = 1000
+): PersistStorage<PartializedSessionState> => {
+  let pendingWrite: string | null = null;
+  let writeTimeout: ReturnType<typeof setTimeout> | null = null;
+  let lastWriteTime = 0;
+
+  const scheduleWrite = (key: string, value: string) => {
+    pendingWrite = value;
+
+    // Clear any existing timeout
+    if (writeTimeout) {
+      clearTimeout(writeTimeout);
+    }
+
+    // Calculate time since last write
+    const timeSinceLastWrite = Date.now() - lastWriteTime;
+
+    // If it's been long enough, write immediately using idle callback
+    if (timeSinceLastWrite >= debounceMs) {
+      const doWrite = () => {
+        if (pendingWrite !== null) {
+          // Check quota before writing
+          if (isCriticallyFull()) {
+            console.warn('localStorage critically full, attempting cleanup...');
+            // Try to cleanup old session data to make room
+            const cleaned = cleanupByPrefix('podex-sessions', 5);
+            if (cleaned > 0) {
+              console.info(`Cleaned up ${cleaned} old session entries`);
+            }
+          }
+
+          try {
+            localStorage.setItem(key, pendingWrite);
+            lastWriteTime = Date.now();
+          } catch (e) {
+            console.warn('Failed to persist session state:', e);
+            // If write failed due to quota, try cleanup and retry once
+            if (e instanceof Error && e.name === 'QuotaExceededError') {
+              cleanupByPrefix('podex-sessions', 3);
+              try {
+                localStorage.setItem(key, pendingWrite);
+                lastWriteTime = Date.now();
+              } catch {
+                console.error('Failed to persist session state even after cleanup');
+              }
+            }
+          }
+          pendingWrite = null;
+        }
+      };
+
+      // Use requestIdleCallback if available for non-blocking writes
+      if (typeof requestIdleCallback !== 'undefined') {
+        requestIdleCallback(doWrite, { timeout: 100 });
+      } else {
+        doWrite();
+      }
+    } else {
+      // Otherwise, schedule a debounced write
+      writeTimeout = setTimeout(() => {
+        if (pendingWrite !== null) {
+          // Check quota before writing
+          if (isNearQuota(0.9)) {
+            console.warn('localStorage near quota, cleaning up old sessions...');
+            cleanupByPrefix('podex-sessions', 5);
+          }
+
+          try {
+            localStorage.setItem(key, pendingWrite);
+            lastWriteTime = Date.now();
+          } catch (e) {
+            console.warn('Failed to persist session state:', e);
+          }
+          pendingWrite = null;
+        }
+        writeTimeout = null;
+      }, debounceMs - timeSinceLastWrite);
+    }
+  };
+
+  return {
+    getItem: (name: string): StorageValue<PartializedSessionState> | null => {
+      try {
+        const value = localStorage.getItem(name);
+        if (!value) return null;
+        return JSON.parse(value) as StorageValue<PartializedSessionState>;
+      } catch {
+        return null;
+      }
+    },
+    setItem: (name: string, value: StorageValue<PartializedSessionState>): void => {
+      try {
+        scheduleWrite(name, JSON.stringify(value));
+      } catch {
+        // Ignore serialization errors
+      }
+    },
+    removeItem: (name: string): void => {
+      // Immediate removal
+      if (writeTimeout) {
+        clearTimeout(writeTimeout);
+        writeTimeout = null;
+      }
+      pendingWrite = null;
+      try {
+        localStorage.removeItem(name);
+      } catch {
+        // Ignore removal errors
+      }
+    },
+  };
+};
+
 const persistedSessionStore = persist(sessionStoreCreator, {
   name: 'podex-sessions',
+  // Use debounced storage to prevent excessive writes during rapid updates
+  storage: createDebouncedStorage(1000),
   partialize: (state) => ({
     currentSessionId: state.currentSessionId,
     // Limit persisted data to prevent localStorage overflow

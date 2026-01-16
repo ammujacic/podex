@@ -5,6 +5,7 @@
 import * as Sentry from '@sentry/nextjs';
 import type { User, AuthTokens } from '@/stores/auth';
 import { useAuthStore } from '@/stores/auth';
+import type { ThinkingConfig, AttachmentFile } from '@podex/shared';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
@@ -150,6 +151,33 @@ function calculateExpiry(expiresIn: number): number {
   return Date.now() + expiresIn * 1000;
 }
 
+// Custom error class for API errors with status code
+export class ApiRequestError extends Error {
+  status: number;
+  isAborted: boolean;
+
+  constructor(message: string, status: number, isAborted = false) {
+    super(message);
+    this.name = 'ApiRequestError';
+    this.status = status;
+    this.isAborted = isAborted;
+  }
+}
+
+// Helper to check if an error is an abort error
+export function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === 'AbortError') ||
+    (error instanceof ApiRequestError && error.isAborted)
+  );
+}
+
+// Request options with optional abort signal
+interface RequestOptions {
+  includeAuth?: boolean;
+  signal?: AbortSignal;
+}
+
 class ApiClient {
   private baseUrl: string;
 
@@ -189,8 +217,7 @@ class ApiClient {
         message = `HTTP ${response.status}: ${response.statusText}`;
       }
 
-      const err = new Error(message) as Error & { status: number };
-      err.status = response.status;
+      const err = new ApiRequestError(message, response.status);
 
       // Auto-logout on 401 (invalid/expired token)
       if (response.status === 401) {
@@ -220,23 +247,36 @@ class ApiClient {
     return response.json();
   }
 
-  async get<T>(path: string, includeAuth = true): Promise<T> {
+  private handleFetchError(error: unknown): never {
+    // Handle abort errors
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new ApiRequestError('Request was cancelled', 0, true);
+    }
+    // Handle network errors (e.g., server not running, CORS issues)
+    if (error instanceof TypeError && error.message === 'Failed to fetch') {
+      throw new ApiRequestError(
+        'Unable to connect to the API server. Please ensure the backend is running.',
+        503
+      );
+    }
+    throw error;
+  }
+
+  async get<T>(path: string, options: RequestOptions | boolean = true): Promise<T> {
+    // Support legacy boolean signature for includeAuth
+    const opts: RequestOptions = typeof options === 'boolean' ? { includeAuth: options } : options;
+    const { includeAuth = true, signal } = opts;
+
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
         method: 'GET',
         headers: this.getHeaders(includeAuth),
+        credentials: 'include', // Send httpOnly cookies for auth
+        signal,
       });
       return this.handleResponse<T>(response);
     } catch (error) {
-      // Handle network errors (e.g., server not running, CORS issues)
-      if (error instanceof TypeError && error.message === 'Failed to fetch') {
-        const err = new Error(
-          'Unable to connect to the API server. Please ensure the backend is running.'
-        ) as Error & { status: number };
-        err.status = 503; // Service Unavailable
-        throw err;
-      }
-      throw error;
+      this.handleFetchError(error);
     }
   }
 
@@ -273,82 +313,72 @@ class ApiClient {
     });
   }
 
-  async post<T>(path: string, data: unknown, includeAuth = true): Promise<T> {
+  async post<T>(path: string, data: unknown, options: RequestOptions | boolean = true): Promise<T> {
+    // Support legacy boolean signature for includeAuth
+    const opts: RequestOptions = typeof options === 'boolean' ? { includeAuth: options } : options;
+    const { includeAuth = true, signal } = opts;
+
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
         method: 'POST',
         headers: this.getHeaders(includeAuth),
+        credentials: 'include', // Send httpOnly cookies for auth
         body: JSON.stringify(data),
+        signal,
       });
       return this.handleResponse<T>(response);
     } catch (error) {
-      if (error instanceof TypeError && error.message === 'Failed to fetch') {
-        const err = new Error(
-          'Unable to connect to the API server. Please ensure the backend is running.'
-        ) as Error & { status: number };
-        err.status = 503;
-        throw err;
-      }
-      throw error;
+      this.handleFetchError(error);
     }
   }
 
-  async put<T>(path: string, data: unknown): Promise<T> {
+  async put<T>(path: string, data: unknown, options: RequestOptions = {}): Promise<T> {
+    const { includeAuth = true, signal } = options;
+
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
         method: 'PUT',
-        headers: this.getHeaders(),
+        headers: this.getHeaders(includeAuth),
+        credentials: 'include', // Send httpOnly cookies for auth
         body: JSON.stringify(data),
+        signal,
       });
       return this.handleResponse<T>(response);
     } catch (error) {
-      if (error instanceof TypeError && error.message === 'Failed to fetch') {
-        const err = new Error(
-          'Unable to connect to the API server. Please ensure the backend is running.'
-        ) as Error & { status: number };
-        err.status = 503;
-        throw err;
-      }
-      throw error;
+      this.handleFetchError(error);
     }
   }
 
-  async delete<T>(path: string): Promise<T> {
+  async delete<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    const { includeAuth = true, signal } = options;
+
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
         method: 'DELETE',
-        headers: this.getHeaders(),
+        headers: this.getHeaders(includeAuth),
+        credentials: 'include', // Send httpOnly cookies for auth
+        signal,
       });
       return this.handleResponse<T>(response);
     } catch (error) {
-      if (error instanceof TypeError && error.message === 'Failed to fetch') {
-        const err = new Error(
-          'Unable to connect to the API server. Please ensure the backend is running.'
-        ) as Error & { status: number };
-        err.status = 503;
-        throw err;
-      }
-      throw error;
+      this.handleFetchError(error);
     }
   }
 
-  async patch<T>(path: string, data: unknown): Promise<T> {
+  async patch<T>(path: string, data: unknown, options: RequestOptions = {}): Promise<T> {
+    const { includeAuth = true, signal } = options;
+
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
         method: 'PATCH',
-        headers: this.getHeaders(),
+        headers: this.getHeaders(includeAuth),
+        credentials: 'include', // Send httpOnly cookies for auth
         body: JSON.stringify(data),
+        signal,
       });
       return this.handleResponse<T>(response);
     } catch (error) {
-      if (error instanceof TypeError && error.message === 'Failed to fetch') {
-        const err = new Error(
-          'Unable to connect to the API server. Please ensure the backend is running.'
-        ) as Error & { status: number };
-        err.status = 503;
-        throw err;
-      }
-      throw error;
+      this.handleFetchError(error);
     }
   }
 
@@ -497,7 +527,14 @@ export async function initializeAuth(): Promise<void> {
   store.setInitialized(true);
 }
 
-export function logout(): void {
+export async function logout(): Promise<void> {
+  // Clear server-side httpOnly cookies
+  try {
+    await api.post('/api/auth/logout', {}, { includeAuth: false });
+  } catch {
+    // Ignore errors - cookies might already be cleared or invalid
+  }
+  // Clear local auth state
   useAuthStore.getState().logout();
 }
 
@@ -598,7 +635,7 @@ export interface AgentCreateRequest {
     | 'devops'
     | 'documentator'
     | 'custom';
-  model: string;
+  model?: string; // Optional - uses role default from platform settings if not provided
   config?: Record<string, unknown>;
   template_id?: string; // Reference to custom agent template
 }
@@ -609,6 +646,7 @@ export interface AgentResponse {
   name: string;
   role: string;
   model: string;
+  model_display_name?: string | null; // User-friendly model name from backend
   status: string;
   mode?: 'plan' | 'ask' | 'auto' | 'sovereign';
   config?: Record<string, unknown>;
@@ -645,6 +683,17 @@ export async function deleteAgent(sessionId: string, agentId: string): Promise<v
   await api.delete(`/api/sessions/${sessionId}/agents/${agentId}`);
 }
 
+/**
+ * Update agent settings (name, model).
+ */
+export async function updateAgentSettings(
+  sessionId: string,
+  agentId: string,
+  updates: { name?: string; model?: string }
+): Promise<AgentResponse> {
+  return api.patch<AgentResponse>(`/api/sessions/${sessionId}/agents/${agentId}`, updates);
+}
+
 export async function duplicateAgent(
   sessionId: string,
   agentId: string,
@@ -663,13 +712,69 @@ export async function deleteAgentMessage(
   await api.delete(`/api/sessions/${sessionId}/agents/${agentId}/messages/${messageId}`);
 }
 
+export interface SendMessageOptions {
+  attachments?: AttachmentFile[];
+  thinkingConfig?: ThinkingConfig;
+}
+
 export async function sendAgentMessage(
   sessionId: string,
   agentId: string,
-  content: string
+  content: string,
+  options?: SendMessageOptions
 ): Promise<MessageResponse> {
+  const { attachments, thinkingConfig } = options ?? {};
+
+  // Use multipart form data when attachments are present
+  if (attachments && attachments.length > 0) {
+    const formData = new FormData();
+    formData.append('content', content);
+
+    // Add thinking config if enabled
+    if (thinkingConfig) {
+      formData.append('thinking_enabled', String(thinkingConfig.enabled));
+      formData.append('thinking_budget', String(thinkingConfig.budgetTokens));
+    }
+
+    // Add all attachments
+    for (const att of attachments) {
+      // AttachmentFile should have the actual File object when sending
+      // If it has a preview (data URL), we need to convert it back to a blob
+      if (att.preview && att.type.startsWith('image/')) {
+        const response = await fetch(att.preview);
+        const blob = await response.blob();
+        formData.append('attachments', blob, att.name);
+      }
+    }
+
+    // Use direct fetch for multipart form data
+    const headers: Record<string, string> = {};
+    const tokens = useAuthStore.getState().tokens;
+    if (tokens?.accessToken) {
+      headers['Authorization'] = `Bearer ${tokens.accessToken}`;
+    }
+
+    const response = await fetch(
+      `${API_BASE_URL}/api/sessions/${sessionId}/agents/${agentId}/messages`,
+      {
+        method: 'POST',
+        headers,
+        body: formData,
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to send message');
+    }
+
+    return response.json();
+  }
+
+  // Standard JSON request (no attachments)
   return api.post<MessageResponse>(`/api/sessions/${sessionId}/agents/${agentId}/messages`, {
     content,
+    thinking_config: thinkingConfig,
   });
 }
 
@@ -739,6 +844,22 @@ export async function getAgentMode(sessionId: string, agentId: string): Promise<
   return api.get<AgentModeResponse>(`/api/sessions/${sessionId}/agents/${agentId}/mode`);
 }
 
+export interface PlanModeToggleResponse {
+  mode: AgentMode;
+  previous_mode: AgentMode | null;
+  toggled_to_plan: boolean;
+}
+
+export async function togglePlanMode(
+  sessionId: string,
+  agentId: string
+): Promise<PlanModeToggleResponse> {
+  return api.post<PlanModeToggleResponse>(
+    `/api/sessions/${sessionId}/agents/${agentId}/toggle-plan-mode`,
+    {}
+  );
+}
+
 export async function getPendingApprovals(
   sessionId: string,
   agentId: string
@@ -783,11 +904,114 @@ export async function getAgentContextUsage(agentId: string): Promise<ContextUsag
 
 export async function compactAgentContext(
   agentId: string,
-  customInstructions?: string
+  options?: {
+    customInstructions?: string;
+    preserveRecentMessages?: number;
+  }
 ): Promise<CompactResponse> {
   return api.post<CompactResponse>(`/api/context/agents/${agentId}/compact`, {
-    custom_instructions: customInstructions,
+    custom_instructions: options?.customInstructions,
+    preserve_recent_messages: options?.preserveRecentMessages,
   });
+}
+
+export interface CompactionSettingsResponse {
+  auto_compact_enabled: boolean;
+  auto_compact_threshold_percent: number;
+  custom_compaction_instructions: string | null;
+  preserve_recent_messages: number;
+}
+
+export interface CompactionSettingsUpdate {
+  auto_compact_enabled?: boolean;
+  auto_compact_threshold_percent?: number;
+  custom_compaction_instructions?: string | null;
+  preserve_recent_messages?: number;
+}
+
+export async function getCompactionSettings(
+  sessionId: string
+): Promise<CompactionSettingsResponse> {
+  return api.get<CompactionSettingsResponse>(`/api/context/sessions/${sessionId}/context/settings`);
+}
+
+export async function updateCompactionSettings(
+  sessionId: string,
+  settings: CompactionSettingsUpdate
+): Promise<CompactionSettingsResponse> {
+  return api.put<CompactionSettingsResponse>(
+    `/api/context/sessions/${sessionId}/context/settings`,
+    settings
+  );
+}
+
+// ==================== Checkpoints (Undo/Redo) ====================
+
+export interface FileChange {
+  path: string;
+  change_type: 'create' | 'modify' | 'delete';
+  lines_added: number;
+  lines_removed: number;
+}
+
+export interface Checkpoint {
+  id: string;
+  checkpoint_number: number;
+  description: string | null;
+  action_type: string;
+  agent_id: string;
+  status: 'active' | 'restored' | 'superseded';
+  created_at: string;
+  files: FileChange[];
+  file_count: number;
+  total_lines_added: number;
+  total_lines_removed: number;
+}
+
+export interface CheckpointDiff {
+  id: string;
+  description: string | null;
+  files: Array<{
+    path: string;
+    change_type: string;
+    content_before: string | null;
+    content_after: string | null;
+    lines_added: number;
+    lines_removed: number;
+  }>;
+}
+
+export interface RestoreResponse {
+  success: boolean;
+  checkpoint_id: string;
+  files: Array<{
+    path: string;
+    action: string;
+    success: boolean;
+  }>;
+}
+
+export async function getSessionCheckpoints(
+  sessionId: string,
+  agentId?: string,
+  limit: number = 50
+): Promise<Checkpoint[]> {
+  const params = new URLSearchParams();
+  if (agentId) params.append('agent_id', agentId);
+  params.append('limit', limit.toString());
+  return api.get<Checkpoint[]>(`/api/checkpoints/sessions/${sessionId}/checkpoints?${params}`);
+}
+
+export async function getCheckpoint(checkpointId: string): Promise<Checkpoint> {
+  return api.get<Checkpoint>(`/api/checkpoints/checkpoints/${checkpointId}`);
+}
+
+export async function getCheckpointDiff(checkpointId: string): Promise<CheckpointDiff> {
+  return api.get<CheckpointDiff>(`/api/checkpoints/checkpoints/${checkpointId}/diff`);
+}
+
+export async function restoreCheckpoint(checkpointId: string): Promise<RestoreResponse> {
+  return api.post<RestoreResponse>(`/api/checkpoints/checkpoints/${checkpointId}/restore`, {});
 }
 
 // ==================== Pod Templates ====================
@@ -2484,42 +2708,6 @@ export interface CheckpointDiff {
   }>;
 }
 
-export interface RestoreCheckpointResponse {
-  success: boolean;
-  checkpoint_id: string;
-  files: Array<{
-    path: string;
-    action: string;
-    success: boolean;
-  }>;
-}
-
-export async function getSessionCheckpoints(
-  sessionId: string,
-  options?: { agentId?: string; limit?: number }
-): Promise<Checkpoint[]> {
-  const params = new URLSearchParams();
-  if (options?.agentId) params.set('agent_id', options.agentId);
-  if (options?.limit) params.set('limit', String(options.limit));
-  const query = params.toString() ? `?${params.toString()}` : '';
-  return api.get<Checkpoint[]>(`/api/checkpoints/sessions/${sessionId}/checkpoints${query}`);
-}
-
-export async function getCheckpoint(checkpointId: string): Promise<Checkpoint> {
-  return api.get<Checkpoint>(`/api/checkpoints/checkpoints/${checkpointId}`);
-}
-
-export async function getCheckpointDiff(checkpointId: string): Promise<CheckpointDiff> {
-  return api.get<CheckpointDiff>(`/api/checkpoints/checkpoints/${checkpointId}/diff`);
-}
-
-export async function restoreCheckpoint(checkpointId: string): Promise<RestoreCheckpointResponse> {
-  return api.post<RestoreCheckpointResponse>(
-    `/api/checkpoints/checkpoints/${checkpointId}/restore`,
-    {}
-  );
-}
-
 // ==================== Worktrees ====================
 
 export interface WorktreeResponse {
@@ -3053,4 +3241,639 @@ export async function getCostAlerts(
 
 export async function acknowledgeCostAlert(alertId: string): Promise<{ success: boolean }> {
   return api.post<{ success: boolean }>(`/api/billing/alerts/${alertId}/acknowledge`, {});
+}
+
+// ============================================================================
+// LSP (Language Server Protocol) APIs
+// ============================================================================
+
+export interface LSPDiagnostic {
+  file_path: string;
+  line: number;
+  column: number;
+  end_line: number;
+  end_column: number;
+  message: string;
+  severity: 'error' | 'warning' | 'information' | 'hint';
+  source: string | null;
+  code: string | null;
+}
+
+export interface DiagnosticsResponse {
+  file_path: string;
+  diagnostics: LSPDiagnostic[];
+  language: string | null;
+}
+
+export interface BatchDiagnosticsResponse {
+  results: DiagnosticsResponse[];
+  total_diagnostics: number;
+}
+
+export interface SupportedLanguage {
+  command: string;
+  installed: boolean;
+  extensions: string[];
+}
+
+export interface SupportedLanguagesResponse {
+  workspace_id: string;
+  languages: Record<string, SupportedLanguage>;
+}
+
+/**
+ * Get diagnostics for a single file in a workspace.
+ */
+export async function getFileDiagnostics(
+  workspaceId: string,
+  filePath: string
+): Promise<DiagnosticsResponse> {
+  return api.get<DiagnosticsResponse>(
+    `/api/lsp/workspaces/${workspaceId}/diagnostics?file_path=${encodeURIComponent(filePath)}`
+  );
+}
+
+/**
+ * Get diagnostics for multiple files in a workspace.
+ */
+export async function getBatchDiagnostics(
+  workspaceId: string,
+  filePaths: string[]
+): Promise<BatchDiagnosticsResponse> {
+  return api.post<BatchDiagnosticsResponse>(
+    `/api/lsp/workspaces/${workspaceId}/diagnostics/batch`,
+    { file_paths: filePaths }
+  );
+}
+
+/**
+ * Get supported languages and their installation status for a workspace.
+ */
+export async function getSupportedLanguages(
+  workspaceId: string
+): Promise<SupportedLanguagesResponse> {
+  return api.get<SupportedLanguagesResponse>(
+    `/api/lsp/workspaces/${workspaceId}/supported-languages`
+  );
+}
+
+// ============================================================================
+// File Watching APIs
+// ============================================================================
+
+export interface WatchStatusResponse {
+  workspace_id: string;
+  watching: boolean;
+  patterns: string[] | null;
+}
+
+export interface StartWatchingRequest {
+  patterns?: string[];
+  debounce_ms?: number;
+}
+
+/**
+ * Start watching files for changes in a workspace.
+ * When files change, diagnostics will be automatically refreshed.
+ */
+export async function startFileWatching(
+  workspaceId: string,
+  options?: StartWatchingRequest
+): Promise<WatchStatusResponse> {
+  return api.post<WatchStatusResponse>(`/api/lsp/workspaces/${workspaceId}/watch`, options || {});
+}
+
+/**
+ * Stop watching files for changes in a workspace.
+ */
+export async function stopFileWatching(workspaceId: string): Promise<WatchStatusResponse> {
+  return api.delete<WatchStatusResponse>(`/api/lsp/workspaces/${workspaceId}/watch`);
+}
+
+/**
+ * Get file watcher status for a workspace.
+ */
+export async function getFileWatchStatus(workspaceId: string): Promise<WatchStatusResponse> {
+  return api.get<WatchStatusResponse>(`/api/lsp/workspaces/${workspaceId}/watch/status`);
+}
+
+// ============================================================================
+// Doctor/Diagnostics APIs
+// ============================================================================
+
+export interface ServiceHealth {
+  name: string;
+  status: 'healthy' | 'degraded' | 'unhealthy' | 'unknown';
+  latency_ms: number | null;
+  message: string | null;
+  details: Record<string, unknown> | null;
+}
+
+export interface LLMProviderStatus {
+  provider: string;
+  configured: boolean;
+  active: boolean;
+  model: string | null;
+  details: Record<string, unknown> | null;
+}
+
+export interface SystemInfo {
+  platform: string;
+  python_version: string;
+  app_version: string;
+  environment: string;
+  server_time: string;
+}
+
+export interface DoctorReport {
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  timestamp: string;
+  system: SystemInfo;
+  services: ServiceHealth[];
+  llm_providers: LLMProviderStatus[];
+  recommendations: string[];
+}
+
+/**
+ * Run comprehensive environment diagnostics.
+ * Checks database, Redis, services, Docker, and LLM provider configurations.
+ */
+export async function runDoctor(): Promise<DoctorReport> {
+  return api.get<DoctorReport>('/api/doctor');
+}
+
+/**
+ * Quick health check without authentication.
+ * Useful for monitoring and health probes.
+ */
+export async function quickHealthCheck(): Promise<{
+  status: string;
+  version: string;
+  environment: string;
+  llm_provider: string;
+}> {
+  return api.get('/api/doctor/quick');
+}
+
+// ============================================================================
+// Custom Commands APIs
+// ============================================================================
+
+export interface CommandArgument {
+  name: string;
+  type: string;
+  required: boolean;
+  default: string | null;
+  description: string | null;
+}
+
+export interface CustomCommand {
+  id: string;
+  name: string;
+  description: string | null;
+  prompt_template: string;
+  arguments: CommandArgument[] | null;
+  category: string;
+  enabled: boolean;
+  sort_order: number;
+  is_global: boolean;
+  usage_count: number;
+  user_id: string | null;
+  session_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CommandListResponse {
+  commands: CustomCommand[];
+  total: number;
+}
+
+export interface CreateCommandRequest {
+  name: string;
+  description?: string;
+  prompt_template: string;
+  arguments?: CommandArgument[];
+  category?: string;
+  session_id?: string;
+}
+
+export interface UpdateCommandRequest {
+  name?: string;
+  description?: string;
+  prompt_template?: string;
+  arguments?: CommandArgument[];
+  category?: string;
+  enabled?: boolean;
+  sort_order?: number;
+}
+
+export interface ExecuteCommandResponse {
+  prompt: string;
+  command_id: string;
+  command_name: string;
+}
+
+/**
+ * List custom commands for the current user.
+ */
+export async function listCommands(options?: {
+  category?: string;
+  sessionId?: string;
+  includeGlobal?: boolean;
+  enabledOnly?: boolean;
+}): Promise<CommandListResponse> {
+  const params = new URLSearchParams();
+  if (options?.category) params.set('category', options.category);
+  if (options?.sessionId) params.set('session_id', options.sessionId);
+  if (options?.includeGlobal !== undefined)
+    params.set('include_global', String(options.includeGlobal));
+  if (options?.enabledOnly !== undefined) params.set('enabled_only', String(options.enabledOnly));
+  const query = params.toString();
+  return api.get<CommandListResponse>(`/api/commands${query ? `?${query}` : ''}`);
+}
+
+/**
+ * Create a new custom command.
+ */
+export async function createCommand(data: CreateCommandRequest): Promise<CustomCommand> {
+  return api.post<CustomCommand>('/api/commands', data);
+}
+
+/**
+ * Get a custom command by ID.
+ */
+export async function getCommand(commandId: string): Promise<CustomCommand> {
+  return api.get<CustomCommand>(`/api/commands/${commandId}`);
+}
+
+/**
+ * Get a custom command by name.
+ */
+export async function getCommandByName(name: string, sessionId?: string): Promise<CustomCommand> {
+  const params = sessionId ? `?session_id=${sessionId}` : '';
+  return api.get<CustomCommand>(`/api/commands/by-name/${name}${params}`);
+}
+
+/**
+ * Update a custom command.
+ */
+export async function updateCommand(
+  commandId: string,
+  data: UpdateCommandRequest
+): Promise<CustomCommand> {
+  return api.patch<CustomCommand>(`/api/commands/${commandId}`, data);
+}
+
+/**
+ * Delete a custom command.
+ */
+export async function deleteCommand(commandId: string): Promise<void> {
+  return api.delete(`/api/commands/${commandId}`);
+}
+
+/**
+ * Execute a command and get the rendered prompt.
+ */
+export async function executeCommand(
+  commandId: string,
+  args: Record<string, string> = {}
+): Promise<ExecuteCommandResponse> {
+  return api.post<ExecuteCommandResponse>(`/api/commands/${commandId}/execute`, {
+    arguments: args,
+  });
+}
+
+// ============================================================================
+// Project Init APIs
+// ============================================================================
+
+export interface ProjectInfo {
+  name: string;
+  type: string;
+  language: string;
+  framework: string | null;
+  package_manager: string | null;
+  has_tests: boolean;
+  has_ci: boolean;
+  git_initialized: boolean;
+}
+
+export interface ProjectInitRequest {
+  session_id: string;
+  include_dependencies?: boolean;
+  include_structure?: boolean;
+  custom_context?: string;
+}
+
+export interface ProjectInitResponse {
+  success: boolean;
+  project_info: ProjectInfo | null;
+  agents_md_content: string;
+  file_path: string;
+  created: boolean;
+  message: string;
+}
+
+/**
+ * Initialize project with AGENTS.md file.
+ */
+export async function initProject(data: ProjectInitRequest): Promise<ProjectInitResponse> {
+  return api.post<ProjectInitResponse>('/api/init/project', data);
+}
+
+/**
+ * Get project info without creating AGENTS.md.
+ */
+export async function getProjectInfo(sessionId: string): Promise<ProjectInfo> {
+  return api.get<ProjectInfo>(`/api/init/project/${sessionId}/info`);
+}
+
+// ============================================================================
+// LLM Models APIs
+// ============================================================================
+
+export interface ModelCapabilities {
+  vision: boolean;
+  thinking: boolean;
+  thinking_coming_soon?: boolean;
+  tool_use: boolean;
+  streaming: boolean;
+  json_mode: boolean;
+}
+
+export interface PublicModel {
+  model_id: string;
+  display_name: string;
+  provider: string;
+  family: string;
+  description: string | null;
+  cost_tier: 'low' | 'medium' | 'high' | 'premium';
+  capabilities: ModelCapabilities;
+  context_window: number;
+  max_output_tokens: number;
+  is_default: boolean;
+  input_cost_per_million: number | null;
+  output_cost_per_million: number | null;
+  good_for: string[];
+}
+
+export interface AgentTypeDefaults {
+  model_id: string;
+  temperature: number;
+  max_tokens: number;
+}
+
+export interface AgentDefaultsResponse {
+  defaults: Record<string, AgentTypeDefaults>;
+}
+
+/**
+ * Get list of available LLM models.
+ */
+export async function getAvailableModels(options?: {
+  provider?: string;
+  family?: string;
+}): Promise<PublicModel[]> {
+  const params = new URLSearchParams();
+  if (options?.provider) params.set('provider', options.provider);
+  if (options?.family) params.set('family', options.family);
+  const query = params.toString();
+  return api.get<PublicModel[]>(`/api/models/available${query ? `?${query}` : ''}`);
+}
+
+/**
+ * Get default model settings for all agent types.
+ */
+export async function getModelDefaults(): Promise<AgentDefaultsResponse> {
+  return api.get<AgentDefaultsResponse>('/api/models/defaults');
+}
+
+/**
+ * User-provided API key model.
+ */
+export interface UserProviderModel {
+  model_id: string;
+  display_name: string;
+  provider: string;
+  family: string;
+  description: string | null;
+  cost_tier: 'low' | 'medium' | 'high' | 'premium';
+  capabilities: ModelCapabilities;
+  context_window: number;
+  max_output_tokens: number;
+  is_user_key: boolean; // Always true for user-provider models
+  input_cost_per_million: number | null;
+  output_cost_per_million: number | null;
+  good_for: string[];
+}
+
+/**
+ * Get models available via user's configured API keys.
+ */
+export async function getUserProviderModels(): Promise<UserProviderModel[]> {
+  return api.get<UserProviderModel[]>('/api/models/user-providers');
+}
+
+// ============================================================================
+// Admin Models APIs (for admin users)
+// ============================================================================
+
+export interface AdminModel extends PublicModel {
+  id: string;
+  input_cost_per_million: number;
+  output_cost_per_million: number;
+  is_enabled: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateModelRequest {
+  model_id: string;
+  display_name: string;
+  provider: string;
+  family?: string;
+  description?: string;
+  cost_tier?: string;
+  capabilities?: Partial<ModelCapabilities>;
+  context_window?: number;
+  max_output_tokens?: number;
+  input_cost_per_million?: number;
+  output_cost_per_million?: number;
+  is_enabled?: boolean;
+  is_default?: boolean;
+}
+
+export interface UpdateModelRequest {
+  display_name?: string;
+  description?: string;
+  cost_tier?: string;
+  capabilities?: Partial<ModelCapabilities>;
+  context_window?: number;
+  max_output_tokens?: number;
+  input_cost_per_million?: number;
+  output_cost_per_million?: number;
+  is_enabled?: boolean;
+  is_default?: boolean;
+  sort_order?: number;
+}
+
+export interface UpdateAgentDefaultsRequest {
+  model_id: string;
+  temperature?: number;
+  max_tokens?: number;
+}
+
+/**
+ * Admin: List all LLM models.
+ */
+export async function adminListModels(options?: {
+  provider?: string;
+  family?: string;
+  enabled_only?: boolean;
+}): Promise<AdminModel[]> {
+  const params = new URLSearchParams();
+  if (options?.provider) params.set('provider', options.provider);
+  if (options?.family) params.set('family', options.family);
+  if (options?.enabled_only !== undefined) params.set('enabled_only', String(options.enabled_only));
+  const query = params.toString();
+  return api.get<AdminModel[]>(`/api/admin/models${query ? `?${query}` : ''}`);
+}
+
+/**
+ * Admin: Create a new LLM model.
+ */
+export async function adminCreateModel(data: CreateModelRequest): Promise<AdminModel> {
+  return api.post<AdminModel>('/api/admin/models', data);
+}
+
+/**
+ * Admin: Get a specific LLM model.
+ */
+export async function adminGetModel(modelId: string): Promise<AdminModel> {
+  return api.get<AdminModel>(`/api/admin/models/${modelId}`);
+}
+
+/**
+ * Admin: Update an LLM model.
+ */
+export async function adminUpdateModel(
+  modelId: string,
+  data: UpdateModelRequest
+): Promise<AdminModel> {
+  return api.patch<AdminModel>(`/api/admin/models/${modelId}`, data);
+}
+
+/**
+ * Admin: Delete an LLM model.
+ */
+export async function adminDeleteModel(modelId: string): Promise<void> {
+  return api.delete(`/api/admin/models/${modelId}`);
+}
+
+/**
+ * Admin: Get agent type defaults.
+ */
+export async function adminGetAgentDefaults(): Promise<AgentDefaultsResponse> {
+  return api.get<AgentDefaultsResponse>('/api/admin/models/agent-defaults');
+}
+
+/**
+ * Admin: Update agent type defaults.
+ */
+export async function adminUpdateAgentDefaults(
+  agentType: string,
+  data: UpdateAgentDefaultsRequest
+): Promise<AgentDefaultsResponse> {
+  return api.put<AgentDefaultsResponse>(`/api/admin/models/agent-defaults/${agentType}`, data);
+}
+
+/**
+ * Admin: Seed default LLM models.
+ */
+export async function adminSeedModels(): Promise<{
+  created: number;
+  updated: number;
+  total: number;
+}> {
+  return api.post('/api/admin/models/seed', {});
+}
+
+// ============================================================================
+// User LLM API Keys Management
+// ============================================================================
+
+export interface LLMApiKeysResponse {
+  providers: string[];
+}
+
+export interface SetLLMApiKeyRequest {
+  provider: string;
+  api_key: string;
+}
+
+/**
+ * Get list of LLM providers with configured API keys.
+ * Returns provider names only, not the actual keys.
+ */
+export async function getLLMApiKeys(): Promise<LLMApiKeysResponse> {
+  return api.get<LLMApiKeysResponse>('/api/user/config/llm-api-keys');
+}
+
+/**
+ * Set an LLM API key for a provider.
+ */
+export async function setLLMApiKey(provider: string, apiKey: string): Promise<LLMApiKeysResponse> {
+  return api.post<LLMApiKeysResponse>('/api/user/config/llm-api-keys', {
+    provider,
+    api_key: apiKey,
+  });
+}
+
+/**
+ * Remove an LLM API key for a provider.
+ */
+export async function removeLLMApiKey(provider: string): Promise<LLMApiKeysResponse> {
+  return api.delete<LLMApiKeysResponse>(`/api/user/config/llm-api-keys/${provider}`);
+}
+
+// ============================================================================
+// User Model Preferences
+// ============================================================================
+
+export interface UserAgentPreferences {
+  model_defaults?: Record<string, string>; // role -> model_id
+  [key: string]: unknown;
+}
+
+/**
+ * Get user agent preferences including model defaults.
+ */
+export async function getUserAgentPreferences(): Promise<UserAgentPreferences> {
+  const config = await api.get<{ agent_preferences: UserAgentPreferences | null }>(
+    '/api/user/config'
+  );
+  return config.agent_preferences || { model_defaults: {} };
+}
+
+/**
+ * Update user model default for a specific agent role.
+ */
+export async function updateUserModelDefault(role: string, modelId: string): Promise<void> {
+  const config = await api.get<{ agent_preferences: UserAgentPreferences | null }>(
+    '/api/user/config'
+  );
+  const currentPrefs = config.agent_preferences || {};
+  const modelDefaults = currentPrefs.model_defaults || {};
+
+  await api.patch('/api/user/config', {
+    agent_preferences: {
+      ...currentPrefs,
+      model_defaults: {
+        ...modelDefaults,
+        [role]: modelId,
+      },
+    },
+  });
 }

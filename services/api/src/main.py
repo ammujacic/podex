@@ -41,19 +41,23 @@ from src.routes import (
     billing,
     changes,
     checkpoints,
+    commands,
     completion,
     context,
     dashboard,
+    doctor,
     git,
     hooks,
     knowledge,
     local_pods,
+    lsp,
     mcp,
     mfa,
     notifications,
     oauth,
     plans,
     preview,
+    project_init,
     sessions,
     sharing,
     subagents,
@@ -66,6 +70,7 @@ from src.routes import (
     workspaces,
     worktrees,
 )
+from src.routes.admin.models import public_router as models_public_router
 from src.routes.billing import (
     expire_credits,
     process_subscription_period_ends,
@@ -266,12 +271,15 @@ async def standby_background_task() -> None:  # noqa: PLR0912
             await asyncio.sleep(60)  # Wait before retrying
 
 
-async def workspace_provision_background_task() -> None:
+async def workspace_provision_background_task() -> None:  # noqa: PLR0915
     """Background task to ensure workspaces are provisioned for active sessions.
 
     Runs every 60 seconds to check for active sessions that should have
     running workspaces but don't (e.g., after compute service restart).
     This ensures compute usage tracking works for all active pods.
+
+    Optimized to batch workspace existence checks using asyncio.gather to
+    avoid N+1 API calls.
     """
     from datetime import UTC, datetime  # noqa: PLC0415
 
@@ -281,6 +289,25 @@ async def workspace_provision_background_task() -> None:
     from src.database.models import Session as SessionModel  # noqa: PLC0415
     from src.database.models import Workspace  # noqa: PLC0415
     from src.exceptions import ComputeServiceHTTPError  # noqa: PLC0415
+
+    async def check_workspace_exists(
+        workspace_id: str, owner_id: str
+    ) -> tuple[str, bool, str | None]:
+        """Check if workspace exists in compute service.
+
+        Returns:
+            Tuple of (workspace_id, exists, error_message).
+        """
+        try:
+            existing = await compute_client.get_workspace(workspace_id, owner_id)
+        except ComputeServiceHTTPError as e:
+            if e.status_code == 404:  # noqa: PLR2004
+                return (workspace_id, False, None)
+            return (workspace_id, True, str(e))  # Assume exists on error
+        except Exception as e:
+            return (workspace_id, True, str(e))  # Assume exists on error
+        else:
+            return (workspace_id, existing is not None, None)
 
     while True:
         try:
@@ -304,25 +331,33 @@ async def workspace_provision_background_task() -> None:
                     result = await db.execute(query)
                     rows = result.all()
 
-                    for session, workspace in rows:
-                        try:
-                            # Check if workspace exists in compute service
-                            existing = await compute_client.get_workspace(
-                                workspace.id, session.owner_id
+                    if not rows:
+                        continue
+
+                    # Batch check workspace existence using asyncio.gather
+                    # This converts N sequential API calls into N parallel calls
+                    check_tasks = [
+                        check_workspace_exists(workspace.id, session.owner_id)
+                        for session, workspace in rows
+                    ]
+                    check_results = await asyncio.gather(*check_tasks)
+
+                    # Build lookup of which workspaces need provisioning
+                    needs_provision: dict[str, bool] = {}
+                    for workspace_id, exists, error in check_results:
+                        if error:
+                            logger.warning(
+                                "Error checking workspace existence",
+                                workspace_id=workspace_id,
+                                error=error,
                             )
-                            if existing:
-                                continue  # Workspace exists, nothing to do
+                        needs_provision[workspace_id] = not exists and error is None
 
-                        except ComputeServiceHTTPError as e:
-                            if e.status_code != 404:  # noqa: PLR2004
-                                logger.warning(
-                                    "Error checking workspace existence",
-                                    workspace_id=workspace.id,
-                                    error=str(e),
-                                )
-                                continue
+                    # Now provision only the workspaces that don't exist
+                    for session, workspace in rows:
+                        if not needs_provision.get(workspace.id, False):
+                            continue
 
-                        # Workspace doesn't exist in compute service, provision it
                         try:
                             # Use the existing build_workspace_config function
                             from src.routes.sessions import (  # noqa: PLC0415
@@ -853,6 +888,7 @@ api_v1.include_router(uploads.router, prefix="/sessions", tags=["uploads"])
 api_v1.include_router(billing.router, tags=["billing"])
 api_v1.include_router(webhooks.router, tags=["webhooks"])
 api_v1.include_router(admin.router, tags=["admin"])
+api_v1.include_router(models_public_router, prefix="/models", tags=["models"])
 api_v1.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 api_v1.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
 api_v1.include_router(context.router, prefix="/context", tags=["context"])
@@ -862,6 +898,10 @@ api_v1.include_router(changes.router, prefix="/changes", tags=["changes"])
 api_v1.include_router(subagents.router, tags=["subagents"])
 api_v1.include_router(hooks.router, tags=["hooks"])
 api_v1.include_router(terminal_agents.router, prefix="/terminal-agents", tags=["terminal-agents"])
+api_v1.include_router(lsp.router, tags=["lsp"])
+api_v1.include_router(commands.router, tags=["commands"])
+api_v1.include_router(project_init.router, tags=["init"])
+api_v1.include_router(doctor.router, tags=["doctor"])
 
 # Mount v1 API at /api/v1
 app.include_router(api_v1, prefix="/api/v1")

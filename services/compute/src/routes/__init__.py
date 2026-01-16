@@ -1,6 +1,7 @@
 """Compute service routes."""
 
 from src.routes.health import router as health_router
+from src.routes.lsp import router as lsp_router
 from src.routes.preview import router as preview_router
 from src.routes.terminal import (
     reset_terminal_manager,
@@ -14,6 +15,7 @@ from src.routes.workspaces import router as workspaces_router
 
 __all__ = [
     "health_router",
+    "lsp_router",
     "preview_router",
     "reset_terminal_manager",
     "shutdown_terminal_sessions",

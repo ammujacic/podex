@@ -17,7 +17,7 @@ from src.cache import (
     cache_delete,
     cache_get,
     cache_set,
-    invalidate_pattern,
+    invalidate_user_sessions,
     session_key,
 )
 from src.compute_client import compute_client
@@ -134,23 +134,38 @@ def get_current_user_id(request: Request) -> str:
 async def check_session_quota(db: AsyncSession, user_id: str) -> None:
     """Check if user has reached their session quota.
 
+    Uses SELECT FOR UPDATE with NOWAIT on the user's subscription row to prevent
+    race conditions where concurrent requests could exceed the quota. The lock
+    serializes all concurrent session creation requests for the same user.
+
     Args:
         db: Database session
         user_id: User ID to check
 
     Raises:
-        HTTPException: If user has exceeded their session quota
+        HTTPException: If user has exceeded their session quota or lock acquisition fails
     """
-    # Get user's active subscription and plan
-    sub_query = (
-        select(UserSubscription)
-        .where(UserSubscription.user_id == user_id)
-        .where(UserSubscription.status.in_(["active", "trialing"]))
-        .order_by(UserSubscription.created_at.desc())
-        .limit(1)
-    )
-    sub_result = await db.execute(sub_query)
-    subscription = sub_result.scalar_one_or_none()
+    from sqlalchemy.exc import OperationalError  # noqa: PLC0415
+
+    try:
+        # Lock the user's subscription row with NOWAIT to fail fast on contention
+        # This prevents race conditions where multiple requests could exceed the quota
+        sub_query = (
+            select(UserSubscription)
+            .where(UserSubscription.user_id == user_id)
+            .where(UserSubscription.status.in_(["active", "trialing"]))
+            .order_by(UserSubscription.created_at.desc())
+            .limit(1)
+            .with_for_update(nowait=True)
+        )
+        sub_result = await db.execute(sub_query)
+        subscription = sub_result.scalar_one_or_none()
+    except OperationalError:
+        # Lock acquisition failed - another request is creating a session
+        raise HTTPException(
+            status_code=409,
+            detail="Another session creation is in progress. Please try again.",
+        ) from None
 
     if not subscription:
         # No active subscription - use free tier limits (3 sessions)
@@ -163,7 +178,8 @@ async def check_session_quota(db: AsyncSession, user_id: str) -> None:
         plan = plan_result.scalar_one_or_none()
         max_sessions = plan.max_sessions if plan else 3
 
-    # Count current active (non-archived) sessions
+    # Count current active (non-archived) sessions (within the lock)
+    # The lock ensures this count is accurate and won't change until we commit
     count_query = (
         select(func.count())
         .select_from(SessionModel)
@@ -303,8 +319,8 @@ async def create_session(
         )
         # Session still usable, compute will be provisioned on first access
 
-    # Invalidate user's sessions list cache
-    await invalidate_pattern(f"sessions:user:{user_id}:*")
+    # Invalidate user's sessions list cache (O(1) version increment)
+    await invalidate_user_sessions(user_id)
 
     return SessionResponse(
         id=session.id,
@@ -496,7 +512,7 @@ async def archive_session(
 
     # Invalidate caches
     await cache_delete(session_key(session_id))
-    await invalidate_pattern(f"sessions:user:{user_id}:*")
+    await invalidate_user_sessions(user_id)
 
     return SessionResponse(
         id=session.id,
@@ -543,7 +559,7 @@ async def unarchive_session(
 
     # Invalidate caches
     await cache_delete(session_key(session_id))
-    await invalidate_pattern(f"sessions:user:{user_id}:*")
+    await invalidate_user_sessions(user_id)
 
     return SessionResponse(
         id=session.id,
@@ -585,7 +601,7 @@ async def delete_session(
 
     # Invalidate caches
     await cache_delete(session_key(session_id))
-    await invalidate_pattern(f"sessions:user:{user_id}:*")
+    await invalidate_user_sessions(user_id)
 
     return {"message": "Session deleted"}
 

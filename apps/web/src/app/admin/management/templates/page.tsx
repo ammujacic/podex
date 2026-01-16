@@ -31,6 +31,39 @@ const AVAILABLE_ICONS = [
   { id: 'box', name: 'Blank' },
 ];
 
+// Template icon configuration with CDN URLs (Simple Icons)
+const templateIconConfig: Record<string, { url: string }> = {
+  nodejs: { url: 'https://cdn.simpleicons.org/nodedotjs/339933' },
+  python: { url: 'https://cdn.simpleicons.org/python/3776AB' },
+  go: { url: 'https://cdn.simpleicons.org/go/00ADD8' },
+  rust: { url: 'https://cdn.simpleicons.org/rust/DEA584' },
+  typescript: { url: 'https://cdn.simpleicons.org/typescript/3178C6' },
+  react: { url: 'https://cdn.simpleicons.org/react/61DAFB' },
+  layers: { url: 'https://cdn.simpleicons.org/stackblitz/1389FD' },
+  docker: { url: 'https://cdn.simpleicons.org/docker/2496ED' },
+  javascript: { url: 'https://cdn.simpleicons.org/javascript/F7DF1E' },
+};
+
+function TemplateIcon({ icon, iconUrl }: { icon: string | null; iconUrl?: string | null }) {
+  // Use iconUrl from API if available, otherwise fall back to local mapping
+  const url = iconUrl || (icon ? templateIconConfig[icon]?.url : null);
+
+  if (url) {
+    return (
+      <Image
+        src={url}
+        alt={icon || 'template'}
+        width={24}
+        height={24}
+        className="w-6 h-6"
+        unoptimized
+      />
+    );
+  }
+
+  return <Box className="h-5 w-5 text-accent-primary" />;
+}
+
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString('en-US', {
     year: 'numeric',
@@ -59,17 +92,7 @@ function TemplateRow({
       <td className="px-4 py-3">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-lg bg-accent-primary/10 flex items-center justify-center">
-            {template.icon_url ? (
-              <Image
-                src={template.icon_url}
-                alt={template.name}
-                width={24}
-                height={24}
-                className="w-6 h-6"
-              />
-            ) : (
-              <Box className="h-5 w-5 text-accent-primary" />
-            )}
+            <TemplateIcon icon={template.icon} iconUrl={template.icon_url} />
           </div>
           <div>
             <p className="text-text-primary font-medium">{template.name}</p>

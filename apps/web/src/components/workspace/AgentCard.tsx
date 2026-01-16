@@ -1,22 +1,27 @@
 'use client';
 
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import {
   AlertTriangle,
   Bell,
   Bot,
+  Brain,
   ChevronDown,
   ChevronRight,
+  ClipboardList,
   Code2,
   Copy,
   Eye,
   FileText,
   HelpCircle,
+  ImageOff,
+  Key,
   Lightbulb,
   Loader2,
   MessageCircle,
   Mic,
   MoreVertical,
+  Paperclip,
   Pencil,
   RefreshCw,
   Send,
@@ -27,6 +32,7 @@ import {
   StopCircle,
   TestTube2,
   Trash2,
+  Undo2,
   Volume2,
   VolumeX,
   Workflow,
@@ -51,6 +57,7 @@ import { type Agent, type AgentMode, useSessionStore } from '@/stores/session';
 import { useAttentionStore } from '@/stores/attention';
 import { useApprovalsStore } from '@/stores/approvals';
 import { useWorktreesStore } from '@/stores/worktrees';
+import { useCheckpointsStore } from '@/stores/checkpoints';
 import { cn, formatTimestamp, cleanStreamingContent, getFriendlyErrorMessage } from '@/lib/utils';
 import {
   sendAgentMessage,
@@ -61,6 +68,9 @@ import {
   abortAgent,
   approvePlan,
   rejectPlan,
+  togglePlanMode,
+  restoreCheckpoint,
+  updateAgentSettings,
 } from '@/lib/api';
 import { useVoiceCapture } from '@/hooks/useVoiceCapture';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
@@ -73,7 +83,20 @@ import { ContextUsageRing } from './ContextUsageRing';
 import { CompactionDialog } from './CompactionDialog';
 import { ToolResultDisplay } from './ToolResultDisplay';
 import { WorktreeStatus } from './WorktreeStatus';
-import { compactAgentContext } from '@/lib/api';
+import { ModelTooltip, ModelCapabilityBadges } from './ModelTooltip';
+import { ThinkingConfigDialog } from './ThinkingConfigDialog';
+import { SlashCommandMenu, isBuiltInCommand, type BuiltInCommand } from './SlashCommandMenu';
+import {
+  compactAgentContext,
+  getAvailableModels,
+  getUserProviderModels,
+  executeCommand,
+  type PublicModel,
+  type UserProviderModel,
+  type CustomCommand,
+} from '@/lib/api';
+import { SUPPORTED_IMAGE_TYPES, MAX_ATTACHMENT_SIZE_MB } from '@podex/shared';
+import type { ThinkingConfig, AttachmentFile, ModelInfo, LLMProvider } from '@podex/shared';
 
 // Confirmation dialog component
 function ConfirmDialog({
@@ -267,10 +290,22 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   // Dialog states for replacing native confirm/prompt/alert
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
+  // Thinking config dialog state
+  const [thinkingDialogOpen, setThinkingDialogOpen] = useState(false);
+  // Attachment state for image uploads
+  const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
+  // Backend models state - fetched from API
+  const [backendModels, setBackendModels] = useState<PublicModel[]>([]);
+  // User-provider models (from user's own API keys)
+  const [userProviderModels, setUserProviderModels] = useState<UserProviderModel[]>([]);
+  // Slash command menu state
+  const [showSlashMenu, setShowSlashMenu] = useState(false);
+  const [slashQuery, setSlashQuery] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const {
     removeAgent,
     updateAgent,
@@ -278,11 +313,16 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     addAgentMessage,
     deleteAgentMessage,
     streamingMessages,
+    updateAgentThinking,
   } = useSessionStore();
   const { getAgentWorktree } = useWorktreesStore();
+  const { getAgentCheckpoints, restoringCheckpointId } = useCheckpointsStore();
 
   // Get worktree for this agent (if it exists)
   const agentWorktree = getAgentWorktree(sessionId, agent.id);
+
+  // Get checkpoints for this agent
+  const agentCheckpoints = getAgentCheckpoints(sessionId, agent.id);
 
   // Find active streaming message for this agent
   const streamingMessage = Object.values(streamingMessages).find(
@@ -301,6 +341,18 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
     }
   }, [agent.messages.length, isSending, streamingMessage?.content]);
+
+  // Fetch available models from backend (platform models + user-provider models)
+  useEffect(() => {
+    // Fetch platform models
+    getAvailableModels()
+      .then(setBackendModels)
+      .catch((err) => console.error('Failed to fetch platform models:', err));
+    // Fetch user-provider models (from user's API keys)
+    getUserProviderModels()
+      .then(setUserProviderModels)
+      .catch((err) => console.error('Failed to fetch user-provider models:', err));
+  }, []);
 
   // Handle Escape key to abort running tasks
   const handleAbort = useCallback(async () => {
@@ -394,11 +446,13 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   const textColor = agentTextColors[agent.color] ?? 'text-text-primary';
 
   const handleSendMessage = useCallback(async () => {
-    if (!message.trim() || isSending) return;
+    if ((!message.trim() && attachments.length === 0) || isSending) return;
 
     const messageContent = message.trim();
+    const currentAttachments = [...attachments];
     setIsSending(true);
     setMessage('');
+    setAttachments([]); // Clear attachments after sending
 
     // Optimistically add user message to UI immediately
     const userMessage = {
@@ -413,18 +467,200 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     updateAgent(sessionId, agent.id, { status: 'active' });
 
     try {
-      await sendAgentMessage(sessionId, agent.id, messageContent);
+      await sendAgentMessage(sessionId, agent.id, messageContent, {
+        attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
+        thinkingConfig: agent.thinkingConfig,
+      });
       // Response will come via WebSocket
     } catch (error) {
       console.error('Failed to send message:', error);
       // Could remove the optimistic message or show error state
       updateAgent(sessionId, agent.id, { status: 'error' });
+      toast.error('Failed to send message. Please try again.');
     } finally {
       setIsSending(false);
     }
-  }, [message, isSending, sessionId, agent.id, addAgentMessage, updateAgent]);
+  }, [
+    message,
+    attachments,
+    isSending,
+    sessionId,
+    agent.id,
+    agent.thinkingConfig,
+    addAgentMessage,
+    updateAgent,
+  ]);
+
+  // Handle input change to detect slash commands
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setMessage(value);
+
+    // Check if user is typing a slash command
+    if (value.startsWith('/')) {
+      const query = value.slice(1); // Remove the leading slash
+      setSlashQuery(query);
+      setShowSlashMenu(true);
+    } else {
+      setShowSlashMenu(false);
+      setSlashQuery('');
+    }
+  }, []);
+
+  // Handle slash command selection
+  const handleSlashCommandSelect = useCallback(
+    async (command: BuiltInCommand | CustomCommand) => {
+      setShowSlashMenu(false);
+      setSlashQuery('');
+
+      if (isBuiltInCommand(command)) {
+        // Handle built-in commands
+        const builtIn = command as BuiltInCommand;
+
+        // Immediate actions that don't send to agent
+        if (builtIn.immediate && builtIn.action) {
+          switch (builtIn.action) {
+            case 'help':
+              // Show help - list all commands in a toast or message
+              toast.info('Available Commands', {
+                description: 'Type / to see all commands. Use /init, /test, /commit, and more.',
+                duration: 5000,
+              });
+              setMessage('');
+              return;
+
+            case 'clear':
+              // Clear conversation messages locally
+              if (agent.messages.length > 0) {
+                updateAgent(sessionId, agent.id, { messages: [] });
+                toast.success('Conversation cleared');
+              } else {
+                toast.info('Conversation is already empty');
+              }
+              setMessage('');
+              return;
+
+            case 'compact':
+              setCompactionDialogOpen(true);
+              setMessage('');
+              return;
+
+            case 'checkpoint':
+              // Send checkpoint request to agent
+              setMessage('/checkpoint - Create a checkpoint of the current changes');
+              setTimeout(() => handleSendMessage(), 0);
+              return;
+
+            case 'undo':
+              // If there are checkpoints, show the dropdown/dialog
+              if (agentCheckpoints.length > 0) {
+                toast.info('Use the Undo button in the header to restore a checkpoint');
+              } else {
+                toast.warning('No checkpoints available');
+              }
+              setMessage('');
+              return;
+
+            case 'mode':
+              // Open mode settings dialog
+              setModeSettingsOpen(true);
+              setMessage('');
+              return;
+
+            case 'model':
+              // Show model info and available models in toast
+              // The model dropdown is in the header - inform user
+              toast.info(`Current model: ${agent.model}`, {
+                description: 'Use the model dropdown in the agent header to switch models.',
+                duration: 4000,
+              });
+              setMessage('');
+              return;
+
+            case 'think':
+              // Open thinking config dialog
+              setThinkingDialogOpen(true);
+              setMessage('');
+              return;
+          }
+        }
+
+        // Commands that need arguments - insert template
+        if (builtIn.args && builtIn.args.length > 0) {
+          const argPlaceholders = builtIn.args
+            .map((a) => (a.required ? `<${a.name}>` : `[${a.name}]`))
+            .join(' ');
+          setMessage(`/${builtIn.name} ${argPlaceholders}`);
+          // Select the first placeholder for easy typing
+          setTimeout(() => {
+            if (inputRef.current) {
+              const start = builtIn.name.length + 2; // after "/<name> "
+              inputRef.current.focus();
+              inputRef.current.setSelectionRange(start, inputRef.current.value.length);
+            }
+          }, 0);
+          return;
+        }
+
+        // Commands without args - send directly to agent
+        setMessage(`/${builtIn.name}`);
+        setTimeout(() => handleSendMessage(), 0);
+      } else {
+        // Handle custom commands - execute via API to get rendered prompt
+        const custom = command as CustomCommand;
+
+        if (custom.arguments && custom.arguments.length > 0) {
+          // Has arguments - insert template
+          const argPlaceholders = custom.arguments
+            .map((a) => (a.required ? `<${a.name}>` : `[${a.name}]`))
+            .join(' ');
+          setMessage(`/${custom.name} ${argPlaceholders}`);
+          setTimeout(() => {
+            if (inputRef.current) {
+              const start = custom.name.length + 2;
+              inputRef.current.focus();
+              inputRef.current.setSelectionRange(start, inputRef.current.value.length);
+            }
+          }, 0);
+        } else {
+          // No arguments - execute and send rendered prompt
+          try {
+            const result = await executeCommand(custom.id, {});
+            setMessage(result.prompt);
+            setTimeout(() => handleSendMessage(), 0);
+          } catch (error) {
+            console.error('Failed to execute command:', error);
+            toast.error(`Failed to execute /${custom.name}`);
+            setMessage('');
+          }
+        }
+      }
+    },
+    [
+      agent.messages.length,
+      agentCheckpoints.length,
+      handleSendMessage,
+      updateAgent,
+      sessionId,
+      agent.id,
+      agent.model,
+    ]
+  );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // If slash menu is open, let it handle arrow keys and enter
+    if (showSlashMenu) {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'Enter' || e.key === 'Tab') {
+        // SlashCommandMenu handles these via window event listener
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowSlashMenu(false);
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
@@ -480,13 +716,19 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   }, []);
 
   const handleRenameConfirm = useCallback(
-    (newName: string) => {
-      if (newName !== agent.name) {
-        updateAgent(sessionId, agent.id, { name: newName });
+    async (newName: string) => {
+      // Update local state immediately
+      updateAgent(sessionId, agent.id, { name: newName });
+
+      // Persist to backend
+      try {
+        await updateAgentSettings(sessionId, agent.id, { name: newName });
+      } catch (error) {
+        console.error('Failed to persist name change:', error);
       }
       setRenameDialogOpen(false);
     },
-    [agent.name, agent.id, sessionId, updateAgent]
+    [agent.id, sessionId, updateAgent]
   );
 
   const handleDuplicate = useCallback(async () => {
@@ -555,26 +797,313 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     } finally {
       setIsDeleting(false);
     }
-  }, [sessionId, agent.id, agent.name, removeAgent]);
+  }, [sessionId, agent.id, removeAgent]);
 
-  const availableModels = [
-    { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5' },
-    { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4' },
-    { id: 'gpt-4o', name: 'GPT-4o' },
-    { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
-  ];
+  const [isTogglingPlanMode, setIsTogglingPlanMode] = useState(false);
+
+  const handleTogglePlanMode = useCallback(async () => {
+    if (isTogglingPlanMode) return;
+    setIsTogglingPlanMode(true);
+    try {
+      const result = await togglePlanMode(sessionId, agent.id);
+      // Update local state - the WebSocket event will also update but this is faster
+      updateAgent(sessionId, agent.id, {
+        mode: result.mode,
+        previousMode: result.previous_mode ?? undefined,
+      });
+      toast.success(
+        result.toggled_to_plan
+          ? 'Switched to Plan mode (read-only)'
+          : `Switched back to ${result.mode.charAt(0).toUpperCase() + result.mode.slice(1)} mode`
+      );
+    } catch (error) {
+      console.error('Failed to toggle plan mode:', error);
+      toast.error('Failed to toggle plan mode');
+    } finally {
+      setIsTogglingPlanMode(false);
+    }
+  }, [sessionId, agent.id, isTogglingPlanMode, updateAgent]);
+
+  const handleRestoreCheckpoint = useCallback(
+    async (checkpointId: string, description: string | null) => {
+      try {
+        const result = await restoreCheckpoint(checkpointId);
+        if (result.success) {
+          toast.success(`Restored: ${description || 'checkpoint'}`, {
+            description: `${result.files.length} file(s) restored`,
+          });
+        } else {
+          toast.error('Failed to restore checkpoint');
+        }
+      } catch (error) {
+        console.error('Failed to restore checkpoint:', error);
+        toast.error('Failed to restore checkpoint');
+      }
+    },
+    []
+  );
+
+  // Extended ModelInfo with user API flag
+  type ExtendedModelInfo = ModelInfo & { isUserKey?: boolean };
+
+  // Convert backend model to ModelInfo format for tooltips/badges
+  const backendModelToInfo = useCallback(
+    (m: PublicModel, isUserKey = false): ExtendedModelInfo => ({
+      id: m.model_id,
+      provider: (isUserKey ? m.provider : 'podex') as LLMProvider,
+      displayName: m.display_name,
+      shortName: m.display_name
+        .replace('Claude ', '')
+        .replace('Llama ', '')
+        .replace(' (Direct)', ''),
+      tier:
+        m.cost_tier === 'premium' || m.cost_tier === 'high'
+          ? 'flagship'
+          : m.cost_tier === 'medium'
+            ? 'balanced'
+            : 'fast',
+      contextWindow: m.context_window,
+      maxOutputTokens: m.max_output_tokens,
+      supportsVision: m.capabilities.vision,
+      supportsThinking: m.capabilities.thinking,
+      thinkingStatus: m.capabilities.thinking
+        ? 'available'
+        : m.capabilities.thinking_coming_soon
+          ? 'coming_soon'
+          : 'not_supported',
+      capabilities: [
+        'chat',
+        'code',
+        ...(m.capabilities.vision ? (['vision'] as const) : []),
+        ...(m.capabilities.tool_use ? (['function_calling'] as const) : []),
+      ],
+      goodFor: m.good_for || [],
+      description: m.description || '',
+      reasoningEffort:
+        m.cost_tier === 'premium' || m.cost_tier === 'high'
+          ? 'high'
+          : m.cost_tier === 'medium'
+            ? 'medium'
+            : 'low',
+      isUserKey,
+      inputPricePerMillion: m.input_cost_per_million ?? undefined,
+      outputPricePerMillion: m.output_cost_per_million ?? undefined,
+    }),
+    []
+  );
+
+  // Convert user-provider model to ModelInfo format
+  const userModelToInfo = useCallback(
+    (m: UserProviderModel): ExtendedModelInfo => ({
+      id: m.model_id,
+      provider: m.provider as LLMProvider,
+      displayName: m.display_name,
+      shortName: m.display_name.replace('Claude ', '').replace(' (Direct)', ''),
+      tier:
+        m.cost_tier === 'premium' || m.cost_tier === 'high'
+          ? 'flagship'
+          : m.cost_tier === 'medium'
+            ? 'balanced'
+            : 'fast',
+      contextWindow: m.context_window,
+      maxOutputTokens: m.max_output_tokens,
+      supportsVision: m.capabilities.vision,
+      supportsThinking: m.capabilities.thinking,
+      thinkingStatus: m.capabilities.thinking
+        ? 'available'
+        : m.capabilities.thinking_coming_soon
+          ? 'coming_soon'
+          : 'not_supported',
+      capabilities: [
+        'chat',
+        'code',
+        ...(m.capabilities.vision ? (['vision'] as const) : []),
+        ...(m.capabilities.tool_use ? (['function_calling'] as const) : []),
+      ],
+      goodFor: m.good_for || [],
+      description: m.description || '',
+      reasoningEffort:
+        m.cost_tier === 'premium' || m.cost_tier === 'high'
+          ? 'high'
+          : m.cost_tier === 'medium'
+            ? 'medium'
+            : 'low',
+      isUserKey: true,
+      inputPricePerMillion: m.input_cost_per_million ?? undefined,
+      outputPricePerMillion: m.output_cost_per_million ?? undefined,
+    }),
+    []
+  );
+
+  // Get model info for current agent model - check all sources (backend only)
+  const currentModelInfo = useMemo(() => {
+    // Check user-provider models first
+    const userModel = userProviderModels.find((m) => m.model_id === agent.model);
+    if (userModel) return userModelToInfo(userModel);
+    // Check backend (platform) models
+    const backendModel = backendModels.find((m) => m.model_id === agent.model);
+    if (backendModel) return backendModelToInfo(backendModel);
+    // No fallback to frontend constants - return undefined if not found in backend
+    return undefined;
+  }, [agent.model, backendModels, userProviderModels, backendModelToInfo, userModelToInfo]);
+
+  // Group models by tier for dropdown (platform models + user-provider models)
+  const modelsByTier = useMemo((): {
+    flagship: ExtendedModelInfo[];
+    balanced: ExtendedModelInfo[];
+    fast: ExtendedModelInfo[];
+    userApi: ExtendedModelInfo[];
+  } => {
+    const flagship: ExtendedModelInfo[] = [];
+    const balanced: ExtendedModelInfo[] = [];
+    const fast: ExtendedModelInfo[] = [];
+    const userApi: ExtendedModelInfo[] = [];
+
+    // Add platform models
+    for (const m of backendModels) {
+      const info = backendModelToInfo(m);
+      if (m.cost_tier === 'premium' || m.cost_tier === 'high') {
+        flagship.push(info);
+      } else if (m.cost_tier === 'medium') {
+        balanced.push(info);
+      } else {
+        fast.push(info);
+      }
+    }
+
+    // Add user-provider models to the userApi section
+    for (const m of userProviderModels) {
+      userApi.push(userModelToInfo(m));
+    }
+
+    return { flagship, balanced, fast, userApi };
+  }, [backendModels, userProviderModels, backendModelToInfo, userModelToInfo]);
 
   const handleChangeModel = useCallback(
-    (newModel: string) => {
+    async (newModel: string) => {
+      // Update local state immediately for responsive UI
       updateAgent(sessionId, agent.id, { model: newModel });
+
+      // Persist to backend
+      try {
+        await updateAgentSettings(sessionId, agent.id, { model: newModel });
+      } catch (error) {
+        console.error('Failed to persist model change:', error);
+        // Don't revert - the local state is fine for this session
+        // Backend will sync on next session load
+      }
     },
     [agent.id, sessionId, updateAgent]
   );
 
-  const getModelDisplayName = (modelId: string) => {
-    const model = availableModels.find((m) => m.id === modelId);
-    return model?.name ?? modelId;
-  };
+  const getModelDisplayName = useCallback(
+    (modelId: string) => {
+      // Use backend-provided display name if available (from agent data)
+      if (agent.modelDisplayName) {
+        return agent.modelDisplayName.replace('Claude ', '').replace('Llama ', '');
+      }
+      // Check user-provider models first
+      const userModel = userProviderModels.find((m) => m.model_id === modelId);
+      if (userModel)
+        return userModel.display_name
+          .replace('Claude ', '')
+          .replace('Llama ', '')
+          .replace(' (Direct)', '');
+      // Check backend platform models
+      const backendModel = backendModels.find((m) => m.model_id === modelId);
+      if (backendModel)
+        return backendModel.display_name.replace('Claude ', '').replace('Llama ', '');
+      // No fallback to frontend constants - return model ID if not found
+      return modelId;
+    },
+    [agent.modelDisplayName, backendModels, userProviderModels]
+  );
+
+  // Handle thinking config save
+  const handleSaveThinkingConfig = useCallback(
+    (config: ThinkingConfig) => {
+      updateAgentThinking(sessionId, agent.id, config);
+    },
+    [sessionId, agent.id, updateAgentThinking]
+  );
+
+  // Handle file selection for attachments
+  const handleFileSelect = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (!files || files.length === 0) return;
+
+      // Check if model supports vision
+      if (!currentModelInfo?.supportsVision) {
+        toast.error(
+          `${currentModelInfo?.displayName ?? 'This model'} does not support image input`
+        );
+        return;
+      }
+
+      const newAttachments: AttachmentFile[] = [];
+
+      for (const file of Array.from(files)) {
+        // Validate file type
+        if (!SUPPORTED_IMAGE_TYPES.includes(file.type)) {
+          toast.error(`Unsupported file type: ${file.name}. Use PNG, JPG, GIF, or WebP.`);
+          continue;
+        }
+
+        // Validate file size
+        const sizeMB = file.size / (1024 * 1024);
+        if (sizeMB > MAX_ATTACHMENT_SIZE_MB) {
+          toast.error(
+            `File too large: ${file.name} (${sizeMB.toFixed(1)}MB). Max is ${MAX_ATTACHMENT_SIZE_MB}MB.`
+          );
+          continue;
+        }
+
+        // Create preview URL
+        const preview = URL.createObjectURL(file);
+
+        newAttachments.push({
+          id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          preview,
+          status: 'ready',
+        });
+      }
+
+      setAttachments((prev) => [...prev, ...newAttachments]);
+
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    },
+    [currentModelInfo]
+  );
+
+  // Remove attachment
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments((prev) => {
+      const att = prev.find((a) => a.id === id);
+      if (att?.preview) {
+        URL.revokeObjectURL(att.preview);
+      }
+      return prev.filter((a) => a.id !== id);
+    });
+  }, []);
+
+  // Clear attachments when model changes to non-vision model
+  useEffect(() => {
+    if (!currentModelInfo?.supportsVision && attachments.length > 0) {
+      toast.warning('Attachments cleared: selected model does not support images');
+      // Cleanup preview URLs
+      attachments.forEach((att) => {
+        if (att.preview) URL.revokeObjectURL(att.preview);
+      });
+      setAttachments([]);
+    }
+  }, [currentModelInfo?.supportsVision, attachments.length]);
 
   // Handle TTS playback for a message
   const handlePlayMessage = useCallback(
@@ -710,6 +1239,121 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                 <currentModeConfig.icon className="h-3 w-3" />
                 {currentModeConfig.label}
               </button>
+              {/* Plan mode toggle button */}
+              <button
+                onClick={handleTogglePlanMode}
+                disabled={isTogglingPlanMode}
+                className={cn(
+                  'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-colors cursor-pointer',
+                  agent.mode === 'plan'
+                    ? 'bg-blue-500/30 text-blue-400 ring-1 ring-blue-400/50 hover:bg-blue-500/40'
+                    : 'bg-elevated text-text-muted hover:bg-overlay hover:text-text-primary',
+                  isTogglingPlanMode && 'opacity-50 cursor-not-allowed'
+                )}
+                title={
+                  agent.mode === 'plan'
+                    ? `Exit Plan mode (return to ${agent.previousMode || 'Ask'})`
+                    : 'Enter Plan mode (read-only)'
+                }
+              >
+                <ClipboardList className="h-3 w-3" />
+                <span>Plan</span>
+                {agent.mode === 'plan' && (
+                  <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
+                )}
+              </button>
+              {/* Extended Thinking toggle */}
+              {currentModelInfo?.supportsThinking && (
+                <button
+                  onClick={() => setThinkingDialogOpen(true)}
+                  className={cn(
+                    'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-colors cursor-pointer',
+                    agent.thinkingConfig?.enabled
+                      ? 'bg-purple-500/30 text-purple-400 ring-1 ring-purple-400/50 hover:bg-purple-500/40'
+                      : 'bg-elevated text-text-muted hover:bg-overlay hover:text-text-primary'
+                  )}
+                  title={
+                    agent.thinkingConfig?.enabled
+                      ? `Extended Thinking: ${agent.thinkingConfig.budgetTokens.toLocaleString()} tokens`
+                      : 'Enable Extended Thinking'
+                  }
+                >
+                  <Brain className="h-3 w-3" />
+                  <span>Think</span>
+                  {agent.thinkingConfig?.enabled ? (
+                    <>
+                      <span className="text-purple-300">
+                        {Math.round(agent.thinkingConfig.budgetTokens / 1000)}K
+                      </span>
+                      <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-purple-400 animate-pulse" />
+                    </>
+                  ) : (
+                    <span className="text-text-muted/60">Off</span>
+                  )}
+                </button>
+              )}
+              {/* Thinking coming soon badge */}
+              {currentModelInfo?.thinkingStatus === 'coming_soon' && (
+                <span
+                  className="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-gray-500/20 text-gray-400"
+                  title="Extended thinking coming soon for this model"
+                >
+                  <Brain className="h-3 w-3" />
+                  Soon
+                </span>
+              )}
+              {/* Undo/Checkpoint dropdown */}
+              {agentCheckpoints.length > 0 && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      className={cn(
+                        'flex items-center justify-center rounded-full p-1 text-xs transition-colors cursor-pointer',
+                        'bg-elevated text-text-muted hover:bg-overlay hover:text-text-primary',
+                        restoringCheckpointId && 'opacity-50 cursor-not-allowed'
+                      )}
+                      disabled={!!restoringCheckpointId}
+                      title="Undo changes"
+                    >
+                      <Undo2 className="h-3 w-3" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="w-64">
+                    <DropdownMenuLabel className="text-xs text-text-muted">
+                      Restore to checkpoint
+                    </DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    {agentCheckpoints.slice(0, 10).map((cp) => (
+                      <DropdownMenuItem
+                        key={cp.id}
+                        onClick={() => handleRestoreCheckpoint(cp.id, cp.description)}
+                        disabled={cp.status === 'restored' || !!restoringCheckpointId}
+                        className="cursor-pointer"
+                      >
+                        <div className="flex flex-col gap-0.5 w-full">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm truncate">
+                              {cp.description || `Checkpoint #${cp.checkpointNumber}`}
+                            </span>
+                            {cp.status === 'restored' && (
+                              <span className="text-xs text-green-400">restored</span>
+                            )}
+                          </div>
+                          <span className="text-xs text-text-muted">
+                            {cp.fileCount} file{cp.fileCount !== 1 ? 's' : ''} • +
+                            {cp.totalLinesAdded}/-{cp.totalLinesRemoved}
+                          </span>
+                        </div>
+                      </DropdownMenuItem>
+                    ))}
+                    {agentCheckpoints.length > 10 && (
+                      <DropdownMenuItem disabled className="text-xs text-text-muted">
+                        +{agentCheckpoints.length - 10} more checkpoints
+                      </DropdownMenuItem>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
               {/* Auto-switched badge - shows when mode was auto-switched and will revert */}
               {agent.previousMode && (
                 <span
@@ -754,19 +1398,94 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
               <DropdownMenuTrigger asChild>
                 <button className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary cursor-pointer">
                   {getModelDisplayName(agent.model)}
+                  {currentModelInfo && <ModelCapabilityBadges model={currentModelInfo} compact />}
+                  {!currentModelInfo?.supportsVision && (
+                    <span
+                      className="text-yellow-500/70"
+                      title={`${currentModelInfo?.displayName ?? 'This model'} does not support image input`}
+                    >
+                      <ImageOff className="h-3 w-3" />
+                    </span>
+                  )}
                   <ChevronDown className="h-3 w-3" />
                 </button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-48">
+              <DropdownMenuContent align="start" className="w-64">
                 <DropdownMenuLabel>Select Model</DropdownMenuLabel>
                 <DropdownMenuSeparator />
+                {/* Flagship Tier */}
+                <DropdownMenuLabel className="text-xs text-amber-400">Flagship</DropdownMenuLabel>
                 <DropdownMenuRadioGroup value={agent.model} onValueChange={handleChangeModel}>
-                  {availableModels.map((model) => (
-                    <DropdownMenuRadioItem key={model.id} value={model.id}>
-                      {model.name}
-                    </DropdownMenuRadioItem>
+                  {modelsByTier.flagship.map((model) => (
+                    <ModelTooltip key={model.id} model={model} side="right">
+                      <DropdownMenuRadioItem
+                        value={model.id}
+                        className="flex items-center justify-between cursor-pointer"
+                      >
+                        <span>{model.shortName}</span>
+                        <ModelCapabilityBadges model={model} compact />
+                      </DropdownMenuRadioItem>
+                    </ModelTooltip>
                   ))}
                 </DropdownMenuRadioGroup>
+                <DropdownMenuSeparator />
+                {/* Balanced Tier */}
+                <DropdownMenuLabel className="text-xs text-blue-400">Balanced</DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={agent.model} onValueChange={handleChangeModel}>
+                  {modelsByTier.balanced.map((model) => (
+                    <ModelTooltip key={model.id} model={model} side="right">
+                      <DropdownMenuRadioItem
+                        value={model.id}
+                        className="flex items-center justify-between cursor-pointer"
+                      >
+                        <span>{model.shortName}</span>
+                        <ModelCapabilityBadges model={model} compact />
+                      </DropdownMenuRadioItem>
+                    </ModelTooltip>
+                  ))}
+                </DropdownMenuRadioGroup>
+                <DropdownMenuSeparator />
+                {/* Fast Tier */}
+                <DropdownMenuLabel className="text-xs text-green-400">Fast</DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={agent.model} onValueChange={handleChangeModel}>
+                  {modelsByTier.fast.map((model) => (
+                    <ModelTooltip key={model.id} model={model} side="right">
+                      <DropdownMenuRadioItem
+                        value={model.id}
+                        className="flex items-center justify-between cursor-pointer"
+                      >
+                        <span>{model.shortName}</span>
+                        <ModelCapabilityBadges model={model} compact />
+                      </DropdownMenuRadioItem>
+                    </ModelTooltip>
+                  ))}
+                </DropdownMenuRadioGroup>
+                {/* Your API Keys */}
+                {modelsByTier.userApi.length > 0 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel className="text-xs text-purple-400 flex items-center gap-1">
+                      <Key className="h-3 w-3" />
+                      Your API Keys
+                    </DropdownMenuLabel>
+                    <DropdownMenuRadioGroup value={agent.model} onValueChange={handleChangeModel}>
+                      {modelsByTier.userApi.map((model) => (
+                        <ModelTooltip key={model.id} model={model} side="right">
+                          <DropdownMenuRadioItem
+                            value={model.id}
+                            className="flex items-center justify-between cursor-pointer"
+                          >
+                            <span className="flex items-center gap-1">
+                              <Key className="h-3 w-3 text-purple-400" />
+                              {model.shortName}
+                            </span>
+                            <ModelCapabilityBadges model={model} compact />
+                          </DropdownMenuRadioItem>
+                        </ModelTooltip>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -797,14 +1516,76 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                 <Settings2 className="mr-2 h-4 w-4" />
                 Change Model
               </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="w-48">
+              <DropdownMenuSubContent className="w-64">
+                {/* Flagship */}
+                <DropdownMenuLabel className="text-xs text-amber-400">Flagship</DropdownMenuLabel>
                 <DropdownMenuRadioGroup value={agent.model} onValueChange={handleChangeModel}>
-                  {availableModels.map((model) => (
-                    <DropdownMenuRadioItem key={model.id} value={model.id}>
-                      {model.name}
+                  {modelsByTier.flagship.map((model) => (
+                    <DropdownMenuRadioItem
+                      key={model.id}
+                      value={model.id}
+                      className="flex items-center justify-between cursor-pointer"
+                    >
+                      <span>{model.shortName}</span>
+                      <ModelCapabilityBadges model={model} compact />
                     </DropdownMenuRadioItem>
                   ))}
                 </DropdownMenuRadioGroup>
+                <DropdownMenuSeparator />
+                {/* Balanced */}
+                <DropdownMenuLabel className="text-xs text-blue-400">Balanced</DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={agent.model} onValueChange={handleChangeModel}>
+                  {modelsByTier.balanced.map((model) => (
+                    <DropdownMenuRadioItem
+                      key={model.id}
+                      value={model.id}
+                      className="flex items-center justify-between cursor-pointer"
+                    >
+                      <span>{model.shortName}</span>
+                      <ModelCapabilityBadges model={model} compact />
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+                <DropdownMenuSeparator />
+                {/* Fast */}
+                <DropdownMenuLabel className="text-xs text-green-400">Fast</DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={agent.model} onValueChange={handleChangeModel}>
+                  {modelsByTier.fast.map((model) => (
+                    <DropdownMenuRadioItem
+                      key={model.id}
+                      value={model.id}
+                      className="flex items-center justify-between cursor-pointer"
+                    >
+                      <span>{model.shortName}</span>
+                      <ModelCapabilityBadges model={model} compact />
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+                {/* Your API Keys */}
+                {modelsByTier.userApi.length > 0 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel className="text-xs text-purple-400 flex items-center gap-1">
+                      <Key className="h-3 w-3" />
+                      Your API Keys
+                    </DropdownMenuLabel>
+                    <DropdownMenuRadioGroup value={agent.model} onValueChange={handleChangeModel}>
+                      {modelsByTier.userApi.map((model) => (
+                        <DropdownMenuRadioItem
+                          key={model.id}
+                          value={model.id}
+                          className="flex items-center justify-between cursor-pointer"
+                        >
+                          <span className="flex items-center gap-1">
+                            <Key className="h-3 w-3 text-purple-400" />
+                            {model.shortName}
+                          </span>
+                          <ModelCapabilityBadges model={model} compact />
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </>
+                )}
               </DropdownMenuSubContent>
             </DropdownMenuSub>
             <DropdownMenuItem onClick={() => setVoiceSettingsOpen(true)} className="cursor-pointer">
@@ -859,14 +1640,16 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                 <div className="ml-0 max-w-[85%]">
                   <button
                     onClick={() => toggleThinking(msg.id)}
-                    className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text-secondary transition-colors cursor-pointer"
+                    className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text-secondary transition-colors cursor-pointer py-2 -my-1 min-h-[36px]"
+                    aria-expanded={expandedThinking[msg.id]}
+                    aria-label={expandedThinking[msg.id] ? 'Collapse thinking' : 'Expand thinking'}
                   >
                     {expandedThinking[msg.id] ? (
-                      <ChevronDown className="h-3 w-3" />
+                      <ChevronDown className="h-4 w-4" />
                     ) : (
-                      <ChevronRight className="h-3 w-3" />
+                      <ChevronRight className="h-4 w-4" />
                     )}
-                    <Lightbulb className="h-3 w-3" />
+                    <Lightbulb className="h-4 w-4" />
                     <span>Thinking</span>
                   </button>
                   {expandedThinking[msg.id] && (
@@ -906,7 +1689,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                         disabled={deletingMessageId === msg.id}
                         aria-label="Delete message"
                         className={cn(
-                          'rounded p-1 transition-colors opacity-0 group-hover/message:opacity-100 cursor-pointer',
+                          'rounded p-2 -m-1 min-w-[36px] min-h-[36px] flex items-center justify-center transition-colors opacity-0 group-hover/message:opacity-100 cursor-pointer',
                           msg.role === 'user'
                             ? 'hover:bg-white/20 text-text-inverse/60 hover:text-text-inverse'
                             : 'hover:bg-overlay text-text-muted hover:text-red-400',
@@ -915,9 +1698,9 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                         title="Delete message"
                       >
                         {deletingMessageId === msg.id ? (
-                          <Loader2 className="h-3 w-3 animate-spin" />
+                          <Loader2 className="h-4 w-4 animate-spin" />
                         ) : (
-                          <X className="h-3 w-3" />
+                          <X className="h-4 w-4" />
                         )}
                       </button>
                       {/* TTS playback buttons for assistant messages */}
@@ -930,18 +1713,18 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                               playingMessageId === msg.id ? 'Stop playback' : 'Play message'
                             }
                             className={cn(
-                              'rounded p-1 transition-colors hover:bg-overlay cursor-pointer',
+                              'rounded p-2 -m-1 min-w-[36px] min-h-[36px] flex items-center justify-center transition-colors hover:bg-overlay cursor-pointer',
                               playingMessageId === msg.id && 'text-accent-primary',
                               synthesizingMessageId === msg.id && 'opacity-50'
                             )}
                             title={playingMessageId === msg.id ? 'Stop playback' : 'Play message'}
                           >
                             {synthesizingMessageId === msg.id ? (
-                              <Loader2 className="h-3 w-3 animate-spin" />
+                              <Loader2 className="h-4 w-4 animate-spin" />
                             ) : playingMessageId === msg.id ? (
-                              <VolumeX className="h-3 w-3" />
+                              <VolumeX className="h-4 w-4" />
                             ) : (
-                              <Volume2 className="h-3 w-3" />
+                              <Volume2 className="h-4 w-4" />
                             )}
                           </button>
                           <button
@@ -949,12 +1732,12 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                             disabled={synthesizingMessageId === msg.id}
                             aria-label="Regenerate audio summary"
                             className={cn(
-                              'rounded p-1 transition-colors hover:bg-overlay text-text-muted hover:text-text-secondary cursor-pointer',
+                              'rounded p-2 -m-1 min-w-[36px] min-h-[36px] flex items-center justify-center transition-colors hover:bg-overlay text-text-muted hover:text-text-secondary cursor-pointer',
                               synthesizingMessageId === msg.id && 'opacity-50'
                             )}
                             title="Regenerate audio summary"
                           >
-                            <RefreshCw className="h-3 w-3" />
+                            <RefreshCw className="h-4 w-4" />
                           </button>
                         </>
                       )}
@@ -1091,7 +1874,9 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                   };
                   addAgentMessage(sessionId, agent.id, userMessage);
                   updateAgent(sessionId, agent.id, { status: 'active' });
-                  sendAgentMessage(sessionId, agent.id, feedback).catch((error) => {
+                  sendAgentMessage(sessionId, agent.id, feedback, {
+                    thinkingConfig: agent.thinkingConfig,
+                  }).catch((error) => {
                     console.error('Failed to send refinement:', error);
                     updateAgent(sessionId, agent.id, { status: 'error' });
                     toast.error('Failed to send refinement. Please try again.');
@@ -1112,6 +1897,28 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
 
       {/* Input area */}
       <div className="border-t border-border-subtle p-3" data-tour="agent-input">
+        {/* Attachment previews */}
+        {attachments.length > 0 && (
+          <div className="flex gap-2 mb-2 flex-wrap">
+            {attachments.map((att) => (
+              <div key={att.id} className="relative group">
+                <img
+                  src={att.preview}
+                  alt={att.name}
+                  className="h-16 w-16 object-cover rounded border border-border-subtle"
+                />
+                <button
+                  onClick={() => removeAttachment(att.id)}
+                  className="absolute -top-1 -right-1 bg-red-500 rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                  title="Remove attachment"
+                >
+                  <X className="h-3 w-3 text-white" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Real-time transcription preview */}
         {isRecording && currentTranscript && (
           <div className="mb-2 rounded-md bg-elevated px-3 py-2 text-sm text-text-secondary">
@@ -1121,6 +1928,35 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         )}
 
         <div className="flex items-center gap-2">
+          {/* Attachment button */}
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={!currentModelInfo?.supportsVision}
+            className={cn(
+              'rounded-md p-2 transition-colors',
+              currentModelInfo?.supportsVision
+                ? 'bg-elevated text-text-muted hover:bg-overlay hover:text-text-secondary'
+                : 'bg-elevated text-text-muted/50 cursor-not-allowed'
+            )}
+            title={
+              currentModelInfo?.supportsVision
+                ? 'Attach image (PNG, JPG, GIF, WebP)'
+                : `${currentModelInfo?.displayName ?? 'This model'} does not support images`
+            }
+          >
+            <Paperclip className="h-4 w-4" />
+          </button>
+
+          {/* Hidden file input */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            multiple
+            onChange={handleFileSelect}
+            className="hidden"
+          />
+
           {/* Mic button - push to talk */}
           <button
             onMouseDown={startRecording}
@@ -1145,22 +1981,42 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
             <Mic className="h-4 w-4" />
           </button>
 
-          <input
-            ref={inputRef}
-            type="text"
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={isRecording ? 'Listening...' : `Ask ${agent.name.toLowerCase()}...`}
-            className="flex-1 bg-elevated border border-border-default rounded-md px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-border-focus focus:outline-none selection:bg-accent-primary selection:text-white"
-            disabled={isRecording}
-          />
+          <div className="relative flex-1">
+            <input
+              ref={inputRef}
+              type="text"
+              value={message}
+              onChange={handleInputChange}
+              onKeyDown={handleKeyDown}
+              placeholder={
+                isRecording
+                  ? 'Listening...'
+                  : `Type / for commands or ask ${agent.name.toLowerCase()}...`
+              }
+              className="w-full bg-elevated border border-border-default rounded-md px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-border-focus focus:outline-none selection:bg-accent-primary selection:text-white"
+              disabled={isRecording}
+            />
+            {/* Slash command menu */}
+            {showSlashMenu && (
+              <SlashCommandMenu
+                query={slashQuery}
+                sessionId={sessionId}
+                onSelect={handleSlashCommandSelect}
+                onClose={() => setShowSlashMenu(false)}
+              />
+            )}
+          </div>
           <button
             onClick={handleSendMessage}
-            disabled={!message.trim() || isSending || isRecording}
+            disabled={
+              (!message.trim() && attachments.length === 0) ||
+              isSending ||
+              isRecording ||
+              (attachments.length > 0 && !currentModelInfo?.supportsVision)
+            }
             className={cn(
               'rounded-md p-2 transition-colors',
-              message.trim() && !isSending && !isRecording
+              (message.trim() || attachments.length > 0) && !isSending && !isRecording
                 ? 'bg-accent-primary text-text-inverse hover:bg-opacity-90 cursor-pointer'
                 : 'bg-elevated text-text-muted cursor-not-allowed'
             )}
@@ -1206,8 +2062,8 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
           agentName={agent.name}
           sessionId={sessionId}
           onClose={() => setCompactionDialogOpen(false)}
-          onCompact={async (instructions) => {
-            await compactAgentContext(agent.id, instructions);
+          onCompact={async (options) => {
+            await compactAgentContext(agent.id, options);
           }}
         />
       )}
@@ -1232,6 +2088,15 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         placeholder="Agent name"
         onConfirm={handleRenameConfirm}
         onCancel={() => setRenameDialogOpen(false)}
+      />
+
+      {/* Extended Thinking Config Dialog */}
+      <ThinkingConfigDialog
+        open={thinkingDialogOpen}
+        onOpenChange={setThinkingDialogOpen}
+        config={agent.thinkingConfig}
+        onSave={handleSaveThinkingConfig}
+        modelName={currentModelInfo?.displayName ?? 'Model'}
       />
     </div>
   );

@@ -29,6 +29,7 @@ interface ComputeStackProps extends cdk.StackProps {
   internalApiKeySecret?: secretsmanager.ISecret;
   redisAuthToken?: secretsmanager.ISecret;
   stripeSecret?: secretsmanager.ISecret;
+  redisEncryptionKeySecret?: secretsmanager.ISecret;
   redisEndpoint: string;
 }
 
@@ -60,6 +61,7 @@ export class ComputeStack extends cdk.Stack {
   private readonly internalApiKeySecret?: secretsmanager.ISecret;
   private readonly redisAuthToken?: secretsmanager.ISecret;
   private readonly stripeSecret?: secretsmanager.ISecret;
+  private readonly redisEncryptionKeySecret?: secretsmanager.ISecret;
   private readonly redisEndpoint: string;
   private albSecurityGroup!: ec2.SecurityGroup;
 
@@ -77,6 +79,7 @@ export class ComputeStack extends cdk.Stack {
     this.internalApiKeySecret = props.internalApiKeySecret;
     this.redisAuthToken = props.redisAuthToken;
     this.stripeSecret = props.stripeSecret;
+    this.redisEncryptionKeySecret = props.redisEncryptionKeySecret;
     this.redisEndpoint = props.redisEndpoint;
 
     // ECS Cluster with CloudMap namespace for service discovery
@@ -467,6 +470,11 @@ export class ComputeStack extends cdk.Stack {
     if (this.internalApiKeySecret) {
       apiSecrets.INTERNAL_SERVICE_TOKEN = ecs.Secret.fromSecretsManager(this.internalApiKeySecret);
     }
+    if (this.redisEncryptionKeySecret) {
+      apiSecrets.REDIS_ENCRYPTION_KEY = ecs.Secret.fromSecretsManager(
+        this.redisEncryptionKeySecret
+      );
+    }
 
     // Compute API URL based on ALB DNS or domain name
     const apiBaseUrl = this.config.domainName
@@ -512,6 +520,10 @@ export class ComputeStack extends cdk.Stack {
         // Sentry
         SENTRY_TRACES_SAMPLE_RATE: this.config.sentryTracesSampleRate.toString(),
         SENTRY_PROFILES_SAMPLE_RATE: this.config.sentryProfilesSampleRate.toString(),
+        // Auth Cookies (httpOnly cookies for XSS protection)
+        COOKIE_SECURE: 'true',
+        COOKIE_SAMESITE: 'lax',
+        ...(this.config.domainName ? { COOKIE_DOMAIN: this.config.domainName } : {}),
       },
       secrets: apiSecrets,
       portMappings: [{ containerPort: 3001 }],

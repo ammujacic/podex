@@ -84,6 +84,7 @@ const computeStack = new ComputeStack(app, `Podex-Compute-${config.envName}`, {
   jwtSecret: databaseStack.jwtSecret,
   internalApiKeySecret: databaseStack.internalApiKeySecret,
   redisAuthToken: databaseStack.redisAuthToken,
+  redisEncryptionKeySecret: databaseStack.redisEncryptionKeySecret,
   // Redis endpoint for services
   redisEndpoint: databaseStack.redisEndpoint,
 });

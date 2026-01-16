@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     docker_host: str = "unix:///var/run/docker.sock"
     max_workspaces: int = 10
     workspace_timeout: int = 3600  # 1 hour idle timeout
+    shutdown_timeout: int = 60  # Max seconds for graceful shutdown before forcing exit
     workspace_image: str = "podex/workspace:latest"
     docker_network: str = "podex-dev"
 

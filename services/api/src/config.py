@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
+    # Auth Cookies (httpOnly cookies for XSS protection)
+    COOKIE_SECURE: bool = True  # Set False for local dev without HTTPS
+    COOKIE_DOMAIN: str | None = None  # Set for cross-subdomain cookies (e.g., ".podex.dev")
+    COOKIE_SAMESITE: str = "lax"  # "lax", "strict", or "none"
+
     # Password requirements
     PASSWORD_MIN_LENGTH: int = 8
     PASSWORD_MAX_LENGTH: int = 128
@@ -147,7 +152,13 @@ class Settings(BaseSettings):
     EMAIL_REPLY_TO: str = "support@podex.dev"
 
     # AI/LLM providers
+    LLM_PROVIDER: str = "bedrock"  # bedrock (default), anthropic, openai, ollama
     ANTHROPIC_API_KEY: str | None = None
+    OPENAI_API_KEY: str | None = None
+    AWS_ACCESS_KEY_ID: str | None = None
+    AWS_SECRET_ACCESS_KEY: str | None = None
+    OLLAMA_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "qwen2.5-coder:14b"
 
     # Internal Service Authentication
     INTERNAL_SERVICE_TOKEN: str | None = None  # Token for service-to-service auth

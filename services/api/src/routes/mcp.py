@@ -21,7 +21,7 @@ from src.mcp_defaults import (
     get_all_categories,
     get_default_server_by_slug,
 )
-from src.mcp_discovery import MCPDiscoveryConfig, discover_mcp_tools
+from src.mcp_discovery import MCPDiscoveryConfig, discover_mcp_tools, execute_mcp_tool
 from src.middleware.auth import get_current_user
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
@@ -335,6 +335,27 @@ class MCPServerListResponse(BaseModel):
     total: int
 
 
+class MCPToolExecuteRequest(BaseModel):
+    """Request to execute an MCP tool."""
+
+    server_id: str | None = Field(None, description="Server ID (UUID)")
+    server_name: str | None = Field(None, description="Server name (alternative to ID)")
+    tool_name: str = Field(..., min_length=1, max_length=256)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    session_id: str | None = Field(None, description="Optional session ID for tracking")
+
+
+class MCPToolExecuteResponse(BaseModel):
+    """Response from executing an MCP tool."""
+
+    success: bool
+    result: Any = None
+    error: str | None = None
+    is_error: bool = False
+    server_name: str | None = None
+    tool_name: str | None = None
+
+
 @router.get("", response_model=MCPServerListResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def list_servers(
@@ -359,6 +380,125 @@ async def list_servers(
     return MCPServerListResponse(
         servers=[_server_to_response(s) for s in servers],
         total=len(servers),
+    )
+
+
+@router.post("/execute", response_model=MCPToolExecuteResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def execute_tool(
+    request: Request,
+    response: Response,
+    data: MCPToolExecuteRequest,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> MCPToolExecuteResponse:
+    """Execute an MCP tool on behalf of a terminal agent.
+
+    This endpoint allows terminal agents running in containers to call MCP tools
+    without needing direct MCP server access. The API handles server connection,
+    authentication, and tool execution.
+
+    Either server_id or server_name must be provided to identify the MCP server.
+    """
+    import structlog  # noqa: PLC0415
+
+    logger = structlog.get_logger()
+
+    # Find the server by ID or name
+    if data.server_id:
+        server = await db.get(MCPServer, data.server_id)
+        if not server or server.user_id != current_user["id"]:
+            raise HTTPException(status_code=404, detail="Server not found")
+    elif data.server_name:
+        result = await db.execute(
+            select(MCPServer).where(
+                MCPServer.user_id == current_user["id"],
+                MCPServer.name == data.server_name,
+            )
+        )
+        server = result.scalar_one_or_none()
+        if not server:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Server with name '{data.server_name}' not found",
+            )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Either server_id or server_name must be provided",
+        )
+
+    # Check if server is enabled
+    if not server.is_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Server '{server.name}' is disabled",
+        )
+
+    # Verify the tool exists in discovered tools
+    discovered_tools = server.discovered_tools or []
+    tool_names = [name for t in discovered_tools if (name := t.get("name"))]
+    max_display_tools = 10
+    if data.tool_name not in tool_names:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Tool '{data.tool_name}' not found on server '{server.name}'. "
+            f"Available tools: {', '.join(tool_names[:max_display_tools])}"
+            f"{'...' if len(tool_names) > max_display_tools else ''}",
+        )
+
+    # Build configuration for the MCP server
+    config = MCPDiscoveryConfig(
+        transport=server.transport,
+        command=server.command,
+        args=server.args or [],
+        url=server.url,
+        env_vars=server.env_vars or {},
+        timeout=60,  # Longer timeout for tool execution
+    )
+
+    logger.info(
+        "Executing MCP tool",
+        user_id=current_user["id"],
+        server_name=server.name,
+        tool_name=data.tool_name,
+        session_id=data.session_id,
+    )
+
+    # Execute the tool
+    execution_result = await execute_mcp_tool(
+        config=config,
+        tool_name=data.tool_name,
+        arguments=data.arguments,
+    )
+
+    if not execution_result.success:
+        logger.warning(
+            "MCP tool execution failed",
+            server_name=server.name,
+            tool_name=data.tool_name,
+            error=execution_result.error,
+        )
+        return MCPToolExecuteResponse(
+            success=False,
+            error=execution_result.error,
+            server_name=server.name,
+            tool_name=data.tool_name,
+        )
+
+    logger.info(
+        "MCP tool executed successfully",
+        server_name=server.name,
+        tool_name=data.tool_name,
+        is_error=execution_result.is_error,
+    )
+
+    return MCPToolExecuteResponse(
+        success=True,
+        result=execution_result.result,
+        is_error=execution_result.is_error,
+        server_name=server.name,
+        tool_name=data.tool_name,
     )
 
 

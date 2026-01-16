@@ -138,6 +138,9 @@ class Agent(Base):
         UUID(as_uuid=False),
         ForeignKey("agent_templates.id", ondelete="SET NULL"),
     )
+    # Context tracking
+    context_tokens_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    context_max_tokens: Mapped[int] = mapped_column(Integer, default=200000, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

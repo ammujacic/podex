@@ -61,6 +61,8 @@ class DockerComputeManager(ComputeManager):
         self.client = docker.from_env()
         self._workspaces: dict[str, WorkspaceInfo] = {}
         self._file_sync: FileSync | None = None
+        # Lock for billing operations to prevent race conditions
+        self._billing_lock = asyncio.Lock()
         logger.info(
             "DockerComputeManager initialized",
             docker_host=settings.docker_host,
@@ -554,53 +556,68 @@ class DockerComputeManager(ComputeManager):
             logger.exception("Failed to track compute usage")
 
     async def track_running_workspaces_usage(self) -> None:
-        """Track compute usage for all running workspaces (called periodically)."""
-        now = datetime.now(UTC)
+        """Track compute usage for all running workspaces (called periodically).
 
-        for workspace in list(self._workspaces.values()):
-            if workspace.status != WorkspaceStatus.RUNNING:
-                continue
+        Uses a lock to prevent race conditions where concurrent calls could
+        read the same timestamp and double-bill.
+        """
+        async with self._billing_lock:
+            now = datetime.now(UTC)
 
-            try:
-                # Get last billing timestamp from metadata
-                last_billing_str = workspace.metadata.get("last_billing_timestamp")
-                if not last_billing_str:
-                    # Use workspace creation time as starting point for first billing cycle
-                    # This ensures we track usage from when the workspace started running
-                    last_billing = workspace.created_at
-                else:
-                    # Parse last billing timestamp
-                    last_billing = datetime.fromisoformat(last_billing_str)
+            for workspace in list(self._workspaces.values()):
+                if workspace.status != WorkspaceStatus.RUNNING:
+                    continue
 
-                # Ensure last_billing is timezone-aware
-                if last_billing.tzinfo is None:
-                    last_billing = last_billing.replace(tzinfo=UTC)
+                try:
+                    # Get last billing timestamp from metadata
+                    last_billing_str = workspace.metadata.get("last_billing_timestamp")
+                    if not last_billing_str:
+                        # Use workspace creation time as starting point for first billing cycle
+                        # This ensures we track usage from when the workspace started running
+                        last_billing = workspace.created_at
+                    else:
+                        # Parse last billing timestamp
+                        last_billing = datetime.fromisoformat(last_billing_str)
 
-                # Calculate duration since last billing
-                duration = (now - last_billing).total_seconds()
+                    # Ensure last_billing is timezone-aware
+                    if last_billing.tzinfo is None:
+                        last_billing = last_billing.replace(tzinfo=UTC)
 
-                # Only track if at least 10 minutes have passed to avoid too many small entries
-                # This also helps with cost precision since per-minute billing at low rates
-                # results in sub-cent costs that round to $0
-                if duration >= 600:  # noqa: PLR2004
-                    duration_seconds = int(duration)
+                    # Calculate duration since last billing
+                    duration = (now - last_billing).total_seconds()
 
-                    # Track the usage
-                    await self._track_compute_usage(workspace, duration_seconds)
+                    # Only track if at least 10 minutes have passed to avoid too many small entries
+                    # This also helps with cost precision since per-minute billing at low rates
+                    # results in sub-cent costs that round to $0
+                    if duration >= 600:  # noqa: PLR2004
+                        duration_seconds = int(duration)
 
-                    # Update last billing timestamp
-                    workspace.metadata["last_billing_timestamp"] = now.isoformat()
+                        # Update timestamp BEFORE tracking to prevent double-billing
+                        # even if _track_compute_usage fails and retries
+                        old_timestamp = workspace.metadata.get("last_billing_timestamp")
+                        workspace.metadata["last_billing_timestamp"] = now.isoformat()
 
-                    logger.debug(
-                        "Tracked periodic compute usage",
+                        try:
+                            # Track the usage
+                            await self._track_compute_usage(workspace, duration_seconds)
+
+                            logger.debug(
+                                "Tracked periodic compute usage",
+                                workspace_id=workspace.id,
+                                duration_seconds=duration_seconds,
+                            )
+                        except Exception:
+                            # Restore old timestamp on failure so we retry next time
+                            if old_timestamp:
+                                workspace.metadata["last_billing_timestamp"] = old_timestamp
+                            else:
+                                workspace.metadata.pop("last_billing_timestamp", None)
+                            raise
+                except Exception:
+                    logger.exception(
+                        "Failed to track periodic usage for workspace",
                         workspace_id=workspace.id,
-                        duration_seconds=duration_seconds,
                     )
-            except Exception:
-                logger.exception(
-                    "Failed to track periodic usage for workspace",
-                    workspace_id=workspace.id,
-                )
 
     async def delete_workspace(self, workspace_id: str, preserve_files: bool = True) -> None:
         """Delete a workspace and its container.
@@ -613,15 +630,26 @@ class DockerComputeManager(ComputeManager):
         if not workspace:
             return
 
-        # Sync files to S3 before deletion
+        # Sync files to S3 before deletion (with timeout to prevent shutdown hangs)
         if self._file_sync:
             try:
                 await self._file_sync.stop_background_sync(workspace_id)
                 if preserve_files:
-                    await self._file_sync.sync_to_s3(workspace_id)
+                    await asyncio.wait_for(
+                        self._file_sync.sync_to_s3(workspace_id),
+                        timeout=30.0,  # 30 second timeout to prevent shutdown hangs
+                    )
                 else:
                     # Optionally delete S3 files too
-                    await self._file_sync.delete_workspace_files(workspace_id)
+                    await asyncio.wait_for(
+                        self._file_sync.delete_workspace_files(workspace_id),
+                        timeout=30.0,
+                    )
+            except TimeoutError:
+                logger.warning(
+                    "S3 sync timed out during workspace deletion",
+                    workspace_id=workspace_id,
+                )
             except Exception:
                 logger.exception(
                     "Failed to handle S3 files before delete",
@@ -879,8 +907,14 @@ class DockerComputeManager(ComputeManager):
                     workspace_id=workspace_id,
                     idle_seconds=idle_time,
                 )
-                await self.delete_workspace(workspace_id)
-                cleaned_up.append(workspace_id)
+                try:
+                    await self.delete_workspace(workspace_id)
+                    cleaned_up.append(workspace_id)
+                except Exception:
+                    logger.exception(
+                        "Failed to cleanup workspace, continuing with others",
+                        workspace_id=workspace_id,
+                    )
 
         return cleaned_up
 

@@ -284,9 +284,6 @@ class TmuxTerminalSession:
             tty=True,
         )
 
-        # Set socket to non-blocking mode once at startup
-        self.socket._sock.setblocking(False)
-
         self._running = True
         self._using_tmux = True
 
@@ -328,9 +325,6 @@ class TmuxTerminalSession:
             socket=True,
             tty=True,
         )
-
-        # Set socket to non-blocking mode once at startup
-        self.socket._sock.setblocking(False)
 
         self._running = True
         self._using_tmux = False
@@ -388,8 +382,7 @@ class TmuxTerminalSession:
             return False
         try:
             sock = self.socket._sock
-            loop = asyncio.get_event_loop()
-            await loop.sock_sendall(sock, data)
+            await asyncio.to_thread(sock.sendall, data)
             return True
         except Exception as e:
             logger.warning(
@@ -405,11 +398,12 @@ class TmuxTerminalSession:
             return None
         try:
             sock = self.socket._sock
-            loop = asyncio.get_event_loop()
+            # Set a short timeout for non-blocking behavior
+            sock.settimeout(0.1)
             try:
-                data = await loop.sock_recv(sock, size)
+                data = await asyncio.to_thread(sock.recv, size)
                 return data if data else None
-            except BlockingIOError:
+            except TimeoutError:
                 return b""
         except Exception as e:
             logger.warning(

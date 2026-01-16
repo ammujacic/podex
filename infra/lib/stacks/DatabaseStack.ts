@@ -25,6 +25,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly internalApiKeySecret: secretsmanager.Secret;
   public readonly sentrySecret: secretsmanager.Secret;
   public readonly redisAuthToken: secretsmanager.Secret;
+  public readonly redisEncryptionKeySecret: secretsmanager.Secret;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
@@ -141,6 +142,17 @@ export class DatabaseStack extends cdk.Stack {
       },
     });
 
+    // Redis encryption key for application-level encryption at rest
+    // This provides an additional layer of encryption on top of ElastiCache's at-rest encryption
+    this.redisEncryptionKeySecret = new secretsmanager.Secret(this, 'RedisEncryptionKeySecret', {
+      secretName: `podex/${config.envName}/redis-encryption-key`,
+      description: 'Encryption key for Redis data at rest (application-level Fernet encryption)',
+      generateSecretString: {
+        excludePunctuation: true,
+        passwordLength: 32, // 32 bytes for Fernet key derivation
+      },
+    });
+
     // Redis subnet group
     const redisSubnetGroup = new elasticache.CfnSubnetGroup(this, 'RedisSubnetGroup', {
       description: 'Subnet group for Redis cluster',
@@ -220,6 +232,11 @@ export class DatabaseStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'RedisAuthTokenArn', {
       value: this.redisAuthToken.secretArn,
       description: 'Redis AUTH token secret ARN',
+    });
+
+    new cdk.CfnOutput(this, 'RedisEncryptionKeyArn', {
+      value: this.redisEncryptionKeySecret.secretArn,
+      description: 'Redis encryption key secret ARN',
     });
   }
 }

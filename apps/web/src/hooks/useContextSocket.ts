@@ -108,7 +108,7 @@ export function useContextSocket({ sessionId, agentIds = [] }: UseContextSocketO
           messagesRemoved: data.messages_removed,
           messagesPreserved: 0, // Not sent in event
           summaryText: data.summary,
-          triggerType: 'manual',
+          triggerType: data.trigger_type || 'manual',
           createdAt: new Date(),
         });
       }

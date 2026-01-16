@@ -1,8 +1,10 @@
 'use client';
 
-import { useCallback, useRef } from 'react';
+import { useCallback, useRef, useEffect } from 'react';
 import Editor, { type OnMount, type Monaco } from '@monaco-editor/react';
 import type { editor } from 'monaco-editor';
+import type { LSPDiagnostic } from '@/lib/api';
+import { diagnosticsToMonacoMarkers } from '@/hooks/useLSP';
 
 export interface CodeEditorProps {
   value: string;
@@ -12,6 +14,10 @@ export interface CodeEditorProps {
   onChange?: (value: string) => void;
   onSave?: (value: string) => void;
   className?: string;
+  /** LSP diagnostics to display as markers */
+  diagnostics?: LSPDiagnostic[];
+  /** Callback when editor content changes (debounced) for triggering diagnostics */
+  onContentChange?: (value: string) => void;
 }
 
 // Terminal Noir theme for Monaco
@@ -71,12 +77,16 @@ export function CodeEditor({
   onChange,
   onSave,
   className,
+  diagnostics,
+  onContentChange,
 }: CodeEditorProps) {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
+  const monacoRef = useRef<Monaco | null>(null);
 
   const handleEditorDidMount: OnMount = useCallback(
     (editor: editor.IStandaloneCodeEditor, monaco: Monaco) => {
       editorRef.current = editor;
+      monacoRef.current = monaco;
 
       // Define custom theme
       monaco.editor.defineTheme('terminal-noir', terminalNoirTheme);
@@ -96,14 +106,56 @@ export function CodeEditor({
     [onSave]
   );
 
+  // Update Monaco markers when diagnostics change
+  useEffect(() => {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    if (!editor || !monaco) return;
+
+    const model = editor.getModel();
+    if (!model) return;
+
+    if (diagnostics && diagnostics.length > 0) {
+      const markers = diagnosticsToMonacoMarkers(diagnostics);
+      monaco.editor.setModelMarkers(model, 'lsp', markers);
+    } else {
+      // Clear markers if no diagnostics
+      monaco.editor.setModelMarkers(model, 'lsp', []);
+    }
+  }, [diagnostics]);
+
+  // Debounce ref for content change callback
+  const contentChangeTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   const handleChange = useCallback(
     (newValue: string | undefined) => {
-      if (onChange && newValue !== undefined) {
+      if (newValue === undefined) return;
+
+      if (onChange) {
         onChange(newValue);
       }
+
+      // Debounced content change for diagnostics
+      if (onContentChange) {
+        if (contentChangeTimerRef.current) {
+          clearTimeout(contentChangeTimerRef.current);
+        }
+        contentChangeTimerRef.current = setTimeout(() => {
+          onContentChange(newValue);
+        }, 500); // 500ms debounce
+      }
     },
-    [onChange]
+    [onChange, onContentChange]
   );
+
+  // Cleanup debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (contentChangeTimerRef.current) {
+        clearTimeout(contentChangeTimerRef.current);
+      }
+    };
+  }, []);
 
   return (
     <div className={className}>

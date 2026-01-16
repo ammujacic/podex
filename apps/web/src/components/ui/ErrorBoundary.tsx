@@ -59,10 +59,11 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     const { error, errorInfo } = this.state;
     const subject = encodeURIComponent(`Bug Report: ${error?.message || 'Unknown error'}`);
     const body = encodeURIComponent(
-      `Error: ${error?.message}\n\nStack: ${error?.stack}\n\nComponent Stack: ${errorInfo?.componentStack}`
+      `**Error:**\n\`\`\`\n${error?.message}\n\`\`\`\n\n**Stack Trace:**\n\`\`\`\n${error?.stack}\n\`\`\`\n\n**Component Stack:**\n\`\`\`\n${errorInfo?.componentStack}\n\`\`\`\n\n**Browser:** ${typeof navigator !== 'undefined' ? navigator.userAgent : 'Unknown'}\n**URL:** ${typeof window !== 'undefined' ? window.location.href : 'Unknown'}`
     );
+    // Open GitHub issues page - users can file issues at the podex repository
     window.open(
-      `https://github.com/your-org/podex/issues/new?title=${subject}&body=${body}`,
+      `https://github.com/podex-dev/podex/issues/new?title=${subject}&body=${body}&labels=bug`,
       '_blank'
     );
   };

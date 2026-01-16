@@ -302,6 +302,114 @@ AVAILABLE_TOOLS: dict[str, Tool] = {
             "required": [],
         },
     ),
+    # File pattern matching
+    "glob_files": Tool(
+        name="glob_files",
+        description="Find files matching a glob pattern (e.g., '**/*.py', 'src/**/*.ts')",
+        parameters={
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob pattern to match (e.g., '**/*.py', 'src/*.ts')",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Base directory to search from (relative to workspace root)",
+                    "default": ".",
+                },
+                "include_hidden": {
+                    "type": "boolean",
+                    "description": "Include hidden files (starting with .)",
+                    "default": False,
+                },
+            },
+            "required": ["pattern"],
+        },
+    ),
+    # Patch application
+    "apply_patch": Tool(
+        name="apply_patch",
+        description="Apply a unified diff patch to a file",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File path to apply patch to",
+                },
+                "patch": {
+                    "type": "string",
+                    "description": "Unified diff patch content",
+                },
+                "reverse": {
+                    "type": "boolean",
+                    "description": "Reverse the patch (undo changes)",
+                    "default": False,
+                },
+            },
+            "required": ["path", "patch"],
+        },
+    ),
+    # URL fetching
+    "fetch_url": Tool(
+        name="fetch_url",
+        description="Fetch content from a URL (HTML is converted to markdown)",
+        parameters={
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "URL to fetch",
+                },
+                "extract_text": {
+                    "type": "boolean",
+                    "description": "Extract and clean text content (default: True)",
+                    "default": True,
+                },
+                "max_length": {
+                    "type": "integer",
+                    "description": "Maximum content length in characters",
+                    "default": 50000,
+                },
+            },
+            "required": ["url"],
+        },
+    ),
+    # Grep-style content search
+    "grep": Tool(
+        name="grep",
+        description="Search for text patterns in files using regex",
+        parameters={
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Regex pattern to search for",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "File or directory to search in",
+                    "default": ".",
+                },
+                "file_pattern": {
+                    "type": "string",
+                    "description": "Glob pattern to filter files (e.g., '*.py')",
+                },
+                "ignore_case": {
+                    "type": "boolean",
+                    "description": "Case-insensitive search",
+                    "default": False,
+                },
+                "context_lines": {
+                    "type": "integer",
+                    "description": "Number of context lines around matches",
+                    "default": 2,
+                },
+            },
+            "required": ["pattern"],
+        },
+    ),
 }
 
 

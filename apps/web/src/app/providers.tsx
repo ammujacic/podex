@@ -174,9 +174,24 @@ export function Providers({ children }: ProvidersProps) {
             staleTime: 60 * 1000, // 1 minute
             refetchOnWindowFocus: false,
             retry: (failureCount, error) => {
-              // Don't retry on 4xx errors
-              if (error instanceof Error && error.message.includes('4')) {
-                return false;
+              // Don't retry on 4xx client errors (400-499)
+              if (error instanceof Error) {
+                const errorWithStatus = error as Error & { status?: number };
+                // Check for status code on error object
+                if (
+                  errorWithStatus.status &&
+                  errorWithStatus.status >= 400 &&
+                  errorWithStatus.status < 500
+                ) {
+                  return false;
+                }
+                // Fallback: check for HTTP 4xx status codes in message (e.g., "HTTP 404")
+                if (
+                  /\bHTTP\s*4\d{2}\b/i.test(error.message) ||
+                  /\b4\d{2}\s*:/i.test(error.message)
+                ) {
+                  return false;
+                }
               }
               return failureCount < 3;
             },
@@ -217,25 +232,42 @@ export function Providers({ children }: ProvidersProps) {
           </ThemeInitializer>
         </AuthInitializer>
 
-        {/* Toast notifications */}
-        <Toaster
-          theme="dark"
-          position="bottom-right"
-          offset={80} // Above mobile nav
-          toastOptions={{
-            duration: 4000,
-            style: {
-              background: 'var(--bg-elevated)',
-              border: '1px solid var(--border-default)',
-              color: 'var(--text-primary)',
-              borderRadius: 'var(--radius-lg)',
-            },
-            className: 'animate-slide-up',
-          }}
-          closeButton
-          richColors
-        />
+        {/* Toast notifications with theme awareness */}
+        <ThemedToaster />
       </QueryClientProvider>
     </ErrorBoundary>
+  );
+}
+
+// Toaster component that respects user's theme preference
+function ThemedToaster() {
+  const theme = useUIStore((state) => state.theme);
+
+  // Determine the effective theme (handle 'system' preference)
+  const effectiveTheme =
+    theme === 'system'
+      ? typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
+        ? 'dark'
+        : 'light'
+      : theme;
+
+  return (
+    <Toaster
+      theme={effectiveTheme as 'light' | 'dark'}
+      position="bottom-right"
+      offset={80} // Above mobile nav
+      toastOptions={{
+        duration: 4000,
+        style: {
+          background: 'var(--bg-elevated)',
+          border: '1px solid var(--border-default)',
+          color: 'var(--text-primary)',
+          borderRadius: 'var(--radius-lg)',
+        },
+        className: 'animate-slide-up',
+      }}
+      closeButton
+      richColors
+    />
   );
 }

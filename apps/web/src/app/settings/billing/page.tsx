@@ -213,8 +213,8 @@ export default function BillingPage() {
                   ? 'Custom'
                   : formatCurrency(
                       subscription.billing_cycle === 'yearly'
-                        ? (subscription.plan.price_yearly || 0) / 100
-                        : (subscription.plan.price_monthly || 0) / 100
+                        ? subscription.plan.price_yearly || 0
+                        : subscription.plan.price_monthly || 0
                     )}
               </div>
               <div className="text-sm text-text-muted mb-2">

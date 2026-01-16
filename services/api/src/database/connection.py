@@ -15,7 +15,9 @@ from sqlalchemy.ext.asyncio import (
 from src.config import settings
 from src.database.models import (
     Base,
+    CustomCommand,
     HardwareSpec,
+    LLMModel,
     PlatformSetting,
     PodTemplate,
     SubscriptionPlan,
@@ -105,11 +107,15 @@ async def seed_database() -> None:
 
     This function is idempotent - it will only create records that don't already exist.
     It seeds: subscription plans, hardware specs, pod templates, platform settings,
-    and terminal-integrated agent types.
+    terminal-integrated agent types, and LLM models.
     """
     # Import default data from admin routes and seed data
-    from src.database.seed_data import DEFAULT_TERMINAL_AGENTS  # noqa: PLC0415
+    from src.database.seed_data import (  # noqa: PLC0415
+        DEFAULT_GLOBAL_COMMANDS,
+        DEFAULT_TERMINAL_AGENTS,
+    )
     from src.routes.admin.hardware import DEFAULT_HARDWARE_SPECS  # noqa: PLC0415
+    from src.routes.admin.models import DEFAULT_MODELS  # noqa: PLC0415
     from src.routes.admin.plans import DEFAULT_PLANS  # noqa: PLC0415
     from src.routes.admin.settings import DEFAULT_SETTINGS  # noqa: PLC0415
     from src.routes.templates import OFFICIAL_TEMPLATES  # noqa: PLC0415
@@ -122,6 +128,8 @@ async def seed_database() -> None:
                 "templates": 0,
                 "settings": 0,
                 "terminal_agents": 0,
+                "llm_models": 0,
+                "global_commands": 0,
             }
 
             # Seed subscription plans
@@ -194,6 +202,40 @@ async def seed_database() -> None:
                     )
                     totals["terminal_agents"] += 1
 
+            # Seed LLM models
+            for model_data in DEFAULT_MODELS:
+                result = await db.execute(
+                    select(LLMModel).where(LLMModel.model_id == model_data["model_id"])
+                )
+                if not result.scalar_one_or_none():
+                    db.add(LLMModel(**model_data))
+                    totals["llm_models"] += 1
+
+            # Seed global slash commands
+            for cmd_data in DEFAULT_GLOBAL_COMMANDS:
+                result = await db.execute(
+                    select(CustomCommand).where(
+                        CustomCommand.name == cmd_data["name"],
+                        CustomCommand.is_global == True,  # noqa: E712
+                    )
+                )
+                if not result.scalar_one_or_none():
+                    db.add(
+                        CustomCommand(
+                            name=cmd_data["name"],
+                            description=cmd_data.get("description"),
+                            prompt_template=cmd_data["prompt_template"],
+                            arguments=cmd_data.get("arguments", []),
+                            category=cmd_data.get("category", "custom"),
+                            sort_order=cmd_data.get("sort_order", 100),
+                            is_global=True,
+                            enabled=True,
+                            user_id=None,
+                            session_id=None,
+                        )
+                    )
+                    totals["global_commands"] += 1
+
             await db.commit()
 
             if any(totals.values()):
@@ -204,6 +246,8 @@ async def seed_database() -> None:
                     templates=totals["templates"],
                     settings=totals["settings"],
                     terminal_agents=totals["terminal_agents"],
+                    llm_models=totals["llm_models"],
+                    global_commands=totals["global_commands"],
                 )
 
         except Exception as e:

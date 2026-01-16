@@ -92,8 +92,8 @@ export function ExternalAgentSettings() {
     try {
       // Use authenticated API client instead of raw fetch
       const [profilesData, agentTypesData] = await Promise.all([
-        api.get<EnvProfile[]>('/terminal-agents/env-profiles'),
-        api.get<TerminalAgentType[]>('/terminal-agents/terminal-agent-types'),
+        api.get<EnvProfile[]>('/api/terminal-agents/env-profiles'),
+        api.get<TerminalAgentType[]>('/api/terminal-agents/terminal-agent-types'),
       ]);
 
       setProfiles(profilesData);
@@ -119,7 +119,7 @@ export function ExternalAgentSettings() {
     setError(null);
 
     try {
-      await api.post('/terminal-agents/env-profiles', {
+      await api.post('/api/terminal-agents/env-profiles', {
         name: formData.name,
         agent_type_id: formData.agent_type_id || null,
         env_vars: formData.env_vars,
@@ -141,7 +141,7 @@ export function ExternalAgentSettings() {
     setError(null);
 
     try {
-      await api.put(`/terminal-agents/env-profiles/${editingProfile.id}`, {
+      await api.put(`/api/terminal-agents/env-profiles/${editingProfile.id}`, {
         name: formData.name,
         agent_type_id: formData.agent_type_id || null,
         env_vars: formData.env_vars,
@@ -164,7 +164,7 @@ export function ExternalAgentSettings() {
     if (!deleteConfirm.profileId) return;
 
     try {
-      await api.delete(`/terminal-agents/env-profiles/${deleteConfirm.profileId}`);
+      await api.delete(`/api/terminal-agents/env-profiles/${deleteConfirm.profileId}`);
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');

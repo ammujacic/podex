@@ -6,6 +6,8 @@ such as MFA secrets and API keys.
 
 import base64
 import hashlib
+import json
+from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -160,3 +162,53 @@ def decrypt_if_needed(value: str) -> str:
     except DecryptionError:
         # If decryption fails, assume it's plaintext (legacy data)
         return value
+
+
+def encrypt_dict(data: dict[str, Any] | None) -> str | None:
+    """Encrypt a dictionary as a JSON string.
+
+    Used for encrypting env_vars and other sensitive dict fields at rest.
+
+    Args:
+        data: Dictionary to encrypt, or None.
+
+    Returns:
+        Encrypted JSON string, or None if input is None/empty.
+    """
+    if not data:
+        return None
+    json_str = json.dumps(data, sort_keys=True)
+    return encrypt_string(json_str)
+
+
+def decrypt_dict(encrypted: str | None) -> dict[str, Any]:
+    """Decrypt an encrypted JSON string to a dictionary.
+
+    Handles both encrypted data and legacy plaintext JSON for backward
+    compatibility during migration.
+
+    Args:
+        encrypted: Encrypted string, plaintext JSON, or None.
+
+    Returns:
+        Decrypted dictionary, or empty dict if input is None/empty.
+    """
+    if not encrypted:
+        return {}
+
+    # Handle legacy plaintext JSON (not yet encrypted)
+    if not is_encrypted(encrypted):
+        try:
+            result = json.loads(encrypted)
+            return result if isinstance(result, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+
+    # Decrypt and parse JSON
+    try:
+        decrypted = decrypt_string(encrypted)
+        result = json.loads(decrypted)
+        return result if isinstance(result, dict) else {}
+    except (DecryptionError, json.JSONDecodeError, TypeError):
+        # If decryption or parsing fails, return empty dict
+        return {}

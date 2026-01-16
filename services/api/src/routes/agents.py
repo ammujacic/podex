@@ -17,7 +17,16 @@ from podex_shared import generate_tts_summary
 from src.agent_client import agent_client
 from src.config import settings
 from src.database import Agent as AgentModel
-from src.database import AgentTemplate, SubscriptionPlan, UserSubscription, get_db
+from src.database import (
+    AgentTemplate,
+    LLMModel,
+    PlatformSetting,
+    SessionCollaborator,
+    SubscriptionPlan,
+    UserConfig,
+    UserSubscription,
+    get_db,
+)
 from src.database import Message as MessageModel
 from src.database import Session as SessionModel
 from src.database.connection import async_session_factory
@@ -160,6 +169,25 @@ def sanitize_error_for_client(error: Exception | str, max_length: int = 200) -> 
     return sanitized
 
 
+def _normalize_command_pattern(pattern: str) -> str:
+    """Normalize a command pattern for consistent comparison.
+
+    Normalizes whitespace and case for security validation.
+
+    Args:
+        pattern: The command pattern to normalize.
+
+    Returns:
+        Normalized pattern string.
+    """
+    # Strip leading/trailing whitespace
+    normalized = pattern.strip()
+    # Collapse multiple spaces into single space
+    normalized = " ".join(normalized.split())
+    # Lowercase for case-insensitive comparison
+    return normalized.lower()
+
+
 def validate_command_allowlist(allowlist: list[str] | None) -> list[str] | None:
     """Validate command allowlist patterns for safety.
 
@@ -175,29 +203,35 @@ def validate_command_allowlist(allowlist: list[str] | None) -> list[str] | None:
     if not allowlist:
         return allowlist
 
+    # Pre-normalize forbidden patterns for comparison
+    forbidden_normalized = {_normalize_command_pattern(p) for p in FORBIDDEN_COMMAND_PATTERNS}
+
     validated = []
     for pattern in allowlist:
-        pattern = pattern.strip()
+        # Normalize the pattern for validation
+        normalized = _normalize_command_pattern(pattern)
+        original_stripped = pattern.strip()
 
-        # Check for forbidden patterns
-        if pattern.lower() in {p.lower() for p in FORBIDDEN_COMMAND_PATTERNS}:
+        # Check for forbidden patterns (normalized comparison)
+        if normalized in forbidden_normalized:
             raise ValueError(  # noqa: TRY003
-                f"Command pattern '{pattern}' is not allowed for security reasons"
+                f"Command pattern '{original_stripped}' is not allowed for security reasons"
             )
 
         # Check for overly broad wildcards
-        if pattern == "*" or pattern.startswith("* "):
+        if normalized == "*" or normalized.startswith("* "):
             raise ValueError(  # noqa: TRY003
                 "Wildcard-only patterns are not allowed. Please specify more specific commands."
             )
 
         # Check for shell injection patterns
-        if any(c in pattern for c in ["|", ";", "&&", "||", "`", "$("]):
+        if any(c in original_stripped for c in ["|", ";", "&&", "||", "`", "$("]):
             raise ValueError(  # noqa: TRY003
-                f"Command pattern '{pattern}' contains shell operators which are not allowed"
+                f"Command pattern '{original_stripped}' contains "
+                "shell operators which are not allowed"
             )
 
-        validated.append(pattern)
+        validated.append(original_stripped)
 
     return validated
 
@@ -221,6 +255,10 @@ async def verify_session_access(
 ) -> SessionModel:
     """Verify the current user has access to the session.
 
+    Access is granted if:
+    - User is the session owner, OR
+    - User is a collaborator on the session
+
     Raises:
         HTTPException: If session not found or user lacks access.
     """
@@ -233,17 +271,30 @@ async def verify_session_access(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    if session.owner_id != user_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    # Check if user is owner
+    if session.owner_id == user_id:
+        return session
 
-    return session
+    # Check if user is a collaborator
+    collaborator_query = select(SessionCollaborator).where(
+        SessionCollaborator.session_id == session_id,
+        SessionCollaborator.user_id == user_id,
+    )
+    collaborator_result = await db.execute(collaborator_query)
+    collaborator = collaborator_result.scalar_one_or_none()
+
+    if collaborator:
+        return session
+
+    raise HTTPException(status_code=403, detail="Access denied")
 
 
 async def check_agent_quota(db: AsyncSession, user_id: str, session_id: str) -> None:
     """Check if user has reached their agent quota for a session.
 
-    Uses SELECT FOR UPDATE on the session row to prevent race conditions
-    where concurrent requests could exceed the quota.
+    Uses SELECT FOR UPDATE with NOWAIT on the session row to prevent race conditions
+    where concurrent requests could exceed the quota. The lock serializes all
+    concurrent agent creation requests for the same session.
 
     Args:
         db: Database session
@@ -253,11 +304,23 @@ async def check_agent_quota(db: AsyncSession, user_id: str, session_id: str) -> 
     Raises:
         HTTPException: If user has exceeded their agent quota or lacks a valid subscription
     """
-    # Lock the session row to serialize concurrent agent creation requests
-    # This prevents race conditions where multiple requests could exceed the quota
-    session_lock_query = select(SessionModel).where(SessionModel.id == session_id).with_for_update()
-    lock_result = await db.execute(session_lock_query)
-    session = lock_result.scalar_one_or_none()
+    from sqlalchemy.exc import OperationalError  # noqa: PLC0415
+
+    try:
+        # Lock the session row with NOWAIT to fail fast on contention
+        # This prevents race conditions where multiple requests could exceed the quota
+        # Using NOWAIT ensures we don't wait indefinitely on a locked row
+        session_lock_query = (
+            select(SessionModel).where(SessionModel.id == session_id).with_for_update(nowait=True)
+        )
+        lock_result = await db.execute(session_lock_query)
+        session = lock_result.scalar_one_or_none()
+    except OperationalError:
+        # Lock acquisition failed - another request is creating an agent
+        raise HTTPException(
+            status_code=409,
+            detail="Another agent creation is in progress. Please try again.",
+        ) from None
 
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -294,6 +357,7 @@ async def check_agent_quota(db: AsyncSession, user_id: str, session_id: str) -> 
     max_agents = plan.max_agents
 
     # Count current agents in this session (within the lock)
+    # The lock ensures this count is accurate and won't change until we commit
     count_query = (
         select(func.count()).select_from(AgentModel).where(AgentModel.session_id == session_id)
     )
@@ -314,7 +378,7 @@ class AgentCreate(BaseModel):
 
     name: str
     role: str  # Validated: architect, coder, reviewer, tester, agent_builder, custom
-    model: str
+    model: str | None = None  # Optional - uses role default from platform settings if not provided
     mode: str = "ask"  # plan, ask, auto, sovereign
     command_allowlist: list[str] | None = None  # Allowed commands for Auto mode
     config: dict[str, Any] | None = None
@@ -347,6 +411,7 @@ class AgentResponse(BaseModel):
     name: str
     role: str
     model: str
+    model_display_name: str | None = None  # User-friendly model name from database
     status: str
     mode: str = "ask"  # plan, ask, auto, sovereign
     command_allowlist: list[str] | None = None
@@ -374,6 +439,13 @@ class AgentModeUpdate(BaseModel):
         return mode_lower
 
 
+class AgentUpdate(BaseModel):
+    """Update agent settings request."""
+
+    name: str | None = None
+    model: str | None = None
+
+
 class ImageAttachment(BaseModel):
     """Image attachment for agent messages."""
 
@@ -384,11 +456,31 @@ class ImageAttachment(BaseModel):
     filename: str | None = None  # Original filename
 
 
+class ThinkingConfigRequest(BaseModel):
+    """Extended thinking configuration for agent messages."""
+
+    enabled: bool = False
+    budget_tokens: int = 8000  # Default budget (min 1024, max 32000)
+
+    @field_validator("budget_tokens")
+    @classmethod
+    def validate_budget(cls, v: int) -> int:
+        """Validate thinking budget is within allowed range."""
+        min_budget = 1024
+        max_budget = 32000
+        if v < min_budget:
+            return min_budget
+        if v > max_budget:
+            return max_budget
+        return v
+
+
 class MessageCreate(BaseModel):
     """Create message request."""
 
     content: str
     images: list[ImageAttachment] | None = None  # Optional image attachments
+    thinking_config: ThinkingConfigRequest | None = None  # Extended thinking config
 
     @field_validator("content")
     @classmethod
@@ -447,6 +539,9 @@ class PaginationParams:
 
     limit: int = 100
     offset: int = 0
+    # Cursor for cursor-based pagination (message ID)
+    # When provided, offset is ignored and results start after this message
+    cursor: str | None = None
 
     def __post_init__(self) -> None:
         """Clamp values to valid ranges."""
@@ -483,6 +578,78 @@ class GetMessagesParams:
 # Agent colors for UI
 AGENT_COLORS = ["#00e5ff", "#a855f7", "#22c55e", "#f59e0b", "#ec4899", "#eab308"]
 
+
+async def get_model_display_name(db: AsyncSession, model_id: str) -> str | None:
+    """Look up model display name from the database.
+
+    Args:
+        db: Database session
+        model_id: The model ID to look up
+
+    Returns:
+        The display name if found, None otherwise
+    """
+    result = await db.execute(select(LLMModel.display_name).where(LLMModel.model_id == model_id))
+    row = result.first()
+    return row[0] if row else None
+
+
+# Default model for when platform settings don't have a role default configured
+DEFAULT_FALLBACK_MODEL = "anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+
+async def get_default_model_for_role(db: AsyncSession, role: str) -> str:
+    """Get the default model for an agent role from platform settings.
+
+    Args:
+        db: Database session
+        role: The agent role (e.g., 'chat', 'coder', 'architect')
+
+    Returns:
+        The default model ID for the role, or a fallback if not configured
+    """
+    result = await db.execute(
+        select(PlatformSetting).where(PlatformSetting.key == "agent_model_defaults")
+    )
+    setting = result.scalar_one_or_none()
+
+    if setting and setting.value:
+        defaults = setting.value
+        if role in defaults and "model_id" in defaults[role]:
+            return str(defaults[role]["model_id"])
+
+    # Return fallback model if no default configured for this role
+    return DEFAULT_FALLBACK_MODEL
+
+
+def _build_agent_response(
+    agent: AgentModel, model_display_name: str | None = None
+) -> AgentResponse:
+    """Build AgentResponse from an Agent model.
+
+    Args:
+        agent: The agent model
+        model_display_name: Optional pre-fetched display name
+
+    Returns:
+        AgentResponse with all fields populated
+    """
+    return AgentResponse(
+        id=agent.id,
+        session_id=agent.session_id,
+        name=agent.name,
+        role=agent.role,
+        model=agent.model,
+        model_display_name=model_display_name,
+        status=agent.status,
+        mode=agent.mode,
+        command_allowlist=agent.command_allowlist,
+        config=agent.config,
+        template_id=agent.template_id,
+        created_at=agent.created_at,
+    )
+
+
 # Agent role system prompts for context
 AGENT_ROLE_PROMPTS: dict[str, str] = {
     "architect": (
@@ -501,50 +668,86 @@ AGENT_ROLE_PROMPTS: dict[str, str] = {
         "You are a testing agent. Write tests, identify edge cases, "
         "and ensure code quality through testing."
     ),
+    "security": (
+        "You are a security agent. Identify security vulnerabilities, "
+        "suggest secure coding practices, and help implement security measures."
+    ),
+    "devops": (
+        "You are a DevOps agent. Help with CI/CD pipelines, infrastructure, "
+        "deployment configurations, and operational best practices."
+    ),
+    "orchestrator": (
+        "You are an orchestrator agent. Coordinate tasks between multiple agents, "
+        "delegate work appropriately, and ensure efficient task completion."
+    ),
+    "agent_builder": (
+        "You are an agent builder. Help create custom agent configurations, "
+        "define system prompts, and configure agent capabilities."
+    ),
+    "documentator": (
+        "You are a documentation agent. Write clear documentation, API references, "
+        "README files, and help maintain project documentation."
+    ),
+    "chat": (
+        "You are a conversational assistant. Answer questions, provide explanations, "
+        "and help users understand the codebase and project."
+    ),
     "custom": "You are a helpful AI assistant.",
 }
 
 # ==================== Agent Attention Detection ====================
 
 # Patterns that indicate the agent needs user approval
+# Patterns are anchored to reduce false positives (match at sentence boundaries)
 APPROVAL_PATTERNS = [
-    r"(?:awaiting|waiting for) (?:your )?approval",
-    r"please (?:review|approve|confirm)",
-    r"shall I proceed\??",
-    r"do you want me to (?:proceed|continue|go ahead)",
-    r"would you like me to (?:proceed|continue|go ahead|implement|execute)",
-    r"ready to (?:proceed|implement|execute).*\?",
-    r"before I (?:proceed|continue|start)",
-    r"let me know (?:if|when) (?:you'?re ready|I should)",
-    r"approve (?:this|the) plan",
+    # Direct approval requests - sentence start or after punctuation
+    r"(?:^|[.!?]\s*)(?:awaiting|waiting for) (?:your )?approval",
+    r"(?:^|[.!?]\s*)please (?:review|approve|confirm)\b",
+    # Questions at end of response or sentence
+    r"shall I proceed\?(?:\s*$|\s*[.!])",
+    r"do you want me to (?:proceed|continue|go ahead)\?(?:\s*$|\s*[.!])",
+    r"would you like me to (?:proceed|continue|go ahead|implement|execute)\?(?:\s*$|\s*[.!])",
+    r"ready to (?:proceed|implement|execute)[^.]*\?(?:\s*$|\s*[.!])",
+    # Before-action statements
+    r"(?:^|[.!?]\s*)before I (?:proceed|continue|start)",
+    r"(?:^|[.!?]\s*)let me know (?:if|when) (?:you'?re ready|I should)",
+    r"(?:^|[.!?]\s*)approve (?:this|the) plan",
 ]
 
 # Patterns that indicate task completion
+# More specific patterns to avoid false positives
 COMPLETION_PATTERNS = [
-    r"I'?ve (?:completed|finished|done|implemented)",
-    r"implementation is (?:done|complete|finished)",
-    r"all (?:tests|files|changes) (?:are )?(?:done|complete|passing)",
-    r"task (?:is )?(?:complete|done|finished)",
-    r"successfully (?:completed|implemented|created|fixed)",
-    r"changes have been (?:made|applied|committed)",
-    r"everything (?:is )?(?:set up|configured|ready)",
+    # Direct completion statements at sentence start
+    r"(?:^|[.!?]\s*)I'?ve (?:completed|finished|done|implemented)\b",
+    r"(?:^|[.!?]\s*)implementation is (?:done|complete|finished)\b",
+    r"(?:^|[.!?]\s*)all (?:tests|files|changes) (?:are )?(?:done|complete|passing)\b",
+    r"(?:^|[.!?]\s*)(?:the )?task (?:is )?(?:complete|done|finished)\b",
+    r"(?:^|[.!?]\s*)successfully (?:completed|implemented|created|fixed)\b",
+    r"(?:^|[.!?]\s*)(?:the )?changes have been (?:made|applied|committed)\b",
+    r"(?:^|[.!?]\s*)everything (?:is )?(?:set up|configured|ready)\b",
 ]
 
 # Patterns that indicate waiting for user input
+# More specific to reduce false positives in explanatory text
 INPUT_PATTERNS = [
-    r"what would you like",
-    r"please (?:provide|specify|tell me|share|clarify)",
-    r"I need (?:more information|clarification|details|input)",
-    r"which (?:option|approach|method) would you prefer",
-    r"can you (?:provide|specify|clarify|share)",
-    r"could you (?:provide|specify|clarify|share|tell me)",
-    r"what (?:should|would) you like me to",
-    r"how would you like me to",
+    # Direct questions to user
+    r"(?:^|[.!?]\s*)what would you like\b",
+    r"(?:^|[.!?]\s*)please (?:provide|specify|tell me|share|clarify)\b",
+    r"(?:^|[.!?]\s*)I need (?:more information|clarification|details|your input)\b",
+    r"(?:^|[.!?]\s*)which (?:option|approach|method) would you prefer\?",
+    # Direct questions that end with question mark
+    r"can you (?:provide|specify|clarify|share)[^?]*\?(?:\s*$|\s*[.!])",
+    r"could you (?:provide|specify|clarify|share|tell me)[^?]*\?(?:\s*$|\s*[.!])",
+    r"what (?:should|would) you like me to[^?]*\?(?:\s*$|\s*[.!])",
+    r"how would you like me to[^?]*\?(?:\s*$|\s*[.!])",
 ]
 
 
 def detect_attention_type(response: str, _agent_role: str) -> str | None:
     """Detect if an agent response requires user attention.
+
+    Uses anchored patterns to reduce false positives. Patterns match at
+    sentence boundaries to avoid matching explanatory text.
 
     Args:
         response: The agent's response content.
@@ -552,23 +755,24 @@ def detect_attention_type(response: str, _agent_role: str) -> str | None:
 
     Returns:
         The attention type if attention is needed, None otherwise.
+        Priority: needs_approval > waiting_input > completed
     """
     response_lower = response.lower()
 
     # Check for approval patterns (highest priority)
     for pattern in APPROVAL_PATTERNS:
-        if re.search(pattern, response_lower, re.IGNORECASE):
+        if re.search(pattern, response_lower, re.IGNORECASE | re.MULTILINE):
             return "needs_approval"
 
-    # Check for completion patterns
-    for pattern in COMPLETION_PATTERNS:
-        if re.search(pattern, response_lower, re.IGNORECASE):
-            return "completed"
-
-    # Check for input patterns
+    # Check for input patterns (second priority - user action needed)
     for pattern in INPUT_PATTERNS:
-        if re.search(pattern, response_lower, re.IGNORECASE):
+        if re.search(pattern, response_lower, re.IGNORECASE | re.MULTILINE):
             return "waiting_input"
+
+    # Check for completion patterns (lowest priority - informational)
+    for pattern in COMPLETION_PATTERNS:
+        if re.search(pattern, response_lower, re.IGNORECASE | re.MULTILINE):
+            return "completed"
 
     return None
 
@@ -712,6 +916,10 @@ class AgentMessageContext:
     command_allowlist: list[str] | None = None
     # Image attachments for vision models
     images: list[dict[str, Any]] | None = None
+    # Extended thinking configuration
+    thinking_config: dict[str, Any] | None = None
+    # User-provided LLM API keys for external providers
+    llm_api_keys: dict[str, str] | None = None
 
 
 def _build_agent_service_context(
@@ -738,6 +946,12 @@ def _build_agent_service_context(
     # Include image attachments for vision models
     if ctx.images:
         agent_context["images"] = ctx.images
+    # Include extended thinking config if provided
+    if ctx.thinking_config:
+        agent_context["thinking_config"] = ctx.thinking_config
+    # Include user-provided LLM API keys (for external providers)
+    if ctx.llm_api_keys:
+        agent_context["llm_api_keys"] = ctx.llm_api_keys
     # Include message_id to enable streaming via Redis Pub/Sub
     if message_id:
         agent_context["message_id"] = message_id
@@ -816,12 +1030,17 @@ class ResponseProcessingContext:
     tool_calls: list[dict[str, Any]] | None = None
     streamed: bool = False  # If True, skip agent_message emit (frontend got it via streaming)
     message_id: str | None = None  # Optional message ID for streaming (to match frontend ID)
+    tokens_used: int = 0  # Token count to update on agent
 
 
 async def _process_and_emit_response(
     processing_ctx: ResponseProcessingContext,
 ) -> None:
-    """Process agent response: create message, emit events, check attention."""
+    """Process agent response: create message, emit events, check attention.
+
+    This function stages all database changes and commits them in a single transaction
+    to ensure consistency. If any part fails, the entire transaction is rolled back.
+    """
     db = processing_ctx.db
     ctx = processing_ctx.ctx
     agent = processing_ctx.agent
@@ -841,12 +1060,22 @@ async def _process_and_emit_response(
         tts_summary=tts_summary,
     )
     db.add(assistant_message)
+
+    # Update agent status to idle
+    agent.status = "idle"
+
+    # Update token tracking if tokens were used
+    if processing_ctx.tokens_used > 0:
+        agent.context_tokens_used += processing_ctx.tokens_used
+
+    # Flush to get message ID without committing
     await db.flush()
     await db.refresh(assistant_message)
 
-    agent.status = "idle"
+    # Single commit for all database changes (message + agent status + tokens)
     await db.commit()
 
+    # After successful commit, emit all events
     # Only emit agent_message if NOT streamed (streaming sends message via Redis pub/sub)
     if not processing_ctx.streamed:
         await _emit_agent_response(
@@ -858,6 +1087,32 @@ async def _process_and_emit_response(
             tool_calls=tool_calls,
         )
     await _notify_agent_status(ctx.session_id, ctx.agent_id, "idle")
+
+    # Emit token usage update if tokens were used
+    if processing_ctx.tokens_used > 0:
+        percentage = int((agent.context_tokens_used / agent.context_max_tokens) * 100)
+        await emit_to_session(
+            ctx.session_id,
+            "context_usage_update",
+            {
+                "agent_id": ctx.agent_id,
+                "tokens_used": agent.context_tokens_used,
+                "tokens_max": agent.context_max_tokens,
+                "percentage": percentage,
+            },
+        )
+
+        # Check for auto-compaction if threshold exceeded
+        # Import locally to avoid circular dependency
+        from src.routes.context import maybe_trigger_auto_compaction  # noqa: PLC0415
+
+        if ctx.user_id:
+            await maybe_trigger_auto_compaction(
+                db=db,
+                agent=agent,
+                session_id=ctx.session_id,
+                user_id=ctx.user_id,
+            )
 
     attention_type = detect_attention_type(response_content, ctx.agent_role)
     if attention_type:
@@ -893,7 +1148,7 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0
     # Create a new database session for the background task
     async with async_session_factory() as db:
         try:
-            # Update agent status to active with row-level locking to prevent race conditions
+            # Update agent status to running with row-level locking to prevent race conditions
             agent_query = select(AgentModel).where(AgentModel.id == ctx.agent_id).with_for_update()
             result = await db.execute(agent_query)
             agent = result.scalar_one_or_none()
@@ -902,7 +1157,7 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0
                 logger.warning("Agent not found for message processing", agent_id=ctx.agent_id)
                 return
 
-            agent.status = "active"
+            agent.status = "running"
             await db.commit()
 
             # Get voice config for auto-play
@@ -910,7 +1165,7 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0
             auto_play = voice_config.get("auto_play", False)
 
             # Notify frontend that agent is processing
-            await _notify_agent_status(ctx.session_id, ctx.agent_id, "active")
+            await _notify_agent_status(ctx.session_id, ctx.agent_id, "running")
 
             # Fetch effective MCP config for the user
             if ctx.user_id:
@@ -979,6 +1234,7 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0
             # Process and emit the response with tool calls
             # Set streamed=True since we use streaming - frontend already has message via Redis
             # Pass stream_message_id so DB message has same ID sent to frontend
+            # Include tokens_used for consolidated commit (message + status + tokens)
             processing_ctx = ResponseProcessingContext(
                 db=db,
                 ctx=ctx,
@@ -988,25 +1244,9 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0
                 tool_calls=tool_calls,
                 streamed=True,  # Streaming is always enabled now
                 message_id=stream_message_id,  # Use the same ID that was sent to frontend
+                tokens_used=tokens_used,  # Token count for consolidated DB update
             )
             await _process_and_emit_response(processing_ctx)
-
-            # Update context token tracking and emit update
-            if tokens_used > 0:
-                agent.context_tokens_used += tokens_used
-                await db.commit()
-
-                percentage = int((agent.context_tokens_used / agent.context_max_tokens) * 100)
-                await emit_to_session(
-                    ctx.session_id,
-                    "context_usage_update",
-                    {
-                        "agent_id": ctx.agent_id,
-                        "tokens_used": agent.context_tokens_used,
-                        "tokens_max": agent.context_max_tokens,
-                        "percentage": percentage,
-                    },
-                )
 
         except Exception as e:
             # Log the error with full context
@@ -1114,12 +1354,20 @@ async def create_agent(
     # Determine role (custom if using template, otherwise as specified)
     role = "custom" if data.template_id else data.role
 
+    # Determine model: template model > provided model > role default from platform settings
+    if template:
+        model = template.model
+    elif data.model:
+        model = data.model
+    else:
+        model = await get_default_model_for_role(db, role)
+
     # Create agent
     agent = AgentModel(
         session_id=session_id,
         name=data.name,
         role=role,
-        model=template.model if template else data.model,
+        model=model,
         status="idle",
         mode=data.mode,
         command_allowlist=validated_allowlist,
@@ -1127,32 +1375,24 @@ async def create_agent(
         template_id=data.template_id,
     )
     db.add(agent)
-    await db.commit()
-    await db.refresh(agent)
 
-    # Increment template usage count AFTER successful agent creation
-    # This ensures the count isn't incremented if agent creation fails
+    # Increment template usage count atomically with agent creation
+    # Both operations are in the same transaction - either both succeed or both fail
     if data.template_id:
         await db.execute(
             update(AgentTemplate)
             .where(AgentTemplate.id == data.template_id)
             .values(usage_count=AgentTemplate.usage_count + 1),
         )
-        await db.commit()
 
-    return AgentResponse(
-        id=agent.id,
-        session_id=agent.session_id,
-        name=agent.name,
-        role=agent.role,
-        model=agent.model,
-        status=agent.status,
-        mode=agent.mode,
-        command_allowlist=agent.command_allowlist,
-        config=agent.config,
-        template_id=agent.template_id,
-        created_at=agent.created_at,
-    )
+    # Single commit for both agent creation and template usage increment
+    await db.commit()
+    await db.refresh(agent)
+
+    # Look up model display name
+    model_display_name = await get_model_display_name(db, agent.model)
+
+    return _build_agent_response(agent, model_display_name)
 
 
 @router.get("", response_model=list[AgentResponse])
@@ -1175,22 +1415,14 @@ async def list_agents(
     result = await db.execute(query)
     agents = result.scalars().all()
 
-    return [
-        AgentResponse(
-            id=a.id,
-            session_id=a.session_id,
-            name=a.name,
-            role=a.role,
-            model=a.model,
-            status=a.status,
-            mode=a.mode,
-            command_allowlist=a.command_allowlist,
-            config=a.config,
-            template_id=a.template_id,
-            created_at=a.created_at,
-        )
-        for a in agents
-    ]
+    # Batch fetch all model display names
+    model_ids = list({a.model for a in agents})
+    model_result = await db.execute(
+        select(LLMModel.model_id, LLMModel.display_name).where(LLMModel.model_id.in_(model_ids))
+    )
+    display_names = {row[0]: row[1] for row in model_result.all()}
+
+    return [_build_agent_response(a, display_names.get(a.model)) for a in agents]
 
 
 @router.get("/{agent_id}", response_model=AgentResponse)
@@ -1216,19 +1448,8 @@ async def get_agent(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    return AgentResponse(
-        id=agent.id,
-        session_id=agent.session_id,
-        name=agent.name,
-        role=agent.role,
-        model=agent.model,
-        status=agent.status,
-        mode=agent.mode,
-        command_allowlist=agent.command_allowlist,
-        config=agent.config,
-        template_id=agent.template_id,
-        created_at=agent.created_at,
-    )
+    model_display_name = await get_model_display_name(db, agent.model)
+    return _build_agent_response(agent, model_display_name)
 
 
 @router.patch("/{agent_id}/mode", response_model=AgentResponse)
@@ -1289,18 +1510,161 @@ async def update_agent_mode(
         mode=agent.mode,
     )
 
-    return AgentResponse(
-        id=agent.id,
-        session_id=agent.session_id,
+    model_display_name = await get_model_display_name(db, agent.model)
+    return _build_agent_response(agent, model_display_name)
+
+
+@router.patch("/{agent_id}", response_model=AgentResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def update_agent(
+    session_id: str,
+    agent_id: str,
+    data: AgentUpdate,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> AgentResponse:
+    """Update agent settings (name, model).
+
+    Args:
+        session_id: The session ID.
+        agent_id: The agent ID.
+        data: The update data.
+    """
+    # Verify user has access to session
+    await verify_session_access(session_id, request, db)
+
+    # Get the agent
+    query = select(AgentModel).where(
+        AgentModel.id == agent_id,
+        AgentModel.session_id == session_id,
+    )
+    result = await db.execute(query)
+    agent = result.scalar_one_or_none()
+
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Update fields if provided
+    if data.name is not None:
+        agent.name = data.name
+    if data.model is not None:
+        agent.model = data.model
+
+    await db.commit()
+    await db.refresh(agent)
+
+    # Emit update via WebSocket
+    await emit_to_session(
+        session_id,
+        "agent_update",
+        {
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "name": agent.name,
+            "model": agent.model,
+        },
+    )
+
+    logger.info(
+        "Agent updated",
+        agent_id=agent_id,
+        session_id=session_id,
         name=agent.name,
-        role=agent.role,
         model=agent.model,
-        status=agent.status,
+    )
+
+    model_display_name = await get_model_display_name(db, agent.model)
+    return _build_agent_response(agent, model_display_name)
+
+
+class PlanModeToggleResponse(BaseModel):
+    """Response from toggling plan mode."""
+
+    mode: str
+    previous_mode: str | None
+    toggled_to_plan: bool
+
+
+@router.post("/{agent_id}/toggle-plan-mode", response_model=PlanModeToggleResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def toggle_plan_mode(
+    session_id: str,
+    agent_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> PlanModeToggleResponse:
+    """Toggle between plan mode and the previous mode.
+
+    If the agent is currently in plan mode, it restores the previous mode.
+    If the agent is in any other mode, it switches to plan mode and stores
+    the current mode as the previous mode.
+
+    Args:
+        session_id: The session ID.
+        agent_id: The agent ID.
+
+    Returns:
+        The new mode and previous mode information.
+    """
+    # Verify user has access to session
+    await verify_session_access(session_id, request, db)
+
+    # Get the agent
+    query = select(AgentModel).where(
+        AgentModel.id == agent_id,
+        AgentModel.session_id == session_id,
+    )
+    result = await db.execute(query)
+    agent = result.scalar_one_or_none()
+
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    toggled_to_plan = False
+
+    if agent.mode == "plan":
+        # Currently in plan mode, restore previous mode
+        new_mode = agent.previous_mode or "ask"  # Default to ask if no previous
+        agent.mode = new_mode
+        agent.previous_mode = "plan"  # Store plan as previous for potential toggle back
+    else:
+        # Not in plan mode, switch to plan
+        agent.previous_mode = agent.mode
+        agent.mode = "plan"
+        new_mode = "plan"
+        toggled_to_plan = True
+
+    await db.commit()
+    await db.refresh(agent)
+
+    # Emit mode update via WebSocket
+    await emit_to_session(
+        session_id,
+        "agent_mode_update",
+        {
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "mode": agent.mode,
+            "previous_mode": agent.previous_mode,
+            "toggled_to_plan": toggled_to_plan,
+        },
+    )
+
+    logger.info(
+        "Agent plan mode toggled",
+        agent_id=agent_id,
+        session_id=session_id,
         mode=agent.mode,
-        command_allowlist=agent.command_allowlist,
-        config=agent.config,
-        template_id=agent.template_id,
-        created_at=agent.created_at,
+        previous_mode=agent.previous_mode,
+        toggled_to_plan=toggled_to_plan,
+    )
+
+    return PlanModeToggleResponse(
+        mode=agent.mode,
+        previous_mode=agent.previous_mode,
+        toggled_to_plan=toggled_to_plan,
     )
 
 
@@ -1393,6 +1757,24 @@ async def _send_message_impl(
             for img in params.data.images
         ]
 
+    # Process thinking config if provided
+    thinking_config_data: dict[str, Any] | None = None
+    if params.data.thinking_config and params.data.thinking_config.enabled:
+        thinking_config_data = {
+            "enabled": params.data.thinking_config.enabled,
+            "budget_tokens": params.data.thinking_config.budget_tokens,
+        }
+
+    # Load user's LLM API keys if they exist
+    llm_api_keys: dict[str, str] | None = None
+    if user_id:
+        user_config_result = await deps.common.db.execute(
+            select(UserConfig).where(UserConfig.user_id == user_id)
+        )
+        user_config = user_config_result.scalar_one_or_none()
+        if user_config and user_config.llm_api_keys:
+            llm_api_keys = user_config.llm_api_keys
+
     # Schedule background task to process the message and generate agent response
     msg_context = AgentMessageContext(
         session_id=params.session_id,
@@ -1406,6 +1788,8 @@ async def _send_message_impl(
         agent_mode=agent.mode,
         command_allowlist=agent.command_allowlist,
         images=images_data,
+        thinking_config=thinking_config_data,
+        llm_api_keys=llm_api_keys,
     )
     deps.background_tasks.add_task(process_agent_message, msg_context)
 
@@ -1442,7 +1826,13 @@ async def _get_messages_impl(
     params: GetMessagesParams,
     common: CommonDeps,
 ) -> list[MessageResponse]:
-    """Implementation of get_messages endpoint."""
+    """Implementation of get_messages endpoint.
+
+    Supports both cursor-based and offset-based pagination:
+    - Cursor-based (preferred): Provide `cursor` (message ID) to get messages after that message.
+      This is O(log n) using index on created_at and efficient for large datasets.
+    - Offset-based (legacy): Uses OFFSET which is O(n) for large offsets. Avoid for deep pagination.
+    """
     # Verify user has access to session
     await verify_session_access(params.session_id, common.request, common.db)
 
@@ -1455,14 +1845,36 @@ async def _get_messages_impl(
     if not agent_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    # Get messages with pagination
-    query = (
-        select(MessageModel)
-        .where(MessageModel.agent_id == params.agent_id)
-        .order_by(MessageModel.created_at)
-        .offset(params.pagination.offset)
-        .limit(params.pagination.limit)
-    )
+    # Build base query
+    query = select(MessageModel).where(MessageModel.agent_id == params.agent_id)
+
+    # Use cursor-based pagination if cursor provided (more efficient)
+    if params.pagination.cursor:
+        # First, get the cursor message to find its created_at timestamp
+        cursor_query = select(MessageModel.created_at, MessageModel.id).where(
+            MessageModel.id == params.pagination.cursor,
+            MessageModel.agent_id == params.agent_id,
+        )
+        cursor_result = await common.db.execute(cursor_query)
+        cursor_row = cursor_result.first()
+
+        if cursor_row:
+            cursor_created_at, cursor_id = cursor_row
+            # Get messages after the cursor (using composite key for deterministic ordering)
+            # This is efficient as it uses the index on created_at
+            query = query.where(
+                (MessageModel.created_at > cursor_created_at)
+                | ((MessageModel.created_at == cursor_created_at) & (MessageModel.id > cursor_id))
+            )
+        # If cursor message not found, ignore and return from start
+
+    # Apply ordering and limit
+    query = query.order_by(MessageModel.created_at, MessageModel.id).limit(params.pagination.limit)
+
+    # Only apply offset if not using cursor (for backwards compatibility)
+    if not params.pagination.cursor:
+        query = query.offset(params.pagination.offset)
+
     result = await common.db.execute(query)
     messages = result.scalars().all()
 
@@ -1489,18 +1901,27 @@ async def get_messages(
     db: DbSession,
     limit: int = 100,
     offset: int = 0,
+    cursor: str | None = None,
 ) -> list[MessageResponse]:
     """Get agent conversation history with pagination.
 
+    Supports two pagination methods:
+    - Cursor-based (recommended): Pass `cursor` (message ID) to get messages after that message.
+      This is efficient for large datasets as it uses indexed lookups.
+    - Offset-based (legacy): Pass `offset` to skip N messages. Avoid for deep pagination
+      as it becomes slower with larger offsets.
+
     Args:
         limit: Maximum number of messages to return (default 100, max 500).
-        offset: Number of messages to skip (for pagination).
+        offset: Number of messages to skip (for offset-based pagination).
+        cursor: Message ID to start after (for cursor-based pagination).
+            When provided, offset is ignored.
     """
     common = CommonDeps(request=request, db=db)
     params = GetMessagesParams(
         session_id=session_id,
         agent_id=agent_id,
-        pagination=PaginationParams(limit=limit, offset=offset),
+        pagination=PaginationParams(limit=limit, offset=offset, cursor=cursor),
     )
     return await _get_messages_impl(params, common)
 
@@ -1836,19 +2257,8 @@ async def duplicate_agent(
         session_id=session_id,
     )
 
-    return AgentResponse(
-        id=new_agent.id,
-        session_id=new_agent.session_id,
-        name=new_agent.name,
-        role=new_agent.role,
-        model=new_agent.model,
-        status=new_agent.status,
-        mode=new_agent.mode,
-        command_allowlist=new_agent.command_allowlist,
-        config=new_agent.config,
-        template_id=new_agent.template_id,
-        created_at=new_agent.created_at,
-    )
+    model_display_name = await get_model_display_name(db, new_agent.model)
+    return _build_agent_response(new_agent, model_display_name)
 
 
 # ==================== Message Delete ====================

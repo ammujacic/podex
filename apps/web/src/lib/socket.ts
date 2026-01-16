@@ -236,6 +236,7 @@ export interface ContextUsageUpdateEvent {
 export interface CompactionStartedEvent {
   agent_id: string;
   session_id: string;
+  trigger_type?: 'manual' | 'auto';
 }
 
 export interface CompactionCompletedEvent {
@@ -245,6 +246,7 @@ export interface CompactionCompletedEvent {
   tokens_after: number;
   messages_removed: number;
   summary: string | null;
+  trigger_type?: 'manual' | 'auto';
 }
 
 // Checkpoint events
@@ -437,8 +439,18 @@ export interface SocketEvents {
   tool_call_end: (data: ToolCallEndEvent) => void;
 }
 
+// Track active session for auto-rejoin on reconnect
+interface ActiveSession {
+  sessionId: string;
+  userId: string;
+  authToken?: string;
+}
+
+let activeSession: ActiveSession | null = null;
+
 /**
  * Get or create the Socket.IO client instance.
+ * Uses exponential backoff with more reconnection attempts for better reliability.
  */
 export function getSocket(): Socket {
   if (!socket) {
@@ -446,14 +458,22 @@ export function getSocket(): Socket {
       autoConnect: false,
       transports: ['websocket', 'polling'],
       reconnection: true,
+      // Exponential backoff: starts at 1s, doubles each attempt, max 30s
       reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      reconnectionAttempts: 5,
+      reconnectionDelayMax: 30000,
+      // Increased attempts (10 attempts = ~5 min total with exponential backoff)
+      reconnectionAttempts: 10,
+      // Random jitter to prevent thundering herd
+      randomizationFactor: 0.5,
+      // Timeout for connection attempts
+      timeout: 20000,
     });
 
     socket.on('connect', () => {
       connectionState.connected = true;
       connectionState.error = null;
+      connectionState.reconnecting = false;
+      connectionState.reconnectAttempt = 0;
       notifyConnectionListeners();
     });
 
@@ -469,26 +489,56 @@ export function getSocket(): Socket {
       notifyConnectionListeners();
     });
 
-    socket.on('reconnect_attempt', (attempt: number) => {
+    socket.io.on('reconnect_attempt', (attempt: number) => {
       connectionState.reconnecting = true;
       connectionState.reconnectAttempt = attempt;
       notifyConnectionListeners();
     });
 
-    socket.on('reconnect', () => {
+    socket.io.on('reconnect', () => {
       connectionState.reconnecting = false;
       connectionState.reconnectAttempt = 0;
+      connectionState.error = null;
       notifyConnectionListeners();
+
+      // Auto-rejoin session after reconnection
+      if (activeSession) {
+        const { sessionId, userId, authToken } = activeSession;
+        socket?.emit('session_join', {
+          session_id: sessionId,
+          user_id: userId,
+          ...(authToken && { auth_token: authToken }),
+        });
+      }
     });
 
-    socket.on('reconnect_failed', () => {
+    socket.io.on('reconnect_failed', () => {
       connectionState.reconnecting = false;
-      connectionState.error = 'Reconnection failed after maximum attempts';
+      connectionState.error =
+        'Reconnection failed after maximum attempts. Please refresh the page.';
       notifyConnectionListeners();
     });
   }
 
   return socket;
+}
+
+/**
+ * Manually trigger a reconnection attempt.
+ * Useful for UI "Reconnect" buttons when auto-reconnect has failed.
+ */
+export function reconnectSocket(): void {
+  if (socket) {
+    // Reset state
+    connectionState.error = null;
+    connectionState.reconnecting = true;
+    connectionState.reconnectAttempt = 1;
+    notifyConnectionListeners();
+
+    // Force disconnect and reconnect
+    socket.disconnect();
+    socket.connect();
+  }
 }
 
 /**
@@ -513,6 +563,7 @@ export function disconnectSocket(): void {
 /**
  * Join a session room to receive updates.
  * Waits for socket connection before emitting join event.
+ * Stores session info for automatic rejoin after reconnection.
  *
  * Security Note: Auth token is transmitted via WebSocket. The connection
  * should always use WSS (WebSocket Secure) in production. The token is
@@ -520,6 +571,9 @@ export function disconnectSocket(): void {
  */
 export function joinSession(sessionId: string, userId: string, authToken?: string): void {
   const sock = getSocket();
+
+  // Store session info for auto-rejoin on reconnect
+  activeSession = { sessionId, userId, authToken };
 
   // Warn in development if not using secure connection
   if (
@@ -553,10 +607,16 @@ export function joinSession(sessionId: string, userId: string, authToken?: strin
 
 /**
  * Leave a session room.
+ * Clears the active session to prevent auto-rejoin on reconnect.
  */
 export function leaveSession(sessionId: string, userId: string): void {
   const sock = getSocket();
   sock.emit('session_leave', { session_id: sessionId, user_id: userId });
+
+  // Clear active session to prevent auto-rejoin
+  if (activeSession?.sessionId === sessionId) {
+    activeSession = null;
+  }
 }
 
 /**

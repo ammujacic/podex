@@ -125,6 +125,11 @@ services:
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-1.0}
       SENTRY_PROFILES_SAMPLE_RATE: ${SENTRY_PROFILES_SAMPLE_RATE:-1.0}
+      # Auth Cookies (httpOnly cookies for XSS protection)
+      COOKIE_SECURE: "false"  # Set to "true" if using HTTPS locally
+      COOKIE_SAMESITE: "lax"
+      # Redis Encryption (optional - leave empty to disable)
+      REDIS_ENCRYPTION_KEY: ${REDIS_ENCRYPTION_KEY:-}
     volumes:
       - ./services/api/src:/app/services/api/src
       - ./services/api/migrations:/app/services/api/migrations

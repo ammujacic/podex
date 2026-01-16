@@ -285,6 +285,60 @@ def user_sessions_key(user_id: str, page: int = 1) -> str:
     return f"{settings.CACHE_PREFIX}sessions:user:{user_id}:page:{page}"
 
 
+def user_sessions_version_key(user_id: str) -> str:
+    """Build cache key for user's sessions cache version.
+
+    This version is incremented when sessions change, invalidating all cached pages
+    without needing pattern-based deletion.
+    """
+    return f"{settings.CACHE_PREFIX}sessions:user:{user_id}:version"
+
+
+async def get_user_sessions_version(user_id: str) -> int:
+    """Get the current cache version for a user's sessions.
+
+    Returns 0 if no version exists (first access).
+    """
+    try:
+        client = await get_cache_client()
+        version = await client.client.get(user_sessions_version_key(user_id))
+        return int(version) if version else 0
+    except Exception as e:
+        logger.warning("Failed to get sessions version", user_id=user_id, error=str(e))
+        return 0
+
+
+async def invalidate_user_sessions(user_id: str) -> None:
+    """Invalidate user's sessions cache by incrementing version.
+
+    This is O(1) compared to pattern-based invalidation which is O(n).
+    Old cache entries will naturally expire and won't be found due to
+    version mismatch.
+    """
+    try:
+        client = await get_cache_client()
+        version_key = user_sessions_version_key(user_id)
+        new_version = await client.client.incr(version_key)
+        # Set expiry on version key (7 days) to eventually clean up
+        await client.client.expire(version_key, 7 * 24 * 60 * 60)
+        logger.debug(
+            "Sessions cache version incremented",
+            user_id=user_id,
+            new_version=new_version,
+        )
+    except Exception as e:
+        logger.warning("Failed to invalidate sessions version", user_id=user_id, error=str(e))
+
+
+def user_sessions_key_versioned(user_id: str, page: int, version: int) -> str:
+    """Build versioned cache key for user's sessions list.
+
+    Includes version number so cache is automatically invalidated when
+    version increments.
+    """
+    return f"{settings.CACHE_PREFIX}sessions:user:{user_id}:v{version}:page:{page}"
+
+
 def user_config_key(user_id: str) -> str:
     """Build cache key for user configuration."""
     return f"{settings.CACHE_PREFIX}user_config:{user_id}"

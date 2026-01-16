@@ -19,6 +19,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from src.database.encrypted_types import EncryptedJSON
+
 
 def _generate_uuid() -> str:
     """Generate a new UUID string."""
@@ -631,6 +633,10 @@ class UserConfig(Base):
         JSONB, default=dict
     )  # Agent configs and settings (no API keys)
 
+    # User-provided API keys for external LLM providers (stored encrypted)
+    # Format: openai: sk-..., anthropic: sk-ant-..., google: ...
+    llm_api_keys: Mapped[dict[str, str] | None] = mapped_column(EncryptedJSON)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -777,7 +783,8 @@ class MCPServer(Base):
     command: Mapped[str | None] = mapped_column(Text)  # For stdio transport
     args: Mapped[list[str] | None] = mapped_column(JSONB)
     url: Mapped[str | None] = mapped_column(Text)  # For sse/http transport
-    env_vars: Mapped[dict[str, str] | None] = mapped_column(JSONB)
+    # Environment variables stored encrypted at rest for security
+    env_vars: Mapped[dict[str, str] | None] = mapped_column(EncryptedJSON)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     discovered_tools: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
     discovered_resources: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
@@ -1470,6 +1477,67 @@ class PlatformSetting(Base):
     updated_by: Mapped[str | None] = mapped_column(
         UUID(as_uuid=False),
         ForeignKey("users.id", ondelete="SET NULL"),
+    )
+
+
+# =============================================================================
+# LLM MODEL CONFIGURATION
+# =============================================================================
+
+
+class LLMModel(Base):
+    """LLM model configuration for dynamic model management.
+
+    Stores available LLM models with their capabilities, costs, and settings.
+    Admins can add/modify models without code changes.
+    """
+
+    __tablename__ = "llm_models"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
+    # Unique model identifier (e.g., "anthropic.claude-opus-4-5-20251101-v1:0")
+    model_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    # User-friendly display name (e.g., "Claude Opus 4.5")
+    display_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    # Provider: bedrock, anthropic, openai, ollama
+    provider: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    # Model family: anthropic, llama, titan, cohere, mistral, openai
+    family: Mapped[str] = mapped_column(String(50), nullable=False)
+    # Cost tier: low, medium, high, premium
+    cost_tier: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Input/output cost per million tokens (cents)
+    input_cost_per_million: Mapped[float | None] = mapped_column(Float)
+    output_cost_per_million: Mapped[float | None] = mapped_column(Float)
+    # Model capabilities
+    capabilities: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False
+    )  # vision, thinking, extended_thinking, tool_use, streaming, json_mode
+    # Context window size in tokens
+    context_window: Mapped[int] = mapped_column(Integer, default=200000, nullable=False)
+    # Max output tokens
+    max_output_tokens: Mapped[int] = mapped_column(Integer, default=8192, nullable=False)
+    # Whether model is enabled for use
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    # Whether this is a default model for new agents
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Whether this model requires user's own API key (vs platform-provided)
+    is_user_key_model: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, index=True
+    )
+    # Sort order for display in dropdowns
+    sort_order: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    # Additional metadata (release date, description, etc.)
+    model_metadata: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
 
@@ -2200,8 +2268,8 @@ class ExternalAgentEnvProfile(Base):
         UUID(as_uuid=False),
         ForeignKey("terminal_integrated_agent_types.id", ondelete="CASCADE"),
     )
-    # Encrypted environment variables as JSON
-    env_vars: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False)
+    # Environment variables stored encrypted at rest for security
+    env_vars: Mapped[dict[str, str]] = mapped_column(EncryptedJSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -2224,3 +2292,66 @@ class ExternalAgentEnvProfile(Base):
         "TerminalAgentSession",
         back_populates="env_profile",
     )
+
+
+# =============================================================================
+# CUSTOM COMMANDS MODELS
+# =============================================================================
+
+
+class CustomCommand(Base):
+    """User-defined custom commands (slash commands) for agents.
+
+    Commands can be simple prompt templates or complex workflows with
+    argument placeholders. They can be scoped to user, session, or global.
+    """
+
+    __tablename__ = "custom_commands"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
+    user_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+    )
+    session_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        index=True,
+    )
+    # Command name (without slash), e.g., "review", "test", "deploy"
+    name: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    # Short description shown in command palette
+    description: Mapped[str | None] = mapped_column(String(255))
+    # Full prompt template with optional placeholders like {{file}} or {{selection}}
+    prompt_template: Mapped[str] = mapped_column(Text, nullable=False)
+    # Argument definitions: [{name, type, required, default, description}]
+    arguments: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
+    # Category for grouping in UI: "code", "git", "test", "deploy", "custom"
+    category: Mapped[str] = mapped_column(String(50), default="custom", nullable=False)
+    # Whether this command is enabled
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Sort order for display
+    sort_order: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    # Whether command is global (admin-defined for all users)
+    is_global: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Usage count for analytics
+    usage_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    # Relationships
+    user: Mapped["User | None"] = relationship("User")
+    session: Mapped["Session | None"] = relationship("Session")
+
+    # Unique constraint: command name is unique per user (or global)
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_custom_command_user_name"),)

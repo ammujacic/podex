@@ -11,6 +11,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from src.config import settings
 from src.database.connection import get_db
 from src.database.models import User
+from src.routes.auth import COOKIE_ACCESS_TOKEN
 
 logger = structlog.get_logger()
 
@@ -24,6 +25,7 @@ PUBLIC_PATHS: list[tuple[str, bool]] = [
     ("/api/auth/login", False),
     ("/api/auth/register", False),
     ("/api/auth/refresh", False),
+    ("/api/auth/logout", False),  # Allow logout without valid token
     ("/api/auth/password/check", False),  # Public password strength check
     ("/api/oauth/github", True),  # OAuth callbacks have query params
     ("/api/oauth/google", True),
@@ -70,23 +72,24 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if _is_public_path(request.url.path):
             return await call_next(request)
 
-        # Extract token from Authorization header
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            return Response(
-                content='{"detail": "Missing or invalid authorization header"}',
-                status_code=401,
-                media_type="application/json",
-            )
+        # Extract token: prefer httpOnly cookie, fall back to Authorization header
+        # Cookie-based auth is more secure (XSS protection)
+        token = request.cookies.get(COOKIE_ACCESS_TOKEN)
 
-        parts = auth_header.split(" ")
-        if len(parts) != 2:  # noqa: PLR2004
+        if not token:
+            # Fall back to Authorization header for backward compatibility
+            auth_header = request.headers.get("Authorization")
+            if auth_header and auth_header.startswith("Bearer "):
+                parts = auth_header.split(" ")
+                if len(parts) == 2:  # noqa: PLR2004
+                    token = parts[1]
+
+        if not token:
             return Response(
-                content='{"detail": "Invalid authorization header format"}',
+                content='{"detail": "Authentication required"}',
                 status_code=401,
                 media_type="application/json",
             )
-        token = parts[1]
 
         try:
             # Decode and validate JWT

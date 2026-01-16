@@ -63,7 +63,9 @@ export default function TerminalAgentsAdminPage() {
 
   const loadAgentTypes = async () => {
     try {
-      const data = await api.get<TerminalAgentType[]>('/api/admin/terminal-agent-types');
+      const data = await api.get<TerminalAgentType[]>(
+        '/api/terminal-agents/admin/terminal-agent-types'
+      );
       setAgentTypes(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -77,7 +79,7 @@ export default function TerminalAgentsAdminPage() {
     setError(null);
 
     try {
-      await api.post('/api/admin/terminal-agent-types', formData);
+      await api.post('/api/terminal-agents/admin/terminal-agent-types', formData);
       await loadAgentTypes();
       setShowCreateForm(false);
       setFormData(defaultForm);
@@ -95,7 +97,7 @@ export default function TerminalAgentsAdminPage() {
     setError(null);
 
     try {
-      await api.put(`/api/admin/terminal-agent-types/${agentId}`, formData);
+      await api.put(`/api/terminal-agents/admin/terminal-agent-types/${agentId}`, formData);
       await loadAgentTypes();
       setEditingAgent(null);
       setFormData(defaultForm);
@@ -110,7 +112,7 @@ export default function TerminalAgentsAdminPage() {
     if (!confirm('Are you sure you want to delete this agent type?')) return;
 
     try {
-      await api.delete(`/api/admin/terminal-agent-types/${agentId}`);
+      await api.delete(`/api/terminal-agents/admin/terminal-agent-types/${agentId}`);
       await loadAgentTypes();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -119,7 +121,7 @@ export default function TerminalAgentsAdminPage() {
 
   const toggleEnabled = async (agent: TerminalAgentType) => {
     try {
-      await api.put(`/api/admin/terminal-agent-types/${agent.id}`, {
+      await api.put(`/api/terminal-agents/admin/terminal-agent-types/${agent.id}`, {
         is_enabled: !agent.is_enabled,
       });
       await loadAgentTypes();
