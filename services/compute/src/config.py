@@ -24,8 +24,8 @@ class Settings(BaseSettings):
     # CORS - allowed origins for API access
     cors_origins: list[str] = ["http://localhost:3000"]
 
-    # Compute mode: docker for local, aws for production
-    compute_mode: Literal["docker", "aws"] = "docker"
+    # Compute mode: docker for local, gcp for production
+    compute_mode: Literal["docker", "gcp"] = "docker"
 
     # Docker settings (local development)
     docker_host: str = "unix:///var/run/docker.sock"
@@ -35,55 +35,30 @@ class Settings(BaseSettings):
     workspace_image: str = "podex/workspace:latest"
     docker_network: str = "podex-dev"
 
-    # Container images for different architectures (AWS production)
-    # These are ECR image URIs or public images with architecture-specific tags
+    # GCP settings
+    gcp_project_id: str | None = None
+    gcp_region: str = "us-east5"
+
+    # Container images for different architectures (GCP production)
+    # These are GCR/Artifact Registry image URIs
     workspace_image_arm64: str = "podex/workspace:latest-arm64"
     workspace_image_x86: str = "podex/workspace:latest-amd64"
     workspace_image_gpu: str = "podex/workspace:latest-gpu"  # x86 + CUDA
-    workspace_image_arm_gpu: str = "podex/workspace:latest-arm-gpu"  # ARM + T4G
-    workspace_image_ml: str = "podex/workspace:latest-neuron"  # AWS Neuron SDK
 
-    # AWS settings (production)
-    aws_region: str = "us-east-1"
-    aws_endpoint: str | None = None  # For LocalStack
+    # GKE cluster settings
+    gke_cluster_name: str = "podex-workspaces"
+    gke_namespace: str = "workspaces"
 
-    # ECS cluster and task definitions
-    # Names must match CDK-created task definition families: podex-workspace-{type}-{env}
-    # These are overridden by COMPUTE_ECS_* env vars in production
-    ecs_cluster_name: str = "podex-dev"
-    ecs_task_definition: str = "podex-workspace-x86-dev"  # Fargate x86_64 task definition
-    ecs_arm_task_definition: str = "podex-workspace-dev"  # Fargate ARM64 (Graviton) - default
-    ecs_gpu_task_definition: str = (
-        "podex-workspace-gpu-dev"  # EC2 x86 GPU task definition (NVIDIA T4/A10G/A100)
-    )
-    ecs_arm_gpu_task_definition: str = (
-        "podex-workspace-arm-gpu-dev"  # EC2 ARM GPU task definition (Graviton2 + T4G)
-    )
-    ecs_ml_accelerator_task_definition: str = (
-        "podex-workspace-ml-dev"  # EC2 ML accelerator (Inferentia/Trainium)
-    )
-    ecs_subnets: list[str] = []
-    ecs_security_groups: list[str] = []
-
-    # ECS capacity providers (must match CDK-created capacity providers)
-    # These are ECS capacity providers backed by auto-scaling groups
-    # GPU capacity providers (NVIDIA x86)
-    gpu_capacity_provider_t4: str = "gpu-t4-provider"
-    gpu_capacity_provider_a10g: str = "gpu-a10g-provider"
-    gpu_capacity_provider_a100: str = "gpu-a100-provider"
-    # GPU capacity providers (ARM + NVIDIA T4G via g5g)
-    gpu_capacity_provider_arm_t4g: str = "gpu-arm-t4g-provider"
-    # ML accelerator capacity providers (AWS custom silicon)
-    ml_capacity_provider_inferentia2: str = "ml-inferentia2-provider"
-    ml_capacity_provider_trainium: str = "ml-trainium-provider"
+    # Cloud Run settings (for serverless workspaces)
+    cloud_run_service_account: str | None = None
 
     # Redis for state management
     redis_url: str = "redis://localhost:6379"
 
-    # S3 storage for workspace files
-    s3_bucket: str = "podex-workspaces"
-    s3_prefix: str = "workspaces"
-    s3_sync_interval: int = 30  # Seconds between background syncs
+    # GCS storage for workspace files
+    gcs_bucket: str = "podex-workspaces"
+    gcs_prefix: str = "workspaces"
+    gcs_sync_interval: int = 30  # Seconds between background syncs
 
     # Workspace tiers (vCPU, memory in MB)
     # ALPHA: All tiers use minimum resources - scale up when needed

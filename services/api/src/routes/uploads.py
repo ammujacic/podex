@@ -19,10 +19,147 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.compute_client import compute_client
 from src.database import Session as SessionModel
 from src.database import get_db
+from src.database.models import UsageQuota
 from src.exceptions import ComputeClientError
+from src.middleware.auth import get_current_user_id
 from src.middleware.rate_limit import RATE_LIMIT_UPLOAD, limiter
 
 logger = structlog.get_logger()
+
+
+async def check_storage_quota(db: AsyncSession, user_id: str, upload_size_bytes: int) -> None:
+    """Check if user has storage quota available for an upload.
+
+    SECURITY: Enforces storage limits BEFORE accepting uploads to prevent
+    users from exceeding their quota by uploading files that are rejected later.
+
+    Args:
+        db: Database session
+        user_id: User ID
+        upload_size_bytes: Size of the upload in bytes
+
+    Raises:
+        HTTPException: If storage quota would be exceeded
+    """
+    quota_result = await db.execute(
+        select(UsageQuota)
+        .where(UsageQuota.user_id == user_id)
+        .where(UsageQuota.quota_type == "storage_gb")
+    )
+    quota = quota_result.scalar_one_or_none()
+
+    if not quota:
+        # No quota defined = no limit (or use system default)
+        return
+
+    # Convert upload size to GB (with ceiling to avoid undercount)
+    import math
+
+    upload_size_gb = (
+        math.ceil(upload_size_bytes / (1024 * 1024 * 1024) * 1000) / 1000
+    )  # Keep 3 decimal precision
+
+    # Check if adding this upload would exceed quota
+    new_usage = quota.current_usage + upload_size_gb
+    if new_usage > quota.limit_value and not quota.overage_allowed:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Storage quota exceeded. Current: {quota.current_usage}GB, "
+            f"Limit: {quota.limit_value}GB, Upload: {upload_size_gb:.3f}GB",
+        )
+
+
+# ============================================================================
+# Magic Byte Signatures for File Type Verification
+# SECURITY: Verify file content matches claimed type to prevent spoofing
+# ============================================================================
+
+# Magic bytes for common file types
+FILE_SIGNATURES: dict[str, list[tuple[bytes, int]]] = {
+    # Images
+    "image/jpeg": [(b"\xff\xd8\xff", 0)],
+    "image/png": [(b"\x89PNG\r\n\x1a\n", 0)],
+    "image/gif": [(b"GIF87a", 0), (b"GIF89a", 0)],
+    "image/webp": [(b"RIFF", 0), (b"WEBP", 8)],  # RIFF....WEBP
+    "image/bmp": [(b"BM", 0)],
+    # Documents
+    "application/pdf": [(b"%PDF", 0)],
+    # Archives
+    "application/zip": [(b"PK\x03\x04", 0), (b"PK\x05\x06", 0)],  # Normal and empty
+    "application/gzip": [(b"\x1f\x8b", 0)],
+    "application/x-tar": [(b"ustar", 257)],  # POSIX tar
+    # Note: text/* and application/json are not checked as they don't have signatures
+}
+
+# File types that don't need magic byte verification (text-based)
+TEXT_BASED_TYPES = {
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    "text/html",
+    "text/css",
+    "text/javascript",
+    "application/json",
+    "application/xml",
+    "application/javascript",
+    "image/svg+xml",  # SVG is XML-based
+}
+
+
+def verify_file_signature(content: bytes, claimed_type: str) -> bool:
+    """Verify file content matches claimed MIME type using magic bytes.
+
+    SECURITY: This prevents content-type spoofing attacks where a malicious
+    file is uploaded with a safe content-type header but actually contains
+    different content (e.g., an executable disguised as an image).
+
+    Args:
+        content: The raw file bytes.
+        claimed_type: The claimed MIME type from the upload.
+
+    Returns:
+        True if the content matches the claimed type or type doesn't need verification.
+        False if the content doesn't match the claimed type.
+    """
+    # Text-based types don't have magic signatures
+    if claimed_type in TEXT_BASED_TYPES:
+        return True
+
+    # Check if we have signatures for this type
+    signatures = FILE_SIGNATURES.get(claimed_type)
+    if not signatures:
+        # No signature defined - allow with warning
+        logger.warning(
+            "No magic signature defined for content type",
+            content_type=claimed_type,
+        )
+        return True
+
+    # Check all signature variants for this type
+    for signature, offset in signatures:
+        if (
+            len(content) >= offset + len(signature)
+            and content[offset : offset + len(signature)] == signature
+        ):
+            return True
+
+    # Special case for WebP: needs both RIFF and WEBP
+    if (
+        claimed_type == "image/webp"
+        and len(content) >= 12
+        and content[0:4] == b"RIFF"
+        and content[8:12] == b"WEBP"
+    ):
+        return True
+
+    # No signature matched
+    logger.warning(
+        "File signature does not match claimed content type",
+        claimed_type=claimed_type,
+        content_preview=content[:16].hex() if content else "empty",
+    )
+    return False
+
 
 router = APIRouter()
 
@@ -102,14 +239,6 @@ class BulkUploadResponse(BaseModel):
     total_size: int
 
 
-def get_current_user_id(request: Request) -> str:
-    """Get current user ID from request state."""
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return str(user_id)
-
-
 async def verify_session_access(
     session_id: str,
     request: Request,
@@ -160,9 +289,15 @@ async def read_file_content(file: UploadFile, max_size: int) -> bytes:
     return content
 
 
-def compute_checksum(content: bytes) -> str:
-    """Compute SHA-256 checksum of content."""
-    return hashlib.sha256(content).hexdigest()
+async def compute_checksum(content: bytes) -> str:
+    """Compute SHA-256 checksum of content.
+
+    PERFORMANCE: Uses asyncio.to_thread to avoid blocking the event loop
+    for large files.
+    """
+    import asyncio
+
+    return await asyncio.to_thread(lambda: hashlib.sha256(content).hexdigest())
 
 
 def validate_upload_path(path: str) -> str:
@@ -222,12 +357,12 @@ def validate_upload_path(path: str) -> str:
 
 @router.post("/{session_id}/upload", response_model=UploadResponse)
 @limiter.limit(RATE_LIMIT_UPLOAD)
-async def upload_file(  # noqa: PLR0913
+async def upload_file(
     session_id: str,
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
-    file: UploadFile = File(...),  # noqa: B008
+    file: UploadFile = File(...),
     path: str = Query(default="uploads", description="Target directory path in workspace"),
 ) -> UploadResponse:
     """Upload a file to the session workspace.
@@ -251,7 +386,24 @@ async def upload_file(  # noqa: PLR0913
 
     # Read content
     content = await read_file_content(file, MAX_FILE_SIZE)
-    checksum = compute_checksum(content)
+
+    # SECURITY: Check storage quota BEFORE accepting upload
+    await check_storage_quota(db, user_id, len(content))
+
+    # SECURITY: Verify file content matches claimed type
+    content_type = (
+        file.content_type
+        or mimetypes.guess_type(file.filename or "")[0]
+        or "application/octet-stream"
+    )
+    if not verify_file_signature(content, content_type):
+        raise HTTPException(
+            status_code=400,
+            detail="File content does not match the declared content type. "
+            "File may be corrupted or spoofed.",
+        )
+
+    checksum = await compute_checksum(content)
 
     # Generate unique filename
     file_id = str(uuid4())
@@ -310,12 +462,12 @@ async def upload_file(  # noqa: PLR0913
 
 @router.post("/{session_id}/upload/image", response_model=ImageUploadResponse)
 @limiter.limit(RATE_LIMIT_UPLOAD)
-async def upload_image(  # noqa: PLR0913
+async def upload_image(
     session_id: str,
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
-    file: UploadFile = File(...),  # noqa: B008
+    file: UploadFile = File(...),
     path: str = Query(default="uploads/images", description="Target directory path"),
 ) -> ImageUploadResponse:
     """Upload an image to the session workspace.
@@ -342,16 +494,35 @@ async def upload_image(  # noqa: PLR0913
 
     # Read content
     content = await read_file_content(file, MAX_IMAGE_SIZE)
-    checksum = compute_checksum(content)
+
+    # SECURITY: Check storage quota BEFORE accepting upload
+    await check_storage_quota(db, user_id, len(content))
+
+    # SECURITY: Verify image content matches claimed type
+    content_type = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "image/png"
+    if not verify_file_signature(content, content_type):
+        raise HTTPException(
+            status_code=400,
+            detail="Image content does not match the declared content type. "
+            "File may be corrupted or spoofed.",
+        )
+
+    checksum = await compute_checksum(content)
 
     # Try to get image dimensions
+    # PERFORMANCE: Use asyncio.to_thread to avoid blocking the event loop
     width: int | None = None
     height: int | None = None
     try:
-        from PIL import Image  # noqa: PLC0415
+        import asyncio
 
-        img = Image.open(BytesIO(content))
-        width, height = img.size
+        from PIL import Image
+
+        def _get_dimensions() -> tuple[int, int]:
+            img = Image.open(BytesIO(content))
+            return img.size
+
+        width, height = await asyncio.to_thread(_get_dimensions)
     except ImportError:
         logger.debug("PIL not available, skipping image dimension extraction")
     except Exception as e:
@@ -411,12 +582,12 @@ async def upload_image(  # noqa: PLR0913
 
 @router.post("/{session_id}/upload/bulk", response_model=BulkUploadResponse)
 @limiter.limit(RATE_LIMIT_UPLOAD)
-async def upload_files_bulk(  # noqa: PLR0913
+async def upload_files_bulk(
     session_id: str,
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
-    files: list[UploadFile] = File(...),  # noqa: B008
+    files: list[UploadFile] = File(...),
     path: str = Query(default="uploads", description="Target directory path"),
 ) -> BulkUploadResponse:
     """Upload multiple files at once.
@@ -447,14 +618,24 @@ async def upload_files_bulk(  # noqa: PLR0913
     failed: list[dict[str, str]] = []
     total_size = 0
 
+    # SECURITY: Calculate total size and check quota BEFORE processing uploads
+    file_contents: list[tuple[UploadFile, bytes]] = []
     for file in files:
         try:
-            # Validate file
             validate_file(file, MAX_FILE_SIZE, ALLOWED_FILE_TYPES)
-
-            # Read content
             content = await read_file_content(file, MAX_FILE_SIZE)
-            checksum = compute_checksum(content)
+            file_contents.append((file, content))
+            total_size += len(content)
+        except HTTPException as e:
+            failed.append({"filename": file.filename or "unknown", "error": e.detail})
+
+    # Check storage quota for total upload size
+    if total_size > 0:
+        await check_storage_quota(db, user_id, total_size)
+
+    for file, content in file_contents:
+        try:
+            checksum = await compute_checksum(content)
 
             # Generate unique filename
             file_id = str(uuid4())
@@ -482,7 +663,6 @@ async def upload_files_bulk(  # noqa: PLR0913
                     file_content,
                 )
 
-            total_size += len(content)
             uploaded.append(
                 UploadResponse(
                     id=file_id,
@@ -580,19 +760,28 @@ async def upload_image_base64(
             detail=f"Image too large. Maximum size is {MAX_IMAGE_SIZE // (1024 * 1024)}MB",
         )
 
-    checksum = compute_checksum(content)
+    # SECURITY: Check storage quota BEFORE accepting upload
+    await check_storage_quota(db, user_id, len(content))
+
+    checksum = await compute_checksum(content)
 
     # Try to get image dimensions
+    # PERFORMANCE: Use asyncio.to_thread to avoid blocking the event loop
     width: int | None = None
     height: int | None = None
     try:
-        from PIL import Image  # noqa: PLC0415
+        import asyncio
 
-        img = Image.open(BytesIO(content))
-        width, height = img.size
+        from PIL import Image
+
+        def _get_dimensions() -> tuple[int, int]:
+            img = Image.open(BytesIO(content))
+            return img.size
+
+        width, height = await asyncio.to_thread(_get_dimensions)
     except ImportError:
         pass  # PIL not available
-    except Exception:  # noqa: S110
+    except Exception:
         pass  # Failed to read image dimensions, not critical
 
     # Generate unique filename

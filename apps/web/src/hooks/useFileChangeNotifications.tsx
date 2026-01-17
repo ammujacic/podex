@@ -5,6 +5,8 @@ import { toast } from 'sonner';
 import { FileCode, FilePlus, FileX, FileEdit } from 'lucide-react';
 import { onSocketEvent, type FileChangeEvent } from '@/lib/socket';
 import { useAgentAttention } from '@/hooks/useAgentAttention';
+import { useEditorStore } from '@/stores/editor';
+import { getLanguageFromPath } from '@/stores/sessionTypes';
 
 interface UseFileChangeNotificationsOptions {
   sessionId: string;
@@ -45,7 +47,15 @@ export function useFileChangeNotifications({
             action: {
               label: 'View',
               onClick: () => {
-                // TODO: Dispatch action to open the file in editor
+                // Open the file in editor
+                useEditorStore.getState().openTab({
+                  path: event.file_path,
+                  name: fileName,
+                  language: getLanguageFromPath(event.file_path),
+                  isPreview: true,
+                  paneId: 'main', // Default to main pane
+                  isDirty: false,
+                });
               },
             },
           });
@@ -58,7 +68,15 @@ export function useFileChangeNotifications({
             action: {
               label: 'View',
               onClick: () => {
-                // TODO: Dispatch action to open the file in editor
+                // Open the file in editor
+                useEditorStore.getState().openTab({
+                  path: event.file_path,
+                  name: fileName,
+                  language: getLanguageFromPath(event.file_path),
+                  isPreview: true,
+                  paneId: 'main', // Default to main pane
+                  isDirty: false,
+                });
               },
             },
           });

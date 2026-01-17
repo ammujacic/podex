@@ -10,6 +10,8 @@ import { initializeAuth } from '@/lib/api';
 import { OnboardingTourProvider } from '@/components/ui/OnboardingTour';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { useSettingsSync } from '@/hooks/useSettingsSync';
+import { usePWAInit } from '@/hooks/usePWAInit';
+import { IOSInstallModal, OfflineIndicator } from '@/components/pwa';
 
 interface ProvidersProps {
   children: ReactNode;
@@ -137,6 +139,12 @@ function ThemeInitializer({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+// PWA initializer - sets up install prompts, offline detection, etc.
+function PWAInitializer({ children }: { children: ReactNode }) {
+  usePWAInit();
+  return <>{children}</>;
+}
+
 export function Providers({ children }: ProvidersProps) {
   const [queryClient] = useState(
     () =>
@@ -192,14 +200,20 @@ export function Providers({ children }: ProvidersProps) {
       <QueryClientProvider client={queryClient}>
         <AuthInitializer>
           <ThemeInitializer>
-            <OnboardingTourProvider>
-              <KeyboardShortcuts>
-                {children}
+            <PWAInitializer>
+              <OnboardingTourProvider>
+                <KeyboardShortcuts>
+                  {children}
 
-                {/* Global components */}
-                <AriaLiveRegion />
-              </KeyboardShortcuts>
-            </OnboardingTourProvider>
+                  {/* Global components */}
+                  <AriaLiveRegion />
+
+                  {/* PWA components */}
+                  <IOSInstallModal />
+                  <OfflineIndicator />
+                </KeyboardShortcuts>
+              </OnboardingTourProvider>
+            </PWAInitializer>
           </ThemeInitializer>
         </AuthInitializer>
 

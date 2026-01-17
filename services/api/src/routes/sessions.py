@@ -9,7 +9,7 @@ from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,7 +22,7 @@ from src.cache import (
 )
 from src.compute_client import compute_client
 from src.config import settings
-from src.database import FileChange, PodTemplate, SubscriptionPlan, UserSubscription, get_db
+from src.database import FileChange, PodTemplate, SubscriptionPlan, UserSubscription
 from src.database import Session as SessionModel
 from src.database import Workspace as WorkspaceModel
 from src.exceptions import ComputeClientError, ComputeServiceHTTPError
@@ -31,13 +31,11 @@ from src.middleware.rate_limit import (
     RATE_LIMIT_UPLOAD,
     limiter,
 )
+from src.routes.dependencies import DbSession, get_current_user_id
 
 logger = structlog.get_logger()
 
 router = APIRouter()
-
-# Type alias for database session dependency
-DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
 @dataclass
@@ -103,8 +101,7 @@ class SessionResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SessionListResponse(BaseModel):
@@ -117,18 +114,6 @@ class SessionListResponse(BaseModel):
     has_more: bool
     # Cursor for next page (for cursor-based pagination)
     next_cursor: str | None = None
-
-
-def get_current_user_id(request: Request) -> str:
-    """Get current user ID from request state.
-
-    Raises:
-        HTTPException: If user is not authenticated.
-    """
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return str(user_id)
 
 
 async def check_session_quota(db: AsyncSession, user_id: str) -> None:
@@ -145,7 +130,7 @@ async def check_session_quota(db: AsyncSession, user_id: str) -> None:
     Raises:
         HTTPException: If user has exceeded their session quota or lock acquisition fails
     """
-    from sqlalchemy.exc import OperationalError  # noqa: PLC0415
+    from sqlalchemy.exc import OperationalError
 
     try:
         # Lock the user's subscription row with NOWAIT to fail fast on contention
@@ -703,7 +688,7 @@ async def update_session_layout(
 
 @router.patch("/{session_id}/layout/agent/{agent_id}")
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def update_agent_layout(  # noqa: PLR0913
+async def update_agent_layout(
     session_id: str,
     agent_id: str,
     request: Request,
@@ -733,7 +718,7 @@ async def update_agent_layout(  # noqa: PLR0913
 
 @router.patch("/{session_id}/layout/file-preview/{preview_id}")
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def update_file_preview_layout(  # noqa: PLR0913
+async def update_file_preview_layout(
     session_id: str,
     preview_id: str,
     request: Request,
@@ -786,7 +771,7 @@ async def get_standby_settings(
     db: DbSession,
 ) -> StandbySettingsResponse:
     """Get effective standby settings for session."""
-    from src.database.models import UserConfig  # noqa: PLC0415
+    from src.database.models import UserConfig
 
     session = await get_session_or_404(session_id, request, db)
 
@@ -858,7 +843,7 @@ async def clear_standby_settings(
     db: DbSession,
 ) -> StandbySettingsResponse:
     """Clear per-session standby override (revert to user default)."""
-    from src.database.models import UserConfig  # noqa: PLC0415
+    from src.database.models import UserConfig
 
     session = await get_session_or_404(session_id, request, db)
 
@@ -1206,7 +1191,7 @@ async def ensure_workspace_provisioned(
         if existing:
             return  # Workspace exists, nothing to do
     except ComputeServiceHTTPError as e:
-        if e.status_code != 404:  # noqa: PLR2004
+        if e.status_code != 404:
             raise  # Re-raise non-404 errors
 
     # Build workspace config from template if db session is available
@@ -1225,7 +1210,7 @@ async def ensure_workspace_provisioned(
     # Workspace doesn't exist, acquire lock before provisioning
     # This prevents multiple concurrent requests from trying to create
     # the same workspace simultaneously
-    from src.cache import get_cache_client  # noqa: PLC0415
+    from src.cache import get_cache_client
 
     lock_key = f"workspace_provision:{workspace_id}"
 
@@ -1243,7 +1228,7 @@ async def ensure_workspace_provisioned(
                     )
                     return  # Workspace was created while we waited for lock
             except ComputeServiceHTTPError as e:
-                if e.status_code != 404:  # noqa: PLR2004
+                if e.status_code != 404:
                     raise
 
             # Workspace still doesn't exist, provision it
@@ -1442,7 +1427,7 @@ async def create_file(
 
 @router.put("/{session_id}/files/content", response_model=FileContent)
 @limiter.limit(RATE_LIMIT_UPLOAD)
-async def update_file_content(  # noqa: PLR0913
+async def update_file_content(
     session_id: str,
     request: Request,
     response: Response,
@@ -1798,8 +1783,7 @@ class FileChangeResponse(BaseModel):
     diff: str | None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class FileHistoryResponse(BaseModel):
@@ -1812,7 +1796,7 @@ class FileHistoryResponse(BaseModel):
 
 @router.get("/{session_id}/files/history")
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def get_file_history(  # noqa: PLR0913
+async def get_file_history(
     session_id: str,
     request: Request,
     response: Response,
@@ -1873,7 +1857,7 @@ async def get_file_history(  # noqa: PLR0913
 
 @router.get("/{session_id}/files/diff")
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def get_file_diff(  # noqa: PLR0913
+async def get_file_diff(
     session_id: str,
     request: Request,
     response: Response,

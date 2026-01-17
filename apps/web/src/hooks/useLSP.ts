@@ -200,9 +200,10 @@ export function useLSP({
 
   // Cleanup debounce timer on unmount
   useEffect(() => {
+    const timerRef = debounceTimerRef;
     return () => {
-      if (debounceTimerRef.current) {
-        clearTimeout(debounceTimerRef.current);
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
       }
     };
   }, []);

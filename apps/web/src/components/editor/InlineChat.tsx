@@ -14,7 +14,8 @@ import {
   XCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { editor } from 'monaco-editor';
+import { calculateBoundedPosition } from '@/lib/ui-utils';
+import type { editor } from '@codingame/monaco-vscode-editor-api';
 
 interface InlineChatProps {
   editor: editor.IStandaloneCodeEditor;
@@ -243,29 +244,40 @@ export function InlineChat({
     }
   };
 
+  // Calculate bounded position
+  const DIALOG_WIDTH = 450;
+  const DIALOG_HEIGHT = 400;
+  const boundedPos = calculateBoundedPosition(position.x, position.y, DIALOG_WIDTH, DIALOG_HEIGHT);
+
   return (
     <div
       ref={containerRef}
       className="fixed z-50 w-[450px] rounded-lg border border-border-default bg-surface shadow-2xl overflow-hidden"
       style={{
-        left: Math.min(position.x, window.innerWidth - 470),
-        top: Math.min(position.y, window.innerHeight - 400),
+        left: boundedPos.x,
+        top: boundedPos.y,
       }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="inline-chat-title"
     >
       {/* Header */}
       <div className="flex items-center justify-between border-b border-border-subtle px-3 py-2">
         <div className="flex items-center gap-2">
-          <Wand2 className="h-4 w-4 text-accent-primary" />
-          <span className="text-sm font-medium text-text-primary">Inline Chat</span>
+          <Wand2 className="h-4 w-4 text-accent-primary" aria-hidden="true" />
+          <span id="inline-chat-title" className="text-sm font-medium text-text-primary">
+            Inline Chat
+          </span>
           {selectedText && (
             <span className="text-xs text-text-muted">({selectedText.length} chars selected)</span>
           )}
         </div>
         <button
           onClick={onClose}
-          className="p-1 rounded hover:bg-overlay text-text-muted hover:text-text-primary"
+          className="p-1 rounded hover:bg-overlay text-text-muted hover:text-text-primary min-w-[32px] min-h-[32px] flex items-center justify-center"
+          aria-label="Close inline chat"
         >
-          <X className="h-4 w-4" />
+          <X className="h-4 w-4" aria-hidden="true" />
         </button>
       </div>
 

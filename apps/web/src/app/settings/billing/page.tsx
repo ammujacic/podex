@@ -13,6 +13,7 @@ import {
   type InvoiceResponse,
 } from '@/lib/api';
 import { CreditCard, Download } from 'lucide-react';
+import CostInsights from '@/components/billing/CostInsights';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 const formatCurrency = (amount: number, currency = 'USD') => {
@@ -286,6 +287,11 @@ export default function BillingPage() {
           </div>
         </div>
       )}
+
+      {/* Cost Insights */}
+      <div className="mb-8">
+        <CostInsights />
+      </div>
 
       {/* Payment Methods */}
       <div className="bg-surface border border-border-default rounded-xl p-6 mb-8">

@@ -158,7 +158,7 @@ class CostAlertManager:
         """Set a budget for a session."""
         async with self._lock:
             if not budget.session_id:
-                raise ValueError("Session budget requires session_id")  # noqa: TRY003
+                raise ValueError("session_id required")  # noqa: TRY003
 
             self._session_budgets[budget.session_id] = budget
 
@@ -179,19 +179,52 @@ class CostAlertManager:
         async with self._lock:
             return self._session_budgets.get(session_id)
 
-    async def delete_budget(self, budget_id: str) -> bool:
-        """Delete a budget by ID."""
+    async def delete_budget(self, budget_id: str, user_id: str | None = None) -> bool:
+        """Delete a budget by ID.
+
+        SECURITY: If user_id is provided, verifies ownership before deletion.
+
+        Args:
+            budget_id: The ID of the budget to delete.
+            user_id: Optional user ID to verify ownership. If provided, only
+                     deletes the budget if it belongs to this user.
+
+        Returns:
+            True if budget was deleted, False if not found or ownership mismatch.
+        """
         async with self._lock:
             # Check user budgets
-            for user_id, budgets in self._user_budgets.items():
+            for budget_user_id, budgets in self._user_budgets.items():
                 for i, budget in enumerate(budgets):
                     if budget.id == budget_id:
-                        del self._user_budgets[user_id][i]
+                        # SECURITY: Verify ownership if user_id provided
+                        if user_id and budget.user_id != user_id:
+                            logger.warning(
+                                "Budget ownership mismatch on delete",
+                                extra={
+                                    "budget_id": budget_id,
+                                    "budget_owner": budget.user_id,
+                                    "requesting_user": user_id,
+                                },
+                            )
+                            return False
+                        del self._user_budgets[budget_user_id][i]
                         return True
 
             # Check session budgets
             for session_id, budget in list(self._session_budgets.items()):
                 if budget.id == budget_id:
+                    # SECURITY: Verify ownership if user_id provided
+                    if user_id and budget.user_id != user_id:
+                        logger.warning(
+                            "Session budget ownership mismatch on delete",
+                            extra={
+                                "budget_id": budget_id,
+                                "budget_owner": budget.user_id,
+                                "requesting_user": user_id,
+                            },
+                        )
+                        return False
                     del self._session_budgets[session_id]
                     return True
 
@@ -457,7 +490,7 @@ _alert_manager: CostAlertManager | None = None
 
 def get_alert_manager() -> CostAlertManager:
     """Get the global alert manager instance."""
-    global _alert_manager  # noqa: PLW0603
+    global _alert_manager
     if _alert_manager is None:
         _alert_manager = CostAlertManager()
     return _alert_manager

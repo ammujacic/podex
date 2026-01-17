@@ -400,7 +400,7 @@ async def execute_tool(
 
     Either server_id or server_name must be provided to identify the MCP server.
     """
-    import structlog  # noqa: PLC0415
+    import structlog
 
     logger = structlog.get_logger()
 
@@ -575,7 +575,7 @@ async def get_server(
 
 @router.patch("/{server_id}", response_model=MCPServerResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def update_server(  # noqa: PLR0913
+async def update_server(
     request: Request,
     response: Response,
     server_id: UUID,
@@ -1008,7 +1008,7 @@ async def get_default_server(
 
 def _check_required_secrets(required_env: list[str]) -> bool:
     """Check if all required environment variables are set."""
-    import os  # noqa: PLC0415
+    import os
 
     if not required_env:
         return True
@@ -1017,7 +1017,7 @@ def _check_required_secrets(required_env: list[str]) -> bool:
 
 def _get_missing_secrets(required_env: list[str]) -> list[str]:
     """Get list of missing required environment variables."""
-    import os  # noqa: PLC0415
+    import os
 
     if not required_env:
         return []
@@ -1026,7 +1026,7 @@ def _get_missing_secrets(required_env: list[str]) -> list[str]:
 
 @defaults_router.post("/{slug}/enable", response_model=MCPServerResponse, status_code=201)
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def enable_default_server(  # noqa: PLR0913
+async def enable_default_server(
     request: Request,
     response: Response,
     slug: str,

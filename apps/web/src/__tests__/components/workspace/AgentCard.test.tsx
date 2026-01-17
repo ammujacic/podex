@@ -24,6 +24,8 @@ vi.mock('@/stores/attention', () => ({
   useAttentionStore: () => ({
     getAttentionsForAgent: () => [],
     getHighestPriorityAttention: () => null,
+    getUnreadCountForAgent: () => 0,
+    hasUnreadForAgent: () => false,
     openPanel: vi.fn(),
   }),
 }));
@@ -54,6 +56,8 @@ vi.mock('@/lib/api', () => ({
   sendAgentMessage: vi.fn(),
   deleteAgent: vi.fn(),
   synthesizeMessage: vi.fn(),
+  getAvailableModels: vi.fn().mockResolvedValue([]),
+  getUserProviderModels: vi.fn().mockResolvedValue([]),
 }));
 
 describe('AgentCard', () => {
@@ -85,8 +89,8 @@ describe('AgentCard', () => {
 
   it('displays agent model', () => {
     render(<AgentCard {...defaultProps} />);
-    // Component displays friendly model name, not raw ID
-    expect(screen.getByText('Claude Opus 4.5')).toBeInTheDocument();
+    // Component displays model ID when no model info is available
+    expect(screen.getByText('claude-opus-4-5-20251101')).toBeInTheDocument();
   });
 
   it('shows active status', () => {

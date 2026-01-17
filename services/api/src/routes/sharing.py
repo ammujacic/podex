@@ -2,25 +2,21 @@
 
 import secrets
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.database import get_db
 from src.database.models import Session as SessionModel
 from src.database.models import SessionShare
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
+from src.routes.dependencies import DbSession, get_current_user_id
 from src.session_sync.manager import session_sync_manager
 from src.session_sync.models import SharingMode
 
 router = APIRouter()
-
-# Type alias for database session dependency
-DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
 # ============== Request/Response Models ==============
@@ -79,18 +75,6 @@ class SessionSharesResponse(BaseModel):
 
 
 # ============== Helper Functions ==============
-
-
-def get_current_user_id(request: Request) -> str:
-    """Get current user ID from request state.
-
-    Raises:
-        HTTPException: If user is not authenticated.
-    """
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return str(user_id)
 
 
 async def check_session_owner(
@@ -332,7 +316,7 @@ async def list_shares(
 
 @router.put("/{session_id}/shares/{share_id}", response_model=ShareResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def update_share(  # noqa: PLR0913
+async def update_share(
     session_id: str,
     share_id: str,
     data: UpdateShareRequest,

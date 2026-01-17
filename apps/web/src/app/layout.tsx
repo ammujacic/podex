@@ -21,34 +21,77 @@ const orbitron = Orbitron({
   variable: '--font-logo',
 });
 
+const siteUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://podex.dev';
+
 export const metadata: Metadata = {
+  metadataBase: new URL(siteUrl),
   title: {
     default: 'Podex',
     template: '%s | Podex',
   },
-  description: 'Web-based agentic IDE platform for AI-powered development',
-  keywords: ['IDE', 'AI', 'development', 'agents', 'coding', 'programming'],
-  authors: [{ name: 'Podex Team' }],
+  description:
+    'Web-based agentic IDE platform for AI-powered development. Deploy AI agents that remember, plan, and execute together.',
+  keywords: [
+    'IDE',
+    'AI',
+    'development',
+    'agents',
+    'coding',
+    'programming',
+    'AI coding assistant',
+    'cloud IDE',
+    'multi-agent',
+    'code generation',
+    'developer tools',
+  ],
+  authors: [{ name: 'Podex Team', url: siteUrl }],
   creator: 'Podex',
   publisher: 'Podex',
   formatDetection: {
     telephone: false,
   },
+  alternates: {
+    canonical: '/',
+  },
   openGraph: {
     type: 'website',
     locale: 'en_US',
+    url: siteUrl,
     siteName: 'Podex',
     title: 'Podex | Code from anywhere',
-    description: 'Web-based agentic IDE platform for AI-powered development',
+    description:
+      'Web-based agentic IDE platform for AI-powered development. Deploy AI agents that remember, plan, and execute together.',
+    images: [
+      {
+        url: '/og-image.png',
+        width: 1200,
+        height: 630,
+        alt: 'Podex - AI-powered cloud IDE with multi-agent collaboration',
+      },
+    ],
   },
   twitter: {
     card: 'summary_large_image',
+    site: '@podexdev',
+    creator: '@podexdev',
     title: 'Podex | Code from anywhere',
-    description: 'Web-based agentic IDE platform for AI-powered development',
+    description:
+      'Web-based agentic IDE platform for AI-powered development. Deploy AI agents that remember, plan, and execute together.',
+    images: ['/og-image.png'],
   },
   robots: {
     index: true,
     follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      'max-video-preview': -1,
+      'max-image-preview': 'large',
+      'max-snippet': -1,
+    },
+  },
+  verification: {
+    google: process.env.GOOGLE_SITE_VERIFICATION,
   },
 };
 
@@ -87,6 +130,10 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <meta name="apple-mobile-web-app-title" content="Podex" />
         <meta name="mobile-web-app-capable" content="yes" />
+
+        {/* PWA manifest and icons */}
+        <link rel="manifest" href="/manifest.json" />
+        <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
       </head>
       <body className="bg-void text-text-primary antialiased">
         {/* Skip to main content link for accessibility */}

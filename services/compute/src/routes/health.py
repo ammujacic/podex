@@ -14,5 +14,5 @@ async def health_check() -> dict[str, str]:
 @router.get("/ready")
 async def readiness_check() -> dict[str, str]:
     """Readiness check endpoint."""
-    # Could check Docker/AWS connectivity here
+    # Could check Docker/GCP connectivity here
     return {"status": "ready", "service": "compute"}

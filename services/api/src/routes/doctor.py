@@ -113,7 +113,7 @@ async def check_redis() -> ServiceHealth:
     """Check Redis connectivity."""
     start = datetime.now(UTC)
     try:
-        import redis.asyncio as aioredis  # noqa: PLC0415
+        import redis.asyncio as aioredis
 
         client = aioredis.from_url(settings.REDIS_URL)
         await client.ping()
@@ -150,7 +150,7 @@ async def check_compute_service() -> ServiceHealth:
             response = await client.get(f"{settings.COMPUTE_SERVICE_URL}/health")
             latency = (datetime.now(UTC) - start).total_seconds() * 1000
 
-            if response.status_code == 200:  # noqa: PLR2004
+            if response.status_code == 200:
                 data = response.json()
                 return ServiceHealth(
                     name="Compute Service",
@@ -183,7 +183,7 @@ async def check_agent_service() -> ServiceHealth:
             response = await client.get(f"{settings.AGENT_SERVICE_URL}/health")
             latency = (datetime.now(UTC) - start).total_seconds() * 1000
 
-            if response.status_code == 200:  # noqa: PLR2004
+            if response.status_code == 200:
                 data = response.json()
                 return ServiceHealth(
                     name="Agent Service",
@@ -212,7 +212,7 @@ async def check_docker() -> ServiceHealth:
     """Check Docker availability."""
     start = datetime.now(UTC)
     try:
-        import docker  # type: ignore[import-untyped]  # noqa: PLC0415
+        import docker  # type: ignore[import-untyped]
 
         client = docker.from_env()
         info = client.info()
@@ -267,26 +267,23 @@ def check_llm_providers() -> list[LLMProviderStatus]:
         )
     )
 
-    # AWS Bedrock
-    bedrock_configured = bool(settings.AWS_ACCESS_KEY_ID and settings.AWS_SECRET_ACCESS_KEY)
+    # Google Cloud Vertex AI
+    vertex_configured = bool(settings.GCP_PROJECT_ID)
     providers.append(
         LLMProviderStatus(
-            provider="bedrock",
-            configured=bedrock_configured,
-            active=settings.LLM_PROVIDER == "bedrock",
-            model="anthropic.claude-3-5-sonnet-20241022-v2:0" if bedrock_configured else None,
+            provider="vertex",
+            configured=vertex_configured,
+            active=settings.LLM_PROVIDER == "vertex",
+            model="claude-sonnet-4-20250514" if vertex_configured else None,
             details={
-                "aws_credentials_set": bedrock_configured,
-                "region": settings.AWS_REGION,
+                "project_id": settings.GCP_PROJECT_ID,
+                "region": settings.GCP_REGION,
                 "supported_models": [
-                    "anthropic.claude-3-5-sonnet-20241022-v2:0",
-                    "anthropic.claude-3-sonnet-20240229-v1:0",
-                    "anthropic.claude-3-haiku-20240307-v1:0",
-                    "meta.llama3-1-70b-instruct-v1:0",
-                    "meta.llama3-1-8b-instruct-v1:0",
-                    "amazon.titan-text-premier-v1:0",
-                    "cohere.command-r-plus-v1:0",
-                    "mistral.mistral-large-2407-v1:0",
+                    "claude-sonnet-4-20250514",
+                    "claude-3-5-sonnet-v2@20241022",
+                    "claude-3-5-haiku@20241022",
+                    "gemini-1.5-pro",
+                    "gemini-1.5-flash",
                 ],
             },
         )
@@ -352,7 +349,7 @@ def generate_recommendations(
     if not any(p.configured for p in providers):
         recommendations.append(
             "No LLM providers are configured. Set ANTHROPIC_API_KEY, "
-            "OPENAI_API_KEY, or AWS credentials."
+            "OPENAI_API_KEY, or GCP_PROJECT_ID for Vertex AI."
         )
 
     return recommendations

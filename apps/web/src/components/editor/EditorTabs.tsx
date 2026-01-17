@@ -1,7 +1,15 @@
 'use client';
 
 import { useCallback, useState, useRef, type DragEvent } from 'react';
-import { X, Circle, SplitSquareHorizontal, SplitSquareVertical, Copy, Columns } from 'lucide-react';
+import {
+  X,
+  Circle,
+  SplitSquareHorizontal,
+  SplitSquareVertical,
+  Copy,
+  Columns,
+  ExternalLink,
+} from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,6 +19,7 @@ import {
 } from '@podex/ui';
 import { cn } from '@/lib/utils';
 import { useEditorStore, type EditorTab } from '@/stores/editor';
+import { useSessionStore } from '@/stores/session';
 
 // File type icons (simple colored circles for now)
 const getFileIcon = (language: string): { color: string; label: string } => {
@@ -133,6 +142,9 @@ export function EditorTabs({ paneId, className }: EditorTabsProps) {
   const splitPane = useEditorStore((s) => s.splitPane);
   const moveTabToPane = useEditorStore((s) => s.moveTabToPane);
   const paneOrder = useEditorStore((s) => s.paneOrder);
+  const extractTab = useEditorStore((s) => s.extractTab);
+
+  const { currentSessionId, openFilePreview } = useSessionStore();
 
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [contextMenuTab, setContextMenuTab] = useState<EditorTab | null>(null);
@@ -186,6 +198,27 @@ export function EditorTabs({ paneId, className }: EditorTabsProps) {
     moveTabToPane(contextMenuTab.id, newPaneId);
     setContextMenuTab(null);
   }, [contextMenuTab, paneId, splitPane, moveTabToPane]);
+
+  const handleOpenInNewWindow = useCallback(() => {
+    if (!contextMenuTab || !currentSessionId) return;
+
+    // Extract the tab (removes from editor)
+    const tab = extractTab(contextMenuTab.id);
+    if (!tab) return;
+
+    // Open as a floating file preview
+    openFilePreview(currentSessionId, {
+      id: `preview-${Date.now()}`,
+      path: tab.path,
+      content: '', // Content will be loaded by the preview component
+      language: tab.language,
+      pinned: false,
+      position: { x: 200, y: 150 },
+      docked: false, // Open as floating window
+    });
+
+    setContextMenuTab(null);
+  }, [contextMenuTab, currentSessionId, extractTab, openFilePreview]);
 
   if (tabs.length === 0) {
     return null;
@@ -245,6 +278,13 @@ export function EditorTabs({ paneId, className }: EditorTabsProps) {
             <DropdownMenuItem onClick={() => navigator.clipboard.writeText(contextMenuTab.path)}>
               <Copy className="mr-2 h-4 w-4" />
               Copy Path
+            </DropdownMenuItem>
+
+            <DropdownMenuSeparator />
+
+            <DropdownMenuItem onClick={handleOpenInNewWindow}>
+              <ExternalLink className="mr-2 h-4 w-4" />
+              Open in New Window
             </DropdownMenuItem>
 
             <DropdownMenuSeparator />

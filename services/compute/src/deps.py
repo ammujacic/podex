@@ -6,9 +6,9 @@ from typing import Annotated
 from fastapi import Depends, Header, HTTPException, status
 
 from src.config import settings
-from src.managers.aws_manager import AWSComputeManager
 from src.managers.base import ComputeManager
 from src.managers.docker_manager import DockerComputeManager
+from src.managers.gcp_manager import GCPComputeManager
 
 
 def verify_internal_api_key(
@@ -76,7 +76,7 @@ class ComputeManagerSingleton:
             if settings.compute_mode == "docker":
                 cls._instance = DockerComputeManager()
             else:
-                cls._instance = AWSComputeManager()
+                cls._instance = GCPComputeManager()
         return cls._instance
 
     @classmethod
@@ -89,7 +89,7 @@ def get_compute_manager() -> ComputeManager:
     """Get the compute manager instance.
 
     Returns DockerComputeManager for local development,
-    AWSComputeManager for production.
+    GCPComputeManager for production.
     """
     return ComputeManagerSingleton.get_instance()
 

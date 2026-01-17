@@ -159,7 +159,7 @@ class DockerComputeManager(ComputeManager):
             logger.exception("Failed to discover existing workspaces")
 
     def set_file_sync(self, file_sync: FileSync) -> None:
-        """Set the file sync service for S3 synchronization."""
+        """Set the file sync service for GCS synchronization."""
         self._file_sync = file_sync
 
     def _get_resource_limits(self, tier: WorkspaceTier) -> dict[str, Any]:
@@ -305,26 +305,26 @@ class DockerComputeManager(ComputeManager):
 
             self._workspaces[workspace_id] = workspace_info
 
-            # Sync files from S3 (restore workspace state)
+            # Sync files from GCS (restore workspace state)
             if self._file_sync:
                 try:
-                    await self._file_sync.sync_from_s3(workspace_id)
+                    await self._file_sync.sync_from_gcs(workspace_id)
                     # Start background sync
                     await self._file_sync.start_background_sync(workspace_id)
-                    workspace_info.metadata["s3_sync_status"] = "success"
+                    workspace_info.metadata["gcs_sync_status"] = "success"
                 except Exception as e:
                     logger.exception(
-                        "Failed to sync files from S3",
+                        "Failed to sync files from GCS",
                         workspace_id=workspace_id,
                     )
                     # Store sync error in metadata for visibility
-                    workspace_info.metadata["s3_sync_status"] = "error"
-                    workspace_info.metadata["s3_sync_error"] = str(e)
+                    workspace_info.metadata["gcs_sync_status"] = "error"
+                    workspace_info.metadata["gcs_sync_error"] = str(e)
 
             # Ensure projects directory exists
             await self.exec_command(workspace_id, "mkdir -p /home/dev/projects", timeout=10)
 
-            # Clone repos if specified (only if no S3 files were synced)
+            # Clone repos if specified (only if no GCS files were synced)
             if config.repos:
                 await self._clone_repos(workspace_id, config.repos, config.git_credentials)
 
@@ -470,21 +470,21 @@ class DockerComputeManager(ComputeManager):
         stop_time = datetime.now(UTC)
         duration_seconds = int((stop_time - workspace.created_at).total_seconds())
 
-        # Sync files to S3 before stopping (stop background sync first)
+        # Sync files to GCS before stopping (stop background sync first)
         sync_error: Exception | None = None
         if self._file_sync:
             try:
                 await self._file_sync.stop_background_sync(workspace_id)
-                await self._file_sync.sync_to_s3(workspace_id)
-                workspace.metadata["s3_sync_status"] = "success"
+                await self._file_sync.sync_to_gcs(workspace_id)
+                workspace.metadata["gcs_sync_status"] = "success"
             except Exception as e:
                 logger.exception(
-                    "Failed to sync files to S3 before stop",
+                    "Failed to sync files to GCS before stop",
                     workspace_id=workspace_id,
                 )
                 # Store sync error - this is important as data may be lost
-                workspace.metadata["s3_sync_status"] = "error"
-                workspace.metadata["s3_sync_error"] = str(e)
+                workspace.metadata["gcs_sync_status"] = "error"
+                workspace.metadata["gcs_sync_error"] = str(e)
                 sync_error = e
 
         try:
@@ -503,7 +503,7 @@ class DockerComputeManager(ComputeManager):
             # Warn if sync failed but stop succeeded
             if sync_error:
                 logger.warning(
-                    "Workspace stopped but S3 sync failed - data may be lost",
+                    "Workspace stopped but GCS sync failed - data may be lost",
                     workspace_id=workspace_id,
                 )
             else:
@@ -624,35 +624,35 @@ class DockerComputeManager(ComputeManager):
 
         Args:
             workspace_id: The workspace to delete
-            preserve_files: If True, sync to S3 before deletion. If False, also delete S3 files.
+            preserve_files: If True, sync to GCS before deletion. If False, also delete GCS files.
         """
         workspace = self._workspaces.get(workspace_id)
         if not workspace:
             return
 
-        # Sync files to S3 before deletion (with timeout to prevent shutdown hangs)
+        # Sync files to GCS before deletion (with timeout to prevent shutdown hangs)
         if self._file_sync:
             try:
                 await self._file_sync.stop_background_sync(workspace_id)
                 if preserve_files:
                     await asyncio.wait_for(
-                        self._file_sync.sync_to_s3(workspace_id),
+                        self._file_sync.sync_to_gcs(workspace_id),
                         timeout=30.0,  # 30 second timeout to prevent shutdown hangs
                     )
                 else:
-                    # Optionally delete S3 files too
+                    # Optionally delete GCS files too
                     await asyncio.wait_for(
                         self._file_sync.delete_workspace_files(workspace_id),
                         timeout=30.0,
                     )
             except TimeoutError:
                 logger.warning(
-                    "S3 sync timed out during workspace deletion",
+                    "GCS sync timed out during workspace deletion",
                     workspace_id=workspace_id,
                 )
             except Exception:
                 logger.exception(
-                    "Failed to handle S3 files before delete",
+                    "Failed to handle GCS files before delete",
                     workspace_id=workspace_id,
                 )
 

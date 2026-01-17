@@ -156,8 +156,45 @@ def _is_allowed_origin(origin: str) -> bool:
         if normalized_origin == normalized_allowed:
             return True
 
-        # Handle wildcard (be careful with this in production)
+        # Handle wildcard - BLOCKED in production for security
         if normalized_allowed == "*":
+            if settings.ENVIRONMENT == "production":
+                logger.error(
+                    "SECURITY: Wildcard CORS origin (*) blocked in production. "
+                    "Configure specific origins in CORS_ORIGINS.",
+                    origin=origin,
+                )
+                # SECURITY: Block wildcard in production instead of allowing
+                return False
+            # Allow wildcard only in development
             return True
 
     return False
+
+
+class CORSConfigurationError(Exception):
+    """Raised when CORS is misconfigured in production."""
+
+
+def check_cors_configuration() -> None:
+    """Check CORS configuration for security issues at startup.
+
+    Call this during application initialization to warn about insecure configs.
+
+    Raises:
+        CORSConfigurationError: If wildcard CORS is configured in production.
+    """
+    if "*" in settings.CORS_ORIGINS:
+        if settings.ENVIRONMENT == "production":
+            error_msg = (
+                "CRITICAL SECURITY ISSUE: Wildcard CORS origin (*) configured in production! "
+                "This allows any website to make authenticated requests. "
+                "Please configure specific origins in CORS_ORIGINS. "
+                "The application will not start with this configuration."
+            )
+            logger.error(error_msg)
+            raise CORSConfigurationError(error_msg)
+        logger.warning(
+            "Wildcard CORS origin (*) is configured. "
+            "This is acceptable for development but must be changed for production."
+        )

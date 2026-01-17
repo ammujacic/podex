@@ -81,8 +81,8 @@ def encrypt_value(value: str) -> str:
         return value
 
     try:
-        encrypted = fernet.encrypt(value.encode("utf-8"))
-        return encrypted.decode("utf-8")
+        encrypted: bytes = fernet.encrypt(value.encode("utf-8"))
+        return str(encrypted.decode("utf-8"))
     except Exception:
         logger.exception("Failed to encrypt Redis value")
         return value
@@ -115,8 +115,8 @@ def decrypt_value(value: str) -> str:
         return value
 
     try:
-        decrypted = fernet.decrypt(value.encode("utf-8"))
-        return decrypted.decode("utf-8")
+        decrypted: bytes = fernet.decrypt(value.encode("utf-8"))
+        return str(decrypted.decode("utf-8"))
     except InvalidToken:
         # Value might look encrypted but isn't, or key mismatch
         logger.warning("Failed to decrypt Redis value - returning as-is")

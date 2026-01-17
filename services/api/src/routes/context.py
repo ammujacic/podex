@@ -1,17 +1,15 @@
 """Context window management routes."""
 
 from datetime import UTC, datetime
-from typing import Annotated
 from uuid import uuid4
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agent_client import agent_client
-from src.database import get_db
 from src.database.models import (
     Agent,
     CompactionLog,
@@ -20,21 +18,12 @@ from src.database.models import (
 from src.database.models import (
     Session as SessionModel,
 )
+from src.routes.dependencies import DbSession, get_current_user_id
 from src.websocket.hub import emit_to_session
 
 logger = structlog.get_logger()
 
 router = APIRouter()
-
-DbSession = Annotated[AsyncSession, Depends(get_db)]
-
-
-def get_current_user_id(request: Request) -> str:
-    """Get current user ID from request state."""
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return str(user_id)
 
 
 class ContextUsageResponse(BaseModel):
@@ -99,7 +88,7 @@ async def maybe_trigger_auto_compaction(
     db: AsyncSession,
     agent: Agent,
     session_id: str,
-    user_id: str,  # noqa: ARG001
+    _user_id: str,
 ) -> bool:
     """Check if auto-compaction should be triggered and execute if needed.
 
@@ -164,7 +153,7 @@ async def maybe_trigger_auto_compaction(
 
     try:
         # Call agent service to perform compaction
-        result = await agent_client._request(  # noqa: SLF001
+        result = await agent_client._request(
             "POST",
             f"/agents/{agent.id}/compact",
             json={
@@ -447,7 +436,7 @@ async def compact_agent_context(
 
     try:
         # Call agent service to perform compaction
-        result = await agent_client._request(  # noqa: SLF001
+        result = await agent_client._request(
             "POST",
             f"/agents/{agent_id}/compact",
             json={

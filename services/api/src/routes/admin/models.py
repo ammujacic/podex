@@ -48,11 +48,11 @@ class ModelCapabilities(BaseModel):
 class CreateModelRequest(BaseModel):
     """Request to create a new LLM model."""
 
-    model_id: str = Field(..., description="Unique Bedrock/provider model ID")
+    model_id: str = Field(..., description="Unique provider model ID")
     display_name: str = Field(..., min_length=1, max_length=100)
-    provider: str = Field(..., description="Provider: bedrock, anthropic, openai, ollama")
+    provider: str = Field(..., description="Provider: vertex, anthropic, openai, ollama")
     family: str = Field(
-        default="anthropic", description="Model family: anthropic, llama, titan, cohere, mistral"
+        default="anthropic", description="Model family: anthropic, gemini, llama, mistral"
     )
     description: str | None = None
     cost_tier: str = Field(default="medium", description="Cost tier: low, medium, high, premium")
@@ -186,7 +186,7 @@ async def list_models(
     if family:
         query = query.where(LLMModel.family == family)
     if enabled_only:
-        query = query.where(LLMModel.is_enabled == True)  # noqa: E712
+        query = query.where(LLMModel.is_enabled == True)
 
     result = await db.execute(query)
     models = result.scalars().all()
@@ -259,52 +259,52 @@ async def get_agent_defaults(
         return AgentDefaultsResponse(
             defaults={
                 "architect": AgentTypeDefaults(
-                    model_id="anthropic.claude-opus-4-5-20251101-v1:0",
+                    model_id="claude-opus-4-5-20251101",
                     temperature=0.7,
                     max_tokens=8192,
                 ),
                 "coder": AgentTypeDefaults(
-                    model_id="anthropic.claude-sonnet-4-5-20250929-v1:0",
+                    model_id="claude-sonnet-4-5-20250929",
                     temperature=0.3,
                     max_tokens=4096,
                 ),
                 "reviewer": AgentTypeDefaults(
-                    model_id="anthropic.claude-sonnet-4-20250514-v1:0",
+                    model_id="claude-sonnet-4-20250514",
                     temperature=0.5,
                     max_tokens=4096,
                 ),
                 "tester": AgentTypeDefaults(
-                    model_id="anthropic.claude-sonnet-4-5-20250929-v1:0",
+                    model_id="claude-sonnet-4-5-20250929",
                     temperature=0.3,
                     max_tokens=4096,
                 ),
                 "chat": AgentTypeDefaults(
-                    model_id="anthropic.claude-haiku-4-5-20251001-v1:0",
+                    model_id="claude-haiku-4-5-20251001",
                     temperature=0.7,
                     max_tokens=2048,
                 ),
                 "security": AgentTypeDefaults(
-                    model_id="anthropic.claude-opus-4-5-20251101-v1:0",
+                    model_id="claude-opus-4-5-20251101",
                     temperature=0.3,
                     max_tokens=4096,
                 ),
                 "devops": AgentTypeDefaults(
-                    model_id="anthropic.claude-sonnet-4-5-20250929-v1:0",
+                    model_id="claude-sonnet-4-5-20250929",
                     temperature=0.5,
                     max_tokens=4096,
                 ),
                 "documentator": AgentTypeDefaults(
-                    model_id="anthropic.claude-sonnet-4-20250514-v1:0",
+                    model_id="claude-sonnet-4-20250514",
                     temperature=0.7,
                     max_tokens=4096,
                 ),
                 "agent_builder": AgentTypeDefaults(
-                    model_id="anthropic.claude-sonnet-4-5-20250929-v1:0",
+                    model_id="claude-sonnet-4-5-20250929",
                     temperature=0.5,
                     max_tokens=8192,
                 ),
                 "orchestrator": AgentTypeDefaults(
-                    model_id="anthropic.claude-opus-4-5-20251101-v1:0",
+                    model_id="claude-opus-4-5-20251101",
                     temperature=0.5,
                     max_tokens=8192,
                 ),
@@ -368,42 +368,42 @@ async def update_agent_default(
         # Create with default values
         defaults = {
             "architect": {
-                "model_id": "anthropic.claude-opus-4-5-20251101-v1:0",
+                "model_id": "claude-opus-4-5-20251101",
                 "temperature": 0.7,
                 "max_tokens": 8192,
             },
             "coder": {
-                "model_id": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+                "model_id": "claude-sonnet-4-5-20250929",
                 "temperature": 0.3,
                 "max_tokens": 4096,
             },
             "reviewer": {
-                "model_id": "anthropic.claude-sonnet-4-20250514-v1:0",
+                "model_id": "claude-sonnet-4-20250514",
                 "temperature": 0.5,
                 "max_tokens": 4096,
             },
             "tester": {
-                "model_id": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+                "model_id": "claude-sonnet-4-5-20250929",
                 "temperature": 0.3,
                 "max_tokens": 4096,
             },
             "chat": {
-                "model_id": "anthropic.claude-haiku-4-5-20251001-v1:0",
+                "model_id": "claude-haiku-4-5-20251001",
                 "temperature": 0.7,
                 "max_tokens": 2048,
             },
             "security": {
-                "model_id": "anthropic.claude-opus-4-5-20251101-v1:0",
+                "model_id": "claude-opus-4-5-20251101",
                 "temperature": 0.3,
                 "max_tokens": 4096,
             },
             "devops": {
-                "model_id": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+                "model_id": "claude-sonnet-4-5-20250929",
                 "temperature": 0.5,
                 "max_tokens": 4096,
             },
             "documentator": {
-                "model_id": "anthropic.claude-sonnet-4-20250514-v1:0",
+                "model_id": "claude-sonnet-4-20250514",
                 "temperature": 0.7,
                 "max_tokens": 4096,
             },
@@ -537,631 +537,6 @@ async def delete_model(
     return {"message": f"Model {model_id} deleted"}
 
 
-# ==================== Seed Default Models ====================
-
-
-DEFAULT_MODELS = [
-    # Anthropic Claude Models (Bedrock)
-    {
-        "model_id": "anthropic.claude-opus-4-5-20251101-v1:0",
-        "display_name": "Claude Opus 4.5",
-        "provider": "bedrock",
-        "family": "anthropic",
-        "cost_tier": "premium",
-        "capabilities": {
-            "vision": True,
-            "thinking": True,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 200000,
-        "max_output_tokens": 16384,
-        "input_cost_per_million": 15.0,  # $15 per million tokens
-        "output_cost_per_million": 75.0,  # $75 per million tokens
-        "is_enabled": True,
-        "is_default": False,  # Only one platform default - using Sonnet 4.5
-        "sort_order": 10,
-        "model_metadata": {
-            "description": "Most capable model for complex reasoning and analysis",
-            "good_for": ["Complex Coding", "Architecture", "Deep Analysis", "Vision Tasks"],
-        },
-    },
-    {
-        "model_id": "anthropic.claude-opus-4-1-20250805-v1:0",
-        "display_name": "Claude Opus 4.1",
-        "provider": "bedrock",
-        "family": "anthropic",
-        "cost_tier": "high",
-        "capabilities": {
-            "vision": True,
-            "thinking": False,
-            "thinking_coming_soon": True,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 200000,
-        "max_output_tokens": 8192,
-        "input_cost_per_million": 12.0,
-        "output_cost_per_million": 60.0,
-        "is_enabled": True,
-        "is_default": False,
-        "sort_order": 15,
-        "model_metadata": {
-            "description": "High capability model for complex tasks",
-            "good_for": ["Complex Reasoning", "Analysis", "Vision"],
-        },
-    },
-    {
-        "model_id": "anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "display_name": "Claude Sonnet 4.5",
-        "provider": "bedrock",
-        "family": "anthropic",
-        "cost_tier": "medium",
-        "capabilities": {
-            "vision": True,
-            "thinking": True,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 200000,
-        "max_output_tokens": 8192,
-        "input_cost_per_million": 3.0,
-        "output_cost_per_million": 15.0,
-        "is_enabled": True,
-        "is_default": True,  # Platform default - best balance of speed/quality/cost
-        "sort_order": 20,
-        "model_metadata": {
-            "description": "Best balance of speed, quality, and cost for most tasks",
-            "good_for": ["Coding", "Agentic Tasks", "Fast Analysis"],
-        },
-    },
-    {
-        "model_id": "anthropic.claude-sonnet-4-20250514-v1:0",
-        "display_name": "Claude Sonnet 4",
-        "provider": "bedrock",
-        "family": "anthropic",
-        "cost_tier": "medium",
-        "capabilities": {
-            "vision": True,
-            "thinking": False,
-            "thinking_coming_soon": True,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 200000,
-        "max_output_tokens": 8192,
-        "input_cost_per_million": 3.0,
-        "output_cost_per_million": 15.0,
-        "is_enabled": True,
-        "is_default": False,
-        "sort_order": 25,
-        "model_metadata": {
-            "description": "Reliable model for everyday coding tasks",
-            "good_for": ["Balanced Tasks", "Code Review", "Analysis"],
-        },
-    },
-    {
-        "model_id": "anthropic.claude-haiku-4-5-20251001-v1:0",
-        "display_name": "Claude Haiku 4.5",
-        "provider": "bedrock",
-        "family": "anthropic",
-        "cost_tier": "low",
-        "capabilities": {
-            "vision": True,
-            "thinking": True,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 200000,
-        "max_output_tokens": 4096,
-        "input_cost_per_million": 0.8,
-        "output_cost_per_million": 4.0,
-        "is_enabled": True,
-        "is_default": False,  # Only one platform default - using Sonnet 4.5
-        "sort_order": 30,
-        "model_metadata": {
-            "description": "Fast and efficient for simple tasks",
-            "good_for": ["Quick Tasks", "Chat", "Efficient Agents"],
-        },
-    },
-    {
-        "model_id": "anthropic.claude-3-5-haiku-20241022-v1:0",
-        "display_name": "Claude 3.5 Haiku",
-        "provider": "bedrock",
-        "family": "anthropic",
-        "cost_tier": "low",
-        "capabilities": {
-            "vision": False,
-            "thinking": False,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 200000,
-        "max_output_tokens": 4096,
-        "input_cost_per_million": 0.8,
-        "output_cost_per_million": 4.0,
-        "is_enabled": True,
-        "is_default": False,
-        "sort_order": 35,
-        "model_metadata": {
-            "description": "Budget option for high-volume simple tasks (no vision)",
-            "good_for": ["Fast Coding", "Quick Responses", "Cost-Effective"],
-        },
-    },
-    # Meta Llama Models (Bedrock)
-    {
-        "model_id": "meta.llama3-1-70b-instruct-v1:0",
-        "display_name": "Llama 3.1 70B",
-        "provider": "bedrock",
-        "family": "llama",
-        "cost_tier": "medium",
-        "capabilities": {
-            "vision": False,
-            "thinking": False,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 128000,
-        "max_output_tokens": 4096,
-        "input_cost_per_million": 2.65,
-        "output_cost_per_million": 3.5,
-        "is_enabled": True,
-        "is_default": False,
-        "sort_order": 50,
-        "model_metadata": {
-            "description": "Large open-source model for general tasks",
-            "good_for": ["Open Source", "General Tasks", "Cost-Effective"],
-        },
-    },
-    {
-        "model_id": "meta.llama3-1-8b-instruct-v1:0",
-        "display_name": "Llama 3.1 8B",
-        "provider": "bedrock",
-        "family": "llama",
-        "cost_tier": "low",
-        "capabilities": {
-            "vision": False,
-            "thinking": False,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 128000,
-        "max_output_tokens": 4096,
-        "input_cost_per_million": 0.3,
-        "output_cost_per_million": 0.6,
-        "is_enabled": True,
-        "is_default": False,
-        "sort_order": 55,
-        "model_metadata": {
-            "description": "Small efficient open-source model",
-            "good_for": ["Fast Tasks", "Local Development", "Budget"],
-        },
-    },
-    # Amazon Titan Models
-    {
-        "model_id": "amazon.titan-text-premier-v1:0",
-        "display_name": "Amazon Titan Premier",
-        "provider": "bedrock",
-        "family": "titan",
-        "cost_tier": "medium",
-        "capabilities": {
-            "vision": False,
-            "thinking": False,
-            "tool_use": False,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 32000,
-        "max_output_tokens": 8192,
-        "input_cost_per_million": 0.5,
-        "output_cost_per_million": 1.5,
-        "is_enabled": True,
-        "is_default": False,
-        "sort_order": 60,
-        "model_metadata": {
-            "description": "Amazon's flagship text model",
-            "good_for": ["AWS Native", "Enterprise", "General Tasks"],
-        },
-    },
-    # Cohere Models
-    {
-        "model_id": "cohere.command-r-plus-v1:0",
-        "display_name": "Cohere Command R+",
-        "provider": "bedrock",
-        "family": "cohere",
-        "cost_tier": "medium",
-        "capabilities": {
-            "vision": False,
-            "thinking": False,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 128000,
-        "max_output_tokens": 4096,
-        "input_cost_per_million": 3.0,
-        "output_cost_per_million": 15.0,
-        "is_enabled": True,
-        "is_default": False,
-        "sort_order": 70,
-        "model_metadata": {
-            "description": "Enterprise-grade model with strong tool use",
-            "good_for": ["Enterprise", "RAG", "Tool Use"],
-        },
-    },
-    # Mistral Models
-    {
-        "model_id": "mistral.mistral-large-2407-v1:0",
-        "display_name": "Mistral Large",
-        "provider": "bedrock",
-        "family": "mistral",
-        "cost_tier": "medium",
-        "capabilities": {
-            "vision": False,
-            "thinking": False,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 128000,
-        "max_output_tokens": 8192,
-        "input_cost_per_million": 4.0,
-        "output_cost_per_million": 12.0,
-        "is_enabled": True,
-        "is_default": False,
-        "sort_order": 80,
-        "model_metadata": {
-            "description": "Mistral's most capable model",
-            "good_for": ["Coding", "European AI", "Multilingual"],
-        },
-    },
-    # ====================
-    # User API Key Models (is_user_key_model=True)
-    # These models are available when users provide their own API keys
-    # ====================
-    # Anthropic Direct API Models
-    {
-        "model_id": "claude-opus-4-5-20251101",
-        "display_name": "Claude Opus 4.5 (Direct)",
-        "provider": "anthropic",
-        "family": "anthropic",
-        "cost_tier": "premium",
-        "capabilities": {
-            "vision": True,
-            "thinking": True,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 200000,
-        "max_output_tokens": 16384,
-        "input_cost_per_million": 15.0,
-        "output_cost_per_million": 75.0,
-        "is_enabled": True,
-        "is_default": False,
-        "is_user_key_model": True,
-        "sort_order": 100,
-        "model_metadata": {
-            "description": "Most capable model via your Anthropic API key",
-            "good_for": ["Complex Coding", "Architecture", "Deep Analysis"],
-        },
-    },
-    {
-        "model_id": "claude-sonnet-4-5-20250929",
-        "display_name": "Claude Sonnet 4.5 (Direct)",
-        "provider": "anthropic",
-        "family": "anthropic",
-        "cost_tier": "medium",
-        "capabilities": {
-            "vision": True,
-            "thinking": True,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 200000,
-        "max_output_tokens": 8192,
-        "input_cost_per_million": 3.0,
-        "output_cost_per_million": 15.0,
-        "is_enabled": True,
-        "is_default": False,
-        "is_user_key_model": True,
-        "sort_order": 110,
-        "model_metadata": {
-            "description": "Best balance of speed and quality via your API key",
-            "good_for": ["Coding", "Agentic Tasks", "Fast Analysis"],
-        },
-    },
-    {
-        "model_id": "claude-3-5-haiku-20241022",
-        "display_name": "Claude 3.5 Haiku (Direct)",
-        "provider": "anthropic",
-        "family": "anthropic",
-        "cost_tier": "low",
-        "capabilities": {
-            "vision": False,
-            "thinking": False,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 200000,
-        "max_output_tokens": 8192,
-        "input_cost_per_million": 0.8,
-        "output_cost_per_million": 4.0,
-        "is_enabled": True,
-        "is_default": False,
-        "is_user_key_model": True,
-        "sort_order": 120,
-        "model_metadata": {
-            "description": "Fast and efficient via your API key",
-            "good_for": ["Fast Coding", "Quick Responses", "Cost-Effective"],
-        },
-    },
-    # OpenAI Direct API Models
-    {
-        "model_id": "gpt-4o",
-        "display_name": "GPT-4o",
-        "provider": "openai",
-        "family": "openai",
-        "cost_tier": "high",
-        "capabilities": {
-            "vision": True,
-            "thinking": False,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 128000,
-        "max_output_tokens": 16384,
-        "input_cost_per_million": 2.5,
-        "output_cost_per_million": 10.0,
-        "is_enabled": True,
-        "is_default": False,
-        "is_user_key_model": True,
-        "sort_order": 200,
-        "model_metadata": {
-            "description": "OpenAI's most capable model",
-            "good_for": ["Multimodal", "Coding", "Vision"],
-        },
-    },
-    {
-        "model_id": "gpt-4o-mini",
-        "display_name": "GPT-4o Mini",
-        "provider": "openai",
-        "family": "openai",
-        "cost_tier": "low",
-        "capabilities": {
-            "vision": True,
-            "thinking": False,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 128000,
-        "max_output_tokens": 16384,
-        "input_cost_per_million": 0.15,
-        "output_cost_per_million": 0.6,
-        "is_enabled": True,
-        "is_default": False,
-        "is_user_key_model": True,
-        "sort_order": 210,
-        "model_metadata": {
-            "description": "Fast and affordable GPT-4 variant",
-            "good_for": ["Fast Tasks", "Budget", "Chat"],
-        },
-    },
-    {
-        "model_id": "gpt-4-turbo",
-        "display_name": "GPT-4 Turbo",
-        "provider": "openai",
-        "family": "openai",
-        "cost_tier": "high",
-        "capabilities": {
-            "vision": True,
-            "thinking": False,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 128000,
-        "max_output_tokens": 4096,
-        "input_cost_per_million": 10.0,
-        "output_cost_per_million": 30.0,
-        "is_enabled": True,
-        "is_default": False,
-        "is_user_key_model": True,
-        "sort_order": 220,
-        "model_metadata": {
-            "description": "Previous flagship with vision",
-            "good_for": ["Vision", "Long Context", "Analysis"],
-        },
-    },
-    # Google AI Direct API Models
-    {
-        "model_id": "gemini-2.0-flash",
-        "display_name": "Gemini 2.0 Flash",
-        "provider": "google",
-        "family": "google",
-        "cost_tier": "low",
-        "capabilities": {
-            "vision": True,
-            "thinking": True,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 1000000,
-        "max_output_tokens": 8192,
-        "input_cost_per_million": 0.1,
-        "output_cost_per_million": 0.4,
-        "is_enabled": True,
-        "is_default": False,
-        "is_user_key_model": True,
-        "sort_order": 300,
-        "model_metadata": {
-            "description": "Google's latest fast model",
-            "good_for": ["Fast Tasks", "Multimodal", "Long Context"],
-        },
-    },
-    {
-        "model_id": "gemini-1.5-pro",
-        "display_name": "Gemini 1.5 Pro",
-        "provider": "google",
-        "family": "google",
-        "cost_tier": "medium",
-        "capabilities": {
-            "vision": True,
-            "thinking": False,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 2000000,
-        "max_output_tokens": 8192,
-        "input_cost_per_million": 1.25,
-        "output_cost_per_million": 5.0,
-        "is_enabled": True,
-        "is_default": False,
-        "is_user_key_model": True,
-        "sort_order": 310,
-        "model_metadata": {
-            "description": "Long context multimodal model",
-            "good_for": ["Massive Context", "Video", "Document Analysis"],
-        },
-    },
-    # Mistral Direct API Models
-    {
-        "model_id": "mistral-large-latest",
-        "display_name": "Mistral Large (Direct)",
-        "provider": "mistral",
-        "family": "mistral",
-        "cost_tier": "high",
-        "capabilities": {
-            "vision": False,
-            "thinking": False,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 128000,
-        "max_output_tokens": 4096,
-        "input_cost_per_million": 2.0,
-        "output_cost_per_million": 6.0,
-        "is_enabled": True,
-        "is_default": False,
-        "is_user_key_model": True,
-        "sort_order": 400,
-        "model_metadata": {
-            "description": "Mistral's most capable model via your API key",
-            "good_for": ["Coding", "European AI", "Multilingual"],
-        },
-    },
-    {
-        "model_id": "codestral-latest",
-        "display_name": "Codestral",
-        "provider": "mistral",
-        "family": "mistral",
-        "cost_tier": "medium",
-        "capabilities": {
-            "vision": False,
-            "thinking": False,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 32000,
-        "max_output_tokens": 4096,
-        "input_cost_per_million": 0.2,
-        "output_cost_per_million": 0.6,
-        "is_enabled": True,
-        "is_default": False,
-        "is_user_key_model": True,
-        "sort_order": 410,
-        "model_metadata": {
-            "description": "Specialized for code generation",
-            "good_for": ["Code Generation", "Fill-in-the-Middle", "Fast Coding"],
-        },
-    },
-    # Cohere Direct API Models
-    {
-        "model_id": "command-r-plus",
-        "display_name": "Command R+",
-        "provider": "cohere",
-        "family": "cohere",
-        "cost_tier": "high",
-        "capabilities": {
-            "vision": False,
-            "thinking": False,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 128000,
-        "max_output_tokens": 4096,
-        "input_cost_per_million": 2.5,
-        "output_cost_per_million": 10.0,
-        "is_enabled": True,
-        "is_default": False,
-        "is_user_key_model": True,
-        "sort_order": 500,
-        "model_metadata": {
-            "description": "Cohere's most capable model",
-            "good_for": ["Enterprise", "RAG", "Tool Use"],
-        },
-    },
-]
-
-
-@router.post("/seed")
-@limiter.limit(RATE_LIMIT_STANDARD)
-@require_admin
-async def seed_default_models(
-    request: Request,
-    response: Response,
-    db: DbSession,
-) -> dict[str, int]:
-    """Seed default LLM models (admin only)."""
-    admin_id = get_admin_user_id(request)
-    created = 0
-    updated = 0
-
-    for model_data in DEFAULT_MODELS:
-        result = await db.execute(
-            select(LLMModel).where(LLMModel.model_id == model_data["model_id"])
-        )
-        existing = result.scalar_one_or_none()
-
-        if existing:
-            # Update existing model
-            for field, value in model_data.items():
-                setattr(existing, field, value)
-            updated += 1
-        else:
-            # Create new model
-            model = LLMModel(**model_data)
-            db.add(model)
-            created += 1
-
-    await db.commit()
-    logger.info(
-        "Admin seeded LLM models",
-        admin_id=admin_id,
-        created=created,
-        updated=updated,
-    )
-
-    return {"created": created, "updated": updated, "total": len(DEFAULT_MODELS)}
-
-
 # ==================== Public Routes (for regular users) ====================
 
 
@@ -1255,8 +630,8 @@ async def list_available_models(
     """
     query = (
         select(LLMModel)
-        .where(LLMModel.is_enabled == True)  # noqa: E712
-        .where(LLMModel.is_user_key_model == False)  # noqa: E712 - only platform models
+        .where(LLMModel.is_enabled == True)
+        .where(LLMModel.is_user_key_model == False)
         .order_by(LLMModel.sort_order, LLMModel.display_name)
     )
 
@@ -1328,52 +703,52 @@ async def get_public_agent_defaults(
         return AgentDefaultsResponse(
             defaults={
                 "architect": AgentTypeDefaults(
-                    model_id="anthropic.claude-opus-4-5-20251101-v1:0",
+                    model_id="claude-opus-4-5-20251101",
                     temperature=0.7,
                     max_tokens=8192,
                 ),
                 "coder": AgentTypeDefaults(
-                    model_id="anthropic.claude-sonnet-4-5-20250929-v1:0",
+                    model_id="claude-sonnet-4-5-20250929",
                     temperature=0.3,
                     max_tokens=4096,
                 ),
                 "reviewer": AgentTypeDefaults(
-                    model_id="anthropic.claude-sonnet-4-20250514-v1:0",
+                    model_id="claude-sonnet-4-20250514",
                     temperature=0.5,
                     max_tokens=4096,
                 ),
                 "tester": AgentTypeDefaults(
-                    model_id="anthropic.claude-sonnet-4-5-20250929-v1:0",
+                    model_id="claude-sonnet-4-5-20250929",
                     temperature=0.3,
                     max_tokens=4096,
                 ),
                 "chat": AgentTypeDefaults(
-                    model_id="anthropic.claude-haiku-4-5-20251001-v1:0",
+                    model_id="claude-haiku-4-5-20251001",
                     temperature=0.7,
                     max_tokens=2048,
                 ),
                 "security": AgentTypeDefaults(
-                    model_id="anthropic.claude-opus-4-5-20251101-v1:0",
+                    model_id="claude-opus-4-5-20251101",
                     temperature=0.3,
                     max_tokens=4096,
                 ),
                 "devops": AgentTypeDefaults(
-                    model_id="anthropic.claude-sonnet-4-5-20250929-v1:0",
+                    model_id="claude-sonnet-4-5-20250929",
                     temperature=0.5,
                     max_tokens=4096,
                 ),
                 "documentator": AgentTypeDefaults(
-                    model_id="anthropic.claude-sonnet-4-20250514-v1:0",
+                    model_id="claude-sonnet-4-20250514",
                     temperature=0.7,
                     max_tokens=4096,
                 ),
                 "agent_builder": AgentTypeDefaults(
-                    model_id="anthropic.claude-sonnet-4-5-20250929-v1:0",
+                    model_id="claude-sonnet-4-5-20250929",
                     temperature=0.5,
                     max_tokens=8192,
                 ),
                 "orchestrator": AgentTypeDefaults(
-                    model_id="anthropic.claude-opus-4-5-20251101-v1:0",
+                    model_id="claude-opus-4-5-20251101",
                     temperature=0.5,
                     max_tokens=8192,
                 ),
@@ -1436,8 +811,8 @@ async def list_user_provider_models(
     # Query user-key models from database where provider matches user's configured keys
     query = (
         select(LLMModel)
-        .where(LLMModel.is_enabled == True)  # noqa: E712
-        .where(LLMModel.is_user_key_model == True)  # noqa: E712
+        .where(LLMModel.is_enabled == True)
+        .where(LLMModel.is_user_key_model == True)
         .where(LLMModel.provider.in_(configured_providers))
         .order_by(LLMModel.sort_order, LLMModel.display_name)
     )
@@ -1496,7 +871,7 @@ async def get_all_model_capabilities(
 
     Returns a dictionary mapping model_id to capabilities for quick lookup.
     """
-    query = select(LLMModel).where(LLMModel.is_enabled == True)  # noqa: E712
+    query = select(LLMModel).where(LLMModel.is_enabled == True)
 
     result = await db.execute(query)
     models = result.scalars().all()
@@ -1527,7 +902,7 @@ async def get_model_capabilities(
 ) -> ModelCapabilitiesResponse | None:
     """Get capabilities for a specific model (internal API for agent service)."""
     result = await db.execute(
-        select(LLMModel).where(LLMModel.model_id == model_id).where(LLMModel.is_enabled == True)  # noqa: E712
+        select(LLMModel).where(LLMModel.model_id == model_id).where(LLMModel.is_enabled == True)
     )
     m = result.scalar_one_or_none()
 

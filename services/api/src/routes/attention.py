@@ -1,62 +1,21 @@
 """Agent attention notification routes."""
 
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.database import AgentAttention, get_db
-from src.database import Session as SessionModel
+from src.database import AgentAttention
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
+from src.routes.dependencies import DbSession, verify_session_access
 from src.websocket.hub import emit_to_session
 
 logger = structlog.get_logger()
 
 router = APIRouter()
-
-# Type alias for database session dependency
-DbSession = Annotated[AsyncSession, Depends(get_db)]
-
-
-def get_current_user_id(request: Request) -> str:
-    """Get current user ID from request state.
-
-    Raises:
-        HTTPException: If user is not authenticated.
-    """
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return str(user_id)
-
-
-async def verify_session_access(
-    session_id: str,
-    request: Request,
-    db: AsyncSession,
-) -> SessionModel:
-    """Verify the current user has access to the session.
-
-    Raises:
-        HTTPException: If session not found or user lacks access.
-    """
-    user_id = get_current_user_id(request)
-
-    session_query = select(SessionModel).where(SessionModel.id == session_id)
-    session_result = await db.execute(session_query)
-    session = session_result.scalar_one_or_none()
-
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    if session.owner_id != user_id:
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    return session
 
 
 class AttentionResponse(BaseModel):
@@ -104,7 +63,7 @@ async def list_attention_items(
     query = select(AgentAttention).where(AgentAttention.session_id == session_id)
 
     if not include_dismissed:
-        query = query.where(AgentAttention.is_dismissed == False)  # noqa: E712
+        query = query.where(AgentAttention.is_dismissed == False)
 
     query = query.order_by(AgentAttention.created_at.desc())
 
@@ -154,8 +113,8 @@ async def get_unread_count(
         .select_from(AgentAttention)
         .where(
             AgentAttention.session_id == session_id,
-            AgentAttention.is_read == False,  # noqa: E712
-            AgentAttention.is_dismissed == False,  # noqa: E712
+            AgentAttention.is_read == False,
+            AgentAttention.is_dismissed == False,
         )
     )
 
@@ -295,7 +254,7 @@ async def dismiss_all_attention(
         update(AgentAttention)
         .where(
             AgentAttention.session_id == session_id,
-            AgentAttention.is_dismissed == False,  # noqa: E712
+            AgentAttention.is_dismissed == False,
         )
         .values(is_dismissed=True),
     )
@@ -341,7 +300,7 @@ async def dismiss_agent_attention(
         .where(
             AgentAttention.session_id == session_id,
             AgentAttention.agent_id == agent_id,
-            AgentAttention.is_dismissed == False,  # noqa: E712
+            AgentAttention.is_dismissed == False,
         )
         .values(is_dismissed=True),
     )

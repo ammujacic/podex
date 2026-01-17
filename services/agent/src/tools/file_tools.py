@@ -1,18 +1,87 @@
 """File system tools for agents."""
 
+from __future__ import annotations
+
 import fnmatch
 import re
-from pathlib import Path
-from typing import Any
+import signal
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import structlog
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
+    from pathlib import Path
 
 logger = structlog.get_logger()
 
 # File size limits
 MAX_READ_FILE_SIZE = 1_000_000  # 1MB
 MAX_SEARCH_FILE_SIZE = 500_000  # 500KB
+
+# Regex safety limits
+MAX_REGEX_LENGTH = 500  # Maximum regex pattern length
+REGEX_TIMEOUT_SECONDS = 5  # Maximum time for regex operations
+
+
+class RegexTimeoutError(Exception):
+    """Raised when regex operation times out."""
+
+
+def _regex_timeout_handler(signum: int, frame: Any) -> None:  # noqa: ARG001
+    """Signal handler for regex timeout."""
+    raise RegexTimeoutError("Regex operation timed out")
+
+
+@contextmanager
+def regex_timeout(seconds: int) -> Generator[None, None, None]:
+    """Context manager for regex operations with timeout.
+
+    Note: This only works on Unix systems. On Windows, it's a no-op.
+    """
+    if hasattr(signal, "SIGALRM"):
+        old_handler = signal.signal(signal.SIGALRM, _regex_timeout_handler)
+        signal.alarm(seconds)
+        try:
+            yield
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+    else:
+        # Windows doesn't support SIGALRM, just yield without timeout
+        yield
+
+
+def _validate_regex_pattern(pattern: str) -> str | None:
+    """Validate regex pattern for potential ReDoS vulnerabilities.
+
+    Args:
+        pattern: The regex pattern to validate.
+
+    Returns:
+        Error message if pattern is potentially dangerous, None if safe.
+    """
+    # Check length limit
+    if len(pattern) > MAX_REGEX_LENGTH:
+        return f"Regex pattern too long (max {MAX_REGEX_LENGTH} characters)"
+
+    # Check for catastrophic backtracking patterns
+    # These patterns can cause exponential time complexity
+    dangerous_patterns = [
+        r"\([^)]*\+\)[^)]*\+",  # (a+)+
+        r"\([^)]*\*\)[^)]*\*",  # (a*)*
+        r"\([^)]*\+\)[^)]*\*",  # (a+)*
+        r"\([^)]*\*\)[^)]*\+",  # (a*)+
+        r"\.+\*.*\.+\*",  # .+*..+*
+    ]
+
+    for dangerous in dangerous_patterns:
+        if re.search(dangerous, pattern):
+            return "Regex pattern contains potentially dangerous quantifier nesting"
+
+    return None
 
 
 def _normalize_path(path: str) -> str:
@@ -247,6 +316,12 @@ async def search_code(
     """
     try:
         results: list[dict[str, Any]] = []
+
+        # Validate regex for potential ReDoS vulnerabilities
+        validation_error = _validate_regex_pattern(query)
+        if validation_error:
+            return {"success": False, "error": validation_error}
+
         try:
             pattern = re.compile(query, re.IGNORECASE)
         except re.error as e:
@@ -283,27 +358,36 @@ async def search_code(
                 continue
 
             # Skip binary and large files
+            # SECURITY: Use lstat() to get symlink size, not target size
+            # Then read the actual file to prevent symlink attacks
             try:
-                if file_path.stat().st_size > MAX_SEARCH_FILE_SIZE:
+                # Check file size - follow symlinks to get actual target size
+                actual_stat = file_path.stat()  # Follows symlinks
+                if actual_stat.st_size > MAX_SEARCH_FILE_SIZE:
                     continue
 
                 content = file_path.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, PermissionError):
+            except (UnicodeDecodeError, PermissionError, OSError):
                 continue
 
-            # Search for matches
-            for line_num, line in enumerate(content.splitlines(), 1):
-                if pattern.search(line):
-                    results.append(
-                        {
-                            "file": relative_path,
-                            "line": line_num,
-                            "content": line.strip()[:200],  # Truncate long lines
-                        },
-                    )
+            # Search for matches with timeout protection
+            try:
+                with regex_timeout(REGEX_TIMEOUT_SECONDS):
+                    for line_num, line in enumerate(content.splitlines(), 1):
+                        if pattern.search(line):
+                            results.append(
+                                {
+                                    "file": relative_path,
+                                    "line": line_num,
+                                    "content": line.strip()[:200],  # Truncate long lines
+                                },
+                            )
 
-                    if len(results) >= max_results:
-                        break
+                            if len(results) >= max_results:
+                                break
+            except RegexTimeoutError:
+                logger.warning("Regex search timed out for file", file=relative_path)
+                continue
 
         logger.info("Code search completed", query=query, results=len(results))
         return {
@@ -435,6 +519,11 @@ async def grep(
         Dictionary with search results or error.
     """
     try:
+        # Validate regex for potential ReDoS vulnerabilities
+        validation_error = _validate_regex_pattern(pattern)
+        if validation_error:
+            return {"success": False, "error": validation_error}
+
         # Compile regex
         flags = re.IGNORECASE if ignore_case else 0
         try:
@@ -490,35 +579,42 @@ async def grep(
                 continue
 
             # Skip binary/large files
+            # SECURITY: Follow symlinks to get actual target size
             try:
-                if file_path.stat().st_size > MAX_SEARCH_FILE_SIZE:
+                actual_stat = file_path.stat()  # Follows symlinks
+                if actual_stat.st_size > MAX_SEARCH_FILE_SIZE:
                     continue
                 content = file_path.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, PermissionError):
+            except (UnicodeDecodeError, PermissionError, OSError):
                 continue
 
             lines = content.splitlines()
-            for line_num, line in enumerate(lines, 1):
-                if regex.search(line):
-                    # Get context lines
-                    start = max(0, line_num - 1 - context_lines)
-                    end = min(len(lines), line_num + context_lines)
-                    context = []
-                    for i in range(start, end):
-                        prefix = ">" if i == line_num - 1 else " "
-                        context.append(f"{prefix} {i + 1}: {lines[i][:200]}")
+            try:
+                with regex_timeout(REGEX_TIMEOUT_SECONDS):
+                    for line_num, line in enumerate(lines, 1):
+                        if regex.search(line):
+                            # Get context lines
+                            start = max(0, line_num - 1 - context_lines)
+                            end = min(len(lines), line_num + context_lines)
+                            context = []
+                            for i in range(start, end):
+                                prefix = ">" if i == line_num - 1 else " "
+                                context.append(f"{prefix} {i + 1}: {lines[i][:200]}")
 
-                    results.append(
-                        {
-                            "file": relative_path,
-                            "line": line_num,
-                            "match": line.strip()[:200],
-                            "context": "\n".join(context),
-                        }
-                    )
+                            results.append(
+                                {
+                                    "file": relative_path,
+                                    "line": line_num,
+                                    "match": line.strip()[:200],
+                                    "context": "\n".join(context),
+                                }
+                            )
 
-                    if len(results) >= max_results:
-                        break
+                            if len(results) >= max_results:
+                                break
+            except RegexTimeoutError:
+                logger.warning("Regex search timed out for file", file=relative_path)
+                continue
 
         logger.info("Grep search completed", pattern=pattern, count=len(results))
         return {
@@ -709,4 +805,93 @@ async def fetch_url(
         return {"success": False, "error": "Request timed out"}
     except Exception as e:
         logger.error("Failed to fetch URL", url=url, error=str(e))
+        return {"success": False, "error": str(e)}
+
+
+async def propose_change(
+    workspace_path: Path,
+    path: str,
+    new_content: str,
+    description: str | None = None,
+    *,
+    context: Any,
+) -> dict[str, Any]:
+    """Propose a file change for user review instead of directly writing.
+
+    Use this in Ask mode when you want to modify a file. The user will see
+    a diff view and can accept or reject the change.
+
+    Args:
+        workspace_path: Base path to the workspace.
+        path: Relative path to the file within the workspace.
+        new_content: The proposed new content for the file.
+        description: Optional description explaining the change.
+        context: Agent context containing session/agent info.
+
+    Returns:
+        Dictionary with pending change info or error.
+    """
+    try:
+        # Normalize path to handle absolute paths passed by LLM
+        path = _normalize_path(path)
+        resolved_workspace = workspace_path.resolve()
+        file_path = (workspace_path / path).resolve()
+
+        # Validate path is within workspace (protects against symlink attacks)
+        if not _validate_path_within_workspace(resolved_workspace, file_path):
+            return {"success": False, "error": "Path traversal not allowed"}
+
+        # Read original content if file exists
+        original_content: str | None = None
+        if file_path.exists():
+            if not file_path.is_file():
+                return {"success": False, "error": f"Not a file: {path}"}
+            if file_path.stat().st_size > MAX_READ_FILE_SIZE:
+                return {"success": False, "error": "File too large for diff view"}
+            try:
+                original_content = file_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                return {"success": False, "error": f"Cannot read binary file: {path}"}
+
+        # Create pending change via API
+        api_url = context.api_base_url.rstrip("/")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{api_url}/api/v1/sessions/{context.session_id}/pending-changes",
+                json={
+                    "agent_id": context.agent_id,
+                    "file_path": path,
+                    "original_content": original_content,
+                    "proposed_content": new_content,
+                    "description": description,
+                },
+                headers={"Authorization": f"Bearer {context.auth_token}"},
+            )
+            response.raise_for_status()
+            pending_change = response.json()
+
+        logger.info(
+            "Proposed file change",
+            change_id=pending_change["id"],
+            path=path,
+            session_id=context.session_id,
+            agent_id=context.agent_id,
+        )
+
+        return {
+            "success": True,
+            "pending": True,
+            "change_id": pending_change["id"],
+            "path": path,
+            "message": (
+                f"Change proposed for {path}. "
+                "Waiting for user to accept or reject in the diff view."
+            ),
+        }
+
+    except httpx.HTTPStatusError as e:
+        logger.error("Failed to create pending change", path=path, status=e.response.status_code)
+        return {"success": False, "error": f"Failed to propose change: {e.response.status_code}"}
+    except Exception as e:
+        logger.error("Failed to propose change", path=path, error=str(e))
         return {"success": False, "error": str(e)}

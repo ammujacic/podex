@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import { useSessionStore } from '@/stores/session';
 import { useMCPStore } from '@/stores/mcp';
 import { useDiagnosticsStore, DiagnosticSeverity } from '@/components/workspace/ProblemsPanel';
+import { useSentryStore, selectUnresolvedCount } from '@/stores/sentry';
 import type { PanelId } from '@/stores/ui';
 
 export function useSidebarBadges(sessionId: string): Partial<Record<PanelId, number>> {
@@ -30,9 +31,13 @@ export function useSidebarBadges(sessionId: string): Partial<Record<PanelId, num
     return errors + warnings;
   }, [diagnostics]);
 
+  // Sentry: count unresolved issues
+  const sentryUnresolved = useSentryStore(selectUnresolvedCount);
+
   return {
     agents: agents > 0 ? agents : undefined,
     mcp: mcp > 0 ? mcp : undefined,
     problems: problems > 0 ? problems : undefined,
+    sentry: sentryUnresolved > 0 ? sentryUnresolved : undefined,
   };
 }

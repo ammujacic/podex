@@ -252,7 +252,7 @@ _mfa_service: MFAService | None = None
 
 def get_mfa_service() -> MFAService:
     """Get the MFA service singleton."""
-    global _mfa_service  # noqa: PLW0603
+    global _mfa_service
     if _mfa_service is None:
         _mfa_service = MFAService()
     return _mfa_service

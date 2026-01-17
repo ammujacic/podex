@@ -66,7 +66,9 @@ export default function SessionPage() {
   const user = useUser();
   const isInitialized = useAuthStore((s) => s.isInitialized);
   const sessionId = params.id as string;
-  const { sessions, createSession } = useSessionStore();
+  // Use getState() for initial check to avoid dependency on sessions object
+  // This prevents the effect from re-running when any session changes
+  const createSession = useSessionStore((s) => s.createSession);
 
   // Onboarding tour
   const { startTour, hasCompleted } = useOnboardingTour();
@@ -218,10 +220,12 @@ export default function SessionPage() {
 
         if (isCancelled) return;
 
-        // Sync session to Zustand store if not already present
+        // Sync session to Zustand store
         // Note: workspace_id can be null during session creation - handle gracefully
         // Components should check for valid workspaceId before performing terminal/LSP operations
-        if (!sessions[sessionId]) {
+        const existingSession = useSessionStore.getState().sessions[sessionId];
+        if (!existingSession) {
+          // Create new session if it doesn't exist
           createSession({
             id: sessionId,
             name: data.name,
@@ -234,7 +238,36 @@ export default function SessionPage() {
             workspaceStatus: data.status === 'active' ? 'running' : 'pending',
             standbyAt: null,
             standbySettings: null,
+            editorGridCardId: null,
           });
+        } else {
+          // Session exists (likely from localStorage) - sync agents from API
+          // This ensures agents created in other views/devices are loaded
+          // Merge agents: keep local state (messages, status) but ensure all API agents exist
+          const { updateAgent, addAgent: addAgentToSession } = useSessionStore.getState();
+          const existingAgentIds = new Set(existingSession.agents.map((a: Agent) => a.id));
+
+          for (const apiAgent of agentsWithMessages) {
+            if (!existingAgentIds.has(apiAgent.id)) {
+              // Agent exists in API but not in local store - add it
+              addAgentToSession(sessionId, apiAgent);
+            } else {
+              // Agent exists in both - update with API data but keep local messages if more recent
+              const localAgent = existingSession.agents.find((a: Agent) => a.id === apiAgent.id);
+              if (localAgent) {
+                // Merge messages: use API messages if local is empty, otherwise keep local
+                const mergedMessages =
+                  localAgent.messages.length > 0 ? localAgent.messages : apiAgent.messages;
+                updateAgent(sessionId, apiAgent.id, {
+                  name: apiAgent.name,
+                  model: apiAgent.model,
+                  modelDisplayName: apiAgent.modelDisplayName,
+                  status: apiAgent.status,
+                  messages: mergedMessages,
+                });
+              }
+            }
+          }
         }
 
         // Check pod status
@@ -272,7 +305,6 @@ export default function SessionPage() {
     sessionId,
     user,
     router,
-    sessions,
     createSession,
     isInitialized,
     simulateStartup,

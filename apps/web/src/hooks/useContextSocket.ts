@@ -2,7 +2,7 @@
  * React hook for context window WebSocket events.
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useMemo } from 'react';
 import { useContextStore } from '@/stores/context';
 import {
   onSocketEvent,
@@ -27,6 +27,12 @@ export function useContextSocket({ sessionId, agentIds = [] }: UseContextSocketO
   const setCompactingRef = useRef(useContextStore.getState().setCompacting);
   const addCompactionLogRef = useRef(useContextStore.getState().addCompactionLog);
 
+  // Stabilize agentIds array to prevent unnecessary effect re-runs
+  // This creates a new reference only when the array contents actually change
+  const agentIdsKey = agentIds.join(',');
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- Intentionally only depend on stringified key to stabilize array reference
+  const stableAgentIds = useMemo(() => agentIds, [agentIdsKey]);
+
   // Keep refs updated
   useEffect(() => {
     const unsubscribe = useContextStore.subscribe((state) => {
@@ -39,10 +45,10 @@ export function useContextSocket({ sessionId, agentIds = [] }: UseContextSocketO
 
   // Fetch initial context usage for all agents
   useEffect(() => {
-    if (!sessionId || agentIds.length === 0) return;
+    if (!sessionId || stableAgentIds.length === 0) return;
 
     const fetchInitialUsage = async () => {
-      for (const agentId of agentIds) {
+      for (const agentId of stableAgentIds) {
         try {
           const usage = await getAgentContextUsage(agentId);
           setAgentUsageRef.current(agentId, {
@@ -58,8 +64,7 @@ export function useContextSocket({ sessionId, agentIds = [] }: UseContextSocketO
     };
 
     fetchInitialUsage();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, agentIds.join(',')]); // Join to create stable dependency
+  }, [sessionId, stableAgentIds]);
 
   useEffect(() => {
     if (!sessionId) return;

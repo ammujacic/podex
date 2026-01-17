@@ -423,9 +423,13 @@ function ToolCallBlock({ content, language }: { content: string; language: strin
 }
 
 /**
- * Main Markdown Renderer Component
+ * Main Markdown Renderer Component.
+ * Memoized to prevent re-parsing unchanged content.
  */
-export function MarkdownRenderer({ content, className }: MarkdownRendererProps) {
+export const MarkdownRenderer = React.memo<MarkdownRendererProps>(function MarkdownRenderer({
+  content,
+  className,
+}) {
   const blocks = useMemo(() => parseMarkdown(content), [content]);
 
   return (
@@ -524,4 +528,4 @@ export function MarkdownRenderer({ content, className }: MarkdownRendererProps) 
       })}
     </div>
   );
-}
+});

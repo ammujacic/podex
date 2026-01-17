@@ -1,22 +1,23 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Send, Mic, Paperclip, Loader2, StopCircle, ChevronDown, Bot, X } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { Send, Mic, Paperclip, Loader2, StopCircle, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { useSessionStore, type AgentMessage } from '@/stores/session';
 import { sendAgentMessage, abortAgent, isQuotaError } from '@/lib/api';
-
-// Generate temporary ID for optimistic updates
-function generateTempId(): string {
-  return `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-}
 import { useSwipeGesture } from '@/hooks/useGestures';
 import { useVoiceCapture } from '@/hooks/useVoiceCapture';
 import { MarkdownRenderer } from './MarkdownRenderer';
-import { ToolResultDisplay } from './ToolResultDisplay';
 import { CreditExhaustedBanner } from './CreditExhaustedBanner';
 import { MobileAgentToolbar } from './MobileAgentToolbar';
+import { MobileMessageBubble } from './MobileMessageBubble';
+import { NoMessagesEmptyState } from '@/components/ui/EmptyState';
+
+// Generate temporary ID for optimistic updates
+function generateTempId(): string {
+  return `temp-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+}
 
 interface MobileAgentViewProps {
   sessionId: string;
@@ -44,39 +45,48 @@ export function MobileAgentView({
   const agent = session?.agents?.find((a) => a.id === agentId);
 
   // Get finalized messages with deduplication (safety net for race conditions and stale localStorage)
+  // Uses O(n) Set-based approach for efficiency
   const finalizedMessages = useMemo(() => {
     const messages = agent?.messages ?? [];
-    // Deduplicate by ID and by content (for messages with different IDs but same content)
-    // Two-pass approach: first collect all messages, then filter to prefer real IDs over temp IDs
-    const seenIds = new Set<string>();
-    const contentToMessages = new Map<string, typeof messages>(); // content -> all messages with that content
+    if (messages.length === 0) return messages;
 
-    // First pass: group messages by content, skip exact ID duplicates
+    const seenIds = new Set<string>();
+    const contentToRealId = new Map<string, string>(); // content key -> real (non-temp) message id
+    const result: typeof messages = [];
+
+    // Single pass: track content keys and prefer real IDs over temp IDs
     for (const msg of messages) {
+      // Skip exact ID duplicates
       if (seenIds.has(msg.id)) continue;
       seenIds.add(msg.id);
 
       const contentKey = `${msg.role}:${msg.content}`;
-      const existing = contentToMessages.get(contentKey) ?? [];
-      existing.push(msg);
-      contentToMessages.set(contentKey, existing);
-    }
+      const existingRealId = contentToRealId.get(contentKey);
+      const isTemp = msg.id.startsWith('temp-');
 
-    // Second pass: for each content group, pick the best message (prefer real ID over temp)
-    const result: typeof messages = [];
-    const usedContents = new Set<string>();
-
-    for (const msg of messages) {
-      const contentKey = `${msg.role}:${msg.content}`;
-      if (usedContents.has(contentKey)) continue;
-
-      const group = contentToMessages.get(contentKey) ?? [msg];
-      // Prefer message with real ID (non-temp) if available
-      const bestMsg = group.find((m) => !m.id.startsWith('temp-')) ?? group[0];
-      if (bestMsg) {
-        result.push(bestMsg);
-        usedContents.add(contentKey);
+      if (existingRealId) {
+        // Content already added with a real ID, skip this duplicate
+        continue;
       }
+
+      if (!isTemp) {
+        // This is a real ID - mark this content as having a real ID
+        contentToRealId.set(contentKey, msg.id);
+      }
+
+      // Check if we already added a temp version of this content
+      const existingTempIndex = result.findIndex(
+        (m) => m.id.startsWith('temp-') && `${m.role}:${m.content}` === contentKey
+      );
+
+      if (existingTempIndex !== -1 && !isTemp) {
+        // Replace temp message with real one (maintains position)
+        result[existingTempIndex] = msg;
+      } else if (existingTempIndex === -1) {
+        // No existing message with this content, add it
+        result.push(msg);
+      }
+      // else: temp message exists and this is also temp, skip
     }
 
     return result;
@@ -174,11 +184,16 @@ export function MobileAgentView({
 
   // Handle voice recording toggle
   const handleVoiceToggle = useCallback(async () => {
-    if (isRecording) {
-      await stopRecording();
-      // After stopping, the transcript becomes input via onTranscript callback
-    } else {
-      await startRecording();
+    try {
+      if (isRecording) {
+        await stopRecording();
+        // After stopping, the transcript becomes input via onTranscript callback
+      } else {
+        await startRecording();
+      }
+    } catch (error) {
+      console.error('Voice recording error:', error);
+      toast.error('Failed to toggle voice recording');
     }
   }, [isRecording, startRecording, stopRecording]);
 
@@ -191,7 +206,13 @@ export function MobileAgentView({
   // Handle voice send - stop recording and submit the transcript
   const handleVoiceSend = useCallback(async () => {
     const transcript = currentTranscript.trim();
-    await stopRecording();
+    try {
+      await stopRecording();
+    } catch (error) {
+      console.error('Failed to stop recording:', error);
+      toast.error('Failed to stop recording');
+      return;
+    }
     if (transcript && !isSubmitting && agent) {
       // Prevent double-submission on mobile
       const now = Date.now();
@@ -248,6 +269,15 @@ export function MobileAgentView({
     }
   };
 
+  // Auto-resize textarea based on content
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInput(e.target.value);
+    // Reset height to auto to get the correct scrollHeight
+    e.target.style.height = 'auto';
+    // Set height to scrollHeight, capped at max-height (128px)
+    e.target.style.height = `${Math.min(e.target.scrollHeight, 128)}px`;
+  }, []);
+
   if (!agent) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -259,7 +289,7 @@ export function MobileAgentView({
   return (
     <div
       ref={swipeRef}
-      className="flex flex-col h-full"
+      className="flex flex-col h-full touch-pan-y"
       data-tour="agent-grid"
       style={{
         transform: isSwiping ? `translateX(${deltaX * 0.3}px)` : undefined,
@@ -279,20 +309,11 @@ export function MobileAgentView({
       {/* Messages area - scrollable middle section */}
       <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-4">
         {finalizedMessages.length === 0 && !streamingMessage ? (
-          <div className="flex flex-col items-center justify-center min-h-full text-center px-4">
-            <div className="w-16 h-16 rounded-full bg-accent-primary/10 flex items-center justify-center mb-4">
-              <Bot className="h-8 w-8 text-accent-primary" />
-            </div>
-            <h3 className="text-lg font-semibold text-text-primary mb-2">{agent.name}</h3>
-            <p className="text-sm text-text-secondary max-w-xs">
-              Start a conversation with this agent. Ask questions, request code changes, or explore
-              your codebase.
-            </p>
-          </div>
+          <NoMessagesEmptyState agentName={agent.name} />
         ) : (
           <div className="space-y-4">
             {finalizedMessages.map((message) => (
-              <MessageBubble key={message.id} message={message} />
+              <MobileMessageBubble key={message.id} message={message} />
             ))}
             {/* Streaming message or thinking indicator */}
             {isProcessing && (
@@ -357,13 +378,13 @@ export function MobileAgentView({
               <button
                 onClick={handleVoiceCancel}
                 className={cn(
-                  'flex items-center gap-2 px-4 py-2 rounded-lg',
+                  'flex items-center gap-2 px-4 py-2.5 min-h-[44px] rounded-lg',
                   'bg-surface-hover text-text-secondary',
                   'hover:bg-surface-active hover:text-text-primary',
                   'transition-colors touch-manipulation'
                 )}
               >
-                <X className="h-4 w-4" />
+                <X className="h-5 w-5" />
                 <span className="text-sm font-medium">Cancel</span>
               </button>
 
@@ -372,14 +393,14 @@ export function MobileAgentView({
                 onClick={handleVoiceSend}
                 disabled={!currentTranscript.trim()}
                 className={cn(
-                  'flex items-center gap-2 px-4 py-2 rounded-lg',
+                  'flex items-center gap-2 px-4 py-2.5 min-h-[44px] rounded-lg',
                   'bg-accent-primary text-text-inverse',
                   'hover:bg-accent-primary/90',
                   'disabled:opacity-50 disabled:cursor-not-allowed',
                   'transition-colors touch-manipulation'
                 )}
               >
-                <Send className="h-4 w-4" />
+                <Send className="h-5 w-5" />
                 <span className="text-sm font-medium">Send</span>
               </button>
             </div>
@@ -387,16 +408,17 @@ export function MobileAgentView({
         ) : (
           /* Normal input UI */
           <div className="flex items-center gap-2">
-            {/* Attachment button */}
+            {/* Attachment button - disabled until feature is implemented */}
             <button
+              disabled
               className={cn(
-                'p-2 rounded-lg',
-                'hover:bg-surface-hover active:bg-surface-active',
+                'p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg',
+                'text-text-tertiary opacity-50 cursor-not-allowed',
                 'transition-colors touch-manipulation'
               )}
-              aria-label="Attach file"
+              aria-label="Attach file (coming soon)"
             >
-              <Paperclip className="h-5 w-5 text-text-secondary" />
+              <Paperclip className="h-5 w-5" />
             </button>
 
             {/* Text input */}
@@ -404,7 +426,7 @@ export function MobileAgentView({
               <textarea
                 ref={inputRef}
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
                 placeholder="Message..."
                 rows={1}
@@ -413,11 +435,11 @@ export function MobileAgentView({
                   'bg-surface-hover border border-border-subtle',
                   'text-base text-text-primary placeholder:text-text-tertiary',
                   'focus:outline-none focus:ring-2 focus:ring-accent-primary/50',
-                  'max-h-32 overflow-y-auto'
+                  'overflow-y-auto'
                 )}
                 style={{
                   minHeight: '44px',
-                  height: 'auto',
+                  maxHeight: '128px',
                 }}
               />
             </div>
@@ -427,7 +449,7 @@ export function MobileAgentView({
               <button
                 onClick={handleAbort}
                 className={cn(
-                  'p-2 rounded-lg',
+                  'p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg',
                   'bg-status-error/10 text-status-error',
                   'hover:bg-status-error/20',
                   'transition-colors touch-manipulation'
@@ -441,7 +463,7 @@ export function MobileAgentView({
                 onClick={handleSubmit}
                 disabled={isSubmitting}
                 className={cn(
-                  'p-2 rounded-lg',
+                  'p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg',
                   'bg-accent-primary text-text-inverse',
                   'hover:bg-accent-primary/90',
                   'disabled:opacity-50 disabled:cursor-not-allowed',
@@ -459,7 +481,7 @@ export function MobileAgentView({
               <button
                 onClick={handleVoiceToggle}
                 className={cn(
-                  'p-2 rounded-lg',
+                  'p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg',
                   'hover:bg-surface-hover active:bg-surface-active',
                   'transition-colors touch-manipulation'
                 )}
@@ -473,93 +495,4 @@ export function MobileAgentView({
       </div>
     </div>
   );
-}
-
-// Message bubble component
-interface MessageBubbleProps {
-  message: AgentMessage;
-}
-
-function MessageBubble({ message }: MessageBubbleProps) {
-  const isUser = message.role === 'user';
-  const isAssistant = message.role === 'assistant';
-  const [isExpanded, setIsExpanded] = useState(true);
-
-  // Check if message has tool calls with results
-  const completedToolCalls =
-    message.toolCalls?.filter((tc) => tc.status === 'completed' && tc.result) ?? [];
-  const hasToolResults = completedToolCalls.length > 0;
-
-  return (
-    <div className={cn('flex flex-col', isUser ? 'items-end' : 'items-start')}>
-      <div
-        className={cn(
-          'max-w-[85%] rounded-2xl px-4 py-2.5',
-          isUser
-            ? 'bg-accent-primary text-text-inverse rounded-br-md'
-            : 'bg-[#1a1a2e] border border-border-subtle text-text-primary rounded-bl-md'
-        )}
-      >
-        {/* Message content */}
-        {message.content && (
-          <div className="text-sm">
-            {isUser ? (
-              <p className="whitespace-pre-wrap">{message.content}</p>
-            ) : (
-              <MarkdownRenderer content={message.content} />
-            )}
-          </div>
-        )}
-
-        {/* Thinking display */}
-        {message.thinking && (
-          <details className="mt-2 text-xs text-text-tertiary">
-            <summary className="cursor-pointer hover:text-text-secondary">View thinking...</summary>
-            <p className="mt-1 whitespace-pre-wrap">{message.thinking}</p>
-          </details>
-        )}
-      </div>
-
-      {/* Tool results (for assistant messages) */}
-      {isAssistant && hasToolResults && (
-        <div className="w-full max-w-[85%] mt-2">
-          <button
-            onClick={() => setIsExpanded(!isExpanded)}
-            className={cn(
-              'flex items-center gap-1.5 text-xs text-text-tertiary',
-              'hover:text-text-secondary transition-colors'
-            )}
-          >
-            <ChevronDown
-              className={cn('h-3.5 w-3.5 transition-transform', !isExpanded && '-rotate-90')}
-            />
-            <span>
-              {completedToolCalls.length} tool{' '}
-              {completedToolCalls.length === 1 ? 'result' : 'results'}
-            </span>
-          </button>
-
-          {isExpanded && (
-            <div className="mt-2 space-y-2">
-              {completedToolCalls.map((toolCall) => (
-                <ToolResultDisplay
-                  key={toolCall.id}
-                  toolName={toolCall.name}
-                  result={toolCall.result}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Timestamp */}
-      <span className="text-2xs text-text-tertiary mt-1 px-1">{formatTime(message.timestamp)}</span>
-    </div>
-  );
-}
-
-function formatTime(date: Date | string): string {
-  const d = typeof date === 'string' ? new Date(date) : date;
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }

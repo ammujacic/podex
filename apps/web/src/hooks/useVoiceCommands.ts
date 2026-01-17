@@ -219,6 +219,8 @@ export function useVoiceCommands({
             if (command.message) {
               setTerminalVisible(true);
               // TODO: Implement terminal integration for command execution
+              // Could integrate with terminal to execute the command
+              console.warn('Voice command to run:', command.message);
             }
             break;
 

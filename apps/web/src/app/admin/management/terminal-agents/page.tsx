@@ -376,6 +376,7 @@ export default function TerminalAgentsAdminPage() {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 {agent.logo_url && (
+                  // eslint-disable-next-line @next/next/no-img-element -- Dynamic external URL
                   <img src={agent.logo_url} alt={agent.name} className="w-8 h-8 rounded" />
                 )}
                 <div>

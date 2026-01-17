@@ -31,36 +31,39 @@ export function ThinkingDisplay({
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const [displayedContent, setDisplayedContent] = useState('');
   const contentRef = useRef<HTMLDivElement>(null);
+  // Track displayed content length in ref to avoid stale closure in animation interval
+  const displayedLengthRef = useRef(0);
 
   const blocks = Array.isArray(thinking) ? thinking : thinking ? [thinking] : [];
+  const hasBlocks = blocks.length > 0;
   const latestBlock = blocks[blocks.length - 1];
   const totalContent = blocks.map((b) => b.content).join('\n\n');
 
   // Animate thinking text when active
   useEffect(() => {
-    if (!isActive || !latestBlock) {
+    if (!isActive || !hasBlocks) {
       setDisplayedContent(totalContent);
+      displayedLengthRef.current = totalContent.length;
       return;
     }
 
     // Typewriter effect for active thinking
-    let currentIndex = displayedContent.length;
     const targetLength = totalContent.length;
 
-    if (currentIndex >= targetLength) return;
+    // If we're already at or past target, nothing to animate
+    if (displayedLengthRef.current >= targetLength) return;
 
     const interval = setInterval(() => {
-      currentIndex += 3; // Characters per tick
-      setDisplayedContent(totalContent.slice(0, currentIndex));
+      displayedLengthRef.current = Math.min(displayedLengthRef.current + 3, targetLength);
+      setDisplayedContent(totalContent.slice(0, displayedLengthRef.current));
 
-      if (currentIndex >= targetLength) {
+      if (displayedLengthRef.current >= targetLength) {
         clearInterval(interval);
       }
     }, 20);
 
     return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [totalContent, isActive]);
+  }, [totalContent, isActive, hasBlocks]);
 
   // Auto-scroll to bottom when content updates
   useEffect(() => {
@@ -162,12 +165,18 @@ function ThinkingBlockItem({ block: _block, content, isLatest, isActive }: Think
   // Parse thinking content for structure
   const sections = parseThinkingContent(content);
 
+  // Generate stable key for section based on type and content
+  const getSectionKey = (section: ThinkingSection, index: number): string => {
+    const contentSnippet = section.content.slice(0, 50).replace(/\s+/g, '-');
+    return `${section.type}-${index}-${contentSnippet}`;
+  };
+
   return (
     <div
       className={cn('rounded-lg p-3', isLatest ? 'bg-purple-500/10' : 'bg-surface-secondary/30')}
     >
       {sections.map((section, i) => (
-        <div key={i} className="mb-2 last:mb-0">
+        <div key={getSectionKey(section, i)} className="mb-2 last:mb-0">
           {section.type === 'heading' && (
             <div className="flex items-center gap-1.5 text-sm font-medium text-purple-400 mb-1">
               <Lightbulb className="w-3 h-3" />

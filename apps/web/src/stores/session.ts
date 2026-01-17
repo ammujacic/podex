@@ -1,122 +1,50 @@
 import { create, type StateCreator } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 
-import { isCriticallyFull, isNearQuota, cleanupByPrefix } from '@/lib/storageQuota';
-import type { ThinkingConfig } from '@podex/shared';
+// Import types and helpers from extracted modules
+import {
+  type Agent,
+  type AgentMessage,
+  type AgentMode,
+  type AgentPosition,
+  type FilePreview,
+  type GridSpan,
+  type Session,
+  type StandbySettings,
+  type StreamingMessage,
+  type ToolCall,
+  getLanguageFromPath,
+  MAX_MESSAGES_PER_AGENT,
+  MAX_RECENT_FILES,
+} from './sessionTypes';
+import { createDebouncedStorage } from './sessionStorage';
+import { useStreamingStore } from './streaming';
 
-export interface AgentPosition {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  zIndex: number;
-}
+// Re-export types for backward compatibility
+export type {
+  Agent,
+  AgentMessage,
+  AgentMode,
+  AgentPosition,
+  AgentRole,
+  FilePreview,
+  GridSpan,
+  Session,
+  StandbySettings,
+  StreamingMessage,
+  ToolCall,
+  ViewMode,
+  WorkspaceStatus,
+} from './sessionTypes';
 
-export interface GridSpan {
-  colSpan: number; // 1-3 columns
-  rowSpan: number; // 1-2 rows
-}
-
-// Agent permission modes
-export type AgentMode = 'plan' | 'ask' | 'auto' | 'sovereign';
-
-export interface Agent {
-  id: string;
-  name: string;
-  role:
-    | 'architect'
-    | 'coder'
-    | 'reviewer'
-    | 'tester'
-    | 'agent_builder'
-    | 'orchestrator'
-    | 'chat'
-    | 'security'
-    | 'devops'
-    | 'documentator'
-    | 'custom';
-  model: string;
-  modelDisplayName?: string; // User-friendly model name from backend
-  status: 'idle' | 'active' | 'error';
-  color: string;
-  messages: AgentMessage[];
-  position?: AgentPosition;
-  gridSpan?: GridSpan;
-  templateId?: string; // Reference to custom agent template
-  terminalSessionId?: string; // For terminal-integrated agents
-  terminalAgentTypeId?: string; // The type ID of the terminal agent (for restarts)
-  // Agent mode and command permissions
-  mode: AgentMode;
-  previousMode?: AgentMode; // For auto-revert tracking when mode is auto-switched
-  commandAllowlist?: string[]; // Allowed commands for Auto mode (glob patterns)
-  // Extended thinking configuration
-  thinkingConfig?: ThinkingConfig;
-}
-
-export interface AgentMessage {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  thinking?: string; // Agent's thinking/reasoning process (collapsible)
-  timestamp: Date;
-  toolCalls?: ToolCall[];
-}
-
-export interface ToolCall {
-  id: string;
-  name: string;
-  args: Record<string, unknown>;
-  result?: string;
-  status: 'pending' | 'running' | 'completed' | 'error';
-}
-
-// Streaming message state for real-time token display
-export interface StreamingMessage {
-  messageId: string;
-  agentId: string;
-  sessionId: string;
-  content: string; // Accumulated tokens
-  thinkingContent: string; // Accumulated thinking tokens
-  isStreaming: boolean;
-  startedAt: Date;
-}
-
-export interface FilePreview {
-  id: string;
-  path: string;
-  content: string;
-  language: string;
-  pinned: boolean;
-  position: { x: number; y: number; width?: number; height?: number; zIndex?: number };
-  gridSpan?: GridSpan;
-  docked: boolean; // If true, shows in the main grid/freeform area. If false, floats as overlay.
-}
-
-export interface StandbySettings {
-  timeoutMinutes: number | null; // null = Never
-  source: 'session' | 'user_default';
-}
-
-export interface Session {
-  id: string;
-  name: string;
-  workspaceId: string;
-  branch: string;
-  agents: Agent[];
-  filePreviews: FilePreview[];
-  activeAgentId: string | null;
-  viewMode: 'grid' | 'focus' | 'freeform';
-  // Workspace status tracking
-  workspaceStatus: 'pending' | 'running' | 'standby' | 'stopped' | 'error';
-  standbyAt: string | null;
-  standbySettings: StandbySettings | null;
-}
+// ============================================================================
+// Session State Interface
+// ============================================================================
 
 interface SessionState {
   sessions: Record<string, Session>;
   currentSessionId: string | null;
   recentFiles: string[]; // List of recently opened file paths
-  streamingMessages: Record<string, StreamingMessage>; // Keyed by messageId
 
   // Session actions
   createSession: (session: Session) => void;
@@ -147,6 +75,11 @@ interface SessionState {
   dockFilePreview: (sessionId: string, previewId: string, docked: boolean) => void;
   updateFilePreviewGridSpan: (sessionId: string, previewId: string, gridSpan: GridSpan) => void;
 
+  // Editor grid card actions (consolidated tabbed editor in grid)
+  createEditorGridCard: (sessionId: string) => string;
+  removeEditorGridCard: (sessionId: string) => void;
+  updateEditorGridSpan: (sessionId: string, gridSpan: GridSpan) => void;
+
   // Recent files
   addRecentFile: (path: string) => void;
   clearRecentFiles: () => void;
@@ -171,9 +104,15 @@ interface SessionState {
   ) => void;
 
   // Extended thinking config action
-  updateAgentThinking: (sessionId: string, agentId: string, thinkingConfig: ThinkingConfig) => void;
+  updateAgentThinking: (
+    sessionId: string,
+    agentId: string,
+    thinkingConfig: Agent['thinkingConfig']
+  ) => void;
 
-  // Streaming message actions
+  // Streaming message actions (delegated to streaming store for new code)
+  // Kept for backward compatibility
+  streamingMessages: Record<string, StreamingMessage>;
   startStreamingMessage: (sessionId: string, agentId: string, messageId: string) => void;
   appendStreamingToken: (messageId: string, token: string) => void;
   appendThinkingToken: (messageId: string, thinking: string) => void;
@@ -185,54 +124,19 @@ interface SessionState {
   getStreamingMessage: (messageId: string) => StreamingMessage | undefined;
 }
 
-// Helper to get file extension language
-function getLanguageFromPath(path: string): string {
-  const ext = path.split('.').pop()?.toLowerCase() || '';
-  const languageMap: Record<string, string> = {
-    ts: 'typescript',
-    tsx: 'typescript',
-    js: 'javascript',
-    jsx: 'javascript',
-    py: 'python',
-    rs: 'rust',
-    go: 'go',
-    rb: 'ruby',
-    java: 'java',
-    kt: 'kotlin',
-    swift: 'swift',
-    c: 'c',
-    cpp: 'cpp',
-    h: 'c',
-    hpp: 'cpp',
-    cs: 'csharp',
-    php: 'php',
-    html: 'html',
-    css: 'css',
-    scss: 'scss',
-    less: 'less',
-    json: 'json',
-    yaml: 'yaml',
-    yml: 'yaml',
-    xml: 'xml',
-    md: 'markdown',
-    sql: 'sql',
-    sh: 'shell',
-    bash: 'shell',
-    zsh: 'shell',
-  };
-  return languageMap[ext] || 'plaintext';
-}
-
-// Maximum number of messages to keep per agent to prevent localStorage overflow
-const MAX_MESSAGES_PER_AGENT = 100;
-// Maximum number of recent files to keep
-const MAX_RECENT_FILES = 50;
+// ============================================================================
+// Store Implementation
+// ============================================================================
 
 const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
   sessions: {},
   currentSessionId: null,
   recentFiles: [],
   streamingMessages: {},
+
+  // ========================================================================
+  // Session Actions
+  // ========================================================================
 
   createSession: (session) =>
     set((state) => ({
@@ -250,6 +154,10 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
     }),
 
   setCurrentSession: (sessionId) => set({ currentSessionId: sessionId }),
+
+  // ========================================================================
+  // Agent Actions
+  // ========================================================================
 
   addAgent: (sessionId, agent) =>
     set((state) => {
@@ -309,6 +217,10 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
       };
     }),
 
+  // ========================================================================
+  // Message Actions (with deduplication)
+  // ========================================================================
+
   addAgentMessage: (sessionId, agentId, message) =>
     set((state) => {
       const session = state.sessions[sessionId];
@@ -327,7 +239,7 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
               }
 
               // Deduplication: for user messages with temp IDs (optimistic updates),
-              // check if a real message with same content already exists (race condition fix)
+              // check if a real message with same content already exists
               if (message.role === 'user' && message.id.startsWith('temp-')) {
                 const existingRealMessage = a.messages.find(
                   (m) =>
@@ -357,13 +269,12 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
               }
 
               // Deduplication: for assistant messages, check by content
-              // (streaming messages finalized and then agent_message arrives)
               if (message.role === 'assistant') {
                 const existingByContent = a.messages.find(
                   (m) => m.role === 'assistant' && m.content === message.content
                 );
                 if (existingByContent) {
-                  // Update the ID to the real one if different (for audio playback to work)
+                  // Update the ID to the real one if different
                   if (existingByContent.id !== message.id) {
                     return {
                       ...a,
@@ -372,7 +283,7 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
                       ),
                     };
                   }
-                  return a; // Same content already exists, don't add duplicate
+                  return a; // Same content already exists
                 }
               }
 
@@ -431,6 +342,10 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
       };
     }),
 
+  // ========================================================================
+  // Agent Position/Grid Actions
+  // ========================================================================
+
   updateAgentPosition: (sessionId, agentId, position) =>
     set((state) => {
       const session = state.sessions[sessionId];
@@ -484,6 +399,10 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
         },
       };
     }),
+
+  // ========================================================================
+  // File Preview Actions
+  // ========================================================================
 
   openFilePreview: (sessionId, pathOrPreview) =>
     set((state) => {
@@ -608,12 +527,74 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
       };
     }),
 
+  // ========================================================================
+  // Editor Grid Card Actions
+  // ========================================================================
+
+  createEditorGridCard: (sessionId) => {
+    const id = `editor-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            editorGridCardId: id,
+            editorGridSpan: { colSpan: 1, rowSpan: 1 },
+          },
+        },
+      };
+    });
+    return id;
+  },
+
+  removeEditorGridCard: (sessionId) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            editorGridCardId: null,
+            editorGridSpan: undefined,
+          },
+        },
+      };
+    }),
+
+  updateEditorGridSpan: (sessionId, gridSpan) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            editorGridSpan: gridSpan,
+          },
+        },
+      };
+    }),
+
+  // ========================================================================
+  // Recent Files Actions
+  // ========================================================================
+
   addRecentFile: (path) =>
     set((state) => ({
       recentFiles: [path, ...state.recentFiles.filter((p) => p !== path)].slice(0, 20),
     })),
 
   clearRecentFiles: () => set({ recentFiles: [] }),
+
+  // ========================================================================
+  // View Mode Actions
+  // ========================================================================
 
   setViewMode: (sessionId, mode) =>
     set((state) => {
@@ -626,6 +607,10 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
         },
       };
     }),
+
+  // ========================================================================
+  // Workspace Status Actions
+  // ========================================================================
 
   setWorkspaceStatus: (sessionId, status, standbyAt = null) =>
     set((state) => {
@@ -655,6 +640,10 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
       };
     }),
 
+  // ========================================================================
+  // Agent Mode Actions
+  // ========================================================================
+
   handleAutoModeSwitch: (sessionId, agentId, newMode, previousMode) =>
     set((state) => {
       const session = state.sessions[sessionId];
@@ -669,7 +658,6 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
                 ? {
                     ...a,
                     mode: newMode,
-                    // Store previous mode for auto-revert, or clear it if this is a revert
                     previousMode: previousMode ?? undefined,
                   }
                 : a
@@ -694,8 +682,15 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
       };
     }),
 
-  // Streaming message actions
-  startStreamingMessage: (sessionId, agentId, messageId) =>
+  // ========================================================================
+  // Streaming Message Actions
+  // Delegated to streaming store but kept here for backward compatibility
+  // ========================================================================
+
+  startStreamingMessage: (sessionId, agentId, messageId) => {
+    // Delegate to streaming store
+    useStreamingStore.getState().startStreamingMessage(sessionId, agentId, messageId);
+    // Update local state for backward compat
     set((state) => ({
       streamingMessages: {
         ...state.streamingMessages,
@@ -709,9 +704,13 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
           startedAt: new Date(),
         },
       },
-    })),
+    }));
+  },
 
-  appendStreamingToken: (messageId, token) =>
+  appendStreamingToken: (messageId, token) => {
+    // Delegate to streaming store
+    useStreamingStore.getState().appendStreamingToken(messageId, token);
+    // Update local state for backward compat
     set((state) => {
       const existing = state.streamingMessages[messageId];
       if (!existing) return state;
@@ -724,9 +723,13 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
           },
         },
       };
-    }),
+    });
+  },
 
-  appendThinkingToken: (messageId, thinking) =>
+  appendThinkingToken: (messageId, thinking) => {
+    // Delegate to streaming store
+    useStreamingStore.getState().appendThinkingToken(messageId, thinking);
+    // Update local state for backward compat
     set((state) => {
       const existing = state.streamingMessages[messageId];
       if (!existing) return state;
@@ -739,64 +742,63 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
           },
         },
       };
-    }),
+    });
+  },
 
-  finalizeStreamingMessage: (messageId, fullContent, toolCalls) =>
-    set((state) => {
-      const streaming = state.streamingMessages[messageId];
-      if (!streaming) return state;
+  finalizeStreamingMessage: (messageId, fullContent, toolCalls) => {
+    const state = get();
+    const streaming = state.streamingMessages[messageId];
+    if (!streaming) return;
 
-      // Remove from streaming messages
-      const { [messageId]: _removed, ...remainingStreaming } = state.streamingMessages;
+    // Complete in streaming store
+    useStreamingStore.getState().completeStreaming(messageId, fullContent, toolCalls);
 
-      // Add as a completed message to the agent
-      const session = state.sessions[streaming.sessionId];
-      if (!session) {
-        return { streamingMessages: remainingStreaming };
-      }
+    // Remove from streaming messages
+    const { [messageId]: _removed, ...remainingStreaming } = state.streamingMessages;
 
-      const newMessage: AgentMessage = {
-        id: messageId,
-        role: 'assistant',
-        content: fullContent,
-        thinking: streaming.thinkingContent || undefined, // Include thinking if present
-        timestamp: new Date(),
-        toolCalls: toolCalls, // Include tool calls from streaming
-      };
+    // Add as a completed message to the agent
+    const session = state.sessions[streaming.sessionId];
+    if (!session) {
+      set({ streamingMessages: remainingStreaming });
+      return;
+    }
 
-      return {
-        streamingMessages: remainingStreaming,
-        sessions: {
-          ...state.sessions,
-          [streaming.sessionId]: {
-            ...session,
-            agents: session.agents.map((a) => {
-              if (a.id !== streaming.agentId) return a;
-              // Add message and enforce limit
-              const newMessages = [...a.messages, newMessage];
-              const limitedMessages =
-                newMessages.length > MAX_MESSAGES_PER_AGENT
-                  ? newMessages.slice(-MAX_MESSAGES_PER_AGENT)
-                  : newMessages;
-              return { ...a, messages: limitedMessages };
-            }),
-          },
+    const newMessage: AgentMessage = {
+      id: messageId,
+      role: 'assistant',
+      content: fullContent,
+      thinking: streaming.thinkingContent || undefined,
+      timestamp: new Date(),
+      toolCalls: toolCalls,
+    };
+
+    set({
+      streamingMessages: remainingStreaming,
+      sessions: {
+        ...state.sessions,
+        [streaming.sessionId]: {
+          ...session,
+          agents: session.agents.map((a) => {
+            if (a.id !== streaming.agentId) return a;
+            // Add message and enforce limit
+            const newMessages = [...a.messages, newMessage];
+            const limitedMessages =
+              newMessages.length > MAX_MESSAGES_PER_AGENT
+                ? newMessages.slice(-MAX_MESSAGES_PER_AGENT)
+                : newMessages;
+            return { ...a, messages: limitedMessages };
+          }),
         },
-      };
-    }),
+      },
+    });
+  },
 
   getStreamingMessage: (messageId) => get().streamingMessages[messageId],
 });
 
-// Debounced storage adapter to prevent excessive localStorage writes
-// Uses requestIdleCallback when available for better performance
-// Compatible with Zustand's persist middleware StorageValue format
-type StorageValue<T> = { state: T; version?: number };
-type PersistStorage<T> = {
-  getItem: (name: string) => StorageValue<T> | null | Promise<StorageValue<T> | null>;
-  setItem: (name: string, value: StorageValue<T>) => void | Promise<void>;
-  removeItem: (name: string) => void | Promise<void>;
-};
+// ============================================================================
+// Persistence Configuration
+// ============================================================================
 
 type PartializedSessionState = {
   currentSessionId: string | null;
@@ -804,124 +806,10 @@ type PartializedSessionState = {
   recentFiles: string[];
 };
 
-const createDebouncedStorage = (
-  debounceMs: number = 1000
-): PersistStorage<PartializedSessionState> => {
-  let pendingWrite: string | null = null;
-  let writeTimeout: ReturnType<typeof setTimeout> | null = null;
-  let lastWriteTime = 0;
-
-  const scheduleWrite = (key: string, value: string) => {
-    pendingWrite = value;
-
-    // Clear any existing timeout
-    if (writeTimeout) {
-      clearTimeout(writeTimeout);
-    }
-
-    // Calculate time since last write
-    const timeSinceLastWrite = Date.now() - lastWriteTime;
-
-    // If it's been long enough, write immediately using idle callback
-    if (timeSinceLastWrite >= debounceMs) {
-      const doWrite = () => {
-        if (pendingWrite !== null) {
-          // Check quota before writing
-          if (isCriticallyFull()) {
-            console.warn('localStorage critically full, attempting cleanup...');
-            // Try to cleanup old session data to make room
-            const cleaned = cleanupByPrefix('podex-sessions', 5);
-            if (cleaned > 0) {
-              console.info(`Cleaned up ${cleaned} old session entries`);
-            }
-          }
-
-          try {
-            localStorage.setItem(key, pendingWrite);
-            lastWriteTime = Date.now();
-          } catch (e) {
-            console.warn('Failed to persist session state:', e);
-            // If write failed due to quota, try cleanup and retry once
-            if (e instanceof Error && e.name === 'QuotaExceededError') {
-              cleanupByPrefix('podex-sessions', 3);
-              try {
-                localStorage.setItem(key, pendingWrite);
-                lastWriteTime = Date.now();
-              } catch {
-                console.error('Failed to persist session state even after cleanup');
-              }
-            }
-          }
-          pendingWrite = null;
-        }
-      };
-
-      // Use requestIdleCallback if available for non-blocking writes
-      if (typeof requestIdleCallback !== 'undefined') {
-        requestIdleCallback(doWrite, { timeout: 100 });
-      } else {
-        doWrite();
-      }
-    } else {
-      // Otherwise, schedule a debounced write
-      writeTimeout = setTimeout(() => {
-        if (pendingWrite !== null) {
-          // Check quota before writing
-          if (isNearQuota(0.9)) {
-            console.warn('localStorage near quota, cleaning up old sessions...');
-            cleanupByPrefix('podex-sessions', 5);
-          }
-
-          try {
-            localStorage.setItem(key, pendingWrite);
-            lastWriteTime = Date.now();
-          } catch (e) {
-            console.warn('Failed to persist session state:', e);
-          }
-          pendingWrite = null;
-        }
-        writeTimeout = null;
-      }, debounceMs - timeSinceLastWrite);
-    }
-  };
-
-  return {
-    getItem: (name: string): StorageValue<PartializedSessionState> | null => {
-      try {
-        const value = localStorage.getItem(name);
-        if (!value) return null;
-        return JSON.parse(value) as StorageValue<PartializedSessionState>;
-      } catch {
-        return null;
-      }
-    },
-    setItem: (name: string, value: StorageValue<PartializedSessionState>): void => {
-      try {
-        scheduleWrite(name, JSON.stringify(value));
-      } catch {
-        // Ignore serialization errors
-      }
-    },
-    removeItem: (name: string): void => {
-      // Immediate removal
-      if (writeTimeout) {
-        clearTimeout(writeTimeout);
-        writeTimeout = null;
-      }
-      pendingWrite = null;
-      try {
-        localStorage.removeItem(name);
-      } catch {
-        // Ignore removal errors
-      }
-    },
-  };
-};
-
 const persistedSessionStore = persist(sessionStoreCreator, {
   name: 'podex-sessions',
   // Use debounced storage to prevent excessive writes during rapid updates
-  storage: createDebouncedStorage(1000),
+  storage: createDebouncedStorage<PartializedSessionState>('podex-sessions', 1000),
   partialize: (state) => ({
     currentSessionId: state.currentSessionId,
     // Limit persisted data to prevent localStorage overflow
@@ -946,6 +834,10 @@ const persistedSessionStore = persist(sessionStoreCreator, {
     recentFiles: state.recentFiles.slice(0, MAX_RECENT_FILES),
   }),
 });
+
+// ============================================================================
+// Export Store
+// ============================================================================
 
 // Only enable devtools in development to prevent exposing message data in production
 export const useSessionStore = create<SessionState>()(

@@ -3,6 +3,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import {
   Bot,
+  Bug,
   FileCode,
   FolderTree,
   GitBranch,
@@ -28,6 +29,7 @@ import { ExtensionsPanel } from './ExtensionsPanel';
 import { SearchPanel } from './SearchPanel';
 import { DiagnosticsSidebarPanel } from './DiagnosticsSidebarPanel';
 import { UsageSidebarPanel } from './UsageSidebarPanel';
+import { SentryPanel } from './SentryPanel';
 
 interface SidebarContainerProps {
   side: SidebarSide;
@@ -44,16 +46,17 @@ const panelConfig: Record<PanelId, { icon: typeof Bot; label: string }> = {
   search: { icon: Search, label: 'Search' },
   problems: { icon: AlertTriangle, label: 'Problems' },
   usage: { icon: BarChart3, label: 'Usage' },
+  sentry: { icon: Bug, label: 'Sentry' },
 };
 
 // Left sidebar: traditional coding tools
 const leftPanelIds: PanelId[] = ['files', 'search', 'git', 'problems'];
 
 // Right sidebar: AI-related and utility panels
-const rightPanelIds: PanelId[] = ['agents', 'mcp', 'extensions', 'usage', 'preview'];
+const rightPanelIds: PanelId[] = ['agents', 'mcp', 'sentry', 'extensions', 'usage', 'preview'];
 
 // Panels that show badge counts
-const badgePanelIds: PanelId[] = ['agents', 'mcp', 'problems'];
+const badgePanelIds: PanelId[] = ['agents', 'mcp', 'problems', 'sentry'];
 
 function SidebarBadge({ count }: { count: number | undefined }) {
   if (!count || count <= 0) return null;
@@ -150,6 +153,8 @@ function SidebarPanel({ panelId, sessionId }: SidebarPanelProps) {
             <p className="mt-2 text-xs">Open preview from the header menu.</p>
           </div>
         );
+      case 'sentry':
+        return <SentryPanel sessionId={sessionId} />;
       default:
         return null;
     }

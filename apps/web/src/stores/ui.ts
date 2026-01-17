@@ -15,7 +15,8 @@ export type PanelId =
   | 'extensions'
   | 'search'
   | 'problems'
-  | 'usage';
+  | 'usage'
+  | 'sentry';
 export type SidebarSide = 'left' | 'right';
 
 export interface PanelSlot {
@@ -152,6 +153,11 @@ interface UIState {
   mobileOpenFile: { path: string; content: string; language: string } | null;
   openMobileFile: (path: string, content: string, language: string) => void;
   closeMobileFile: () => void;
+
+  // Mobile file actions (quick actions sheet)
+  mobileFileActionsTarget: { path: string; name: string; type: 'file' | 'directory' } | null;
+  openMobileFileActions: (path: string, name: string, type: 'file' | 'directory') => void;
+  closeMobileFileActions: () => void;
 
   // Reduced motion preference
   prefersReducedMotion: boolean;
@@ -534,6 +540,12 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
   mobileOpenFile: null,
   openMobileFile: (path, content, language) => set({ mobileOpenFile: { path, content, language } }),
   closeMobileFile: () => set({ mobileOpenFile: null }),
+
+  // Mobile file actions (quick actions sheet)
+  mobileFileActionsTarget: null,
+  openMobileFileActions: (path, name, type) =>
+    set({ mobileFileActionsTarget: { path, name, type } }),
+  closeMobileFileActions: () => set({ mobileFileActionsTarget: null }),
 
   // Reduced motion preference
   prefersReducedMotion: false,

@@ -108,7 +108,7 @@ const osVersions = [
   { value: 'ubuntu-22.04', label: 'Ubuntu 22.04 LTS' },
   { value: 'ubuntu-24.04', label: 'Ubuntu 24.04 LTS' },
   { value: 'debian-12', label: 'Debian 12' },
-  { value: 'amazon-linux-2023', label: 'Amazon Linux 2023' },
+  { value: 'rocky-linux-9', label: 'Rocky Linux 9' },
 ];
 
 // Compute target type

@@ -240,7 +240,7 @@ _subscriber: StreamSubscriber | None = None
 
 def get_stream_subscriber() -> StreamSubscriber:
     """Get or create the singleton StreamSubscriber instance."""
-    global _subscriber  # noqa: PLW0603
+    global _subscriber
     if _subscriber is None:
         _subscriber = StreamSubscriber()
     return _subscriber

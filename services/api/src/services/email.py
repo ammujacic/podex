@@ -1,22 +1,27 @@
-"""Transactional email service using Amazon SES.
+"""Transactional email service with pluggable backends.
 
 This module provides a comprehensive email service with:
 - Beautiful, responsive HTML templates matching the Podex design system
 - Plain text fallbacks for all emails
-- Rate limiting and retry logic
+- Multiple backend support (console, SMTP)
 - Email tracking and logging
 - Template rendering with Jinja2-style variables
+
+Backends:
+- console: Logs emails to console (development)
+- smtp: Uses standard SMTP (production - works with any SMTP relay)
 """
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from enum import Enum
 from functools import lru_cache
 from typing import Any
+from uuid import uuid4
 
-import aioboto3
 import structlog
-from botocore.exceptions import ClientError
 
 from src.config import settings
 
@@ -28,8 +33,8 @@ class EmailTemplate(str, Enum):
 
     WELCOME = "welcome"
     EMAIL_VERIFICATION = "email_verification"
-    PASSWORD_RESET = "pw_reset"  # noqa: S105 - not a password
-    PASSWORD_CHANGED = "pw_changed"  # noqa: S105 - not a password
+    PASSWORD_RESET = "pw_reset"
+    PASSWORD_CHANGED = "pw_changed"
     SUBSCRIPTION_CREATED = "subscription_created"
     SUBSCRIPTION_CANCELED = "subscription_canceled"
     SUBSCRIPTION_RENEWED = "subscription_renewed"
@@ -54,13 +59,18 @@ class EmailResult:
 
 
 class EmailService:
-    """Service for sending transactional emails via Amazon SES."""
+    """Service for sending transactional emails with pluggable backends.
+
+    Supported backends (via EMAIL_BACKEND setting):
+    - console: Logs emails to console (development)
+    - smtp: Uses standard SMTP (production)
+    """
 
     def __init__(self) -> None:
         """Initialize the email service."""
-        self._session = aioboto3.Session()
         self._from_email = settings.EMAIL_FROM_ADDRESS
         self._from_name = settings.EMAIL_FROM_NAME
+        self._backend = getattr(settings, "EMAIL_BACKEND", "console")
 
     async def send_email(
         self,
@@ -91,46 +101,104 @@ class EmailService:
         # Build from address
         from_address = f"{self._from_name} <{self._from_email}>"
 
-        # Build destination
-        destination: dict[str, list[str]] = {"ToAddresses": [to_email]}
-        if cc:
-            destination["CcAddresses"] = cc
-        if bcc:
-            destination["BccAddresses"] = bcc
+        # Route to appropriate backend
+        if self._backend == "console":
+            return await self._send_console(
+                to_email, subject, html_body, text_body, template, cc, bcc
+            )
+        if self._backend == "smtp":
+            return await self._send_smtp(
+                to_email, from_address, subject, html_body, text_body, template, cc, bcc
+            )
+        logger.warning("Unknown email backend: %s, using console", self._backend)
+        return await self._send_console(to_email, subject, html_body, text_body, template, cc, bcc)
+
+    async def _send_console(
+        self,
+        to_email: str,
+        subject: str,
+        html_body: str,  # noqa: ARG002
+        text_body: str,
+        template: EmailTemplate,
+        cc: list[str] | None,
+        bcc: list[str] | None,
+    ) -> EmailResult:
+        """Log email to console (development backend)."""
+        message_id = f"console-{uuid4().hex[:12]}"
+
+        logger.info(
+            "Email sent (console backend)",
+            to=to_email,
+            cc=cc,
+            bcc=bcc,
+            subject=subject,
+            template=template.value,
+            message_id=message_id,
+            body_preview=text_body[:200] + "..." if len(text_body) > 200 else text_body,
+        )
+
+        return EmailResult(success=True, message_id=message_id)
+
+    async def _send_smtp(
+        self,
+        to_email: str,
+        from_address: str,
+        subject: str,
+        html_body: str,
+        text_body: str,
+        template: EmailTemplate,
+        cc: list[str] | None,
+        bcc: list[str] | None,
+    ) -> EmailResult:
+        """Send email via SMTP."""
+        import smtplib  # noqa: PLC0415
 
         try:
-            async with self._session.client(
-                "ses",
-                region_name=settings.AWS_REGION,
-                endpoint_url=settings.AWS_ENDPOINT,
-            ) as ses:
-                response = await ses.send_email(
-                    Source=from_address,
-                    Destination=destination,
-                    Message={
-                        "Subject": {"Data": subject, "Charset": "UTF-8"},
-                        "Body": {
-                            "Html": {"Data": html_body, "Charset": "UTF-8"},
-                            "Text": {"Data": text_body, "Charset": "UTF-8"},
-                        },
-                    },
-                    Tags=[
-                        {"Name": "template", "Value": template.value},
-                        {"Name": "environment", "Value": settings.ENVIRONMENT},
-                    ],
-                )
+            # Build MIME message
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = from_address
+            msg["To"] = to_email
+            if cc:
+                msg["Cc"] = ", ".join(cc)
 
-                message_id = response["MessageId"]
-                logger.info(
-                    "Email sent successfully",
-                    to=to_email,
-                    template=template.value,
-                    message_id=message_id,
-                )
+            # Attach plain text and HTML parts
+            msg.attach(MIMEText(text_body, "plain", "utf-8"))
+            msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-                return EmailResult(success=True, message_id=message_id)
+            # Build recipient list
+            recipients = [to_email]
+            if cc:
+                recipients.extend(cc)
+            if bcc:
+                recipients.extend(bcc)
 
-        except ClientError as e:
+            # Get SMTP settings
+            smtp_host = getattr(settings, "SMTP_HOST", "localhost")
+            smtp_port = getattr(settings, "SMTP_PORT", 587)
+            smtp_user = getattr(settings, "SMTP_USER", None)
+            smtp_password = getattr(settings, "SMTP_PASSWORD", None)
+            smtp_use_tls = getattr(settings, "SMTP_USE_TLS", True)
+
+            # Send via SMTP
+            with smtplib.SMTP(smtp_host, smtp_port) as server:
+                if smtp_use_tls:
+                    server.starttls()
+                if smtp_user and smtp_password:
+                    server.login(smtp_user, smtp_password)
+                server.sendmail(from_address, recipients, msg.as_string())
+
+            message_id = f"smtp-{uuid4().hex[:12]}"
+            logger.info(
+                "Email sent successfully",
+                to=to_email,
+                template=template.value,
+                message_id=message_id,
+            )
+
+            return EmailResult(success=True, message_id=message_id)
+
+        except Exception as e:
             error_msg = str(e)
             logger.exception(
                 "Failed to send email",

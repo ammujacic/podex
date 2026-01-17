@@ -1,9 +1,7 @@
 """Comprehensive tests for workspace models."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
-
-import pytest
 
 from podex_shared.models.workspace import (
     HARDWARE_SPECS,
@@ -94,9 +92,9 @@ class TestAcceleratorType:
         assert AcceleratorType.T4G == "t4g"
 
     def test_ml_accelerators(self) -> None:
-        """Test AWS ML accelerator values."""
-        assert AcceleratorType.INFERENTIA2 == "inferentia2"
-        assert AcceleratorType.TRAINIUM == "trainium"
+        """Test TPU ML accelerator values."""
+        assert AcceleratorType.TPU_V4 == "tpu_v4"
+        assert AcceleratorType.TPU_V5 == "tpu_v5"
 
     def test_gpu_type_alias(self) -> None:
         """Test GPUType is an alias for AcceleratorType."""
@@ -300,7 +298,7 @@ class TestHardwareSpecsDict:
         """Test ML Inference spec."""
         spec = HARDWARE_SPECS.get(WorkspaceTier.ML_INFERENCE)
         assert spec is not None
-        assert spec.gpu_type == AcceleratorType.INFERENTIA2
+        assert spec.gpu_type == AcceleratorType.TPU_V4
 
     def test_all_tiers_have_specs(self) -> None:
         """Test that all tiers have hardware specs."""
@@ -380,7 +378,7 @@ class TestWorkspaceInfo:
 
     def test_workspace_info(self) -> None:
         """Test creating WorkspaceInfo."""
-        now = datetime.utcnow()
+        now = datetime.now()
         info = WorkspaceInfo(
             id="ws-123",
             user_id="user-456",

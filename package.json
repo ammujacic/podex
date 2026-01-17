@@ -8,13 +8,17 @@
       "allowedVersions": {
         "react": "19",
         "react-dom": "19"
-      }
+      },
+      "allowAny": [
+        "monaco-editor"
+      ]
     },
     "onlyBuiltDependencies": [
       "@sentry/cli"
     ],
     "overrides": {
-      "esbuild@<=0.24.2": ">=0.25.0"
+      "esbuild@<=0.24.2": ">=0.25.0",
+      "monaco-editor": "npm:@codingame/monaco-vscode-editor-api@^25.0.0"
     }
   },
   "scripts": {

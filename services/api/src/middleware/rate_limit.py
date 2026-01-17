@@ -125,10 +125,32 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         """Apply rate limiting to requests."""
-        # Skip rate limiting for health checks and WebSocket upgrade
+        # Skip rate limiting for health checks only
         path = request.url.path
-        if path == "/health" or request.headers.get("upgrade") == "websocket":
+        if path == "/health":
             return await call_next(request)
+
+        # SECURITY: Apply rate limiting to WebSocket upgrades to prevent connection flooding
+        # WebSocket connections consume server resources and should be rate limited
+        if request.headers.get("upgrade") == "websocket":
+            # Apply WebSocket-specific rate limit
+            client_key = get_client_identifier(request)
+            is_allowed = await check_websocket_rate_limit(client_key)
+            if not is_allowed:
+                logger.warning(
+                    "WebSocket rate limit exceeded",
+                    client=client_key,
+                    path=path,
+                )
+                return Response(
+                    content="WebSocket rate limit exceeded. Too many connection attempts.",
+                    status_code=429,
+                    headers={
+                        "Retry-After": "60",
+                        "X-RateLimit-Limit": "60",
+                        "X-RateLimit-Remaining": "0",
+                    },
+                )
 
         # Apply default rate limit via limiter
         # Note: Routes with @limiter.limit() will use their own limits
@@ -186,6 +208,9 @@ async def store_oauth_state(state: str, provider: str) -> None:
 async def validate_oauth_state(state: str, expected_provider: str) -> bool:
     """Validate OAuth state from Redis (one-time use).
 
+    SECURITY: Implements fail-closed behavior - if Redis is unavailable,
+    OAuth state validation fails to prevent replay attacks.
+
     Args:
         state: The state token to validate
         expected_provider: Expected OAuth provider (github, google)
@@ -193,27 +218,39 @@ async def validate_oauth_state(state: str, expected_provider: str) -> bool:
     Returns:
         True if state is valid and matches provider, False otherwise
     """
-    client = await get_redis_client()
-    key = f"{OAUTH_STATE_PREFIX}{state}"
+    try:
+        client = await get_redis_client()
+        key = f"{OAUTH_STATE_PREFIX}{state}"
 
-    # Get and delete atomically to prevent reuse
-    provider = await client.getdel(key)
+        # Get and delete atomically to prevent reuse
+        provider = await client.getdel(key)
 
-    if provider is None:
-        logger.warning("OAuth state not found or expired", state=state[:8])
-        return False
+        if provider is None:
+            logger.warning("OAuth state not found or expired", state=state[:8])
+            return False
 
-    if provider != expected_provider:
-        logger.warning(
-            "OAuth state provider mismatch",
+        if provider != expected_provider:
+            logger.warning(
+                "OAuth state provider mismatch",
+                state=state[:8],
+                expected=expected_provider,
+                actual=provider,
+            )
+            return False
+
+        logger.debug("OAuth state validated", state=state[:8], provider=provider)
+
+    except Exception as e:
+        # SECURITY: Fail-closed - reject OAuth if Redis is unavailable
+        # This prevents potential replay attacks when state can't be verified
+        logger.exception(
+            "OAuth state validation failed due to Redis error - rejecting (fail-closed)",
             state=state[:8],
-            expected=expected_provider,
-            actual=provider,
+            error=str(e),
         )
         return False
-
-    logger.debug("OAuth state validated", state=state[:8], provider=provider)
-    return True
+    else:
+        return True
 
 
 # ============================================================================
@@ -222,6 +259,11 @@ async def validate_oauth_state(state: str, expected_provider: str) -> bool:
 
 AUTH_RATE_LIMIT_PREFIX = "podex:ratelimit:auth:"
 AUTH_RATE_LIMIT_WINDOW = 300  # 5 minutes
+
+# WebSocket rate limiting
+WEBSOCKET_RATE_LIMIT_PREFIX = "podex:ratelimit:ws:"
+WEBSOCKET_RATE_LIMIT_WINDOW = 60  # 1 minute
+WEBSOCKET_RATE_LIMIT_MAX = 60  # Max 60 WebSocket connections per minute per client
 
 
 async def check_auth_rate_limit(
@@ -260,3 +302,48 @@ async def check_auth_rate_limit(
         return False
 
     return True
+
+
+async def check_websocket_rate_limit(client_key: str) -> bool:
+    """Check if WebSocket rate limit is exceeded.
+
+    SECURITY: Rate limits WebSocket connection attempts to prevent:
+    - Connection flooding (resource exhaustion)
+    - DoS attacks via WebSocket handshakes
+
+    Args:
+        client_key: Unique client identifier (user:id or ip:address).
+
+    Returns:
+        True if connection is allowed, False if rate limited.
+    """
+    try:
+        client = await get_redis_client()
+        redis_key = f"{WEBSOCKET_RATE_LIMIT_PREFIX}{client_key}"
+
+        # Use Redis pipeline for atomic increment + expire
+        pipe = client.pipeline()
+        pipe.incr(redis_key)
+        pipe.expire(redis_key, WEBSOCKET_RATE_LIMIT_WINDOW)
+        results = await pipe.execute()
+
+        current_count = results[0]
+
+        if current_count > WEBSOCKET_RATE_LIMIT_MAX:
+            logger.warning(
+                "WebSocket rate limit exceeded",
+                key=client_key,
+                count=current_count,
+                limit=WEBSOCKET_RATE_LIMIT_MAX,
+            )
+            return False
+        return True
+    except Exception as e:
+        # SECURITY: Fail closed - deny connection when Redis unavailable
+        # WebSocket connections are expensive resources and could be used for DoS
+        # Legitimate users can retry; attackers shouldn't bypass rate limits
+        logger.exception(
+            "WebSocket rate limit check failed - rejecting (fail-closed)",
+            error=str(e),
+        )
+        return False

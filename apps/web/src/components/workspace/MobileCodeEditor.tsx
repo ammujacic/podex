@@ -180,7 +180,8 @@ export function MobileCodeEditor({
     return () => {
       view.destroy();
     };
-  }, []); // Only create editor once
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Editor instance created once; value updates handled by separate effect
+  }, []);
 
   // Update content when value changes externally
   useEffect(() => {

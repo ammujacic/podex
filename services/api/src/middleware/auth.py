@@ -9,7 +9,7 @@ from sqlalchemy import select
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.config import settings
-from src.database.connection import get_db
+from src.database.connection import async_session_factory
 from src.database.models import User
 from src.routes.auth import COOKIE_ACCESS_TOKEN
 
@@ -24,9 +24,13 @@ PUBLIC_PATHS: list[tuple[str, bool]] = [
     ("/api/openapi.json", False),
     ("/api/auth/login", False),
     ("/api/auth/register", False),
+    ("/api/auth/signup", False),
     ("/api/auth/refresh", False),
     ("/api/auth/logout", False),  # Allow logout without valid token
     ("/api/auth/password/check", False),  # Public password strength check
+    ("/api/billing/plans", True),  # Public subscription plans
+    ("/api/billing/hardware-specs", True),  # Public hardware specs
+    ("/api/agent-templates", True),  # Public agent templates
     ("/api/oauth/github", True),  # OAuth callbacks have query params
     ("/api/oauth/google", True),
     ("/api/preview", True),  # Preview endpoints have subpaths
@@ -58,7 +62,7 @@ def _is_public_path(request_path: str) -> bool:
 class AuthMiddleware(BaseHTTPMiddleware):
     """JWT authentication middleware."""
 
-    async def dispatch(  # noqa: PLR0911
+    async def dispatch(
         self,
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
@@ -81,7 +85,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             auth_header = request.headers.get("Authorization")
             if auth_header and auth_header.startswith("Bearer "):
                 parts = auth_header.split(" ")
-                if len(parts) == 2:  # noqa: PLR2004
+                if len(parts) == 2:
                     token = parts[1]
 
         if not token:
@@ -108,46 +112,66 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     media_type="application/json",
                 )
 
-            # Verify user exists in database
-            async for db in get_db():
-                try:
-                    result = await db.execute(select(User).where(User.id == user_id))
-                    user = result.scalar_one_or_none()
+            # SECURITY: Require jti claim for token revocation support
+            # Tokens without jti cannot be individually revoked, making them a security risk
+            token_jti = payload.get("jti")
+            if not token_jti:
+                logger.warning("Token missing jti claim - cannot be revoked", user_id=user_id)
+                return Response(
+                    content='{"detail": "Invalid token format"}',
+                    status_code=401,
+                    media_type="application/json",
+                )
 
-                    if not user:
-                        logger.warning(
-                            "User not found in database",
-                            user_id=user_id,
-                        )
-                        return Response(
-                            content='{"detail": "Invalid token - user not found"}',
-                            status_code=401,
-                            media_type="application/json",
-                        )
+            # Check if token has been revoked (e.g., after password change or logout)
+            from src.services.token_blacklist import is_token_revoked
 
-                    # Check if user account is active
-                    if not user.is_active:
-                        logger.warning(
-                            "Deactivated user attempted access",
-                            user_id=user_id,
-                        )
-                        return Response(
-                            content='{"detail": "Account deactivated. Please contact support."}',
-                            status_code=403,
-                            media_type="application/json",
-                        )
+            if await is_token_revoked(token_jti):
+                logger.warning("Revoked token used", user_id=user_id, jti=token_jti)
+                return Response(
+                    content='{"detail": "Token has been revoked"}',
+                    status_code=401,
+                    media_type="application/json",
+                )
 
-                    # Add user info to request state
-                    request.state.user_id = user_id
+            # Verify user exists in database using proper async context manager
+            async with async_session_factory() as db:
+                result = await db.execute(select(User).where(User.id == user_id))
+                user = result.scalar_one_or_none()
 
-                    # Validate and set user role (defense in depth - don't trust JWT role blindly)
-                    jwt_role = payload.get("role", "member")
-                    valid_roles = {"member", "admin", "super_admin"}
-                    request.state.user_role = jwt_role if jwt_role in valid_roles else "member"
-                    break
-                finally:
-                    # Clean up database session
-                    await db.close()
+                if not user:
+                    logger.warning(
+                        "User not found in database",
+                        user_id=user_id,
+                    )
+                    return Response(
+                        content='{"detail": "Invalid token - user not found"}',
+                        status_code=401,
+                        media_type="application/json",
+                    )
+
+                # Check if user account is active
+                if not user.is_active:
+                    logger.warning(
+                        "Deactivated user attempted access",
+                        user_id=user_id,
+                    )
+                    return Response(
+                        content='{"detail": "Account deactivated. Please contact support."}',
+                        status_code=403,
+                        media_type="application/json",
+                    )
+
+                # Add user info to request state
+                request.state.user_id = user_id
+                # SECURITY: Add email for admin bypass checks (ADMIN_SUPER_USER_EMAILS)
+                request.state.user_email = user.email
+
+                # SECURITY: Always use the role from database, not from JWT
+                # This ensures role changes take effect immediately
+                valid_roles = {"member", "admin", "super_admin"}
+                db_role = getattr(user, "role", "member") or "member"
+                request.state.user_role = db_role if db_role in valid_roles else "member"
 
         except JWTError as e:
             logger.warning("JWT validation failed", error=str(e))

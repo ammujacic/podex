@@ -302,7 +302,7 @@ async def _link_or_create_user(db: AsyncSession, user_info: OAuthUserInfo) -> Us
         free_plan = free_plan_result.scalar_one_or_none()
 
         if free_plan:
-            from datetime import UTC, datetime, timedelta  # noqa: PLC0415
+            from datetime import UTC, datetime, timedelta
 
             now = datetime.now(UTC)
             subscription = UserSubscription(
@@ -324,12 +324,12 @@ def _build_token_response(user: User) -> OAuthTokenResponse:
     # Get user role from database
     user_role = getattr(user, "role", "member") or "member"
 
-    access_token = create_access_token(user.id, role=user_role)
-    refresh_token = create_refresh_token(user.id)
+    access_token_info = create_access_token(user.id, role=user_role)
+    refresh_token_info = create_refresh_token(user.id)
 
     return OAuthTokenResponse(
-        access_token=access_token,
-        refresh_token=refresh_token,
+        access_token=access_token_info.token,
+        refresh_token=refresh_token_info.token,
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         user={
             "id": user.id,

@@ -10,6 +10,7 @@ import { ResizableGridCard } from './ResizableGridCard';
 import { ResizableTerminalCard } from './ResizableTerminalCard';
 import { TerminalAgentCell } from './TerminalAgentCell';
 import { DockedFilePreviewCard } from './DockedFilePreviewCard';
+import { EditorGridCard } from './EditorGridCard';
 import { GridProvider } from './GridContext';
 import { useUIStore } from '@/stores/ui';
 import { CodeEditor } from './CodeEditor';
@@ -161,6 +162,7 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
   const workspaceId = session?.workspaceId ?? '';
   const filePreviews = session?.filePreviews ?? [];
   const dockedPreviews = filePreviews.filter((p) => p.docked);
+  const editorGridCardId = session?.editorGridCardId;
 
   const handleAddAgent = () => {
     openModal('create-agent');
@@ -382,6 +384,16 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
               maxCols={2}
             />
           ))}
+
+          {/* Consolidated editor grid card */}
+          {editorGridCardId && (
+            <EditorGridCard
+              key={editorGridCardId}
+              sessionId={sessionId}
+              paneId="main"
+              maxCols={2}
+            />
+          )}
 
           {/* Add agent button */}
           <button

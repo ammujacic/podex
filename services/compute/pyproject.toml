@@ -84,6 +84,7 @@ module = [
     "podex_shared",
     "podex_shared.*",
     "sentry_sdk.*",
+    "google.*",
 ]
 ignore_missing_imports = true
 

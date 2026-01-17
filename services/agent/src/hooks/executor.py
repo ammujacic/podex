@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import shlex
 import time
 from typing import Any
 
@@ -12,6 +13,46 @@ from .registry import HookRegistry, get_hook_registry
 from .types import HookContext, HookDefinition, HookResult, HookType
 
 logger = structlog.get_logger()
+
+# SECURITY: Characters that are dangerous in shell commands
+_DANGEROUS_SHELL_PATTERNS = frozenset(
+    {
+        "&&",
+        "||",
+        ";",
+        "|",
+        "`",
+        "$(",
+        "${",
+        "<(",
+        ">(",
+        "\n",
+        "\r",
+        ">>",
+        "<<",
+        ">&",
+        "<&",
+        "\\n",
+        "\\r",
+    }
+)
+
+
+def _validate_hook_command(command: str) -> str | None:
+    """Validate hook command for shell injection patterns.
+
+    SECURITY: Prevents command injection by rejecting dangerous patterns.
+
+    Args:
+        command: The command string to validate.
+
+    Returns:
+        Error message if command is dangerous, None if safe.
+    """
+    for pattern in _DANGEROUS_SHELL_PATTERNS:
+        if pattern in command:
+            return f"Hook command contains forbidden pattern: {pattern!r}"
+    return None
 
 
 class HookExecutor:
@@ -188,9 +229,31 @@ class HookExecutor:
         return env
 
     async def _run_command(self, command: str, env: dict[str, str]) -> str:
-        """Run a shell command and return output."""
-        process = await asyncio.create_subprocess_shell(
-            command,
+        """Run a command safely and return output.
+
+        SECURITY: Uses create_subprocess_exec instead of create_subprocess_shell
+        to prevent command injection. Commands are parsed with shlex and validated
+        for dangerous patterns.
+        """
+        # SECURITY: Validate command for dangerous patterns
+        validation_error = _validate_hook_command(command)
+        if validation_error:
+            raise ValueError(validation_error)
+
+        # SECURITY: Parse command with shlex to get argument list
+        # This prevents shell injection by treating the command as a simple
+        # executable with arguments, not a shell script
+        try:
+            cmd_parts = shlex.split(command)
+        except ValueError as e:
+            raise ValueError(f"Invalid command syntax: {e}") from e
+
+        if not cmd_parts:
+            raise ValueError("Empty command")
+
+        # SECURITY: Use create_subprocess_exec instead of create_subprocess_shell
+        process = await asyncio.create_subprocess_exec(
+            *cmd_parts,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,

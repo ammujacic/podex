@@ -5,19 +5,19 @@ the compute service to execute Git commands in the workspace container.
 """
 
 import re
-from typing import Annotated, Any
+from typing import Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.compute_client import compute_client
 from src.database import Session as SessionModel
-from src.database import get_db
 from src.exceptions import ComputeClientError
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
+from src.routes.dependencies import DbSession, get_current_user_id
 from src.routes.sessions import ensure_workspace_provisioned
 
 logger = structlog.get_logger()
@@ -86,22 +86,6 @@ def validate_branch_name(branch: str | None) -> str | None:
         raise HTTPException(status_code=400, detail="Branch name cannot be '@'")
 
     return branch
-
-
-# Type alias for database session dependency
-DbSession = Annotated[AsyncSession, Depends(get_db)]
-
-
-def get_current_user_id(request: Request) -> str:
-    """Get current user ID from request state.
-
-    Raises:
-        HTTPException: If user is not authenticated.
-    """
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return str(user_id)
 
 
 class GitStatus(BaseModel):
@@ -236,10 +220,9 @@ async def get_git_status(
     try:
         result = await compute_client.git_status(workspace_id, user_id)
     except ComputeClientError as e:
-        logger.error(  # noqa: TRY400
+        logger.exception(
             "Failed to get git status from compute service",
             workspace_id=workspace_id,
-            error=str(e),
         )
         raise HTTPException(status_code=503, detail=f"Compute service unavailable: {e}") from e
     else:
@@ -260,10 +243,9 @@ async def get_branches(
     try:
         result = await compute_client.git_branches(workspace_id, user_id)
     except ComputeClientError as e:
-        logger.error(  # noqa: TRY400
+        logger.exception(
             "Failed to get git branches from compute service",
             workspace_id=workspace_id,
-            error=str(e),
         )
         raise HTTPException(status_code=503, detail=f"Compute service unavailable: {e}") from e
     else:
@@ -285,10 +267,9 @@ async def get_log(
     try:
         result = await compute_client.git_log(workspace_id, user_id, limit=limit)
     except ComputeClientError as e:
-        logger.error(  # noqa: TRY400
+        logger.exception(
             "Failed to get git log from compute service",
             workspace_id=workspace_id,
-            error=str(e),
         )
         raise HTTPException(status_code=503, detail=f"Compute service unavailable: {e}") from e
     else:
@@ -311,10 +292,9 @@ async def get_diff(
     try:
         result = await compute_client.git_diff(workspace_id, user_id, staged=staged)
     except ComputeClientError as e:
-        logger.error(  # noqa: TRY400
+        logger.exception(
             "Failed to get git diff from compute service",
             workspace_id=workspace_id,
-            error=str(e),
         )
         raise HTTPException(status_code=503, detail=f"Compute service unavailable: {e}") from e
     else:
@@ -336,11 +316,10 @@ async def stage_files(
     try:
         await compute_client.git_stage(workspace_id, user_id, data.files)
     except ComputeClientError as e:
-        logger.error(  # noqa: TRY400
+        logger.exception(
             "Failed to stage files",
             workspace_id=workspace_id,
             files=data.files,
-            error=str(e),
         )
         raise HTTPException(status_code=503, detail=f"Compute service unavailable: {e}") from e
     return {"message": f"Staged {len(data.files)} file(s)"}
@@ -361,11 +340,10 @@ async def unstage_files(
     try:
         await compute_client.git_unstage(workspace_id, user_id, data.files)
     except ComputeClientError as e:
-        logger.error(  # noqa: TRY400
+        logger.exception(
             "Failed to unstage files",
             workspace_id=workspace_id,
             files=data.files,
-            error=str(e),
         )
         raise HTTPException(status_code=503, detail=f"Compute service unavailable: {e}") from e
     return {"message": f"Unstaged {len(data.files)} file(s)"}
@@ -390,11 +368,10 @@ async def commit_changes(
 
         result = await compute_client.git_commit(workspace_id, user_id, data.message)
     except ComputeClientError as e:
-        logger.error(  # noqa: TRY400
+        logger.exception(
             "Failed to commit changes",
             workspace_id=workspace_id,
             message=data.message,
-            error=str(e),
         )
         raise HTTPException(status_code=503, detail=f"Compute service unavailable: {e}") from e
     return result
@@ -423,12 +400,11 @@ async def push_changes(
             branch=safe_branch,
         )
     except ComputeClientError as e:
-        logger.error(  # noqa: TRY400
+        logger.exception(
             "Failed to push changes",
             workspace_id=workspace_id,
             remote=data.remote,
             branch=data.branch,
-            error=str(e),
         )
         raise HTTPException(status_code=503, detail=f"Compute service unavailable: {e}") from e
     return result
@@ -457,12 +433,11 @@ async def pull_changes(
             branch=safe_branch,
         )
     except ComputeClientError as e:
-        logger.error(  # noqa: TRY400
+        logger.exception(
             "Failed to pull changes",
             workspace_id=workspace_id,
             remote=data.remote,
             branch=data.branch,
-            error=str(e),
         )
         raise HTTPException(status_code=503, detail=f"Compute service unavailable: {e}") from e
     return result
@@ -493,12 +468,156 @@ async def checkout_branch(
             create=data.create,
         )
     except ComputeClientError as e:
-        logger.error(  # noqa: TRY400
+        logger.exception(
             "Failed to checkout branch",
             workspace_id=workspace_id,
             branch=data.branch,
             create=data.create,
-            error=str(e),
         )
         raise HTTPException(status_code=503, detail=f"Compute service unavailable: {e}") from e
     return result
+
+
+# ==================== Branch Comparison ====================
+
+
+class BranchCompareCommit(BaseModel):
+    """A commit in a branch comparison."""
+
+    sha: str
+    message: str
+    author: str
+    date: str
+
+
+class BranchCompareFile(BaseModel):
+    """A file changed between branches."""
+
+    path: str
+    status: str  # added, modified, deleted, renamed
+
+
+class BranchCompareResponse(BaseModel):
+    """Response for branch comparison."""
+
+    base: str
+    compare: str
+    commits: list[BranchCompareCommit]
+    files: list[BranchCompareFile]
+    ahead: int
+    stat: str
+
+
+@router.get("/compare/{base}...{compare}", response_model=BranchCompareResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def compare_branches(
+    session_id: str,
+    base: str,
+    compare: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> BranchCompareResponse:
+    """Compare two branches and return commits and changed files."""
+    workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
+
+    # Validate branch names
+    safe_base = validate_branch_name(base)
+    safe_compare = validate_branch_name(compare)
+    if not safe_base or not safe_compare:
+        raise HTTPException(status_code=400, detail="Both branch names are required")
+
+    try:
+        result = await compute_client.git_compare(
+            workspace_id,
+            user_id,
+            base=safe_base,
+            compare=safe_compare,
+        )
+    except ComputeClientError as e:
+        logger.exception(
+            "Failed to compare branches",
+            workspace_id=workspace_id,
+            base=base,
+            compare=compare,
+        )
+        raise HTTPException(status_code=503, detail=f"Compute service unavailable: {e}") from e
+
+    return BranchCompareResponse(
+        base=result["base"],
+        compare=result["compare"],
+        commits=[BranchCompareCommit(**c) for c in result["commits"]],
+        files=[BranchCompareFile(**f) for f in result["files"]],
+        ahead=result["ahead"],
+        stat=result["stat"],
+    )
+
+
+class MergePreviewRequest(BaseModel):
+    """Request for merge preview."""
+
+    source_branch: str
+    target_branch: str
+
+
+class MergePreviewFile(BaseModel):
+    """A file that would change in a merge."""
+
+    path: str
+    status: str
+
+
+class MergePreviewResponse(BaseModel):
+    """Response for merge preview."""
+
+    can_merge: bool
+    has_conflicts: bool
+    conflicts: list[str]
+    files_changed: list[MergePreviewFile] = []
+    error: str | None = None
+
+
+@router.post("/merge-preview", response_model=MergePreviewResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def preview_merge(
+    session_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    data: MergePreviewRequest,
+    db: DbSession,
+) -> MergePreviewResponse:
+    """Preview a merge operation without actually merging.
+
+    This performs a dry-run merge to detect potential conflicts.
+    """
+    workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
+
+    # Validate branch names
+    safe_source = validate_branch_name(data.source_branch)
+    safe_target = validate_branch_name(data.target_branch)
+    if not safe_source or not safe_target:
+        raise HTTPException(status_code=400, detail="Both branch names are required")
+
+    try:
+        result = await compute_client.git_merge_preview(
+            workspace_id,
+            user_id,
+            source_branch=safe_source,
+            target_branch=safe_target,
+        )
+    except ComputeClientError as e:
+        logger.exception(
+            "Failed to preview merge",
+            workspace_id=workspace_id,
+            source=data.source_branch,
+            target=data.target_branch,
+        )
+        raise HTTPException(status_code=503, detail=f"Compute service unavailable: {e}") from e
+
+    return MergePreviewResponse(
+        can_merge=result["can_merge"],
+        has_conflicts=result["has_conflicts"],
+        conflicts=result["conflicts"],
+        files_changed=[MergePreviewFile(**f) for f in result.get("files_changed", [])],
+        error=result.get("error"),
+    )

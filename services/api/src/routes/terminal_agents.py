@@ -6,6 +6,9 @@ This module proxies terminal I/O to the compute service's terminal WebSocket.
 
 import asyncio
 import contextlib
+import os
+import re
+import shlex
 import time
 from typing import Annotated, Any
 from uuid import UUID, uuid4
@@ -27,11 +30,36 @@ from src.database import (
     get_db,
 )
 from src.middleware.auth import get_current_user
+from src.services.token_blacklist import is_token_revoked
 from src.terminal.manager import terminal_manager
 
 logger = structlog.get_logger()
 
 router = APIRouter()
+
+# SECURITY: POSIX-compliant environment variable name pattern
+# Must start with letter or underscore, followed by letters, digits, or underscores
+# Also validate length to prevent abuse
+ENV_VAR_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+ENV_VAR_NAME_MAX_LENGTH = 128  # Reasonable limit for env var names
+ENV_VAR_VALUE_MAX_LENGTH = 32768  # 32KB max value length
+
+
+class InvalidWorkDirError(HTTPException):
+    """Exception raised for invalid working directory paths."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(status_code=400, detail=detail)
+
+
+def validate_env_var_name(name: str) -> bool:
+    """Validate that an environment variable name is POSIX-compliant and safe.
+
+    SECURITY: Prevents shell injection through malformed env var names.
+    """
+    if not name or len(name) > ENV_VAR_NAME_MAX_LENGTH:
+        return False
+    return bool(ENV_VAR_NAME_PATTERN.match(name))
 
 
 async def validate_ws_token(token: str | None, db: AsyncSession) -> str | None:
@@ -39,6 +67,9 @@ async def validate_ws_token(token: str | None, db: AsyncSession) -> str | None:
 
     WebSocket connections can't send Authorization headers, so the token
     is passed as a query parameter instead.
+
+    SECURITY: Only accepts access tokens (type="access"), not refresh tokens.
+    Also checks token blacklist to ensure revoked tokens cannot be used.
 
     Returns:
         User ID if token is valid, None otherwise.
@@ -52,8 +83,22 @@ async def validate_ws_token(token: str | None, db: AsyncSession) -> str | None:
             settings.JWT_SECRET_KEY,
             algorithms=[settings.JWT_ALGORITHM],
         )
+
+        # SECURITY: Only accept access tokens, not refresh tokens
+        # This prevents refresh token reuse as access tokens
+        token_type = payload.get("type")
+        if token_type and token_type != "access":
+            logger.warning("Non-access token used for WebSocket auth", token_type=token_type)
+            return None
+
         user_id_value = payload.get("sub")
         if not user_id_value:
+            return None
+
+        # SECURITY: Check token blacklist for revoked tokens
+        token_jti = payload.get("jti")
+        if token_jti and await is_token_revoked(token_jti):
+            logger.warning("Revoked token used for terminal WebSocket", jti=token_jti[:8] + "...")
             return None
 
         user_id_str = str(user_id_value)
@@ -198,7 +243,7 @@ class TerminalAgentSessionManager:
         """Check if the server is shutting down."""
         return self._shutting_down
 
-    async def create_session(  # noqa: PLR0913
+    async def create_session(
         self,
         session_id: str,
         workspace_id: str,
@@ -243,19 +288,65 @@ class TerminalAgentSessionManager:
                 )
 
                 # Build the startup command
+                # SECURITY: Validate and sanitize working directory
                 work_dir = working_directory or "/home/dev"
-                run_cmd = " ".join(agent_type.run_command) if agent_type.run_command else ""
+
+                # SECURITY: Prevent directory traversal attacks
+                # Only allow absolute paths starting with /home/ or relative paths within workspace
+                def _raise_path_traversal_error() -> None:
+                    raise InvalidWorkDirError(  # noqa: TRY003, TRY301
+                        "Invalid working directory: path traversal not allowed"
+                    )
+
+                def _raise_invalid_home_path_error() -> None:
+                    raise InvalidWorkDirError(  # noqa: TRY003, TRY301
+                        "Invalid working directory: must be under /home"
+                    )
+
+                if ".." in work_dir:
+                    _raise_path_traversal_error()
+                # Normalize path and verify it's safe
+                normalized = os.path.normpath(work_dir)
+                # Only allow paths under /home or relative paths that don't escape
+                if normalized.startswith("/") and not normalized.startswith("/home"):
+                    _raise_invalid_home_path_error()
+
+                safe_work_dir = shlex.quote(normalized)
+
+                # SECURITY: Quote each command part to prevent injection
+                if agent_type.run_command:
+                    run_cmd = " ".join(shlex.quote(part) for part in agent_type.run_command)
+                else:
+                    run_cmd = ""
 
                 # Set environment variables if env_profile provided
+                # SECURITY: Use shlex.quote for both key and value
                 env_setup = ""
                 if env_profile and env_profile.env_vars:
                     for key, value in env_profile.env_vars.items():
-                        # Escape single quotes in value
-                        safe_value = value.replace("'", "'\"'\"'")
-                        env_setup += f"export {key}='{safe_value}' && "
+                        # SECURITY: Validate key is POSIX-compliant env var name
+                        if not validate_env_var_name(key):
+                            logger.warning(
+                                "Skipping invalid env var name",
+                                key=key[:50],  # Truncate to avoid log injection
+                                session_id=session_id,
+                            )
+                            continue
+                        # SECURITY: Validate value length to prevent abuse
+                        if len(value) > ENV_VAR_VALUE_MAX_LENGTH:
+                            logger.warning(
+                                "Skipping env var with oversized value",
+                                key=key,
+                                value_length=len(value),
+                                session_id=session_id,
+                            )
+                            continue
+                        # Use shlex.quote for the value
+                        safe_value = shlex.quote(value)
+                        env_setup += f"export {key}={safe_value} && "
 
                 # Build full startup command: cd to directory, set env, run agent
-                startup_cmd = f"cd {work_dir} && {env_setup}{run_cmd}\n"
+                startup_cmd = f"cd {safe_work_dir} && {env_setup}{run_cmd}\n"
 
                 # Give the terminal a moment to initialize
                 await asyncio.sleep(0.5)
@@ -297,8 +388,10 @@ class TerminalAgentSessionManager:
                     session_id=session_id,
                     error=str(e),
                 )
+                # SECURITY: Don't expose internal error details to client
                 raise HTTPException(
-                    status_code=500, detail=f"Failed to start terminal agent: {e!s}"
+                    status_code=500,
+                    detail="Failed to start terminal agent. Please try again or contact support.",
                 )
 
     async def get_session(self, session_id: str) -> dict[str, Any] | None:
@@ -516,7 +609,12 @@ async def create_terminal_agent_session(
             compute_client, request.workspace_id, user_id, agent_type
         )
         if not success:
-            raise HTTPException(status_code=500, detail=f"Failed to install {agent_type.name}")
+            # SECURITY: Log agent name internally but give generic message to client
+            logger.error("Failed to install terminal agent", agent_type=agent_type.name)
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to install terminal agent. Please try again or contact support.",
+            )
 
     # Create database session record
     session_id = str(uuid4())
@@ -591,6 +689,27 @@ async def create_env_profile(
     db: DbSession,
 ) -> EnvProfileResponse:
     """Create a new environment profile."""
+    # SECURITY: Validate env var names before storing
+    if request.env_vars:
+        invalid_keys = [key for key in request.env_vars if not validate_env_var_name(key)]
+        if invalid_keys:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid environment variable names: {', '.join(invalid_keys[:5])}. "
+                f"Names must start with a letter or underscore and contain only "
+                f"alphanumeric characters and underscores.",
+            )
+        # SECURITY: Validate value lengths
+        oversized_keys = [
+            key for key, value in request.env_vars.items() if len(value) > ENV_VAR_VALUE_MAX_LENGTH
+        ]
+        if oversized_keys:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Environment variable values too large: {', '.join(oversized_keys[:5])}. "
+                f"Maximum value length is {ENV_VAR_VALUE_MAX_LENGTH} characters.",
+            )
+
     profile = ExternalAgentEnvProfile(
         user_id=current_user["id"],
         name=request.name,
@@ -861,7 +980,7 @@ async def close_terminal_agent_session(
 
 
 @router.websocket("/{session_id}/ws")
-async def terminal_agent_websocket(  # noqa: PLR0915
+async def terminal_agent_websocket(
     websocket: WebSocket,
     session_id: str,
     db: DbSession,
@@ -1019,6 +1138,9 @@ _MIN_BASH_CMD_PARTS = 3  # Minimum parts for bash -c pattern: ["bash", "-c", "co
 def _build_shell_command(cmd_parts: list[str]) -> str:
     """Build a shell command from parts, handling bash -c properly.
 
+    SECURITY: Uses shlex.quote for all user-controlled values to prevent
+    shell injection attacks.
+
     If the command starts with 'bash -lc' or 'bash -c', the remaining parts
     are the command string that should be passed as a single argument.
     """
@@ -1028,13 +1150,15 @@ def _build_shell_command(cmd_parts: list[str]) -> str:
     # Check for bash -c or bash -lc pattern
     if len(cmd_parts) >= _MIN_BASH_CMD_PARTS and cmd_parts[0] == "bash":
         flags = cmd_parts[1]
+        # SECURITY: Only allow known safe flags
         if flags in ("-c", "-lc", "-cl"):
             # Everything after the flags is the command string
+            # SECURITY: Quote the entire command string to prevent injection
             cmd_string = " ".join(cmd_parts[2:])
-            return f"bash {flags} '{cmd_string}'"
+            return f"bash {shlex.quote(flags)} {shlex.quote(cmd_string)}"
 
-    # Default: just join with spaces
-    return " ".join(cmd_parts)
+    # Default: quote each part to prevent injection
+    return " ".join(shlex.quote(part) for part in cmd_parts)
 
 
 async def _check_installation_in_workspace(

@@ -1,6 +1,7 @@
 """Real-time cost tracking for LLM usage."""
 
 import asyncio
+import contextlib
 import logging
 import uuid
 from collections import defaultdict
@@ -12,6 +13,11 @@ from enum import Enum
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Memory management configuration
+MAX_USAGE_RECORDS_PER_SESSION = 1000  # Maximum usage records to keep per session
+SESSION_RETENTION_DAYS = 7  # Days to keep session data before cleanup
+CLEANUP_INTERVAL_SECONDS = 3600  # Run cleanup every hour
 
 # Token divisor for cost calculation (cost per million tokens)
 TOKENS_PER_MILLION = 1000000
@@ -172,10 +178,107 @@ class RealtimeCostTracker:
         self._session_costs: dict[str, CostBreakdown] = {}
         # User ID -> list of session IDs
         self._user_sessions: dict[str, list[str]] = defaultdict(list)
+        # Session ID -> last activity timestamp (for cleanup)
+        self._session_last_activity: dict[str, datetime] = {}
         # Callback for cost updates
         self._update_callback: Callable[[str, CostBreakdown], Awaitable[None]] | None = None
         # Lock for thread safety
         self._lock = asyncio.Lock()
+        # Background cleanup task
+        self._cleanup_task: asyncio.Task[None] | None = None
+
+    async def start_cleanup_task(self) -> None:
+        """Start the background cleanup task for memory management.
+
+        Call this during application startup.
+        """
+        if self._cleanup_task is None or self._cleanup_task.done():
+            self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+            logger.info("Cost tracker cleanup task started")
+
+    async def stop_cleanup_task(self) -> None:
+        """Stop the background cleanup task.
+
+        Call this during application shutdown.
+        """
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._cleanup_task
+            logger.info("Cost tracker cleanup task stopped")
+
+    async def _cleanup_loop(self) -> None:
+        """Background loop that periodically cleans up old data."""
+        while True:
+            try:
+                await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
+                await self._cleanup_old_sessions()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Error in cost tracker cleanup loop")
+
+    async def _cleanup_old_sessions(self) -> None:
+        """Clean up sessions that haven't had activity in a while.
+
+        PERFORMANCE: Prevents memory leaks from accumulated session data.
+        """
+        async with self._lock:
+            now = datetime.now(UTC)
+            cutoff = now - timedelta(days=SESSION_RETENTION_DAYS)
+            sessions_to_remove: list[str] = []
+
+            # Find old sessions
+            for session_id, last_activity in self._session_last_activity.items():
+                if last_activity < cutoff:
+                    sessions_to_remove.append(session_id)
+
+            # Remove old sessions
+            for session_id in sessions_to_remove:
+                if session_id in self._session_usage:
+                    del self._session_usage[session_id]
+                if session_id in self._session_costs:
+                    del self._session_costs[session_id]
+                if session_id in self._session_last_activity:
+                    del self._session_last_activity[session_id]
+
+            # Clean up user session mappings
+            for user_id in list(self._user_sessions.keys()):
+                self._user_sessions[user_id] = [
+                    s for s in self._user_sessions[user_id] if s not in sessions_to_remove
+                ]
+                # Remove empty user entries
+                if not self._user_sessions[user_id]:
+                    del self._user_sessions[user_id]
+
+            if sessions_to_remove:
+                logger.info(
+                    "Cost tracker cleanup completed",
+                    extra={
+                        "removed_sessions": len(sessions_to_remove),
+                        "remaining_sessions": len(self._session_usage),
+                    },
+                )
+
+    def _trim_usage_history(self, session_id: str) -> None:
+        """Trim usage history to prevent unbounded memory growth.
+
+        Called while holding the lock.
+        """
+        usage_list = self._session_usage[session_id]
+        if len(usage_list) > MAX_USAGE_RECORDS_PER_SESSION:
+            # Keep only the most recent records
+            # Note: This means we lose exact totals for old calls, but
+            # the cached cost breakdown still has the totals
+            excess = len(usage_list) - MAX_USAGE_RECORDS_PER_SESSION
+            self._session_usage[session_id] = usage_list[excess:]
+            logger.debug(
+                "Trimmed usage history",
+                extra={
+                    "session_id": session_id,
+                    "removed_records": excess,
+                },
+            )
 
     def set_update_callback(
         self, callback: Callable[[str, CostBreakdown], Awaitable[None]]
@@ -246,9 +349,15 @@ class RealtimeCostTracker:
             # Store usage
             self._session_usage[session_id].append(usage)
 
+            # Update last activity timestamp for cleanup
+            self._session_last_activity[session_id] = datetime.now(UTC)
+
             # Track user -> session mapping
             if user_id and session_id not in self._user_sessions[user_id]:
                 self._user_sessions[user_id].append(session_id)
+
+            # Trim usage history to prevent memory leak
+            self._trim_usage_history(session_id)
 
             # Invalidate cached cost
             if session_id in self._session_costs:
@@ -405,7 +514,7 @@ _tracker: RealtimeCostTracker | None = None
 
 def get_cost_tracker() -> RealtimeCostTracker:
     """Get the global cost tracker instance."""
-    global _tracker  # noqa: PLW0603
+    global _tracker
     if _tracker is None:
         _tracker = RealtimeCostTracker()
     return _tracker

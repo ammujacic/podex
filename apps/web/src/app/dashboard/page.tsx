@@ -74,6 +74,7 @@ import { ConfirmDialog, useConfirmDialog } from '@/components/dashboard/ConfirmD
 import { useClickOutside } from '@/hooks/useClickOutside';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { MobileHeader } from '@/components/ui/MobileHeader';
+import { InstallBanner } from '@/components/pwa';
 
 // Status colors and labels
 const defaultStatus = {
@@ -685,6 +686,9 @@ export default function DashboardPage() {
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-6 py-8">
+        {/* PWA Install Banner */}
+        <InstallBanner className="mb-6" />
+
         {/* Welcome Section */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
           <h1 className="text-3xl font-bold text-text-primary mb-2">

@@ -114,7 +114,7 @@ PACKAGE_MANAGER_BY_FILE = {
 }
 
 
-async def detect_project_info(  # noqa: PLR0912
+async def detect_project_info(
     workspace_id: str,
     user_id: str,
 ) -> ProjectInfo:
@@ -188,7 +188,7 @@ async def detect_project_info(  # noqa: PLR0912
         if "package.json" in root_files:
             pkg_response = await compute_client.read_file(workspace_id, "package.json", user_id)
             if pkg_response.get("success"):
-                import json  # noqa: PLC0415
+                import json
 
                 pkg = json.loads(pkg_response.get("content", "{}"))
                 project_name = pkg.get("name", "project")
@@ -203,7 +203,7 @@ async def detect_project_info(  # noqa: PLR0912
                     if line.startswith("module "):
                         project_name = line.split()[-1].split("/")[-1]
                         break
-    except Exception:  # noqa: S110
+    except Exception:
         pass  # Project name detection failure is non-critical
 
     return ProjectInfo(
@@ -218,7 +218,7 @@ async def detect_project_info(  # noqa: PLR0912
     )
 
 
-def generate_agents_md(  # noqa: PLR0912, PLR0915
+def generate_agents_md(
     project_info: ProjectInfo,
     custom_context: str | None = None,
 ) -> str:
@@ -438,7 +438,7 @@ async def init_project(
                 created=False,
                 message="AGENTS.md already exists",
             )
-    except Exception:  # noqa: S110
+    except Exception:
         pass  # File doesn't exist, continue with generation
 
     # Detect project info
@@ -451,10 +451,11 @@ async def init_project(
     try:
         await compute_client.write_file(workspace_id, user_id, "AGENTS.md", agents_md_content)
     except Exception as e:
+        # SECURITY: Log full error internally but don't expose to client
         logger.warning("Failed to write AGENTS.md", error=str(e))
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to write AGENTS.md: {e}",
+            detail="Failed to write AGENTS.md. Please try again or contact support.",
         ) from e
 
     logger.info(

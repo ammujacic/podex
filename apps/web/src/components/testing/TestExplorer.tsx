@@ -607,12 +607,16 @@ export function TestExplorer({ sessionId, onGoToFile, className }: TestExplorerP
     setTimeout(() => endRun('completed'), 2000);
   }, [startRun, endRun, stats.total]);
 
-  const handleRunSuite = useCallback((_suiteId: string) => {
+  const handleRunSuite = useCallback(async (_suiteId: string) => {
     // TODO: Implement test suite execution via API
+    // await api.post(`/api/sessions/${sessionId}/tests/run-suite`, { suiteId: _suiteId });
+    console.warn('Running test suite:', _suiteId);
   }, []);
 
-  const handleRunTest = useCallback((_testId: string) => {
+  const handleRunTest = useCallback(async (_testId: string) => {
     // TODO: Implement single test execution via API
+    // await api.post(`/api/sessions/${sessionId}/tests/run-test`, { testId: _testId });
+    console.warn('Running test:', _testId);
   }, []);
 
   const handleGoToFile = useCallback(

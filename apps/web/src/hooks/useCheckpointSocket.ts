@@ -2,8 +2,9 @@
  * React hook for checkpoint WebSocket events.
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { useCheckpointsStore, type Checkpoint } from '@/stores/checkpoints';
+import { useStoreCallbacks } from './useStoreCallbacks';
 import { onSocketEvent } from '@/lib/socket';
 
 // WebSocket event types for checkpoints
@@ -48,20 +49,13 @@ interface UseCheckpointSocketOptions {
  * Hook to listen for checkpoint WebSocket events and update store.
  */
 export function useCheckpointSocket({ sessionId }: UseCheckpointSocketOptions) {
-  // Use refs to avoid effect re-runs when store selectors change
-  const addCheckpointRef = useRef(useCheckpointsStore.getState().addCheckpoint);
-  const updateCheckpointStatusRef = useRef(useCheckpointsStore.getState().updateCheckpointStatus);
-  const setRestoringRef = useRef(useCheckpointsStore.getState().setRestoring);
+  // Get store methods directly - Zustand selectors are stable
+  const addCheckpoint = useCheckpointsStore((state) => state.addCheckpoint);
+  const updateCheckpointStatus = useCheckpointsStore((state) => state.updateCheckpointStatus);
+  const setRestoring = useCheckpointsStore((state) => state.setRestoring);
 
-  // Keep refs updated
-  useEffect(() => {
-    const unsubscribe = useCheckpointsStore.subscribe((state) => {
-      addCheckpointRef.current = state.addCheckpoint;
-      updateCheckpointStatusRef.current = state.updateCheckpointStatus;
-      setRestoringRef.current = state.setRestoring;
-    });
-    return unsubscribe;
-  }, []);
+  // Use stable ref for callbacks to avoid re-running effects
+  const callbacksRef = useStoreCallbacks({ addCheckpoint, updateCheckpointStatus, setRestoring });
 
   useEffect(() => {
     if (!sessionId) return;
@@ -89,7 +83,7 @@ export function useCheckpointSocket({ sessionId }: UseCheckpointSocketOptions) {
         totalLinesRemoved: data.checkpoint.total_lines_removed,
       };
 
-      addCheckpointRef.current(sessionId, checkpoint);
+      callbacksRef.current.addCheckpoint(sessionId, checkpoint);
     });
 
     // Handle restore started
@@ -97,7 +91,7 @@ export function useCheckpointSocket({ sessionId }: UseCheckpointSocketOptions) {
       'checkpoint_restore_started',
       (data: CheckpointRestoreStartedEvent) => {
         if (data.session_id !== sessionId) return;
-        setRestoringRef.current(data.checkpoint_id);
+        callbacksRef.current.setRestoring(data.checkpoint_id);
       }
     );
 
@@ -107,8 +101,8 @@ export function useCheckpointSocket({ sessionId }: UseCheckpointSocketOptions) {
       (data: CheckpointRestoredEvent) => {
         if (data.session_id !== sessionId) return;
 
-        updateCheckpointStatusRef.current(sessionId, data.checkpoint_id, 'restored');
-        setRestoringRef.current(null);
+        callbacksRef.current.updateCheckpointStatus(sessionId, data.checkpoint_id, 'restored');
+        callbacksRef.current.setRestoring(null);
       }
     );
 
@@ -117,5 +111,6 @@ export function useCheckpointSocket({ sessionId }: UseCheckpointSocketOptions) {
       unsubRestoreStarted();
       unsubRestored();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 }

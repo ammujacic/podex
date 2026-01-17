@@ -6,12 +6,14 @@ import operator
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from src.skills.loader import Skill, SkillLoader
-from src.tools.executor import ToolExecutor
+
+if TYPE_CHECKING:
+    from src.tools.executor import ToolExecutor
 
 logger = structlog.get_logger()
 
@@ -66,7 +68,7 @@ class SkillRegistry:
     def __init__(
         self,
         loader: SkillLoader | None = None,
-        tool_executor: ToolExecutor | None = None,
+        tool_executor: "ToolExecutor | None" = None,
     ) -> None:
         """Initialize skill registry.
 

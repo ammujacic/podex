@@ -1,33 +1,21 @@
 """Git worktree management routes for parallel agent execution."""
 
 from datetime import UTC, datetime
-from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.compute_client import compute_client
-from src.database import get_db
 from src.database.models import AgentWorktree
 from src.database.models import Session as SessionModel
+from src.routes.dependencies import DbSession, get_current_user_id
 from src.websocket.hub import emit_to_session
 
 logger = structlog.get_logger()
 
 router = APIRouter()
-
-DbSession = Annotated[AsyncSession, Depends(get_db)]
-
-
-def get_current_user_id(request: Request) -> str:
-    """Get current user ID from request state."""
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return str(user_id)
 
 
 class WorktreeResponse(BaseModel):
@@ -161,7 +149,7 @@ async def merge_worktree(
     worktree_id: str,
     request: Request,
     db: DbSession,
-    merge_request: MergeWorktreeRequest = MergeWorktreeRequest(),  # noqa: B008
+    merge_request: MergeWorktreeRequest = MergeWorktreeRequest(),
 ) -> MergeWorktreeResponse:
     """Trigger merge of worktree to main branch."""
     user_id = get_current_user_id(request)
@@ -205,7 +193,7 @@ async def merge_worktree(
     try:
         # Perform actual git merge via compute service
         if not session.workspace_id:
-            raise HTTPException(status_code=400, detail="Session workspace_id is required")  # noqa: TRY301
+            raise HTTPException(status_code=400, detail="workspace_id required")  # noqa: TRY301
 
         merge_result = await compute_client.git_worktree_merge(
             session.workspace_id,
@@ -263,7 +251,9 @@ async def merge_worktree(
             },
         )
 
-        raise HTTPException(status_code=500, detail=merge_result.get("message", "Merge failed"))  # noqa: TRY301
+        raise HTTPException(  # noqa: TRY301
+            status_code=500, detail=merge_result.get("message", "Merge failed")
+        )
 
     except HTTPException:
         raise
@@ -277,8 +267,11 @@ async def merge_worktree(
             worktree_id=worktree.id,
             error=str(e),
         )
-
-        raise HTTPException(status_code=500, detail=f"Merge failed: {e!s}")  # noqa: B904
+        # SECURITY: Don't expose internal error details to client
+        raise HTTPException(
+            status_code=500,
+            detail="Merge failed. Please check for conflicts and try again.",
+        )
 
 
 class DeleteWorktreeResponse(BaseModel):
@@ -320,7 +313,7 @@ async def delete_worktree(
     try:
         # Delete the worktree via compute service
         if not session.workspace_id:
-            raise HTTPException(status_code=400, detail="Session workspace_id is required")  # noqa: TRY301
+            raise HTTPException(status_code=400, detail="workspace_id required")  # noqa: TRY301
 
         delete_result = await compute_client.git_worktree_delete(
             session.workspace_id,
@@ -360,7 +353,11 @@ async def delete_worktree(
         raise
     except Exception as e:
         logger.exception("Worktree deletion failed", worktree_id=worktree_id, error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to delete worktree: {e!s}")  # noqa: B904
+        # SECURITY: Don't expose internal error details to client
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to delete worktree. Please try again or contact support.",
+        )
 
 
 class ConflictFile(BaseModel):
@@ -405,7 +402,7 @@ async def check_worktree_conflicts(
     try:
         # Check for conflicts via compute service
         if not session.workspace_id:
-            raise HTTPException(status_code=400, detail="Session workspace_id is required")  # noqa: TRY301
+            raise HTTPException(status_code=400, detail="workspace_id required")  # noqa: TRY301
 
         conflicts_result = await compute_client.git_worktree_check_conflicts(
             session.workspace_id,

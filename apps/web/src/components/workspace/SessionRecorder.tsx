@@ -629,13 +629,25 @@ export function SessionRecorder({ sessionId, className }: SessionRecorderProps) 
           recordings={recordings}
           onSelect={loadRecording}
           onDelete={() => {
-            /* TODO: Implement delete recording */
+            /* TODO: Implement delete recording API */
+            // await api.delete(`/api/sessions/${sessionId}/recordings/${recording.id}`);
+            console.warn('Delete recording');
           }}
           onShare={() => {
-            /* TODO: Implement share recording */
+            /* TODO: Implement share recording API */
+            // const shareUrl = await api.post(`/api/sessions/${sessionId}/recordings/${recording.id}/share`);
+            // navigator.clipboard.writeText(shareUrl);
+            console.warn('Share recording');
           }}
           onDownload={() => {
-            /* TODO: Implement download recording */
+            /* TODO: Implement download recording API */
+            // const blob = await api.get(`/api/sessions/${sessionId}/recordings/${recording.id}/download`, { responseType: 'blob' });
+            // const url = URL.createObjectURL(blob);
+            // const a = document.createElement('a');
+            // a.href = url;
+            // a.download = 'session-recording.json';
+            // a.click();
+            console.warn('Download recording');
           }}
         />
       </div>

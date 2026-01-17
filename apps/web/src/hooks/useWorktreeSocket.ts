@@ -2,8 +2,9 @@
  * React hook for worktree WebSocket events.
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { useWorktreesStore, type Worktree } from '@/stores/worktrees';
+import { useStoreCallbacks } from './useStoreCallbacks';
 import { onSocketEvent } from '@/lib/socket';
 
 // WebSocket event types for worktrees
@@ -59,22 +60,19 @@ interface UseWorktreeSocketOptions {
  * Hook to listen for worktree WebSocket events and update store.
  */
 export function useWorktreeSocket({ sessionId }: UseWorktreeSocketOptions) {
-  // Use refs to avoid effect re-runs when store selectors change
-  const addWorktreeRef = useRef(useWorktreesStore.getState().addWorktree);
-  const updateWorktreeStatusRef = useRef(useWorktreesStore.getState().updateWorktreeStatus);
-  const removeWorktreeRef = useRef(useWorktreesStore.getState().removeWorktree);
-  const setOperatingRef = useRef(useWorktreesStore.getState().setOperating);
+  // Get store methods directly - Zustand selectors are stable
+  const addWorktree = useWorktreesStore((state) => state.addWorktree);
+  const updateWorktreeStatus = useWorktreesStore((state) => state.updateWorktreeStatus);
+  const removeWorktree = useWorktreesStore((state) => state.removeWorktree);
+  const setOperating = useWorktreesStore((state) => state.setOperating);
 
-  // Keep refs updated
-  useEffect(() => {
-    const unsubscribe = useWorktreesStore.subscribe((state) => {
-      addWorktreeRef.current = state.addWorktree;
-      updateWorktreeStatusRef.current = state.updateWorktreeStatus;
-      removeWorktreeRef.current = state.removeWorktree;
-      setOperatingRef.current = state.setOperating;
-    });
-    return unsubscribe;
-  }, []);
+  // Use stable ref for callbacks to avoid re-running effects
+  const callbacksRef = useStoreCallbacks({
+    addWorktree,
+    updateWorktreeStatus,
+    removeWorktree,
+    setOperating,
+  });
 
   useEffect(() => {
     if (!sessionId) return;
@@ -94,7 +92,7 @@ export function useWorktreeSocket({ sessionId }: UseWorktreeSocketOptions) {
         mergedAt: null,
       };
 
-      addWorktreeRef.current(sessionId, worktree);
+      callbacksRef.current.addWorktree(sessionId, worktree);
     });
 
     // Handle status changed
@@ -102,7 +100,7 @@ export function useWorktreeSocket({ sessionId }: UseWorktreeSocketOptions) {
       'worktree_status_changed',
       (data: WorktreeStatusChangedEvent) => {
         if (data.session_id !== sessionId) return;
-        updateWorktreeStatusRef.current(
+        callbacksRef.current.updateWorktreeStatus(
           sessionId,
           data.worktree_id,
           data.new_status as Worktree['status']
@@ -115,7 +113,7 @@ export function useWorktreeSocket({ sessionId }: UseWorktreeSocketOptions) {
       'worktree_conflict_detected',
       (data: WorktreeConflictDetectedEvent) => {
         if (data.session_id !== sessionId) return;
-        updateWorktreeStatusRef.current(sessionId, data.worktree_id, 'conflict');
+        callbacksRef.current.updateWorktreeStatus(sessionId, data.worktree_id, 'conflict');
       }
     );
 
@@ -124,17 +122,17 @@ export function useWorktreeSocket({ sessionId }: UseWorktreeSocketOptions) {
       if (data.session_id !== sessionId) return;
 
       if (data.merge_result.success) {
-        updateWorktreeStatusRef.current(sessionId, data.worktree_id, 'merged');
+        callbacksRef.current.updateWorktreeStatus(sessionId, data.worktree_id, 'merged');
       } else {
-        updateWorktreeStatusRef.current(sessionId, data.worktree_id, 'failed');
+        callbacksRef.current.updateWorktreeStatus(sessionId, data.worktree_id, 'failed');
       }
-      setOperatingRef.current(null);
+      callbacksRef.current.setOperating(null);
     });
 
     // Handle deleted
     const unsubDeleted = onSocketEvent('worktree_deleted', (data: WorktreeDeletedEvent) => {
       if (data.session_id !== sessionId) return;
-      removeWorktreeRef.current(sessionId, data.worktree_id);
+      callbacksRef.current.removeWorktree(sessionId, data.worktree_id);
     });
 
     return () => {
@@ -144,5 +142,6 @@ export function useWorktreeSocket({ sessionId }: UseWorktreeSocketOptions) {
       unsubMerged();
       unsubDeleted();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 }

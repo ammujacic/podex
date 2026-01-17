@@ -12,6 +12,13 @@ import { useAuthStore } from '@/stores/auth';
 import { cn } from '@/lib/utils';
 import '@xterm/xterm/css/xterm.css';
 
+// Type for WebSocket messages from terminal backend
+interface TerminalWebSocketMessage {
+  type: 'output' | 'error' | 'resize' | 'heartbeat';
+  data?: string;
+  error?: string;
+}
+
 interface TerminalAgentCellProps {
   agent: Agent;
   sessionId: string;
@@ -89,7 +96,11 @@ export const TerminalAgentCell = forwardRef<TerminalAgentCellRef, TerminalAgentC
         const wsProtocol = apiUrl.startsWith('https') ? 'wss:' : 'ws:';
         const apiHost = apiUrl.replace(/^https?:\/\//, '');
 
-        // Include auth token as query parameter (WebSocket can't send headers)
+        // TODO: Security improvement - Consider implementing ticket-based auth instead of
+        // passing token in URL. Current approach exposes token in browser history and server logs.
+        // Better pattern: 1) Get short-lived ticket from REST endpoint, 2) Pass ticket in URL,
+        // 3) Server exchanges ticket for session. This requires backend changes.
+        // For now, using direct token approach with HTTPS requirement for security.
         const token = useAuthStore.getState().tokens?.accessToken;
         const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
         const wsUrl = `${wsProtocol}//${apiHost}/api/v1/terminal-agents/${agent.terminalSessionId}/ws${tokenParam}`;
@@ -102,9 +113,13 @@ export const TerminalAgentCell = forwardRef<TerminalAgentCellRef, TerminalAgentC
         };
 
         ws.onmessage = (event) => {
-          const data = JSON.parse(event.data);
-          if (data.type === 'output' && terminalInstanceRef.current) {
-            terminalInstanceRef.current.write(data.data);
+          try {
+            const data = JSON.parse(event.data) as TerminalWebSocketMessage;
+            if (data.type === 'output' && data.data && terminalInstanceRef.current) {
+              terminalInstanceRef.current.write(data.data);
+            }
+          } catch (err) {
+            console.error('Failed to parse terminal WebSocket message:', err);
           }
         };
 
@@ -300,6 +315,16 @@ export const TerminalAgentCell = forwardRef<TerminalAgentCellRef, TerminalAgentC
       }, 30000); // 30 seconds
 
       return () => clearInterval(heartbeatInterval);
+    }, []);
+
+    // Cleanup WebSocket on unmount to prevent memory leaks
+    useEffect(() => {
+      return () => {
+        if (websocketRef.current) {
+          websocketRef.current.close();
+          websocketRef.current = null;
+        }
+      };
     }, []);
 
     // Focus the terminal when clicking on it

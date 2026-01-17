@@ -14,9 +14,15 @@ export default function AccountPage() {
 
   const handleSave = async () => {
     setSaving(true);
-    // TODO: Implement save functionality
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    setSaving(false);
+    try {
+      // TODO: Implement user profile update API endpoint
+      // await api.patch('/api/auth/me', { name: displayName });
+      await new Promise((resolve) => setTimeout(resolve, 1000)); // Simulate API call
+    } catch (error) {
+      console.error('Failed to save account settings:', error);
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (

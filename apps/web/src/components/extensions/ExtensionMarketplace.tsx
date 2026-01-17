@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   Search,
   X,
@@ -13,211 +13,190 @@ import {
   Box,
   AlertCircle,
   ExternalLink,
-  ChevronRight,
   Puzzle,
+  Loader2,
+  User,
+  Briefcase,
+  RefreshCw,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
-import { useExtensionHost } from '@/lib/extensions/ExtensionHost';
-import type { ExtensionManifest, ExtensionInfo, ExtensionCategory } from '@/lib/extensions/types';
+import {
+  searchExtensions,
+  getExtensionDetail,
+  getInstalledExtensions,
+  installExtension as installExtensionApi,
+  uninstallExtension as uninstallExtensionApi,
+  toggleExtension,
+  formatDownloadCount,
+  formatRating,
+  createExtensionId,
+  type OpenVSXExtension,
+  type InstalledExtension,
+  type ExtensionSearchParams,
+} from '@/lib/api/extensions';
+import { useSessionStore } from '@/stores/session';
 
 // ============================================================================
 // Types
 // ============================================================================
 
-interface MarketplaceExtension {
-  manifest: ExtensionManifest;
-  downloads: number;
-  rating: number;
-  ratingCount: number;
-  lastUpdated: string;
-  verified: boolean;
+type TabType = 'marketplace' | 'installed';
+type SortType = 'relevance' | 'downloadCount' | 'rating' | 'timestamp';
+type CategoryType =
+  | 'all'
+  | 'Programming Languages'
+  | 'Themes'
+  | 'Linters'
+  | 'Formatters'
+  | 'Debuggers'
+  | 'Other';
+type InstallScope = 'user' | 'workspace';
+
+// ============================================================================
+// Install Scope Dialog Component
+// ============================================================================
+
+interface InstallScopeDialogProps {
+  extension: OpenVSXExtension;
+  workspaceId?: string;
+  onInstall: (scope: InstallScope) => void;
+  onCancel: () => void;
+  isInstalling: boolean;
 }
 
-type TabType = 'marketplace' | 'installed';
-type SortType = 'relevance' | 'downloads' | 'rating' | 'recent';
+function InstallScopeDialog({
+  extension,
+  workspaceId,
+  onInstall,
+  onCancel,
+  isInstalling,
+}: InstallScopeDialogProps) {
+  const [scope, setScope] = useState<InstallScope>('user');
 
-// ============================================================================
-// Mock Marketplace Data
-// ============================================================================
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onClick={onCancel}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        className="w-full max-w-md rounded-lg border border-border-default bg-elevated p-6 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-lg font-semibold text-text-primary">Install Extension</h2>
+        <p className="mt-1 text-sm text-text-secondary">
+          Choose where to install &quot;{extension.displayName || extension.name}&quot;
+        </p>
 
-const MOCK_EXTENSIONS: MarketplaceExtension[] = [
-  {
-    manifest: {
-      id: 'podex.prettier',
-      name: 'prettier',
-      displayName: 'Prettier - Code Formatter',
-      version: '10.1.0',
-      description: 'Code formatter using prettier',
-      author: 'Podex Team',
-      publisher: 'podex',
-      license: 'MIT',
-      icon: '✨',
-      main: 'dist/extension.js',
-      categories: ['formatters'],
-      keywords: ['format', 'prettier', 'beautify'],
-      engines: { podex: '^1.0.0' },
-      activationEvents: ['onLanguage:javascript', 'onLanguage:typescript'],
-      contributes: {
-        commands: [{ command: 'prettier.format', title: 'Format Document with Prettier' }],
-      },
-      permissions: ['filesystem.read', 'filesystem.write'],
-    },
-    downloads: 1250000,
-    rating: 4.8,
-    ratingCount: 15420,
-    lastUpdated: '2024-01-05',
-    verified: true,
-  },
-  {
-    manifest: {
-      id: 'podex.eslint',
-      name: 'eslint',
-      displayName: 'ESLint',
-      version: '2.4.4',
-      description: 'Integrates ESLint JavaScript into Podex',
-      author: 'Podex Team',
-      publisher: 'podex',
-      license: 'MIT',
-      icon: '🔍',
-      main: 'dist/extension.js',
-      categories: ['linters'],
-      keywords: ['lint', 'eslint', 'javascript'],
-      engines: { podex: '^1.0.0' },
-      activationEvents: ['onLanguage:javascript', 'onLanguage:typescript'],
-      contributes: {
-        commands: [{ command: 'eslint.fix', title: 'Fix all auto-fixable Problems' }],
-      },
-      permissions: ['filesystem.read', 'editor.decorations'],
-    },
-    downloads: 980000,
-    rating: 4.7,
-    ratingCount: 12350,
-    lastUpdated: '2024-01-03',
-    verified: true,
-  },
-  {
-    manifest: {
-      id: 'podex.git-lens',
-      name: 'gitlens',
-      displayName: 'GitLens — Git supercharged',
-      version: '14.5.0',
-      description: 'Supercharge Git with rich visualizations and insights',
-      author: 'GitKraken',
-      publisher: 'eamodio',
-      license: 'MIT',
-      icon: '🔀',
-      main: 'dist/extension.js',
-      categories: ['productivity'],
-      keywords: ['git', 'blame', 'history', 'annotations'],
-      engines: { podex: '^1.0.0' },
-      activationEvents: ['*'],
-      contributes: {
-        views: [{ id: 'gitlens.views.commits', name: 'Commits' }],
-      },
-      permissions: ['filesystem.read', 'terminal.execute'],
-    },
-    downloads: 750000,
-    rating: 4.9,
-    ratingCount: 9870,
-    lastUpdated: '2024-01-02',
-    verified: true,
-  },
-  {
-    manifest: {
-      id: 'podex.python',
-      name: 'python',
-      displayName: 'Python',
-      version: '2024.0.1',
-      description: 'IntelliSense, linting, debugging, and more for Python',
-      author: 'Podex Team',
-      publisher: 'podex',
-      license: 'MIT',
-      icon: '🐍',
-      main: 'dist/extension.js',
-      categories: ['languages'],
-      keywords: ['python', 'pylance', 'pyright'],
-      engines: { podex: '^1.0.0' },
-      activationEvents: ['onLanguage:python'],
-      contributes: {
-        languages: [{ id: 'python', extensions: ['.py', '.pyw'] }],
-      },
-      permissions: ['filesystem.read', 'terminal.execute'],
-    },
-    downloads: 650000,
-    rating: 4.6,
-    ratingCount: 8540,
-    lastUpdated: '2024-01-04',
-    verified: true,
-  },
-  {
-    manifest: {
-      id: 'podex.copilot',
-      name: 'copilot',
-      displayName: 'GitHub Copilot',
-      version: '1.150.0',
-      description: 'AI pair programmer',
-      author: 'GitHub',
-      publisher: 'github',
-      license: 'Proprietary',
-      icon: '🤖',
-      main: 'dist/extension.js',
-      categories: ['productivity'],
-      keywords: ['ai', 'copilot', 'autocomplete', 'intellisense'],
-      engines: { podex: '^1.0.0' },
-      activationEvents: ['*'],
-      contributes: {},
-      permissions: ['network', 'editor.decorations'],
-    },
-    downloads: 2100000,
-    rating: 4.5,
-    ratingCount: 25600,
-    lastUpdated: '2024-01-06',
-    verified: true,
-  },
-  {
-    manifest: {
-      id: 'dracula.theme',
-      name: 'dracula',
-      displayName: 'Dracula Theme',
-      version: '2.24.3',
-      description: 'A dark theme for Podex',
-      author: 'Dracula Theme',
-      publisher: 'dracula-theme',
-      license: 'MIT',
-      icon: '🧛',
-      main: 'dist/extension.js',
-      categories: ['themes'],
-      keywords: ['theme', 'dark', 'dracula'],
-      engines: { podex: '^1.0.0' },
-      activationEvents: ['*'],
-      contributes: {
-        themes: [
-          { id: 'dracula', label: 'Dracula', uiTheme: 'vs-dark', path: './themes/dracula.json' },
-        ],
-      },
-      permissions: [],
-    },
-    downloads: 890000,
-    rating: 4.9,
-    ratingCount: 11200,
-    lastUpdated: '2023-12-15',
-    verified: true,
-  },
-];
+        <div className="mt-4 space-y-3">
+          {/* User Account Option */}
+          <label
+            className={cn(
+              'flex cursor-pointer items-start gap-3 rounded-lg border p-4 transition-colors',
+              scope === 'user'
+                ? 'border-accent-primary bg-accent-primary/5'
+                : 'border-border-default hover:border-border-subtle'
+            )}
+          >
+            <input
+              type="radio"
+              name="scope"
+              value="user"
+              checked={scope === 'user'}
+              onChange={() => setScope('user')}
+              className="mt-1"
+            />
+            <div className="flex-1">
+              <div className="flex items-center gap-2">
+                <User className="h-4 w-4 text-text-secondary" />
+                <span className="font-medium text-text-primary">User Account</span>
+              </div>
+              <p className="mt-1 text-xs text-text-muted">
+                Available in all your workspaces and sessions. Syncs across devices.
+              </p>
+            </div>
+          </label>
+
+          {/* Workspace Option */}
+          <label
+            className={cn(
+              'flex cursor-pointer items-start gap-3 rounded-lg border p-4 transition-colors',
+              !workspaceId && 'cursor-not-allowed opacity-50',
+              scope === 'workspace'
+                ? 'border-accent-primary bg-accent-primary/5'
+                : 'border-border-default hover:border-border-subtle'
+            )}
+          >
+            <input
+              type="radio"
+              name="scope"
+              value="workspace"
+              checked={scope === 'workspace'}
+              onChange={() => setScope('workspace')}
+              disabled={!workspaceId}
+              className="mt-1"
+            />
+            <div className="flex-1">
+              <div className="flex items-center gap-2">
+                <Briefcase className="h-4 w-4 text-text-secondary" />
+                <span className="font-medium text-text-primary">This Workspace Only</span>
+              </div>
+              <p className="mt-1 text-xs text-text-muted">
+                {workspaceId
+                  ? 'Only available in this workspace. Persists across pods.'
+                  : 'No workspace selected. Open a workspace to use this option.'}
+              </p>
+            </div>
+          </label>
+        </div>
+
+        <div className="mt-6 flex justify-end gap-3">
+          <button
+            onClick={onCancel}
+            disabled={isInstalling}
+            className="rounded-md border border-border-default px-4 py-2 text-sm text-text-secondary hover:bg-overlay disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onInstall(scope)}
+            disabled={isInstalling}
+            className="flex items-center gap-2 rounded-md bg-accent-primary px-4 py-2 text-sm font-medium text-text-inverse hover:bg-accent-primary/90 disabled:opacity-50"
+          >
+            {isInstalling && <Loader2 className="h-4 w-4 animate-spin" />}
+            Install
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
 
 // ============================================================================
 // Extension Card Component
 // ============================================================================
 
 interface ExtensionCardProps {
-  extension: MarketplaceExtension;
-  installedInfo?: ExtensionInfo;
-  onInstall: (manifest: ExtensionManifest) => void;
-  onUninstall: (extensionId: string) => void;
-  onEnable: (extensionId: string) => void;
-  onDisable: (extensionId: string) => void;
+  extension: OpenVSXExtension;
+  installedInfo?: InstalledExtension;
+  onInstall: (extension: OpenVSXExtension) => void;
+  onUninstall: (extensionId: string, scope: InstallScope, workspaceId?: string) => void;
+  onToggle: (
+    extensionId: string,
+    enabled: boolean,
+    scope: InstallScope,
+    workspaceId?: string
+  ) => void;
   onClick: () => void;
+  isInstalling?: boolean;
+  isToggling?: boolean;
 }
 
 function ExtensionCard({
@@ -225,21 +204,13 @@ function ExtensionCard({
   installedInfo,
   onInstall,
   onUninstall,
-  onEnable,
-  onDisable,
+  onToggle,
   onClick,
+  isInstalling,
+  isToggling,
 }: ExtensionCardProps) {
-  const { manifest, downloads, rating, ratingCount, verified } = extension;
   const isInstalled = !!installedInfo;
-  const isEnabled = installedInfo?.state === 'enabled' || installedInfo?.state === 'active';
-  const hasError = installedInfo?.state === 'error';
-  void isEnabled; // Used for styling
-
-  const formatDownloads = (num: number) => {
-    if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
-    if (num >= 1000) return `${(num / 1000).toFixed(0)}K`;
-    return num.toString();
-  };
+  const isEnabled = installedInfo?.enabled ?? false;
 
   return (
     <div
@@ -247,36 +218,58 @@ function ExtensionCard({
       onClick={onClick}
     >
       {/* Icon */}
-      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-overlay text-2xl">
-        {manifest.icon || <Puzzle className="h-6 w-6 text-text-muted" />}
+      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-overlay overflow-hidden">
+        {extension.iconUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={extension.iconUrl}
+            alt=""
+            className="h-full w-full object-cover"
+            onError={(e) => {
+              (e.target as HTMLImageElement).style.display = 'none';
+            }}
+          />
+        ) : (
+          <Puzzle className="h-6 w-6 text-text-muted" />
+        )}
       </div>
 
       {/* Content */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <h3 className="text-sm font-medium text-text-primary truncate">{manifest.displayName}</h3>
-          {verified && (
+          <h3 className="text-sm font-medium text-text-primary truncate">
+            {extension.displayName || extension.name}
+          </h3>
+          {extension.verified && (
             <Check className="h-3.5 w-3.5 text-accent-success" aria-label="Verified publisher" />
           )}
-          {hasError && (
-            <AlertCircle
-              className="h-3.5 w-3.5 text-accent-error"
-              aria-label={installedInfo?.error ?? 'Error'}
-            />
+          {installedInfo && (
+            <span
+              className={cn(
+                'rounded-full px-2 py-0.5 text-[10px] font-medium',
+                installedInfo.scope === 'workspace'
+                  ? 'bg-accent-warning/10 text-accent-warning'
+                  : 'bg-accent-primary/10 text-accent-primary'
+              )}
+            >
+              {installedInfo.scope === 'workspace' ? 'Workspace' : 'User'}
+            </span>
           )}
         </div>
 
-        <p className="mt-0.5 text-xs text-text-secondary truncate">{manifest.description}</p>
+        <p className="mt-0.5 text-xs text-text-secondary truncate">{extension.description}</p>
 
         <div className="mt-2 flex items-center gap-3 text-xs text-text-muted">
-          <span>{manifest.publisher}</span>
-          <span className="flex items-center gap-1">
-            <Star className="h-3 w-3 text-accent-warning" />
-            {rating.toFixed(1)} ({formatDownloads(ratingCount)})
-          </span>
+          <span>{extension.publisherDisplayName || extension.namespace}</span>
+          {extension.averageRating !== null && (
+            <span className="flex items-center gap-1">
+              <Star className="h-3 w-3 text-accent-warning" />
+              {formatRating(extension.averageRating)} ({formatDownloadCount(extension.reviewCount)})
+            </span>
+          )}
           <span className="flex items-center gap-1">
             <Download className="h-3 w-3" />
-            {formatDownloads(downloads)}
+            {formatDownloadCount(extension.downloadCount)}
           </span>
         </div>
       </div>
@@ -285,32 +278,34 @@ function ExtensionCard({
       <div className="flex shrink-0 items-center gap-2" onClick={(e) => e.stopPropagation()}>
         {!isInstalled ? (
           <button
-            onClick={() => onInstall(manifest)}
-            className="rounded bg-accent-primary px-3 py-1.5 text-xs font-medium text-text-inverse hover:bg-accent-primary/90"
+            onClick={() => onInstall(extension)}
+            disabled={isInstalling}
+            className="flex items-center gap-1 rounded bg-accent-primary px-3 py-1.5 text-xs font-medium text-text-inverse hover:bg-accent-primary/90 disabled:opacity-50"
           >
+            {isInstalling && <Loader2 className="h-3 w-3 animate-spin" />}
             Install
           </button>
         ) : (
           <>
-            {isEnabled ? (
-              <button
-                onClick={() => onDisable(manifest.id)}
-                className="rounded p-1.5 text-text-muted hover:bg-overlay hover:text-text-secondary"
-                title="Disable"
-              >
-                <PowerOff className="h-4 w-4" />
-              </button>
-            ) : (
-              <button
-                onClick={() => onEnable(manifest.id)}
-                className="rounded p-1.5 text-text-muted hover:bg-overlay hover:text-accent-success"
-                title="Enable"
-              >
-                <Power className="h-4 w-4" />
-              </button>
-            )}
             <button
-              onClick={() => onUninstall(manifest.id)}
+              onClick={() => onToggle(installedInfo.extension_id, !isEnabled, installedInfo.scope)}
+              disabled={isToggling}
+              className={cn(
+                'rounded p-1.5 text-text-muted hover:bg-overlay',
+                isEnabled ? 'hover:text-text-secondary' : 'hover:text-accent-success'
+              )}
+              title={isEnabled ? 'Disable' : 'Enable'}
+            >
+              {isToggling ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : isEnabled ? (
+                <PowerOff className="h-4 w-4" />
+              ) : (
+                <Power className="h-4 w-4" />
+              )}
+            </button>
+            <button
+              onClick={() => onUninstall(installedInfo.extension_id, installedInfo.scope)}
               className="rounded p-1.5 text-text-muted hover:bg-overlay hover:text-accent-error"
               title="Uninstall"
             >
@@ -327,28 +322,41 @@ function ExtensionCard({
 // Extension Detail Panel
 // ============================================================================
 
-interface ExtensionDetailProps {
-  extension: MarketplaceExtension;
-  installedInfo?: ExtensionInfo;
+interface ExtensionDetailPanelProps {
+  extension: OpenVSXExtension;
+  installedInfo?: InstalledExtension;
   onClose: () => void;
-  onInstall: (manifest: ExtensionManifest) => void;
-  onUninstall: (extensionId: string) => void;
-  onEnable: (extensionId: string) => void;
-  onDisable: (extensionId: string) => void;
+  onInstall: (extension: OpenVSXExtension) => void;
+  onUninstall: (extensionId: string, scope: InstallScope, workspaceId?: string) => void;
+  onToggle: (
+    extensionId: string,
+    enabled: boolean,
+    scope: InstallScope,
+    workspaceId?: string
+  ) => void;
+  isInstalling?: boolean;
+  isToggling?: boolean;
 }
 
-function ExtensionDetail({
+function ExtensionDetailPanel({
   extension,
   installedInfo,
   onClose,
   onInstall,
   onUninstall,
-  onEnable,
-  onDisable,
-}: ExtensionDetailProps) {
-  const { manifest, downloads, rating, ratingCount, lastUpdated, verified } = extension;
+  onToggle,
+  isInstalling,
+  isToggling,
+}: ExtensionDetailPanelProps) {
   const isInstalled = !!installedInfo;
-  const isEnabled = installedInfo?.state === 'enabled' || installedInfo?.state === 'active';
+  const isEnabled = installedInfo?.enabled ?? false;
+
+  // Fetch detailed info with readme
+  const { data: detail } = useQuery({
+    queryKey: ['extension-detail', extension.namespace, extension.name],
+    queryFn: () => getExtensionDetail(extension.namespace, extension.name),
+    staleTime: 60 * 60 * 1000, // 1 hour
+  });
 
   return (
     <motion.div
@@ -373,16 +381,32 @@ function ExtensionDetail({
         {/* Hero */}
         <div className="p-6">
           <div className="flex items-start gap-4">
-            <div className="flex h-16 w-16 items-center justify-center rounded-xl bg-overlay text-3xl">
-              {manifest.icon || <Puzzle className="h-8 w-8 text-text-muted" />}
+            <div className="flex h-16 w-16 items-center justify-center rounded-xl bg-overlay overflow-hidden">
+              {extension.iconUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={extension.iconUrl}
+                  alt=""
+                  className="h-full w-full object-cover"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).style.display = 'none';
+                  }}
+                />
+              ) : (
+                <Puzzle className="h-8 w-8 text-text-muted" />
+              )}
             </div>
             <div>
-              <h3 className="text-lg font-semibold text-text-primary">{manifest.displayName}</h3>
+              <h3 className="text-lg font-semibold text-text-primary">
+                {extension.displayName || extension.name}
+              </h3>
               <p className="text-sm text-text-secondary">
-                {manifest.publisher}
-                {verified && <Check className="ml-1 inline h-4 w-4 text-accent-success" />}
+                {extension.publisherDisplayName || extension.namespace}
+                {extension.verified && (
+                  <Check className="ml-1 inline h-4 w-4 text-accent-success" />
+                )}
               </p>
-              <p className="mt-1 text-xs text-text-muted">v{manifest.version}</p>
+              <p className="mt-1 text-xs text-text-muted">v{extension.version}</p>
             </div>
           </div>
 
@@ -391,14 +415,16 @@ function ExtensionDetail({
             <div>
               <div className="flex items-center gap-1 text-text-primary">
                 <Star className="h-4 w-4 text-accent-warning" />
-                {rating.toFixed(1)}
+                {formatRating(extension.averageRating)}
               </div>
-              <div className="text-xs text-text-muted">{ratingCount.toLocaleString()} ratings</div>
+              <div className="text-xs text-text-muted">
+                {extension.reviewCount.toLocaleString()} ratings
+              </div>
             </div>
             <div>
               <div className="flex items-center gap-1 text-text-primary">
                 <Download className="h-4 w-4" />
-                {downloads.toLocaleString()}
+                {extension.downloadCount.toLocaleString()}
               </div>
               <div className="text-xs text-text-muted">downloads</div>
             </div>
@@ -408,30 +434,32 @@ function ExtensionDetail({
           <div className="mt-4 flex gap-2">
             {!isInstalled ? (
               <button
-                onClick={() => onInstall(manifest)}
-                className="flex-1 rounded bg-accent-primary py-2 text-sm font-medium text-text-inverse hover:bg-accent-primary/90"
+                onClick={() => onInstall(extension)}
+                disabled={isInstalling}
+                className="flex flex-1 items-center justify-center gap-2 rounded bg-accent-primary py-2 text-sm font-medium text-text-inverse hover:bg-accent-primary/90 disabled:opacity-50"
               >
+                {isInstalling && <Loader2 className="h-4 w-4 animate-spin" />}
                 Install
               </button>
             ) : (
               <>
-                {isEnabled ? (
-                  <button
-                    onClick={() => onDisable(manifest.id)}
-                    className="flex-1 rounded border border-border-default py-2 text-sm text-text-secondary hover:bg-overlay"
-                  >
-                    Disable
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => onEnable(manifest.id)}
-                    className="flex-1 rounded bg-accent-primary py-2 text-sm font-medium text-text-inverse hover:bg-accent-primary/90"
-                  >
-                    Enable
-                  </button>
-                )}
                 <button
-                  onClick={() => onUninstall(manifest.id)}
+                  onClick={() =>
+                    onToggle(installedInfo.extension_id, !isEnabled, installedInfo.scope)
+                  }
+                  disabled={isToggling}
+                  className={cn(
+                    'flex flex-1 items-center justify-center gap-2 rounded border py-2 text-sm',
+                    isEnabled
+                      ? 'border-border-default text-text-secondary hover:bg-overlay'
+                      : 'border-transparent bg-accent-primary font-medium text-text-inverse hover:bg-accent-primary/90'
+                  )}
+                >
+                  {isToggling && <Loader2 className="h-4 w-4 animate-spin" />}
+                  {isEnabled ? 'Disable' : 'Enable'}
+                </button>
+                <button
+                  onClick={() => onUninstall(installedInfo.extension_id, installedInfo.scope)}
                   className="rounded border border-accent-error/50 px-4 py-2 text-sm text-accent-error hover:bg-accent-error/10"
                 >
                   Uninstall
@@ -444,36 +472,42 @@ function ExtensionDetail({
         {/* Description */}
         <div className="border-t border-border-subtle px-6 py-4">
           <h4 className="mb-2 text-sm font-medium text-text-primary">Description</h4>
-          <p className="text-sm text-text-secondary">{manifest.description}</p>
+          <p className="text-sm text-text-secondary">{extension.description}</p>
         </div>
 
-        {/* Categories */}
-        <div className="border-t border-border-subtle px-6 py-4">
-          <h4 className="mb-2 text-sm font-medium text-text-primary">Categories</h4>
-          <div className="flex flex-wrap gap-2">
-            {manifest.categories.map((cat) => (
-              <span
-                key={cat}
-                className="rounded-full bg-overlay px-3 py-1 text-xs text-text-secondary"
-              >
-                {cat}
-              </span>
-            ))}
-          </div>
-        </div>
-
-        {/* Permissions */}
-        {manifest.permissions.length > 0 && (
+        {/* Categories & Tags */}
+        {(extension.categories.length > 0 || extension.tags.length > 0) && (
           <div className="border-t border-border-subtle px-6 py-4">
-            <h4 className="mb-2 text-sm font-medium text-text-primary">Permissions</h4>
-            <ul className="space-y-1">
-              {manifest.permissions.map((perm) => (
-                <li key={perm} className="flex items-center gap-2 text-xs text-text-secondary">
-                  <ChevronRight className="h-3 w-3 text-text-muted" />
-                  {perm}
-                </li>
-              ))}
-            </ul>
+            {extension.categories.length > 0 && (
+              <>
+                <h4 className="mb-2 text-sm font-medium text-text-primary">Categories</h4>
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {extension.categories.map((cat) => (
+                    <span
+                      key={cat}
+                      className="rounded-full bg-overlay px-3 py-1 text-xs text-text-secondary"
+                    >
+                      {cat}
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
+            {extension.tags.length > 0 && (
+              <>
+                <h4 className="mb-2 text-sm font-medium text-text-primary">Tags</h4>
+                <div className="flex flex-wrap gap-2">
+                  {extension.tags.slice(0, 10).map((tag) => (
+                    <span
+                      key={tag}
+                      className="rounded-full bg-overlay px-3 py-1 text-xs text-text-muted"
+                    >
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -481,19 +515,25 @@ function ExtensionDetail({
         <div className="border-t border-border-subtle px-6 py-4">
           <h4 className="mb-2 text-sm font-medium text-text-primary">More Info</h4>
           <div className="space-y-2 text-xs">
-            <div className="flex justify-between">
-              <span className="text-text-muted">Last updated</span>
-              <span className="text-text-secondary">{lastUpdated}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-text-muted">License</span>
-              <span className="text-text-secondary">{manifest.license}</span>
-            </div>
-            {manifest.repository && (
+            {extension.timestamp && (
+              <div className="flex justify-between">
+                <span className="text-text-muted">Last updated</span>
+                <span className="text-text-secondary">
+                  {new Date(extension.timestamp).toLocaleDateString()}
+                </span>
+              </div>
+            )}
+            {extension.license && (
+              <div className="flex justify-between">
+                <span className="text-text-muted">License</span>
+                <span className="text-text-secondary">{extension.license}</span>
+              </div>
+            )}
+            {extension.repository && (
               <div className="flex justify-between">
                 <span className="text-text-muted">Repository</span>
                 <a
-                  href={manifest.repository}
+                  href={extension.repository}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-1 text-accent-primary hover:underline"
@@ -504,6 +544,17 @@ function ExtensionDetail({
             )}
           </div>
         </div>
+
+        {/* README */}
+        {detail?.readme && (
+          <div className="border-t border-border-subtle px-6 py-4">
+            <h4 className="mb-2 text-sm font-medium text-text-primary">README</h4>
+            <div
+              className="prose prose-sm prose-invert max-w-none text-text-secondary"
+              dangerouslySetInnerHTML={{ __html: detail.readme }}
+            />
+          </div>
+        )}
       </div>
     </motion.div>
   );
@@ -516,222 +567,345 @@ function ExtensionDetail({
 interface ExtensionMarketplaceProps {
   onClose?: () => void;
   className?: string;
+  workspaceId?: string;
 }
 
-export function ExtensionMarketplace({ onClose, className }: ExtensionMarketplaceProps) {
-  const {
-    extensions: installedExtensions,
-    installExtension,
-    uninstallExtension,
-    enableExtension,
-    disableExtension,
-  } = useExtensionHost();
+export function ExtensionMarketplace({
+  onClose,
+  className,
+  workspaceId: propWorkspaceId,
+}: ExtensionMarketplaceProps) {
+  const queryClient = useQueryClient();
+  const sessionWorkspaceId = useSessionStore((s) => {
+    const session = s.currentSessionId ? s.sessions[s.currentSessionId] : null;
+    return session?.workspaceId;
+  });
+  const workspaceId = propWorkspaceId || sessionWorkspaceId;
 
   const [tab, setTab] = useState<TabType>('marketplace');
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [sortBy, setSortBy] = useState<SortType>('relevance');
-  const [categoryFilter, setCategoryFilter] = useState<ExtensionCategory | 'all'>('all');
-  const [selectedExtension, setSelectedExtension] = useState<MarketplaceExtension | null>(null);
-  const [_installing, setInstalling] = useState<string | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState<CategoryType>('all');
+  const [selectedExtension, setSelectedExtension] = useState<OpenVSXExtension | null>(null);
+  const [installDialog, setInstallDialog] = useState<OpenVSXExtension | null>(null);
+
+  // Debounce search query
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(searchQuery), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Search marketplace extensions
+  const searchParams: ExtensionSearchParams = {
+    query: debouncedQuery || undefined,
+    category: categoryFilter !== 'all' ? categoryFilter : undefined,
+    sortBy: sortBy,
+    sortOrder: 'desc',
+    size: 50,
+  };
+
+  const {
+    data: marketplaceData,
+    isLoading: isSearching,
+    error: searchError,
+    refetch: refetchMarketplace,
+  } = useQuery({
+    queryKey: ['extensions-search', searchParams],
+    queryFn: () => searchExtensions(searchParams),
+    enabled: tab === 'marketplace',
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
+
+  // Fetch installed extensions
+  const {
+    data: installedExtensions = [],
+    isLoading: isLoadingInstalled,
+    refetch: refetchInstalled,
+  } = useQuery({
+    queryKey: ['extensions-installed', workspaceId],
+    queryFn: () => getInstalledExtensions(workspaceId),
+    staleTime: 30 * 1000, // 30 seconds
+  });
 
   // Create installed map for quick lookup
   const installedMap = useMemo(() => {
-    const map = new Map<string, ExtensionInfo>();
-    installedExtensions.forEach((ext) => map.set(ext.manifest.id, ext));
+    const map = new Map<string, InstalledExtension>();
+    installedExtensions.forEach((ext) => {
+      const id = createExtensionId(ext.namespace, ext.name);
+      map.set(id, ext);
+    });
     return map;
   }, [installedExtensions]);
 
-  // Filter and sort marketplace extensions
-  const filteredExtensions = useMemo(() => {
-    let filtered =
-      tab === 'installed'
-        ? installedExtensions.map(
-            (info) =>
-              MOCK_EXTENSIONS.find((e) => e.manifest.id === info.manifest.id) || {
-                manifest: info.manifest,
-                downloads: 0,
-                rating: 0,
-                ratingCount: 0,
-                lastUpdated: '',
-                verified: false,
-              }
-          )
-        : MOCK_EXTENSIONS;
+  // Install mutation
+  const installMutation = useMutation({
+    mutationFn: async ({
+      extension,
+      scope,
+    }: {
+      extension: OpenVSXExtension;
+      scope: InstallScope;
+    }) => {
+      return installExtensionApi({
+        extension_id: createExtensionId(extension.namespace, extension.name),
+        version: extension.version,
+        scope,
+        workspace_id: scope === 'workspace' ? workspaceId : undefined,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['extensions-installed'] });
+      setInstallDialog(null);
+    },
+  });
 
-    // Apply search filter
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      filtered = filtered.filter(
-        (ext) =>
-          ext.manifest.displayName.toLowerCase().includes(query) ||
-          ext.manifest.description.toLowerCase().includes(query) ||
-          ext.manifest.keywords.some((k) => k.toLowerCase().includes(query))
+  // Uninstall mutation
+  const uninstallMutation = useMutation({
+    mutationFn: async ({ extensionId, scope }: { extensionId: string; scope: InstallScope }) => {
+      return uninstallExtensionApi(
+        extensionId,
+        scope,
+        scope === 'workspace' ? workspaceId : undefined
       );
-    }
-
-    // Apply category filter
-    if (categoryFilter !== 'all') {
-      filtered = filtered.filter((ext) => ext.manifest.categories.includes(categoryFilter));
-    }
-
-    // Apply sorting
-    switch (sortBy) {
-      case 'downloads':
-        filtered = [...filtered].sort((a, b) => b.downloads - a.downloads);
-        break;
-      case 'rating':
-        filtered = [...filtered].sort((a, b) => b.rating - a.rating);
-        break;
-      case 'recent':
-        filtered = [...filtered].sort(
-          (a, b) => new Date(b.lastUpdated).getTime() - new Date(a.lastUpdated).getTime()
-        );
-        break;
-      default:
-        // relevance - keep original order for now
-        break;
-    }
-
-    return filtered;
-  }, [tab, searchQuery, sortBy, categoryFilter, installedExtensions]);
-
-  // Handlers
-  const handleInstall = useCallback(
-    async (manifest: ExtensionManifest) => {
-      setInstalling(manifest.id);
-      try {
-        // In a real implementation, we'd fetch the extension code from a server
-        const mockCode = `
-          return {
-            activate: function(context) {
-              console.log('Extension ${manifest.displayName} activated');
-              return {};
-            },
-            deactivate: function() {
-              console.log('Extension ${manifest.displayName} deactivated');
-            }
-          };
-        `;
-        await installExtension(manifest, mockCode);
-      } finally {
-        setInstalling(null);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['extensions-installed'] });
+      if (selectedExtension) {
+        const id = createExtensionId(selectedExtension.namespace, selectedExtension.name);
+        if (installedMap.get(id)?.extension_id === id) {
+          setSelectedExtension(null);
+        }
       }
     },
-    [installExtension]
+  });
+
+  // Toggle mutation
+  const toggleMutation = useMutation({
+    mutationFn: async ({
+      extensionId,
+      enabled,
+      scope,
+    }: {
+      extensionId: string;
+      enabled: boolean;
+      scope: InstallScope;
+    }) => {
+      return toggleExtension(
+        extensionId,
+        enabled,
+        scope,
+        scope === 'workspace' ? workspaceId : undefined
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['extensions-installed'] });
+    },
+  });
+
+  // Handlers
+  const handleInstallClick = useCallback((extension: OpenVSXExtension) => {
+    setInstallDialog(extension);
+  }, []);
+
+  const handleInstall = useCallback(
+    (scope: InstallScope) => {
+      if (installDialog) {
+        installMutation.mutate({ extension: installDialog, scope });
+      }
+    },
+    [installDialog, installMutation]
   );
 
   const handleUninstall = useCallback(
-    async (extensionId: string) => {
-      await uninstallExtension(extensionId);
-      if (selectedExtension?.manifest.id === extensionId) {
-        setSelectedExtension(null);
-      }
+    (extensionId: string, scope: InstallScope) => {
+      uninstallMutation.mutate({ extensionId, scope });
     },
-    [uninstallExtension, selectedExtension]
+    [uninstallMutation]
   );
 
-  const categories: { value: ExtensionCategory | 'all'; label: string }[] = [
+  const handleToggle = useCallback(
+    (extensionId: string, enabled: boolean, scope: InstallScope) => {
+      toggleMutation.mutate({ extensionId, enabled, scope });
+    },
+    [toggleMutation]
+  );
+
+  // Get extensions to display
+  const displayExtensions = useMemo(() => {
+    if (tab === 'installed') {
+      // Convert installed extensions to OpenVSXExtension format for display
+      return installedExtensions.map(
+        (installed): OpenVSXExtension => ({
+          namespace: installed.namespace,
+          name: installed.name,
+          displayName: installed.display_name,
+          version: installed.version,
+          description: null,
+          publisherDisplayName: installed.publisher,
+          verified: false,
+          downloadCount: 0,
+          averageRating: null,
+          reviewCount: 0,
+          timestamp: installed.installed_at,
+          preview: false,
+          categories: [],
+          tags: [],
+          iconUrl: installed.icon_url,
+          repository: null,
+          license: null,
+        })
+      );
+    }
+    return marketplaceData?.extensions ?? [];
+  }, [tab, installedExtensions, marketplaceData]);
+
+  // Filter installed extensions by search
+  const filteredExtensions = useMemo(() => {
+    if (!searchQuery || tab === 'marketplace') return displayExtensions;
+
+    const query = searchQuery.toLowerCase();
+    return displayExtensions.filter(
+      (ext) =>
+        (ext.displayName || ext.name).toLowerCase().includes(query) ||
+        (ext.description || '').toLowerCase().includes(query) ||
+        ext.namespace.toLowerCase().includes(query)
+    );
+  }, [displayExtensions, searchQuery, tab]);
+
+  const categories: { value: CategoryType; label: string }[] = [
     { value: 'all', label: 'All' },
-    { value: 'themes', label: 'Themes' },
-    { value: 'languages', label: 'Languages' },
-    { value: 'linters', label: 'Linters' },
-    { value: 'formatters', label: 'Formatters' },
-    { value: 'productivity', label: 'Productivity' },
-    { value: 'snippets', label: 'Snippets' },
-    { value: 'other', label: 'Other' },
+    { value: 'Programming Languages', label: 'Languages' },
+    { value: 'Themes', label: 'Themes' },
+    { value: 'Linters', label: 'Linters' },
+    { value: 'Formatters', label: 'Formatters' },
+    { value: 'Debuggers', label: 'Debuggers' },
+    { value: 'Other', label: 'Other' },
   ];
 
+  const isLoading = tab === 'marketplace' ? isSearching : isLoadingInstalled;
+
   return (
-    <div className={cn('flex h-full bg-elevated', className)}>
-      {/* Main Panel */}
-      <div className="flex flex-1 flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-border-default px-4 py-3">
-          <div className="flex items-center gap-2">
-            <Box className="h-5 w-5 text-accent-primary" />
-            <h1 className="text-sm font-medium text-text-primary">Extensions</h1>
+    <>
+      <div className={cn('flex h-full bg-elevated', className)}>
+        {/* Main Panel */}
+        <div className="flex flex-1 flex-col">
+          {/* Header */}
+          <div className="flex items-center justify-between border-b border-border-default px-4 py-3">
+            <div className="flex items-center gap-2">
+              <Box className="h-5 w-5 text-accent-primary" />
+              <h1 className="text-sm font-medium text-text-primary">Extensions</h1>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  refetchMarketplace();
+                  refetchInstalled();
+                }}
+                className="rounded p-1 text-text-muted hover:bg-overlay hover:text-text-secondary"
+                title="Refresh"
+              >
+                <RefreshCw className="h-4 w-4" />
+              </button>
+              {onClose && (
+                <button
+                  onClick={onClose}
+                  className="rounded p-1 text-text-muted hover:bg-overlay hover:text-text-secondary"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
           </div>
-          {onClose && (
+
+          {/* Tabs */}
+          <div className="flex border-b border-border-subtle px-4">
             <button
-              onClick={onClose}
-              className="rounded p-1 text-text-muted hover:bg-overlay hover:text-text-secondary"
+              onClick={() => setTab('marketplace')}
+              className={cn(
+                'border-b-2 px-4 py-2 text-sm',
+                tab === 'marketplace'
+                  ? 'border-accent-primary text-accent-primary'
+                  : 'border-transparent text-text-muted hover:text-text-secondary'
+              )}
             >
-              <X className="h-4 w-4" />
+              Marketplace
             </button>
-          )}
-        </div>
-
-        {/* Tabs */}
-        <div className="flex border-b border-border-subtle px-4">
-          <button
-            onClick={() => setTab('marketplace')}
-            className={cn(
-              'border-b-2 px-4 py-2 text-sm',
-              tab === 'marketplace'
-                ? 'border-accent-primary text-accent-primary'
-                : 'border-transparent text-text-muted hover:text-text-secondary'
-            )}
-          >
-            Marketplace
-          </button>
-          <button
-            onClick={() => setTab('installed')}
-            className={cn(
-              'border-b-2 px-4 py-2 text-sm',
-              tab === 'installed'
-                ? 'border-accent-primary text-accent-primary'
-                : 'border-transparent text-text-muted hover:text-text-secondary'
-            )}
-          >
-            Installed ({installedExtensions.length})
-          </button>
-        </div>
-
-        {/* Search and Filters */}
-        <div className="space-y-2 border-b border-border-subtle p-4">
-          {/* Search */}
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search extensions..."
-              className="w-full rounded-md border border-border-default bg-surface py-2 pl-9 pr-3 text-sm text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:outline-none"
-            />
+            <button
+              onClick={() => setTab('installed')}
+              className={cn(
+                'border-b-2 px-4 py-2 text-sm',
+                tab === 'installed'
+                  ? 'border-accent-primary text-accent-primary'
+                  : 'border-transparent text-text-muted hover:text-text-secondary'
+              )}
+            >
+              Installed ({installedExtensions.length})
+            </button>
           </div>
 
-          {/* Filters */}
-          <div className="flex items-center gap-2">
-            <select
-              value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value as ExtensionCategory | 'all')}
-              className="rounded border border-border-default bg-surface px-2 py-1 text-xs text-text-secondary focus:outline-none"
-            >
-              {categories.map((cat) => (
-                <option key={cat.value} value={cat.value}>
-                  {cat.label}
-                </option>
-              ))}
-            </select>
+          {/* Search and Filters */}
+          <div className="space-y-2 border-b border-border-subtle p-4">
+            {/* Search */}
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search extensions..."
+                className="w-full rounded-md border border-border-default bg-surface py-2 pl-9 pr-3 text-sm text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:outline-none"
+              />
+            </div>
 
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as SortType)}
-              className="rounded border border-border-default bg-surface px-2 py-1 text-xs text-text-secondary focus:outline-none"
-            >
-              <option value="relevance">Relevance</option>
-              <option value="downloads">Most Downloads</option>
-              <option value="rating">Highest Rated</option>
-              <option value="recent">Recently Updated</option>
-            </select>
+            {/* Filters - only show for marketplace */}
+            {tab === 'marketplace' && (
+              <div className="flex items-center gap-2">
+                <select
+                  value={categoryFilter}
+                  onChange={(e) => setCategoryFilter(e.target.value as CategoryType)}
+                  className="rounded border border-border-default bg-surface px-2 py-1 text-xs text-text-secondary focus:outline-none"
+                >
+                  {categories.map((cat) => (
+                    <option key={cat.value} value={cat.value}>
+                      {cat.label}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as SortType)}
+                  className="rounded border border-border-default bg-surface px-2 py-1 text-xs text-text-secondary focus:outline-none"
+                >
+                  <option value="relevance">Relevance</option>
+                  <option value="downloadCount">Most Downloads</option>
+                  <option value="rating">Highest Rated</option>
+                  <option value="timestamp">Recently Updated</option>
+                </select>
+              </div>
+            )}
           </div>
-        </div>
 
-        {/* Extension List */}
-        <div className="flex-1 overflow-y-auto p-4">
-          <div className="space-y-3">
-            {filteredExtensions.length === 0 ? (
+          {/* Extension List */}
+          <div className="flex-1 overflow-y-auto p-4">
+            {isLoading ? (
+              <div className="flex flex-col items-center justify-center py-12">
+                <Loader2 className="h-8 w-8 animate-spin text-accent-primary" />
+                <p className="mt-4 text-sm text-text-muted">Loading extensions...</p>
+              </div>
+            ) : searchError ? (
+              <div className="flex flex-col items-center justify-center py-12 text-center">
+                <AlertCircle className="h-12 w-12 text-accent-error" />
+                <p className="mt-4 text-sm text-accent-error">Failed to load extensions</p>
+                <button
+                  onClick={() => refetchMarketplace()}
+                  className="mt-2 text-sm text-accent-primary hover:underline"
+                >
+                  Try again
+                </button>
+              </div>
+            ) : filteredExtensions.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12 text-center">
                 <Box className="h-12 w-12 text-text-muted" />
                 <p className="mt-4 text-sm text-text-muted">
@@ -743,38 +917,64 @@ export function ExtensionMarketplace({ onClose, className }: ExtensionMarketplac
                 </p>
               </div>
             ) : (
-              filteredExtensions.map((ext) => (
-                <ExtensionCard
-                  key={ext.manifest.id}
-                  extension={ext}
-                  installedInfo={installedMap.get(ext.manifest.id)}
-                  onInstall={handleInstall}
-                  onUninstall={handleUninstall}
-                  onEnable={enableExtension}
-                  onDisable={disableExtension}
-                  onClick={() => setSelectedExtension(ext)}
-                />
-              ))
+              <div className="space-y-3">
+                {filteredExtensions.map((ext) => {
+                  const extId = createExtensionId(ext.namespace, ext.name);
+                  return (
+                    <ExtensionCard
+                      key={extId}
+                      extension={ext}
+                      installedInfo={installedMap.get(extId)}
+                      onInstall={handleInstallClick}
+                      onUninstall={handleUninstall}
+                      onToggle={handleToggle}
+                      onClick={() => setSelectedExtension(ext)}
+                      isInstalling={
+                        installMutation.isPending &&
+                        installDialog?.namespace === ext.namespace &&
+                        installDialog?.name === ext.name
+                      }
+                      isToggling={toggleMutation.isPending}
+                    />
+                  );
+                })}
+              </div>
             )}
           </div>
         </div>
+
+        {/* Detail Panel */}
+        <AnimatePresence>
+          {selectedExtension && (
+            <ExtensionDetailPanel
+              extension={selectedExtension}
+              installedInfo={installedMap.get(
+                createExtensionId(selectedExtension.namespace, selectedExtension.name)
+              )}
+              onClose={() => setSelectedExtension(null)}
+              onInstall={handleInstallClick}
+              onUninstall={handleUninstall}
+              onToggle={handleToggle}
+              isInstalling={installMutation.isPending}
+              isToggling={toggleMutation.isPending}
+            />
+          )}
+        </AnimatePresence>
       </div>
 
-      {/* Detail Panel */}
+      {/* Install Scope Dialog */}
       <AnimatePresence>
-        {selectedExtension && (
-          <ExtensionDetail
-            extension={selectedExtension}
-            installedInfo={installedMap.get(selectedExtension.manifest.id)}
-            onClose={() => setSelectedExtension(null)}
+        {installDialog && (
+          <InstallScopeDialog
+            extension={installDialog}
+            workspaceId={workspaceId}
             onInstall={handleInstall}
-            onUninstall={handleUninstall}
-            onEnable={enableExtension}
-            onDisable={disableExtension}
+            onCancel={() => setInstallDialog(null)}
+            isInstalling={installMutation.isPending}
           />
         )}
       </AnimatePresence>
-    </div>
+    </>
   );
 }
 
@@ -785,11 +985,17 @@ export function ExtensionMarketplace({ onClose, className }: ExtensionMarketplac
 interface ExtensionIconButtonProps {
   onClick: () => void;
   className?: string;
+  workspaceId?: string;
 }
 
-export function ExtensionIconButton({ onClick, className }: ExtensionIconButtonProps) {
-  const { extensions } = useExtensionHost();
-  const activeCount = extensions.filter((e) => e.state === 'active').length;
+export function ExtensionIconButton({ onClick, className, workspaceId }: ExtensionIconButtonProps) {
+  const { data: extensions = [] } = useQuery({
+    queryKey: ['extensions-installed', workspaceId],
+    queryFn: () => getInstalledExtensions(workspaceId),
+    staleTime: 30 * 1000,
+  });
+
+  const activeCount = extensions.filter((e) => e.enabled).length;
 
   return (
     <button

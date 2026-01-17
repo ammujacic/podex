@@ -11,6 +11,7 @@ const footerLinks = {
     { name: 'Features', href: '/#features' },
     { name: 'Pricing', href: '/#pricing' },
     { name: 'Agents', href: '/agents' },
+    { name: 'Compare', href: '/compare' },
     { name: 'Changelog', href: '/changelog' },
     { name: 'Roadmap', href: '/roadmap' },
   ],
@@ -19,6 +20,7 @@ const footerLinks = {
     { name: 'API Reference', href: '/docs/api' },
     { name: 'Guides', href: '/docs/guides' },
     { name: 'Examples', href: '/examples' },
+    { name: 'Glossary', href: '/glossary' },
     { name: 'Blog', href: '/blog' },
   ],
   Company: [
@@ -126,8 +128,11 @@ export function Footer() {
               <Logo />
             </div>
             <p className="text-text-secondary mb-6 max-w-xs">
-              Your AI development Pods in the Cloud. Build software faster with specialized agents
-              that plan, code, review, and deploy.
+              Podex is a web-based agentic IDE platform that enables developers to deploy pods of
+              specialized AI agents that remember context, plan tasks, and execute code together.
+              Unlike traditional code assistants that offer single-turn suggestions, Podex provides
+              a multi-agent development environment where AI agents collaborate on complex software
+              projects from planning to deployment.
             </p>
 
             {/* Social links */}

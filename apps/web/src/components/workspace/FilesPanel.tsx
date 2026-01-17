@@ -7,17 +7,20 @@ import {
   File,
   Folder,
   FolderOpen,
-  FolderTree,
   Loader2,
   RefreshCw,
   CloudSync,
 } from 'lucide-react';
-import { useSessionStore, type FilePreview } from '@/stores/session';
+import { useSessionStore } from '@/stores/session';
+import { useEditorStore } from '@/stores/editor';
 import { useUIStore } from '@/stores/ui';
 import { cn } from '@/lib/utils';
+import { NoFilesEmptyState, ErrorEmptyState, EmptyFolderState } from '@/components/ui/EmptyState';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { getLanguageFromPath } from './CodeEditor';
 import { listFiles, getFileContent, type FileNode } from '@/lib/api';
+import { MobileFileItem } from './MobileFileItem';
+import { MobileFileActionsSheet } from './MobileFileActionsSheet';
 
 interface FilesPanelProps {
   sessionId: string;
@@ -128,14 +131,7 @@ function FileTreeNode({
                   onLoadFolder={onLoadFolder}
                 />
               ))}
-            {children.length === 0 && (
-              <div
-                className="py-1 text-xs text-text-muted italic"
-                style={{ paddingLeft: paddingLeft + 24 }}
-              >
-                Empty folder
-              </div>
-            )}
+            {children.length === 0 && <EmptyFolderState size="sm" />}
           </div>
         )}
       </div>
@@ -160,12 +156,88 @@ function FileTreeNode({
   );
 }
 
+// Mobile-specific file tree node that uses MobileFileItem with swipe gestures
+interface MobileFileTreeNodeProps {
+  item: FileNode;
+  depth: number;
+  sessionId: string;
+  onFileClick: (path: string) => void;
+  onCopyPath: (path: string) => void;
+  expandedFolders: Set<string>;
+  onToggleFolder: (path: string) => void;
+  loadedFolders: Map<string, FileNode[]>;
+  loadingFolders: Set<string>;
+  onLoadFolder: (path: string) => void;
+}
+
+function MobileFileTreeNode({
+  item,
+  depth,
+  sessionId,
+  onFileClick,
+  onCopyPath,
+  expandedFolders,
+  onToggleFolder,
+  loadedFolders,
+  loadingFolders,
+  onLoadFolder,
+}: MobileFileTreeNodeProps) {
+  const isExpanded = expandedFolders.has(item.path);
+  const isLoading = loadingFolders.has(item.path);
+  const children = loadedFolders.get(item.path);
+
+  const handleToggleFolder = useCallback(() => {
+    if (!isExpanded && !loadedFolders.has(item.path)) {
+      onLoadFolder(item.path);
+    }
+    onToggleFolder(item.path);
+  }, [isExpanded, item.path, loadedFolders, onLoadFolder, onToggleFolder]);
+
+  return (
+    <MobileFileItem
+      item={item}
+      depth={depth}
+      sessionId={sessionId}
+      onFileClick={onFileClick}
+      onCopyPath={onCopyPath}
+      isExpanded={isExpanded}
+      isLoading={isLoading}
+      onToggleFolder={handleToggleFolder}
+    >
+      {item.type === 'directory' && isExpanded && children && (
+        <>
+          {children
+            .filter((child) => child.path || child.name)
+            .map((child, index) => (
+              <MobileFileTreeNode
+                key={child.path || `${item.path}-${index}-${child.name}`}
+                item={child}
+                depth={depth + 1}
+                sessionId={sessionId}
+                onFileClick={onFileClick}
+                onCopyPath={onCopyPath}
+                expandedFolders={expandedFolders}
+                onToggleFolder={onToggleFolder}
+                loadedFolders={loadedFolders}
+                loadingFolders={loadingFolders}
+                onLoadFolder={onLoadFolder}
+              />
+            ))}
+          {children.length === 0 && <EmptyFolderState size="sm" />}
+        </>
+      )}
+    </MobileFileItem>
+  );
+}
+
 export function FilesPanel({ sessionId }: FilesPanelProps) {
-  const { openFilePreview, sessions } = useSessionStore();
+  const { sessions, createEditorGridCard } = useSessionStore();
+  const openTab = useEditorStore((s) => s.openTab);
   const openMobileFile = useUIStore((state) => state.openMobileFile);
   const closeMobileWidget = useUIStore((state) => state.closeMobileWidget);
   const isMobile = useIsMobile();
-  const viewMode = sessions[sessionId]?.viewMode ?? 'grid';
+  const session = sessions[sessionId];
+  const editorGridCardId = session?.editorGridCardId;
   const [rootFiles, setRootFiles] = useState<FileNode[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const [filesError, setFilesError] = useState<string | null>(null);
@@ -247,18 +319,22 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
           closeMobileWidget(); // Close the files widget first
           openMobileFile(fileContent.path, fileContent.content, fileContent.language);
         } else {
-          // On desktop, use the normal file preview
-          const shouldDock = viewMode !== 'freeform';
-          const preview: FilePreview = {
-            id: `preview-${Date.now()}`,
+          // On desktop, open file as a tab in the consolidated editor
+          // Create the editor grid card if it doesn't exist
+          if (!editorGridCardId) {
+            createEditorGridCard(sessionId);
+          }
+
+          // Open file as a tab in the editor store
+          const fileName = fileContent.path.split('/').pop() || fileContent.path;
+          openTab({
             path: fileContent.path,
-            content: fileContent.content,
+            name: fileName,
             language: fileContent.language,
-            pinned: false,
-            position: { x: 100 + Math.random() * 200, y: 100 + Math.random() * 100 },
-            docked: shouldDock,
-          };
-          openFilePreview(sessionId, preview);
+            isDirty: false,
+            isPreview: true, // Single-click opens as preview
+            paneId: 'main',
+          });
         }
       } catch (err) {
         console.error('Failed to load file content:', err);
@@ -269,21 +345,49 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
           closeMobileWidget();
           openMobileFile(path, errorContent, language);
         } else {
-          const shouldDock = viewMode !== 'freeform';
-          const preview: FilePreview = {
-            id: `preview-${Date.now()}`,
+          // Still try to open in editor even on error
+          if (!editorGridCardId) {
+            createEditorGridCard(sessionId);
+          }
+
+          const fileName = path.split('/').pop() || path;
+          openTab({
             path,
-            content: errorContent,
+            name: fileName,
             language,
-            pinned: false,
-            position: { x: 100 + Math.random() * 200, y: 100 + Math.random() * 100 },
-            docked: shouldDock,
-          };
-          openFilePreview(sessionId, preview);
+            isDirty: false,
+            isPreview: true,
+            paneId: 'main',
+          });
         }
       }
     },
-    [sessionId, openFilePreview, viewMode, isMobile, openMobileFile, closeMobileWidget]
+    [
+      sessionId,
+      editorGridCardId,
+      createEditorGridCard,
+      openTab,
+      isMobile,
+      openMobileFile,
+      closeMobileWidget,
+    ]
+  );
+
+  // Copy file path to clipboard
+  const handleCopyPath = useCallback(async (path: string) => {
+    try {
+      await navigator.clipboard.writeText(path);
+    } catch (err) {
+      console.error('Failed to copy path:', err);
+    }
+  }, []);
+
+  // Handle open from actions sheet
+  const handleOpenFromSheet = useCallback(
+    (path: string) => {
+      handleFileClick(path);
+    },
+    [handleFileClick]
   );
 
   return (
@@ -309,18 +413,30 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
             <Loader2 className="h-5 w-5 animate-spin text-text-muted" />
           </div>
         ) : filesError ? (
-          <div className="p-4 text-center">
-            <p className="text-accent-error text-sm mb-2">{filesError}</p>
-            <button onClick={handleRefresh} className="text-sm text-accent-primary hover:underline">
-              Retry
-            </button>
-          </div>
+          <ErrorEmptyState message={filesError} onRetry={handleRefresh} size="sm" />
         ) : rootFiles.length === 0 ? (
-          <div className="p-4 text-center text-text-muted text-sm">
-            <FolderTree className="mx-auto mb-2 h-8 w-8 opacity-50" />
-            <p>Empty workspace</p>
-          </div>
+          <NoFilesEmptyState size="sm" />
+        ) : isMobile ? (
+          // Mobile: Use swipeable file items
+          rootFiles
+            .filter((item) => item.path || item.name)
+            .map((item, index) => (
+              <MobileFileTreeNode
+                key={item.path || `file-${index}-${item.name}`}
+                item={item}
+                depth={0}
+                sessionId={sessionId}
+                onFileClick={handleFileClick}
+                onCopyPath={handleCopyPath}
+                expandedFolders={expandedFolders}
+                onToggleFolder={handleToggleFolder}
+                loadedFolders={loadedFolders}
+                loadingFolders={loadingFolders}
+                onLoadFolder={loadFolder}
+              />
+            ))
         ) : (
+          // Desktop: Use regular file tree
           rootFiles
             .filter((item) => item.path || item.name)
             .map((item, index) => (
@@ -339,6 +455,15 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
             ))
         )}
       </div>
+
+      {/* Mobile file actions sheet */}
+      {isMobile && (
+        <MobileFileActionsSheet
+          sessionId={sessionId}
+          onOpen={handleOpenFromSheet}
+          onCopyPath={handleCopyPath}
+        />
+      )}
     </div>
   );
 }

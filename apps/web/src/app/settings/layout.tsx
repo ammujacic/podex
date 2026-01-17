@@ -21,6 +21,7 @@ import {
   BarChart3,
   Package,
   CreditCard,
+  Building2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -33,6 +34,7 @@ const settingsNavItems = [
   { href: '/settings/voice', label: 'Voice & Audio', icon: Volume2 },
   { href: '/settings/local-pods', label: 'Local Pods', icon: Server },
   { href: '/settings/integrations', label: 'Integrations', icon: Plug },
+  { href: '/settings/organization', label: 'Organization', icon: Building2 },
   { href: '/settings/usage', label: 'Usage', icon: BarChart3 },
   { href: '/settings/plans', label: 'Plans', icon: Package },
   { href: '/settings/billing', label: 'Billing', icon: CreditCard },

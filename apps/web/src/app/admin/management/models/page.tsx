@@ -281,7 +281,7 @@ function EditModelModal({ model, onClose, onSave }: EditModelModalProps) {
                 onChange={(e) => setFormData({ ...formData, provider: e.target.value })}
                 className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
               >
-                <option value="bedrock">Bedrock</option>
+                <option value="vertex">Vertex AI</option>
                 <option value="openai">OpenAI</option>
                 <option value="anthropic">Anthropic</option>
                 <option value="google">Google</option>
@@ -295,9 +295,8 @@ function EditModelModal({ model, onClose, onSave }: EditModelModalProps) {
                 className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
               >
                 <option value="anthropic">Anthropic</option>
+                <option value="gemini">Gemini</option>
                 <option value="meta">Meta</option>
-                <option value="amazon">Amazon</option>
-                <option value="cohere">Cohere</option>
                 <option value="mistral">Mistral</option>
                 <option value="openai">OpenAI</option>
                 <option value="google">Google</option>

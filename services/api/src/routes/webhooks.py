@@ -1,7 +1,6 @@
 """Stripe webhook handlers for payment and subscription events."""
 
 from datetime import UTC, datetime, timedelta
-from json import loads as json_loads
 from typing import Any
 
 import stripe
@@ -22,6 +21,7 @@ from src.database.models import (
     User,
     UserSubscription,
 )
+from src.routes.billing import generate_invoice_number
 from src.services.email import EmailTemplate, get_email_service
 
 logger = structlog.get_logger()
@@ -52,13 +52,11 @@ async def _log_billing_event(
     event = BillingEvent(
         user_id=user_id,
         event_type=event_type,
-        event_data={
-            **event_data,
-            "stripe_event_id": stripe_event_id,
-            "transaction_id": transaction_id,
-        },
+        event_data=event_data,
+        stripe_event_id=stripe_event_id,  # Store in dedicated indexed column
         subscription_id=subscription_id,
         invoice_id=invoice_id,
+        transaction_id=transaction_id,
     )
     db.add(event)
 
@@ -266,26 +264,17 @@ async def handle_stripe_webhook(request: Request) -> dict[str, str]:
     if not sig_header:
         raise HTTPException(status_code=400, detail="Missing Stripe signature")
 
-    # Verify webhook signature
+    # Verify webhook signature - REQUIRED in all environments for security
     try:
-        if settings.STRIPE_WEBHOOK_SECRET:
-            event = stripe.Webhook.construct_event(
-                payload, sig_header, settings.STRIPE_WEBHOOK_SECRET
+        if not settings.STRIPE_WEBHOOK_SECRET:
+            logger.error(
+                "STRIPE_WEBHOOK_SECRET not configured - webhook signature verification is required"
             )
-        elif settings.ENVIRONMENT == "development":
-            # Only allow unverified webhooks in development
-            logger.warning(
-                "Processing unverified webhook in development mode - "
-                "STRIPE_WEBHOOK_SECRET should be set"
-            )
-            event = stripe.Event.construct_from(json_loads(payload), stripe.api_key)
-        else:
-            # In production, webhook secret is required
-            logger.error("STRIPE_WEBHOOK_SECRET not configured in production")
             raise HTTPException(
                 status_code=503,
                 detail="Webhook verification not configured",
             )
+        event = stripe.Webhook.construct_event(payload, sig_header, settings.STRIPE_WEBHOOK_SECRET)
     except ValueError as e:
         logger.warning("Invalid webhook payload", error=str(e))
         raise HTTPException(status_code=400, detail="Invalid payload") from e
@@ -303,12 +292,9 @@ async def handle_stripe_webhook(request: Request) -> dict[str, str]:
     async for db in get_db():
         try:
             # Idempotency check - prevent duplicate event processing
-            # Check if this Stripe event ID was already processed
-
+            # Use dedicated indexed column for fast lookup
             existing_event = await db.execute(
-                select(BillingEvent).where(
-                    BillingEvent.event_data["stripe_event_id"].astext == event.id
-                )
+                select(BillingEvent).where(BillingEvent.stripe_event_id == event.id)
             )
             if existing_event.scalar_one_or_none():
                 logger.info(
@@ -591,10 +577,8 @@ async def handle_invoice_paid(
     invoice = result.scalar_one_or_none()
 
     if not invoice:
-        # Generate invoice number
-        count_result = await db.execute(select(Invoice).where(Invoice.user_id == user.id))
-        invoice_count = len(list(count_result.scalars().all()))
-        invoice_number = f"INV-{user.id[:8].upper()}-{invoice_count + 1:04d}"
+        # Generate invoice number atomically
+        invoice_number = await generate_invoice_number(db, user.id)
 
         invoice = Invoice(
             user_id=user.id,

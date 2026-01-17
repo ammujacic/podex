@@ -1,7 +1,5 @@
 """Comprehensive tests for Docker manager."""
 
-from datetime import UTC, datetime
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -71,9 +69,8 @@ class TestLocalDockerManagerInitialize:
         with patch(
             "docker.from_env",
             side_effect=docker.errors.DockerException("Connection failed"),
-        ):
-            with pytest.raises(docker.errors.DockerException):
-                await manager.initialize()
+        ), pytest.raises(docker.errors.DockerException):
+            await manager.initialize()
 
     @pytest.mark.asyncio
     async def test_ensure_network_exists(self, mock_docker_client: MagicMock) -> None:
@@ -576,7 +573,6 @@ class TestLocalDockerManagerProxy:
         self, manager_with_workspace: LocalDockerManager
     ) -> None:
         """Test proxying HTTP request."""
-        import httpx
 
         mock_response = MagicMock()
         mock_response.status_code = 200

@@ -14,8 +14,8 @@ from src.cache import cache_delete, cache_get, cache_set, user_config_key
 from src.config import settings
 from src.database.connection import get_db
 from src.database.models import User, UserConfig
-from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
-from src.storage.s3 import get_storage
+from src.middleware.rate_limit import RATE_LIMIT_SENSITIVE, RATE_LIMIT_STANDARD, limiter
+from src.storage.gcs import get_storage
 
 logger = structlog.get_logger()
 
@@ -67,6 +67,22 @@ DOTFILES_PATH_PATTERN = re.compile(r"^\.?[a-zA-Z0-9][a-zA-Z0-9._/-]*$")
 
 # Maximum tour ID length
 MAX_TOUR_ID_LENGTH = 50
+
+# SECURITY: Dotfiles upload limits
+MAX_DOTFILE_SIZE_BYTES = 1024 * 1024  # 1 MB per file
+MAX_DOTFILES_PER_UPLOAD = 20  # Maximum files per upload request
+
+# SECURITY: LLM API key patterns for validation by provider
+# These patterns help ensure API keys are in the expected format
+LLM_API_KEY_PATTERNS = {
+    "openai": re.compile(r"^sk-[a-zA-Z0-9]{20,}$"),  # sk-... format
+    "anthropic": re.compile(r"^sk-ant-[a-zA-Z0-9-]{20,}$"),  # sk-ant-... format
+    "google": re.compile(r"^[a-zA-Z0-9_-]{30,}$"),  # Google AI Studio keys
+    "mistral": re.compile(r"^[a-zA-Z0-9]{20,}$"),  # Mistral API keys
+    "cohere": re.compile(r"^[a-zA-Z0-9]{30,}$"),  # Cohere API keys
+    "ollama": re.compile(r"^.{0,200}$"),  # Ollama typically uses no key or custom
+    "lmstudio": re.compile(r"^.{0,200}$"),  # LM Studio typically uses no key or custom
+}
 
 # Paths that should never be synced (security sensitive)
 FORBIDDEN_DOTFILE_PATHS = {
@@ -193,6 +209,25 @@ class DotfilesUploadRequest(BaseModel):
     """Request to upload dotfiles."""
 
     files: list[DotfileContent]
+
+    @property
+    def validated_files(self) -> list[DotfileContent]:
+        """Validate and return files with security checks."""
+
+        class TooManyFilesError(ValueError):
+            def __init__(self, max_files: int) -> None:
+                super().__init__(f"Too many files (max {max_files})")
+
+        class FileTooLargeError(ValueError):
+            def __init__(self, path: str, max_size_kb: int) -> None:
+                super().__init__(f"File {path} too large (max {max_size_kb}KB)")
+
+        if len(self.files) > MAX_DOTFILES_PER_UPLOAD:
+            raise TooManyFilesError(MAX_DOTFILES_PER_UPLOAD)
+        for f in self.files:
+            if len(f.content.encode("utf-8")) > MAX_DOTFILE_SIZE_BYTES:
+                raise FileTooLargeError(f.path, MAX_DOTFILE_SIZE_BYTES // 1024)
+        return self.files
 
 
 @router.get("", response_model=UserConfigResponse)
@@ -383,7 +418,7 @@ async def get_dotfiles(
 
 
 @router.post("/dotfiles")
-@limiter.limit(RATE_LIMIT_STANDARD)
+@limiter.limit(RATE_LIMIT_SENSITIVE)  # Stricter rate limit for upload operations
 async def upload_dotfiles(
     request_data: DotfilesUploadRequest,
     request: Request,
@@ -395,15 +430,21 @@ async def upload_dotfiles(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    # Validate all paths first
-    validate_dotfiles_paths([f.path for f in request_data.files])
+    # SECURITY: Validate file count and sizes before processing
+    try:
+        validated_files = request_data.validated_files
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    # Validate all paths (security check for path traversal, forbidden paths)
+    validate_dotfiles_paths([f.path for f in validated_files])
 
     storage = get_storage()
 
     uploaded = 0
     errors = []
 
-    for file in request_data.files:
+    for file in validated_files:
         try:
             await storage.put_file(
                 f"user-{user_id}",  # Use user ID as workspace ID for dotfiles
@@ -452,8 +493,8 @@ async def delete_dotfile(
 
 
 @router.post("/dotfiles/sync-from-repo")
-@limiter.limit(RATE_LIMIT_STANDARD)
-async def sync_dotfiles_from_repo(  # noqa: PLR0915
+@limiter.limit("5/hour")  # SECURITY: Very strict rate limit - this clones git repos
+async def sync_dotfiles_from_repo(
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
@@ -469,12 +510,10 @@ async def sync_dotfiles_from_repo(  # noqa: PLR0915
     if not config or not config.dotfiles_repo:
         raise HTTPException(status_code=400, detail="No dotfiles repository configured")
 
-    import asyncio  # noqa: PLC0415
-    import shutil  # noqa: PLC0415
-    import tempfile  # noqa: PLC0415
-    from pathlib import Path  # noqa: PLC0415
-
-    import boto3  # noqa: PLC0415
+    import asyncio
+    import shutil
+    import tempfile
+    from pathlib import Path
 
     # Get dotfiles configuration
     dotfiles_repo = config.dotfiles_repo
@@ -511,27 +550,24 @@ async def sync_dotfiles_from_repo(  # noqa: PLR0915
         if process.returncode != 0:
             error_msg = stderr.decode() if stderr else "Unknown git error"
             raise HTTPException(  # noqa: TRY301
-                status_code=400, detail=f"Failed to clone dotfiles repo: {error_msg}"
+                status_code=400, detail=f"Clone failed: {error_msg}"
             )
 
-        # Upload specified files to S3
-        s3_client = boto3.client(
-            "s3",
-            region_name=settings.AWS_REGION,
-            endpoint_url=settings.AWS_ENDPOINT_URL
-            if hasattr(settings, "AWS_ENDPOINT_URL")
-            else None,
-        )
-        bucket = settings.S3_BUCKET if hasattr(settings, "S3_BUCKET") else "podex-dotfiles"
+        # Upload specified files to GCS
+        from google.cloud import storage
+
+        gcs_client = storage.Client(project=settings.GCP_PROJECT_ID)
+        bucket = gcs_client.bucket(settings.GCS_BUCKET)
 
         for dotfile in dotfiles_files:
             file_path = clone_path / dotfile.lstrip("/").lstrip("~").lstrip("./")
             if file_path.exists() and file_path.is_file():
                 try:
-                    s3_key = f"dotfiles/{user_id}/{dotfile.lstrip('./')}"
-                    s3_client.upload_file(str(file_path), bucket, s3_key)
+                    gcs_key = f"dotfiles/{user_id}/{dotfile.lstrip('./')}"
+                    blob = bucket.blob(gcs_key)
+                    blob.upload_from_filename(str(file_path))
                     synced_files.append(dotfile)
-                    logger.info("Synced dotfile to S3", user_id=user_id, file=dotfile)
+                    logger.info("Synced dotfile to GCS", user_id=user_id, file=dotfile)
                 except Exception as e:
                     errors.append(f"{dotfile}: {e!s}")
                     logger.warning(
@@ -778,16 +814,28 @@ async def set_llm_api_key(
         raise HTTPException(status_code=401, detail="Authentication required")
 
     # Validate provider
-    if data.provider.lower() not in VALID_LLM_PROVIDERS:
+    provider_lower = data.provider.lower()
+    if provider_lower not in VALID_LLM_PROVIDERS:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid provider. Must be one of: {', '.join(sorted(VALID_LLM_PROVIDERS))}",
         )
 
-    # Validate API key format (basic validation)
-    min_api_key_length = 10
-    if not data.api_key or len(data.api_key) < min_api_key_length:
-        raise HTTPException(status_code=400, detail="Invalid API key format")
+    # SECURITY: Validate API key format using provider-specific patterns
+    # This helps prevent storing invalid/malicious data in the database
+    if not data.api_key:
+        raise HTTPException(status_code=400, detail="API key is required")
+
+    key_pattern = LLM_API_KEY_PATTERNS.get(provider_lower)
+    if (
+        key_pattern
+        and not key_pattern.match(data.api_key)
+        and provider_lower in {"openai", "anthropic", "google", "mistral", "cohere"}
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid API key format for {provider_lower}. Please check your API key.",
+        )
 
     result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
     config = result.scalar_one_or_none()
@@ -798,13 +846,13 @@ async def set_llm_api_key(
             user_id=user_id,
             dotfiles_paths=DEFAULT_DOTFILES,
             s3_dotfiles_path=f"users/{user_id}/dotfiles",
-            llm_api_keys={data.provider.lower(): data.api_key},
+            llm_api_keys={provider_lower: data.api_key},
         )
         db.add(config)
     else:
         # Update existing config
         current_keys = config.llm_api_keys or {}
-        current_keys[data.provider.lower()] = data.api_key
+        current_keys[provider_lower] = data.api_key
         config.llm_api_keys = current_keys
 
     await db.commit()
@@ -816,7 +864,7 @@ async def set_llm_api_key(
     logger.info(
         "User set LLM API key",
         user_id=user_id,
-        provider=data.provider.lower(),
+        provider=provider_lower,
     )
 
     providers = list(config.llm_api_keys.keys()) if config.llm_api_keys else []

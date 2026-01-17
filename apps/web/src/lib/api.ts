@@ -1,459 +1,39 @@
 /**
  * API client for Podex backend services.
+ *
+ * This module uses @podex/api-client for platform-agnostic API functionality
+ * with web-specific adapters for HTTP, auth, and error reporting.
  */
 
-import * as Sentry from '@sentry/nextjs';
 import type { User, AuthTokens } from '@/stores/auth';
 import { useAuthStore } from '@/stores/auth';
 import type { ThinkingConfig, AttachmentFile } from '@podex/shared';
 
+// Re-export from @podex/api-client for backward compatibility
+export { ApiRequestError, isAbortError, isQuotaError } from '@podex/api-client';
+import { calculateExpiry } from '@podex/api-client';
+export type { LoginRequest, RegisterRequest } from '@/lib/api-adapters';
+
+// Import adapters and client
+import {
+  FetchHttpAdapter,
+  PodexApiClient,
+  SentryErrorReporter,
+  ZustandAuthProvider,
+} from '@/lib/api-adapters';
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
-// ============================================================================
-// Request Cache for deduplication and caching
-// ============================================================================
+// Create and export the API client singleton
+export const api = new PodexApiClient({
+  baseUrl: API_BASE_URL,
+  httpAdapter: new FetchHttpAdapter(),
+  authProvider: new ZustandAuthProvider(),
+  errorReporter: new SentryErrorReporter(),
+});
 
-interface CacheEntry<T> {
-  data: T;
-  timestamp: number;
-  expiresAt: number;
-}
-
-class RequestCache {
-  private cache = new Map<string, CacheEntry<unknown>>();
-  private pendingRequests = new Map<string, Promise<unknown>>();
-  private defaultTTL = 30 * 1000; // 30 seconds default
-
-  /**
-   * Get cached data if valid, otherwise return null.
-   */
-  get<T>(key: string): T | null {
-    const entry = this.cache.get(key);
-    if (!entry) return null;
-
-    if (Date.now() > entry.expiresAt) {
-      this.cache.delete(key);
-      return null;
-    }
-
-    return entry.data as T;
-  }
-
-  /**
-   * Set cached data with optional TTL.
-   */
-  set<T>(key: string, data: T, ttl?: number): void {
-    const now = Date.now();
-    this.cache.set(key, {
-      data,
-      timestamp: now,
-      expiresAt: now + (ttl ?? this.defaultTTL),
-    });
-  }
-
-  /**
-   * Delete cached data.
-   */
-  delete(key: string): void {
-    this.cache.delete(key);
-  }
-
-  /**
-   * Invalidate all cache entries matching a pattern.
-   */
-  invalidatePattern(pattern: string | RegExp): void {
-    const regex = typeof pattern === 'string' ? new RegExp(pattern) : pattern;
-    for (const key of this.cache.keys()) {
-      if (regex.test(key)) {
-        this.cache.delete(key);
-      }
-    }
-  }
-
-  /**
-   * Clear all cache.
-   */
-  clear(): void {
-    this.cache.clear();
-  }
-
-  /**
-   * Deduplicate concurrent requests to the same endpoint.
-   */
-  async deduplicateRequest<T>(key: string, request: () => Promise<T>): Promise<T> {
-    // Check if there's already a pending request for this key
-    const pending = this.pendingRequests.get(key);
-    if (pending) {
-      return pending as Promise<T>;
-    }
-
-    // Create the request and store it
-    const promise = request().finally(() => {
-      this.pendingRequests.delete(key);
-    });
-
-    this.pendingRequests.set(key, promise);
-    return promise;
-  }
-}
-
-export const requestCache = new RequestCache();
-
-// Types
-export interface LoginRequest {
-  email: string;
-  password: string;
-}
-
-export interface RegisterRequest {
-  email: string;
-  password: string;
-  name: string;
-}
-
-export interface AuthResponse {
-  user: {
-    id: string;
-    email: string;
-    name: string | null;
-    avatar_url: string | null;
-    role: string;
-  };
-  access_token: string;
-  refresh_token: string;
-  expires_in: number;
-}
-
-export interface TokenResponse {
-  access_token: string;
-  refresh_token: string;
-  token_type: string;
-  expires_in: number;
-}
-
-export interface ApiError {
-  detail: string;
-}
-
-// Helper to transform snake_case to camelCase for user
-function transformUser(data: AuthResponse['user']): User {
-  return {
-    id: data.id,
-    email: data.email,
-    name: data.name,
-    avatarUrl: data.avatar_url,
-    role: data.role,
-  };
-}
-
-// Helper to calculate token expiry
-function calculateExpiry(expiresIn: number): number {
-  return Date.now() + expiresIn * 1000;
-}
-
-// Custom error class for API errors with status code
-export class ApiRequestError extends Error {
-  status: number;
-  isAborted: boolean;
-
-  constructor(message: string, status: number, isAborted = false) {
-    super(message);
-    this.name = 'ApiRequestError';
-    this.status = status;
-    this.isAborted = isAborted;
-  }
-}
-
-// Helper to check if an error is an abort error
-export function isAbortError(error: unknown): boolean {
-  return (
-    (error instanceof DOMException && error.name === 'AbortError') ||
-    (error instanceof ApiRequestError && error.isAborted)
-  );
-}
-
-// Helper to check if an error is a quota/credit exhaustion error
-export function isQuotaError(error: unknown): boolean {
-  if (error instanceof ApiRequestError) {
-    const msg = error.message.toLowerCase();
-    // 402 Payment Required or 403 Forbidden with quota-related message
-    return (
-      error.status === 402 ||
-      (error.status === 403 &&
-        (msg.includes('quota') ||
-          msg.includes('credit') ||
-          msg.includes('exceeded') ||
-          msg.includes('insufficient')))
-    );
-  }
-  if (error instanceof Error) {
-    const msg = error.message.toLowerCase();
-    return (
-      msg.includes('quota') ||
-      msg.includes('credit') ||
-      msg.includes('exceeded') ||
-      msg.includes('insufficient')
-    );
-  }
-  return false;
-}
-
-// Request options with optional abort signal
-interface RequestOptions {
-  includeAuth?: boolean;
-  signal?: AbortSignal;
-}
-
-class ApiClient {
-  private baseUrl: string;
-
-  constructor(baseUrl: string) {
-    this.baseUrl = baseUrl;
-  }
-
-  private getHeaders(includeAuth = true): HeadersInit {
-    const headers: HeadersInit = {
-      'Content-Type': 'application/json',
-    };
-
-    if (includeAuth) {
-      const tokens = useAuthStore.getState().tokens;
-      if (tokens?.accessToken) {
-        headers['Authorization'] = `Bearer ${tokens.accessToken}`;
-      }
-    }
-
-    return headers;
-  }
-
-  private async handleResponse<T>(response: Response): Promise<T> {
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({
-        detail: `HTTP ${response.status}: ${response.statusText}`,
-      }));
-
-      // Handle Pydantic validation errors (422) which return detail as an array
-      let message: string;
-      if (Array.isArray(error.detail)) {
-        // Format: [{ loc: ["body", "field"], msg: "error message" }]
-        message = error.detail.map((e: { msg: string }) => e.msg).join(', ');
-      } else if (typeof error.detail === 'string') {
-        message = error.detail;
-      } else {
-        message = `HTTP ${response.status}: ${response.statusText}`;
-      }
-
-      const err = new ApiRequestError(message, response.status);
-
-      // Auto-logout on 401 (invalid/expired token)
-      if (response.status === 401) {
-        useAuthStore.getState().logout();
-      }
-
-      // Report API errors to Sentry (skip 401/403 as they're expected auth errors)
-      if (
-        response.status >= 500 ||
-        (response.status >= 400 && response.status !== 401 && response.status !== 403)
-      ) {
-        Sentry.captureException(err, {
-          tags: {
-            apiError: true,
-            statusCode: response.status,
-          },
-          extra: {
-            url: response.url,
-            status: response.status,
-            statusText: response.statusText,
-          },
-        });
-      }
-
-      throw err;
-    }
-    return response.json();
-  }
-
-  private handleFetchError(error: unknown): never {
-    // Handle abort errors
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new ApiRequestError('Request was cancelled', 0, true);
-    }
-    // Handle network errors (e.g., server not running, CORS issues)
-    if (error instanceof TypeError && error.message === 'Failed to fetch') {
-      throw new ApiRequestError(
-        'Unable to connect to the API server. Please ensure the backend is running.',
-        503
-      );
-    }
-    throw error;
-  }
-
-  async get<T>(path: string, options: RequestOptions | boolean = true): Promise<T> {
-    // Support legacy boolean signature for includeAuth
-    const opts: RequestOptions = typeof options === 'boolean' ? { includeAuth: options } : options;
-    const { includeAuth = true, signal } = opts;
-
-    try {
-      const response = await fetch(`${this.baseUrl}${path}`, {
-        method: 'GET',
-        headers: this.getHeaders(includeAuth),
-        credentials: 'include', // Send httpOnly cookies for auth
-        signal,
-      });
-      return this.handleResponse<T>(response);
-    } catch (error) {
-      this.handleFetchError(error);
-    }
-  }
-
-  /**
-   * GET request with caching and deduplication.
-   * @param path - API path
-   * @param options - Cache options
-   * @returns Cached or fresh data
-   */
-  async getCached<T>(
-    path: string,
-    options: {
-      ttl?: number;
-      includeAuth?: boolean;
-      forceRefresh?: boolean;
-    } = {}
-  ): Promise<T> {
-    const { ttl, includeAuth = true, forceRefresh = false } = options;
-    const cacheKey = `GET:${path}`;
-
-    // Check cache first (unless force refresh)
-    if (!forceRefresh) {
-      const cached = requestCache.get<T>(cacheKey);
-      if (cached !== null) {
-        return cached;
-      }
-    }
-
-    // Deduplicate concurrent requests
-    return requestCache.deduplicateRequest(cacheKey, async () => {
-      const data = await this.get<T>(path, includeAuth);
-      requestCache.set(cacheKey, data, ttl);
-      return data;
-    });
-  }
-
-  async post<T>(path: string, data: unknown, options: RequestOptions | boolean = true): Promise<T> {
-    // Support legacy boolean signature for includeAuth
-    const opts: RequestOptions = typeof options === 'boolean' ? { includeAuth: options } : options;
-    const { includeAuth = true, signal } = opts;
-
-    try {
-      const response = await fetch(`${this.baseUrl}${path}`, {
-        method: 'POST',
-        headers: this.getHeaders(includeAuth),
-        credentials: 'include', // Send httpOnly cookies for auth
-        body: JSON.stringify(data),
-        signal,
-      });
-      return this.handleResponse<T>(response);
-    } catch (error) {
-      this.handleFetchError(error);
-    }
-  }
-
-  async put<T>(path: string, data: unknown, options: RequestOptions = {}): Promise<T> {
-    const { includeAuth = true, signal } = options;
-
-    try {
-      const response = await fetch(`${this.baseUrl}${path}`, {
-        method: 'PUT',
-        headers: this.getHeaders(includeAuth),
-        credentials: 'include', // Send httpOnly cookies for auth
-        body: JSON.stringify(data),
-        signal,
-      });
-      return this.handleResponse<T>(response);
-    } catch (error) {
-      this.handleFetchError(error);
-    }
-  }
-
-  async delete<T>(path: string, options: RequestOptions = {}): Promise<T> {
-    const { includeAuth = true, signal } = options;
-
-    try {
-      const response = await fetch(`${this.baseUrl}${path}`, {
-        method: 'DELETE',
-        headers: this.getHeaders(includeAuth),
-        credentials: 'include', // Send httpOnly cookies for auth
-        signal,
-      });
-      return this.handleResponse<T>(response);
-    } catch (error) {
-      this.handleFetchError(error);
-    }
-  }
-
-  async patch<T>(path: string, data: unknown, options: RequestOptions = {}): Promise<T> {
-    const { includeAuth = true, signal } = options;
-
-    try {
-      const response = await fetch(`${this.baseUrl}${path}`, {
-        method: 'PATCH',
-        headers: this.getHeaders(includeAuth),
-        credentials: 'include', // Send httpOnly cookies for auth
-        body: JSON.stringify(data),
-        signal,
-      });
-      return this.handleResponse<T>(response);
-    } catch (error) {
-      this.handleFetchError(error);
-    }
-  }
-
-  // Auth methods
-  async login(data: LoginRequest): Promise<{ user: User; tokens: AuthTokens }> {
-    const response = await this.post<AuthResponse>('/api/auth/login', data, false);
-    return {
-      user: transformUser(response.user),
-      tokens: {
-        accessToken: response.access_token,
-        refreshToken: response.refresh_token,
-        expiresAt: calculateExpiry(response.expires_in),
-      },
-    };
-  }
-
-  async register(data: RegisterRequest): Promise<{ user: User; tokens: AuthTokens }> {
-    const response = await this.post<AuthResponse>('/api/auth/register', data, false);
-    return {
-      user: transformUser(response.user),
-      tokens: {
-        accessToken: response.access_token,
-        refreshToken: response.refresh_token,
-        expiresAt: calculateExpiry(response.expires_in),
-      },
-    };
-  }
-
-  async refreshToken(refreshToken: string): Promise<AuthTokens> {
-    const response = await this.post<TokenResponse>(
-      '/api/auth/refresh',
-      { refresh_token: refreshToken },
-      false
-    );
-    return {
-      accessToken: response.access_token,
-      refreshToken: response.refresh_token,
-      expiresAt: calculateExpiry(response.expires_in),
-    };
-  }
-
-  async getCurrentUser(): Promise<User> {
-    const response = await this.get<AuthResponse['user']>('/api/auth/me');
-    return transformUser(response);
-  }
-}
-
-// Export singleton instance
-export const api = new ApiClient(API_BASE_URL);
+// Export the request cache for direct access
+export const requestCache = api.getCache();
 
 // Auth actions that update the store
 export async function login(email: string, password: string): Promise<User> {
@@ -904,6 +484,57 @@ export async function respondToApproval(
   return api.post<{ success: boolean; message: string }>(
     `/api/sessions/${sessionId}/agents/${agentId}/approvals/${approvalId}`,
     response
+  );
+}
+
+// ==================== Pending Changes (Agent Diff Review) ====================
+
+export interface PendingChangeResponse {
+  id: string;
+  session_id: string;
+  agent_id: string;
+  agent_name: string;
+  file_path: string;
+  original_content: string | null;
+  proposed_content: string;
+  description: string | null;
+  status: 'pending' | 'accepted' | 'rejected';
+  created_at: string;
+}
+
+export async function getPendingChanges(
+  sessionId: string,
+  status?: 'pending' | 'accepted' | 'rejected'
+): Promise<PendingChangeResponse[]> {
+  const params = status ? `?status=${status}` : '';
+  return api.get<PendingChangeResponse[]>(`/api/sessions/${sessionId}/pending-changes${params}`);
+}
+
+export async function getPendingChange(
+  sessionId: string,
+  changeId: string
+): Promise<PendingChangeResponse> {
+  return api.get<PendingChangeResponse>(`/api/sessions/${sessionId}/pending-changes/${changeId}`);
+}
+
+export async function acceptPendingChange(
+  sessionId: string,
+  changeId: string
+): Promise<{ status: string; change_id: string; file_path: string }> {
+  return api.post<{ status: string; change_id: string; file_path: string }>(
+    `/api/sessions/${sessionId}/pending-changes/${changeId}/accept`,
+    {}
+  );
+}
+
+export async function rejectPendingChange(
+  sessionId: string,
+  changeId: string,
+  feedback?: string
+): Promise<{ status: string; change_id: string; file_path: string }> {
+  return api.post<{ status: string; change_id: string; file_path: string }>(
+    `/api/sessions/${sessionId}/pending-changes/${changeId}/reject`,
+    { feedback }
   );
 }
 
@@ -1367,6 +998,57 @@ export async function checkoutBranch(
   create = false
 ): Promise<{ message: string }> {
   return api.post(`/api/sessions/${sessionId}/git/checkout`, { branch, create });
+}
+
+// Branch Comparison
+export interface BranchCompareCommit {
+  sha: string;
+  message: string;
+  author: string;
+  date: string;
+}
+
+export interface BranchCompareFile {
+  path: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed';
+}
+
+export interface BranchCompareResponse {
+  base: string;
+  compare: string;
+  commits: BranchCompareCommit[];
+  files: BranchCompareFile[];
+  ahead: number;
+  stat: string;
+}
+
+export interface MergePreviewResponse {
+  can_merge: boolean;
+  has_conflicts: boolean;
+  conflicts: string[];
+  files_changed: { path: string; status: string }[];
+  error?: string;
+}
+
+export async function compareBranches(
+  sessionId: string,
+  base: string,
+  compare: string
+): Promise<BranchCompareResponse> {
+  return api.get<BranchCompareResponse>(
+    `/api/sessions/${sessionId}/git/compare/${encodeURIComponent(base)}...${encodeURIComponent(compare)}`
+  );
+}
+
+export async function previewMerge(
+  sessionId: string,
+  sourceBranch: string,
+  targetBranch: string
+): Promise<MergePreviewResponse> {
+  return api.post<MergePreviewResponse>(`/api/sessions/${sessionId}/git/merge-preview`, {
+    source_branch: sourceBranch,
+    target_branch: targetBranch,
+  });
 }
 
 // ==================== File System ====================

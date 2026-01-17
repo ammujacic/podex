@@ -7,7 +7,6 @@ Verifies that:
 - Legacy plaintext data is handled gracefully
 """
 
-import json
 
 import pytest
 
@@ -60,7 +59,7 @@ class TestEncryptionBasics:
 
     def test_encrypt_special_characters(self) -> None:
         """Special characters and unicode should be handled."""
-        special = "!@#$%^&*()_+-={}[]|\\:\";<>?,./~`"
+        special = '!@#$%^&*()_+-={}[]|\\:";<>?,./~`'
         assert decrypt_string(encrypt_string(special)) == special
 
         unicode_str = "Hello \u4e16\u754c \u0391\u03b1 \U0001F600"

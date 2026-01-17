@@ -1,5 +1,6 @@
 """Dashboard routes for statistics and activity feed."""
 
+from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
@@ -265,6 +266,32 @@ async def get_activity_feed(
 
     items: list[ActivityItem] = []
 
+    # PERFORMANCE: Batch fetch agents for all sessions to avoid N+1 queries
+    # Instead of querying agents per session, fetch all at once
+    session_ids = [s.id for s in sessions]
+    if session_ids:
+        # Use a subquery to get top 5 recent agents per session
+        # This is a single query instead of N queries
+
+        # Fetch recent agents grouped by session
+        agents_result = await db.execute(
+            select(Agent)
+            .where(Agent.session_id.in_(session_ids))
+            .order_by(Agent.session_id, Agent.updated_at.desc())
+        )
+        all_agents = agents_result.scalars().all()
+
+        # Group agents by session_id, keeping only top 5 per session
+        agents_by_session: dict[str, list[Agent]] = defaultdict(list)
+        for agent in all_agents:
+            if len(agents_by_session[agent.session_id]) < 5:
+                agents_by_session[agent.session_id].append(agent)
+    else:
+        agents_by_session = {}
+
+    # Build session name lookup for agent items
+    {s.id: s.name for s in sessions}
+
     for session in sessions:
         # Add session creation/update activity
         items.append(
@@ -281,17 +308,9 @@ async def get_activity_feed(
             )
         )
 
-        # Get recent agents for this session
-        agents_result = await db.execute(
-            select(Agent)
-            .where(Agent.session_id == session.id)
-            .order_by(Agent.updated_at.desc())
-            .limit(5)
-        )
-        agents = agents_result.scalars().all()
-
-        for agent in agents:
-            items.append(  # noqa: PERF401
+        # Use pre-fetched agents for this session
+        for agent in agents_by_session.get(session.id, []):
+            items.append(
                 ActivityItem(
                     id=f"agent-{agent.id}",
                     type="agent_created"
@@ -319,7 +338,7 @@ async def get_activity_feed(
 
 @router.get("/usage-history", response_model=UsageHistoryResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def get_usage_history(  # noqa: PLR0912, PLR0915
+async def get_usage_history(
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,

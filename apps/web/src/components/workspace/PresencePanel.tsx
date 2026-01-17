@@ -24,8 +24,14 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { create } from 'zustand';
 import { useAuthStore } from '@/stores/auth';
+import {
+  usePresenceStore,
+  getRandomColor,
+  getSharingModeLabel,
+  type UserPresence,
+  type UserStatus,
+} from '@/stores/presence';
 import {
   listSessionShares,
   createSessionShareLink,
@@ -38,103 +44,10 @@ import {
   type SharingMode,
 } from '@/lib/api';
 import { onSocketEvent, connectSocket, joinSession as socketJoinSession } from '@/lib/socket';
+import { NoUsersEmptyState, ErrorEmptyState } from '@/components/ui/EmptyState';
 
-// ============================================================================
-// Types
-// ============================================================================
-
-export type UserStatus = 'online' | 'away' | 'busy' | 'offline';
-
-export interface UserPresence {
-  id: string;
-  name: string;
-  email: string;
-  avatar?: string;
-  status: UserStatus;
-  color: string;
-  currentFile?: string;
-  cursorLine?: number;
-  lastActive: Date;
-  isTyping?: boolean;
-  sharingMode?: string;
-  isOwner?: boolean;
-}
-
-// ============================================================================
-// Store
-// ============================================================================
-
-interface PresenceState {
-  users: UserPresence[];
-  currentUserId: string | null;
-  followingUserId: string | null;
-  soundEnabled: boolean;
-
-  setUsers: (users: UserPresence[]) => void;
-  addUser: (user: UserPresence) => void;
-  removeUser: (userId: string) => void;
-  updateUser: (userId: string, updates: Partial<UserPresence>) => void;
-  setCurrentUserId: (userId: string) => void;
-  setFollowingUserId: (userId: string | null) => void;
-  toggleSound: () => void;
-}
-
-export const usePresenceStore = create<PresenceState>((set) => ({
-  users: [],
-  currentUserId: null,
-  followingUserId: null,
-  soundEnabled: true,
-
-  setUsers: (users) => set({ users }),
-  addUser: (user) => set((state) => ({ users: [...state.users, user] })),
-  removeUser: (userId) =>
-    set((state) => ({
-      users: state.users.filter((u) => u.id !== userId),
-      followingUserId: state.followingUserId === userId ? null : state.followingUserId,
-    })),
-  updateUser: (userId, updates) =>
-    set((state) => ({
-      users: state.users.map((u) => (u.id === userId ? { ...u, ...updates } : u)),
-    })),
-  setCurrentUserId: (userId) => set({ currentUserId: userId }),
-  setFollowingUserId: (userId) => set({ followingUserId: userId }),
-  toggleSound: () => set((state) => ({ soundEnabled: !state.soundEnabled })),
-}));
-
-// ============================================================================
-// Helper functions
-// ============================================================================
-
-function getRandomColor(seed: string): string {
-  const colors = [
-    '#3b82f6',
-    '#10b981',
-    '#f59e0b',
-    '#8b5cf6',
-    '#ec4899',
-    '#06b6d4',
-    '#f97316',
-    '#84cc16',
-  ] as const;
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) {
-    hash = seed.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  return colors[Math.abs(hash) % colors.length] ?? '#3b82f6';
-}
-
-function getSharingModeLabel(mode: string): string {
-  switch (mode) {
-    case 'view_only':
-      return 'View only';
-    case 'can_edit':
-      return 'Can edit';
-    case 'full_control':
-      return 'Full control';
-    default:
-      return mode;
-  }
-}
+// Re-export for backwards compatibility
+export { usePresenceStore, type UserPresence, type UserStatus };
 
 function getSharingModeIcon(mode: string) {
   switch (mode) {
@@ -297,17 +210,17 @@ function UserCard({
               {isFollowing ? (
                 <button
                   onClick={onUnfollow}
-                  className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-accent-primary text-void"
+                  className="flex items-center gap-1.5 px-3 py-2.5 min-h-[44px] rounded text-xs bg-accent-primary text-void touch-manipulation"
                 >
-                  <Eye className="h-3 w-3" />
+                  <Eye className="h-4 w-4" />
                   Following
                 </button>
               ) : (
                 <button
                   onClick={onFollow}
-                  className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-overlay hover:bg-elevated text-text-muted hover:text-text-secondary"
+                  className="flex items-center gap-1.5 px-3 py-2.5 min-h-[44px] rounded text-xs bg-overlay hover:bg-elevated text-text-muted hover:text-text-secondary touch-manipulation"
                 >
-                  <Eye className="h-3 w-3" />
+                  <Eye className="h-4 w-4" />
                   Follow
                 </button>
               )}
@@ -317,9 +230,9 @@ function UserCard({
             <div className="relative">
               <button
                 onClick={() => setShowMenu(!showMenu)}
-                className="p-1 rounded hover:bg-overlay text-text-muted hover:text-text-primary"
+                className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded hover:bg-overlay text-text-muted hover:text-text-primary touch-manipulation"
               >
-                <MoreHorizontal className="h-4 w-4" />
+                <MoreHorizontal className="h-5 w-5" />
               </button>
               {showMenu && (
                 <div className="absolute right-0 top-full mt-1 z-50 w-44 rounded-lg border border-border-default bg-surface shadow-xl overflow-hidden">
@@ -337,15 +250,15 @@ function UserCard({
                             setShowMenu(false);
                           }}
                           className={cn(
-                            'w-full flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-overlay',
+                            'w-full flex items-center gap-2 px-3 py-3 min-h-[44px] text-sm hover:bg-overlay touch-manipulation',
                             user.sharingMode === mode
                               ? 'text-accent-primary'
                               : 'text-text-secondary'
                           )}
                         >
-                          <Icon className="h-3.5 w-3.5" />
+                          <Icon className="h-4 w-4" />
                           {getSharingModeLabel(mode)}
-                          {user.sharingMode === mode && <Check className="h-3 w-3 ml-auto" />}
+                          {user.sharingMode === mode && <Check className="h-4 w-4 ml-auto" />}
                         </button>
                       );
                     })}
@@ -356,9 +269,9 @@ function UserCard({
                         onRemove?.();
                         setShowMenu(false);
                       }}
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-accent-error hover:bg-overlay"
+                      className="w-full flex items-center gap-2 px-3 py-3 min-h-[44px] text-sm text-accent-error hover:bg-overlay touch-manipulation"
                     >
-                      <Trash2 className="h-3.5 w-3.5" />
+                      <Trash2 className="h-4 w-4" />
                       Remove access
                     </button>
                   </div>
@@ -756,15 +669,8 @@ export function PresencePanel({ sessionId, className }: PresencePanelProps) {
 
   if (error) {
     return (
-      <div className={cn('flex flex-col h-full items-center justify-center py-8 px-4', className)}>
-        <p className="text-sm text-accent-error text-center">{error}</p>
-        <button
-          onClick={fetchShares}
-          className="mt-3 flex items-center gap-1.5 px-3 py-1.5 rounded bg-overlay hover:bg-elevated text-text-secondary text-sm"
-        >
-          <RefreshCw className="h-4 w-4" />
-          Retry
-        </button>
+      <div className={cn('flex flex-col h-full', className)}>
+        <ErrorEmptyState message={error} onRetry={fetchShares} />
       </div>
     );
   }
@@ -888,13 +794,7 @@ export function PresencePanel({ sessionId, className }: PresencePanelProps) {
           </div>
         )}
 
-        {users.length === 1 && (
-          <div className="text-center py-6 text-text-muted">
-            <Users className="h-8 w-8 mx-auto mb-2 opacity-50" />
-            <p className="text-sm">No collaborators yet</p>
-            <p className="text-xs mt-1">Invite others using the options above</p>
-          </div>
-        )}
+        {users.length === 1 && <NoUsersEmptyState size="sm" />}
       </div>
 
       {/* Info */}

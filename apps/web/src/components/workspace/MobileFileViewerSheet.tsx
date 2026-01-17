@@ -137,7 +137,7 @@ export function MobileFileViewerSheet() {
             </div>
             <button
               onClick={closeMobileFile}
-              className="p-2 -mr-2 rounded-lg hover:bg-surface-hover transition-colors touch-manipulation flex-shrink-0"
+              className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg hover:bg-surface-hover transition-colors touch-manipulation flex-shrink-0"
               aria-label="Close"
             >
               <X className="h-5 w-5 text-text-secondary" />

@@ -1,63 +1,87 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useSyncExternalStore } from 'react';
 
 const MOBILE_BREAKPOINT = 768; // md breakpoint in Tailwind
+const RESIZE_DEBOUNCE_MS = 100;
 
-/**
- * Hook to detect if the current viewport is mobile-sized
- * Uses the md breakpoint (768px) as the threshold
- */
-export function useIsMobile(): boolean {
-  const [isMobile, setIsMobile] = useState(false);
+// Shared state for mobile detection - single listener for all hook instances
+let mobileState = typeof window !== 'undefined' ? window.innerWidth < MOBILE_BREAKPOINT : false;
+let viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1024;
+const listeners = new Set<() => void>();
 
-  useEffect(() => {
-    // Check if we're on the client
-    if (typeof window === 'undefined') return;
+function subscribe(callback: () => void): () => void {
+  listeners.add(callback);
+  return () => listeners.delete(callback);
+}
 
-    const checkMobile = () => {
-      setIsMobile(window.innerWidth < MOBILE_BREAKPOINT);
-    };
+function getMobileSnapshot(): boolean {
+  return mobileState;
+}
 
-    // Initial check
-    checkMobile();
+function getWidthSnapshot(): number {
+  return viewportWidth;
+}
 
-    // Listen for resize events
-    window.addEventListener('resize', checkMobile);
+function getServerMobileSnapshot(): boolean {
+  return false;
+}
 
-    // Also listen for orientation changes on mobile
-    window.addEventListener('orientationchange', checkMobile);
+function getServerWidthSnapshot(): number {
+  return 1024;
+}
 
-    return () => {
-      window.removeEventListener('resize', checkMobile);
-      window.removeEventListener('orientationchange', checkMobile);
-    };
-  }, []);
+// Initialize shared resize listener once
+if (typeof window !== 'undefined') {
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-  return isMobile;
+  const handleResize = () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+
+    debounceTimer = setTimeout(() => {
+      const newWidth = window.innerWidth;
+      const newIsMobile = newWidth < MOBILE_BREAKPOINT;
+
+      if (newWidth !== viewportWidth || newIsMobile !== mobileState) {
+        viewportWidth = newWidth;
+        mobileState = newIsMobile;
+        listeners.forEach((callback) => callback());
+      }
+    }, RESIZE_DEBOUNCE_MS);
+  };
+
+  window.addEventListener('resize', handleResize, { passive: true });
+  window.addEventListener('orientationchange', handleResize, { passive: true });
 }
 
 /**
- * Hook to get the current viewport width
+ * Hook to detect if the current viewport is mobile-sized.
+ * Uses a shared listener to avoid multiple event subscriptions.
+ * Uses the md breakpoint (768px) as the threshold.
+ */
+export function useIsMobile(): boolean {
+  return useSyncExternalStore(subscribe, getMobileSnapshot, getServerMobileSnapshot);
+}
+
+/**
+ * Hook to get the current viewport width.
+ * Uses a shared listener with debouncing for performance.
  */
 export function useViewportWidth(): number {
-  const [width, setWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1024);
+  return useSyncExternalStore(subscribe, getWidthSnapshot, getServerWidthSnapshot);
+}
+
+/**
+ * Hook to check if the device is a touch device
+ */
+export function useIsTouchDevice(): boolean {
+  const [isTouch, setIsTouch] = useState(false);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const handleResize = () => {
-      setWidth(window.innerWidth);
-    };
-
-    window.addEventListener('resize', handleResize);
-    window.addEventListener('orientationchange', handleResize);
-
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      window.removeEventListener('orientationchange', handleResize);
-    };
+    setIsTouch(
+      typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0)
+    );
   }, []);
 
-  return width;
+  return isTouch;
 }

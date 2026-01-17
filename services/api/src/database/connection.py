@@ -26,13 +26,15 @@ from src.database.models import (
 
 logger = structlog.get_logger()
 
-# Create async engine
+# Create async engine with configurable pool settings
 engine: AsyncEngine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.DEBUG,
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=settings.DB_POOL_SIZE,
+    max_overflow=settings.DB_POOL_MAX_OVERFLOW,
+    pool_timeout=settings.DB_POOL_TIMEOUT,
+    pool_recycle=settings.DB_POOL_RECYCLE,
 )
 
 # Create async session factory
@@ -109,16 +111,16 @@ async def seed_database() -> None:
     It seeds: subscription plans, hardware specs, pod templates, platform settings,
     terminal-integrated agent types, and LLM models.
     """
-    # Import default data from admin routes and seed data
-    from src.database.seed_data import (  # noqa: PLC0415
+    # Import default data from centralized seeds location
+    from src.database.seeds import (
         DEFAULT_GLOBAL_COMMANDS,
+        DEFAULT_HARDWARE_SPECS,
+        DEFAULT_MODELS,
+        DEFAULT_PLANS,
+        DEFAULT_SETTINGS,
         DEFAULT_TERMINAL_AGENTS,
+        OFFICIAL_TEMPLATES,
     )
-    from src.routes.admin.hardware import DEFAULT_HARDWARE_SPECS  # noqa: PLC0415
-    from src.routes.admin.models import DEFAULT_MODELS  # noqa: PLC0415
-    from src.routes.admin.plans import DEFAULT_PLANS  # noqa: PLC0415
-    from src.routes.admin.settings import DEFAULT_SETTINGS  # noqa: PLC0415
-    from src.routes.templates import OFFICIAL_TEMPLATES  # noqa: PLC0415
 
     async with async_session_factory() as db:
         try:
@@ -216,7 +218,7 @@ async def seed_database() -> None:
                 result = await db.execute(
                     select(CustomCommand).where(
                         CustomCommand.name == cmd_data["name"],
-                        CustomCommand.is_global == True,  # noqa: E712
+                        CustomCommand.is_global == True,
                     )
                 )
                 if not result.scalar_one_or_none():

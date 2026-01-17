@@ -2,8 +2,9 @@
  * React hook for agent WebSocket communication.
  */
 
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback } from 'react';
 import { useSessionStore, type AgentMessage, type AgentMode } from '@/stores/session';
+import { useStoreCallbacks } from './useStoreCallbacks';
 import {
   connectSocket,
   joinSession,
@@ -31,29 +32,25 @@ interface UseAgentSocketOptions {
  * Automatically joins/leaves session rooms and updates store on events.
  */
 export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketOptions) {
-  // Use refs to avoid effect re-runs when store selectors change
-  const addAgentMessageRef = useRef(useSessionStore.getState().addAgentMessage);
-  const updateAgentRef = useRef(useSessionStore.getState().updateAgent);
-  const handleAutoModeSwitchRef = useRef(useSessionStore.getState().handleAutoModeSwitch);
-  // Streaming refs
-  const startStreamingMessageRef = useRef(useSessionStore.getState().startStreamingMessage);
-  const appendStreamingTokenRef = useRef(useSessionStore.getState().appendStreamingToken);
-  const appendThinkingTokenRef = useRef(useSessionStore.getState().appendThinkingToken);
-  const finalizeStreamingMessageRef = useRef(useSessionStore.getState().finalizeStreamingMessage);
+  // Get store methods directly - Zustand selectors are stable and efficient
+  const addAgentMessage = useSessionStore((state) => state.addAgentMessage);
+  const updateAgent = useSessionStore((state) => state.updateAgent);
+  const handleAutoModeSwitch = useSessionStore((state) => state.handleAutoModeSwitch);
+  const startStreamingMessage = useSessionStore((state) => state.startStreamingMessage);
+  const appendStreamingToken = useSessionStore((state) => state.appendStreamingToken);
+  const appendThinkingToken = useSessionStore((state) => state.appendThinkingToken);
+  const finalizeStreamingMessage = useSessionStore((state) => state.finalizeStreamingMessage);
 
-  // Keep refs updated
-  useEffect(() => {
-    const unsubscribe = useSessionStore.subscribe((state) => {
-      addAgentMessageRef.current = state.addAgentMessage;
-      updateAgentRef.current = state.updateAgent;
-      handleAutoModeSwitchRef.current = state.handleAutoModeSwitch;
-      startStreamingMessageRef.current = state.startStreamingMessage;
-      appendStreamingTokenRef.current = state.appendStreamingToken;
-      appendThinkingTokenRef.current = state.appendThinkingToken;
-      finalizeStreamingMessageRef.current = state.finalizeStreamingMessage;
-    });
-    return unsubscribe;
-  }, []);
+  // Use stable ref for callbacks to avoid re-running effects
+  const callbacksRef = useStoreCallbacks({
+    addAgentMessage,
+    updateAgent,
+    handleAutoModeSwitch,
+    startStreamingMessage,
+    appendStreamingToken,
+    appendThinkingToken,
+    finalizeStreamingMessage,
+  });
 
   useEffect(() => {
     if (!sessionId || !userId) return;
@@ -79,7 +76,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
           timestamp: new Date(data.created_at),
           toolCalls: data.tool_calls || undefined,
         };
-        addAgentMessageRef.current(sessionId, data.agent_id, message);
+        callbacksRef.current.addAgentMessage(sessionId, data.agent_id, message);
         return;
       }
 
@@ -95,7 +92,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
           timestamp: new Date(data.created_at),
           toolCalls: data.tool_calls || undefined,
         };
-        addAgentMessageRef.current(sessionId, data.agent_id, message);
+        callbacksRef.current.addAgentMessage(sessionId, data.agent_id, message);
         return;
       }
 
@@ -104,6 +101,9 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       if (existingById) {
         return; // Skip duplicate
       }
+
+      // Use store-level idempotent check via message ID
+      // The store's addAgentMessage handles deduplication internally
 
       // For user messages, also check by content (optimistic messages have temp-xxx IDs)
       if (data.role === 'user') {
@@ -145,14 +145,14 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
         toolCalls: data.tool_calls || undefined,
       };
 
-      addAgentMessageRef.current(sessionId, data.agent_id, message);
+      callbacksRef.current.addAgentMessage(sessionId, data.agent_id, message);
     });
 
     // Handle agent status changes
     const unsubStatus = onSocketEvent('agent_status', (data: AgentStatusEvent) => {
       if (data.session_id !== sessionId) return;
 
-      updateAgentRef.current(sessionId, data.agent_id, { status: data.status });
+      callbacksRef.current.updateAgent(sessionId, data.agent_id, { status: data.status });
     });
 
     // Handle automatic mode switch notifications
@@ -162,7 +162,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
         if (data.session_id !== sessionId) return;
 
         // Update the store with new mode
-        handleAutoModeSwitchRef.current(
+        callbacksRef.current.handleAutoModeSwitch(
           sessionId,
           data.agent_id,
           data.new_mode as AgentMode,
@@ -195,15 +195,15 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
     // Handle streaming: stream start
     const unsubStreamStart = onSocketEvent('agent_stream_start', (data: AgentStreamStartEvent) => {
       if (data.session_id !== sessionId) return;
-      startStreamingMessageRef.current(sessionId, data.agent_id, data.message_id);
+      callbacksRef.current.startStreamingMessage(sessionId, data.agent_id, data.message_id);
       // Set agent status to active when streaming starts
-      updateAgentRef.current(sessionId, data.agent_id, { status: 'active' });
+      callbacksRef.current.updateAgent(sessionId, data.agent_id, { status: 'active' });
     });
 
     // Handle streaming: individual tokens
     const unsubStreamToken = onSocketEvent('agent_token', (data: AgentTokenEvent) => {
       if (data.session_id !== sessionId) return;
-      appendStreamingTokenRef.current(data.message_id, data.token);
+      callbacksRef.current.appendStreamingToken(data.message_id, data.token);
     });
 
     // Handle streaming: thinking tokens (for collapsible thinking display)
@@ -211,7 +211,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       'agent_thinking_token',
       (data: AgentThinkingTokenEvent) => {
         if (data.session_id !== sessionId) return;
-        appendThinkingTokenRef.current(data.message_id, data.thinking);
+        callbacksRef.current.appendThinkingToken(data.message_id, data.thinking);
       }
     );
 
@@ -219,13 +219,13 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
     const unsubStreamEnd = onSocketEvent('agent_stream_end', (data: AgentStreamEndEvent) => {
       if (data.session_id !== sessionId) return;
       // Include tool_calls when finalizing the streaming message
-      finalizeStreamingMessageRef.current(
+      callbacksRef.current.finalizeStreamingMessage(
         data.message_id,
         data.full_content || '',
         data.tool_calls || undefined
       );
       // Set agent status to idle when streaming ends
-      updateAgentRef.current(sessionId, data.agent_id, { status: 'idle' });
+      callbacksRef.current.updateAgent(sessionId, data.agent_id, { status: 'idle' });
     });
 
     // Cleanup on unmount
@@ -239,6 +239,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       unsubStreamEnd();
       leaveSession(sessionId, userId);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, userId, authToken]);
 }
 

@@ -19,6 +19,7 @@ import { useAdminStore, type AdminTemplate } from '@/stores/admin';
 
 // Available icons for templates
 const AVAILABLE_ICONS = [
+  // Existing
   { id: 'nodejs', name: 'Node.js' },
   { id: 'python', name: 'Python' },
   { id: 'go', name: 'Go' },
@@ -29,10 +30,27 @@ const AVAILABLE_ICONS = [
   { id: 'docker', name: 'Docker' },
   { id: 'layers', name: 'Full Stack' },
   { id: 'box', name: 'Blank' },
+  // Web/Backend frameworks
+  { id: 'nextdotjs', name: 'Next.js' },
+  { id: 'django', name: 'Django' },
+  { id: 'fastapi', name: 'FastAPI' },
+  { id: 'rubyonrails', name: 'Ruby on Rails' },
+  { id: 'springboot', name: 'Spring Boot' },
+  { id: 'vuedotjs', name: 'Vue.js' },
+  { id: 'laravel', name: 'Laravel' },
+  { id: 'deno', name: 'Deno' },
+  // Native/Systems
+  { id: 'cplusplus', name: 'C/C++' },
+  { id: 'dotnet', name: '.NET' },
+  { id: 'nvidia', name: 'CUDA' },
+  { id: 'zig', name: 'Zig' },
+  { id: 'arm', name: 'Embedded' },
+  { id: 'webassembly', name: 'WebAssembly' },
 ];
 
 // Template icon configuration with CDN URLs (Simple Icons)
 const templateIconConfig: Record<string, { url: string }> = {
+  // Existing
   nodejs: { url: 'https://cdn.simpleicons.org/nodedotjs/339933' },
   python: { url: 'https://cdn.simpleicons.org/python/3776AB' },
   go: { url: 'https://cdn.simpleicons.org/go/00ADD8' },
@@ -42,6 +60,22 @@ const templateIconConfig: Record<string, { url: string }> = {
   layers: { url: 'https://cdn.simpleicons.org/stackblitz/1389FD' },
   docker: { url: 'https://cdn.simpleicons.org/docker/2496ED' },
   javascript: { url: 'https://cdn.simpleicons.org/javascript/F7DF1E' },
+  // Web/Backend frameworks
+  nextdotjs: { url: 'https://cdn.simpleicons.org/nextdotjs/FFFFFF' },
+  django: { url: 'https://cdn.simpleicons.org/django/092E20' },
+  fastapi: { url: 'https://cdn.simpleicons.org/fastapi/009688' },
+  rubyonrails: { url: 'https://cdn.simpleicons.org/rubyonrails/D30001' },
+  springboot: { url: 'https://cdn.simpleicons.org/springboot/6DB33F' },
+  vuedotjs: { url: 'https://cdn.simpleicons.org/vuedotjs/4FC08D' },
+  laravel: { url: 'https://cdn.simpleicons.org/laravel/FF2D20' },
+  deno: { url: 'https://cdn.simpleicons.org/deno/FFFFFF' },
+  // Native/Systems
+  cplusplus: { url: 'https://cdn.simpleicons.org/cplusplus/00599C' },
+  dotnet: { url: 'https://cdn.simpleicons.org/dotnet/512BD4' },
+  nvidia: { url: 'https://cdn.simpleicons.org/nvidia/76B900' },
+  zig: { url: 'https://cdn.simpleicons.org/zig/F7A41D' },
+  arm: { url: 'https://cdn.simpleicons.org/arm/0091BD' },
+  webassembly: { url: 'https://cdn.simpleicons.org/webassembly/654FF0' },
 };
 
 function TemplateIcon({ icon, iconUrl }: { icon: string | null; iconUrl?: string | null }) {

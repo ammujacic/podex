@@ -1,9 +1,19 @@
 'use client';
 
 import { useState } from 'react';
-import { Bell, Mail, MessageSquare, Volume2, Monitor, Save, Loader2 } from 'lucide-react';
+import {
+  Bell,
+  Mail,
+  MessageSquare,
+  Volume2,
+  Monitor,
+  Save,
+  Loader2,
+  Smartphone,
+} from 'lucide-react';
 import { Button } from '@podex/ui';
 import { cn } from '@/lib/utils';
+import { PushNotificationSettings } from '@/components/settings/PushNotificationSettings';
 
 interface NotificationSetting {
   id: string;
@@ -95,9 +105,18 @@ export default function NotificationsPage() {
 
   const handleSave = async () => {
     setSaving(true);
-    // TODO: Implement save functionality
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    setSaving(false);
+    try {
+      // TODO: Implement notification preferences API endpoint
+      // await api.patch('/api/user/config/notifications', {
+      //   settings,
+      //   desktopEnabled,
+      // });
+      await new Promise((resolve) => setTimeout(resolve, 1000)); // Simulate API call
+    } catch (error) {
+      console.error('Failed to save notification settings:', error);
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -106,6 +125,15 @@ export default function NotificationsPage() {
         <h1 className="text-2xl font-semibold text-text-primary">Notification Preferences</h1>
         <p className="text-text-muted mt-1">Choose how and when you want to be notified</p>
       </div>
+
+      {/* Push Notification Setup */}
+      <section className="mb-8">
+        <h2 className="text-lg font-medium text-text-primary mb-4 flex items-center gap-2">
+          <Smartphone className="w-5 h-5" />
+          Push Notifications
+        </h2>
+        <PushNotificationSettings />
+      </section>
 
       {/* Global Settings */}
       <section className="mb-8">

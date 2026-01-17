@@ -90,7 +90,8 @@ export interface ProviderConfig {
 }
 
 // ============================================================================
-// Provider Metadata
+// Provider UI Metadata (static configuration for provider config panels)
+// Models are fetched from the API, not hardcoded here
 // ============================================================================
 
 const PROVIDER_INFO: Record<
@@ -101,7 +102,6 @@ const PROVIDER_INFO: Record<
     isLocal: boolean;
     defaultUrl?: string;
     docsUrl?: string;
-    models: { id: string; name: string; contextK: number }[];
   }
 > = {
   anthropic: {
@@ -109,32 +109,18 @@ const PROVIDER_INFO: Record<
     description: 'Claude models - Opus, Sonnet, Haiku',
     isLocal: false,
     docsUrl: 'https://console.anthropic.com/',
-    models: [
-      { id: 'claude-opus-4-5', name: 'Claude Opus 4.5', contextK: 200 },
-      { id: 'claude-sonnet-4', name: 'Claude Sonnet 4', contextK: 200 },
-      { id: 'claude-haiku-3-5', name: 'Claude Haiku 3.5', contextK: 200 },
-    ],
   },
   openai: {
     name: 'OpenAI',
     description: 'GPT-4o, GPT-4 Turbo, GPT-3.5',
     isLocal: false,
     docsUrl: 'https://platform.openai.com/',
-    models: [
-      { id: 'gpt-4o', name: 'GPT-4o', contextK: 128 },
-      { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', contextK: 128 },
-      { id: 'gpt-3.5-turbo', name: 'GPT-3.5 Turbo', contextK: 16 },
-    ],
   },
   google: {
     name: 'Google AI',
     description: 'Gemini 1.5 Pro & Flash',
     isLocal: false,
     docsUrl: 'https://aistudio.google.com/',
-    models: [
-      { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro', contextK: 1000 },
-      { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', contextK: 1000 },
-    ],
   },
   ollama: {
     name: 'Ollama',
@@ -142,7 +128,6 @@ const PROVIDER_INFO: Record<
     isLocal: true,
     defaultUrl: 'http://localhost:11434',
     docsUrl: 'https://ollama.ai',
-    models: [],
   },
   lmstudio: {
     name: 'LM Studio',
@@ -150,7 +135,6 @@ const PROVIDER_INFO: Record<
     isLocal: true,
     defaultUrl: 'http://localhost:1234',
     docsUrl: 'https://lmstudio.ai',
-    models: [],
   },
 };
 
@@ -202,153 +186,27 @@ const ALL_AGENT_ROLES = [
 ] as const;
 
 // ============================================================================
-// Default Models
+// Default Provider Configuration (models come from API)
 // ============================================================================
-
-const defaultCloudModels: ModelConfig[] = [
-  // Anthropic
-  {
-    id: 'claude-opus-4-5',
-    provider: 'anthropic',
-    name: 'claude-opus-4-5-20251101',
-    displayName: 'Claude Opus 4.5',
-    contextWindow: 200000,
-    maxOutputTokens: 8192,
-    inputPricePerMillion: 15,
-    outputPricePerMillion: 75,
-    capabilities: [
-      'chat',
-      'completion',
-      'code',
-      'reasoning',
-      'vision',
-      'function_calling',
-      'streaming',
-    ],
-    isLocal: false,
-    isAvailable: true,
-  },
-  {
-    id: 'claude-sonnet-4',
-    provider: 'anthropic',
-    name: 'claude-sonnet-4-20250514',
-    displayName: 'Claude Sonnet 4',
-    contextWindow: 200000,
-    maxOutputTokens: 8192,
-    inputPricePerMillion: 3,
-    outputPricePerMillion: 15,
-    capabilities: [
-      'chat',
-      'completion',
-      'code',
-      'reasoning',
-      'vision',
-      'function_calling',
-      'streaming',
-    ],
-    isLocal: false,
-    isAvailable: true,
-  },
-  {
-    id: 'claude-haiku-3-5',
-    provider: 'anthropic',
-    name: 'claude-3-5-haiku-20241022',
-    displayName: 'Claude Haiku 3.5',
-    contextWindow: 200000,
-    maxOutputTokens: 8192,
-    inputPricePerMillion: 1,
-    outputPricePerMillion: 5,
-    capabilities: ['chat', 'completion', 'code', 'function_calling', 'streaming'],
-    isLocal: false,
-    isAvailable: true,
-  },
-  // OpenAI
-  {
-    id: 'gpt-4o',
-    provider: 'openai',
-    name: 'gpt-4o',
-    displayName: 'GPT-4o',
-    contextWindow: 128000,
-    maxOutputTokens: 16384,
-    inputPricePerMillion: 2.5,
-    outputPricePerMillion: 10,
-    capabilities: ['chat', 'completion', 'code', 'vision', 'function_calling', 'streaming'],
-    isLocal: false,
-    isAvailable: true,
-  },
-  {
-    id: 'gpt-4-turbo',
-    provider: 'openai',
-    name: 'gpt-4-turbo',
-    displayName: 'GPT-4 Turbo',
-    contextWindow: 128000,
-    maxOutputTokens: 4096,
-    inputPricePerMillion: 10,
-    outputPricePerMillion: 30,
-    capabilities: ['chat', 'completion', 'code', 'vision', 'function_calling', 'streaming'],
-    isLocal: false,
-    isAvailable: true,
-  },
-  {
-    id: 'gpt-3.5-turbo',
-    provider: 'openai',
-    name: 'gpt-3.5-turbo',
-    displayName: 'GPT-3.5 Turbo',
-    contextWindow: 16385,
-    maxOutputTokens: 4096,
-    inputPricePerMillion: 0.5,
-    outputPricePerMillion: 1.5,
-    capabilities: ['chat', 'completion', 'code', 'function_calling', 'streaming'],
-    isLocal: false,
-    isAvailable: true,
-  },
-  // Google
-  {
-    id: 'gemini-1.5-pro',
-    provider: 'google',
-    name: 'gemini-1.5-pro',
-    displayName: 'Gemini 1.5 Pro',
-    contextWindow: 1000000,
-    maxOutputTokens: 8192,
-    inputPricePerMillion: 3.5,
-    outputPricePerMillion: 10.5,
-    capabilities: ['chat', 'completion', 'code', 'vision', 'function_calling', 'streaming'],
-    isLocal: false,
-    isAvailable: true,
-  },
-  {
-    id: 'gemini-1.5-flash',
-    provider: 'google',
-    name: 'gemini-1.5-flash',
-    displayName: 'Gemini 1.5 Flash',
-    contextWindow: 1000000,
-    maxOutputTokens: 8192,
-    inputPricePerMillion: 0.075,
-    outputPricePerMillion: 0.3,
-    capabilities: ['chat', 'completion', 'code', 'vision', 'function_calling', 'streaming'],
-    isLocal: false,
-    isAvailable: true,
-  },
-];
 
 const defaultProviders: ProviderConfig[] = [
   {
     id: 'anthropic',
     name: 'Anthropic',
     enabled: true,
-    models: defaultCloudModels.filter((m) => m.provider === 'anthropic'),
+    models: [], // Models fetched from API
   },
   {
     id: 'openai',
     name: 'OpenAI',
     enabled: false,
-    models: defaultCloudModels.filter((m) => m.provider === 'openai'),
+    models: [], // Models fetched from API
   },
   {
     id: 'google',
     name: 'Google AI',
     enabled: false,
-    models: defaultCloudModels.filter((m) => m.provider === 'google'),
+    models: [], // Models fetched from API
   },
   {
     id: 'ollama',
@@ -537,10 +395,17 @@ interface ProviderCardProps {
   providerId: string;
   isConfigured: boolean;
   isSelected: boolean;
+  modelCount: number;
   onSelect: () => void;
 }
 
-function ProviderCard({ providerId, isConfigured, isSelected, onSelect }: ProviderCardProps) {
+function ProviderCard({
+  providerId,
+  isConfigured,
+  isSelected,
+  modelCount,
+  onSelect,
+}: ProviderCardProps) {
   const info = PROVIDER_INFO[providerId];
   if (!info) return null;
 
@@ -594,7 +459,7 @@ function ProviderCard({ providerId, isConfigured, isSelected, onSelect }: Provid
           </div>
           <p className="text-sm text-text-muted mt-0.5">{info.description}</p>
           <p className="text-xs text-text-muted mt-1">
-            {info.isLocal ? 'Auto-discover models' : `${info.models.length} models`}
+            {info.isLocal ? 'Auto-discover models' : `${modelCount} models available`}
           </p>
         </div>
       </div>
@@ -609,6 +474,7 @@ function ProviderCard({ providerId, isConfigured, isSelected, onSelect }: Provid
 interface ProviderConfigPanelProps {
   providerId: string;
   isConfigured: boolean;
+  models: Array<{ id: string; name: string }>;
   onConfigured: () => void;
   onRemove: () => void;
 }
@@ -616,6 +482,7 @@ interface ProviderConfigPanelProps {
 function ProviderConfigPanel({
   providerId,
   isConfigured,
+  models,
   onConfigured,
   onRemove,
 }: ProviderConfigPanelProps) {
@@ -717,19 +584,21 @@ function ProviderConfigPanel({
           </div>
 
           {/* Show available models */}
-          <div>
-            <p className="text-xs text-text-muted mb-2">Available models:</p>
-            <div className="flex flex-wrap gap-2">
-              {info.models.map((model) => (
-                <span
-                  key={model.id}
-                  className="px-2 py-1 rounded-lg bg-overlay text-xs text-text-secondary"
-                >
-                  {model.name}
-                </span>
-              ))}
+          {models.length > 0 && (
+            <div>
+              <p className="text-xs text-text-muted mb-2">Available models:</p>
+              <div className="flex flex-wrap gap-2">
+                {models.map((model) => (
+                  <span
+                    key={model.id}
+                    className="px-2 py-1 rounded-lg bg-overlay text-xs text-text-secondary"
+                  >
+                    {model.name}
+                  </span>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       ) : info.isLocal ? (
         // Local provider configuration
@@ -1100,7 +969,7 @@ export function ModelSettings({ className }: ModelSettingsProps) {
                   Works out of the box - No API key required
                 </p>
                 <p className="text-xs text-text-muted mt-1">
-                  AWS Bedrock models included with your Podex subscription
+                  Vertex AI models included with your Podex subscription
                 </p>
               </div>
             </div>
@@ -1170,6 +1039,7 @@ export function ModelSettings({ className }: ModelSettingsProps) {
                 providerId={providerId}
                 isConfigured={configuredApiKeyProviders.includes(providerId)}
                 isSelected={selectedProvider === providerId}
+                modelCount={userProviderModels.filter((m) => m.provider === providerId).length}
                 onSelect={() =>
                   setSelectedProvider(selectedProvider === providerId ? null : providerId)
                 }
@@ -1182,6 +1052,9 @@ export function ModelSettings({ className }: ModelSettingsProps) {
             <ProviderConfigPanel
               providerId={selectedProvider}
               isConfigured={configuredApiKeyProviders.includes(selectedProvider)}
+              models={userProviderModels
+                .filter((m) => m.provider === selectedProvider)
+                .map((m) => ({ id: m.model_id, name: m.display_name }))}
               onConfigured={refreshApiKeys}
               onRemove={refreshApiKeys}
             />
@@ -1214,6 +1087,7 @@ export function ModelSettings({ className }: ModelSettingsProps) {
                 providerId={providerId}
                 isConfigured={false}
                 isSelected={selectedProvider === providerId}
+                modelCount={0} // Local models are auto-discovered
                 onSelect={() =>
                   setSelectedProvider(selectedProvider === providerId ? null : providerId)
                 }
@@ -1226,6 +1100,7 @@ export function ModelSettings({ className }: ModelSettingsProps) {
             <ProviderConfigPanel
               providerId={selectedProvider}
               isConfigured={false}
+              models={[]} // Local models are auto-discovered
               onConfigured={() => {}}
               onRemove={() => {}}
             />

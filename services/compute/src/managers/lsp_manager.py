@@ -450,7 +450,7 @@ class LSPManager:
                 connection = LSPConnection(
                     workspace_id=workspace_id,
                     language=language,
-                    exec_id=exec_instance.id if hasattr(exec_instance, "id") else "",
+                    exec_id=getattr(exec_instance, "id", ""),
                 )
 
                 # Initialize the LSP connection

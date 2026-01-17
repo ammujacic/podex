@@ -25,7 +25,6 @@ from src.database import (
     SubscriptionPlan,
     UserConfig,
     UserSubscription,
-    get_db,
 )
 from src.database import Message as MessageModel
 from src.database import Session as SessionModel
@@ -38,6 +37,7 @@ from src.exceptions import (
 )
 from src.mcp_config import get_effective_mcp_config
 from src.middleware.rate_limit import RATE_LIMIT_AGENT, RATE_LIMIT_STANDARD, limiter
+from src.routes.dependencies import DbSession, get_current_user_id, verify_session_access
 from src.websocket.hub import (
     AgentAttentionInfo,
     emit_agent_attention,
@@ -48,9 +48,6 @@ from src.websocket.hub import (
 logger = structlog.get_logger()
 
 router = APIRouter()
-
-# Type alias for database session dependency
-DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
 @dataclass
@@ -214,41 +211,22 @@ def validate_command_allowlist(allowlist: list[str] | None) -> list[str] | None:
 
         # Check for forbidden patterns (normalized comparison)
         if normalized in forbidden_normalized:
-            raise ValueError(  # noqa: TRY003
-                f"Command pattern '{original_stripped}' is not allowed for security reasons"
-            )
+            raise ValueError(f"Forbidden pattern: {original_stripped}")  # noqa: TRY003
 
         # Check for overly broad wildcards
         if normalized == "*" or normalized.startswith("* "):
-            raise ValueError(  # noqa: TRY003
-                "Wildcard-only patterns are not allowed. Please specify more specific commands."
-            )
+            raise ValueError("Wildcard-only patterns not allowed")  # noqa: TRY003
 
         # Check for shell injection patterns
         if any(c in original_stripped for c in ["|", ";", "&&", "||", "`", "$("]):
-            raise ValueError(  # noqa: TRY003
-                f"Command pattern '{original_stripped}' contains "
-                "shell operators which are not allowed"
-            )
+            raise ValueError(f"Shell operators not allowed: {original_stripped}")  # noqa: TRY003
 
         validated.append(original_stripped)
 
     return validated
 
 
-def get_current_user_id(request: Request) -> str:
-    """Get current user ID from request state.
-
-    Raises:
-        HTTPException: If user is not authenticated.
-    """
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return str(user_id)
-
-
-async def verify_session_access(
+async def check_session_collaborator_access(
     session_id: str,
     request: Request,
     db: AsyncSession,
@@ -304,7 +282,7 @@ async def check_agent_quota(db: AsyncSession, user_id: str, session_id: str) -> 
     Raises:
         HTTPException: If user has exceeded their agent quota or lacks a valid subscription
     """
-    from sqlalchemy.exc import OperationalError  # noqa: PLC0415
+    from sqlalchemy.exc import OperationalError
 
     try:
         # Lock the session row with NOWAIT to fail fast on contention
@@ -399,7 +377,7 @@ class AgentCreate(BaseModel):
         """Validate mode is a valid AgentMode enum value."""
         mode_lower = v.lower()
         if mode_lower not in VALID_AGENT_MODES:
-            raise ValueError(f"Invalid mode. Must be one of: {list(VALID_AGENT_MODES)}")  # noqa: TRY003
+            raise ValueError("Invalid agent mode")  # noqa: TRY003
         return mode_lower
 
 
@@ -435,7 +413,7 @@ class AgentModeUpdate(BaseModel):
         """Validate mode is a valid AgentMode enum value."""
         mode_lower = v.lower()
         if mode_lower not in VALID_AGENT_MODES:
-            raise ValueError(f"Invalid mode. Must be one of: {list(VALID_AGENT_MODES)}")  # noqa: TRY003
+            raise ValueError("Invalid agent mode")  # noqa: TRY003
         return mode_lower
 
 
@@ -502,7 +480,7 @@ class MessageCreate(BaseModel):
         max_images = 5
         max_size = 10 * 1024 * 1024  # 10MB per image
         if len(v) > max_images:
-            raise ValueError(f"Maximum {max_images} images allowed per message")  # noqa: TRY003
+            raise ValueError("Too many images")  # noqa: TRY003
         for img in v:
             if img.base64_data:
                 # Remove data URL prefix for size calculation
@@ -512,9 +490,7 @@ class MessageCreate(BaseModel):
                 # Base64 is ~4/3 the size of binary
                 estimated_size = len(data) * 3 // 4
                 if estimated_size > max_size:
-                    raise ValueError(  # noqa: TRY003
-                        f"Image too large. Maximum size is {max_size // (1024 * 1024)}MB"
-                    )
+                    raise ValueError("Image too large")  # noqa: TRY003
         return v
 
 
@@ -1104,14 +1080,14 @@ async def _process_and_emit_response(
 
         # Check for auto-compaction if threshold exceeded
         # Import locally to avoid circular dependency
-        from src.routes.context import maybe_trigger_auto_compaction  # noqa: PLC0415
+        from src.routes.context import maybe_trigger_auto_compaction
 
         if ctx.user_id:
             await maybe_trigger_auto_compaction(
                 db=db,
                 agent=agent,
                 session_id=ctx.session_id,
-                user_id=ctx.user_id,
+                _user_id=ctx.user_id,
             )
 
     attention_type = detect_attention_type(response_content, ctx.agent_role)
@@ -1136,7 +1112,7 @@ async def _process_and_emit_response(
         await emit_agent_attention(attention_info)
 
 
-async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0915
+async def process_agent_message(ctx: AgentMessageContext) -> None:
     """Background task to process agent message and generate response.
 
     Calls the agent service to process the message with the LLM.
@@ -2004,6 +1980,106 @@ async def abort_agent(
         "agent_id": agent_id,
         "cancelled_count": cancelled_count,
         "message": "Agent tasks aborted" if cancelled_count > 0 else "No running tasks to abort",
+    }
+
+
+@router.post("/{agent_id}/force-stop")
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def force_stop_agent(
+    session_id: str,
+    agent_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> dict[str, str | int | bool]:
+    """Force-stop a stuck agent, resetting its state completely.
+
+    Unlike abort, this performs a complete reset:
+    - Cancels all pending tasks via agent service (best effort)
+    - Resets agent status to idle
+    - Clears any pending approvals for this agent
+    - Updates status_changed_at timestamp
+    - Notifies all connected clients
+
+    Use when an agent is completely unresponsive or stuck in an error state.
+    This is more aggressive than abort and should be used as a last resort.
+    """
+    from datetime import UTC, datetime
+
+    from sqlalchemy import delete
+
+    from src.database.models import AgentPendingApproval
+
+    # Verify user has access to session
+    await verify_session_access(session_id, request, db)
+
+    # Verify agent exists in session
+    agent_query = select(AgentModel).where(
+        AgentModel.id == agent_id,
+        AgentModel.session_id == session_id,
+    )
+    agent_result = await db.execute(agent_query)
+    agent = agent_result.scalar_one_or_none()
+
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    previous_status = agent.status
+    cancelled_count = 0
+
+    # Try to cancel via agent service (best effort - don't fail if this doesn't work)
+    try:
+        result = await agent_client.abort_agent(agent_id)
+        cancelled_count = result.get("cancelled_count", 0)
+    except Exception as e:
+        logger.warning(
+            "Agent service abort failed during force-stop",
+            agent_id=agent_id,
+            error=str(e),
+        )
+
+    # Force reset status to idle (regardless of current state)
+    agent.status = "idle"
+    agent.status_changed_at = datetime.now(UTC)
+
+    # Clear any pending approvals for this agent
+    await db.execute(
+        delete(AgentPendingApproval).where(
+            AgentPendingApproval.agent_id == agent_id,
+            AgentPendingApproval.status == "pending",
+        )
+    )
+
+    await db.commit()
+
+    # Notify clients of status change
+    await _notify_agent_status(session_id, agent_id, "idle")
+
+    # Emit force-stop event with details
+    await emit_to_session(
+        session_id,
+        "agent_force_stopped",
+        {
+            "agent_id": agent_id,
+            "previous_status": previous_status,
+            "tasks_cancelled": cancelled_count,
+        },
+    )
+
+    logger.info(
+        "Agent force-stopped",
+        agent_id=agent_id,
+        session_id=session_id,
+        previous_status=previous_status,
+        tasks_cancelled=cancelled_count,
+    )
+
+    return {
+        "success": True,
+        "agent_id": agent_id,
+        "previous_status": previous_status,
+        "cancelled_count": cancelled_count,
+        "message": "Agent force-stopped and reset to idle",
     }
 
 

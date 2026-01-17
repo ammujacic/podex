@@ -1,6 +1,7 @@
 """Local pod management API routes for self-hosted compute."""
 
 import hashlib
+import hmac
 import secrets
 from datetime import UTC, datetime
 from typing import Annotated, Any
@@ -273,7 +274,7 @@ async def get_pod(
 
 @router.patch("/{pod_id}", response_model=LocalPodResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def update_pod(  # noqa: PLR0913
+async def update_pod(
     request: Request,
     response: Response,
     pod_id: UUID,
@@ -426,16 +427,36 @@ async def verify_pod_token(token: str, db: AsyncSession) -> LocalPod | None:
     """Verify a pod token and return the pod if valid.
 
     Used by the WebSocket hub for authentication.
+
+    SECURITY: Uses constant-time comparison to prevent timing attacks.
+    We query by token_prefix (public) then verify hash in Python.
     """
     if not token.startswith("pdx_pod_"):
         return None
 
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    # Extract the token part after "pdx_pod_" prefix
+    token_body = token[8:]  # Remove "pdx_pod_" prefix
+    if len(token_body) < 8:
+        return None
+
+    # Use the prefix for initial lookup (prefix is public)
+    provided_prefix = token_body[:8]
 
     result = await db.execute(
-        select(LocalPod).where(LocalPod.token_hash == token_hash),
+        select(LocalPod).where(LocalPod.token_prefix == provided_prefix),
     )
-    return result.scalar_one_or_none()
+    pod = result.scalar_one_or_none()
+
+    if not pod:
+        return None
+
+    # SECURITY: Use constant-time comparison for the full hash
+    # This prevents timing attacks that could reveal hash bytes
+    provided_hash = hashlib.sha256(token.encode()).hexdigest()
+    if not hmac.compare_digest(provided_hash, pod.token_hash):
+        return None
+
+    return pod
 
 
 async def update_pod_status(

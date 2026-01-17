@@ -1,8 +1,8 @@
 """Comprehensive tests for local pod client."""
 
 import asyncio
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+import contextlib
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -99,10 +99,8 @@ class TestLocalPodClientHeartbeat:
         client._connected = False
         heartbeat_task.cancel()
 
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
-        except asyncio.CancelledError:
-            pass
 
         # Should have sent at least one heartbeat
         client.sio.emit.assert_called()

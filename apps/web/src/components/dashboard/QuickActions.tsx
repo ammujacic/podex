@@ -1,8 +1,10 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
+import { useState, useEffect } from 'react';
 import { Clock, FolderGit2, Keyboard, Plus, Sparkles } from 'lucide-react';
 import { Button } from '@podex/ui';
+import { listTemplates, type PodTemplate } from '@/lib/api';
 
 interface QuickActionsProps {
   lastSessionId?: string;
@@ -81,52 +83,66 @@ interface QuickStartTemplatesProps {
   onSelectTemplate: (template: string) => void;
 }
 
+// Fallback icon for templates without an icon
+function TemplateIcon({ icon, name }: { icon: string | null; name: string }) {
+  // If icon is an emoji or single character, render as text
+  if (icon && icon.length <= 2) {
+    return <span className="text-2xl">{icon}</span>;
+  }
+  // If icon matches known icon names, render appropriate icon
+  if (icon === 'sparkles' || name.toLowerCase().includes('ai')) {
+    return <Sparkles className="w-6 h-6 text-accent-primary" />;
+  }
+  // Default to Plus icon for blank/generic
+  if (name.toLowerCase() === 'blank' || !icon) {
+    return <Plus className="w-6 h-6 text-text-muted" />;
+  }
+  // If icon looks like an emoji (multi-byte), render as text
+  return <span className="text-2xl">{icon || '📦'}</span>;
+}
+
 export function QuickStartTemplates({ onSelectTemplate }: QuickStartTemplatesProps) {
-  const templates = [
-    {
-      id: 'blank',
-      name: 'Blank',
-      icon: <Plus className="w-6 h-6 text-text-muted" />,
-    },
-    {
-      id: 'react',
-      name: 'React',
-      icon: <span className="text-2xl">⚛️</span>,
-    },
-    {
-      id: 'nextjs',
-      name: 'Next.js',
-      icon: <span className="text-2xl">▲</span>,
-    },
-    {
-      id: 'python',
-      name: 'Python',
-      icon: <span className="text-2xl">🐍</span>,
-    },
-    {
-      id: 'node',
-      name: 'Node.js',
-      icon: <span className="text-2xl">💚</span>,
-    },
-    {
-      id: 'ai',
-      name: 'AI Agent',
-      icon: <Sparkles className="w-6 h-6 text-accent-primary" />,
-    },
-  ];
+  const [templates, setTemplates] = useState<PodTemplate[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    listTemplates()
+      .then((data) => {
+        // Take first 6 templates for quick start, prioritize popular ones
+        const quickStartTemplates = data.filter((t) => t.is_official || t.is_public).slice(0, 6);
+        setTemplates(quickStartTemplates);
+      })
+      .catch((err) => {
+        console.error('Failed to fetch templates:', err);
+      })
+      .finally(() => {
+        setIsLoading(false);
+      });
+  }, []);
 
   return (
     <div>
       <h3 className="text-lg font-medium text-text-primary mb-4">Quick Start</h3>
       <div className="grid gap-3 grid-cols-3 sm:grid-cols-4 md:grid-cols-6">
-        {templates.map((template) => (
-          <TemplateCard
-            key={template.id}
-            icon={template.icon}
-            name={template.name}
-            onClick={() => onSelectTemplate(template.id)}
-          />
-        ))}
+        {isLoading
+          ? // Loading skeleton
+            Array.from({ length: 6 }).map((_, index) => (
+              <div
+                key={index}
+                className="flex flex-col items-center justify-center p-4 bg-surface border border-border-default rounded-xl min-h-[100px] animate-pulse"
+              >
+                <div className="w-12 h-12 rounded-xl bg-elevated mb-2" />
+                <div className="h-4 w-16 bg-elevated rounded" />
+              </div>
+            ))
+          : templates.map((template) => (
+              <TemplateCard
+                key={template.id}
+                icon={<TemplateIcon icon={template.icon} name={template.name} />}
+                name={template.name}
+                onClick={() => onSelectTemplate(template.slug)}
+              />
+            ))}
       </div>
     </div>
   );

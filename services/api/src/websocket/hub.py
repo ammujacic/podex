@@ -39,21 +39,50 @@ class AgentAttentionInfo:
     attention_id: str | None = None
 
 
-def _verify_auth_token(token: str | None) -> str | None:
+async def _verify_auth_token(token: str | None) -> str | None:
     """Verify JWT auth token and extract user ID.
+
+    SECURITY: Also checks token blacklist to ensure revoked tokens
+    (from logout, password change, etc.) cannot be used for WebSocket connections.
 
     Args:
         token: JWT token to verify
 
     Returns:
-        User ID if valid, None otherwise
+        User ID if valid and not revoked, None otherwise
     """
     if not token:
         return None
 
     try:
         payload: dict[str, Any] = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=["HS256"])
+
+        # SECURITY: Only accept access tokens, not refresh tokens
+        # This prevents refresh token reuse as access tokens
+        token_type = payload.get("type")
+        if token_type and token_type != "access":
+            logger.warning("Non-access token used for WebSocket auth", token_type=token_type)
+            return None
+
         user_id: str | None = payload.get("sub") or payload.get("user_id")
+
+        if not user_id:
+            return None
+
+        # SECURITY: Check token blacklist using jti claim
+        # This ensures revoked tokens (logout, password change) cannot be used
+        token_jti = payload.get("jti")
+        if token_jti:
+            from src.services.token_blacklist import is_token_revoked
+
+            if await is_token_revoked(token_jti):
+                logger.warning(
+                    "Revoked token used for WebSocket auth",
+                    user_id=user_id,
+                    jti=token_jti[:8] + "...",
+                )
+                return None
+
     except JWTError:
         return None
     else:
@@ -117,6 +146,8 @@ async def _verify_workspace_access(workspace_id: str, user_id: str) -> bool:
 MAX_TERMINAL_INPUT_BYTES = 8192
 
 # Track client info (sid -> {user_id, device_id, session_id, voice state, etc.})
+# SECURITY: Bounded by MAX_CLIENTS to prevent memory exhaustion if disconnect events are missed
+MAX_CLIENTS = 50000  # Safety limit - should match max concurrent WebSocket connections
 _client_info: dict[str, dict[str, Any]] = {}
 
 # Maximum updates to store before forcing merge (prevents memory bloat)
@@ -148,7 +179,7 @@ class YjsStorage:
             return None
 
         try:
-            import redis.asyncio as aioredis  # noqa: PLC0415
+            import redis.asyncio as aioredis
 
             self._redis = aioredis.from_url(
                 settings.REDIS_URL,
@@ -222,11 +253,42 @@ class YjsStorage:
             except Exception as e:
                 logger.warning("Redis add_update failed, falling back to memory", error=str(e))
 
-        # Fallback to memory
+        # Fallback to memory with bounds checking
         if session_id not in self._memory_updates:
             self._memory_updates[session_id] = {}
         if doc_name not in self._memory_updates[session_id]:
             self._memory_updates[session_id][doc_name] = []
+
+        # SECURITY: Enforce memory limits to prevent DoS via memory exhaustion
+        current_updates = self._memory_updates[session_id][doc_name]
+        if len(current_updates) >= MAX_YJS_UPDATES_PER_DOC:
+            # Compact to half the limit when full
+            logger.info(
+                "Compacting in-memory Yjs updates",
+                session_id=session_id,
+                doc_name=doc_name,
+                old_count=len(current_updates),
+            )
+            self._memory_updates[session_id][doc_name] = current_updates[
+                -(MAX_YJS_UPDATES_PER_DOC // 2) :
+            ]
+
+        # Check total session bytes
+        total_bytes = sum(
+            sum(len(u) for u in updates)
+            for updates in self._memory_updates.get(session_id, {}).values()
+        )
+        if total_bytes + len(update) > MAX_YJS_BYTES_PER_SESSION:
+            logger.warning(
+                "In-memory Yjs session limit exceeded, forcing cleanup",
+                session_id=session_id,
+                bytes=total_bytes,
+                limit=MAX_YJS_BYTES_PER_SESSION,
+            )
+            # Force aggressive cleanup - keep only recent updates
+            for doc in self._memory_updates.get(session_id, {}):
+                self._memory_updates[session_id][doc] = self._memory_updates[session_id][doc][-10:]
+
         self._memory_updates[session_id][doc_name].append(update)
         return len(self._memory_updates[session_id][doc_name])
 
@@ -274,6 +336,10 @@ yjs_storage = YjsStorage()
 # Legacy in-memory storage (kept for backwards compatibility during transition)
 _yjs_docs: dict[str, dict[str, bytes]] = {}  # session_id -> {doc_name: state_vector}
 _yjs_updates: dict[str, dict[str, list[bytes]]] = {}  # session_id -> {doc_name: [updates]}
+
+# SECURITY: Bounds on in-memory Yjs tracking to prevent memory exhaustion
+MAX_YJS_SESSIONS = 1000  # Maximum number of sessions to track
+MAX_YJS_DOCS_PER_SESSION = 50  # Maximum documents per session
 
 # Grace period for cleanup (seconds) to avoid race conditions
 CLEANUP_GRACE_PERIOD = 5.0
@@ -365,8 +431,8 @@ async def session_join(sid: str, data: dict[str, str]) -> None:
         await sio.emit("error", {"error": "session_id required"}, to=sid)
         return
 
-    # Verify auth token and get user ID
-    user_id = _verify_auth_token(auth_token)
+    # Verify auth token and get user ID (also checks token blacklist)
+    user_id = await _verify_auth_token(auth_token)
     if not user_id:
         await sio.emit("error", {"error": "Authentication required"}, to=sid)
         return
@@ -383,6 +449,12 @@ async def session_join(sid: str, data: dict[str, str]) -> None:
         pending_cleanup.cancel()
 
     # Store client info for disconnect handling
+    # SECURITY: Check bounds to prevent memory exhaustion
+    if len(_client_info) >= MAX_CLIENTS:
+        logger.error("Client info cache at capacity, rejecting connection", max=MAX_CLIENTS)
+        await sio.emit("error", {"error": "Server at capacity, please retry later"}, to=sid)
+        return
+
     _client_info[sid] = {
         "session_id": session_id,
         "user_id": user_id,
@@ -410,7 +482,7 @@ async def session_join(sid: str, data: dict[str, str]) -> None:
 
     # Subscribe to agent streaming events for this session
     # Import here to avoid circular import with streaming.subscriber
-    from src.streaming import get_stream_subscriber  # noqa: PLC0415
+    from src.streaming import get_stream_subscriber
 
     stream_subscriber = get_stream_subscriber()
     await stream_subscriber.subscribe_session(session_id)
@@ -449,7 +521,7 @@ async def session_leave(sid: str, data: dict[str, str]) -> None:
 
         # Unsubscribe from agent streaming events when room is empty
         # Import here to avoid circular import with streaming.subscriber
-        from src.streaming import get_stream_subscriber  # noqa: PLC0415
+        from src.streaming import get_stream_subscriber
 
         stream_subscriber = get_stream_subscriber()
         await stream_subscriber.unsubscribe_session(session_id)
@@ -534,8 +606,8 @@ async def terminal_attach(sid: str, data: dict[str, str]) -> None:
     if shell not in valid_shells:
         shell = "bash"
 
-    # Verify auth token and get user ID
-    user_id = _verify_auth_token(auth_token)
+    # Verify auth token and get user ID (also checks token blacklist)
+    user_id = await _verify_auth_token(auth_token)
     if not user_id:
         await sio.emit("terminal_error", {"error": "Authentication required"}, to=sid)
         return
@@ -801,7 +873,7 @@ async def emit_tool_call_start(
     )
 
 
-async def emit_tool_call_end(  # noqa: PLR0913
+async def emit_tool_call_end(
     session_id: str,
     agent_id: str,
     tool_call_id: str,
@@ -828,7 +900,7 @@ async def emit_tool_call_end(  # noqa: PLR0913
     )
 
 
-async def emit_tool_call_progress(  # noqa: PLR0913
+async def emit_tool_call_progress(
     session_id: str,
     agent_id: str,
     tool_call_id: str,
@@ -857,11 +929,19 @@ async def emit_tool_call_progress(  # noqa: PLR0913
 # Terminal output history per workspace (limited buffer)
 _terminal_history: dict[str, list[dict[str, Any]]] = {}
 MAX_TERMINAL_HISTORY_LINES = 1000
+# SECURITY: Maximum workspaces to track history for to prevent memory exhaustion
+MAX_TERMINAL_HISTORY_WORKSPACES = 5000
 
 
 def _add_to_terminal_history(workspace_id: str, output: str) -> None:
     """Add terminal output to history buffer."""
     if workspace_id not in _terminal_history:
+        # SECURITY: Evict oldest workspace if at capacity
+        if len(_terminal_history) >= MAX_TERMINAL_HISTORY_WORKSPACES:
+            # Remove the oldest entry (first key in dict preserves insertion order in Python 3.7+)
+            oldest_key = next(iter(_terminal_history))
+            del _terminal_history[oldest_key]
+            logger.info("Evicted oldest terminal history", evicted_workspace=oldest_key)
         _terminal_history[workspace_id] = []
 
     history = _terminal_history[workspace_id]
@@ -971,11 +1051,41 @@ async def yjs_update(sid: str, data: dict[str, Any]) -> None:
     try:
         update = base64.b64decode(update_b64)
 
-        # Store the update
+        # SECURITY: Limit update size to prevent DoS
+        if len(update) > 1024 * 1024:  # 1MB max per update
+            logger.warning(
+                "Yjs update exceeds size limit",
+                session_id=session_id,
+                doc_name=doc_name,
+                size=len(update),
+            )
+            return
+
+        # SECURITY: Check session count limit before adding new sessions
         if session_id not in _yjs_updates:
+            if len(_yjs_updates) >= MAX_YJS_SESSIONS:
+                # Evict oldest session (simple LRU approximation)
+                oldest_session = next(iter(_yjs_updates))
+                logger.warning(
+                    "Evicting oldest Yjs session due to limit",
+                    evicted_session=oldest_session,
+                    limit=MAX_YJS_SESSIONS,
+                )
+                del _yjs_updates[oldest_session]
+                _yjs_docs.pop(oldest_session, None)
             _yjs_updates[session_id] = {}
+
+        # SECURITY: Check document count limit per session
         if doc_name not in _yjs_updates[session_id]:
+            if len(_yjs_updates[session_id]) >= MAX_YJS_DOCS_PER_SESSION:
+                logger.warning(
+                    "Yjs document limit exceeded for session",
+                    session_id=session_id,
+                    limit=MAX_YJS_DOCS_PER_SESSION,
+                )
+                return
             _yjs_updates[session_id][doc_name] = []
+
         _yjs_updates[session_id][doc_name].append(update)
 
         # Merge updates periodically to avoid memory bloat
@@ -1208,7 +1318,7 @@ async def cleanup_session_sync() -> None:
 
 
 async def _transcribe_audio_chunks(chunks: list[str], language: str = "en-US") -> dict[str, Any]:
-    """Transcribe audio chunks using AWS Transcribe.
+    """Transcribe audio chunks using Google Cloud Speech-to-Text.
 
     Args:
         chunks: List of base64-encoded audio chunks
@@ -1217,7 +1327,7 @@ async def _transcribe_audio_chunks(chunks: list[str], language: str = "en-US") -
     Returns:
         Dict with 'text' and 'confidence' keys
     """
-    import aioboto3  # noqa: PLC0415
+    from podex_shared.gcp import get_speech_client
 
     if not chunks:
         return {"text": "", "confidence": 0.0}
@@ -1228,99 +1338,28 @@ async def _transcribe_audio_chunks(chunks: list[str], language: str = "en-US") -
         combined_audio += base64.b64decode(chunk_b64)
 
     # Validate minimum audio length (100 bytes minimum)
-    if len(combined_audio) < 100:  # noqa: PLR2004
+    if len(combined_audio) < 100:
         return {"text": "", "confidence": 0.0}
 
-    # Create a unique job name
-    job_name = f"podex-transcribe-{uuid4().hex[:12]}"
-
-    # Use AWS Transcribe streaming for real-time transcription
     try:
-        session = aioboto3.Session()
+        # Use GCP Speech-to-Text for synchronous transcription
+        use_mock = settings.ENVIRONMENT == "development"
+        speech_client = get_speech_client(use_mock=use_mock)
 
-        # Upload audio to S3 temporarily
-        async with session.client(
-            "s3",
-            region_name=settings.AWS_REGION,
-            endpoint_url=settings.AWS_ENDPOINT,
-        ) as s3:
-            audio_key = f"{settings.VOICE_AUDIO_S3_PREFIX}/{job_name}.webm"
-            await s3.put_object(
-                Bucket=settings.S3_BUCKET,
-                Key=audio_key,
-                Body=combined_audio,
-                ContentType="audio/webm",
-            )
-
-            audio_uri = f"s3://{settings.S3_BUCKET}/{audio_key}"
-
-        # Start transcription job
-        async with session.client(
-            "transcribe",
-            region_name=settings.AWS_REGION,
-            endpoint_url=settings.AWS_ENDPOINT,
-        ) as transcribe:
-            await transcribe.start_transcription_job(
-                TranscriptionJobName=job_name,
-                Media={"MediaFileUri": audio_uri},
-                MediaFormat="webm",
-                LanguageCode=language,
-            )
-
-            # Poll for completion (max 30 seconds)
-            for _ in range(60):  # 60 * 0.5s = 30s max
-                await asyncio.sleep(0.5)
-                result = await transcribe.get_transcription_job(TranscriptionJobName=job_name)
-                status = result["TranscriptionJob"]["TranscriptionJobStatus"]
-
-                if status == "COMPLETED":
-                    # Get the transcript
-                    transcript_uri = result["TranscriptionJob"]["Transcript"]["TranscriptFileUri"]
-
-                    # Fetch transcript JSON
-                    import httpx  # noqa: PLC0415
-
-                    async with httpx.AsyncClient() as client:
-                        transcript_response = await client.get(transcript_uri)
-                        transcript_data = transcript_response.json()
-
-                    # Extract text and confidence
-                    results = transcript_data.get("results", {})
-                    transcripts = results.get("transcripts", [])
-
-                    if transcripts:
-                        text = transcripts[0].get("transcript", "")
-                        # Calculate average confidence from items
-                        items = results.get("items", [])
-                        if items:
-                            confidences = [
-                                float(item.get("alternatives", [{}])[0].get("confidence", 0))
-                                for item in items
-                                if item.get("type") == "pronunciation"
-                            ]
-                            confidence = sum(confidences) / len(confidences) if confidences else 0.0
-                        else:
-                            confidence = 0.0
-
-                        return {"text": text, "confidence": confidence}
-
-                    return {"text": "", "confidence": 0.0}
-
-                if status == "FAILED":
-                    logger.warning(
-                        "Transcription job failed",
-                        job_name=job_name,
-                        reason=result["TranscriptionJob"].get("FailureReason"),
-                    )
-                    return {"text": "", "confidence": 0.0}
-
-            # Timeout
-            logger.warning("Transcription job timeout", job_name=job_name)
-            return {"text": "", "confidence": 0.0}
+        result = await speech_client.transcribe(
+            audio_data=combined_audio,
+            encoding="WEBM_OPUS",
+            language_code=language,
+        )
 
     except Exception as e:
-        logger.exception("AWS Transcribe error", error=str(e))
+        logger.exception("GCP Speech transcription error", error=str(e))
         raise
+    else:
+        return {
+            "text": result.transcript,
+            "confidence": result.confidence,
+        }
 
 
 @sio.event
@@ -1397,7 +1436,7 @@ async def voice_stream_end(sid: str, data: dict[str, Any]) -> None:
         chunks_count=len(chunks),
     )
 
-    # Process transcription - in dev mode use mock, in production use AWS Transcribe
+    # Process transcription - in dev mode use mock, in production use GCP Speech-to-Text
     if settings.ENVIRONMENT == "development":
         # Mock transcription for dev mode
         await sio.emit(
@@ -1412,7 +1451,7 @@ async def voice_stream_end(sid: str, data: dict[str, Any]) -> None:
             to=sid,
         )
     else:
-        # Real transcription using AWS Transcribe
+        # Real transcription using GCP Speech-to-Text
         try:
             transcription = await _transcribe_audio_chunks(chunks, _language)
             await sio.emit(
@@ -1599,10 +1638,199 @@ async def agent_attention_dismiss(_sid: str, data: dict[str, Any]) -> None:
     logger.debug("Agent attention dismissed", attention_id=attention_id)
 
 
+# ============== Extension Sync Events ==============
+
+
+async def emit_extension_installed(
+    user_id: str,
+    extension_id: str,
+    namespace: str,
+    name: str,
+    display_name: str,
+    version: str,
+    scope: str,
+    workspace_id: str | None = None,
+    icon_url: str | None = None,
+) -> None:
+    """Emit extension installed event to all user's devices.
+
+    Args:
+        user_id: The user who installed the extension.
+        extension_id: The extension ID (namespace.name).
+        namespace: Extension namespace.
+        name: Extension name.
+        display_name: Extension display name.
+        version: Installed version.
+        scope: Installation scope ('user' or 'workspace').
+        workspace_id: Workspace ID if workspace-scoped.
+        icon_url: Extension icon URL.
+    """
+    await sio.emit(
+        "extension_installed",
+        {
+            "extension_id": extension_id,
+            "namespace": namespace,
+            "name": name,
+            "display_name": display_name,
+            "version": version,
+            "scope": scope,
+            "workspace_id": workspace_id,
+            "icon_url": icon_url,
+            "timestamp": datetime.now(UTC).isoformat(),
+        },
+        room=f"user:{user_id}",
+    )
+
+    logger.info(
+        "Extension installed event emitted",
+        user_id=user_id,
+        extension_id=extension_id,
+        scope=scope,
+    )
+
+
+async def emit_extension_uninstalled(
+    user_id: str,
+    extension_id: str,
+    scope: str,
+    workspace_id: str | None = None,
+) -> None:
+    """Emit extension uninstalled event to all user's devices.
+
+    Args:
+        user_id: The user who uninstalled the extension.
+        extension_id: The extension ID.
+        scope: Installation scope ('user' or 'workspace').
+        workspace_id: Workspace ID if workspace-scoped.
+    """
+    await sio.emit(
+        "extension_uninstalled",
+        {
+            "extension_id": extension_id,
+            "scope": scope,
+            "workspace_id": workspace_id,
+            "timestamp": datetime.now(UTC).isoformat(),
+        },
+        room=f"user:{user_id}",
+    )
+
+    logger.info(
+        "Extension uninstalled event emitted",
+        user_id=user_id,
+        extension_id=extension_id,
+        scope=scope,
+    )
+
+
+async def emit_extension_toggled(
+    user_id: str,
+    extension_id: str,
+    enabled: bool,
+    scope: str,
+    workspace_id: str | None = None,
+) -> None:
+    """Emit extension enabled/disabled event to all user's devices.
+
+    Args:
+        user_id: The user who toggled the extension.
+        extension_id: The extension ID.
+        enabled: Whether extension is now enabled.
+        scope: Installation scope ('user' or 'workspace').
+        workspace_id: Workspace ID if workspace-scoped.
+    """
+    await sio.emit(
+        "extension_toggled",
+        {
+            "extension_id": extension_id,
+            "enabled": enabled,
+            "scope": scope,
+            "workspace_id": workspace_id,
+            "timestamp": datetime.now(UTC).isoformat(),
+        },
+        room=f"user:{user_id}",
+    )
+
+    logger.info(
+        "Extension toggled event emitted",
+        user_id=user_id,
+        extension_id=extension_id,
+        enabled=enabled,
+    )
+
+
+async def emit_extension_settings_changed(
+    user_id: str,
+    extension_id: str,
+    settings: dict[str, Any],
+    scope: str,
+    workspace_id: str | None = None,
+) -> None:
+    """Emit extension settings changed event to all user's devices.
+
+    Args:
+        user_id: The user who changed the settings.
+        extension_id: The extension ID.
+        settings: The new settings.
+        scope: Installation scope ('user' or 'workspace').
+        workspace_id: Workspace ID if workspace-scoped.
+    """
+    await sio.emit(
+        "extension_settings_changed",
+        {
+            "extension_id": extension_id,
+            "settings": settings,
+            "scope": scope,
+            "workspace_id": workspace_id,
+            "timestamp": datetime.now(UTC).isoformat(),
+        },
+        room=f"user:{user_id}",
+    )
+
+    logger.info(
+        "Extension settings changed event emitted",
+        user_id=user_id,
+        extension_id=extension_id,
+    )
+
+
+@sio.event
+async def extension_subscribe(sid: str, data: dict[str, str]) -> None:
+    """Subscribe to extension sync events for a user."""
+    auth_token = data.get("auth_token")
+
+    # Verify auth token and get user ID (also checks token blacklist)
+    user_id = await _verify_auth_token(auth_token)
+    if not user_id:
+        await sio.emit("error", {"error": "Authentication required"}, to=sid)
+        return
+
+    # Join user room for extension sync
+    await sio.enter_room(sid, f"user:{user_id}")
+    logger.info("Client subscribed to extension sync", sid=sid, user_id=user_id)
+
+    # Update client info
+    client = _client_info.get(sid, {})
+    client["extension_sync_user_id"] = user_id
+    _client_info[sid] = client
+
+    await sio.emit("extension_subscribed", {"user_id": user_id}, to=sid)
+
+
+@sio.event
+async def extension_unsubscribe(sid: str, _data: dict[str, str]) -> None:
+    """Unsubscribe from extension sync events."""
+    client = _client_info.get(sid, {})
+    user_id = client.pop("extension_sync_user_id", None)
+
+    if user_id:
+        await sio.leave_room(sid, f"user:{user_id}")
+        logger.info("Client unsubscribed from extension sync", sid=sid, user_id=user_id)
+
+
 # ============== Agent Mode Switch Events ==============
 
 
-async def emit_agent_auto_mode_switch(  # noqa: PLR0913
+async def emit_agent_auto_mode_switch(
     session_id: str,
     agent_id: str,
     agent_name: str,

@@ -1,6 +1,7 @@
 """HTTP client for compute service communication."""
 
 import contextlib
+import time
 from http import HTTPStatus
 from typing import Any
 
@@ -9,6 +10,7 @@ import structlog
 
 from src.config import settings
 from src.exceptions import (
+    ComputeClientError,
     ComputeServiceConnectionError,
     ComputeServiceHTTPError,
 )
@@ -186,6 +188,60 @@ class ComputeClient:
     async def heartbeat(self, workspace_id: str, user_id: str) -> None:
         """Send heartbeat to keep workspace alive."""
         await self._request("POST", f"/workspaces/{workspace_id}/heartbeat", user_id=user_id)
+
+    async def health_check_workspace(
+        self,
+        workspace_id: str,
+        user_id: str,
+        timeout_seconds: int = 10,
+    ) -> dict[str, Any]:
+        """Check if a workspace container is healthy and responsive.
+
+        Performs a lightweight operation to verify container responsiveness
+        by executing a simple echo command.
+
+        Args:
+            workspace_id: The workspace ID.
+            user_id: User ID for authorization.
+            timeout_seconds: Command timeout in seconds.
+
+        Returns:
+            Dict with 'healthy', 'latency_ms', and optional 'error' fields.
+        """
+        start = time.monotonic()
+
+        try:
+            # Simple command that should complete quickly
+            result = await self._request(
+                "POST",
+                f"/workspaces/{workspace_id}/exec",
+                user_id=user_id,
+                json={
+                    "command": "echo 'health_check'",
+                    "timeout": timeout_seconds,
+                },
+            )
+            latency_ms = (time.monotonic() - start) * 1000
+
+            return {
+                "healthy": True,
+                "latency_ms": round(latency_ms, 2),
+                "exit_code": result.get("exit_code", 0) if result else 0,
+            }
+        except ComputeServiceHTTPError as e:
+            latency_ms = (time.monotonic() - start) * 1000
+            return {
+                "healthy": False,
+                "latency_ms": round(latency_ms, 2),
+                "error": f"HTTP {e.status_code}: {e.detail[:200] if e.detail else 'Unknown'}",
+            }
+        except Exception as e:
+            latency_ms = (time.monotonic() - start) * 1000
+            return {
+                "healthy": False,
+                "latency_ms": round(latency_ms, 2),
+                "error": str(e)[:200],
+            }
 
     # ==================== File Operations ====================
 
@@ -411,7 +467,7 @@ class ComputeClient:
         workspace_id: str,
         user_id: str,
         branch_name: str,
-        delete_branch: bool = True,  # noqa: FBT001, FBT002
+        delete_branch: bool = True,
     ) -> dict[str, Any]:
         """Merge a worktree branch to main branch."""
         try:
@@ -522,7 +578,7 @@ class ComputeClient:
             with contextlib.suppress(Exception):
                 await self.exec_command(workspace_id, user_id, f"git branch -D {branch_name}")
 
-            return {  # noqa: TRY300
+            return {
                 "success": True,
                 "message": "Worktree deleted successfully",
             }
@@ -531,6 +587,196 @@ class ComputeClient:
                 "success": False,
                 "message": str(e),
             }
+
+    async def git_compare(
+        self,
+        workspace_id: str,
+        user_id: str,
+        base: str,
+        compare: str,
+    ) -> dict[str, Any]:
+        """Compare two branches and return commits and changed files.
+
+        Args:
+            workspace_id: The workspace ID.
+            user_id: The user ID.
+            base: The base branch to compare from.
+            compare: The branch to compare against.
+
+        Returns:
+            Dictionary with commits, files, and stats.
+        """
+        try:
+            # Get commits between branches
+            commits_result = await self.exec_command(
+                workspace_id,
+                user_id,
+                f"git log --oneline --format='%H|%s|%an|%ad' --date=iso {base}..{compare}",
+            )
+            commits_output = commits_result.get("stdout", "")
+            commits = []
+            for line in commits_output.strip().split("\n") if commits_output.strip() else []:
+                parts = line.split("|", 3)
+                if len(parts) >= MIN_COMMIT_LOG_PARTS - 1:
+                    commits.append(
+                        {
+                            "sha": parts[0],
+                            "message": parts[1],
+                            "author": parts[2],
+                            "date": parts[3],
+                        }
+                    )
+
+            # Get diff stat
+            stat_result = await self.exec_command(
+                workspace_id,
+                user_id,
+                f"git diff --stat {base}...{compare}",
+            )
+            stat_output = stat_result.get("stdout", "")
+
+            # Get list of changed files
+            files_result = await self.exec_command(
+                workspace_id,
+                user_id,
+                f"git diff --name-status {base}...{compare}",
+            )
+            files_output = files_result.get("stdout", "")
+            files = []
+            for line in files_output.strip().split("\n") if files_output.strip() else []:
+                parts = line.split("\t", 1)
+                if len(parts) >= MIN_COMMIT_INFO_PARTS:
+                    status = parts[0]
+                    path = parts[1]
+                    status_map = {
+                        "A": "added",
+                        "M": "modified",
+                        "D": "deleted",
+                        "R": "renamed",
+                    }
+                    files.append(
+                        {
+                            "path": path,
+                            "status": status_map.get(status[0], "modified"),
+                        }
+                    )
+
+            return {
+                "base": base,
+                "compare": compare,
+                "commits": commits,
+                "files": files,
+                "ahead": len(commits),
+                "stat": stat_output.strip() if stat_output else "",
+            }
+        except Exception as e:
+            raise ComputeClientError(f"Branch comparison failed: {e}") from e
+
+    async def git_merge_preview(
+        self,
+        workspace_id: str,
+        user_id: str,
+        source_branch: str,
+        target_branch: str,
+    ) -> dict[str, Any]:
+        """Preview a merge operation without actually merging.
+
+        Args:
+            workspace_id: The workspace ID.
+            user_id: The user ID.
+            source_branch: The branch to merge from.
+            target_branch: The branch to merge into.
+
+        Returns:
+            Dictionary with merge preview including conflict information.
+        """
+        try:
+            # Save current branch
+            current_branch_result = await self.exec_command(
+                workspace_id,
+                user_id,
+                "git branch --show-current",
+            )
+            current_branch = current_branch_result.get("stdout", "").strip()
+
+            # Check if there are uncommitted changes
+            status_result = await self.exec_command(
+                workspace_id,
+                user_id,
+                "git status --porcelain",
+            )
+            status_output = status_result.get("stdout", "")
+            if status_output.strip():
+                return {
+                    "can_merge": False,
+                    "has_conflicts": False,
+                    "conflicts": [],
+                    "files_changed": [],
+                    "error": "Uncommitted changes exist. Please commit or stash before merging.",
+                }
+
+            # Checkout target branch
+            await self.exec_command(workspace_id, user_id, f"git checkout {target_branch}")
+
+            try:
+                # Try merge with no commit and no fast-forward
+                await self.exec_command(
+                    workspace_id,
+                    user_id,
+                    f"git merge --no-commit --no-ff {source_branch}",
+                )
+
+                # Get list of files that would change
+                diff_result = await self.exec_command(
+                    workspace_id,
+                    user_id,
+                    "git diff --cached --name-status HEAD",
+                )
+                diff_output = diff_result.get("stdout", "")
+                files = []
+                for line in diff_output.strip().split("\n") if diff_output.strip() else []:
+                    parts = line.split("\t", 1)
+                    if len(parts) >= MIN_COMMIT_INFO_PARTS:
+                        files.append(
+                            {
+                                "path": parts[1],
+                                "status": parts[0],
+                            }
+                        )
+
+                result = {
+                    "can_merge": True,
+                    "has_conflicts": False,
+                    "conflicts": [],
+                    "files_changed": files,
+                }
+            except Exception:
+                # Merge failed - likely conflicts
+                # Get conflict files
+                conflict_result = await self.exec_command(
+                    workspace_id,
+                    user_id,
+                    "git diff --name-only --diff-filter=U",
+                )
+                conflict_output = conflict_result.get("stdout", "")
+                conflicts = [f.strip() for f in conflict_output.strip().split("\n") if f.strip()]
+
+                result = {
+                    "can_merge": False,
+                    "has_conflicts": True,
+                    "conflicts": conflicts,
+                    "files_changed": [],
+                }
+            finally:
+                # Abort merge and checkout original branch
+                with contextlib.suppress(Exception):
+                    await self.exec_command(workspace_id, user_id, "git merge --abort")
+                with contextlib.suppress(Exception):
+                    await self.exec_command(workspace_id, user_id, f"git checkout {current_branch}")
+
+            return result
+        except Exception as e:
+            raise ComputeClientError(f"Merge preview failed: {e}") from e
 
     # ==================== Shell Escaping Helpers ====================
 

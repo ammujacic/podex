@@ -31,13 +31,12 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
 
-    # S3 Storage
-    S3_BUCKET: str = "podex-workspaces"
-    S3_ENDPOINT_URL: str | None = None  # For LocalStack: http://localhost:4566
-    AWS_S3_REGION: str = "us-east-1"
+    # GCS Storage
+    GCS_BUCKET: str = "podex-workspaces"
+    GCS_ENDPOINT_URL: str | None = None  # For emulator: http://localhost:4443
 
     # LLM Providers
-    LLM_PROVIDER: str = "bedrock"  # bedrock (default), anthropic, openai, ollama
+    LLM_PROVIDER: str = "vertex"  # vertex (default), anthropic, openai, ollama
     ANTHROPIC_API_KEY: str | None = None
     OPENAI_API_KEY: str | None = None
 
@@ -45,20 +44,21 @@ class Settings(BaseSettings):
     OLLAMA_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen2.5-coder:14b"  # Best local coding model
 
-    # AWS (for Bedrock - Podex Native)
-    AWS_REGION: str = "us-east-1"
-    AWS_ACCESS_KEY_ID: str | None = None
-    AWS_SECRET_ACCESS_KEY: str | None = None
+    # GCP (for Vertex AI - Podex Native)
+    GCP_PROJECT_ID: str | None = None
+    GCP_REGION: str = "us-east5"  # Region where Claude models are available
 
-    # Default models by role (Bedrock model IDs for Podex Native)
-    DEFAULT_ARCHITECT_MODEL: str = "anthropic.claude-opus-4-5-20251101-v1:0"
-    DEFAULT_CODER_MODEL: str = "anthropic.claude-sonnet-4-5-20250929-v1:0"
-    DEFAULT_REVIEWER_MODEL: str = "anthropic.claude-sonnet-4-20250514-v1:0"
-    DEFAULT_TESTER_MODEL: str = "anthropic.claude-sonnet-4-5-20250929-v1:0"
-    DEFAULT_CHAT_MODEL: str = "anthropic.claude-haiku-4-5-20251001-v1:0"
-    DEFAULT_SECURITY_MODEL: str = "anthropic.claude-opus-4-5-20251101-v1:0"
-    DEFAULT_DEVOPS_MODEL: str = "anthropic.claude-sonnet-4-5-20250929-v1:0"
-    DEFAULT_DOCUMENTATOR_MODEL: str = "anthropic.claude-sonnet-4-20250514-v1:0"
+    # Default models by role (fallback only - actual defaults come from database)
+    # These are used ONLY if the API service is unavailable at startup.
+    # Admins configure actual defaults via the admin panel (PlatformSetting: agent_model_defaults)
+    DEFAULT_ARCHITECT_MODEL: str = "claude-opus-4-5-20251101"
+    DEFAULT_CODER_MODEL: str = "claude-sonnet-4-5-20250929"
+    DEFAULT_REVIEWER_MODEL: str = "claude-sonnet-4-20250514"
+    DEFAULT_TESTER_MODEL: str = "claude-sonnet-4-5-20250929"
+    DEFAULT_CHAT_MODEL: str = "claude-haiku-4-5-20251001"
+    DEFAULT_SECURITY_MODEL: str = "claude-opus-4-5-20251101"
+    DEFAULT_DEVOPS_MODEL: str = "claude-sonnet-4-5-20250929"
+    DEFAULT_DOCUMENTATOR_MODEL: str = "claude-sonnet-4-20250514"
 
     # Workspace configuration
     WORKSPACE_BASE_PATH: str = _WORKSPACE_BASE
@@ -111,38 +111,35 @@ class Settings(BaseSettings):
 
 
 # ==========================================
-# Bedrock Model Configuration (Fallback)
+# Vertex AI Model Configuration (Fallback Only)
 # ==========================================
-
-# Podex Native (Bedrock) Model IDs - Used as fallback if API unavailable
-BEDROCK_MODELS = {
-    "claude-opus-4.5": "anthropic.claude-opus-4-5-20251101-v1:0",
-    "claude-opus-4.1": "anthropic.claude-opus-4-1-20250805-v1:0",
-    "claude-sonnet-4.5": "anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "claude-sonnet-4": "anthropic.claude-sonnet-4-20250514-v1:0",
-    "claude-haiku-4.5": "anthropic.claude-haiku-4-5-20251001-v1:0",
-    "claude-3.5-haiku": "anthropic.claude-3-5-haiku-20241022-v1:0",
-    "claude-3-haiku": "anthropic.claude-3-haiku-20240307-v1:0",
-}
+# NOTE: All model configuration is admin-controlled via the database.
+# These hardcoded values are ONLY used as fallback when the API service
+# is unavailable (e.g., during initial startup or network issues).
+# Admins manage models and defaults via:
+# - /admin/models - Add/edit/delete available models
+# - /admin/models/agent-defaults - Set default model per agent type
 
 # Fallback: Models that support vision (used if API unavailable)
 _FALLBACK_VISION_CAPABLE_MODELS = frozenset(
     [
-        "anthropic.claude-opus-4-5-20251101-v1:0",
-        "anthropic.claude-opus-4-1-20250805-v1:0",
-        "anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "anthropic.claude-sonnet-4-20250514-v1:0",
-        "anthropic.claude-haiku-4-5-20251001-v1:0",
-        "anthropic.claude-3-haiku-20240307-v1:0",
+        "claude-opus-4-5-20251101",
+        "claude-sonnet-4-5-20250929",
+        "claude-sonnet-4-20250514",
+        "claude-haiku-4-5-20251001",
+        "gemini-2.0-flash",
+        "gemini-2.5-pro-preview",
     ]
 )
 
 # Fallback: Models that support extended thinking (used if API unavailable)
 _FALLBACK_THINKING_CAPABLE_MODELS = frozenset(
     [
-        "anthropic.claude-opus-4-5-20251101-v1:0",
-        "anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "anthropic.claude-haiku-4-5-20251001-v1:0",
+        "claude-opus-4-5-20251101",
+        "claude-sonnet-4-5-20250929",
+        "claude-haiku-4-5-20251001",
+        "gemini-2.0-flash",
+        "gemini-2.5-pro-preview",
     ]
 )
 

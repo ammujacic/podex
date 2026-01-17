@@ -7,20 +7,17 @@ Commands are prompt templates that can include argument placeholders.
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.database.connection import get_db
 from src.database.models import CustomCommand
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
+from src.routes.dependencies import DbSession
 
 logger = structlog.get_logger()
 
 router = APIRouter(prefix="/commands", tags=["commands"])
-
-DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
 # =============================================================================
@@ -146,7 +143,7 @@ def _render_prompt(template: str, arguments: dict[str, str]) -> str:
 
 @router.get("", response_model=CommandListResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def list_commands(  # noqa: PLR0913
+async def list_commands(
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
@@ -154,8 +151,8 @@ async def list_commands(  # noqa: PLR0913
     session_id: Annotated[
         str | None, Query(description="Include session-specific commands")
     ] = None,
-    include_global: Annotated[bool, Query(description="Include global commands")] = True,  # noqa: FBT002
-    enabled_only: Annotated[bool, Query(description="Only return enabled commands")] = True,  # noqa: FBT002
+    include_global: Annotated[bool, Query(description="Include global commands")] = True,
+    enabled_only: Annotated[bool, Query(description="Only return enabled commands")] = True,
 ) -> CommandListResponse:
     """List custom commands available to the current user.
 
@@ -181,14 +178,14 @@ async def list_commands(  # noqa: PLR0913
 
     # Optionally include global commands
     if include_global:
-        conditions.append(CustomCommand.is_global == True)  # noqa: E712
+        conditions.append(CustomCommand.is_global == True)
 
     # Category filter
     query = select(CustomCommand).where(or_(*conditions))
     if category:
         query = query.where(CustomCommand.category == category)
     if enabled_only:
-        query = query.where(CustomCommand.enabled == True)  # noqa: E712
+        query = query.where(CustomCommand.enabled == True)
 
     query = query.order_by(CustomCommand.sort_order, CustomCommand.name)
 
@@ -445,7 +442,7 @@ async def get_command_by_name(
             select(CustomCommand).where(
                 CustomCommand.session_id == session_id,
                 CustomCommand.name == name,
-                CustomCommand.enabled == True,  # noqa: E712
+                CustomCommand.enabled == True,
             )
         )
         command = result.scalar_one_or_none()
@@ -456,9 +453,9 @@ async def get_command_by_name(
     result = await db.execute(
         select(CustomCommand).where(
             CustomCommand.user_id == user_id,
-            CustomCommand.session_id == None,  # noqa: E711
+            CustomCommand.session_id == None,
             CustomCommand.name == name,
-            CustomCommand.enabled == True,  # noqa: E712
+            CustomCommand.enabled == True,
         )
     )
     command = result.scalar_one_or_none()
@@ -468,9 +465,9 @@ async def get_command_by_name(
     # Finally check global commands
     result = await db.execute(
         select(CustomCommand).where(
-            CustomCommand.is_global == True,  # noqa: E712
+            CustomCommand.is_global == True,
             CustomCommand.name == name,
-            CustomCommand.enabled == True,  # noqa: E712
+            CustomCommand.enabled == True,
         )
     )
     command = result.scalar_one_or_none()

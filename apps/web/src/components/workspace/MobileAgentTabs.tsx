@@ -63,16 +63,19 @@ export function MobileAgentTabs({
   };
 
   return (
-    <div
+    <nav
       className="md:hidden border-t border-border-subtle bg-surface/95 backdrop-blur-sm"
       data-tour="agent-tabs"
+      aria-label="Agent tabs"
     >
       <div
         ref={scrollContainerRef}
+        role="tablist"
+        aria-label="Available agents"
         className="flex items-center gap-1 px-2 py-2 overflow-x-auto scrollbar-hide"
         style={{ WebkitOverflowScrolling: 'touch' }}
       >
-        {agents.map((agent) => {
+        {agents.map((agent, index) => {
           const isActive = agent.id === activeAgentId;
           const isProcessing = isAgentProcessing(agent.id);
           const color = getAgentColor(agent);
@@ -80,15 +83,35 @@ export function MobileAgentTabs({
           return (
             <button
               key={agent.id}
+              role="tab"
+              id={`agent-tab-${agent.id}`}
+              aria-selected={isActive}
+              aria-controls={`agent-panel-${agent.id}`}
+              tabIndex={isActive ? 0 : -1}
               data-agent-id={agent.id}
               onClick={() => onAgentSelect(agent.id)}
+              onKeyDown={(e) => {
+                // Arrow key navigation for tabs
+                if (e.key === 'ArrowRight' && index < agents.length - 1) {
+                  const nextAgent = agents[index + 1];
+                  if (nextAgent) {
+                    e.preventDefault();
+                    onAgentSelect(nextAgent.id);
+                  }
+                } else if (e.key === 'ArrowLeft' && index > 0) {
+                  const prevAgent = agents[index - 1];
+                  if (prevAgent) {
+                    e.preventDefault();
+                    onAgentSelect(prevAgent.id);
+                  }
+                }
+              }}
               className={cn(
                 'flex items-center gap-2 px-3 py-2 rounded-lg',
                 'whitespace-nowrap flex-shrink-0',
                 'transition-colors touch-manipulation',
                 isActive ? 'bg-surface-hover' : 'hover:bg-surface-hover/50 active:bg-surface-hover'
               )}
-              aria-current={isActive ? 'true' : undefined}
             >
               {/* Color dot / Processing indicator */}
               <span className="relative flex-shrink-0">
@@ -129,6 +152,6 @@ export function MobileAgentTabs({
 
       {/* Safe area spacer */}
       <div className="h-safe-bottom" />
-    </div>
+    </nav>
   );
 }

@@ -389,6 +389,66 @@ export interface ToolCallEndEvent {
   timestamp: string;
 }
 
+// Extension sync events
+export interface ExtensionInstalledEvent {
+  extension_id: string;
+  namespace: string;
+  name: string;
+  display_name: string;
+  version: string;
+  scope: 'user' | 'workspace';
+  workspace_id?: string;
+  icon_url?: string;
+  timestamp: string;
+}
+
+export interface ExtensionUninstalledEvent {
+  extension_id: string;
+  scope: 'user' | 'workspace';
+  workspace_id?: string;
+  timestamp: string;
+}
+
+export interface ExtensionToggledEvent {
+  extension_id: string;
+  enabled: boolean;
+  scope: 'user' | 'workspace';
+  workspace_id?: string;
+  timestamp: string;
+}
+
+export interface ExtensionSettingsChangedEvent {
+  extension_id: string;
+  settings: Record<string, unknown>;
+  scope: 'user' | 'workspace';
+  workspace_id?: string;
+  timestamp: string;
+}
+
+export interface ExtensionSubscribedEvent {
+  user_id: string;
+}
+
+// Pending change events (agent diff review)
+export interface PendingChangeProposedEvent {
+  id: string;
+  session_id: string;
+  agent_id: string;
+  agent_name: string;
+  file_path: string;
+  original_content: string | null;
+  proposed_content: string;
+  description: string | null;
+  created_at: string;
+}
+
+export interface PendingChangeResolvedEvent {
+  id: string;
+  session_id: string;
+  status: 'accepted' | 'rejected';
+  file_path: string;
+}
+
 export interface SocketEvents {
   agent_message: (data: AgentMessageEvent) => void;
   agent_status: (data: AgentStatusEvent) => void;
@@ -437,6 +497,15 @@ export interface SocketEvents {
   agent_stream_end: (data: AgentStreamEndEvent) => void;
   tool_call_start: (data: ToolCallStartEvent) => void;
   tool_call_end: (data: ToolCallEndEvent) => void;
+  // Extension sync events
+  extension_installed: (data: ExtensionInstalledEvent) => void;
+  extension_uninstalled: (data: ExtensionUninstalledEvent) => void;
+  extension_toggled: (data: ExtensionToggledEvent) => void;
+  extension_settings_changed: (data: ExtensionSettingsChangedEvent) => void;
+  extension_subscribed: (data: ExtensionSubscribedEvent) => void;
+  // Pending change events (agent diff review)
+  pending_change_proposed: (data: PendingChangeProposedEvent) => void;
+  pending_change_resolved: (data: PendingChangeResolvedEvent) => void;
 }
 
 // Track active session for auto-rejoin on reconnect
@@ -764,4 +833,23 @@ export function emitApprovalResponse(
     approved,
     added_to_allowlist: addToAllowlist,
   });
+}
+
+// Extension sync functions
+/**
+ * Subscribe to extension sync events for the authenticated user.
+ * This allows real-time updates when extensions are installed/uninstalled/toggled
+ * on other devices.
+ */
+export function subscribeToExtensions(authToken: string): void {
+  const sock = getSocket();
+  sock.emit('extension_subscribe', { auth_token: authToken });
+}
+
+/**
+ * Unsubscribe from extension sync events.
+ */
+export function unsubscribeFromExtensions(): void {
+  const sock = getSocket();
+  sock.emit('extension_unsubscribe', {});
 }

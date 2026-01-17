@@ -1,15 +1,16 @@
 'use client';
 
 import { useCallback, useRef, useEffect, useState, useMemo } from 'react';
-import Editor, { type OnMount, type Monaco } from '@monaco-editor/react';
-import type { editor, languages } from 'monaco-editor';
 import { cn } from '@/lib/utils';
-import { useEditorStore, type KeyMode } from '@/stores/editor';
+import { useEditorStore } from '@/stores/editor';
+import { useSessionStore } from '@/stores/session';
 import { EditorTabs, EditorEmptyState } from './EditorTabs';
+import { EditorToolbar } from './EditorToolbar';
 import { Breadcrumbs, type BreadcrumbSymbol, convertMonacoSymbolKind } from './Breadcrumbs';
-import { initVimMode, disposeVimMode, vimStatusBarStyles } from './keymodes/VimMode';
-import { initEmacsMode, disposeEmacsMode } from './keymodes/EmacsMode';
 import { getSnippetManager, registerDefaultSnippets } from '@/lib/snippets';
+import { VSCodeEditor, type VSCodeEditorRef } from '@/lib/vscode';
+import { updateFileContent, getFileContent } from '@/lib/api';
+import * as monaco from '@codingame/monaco-vscode-editor-api';
 
 // ============================================================================
 // Types
@@ -27,60 +28,73 @@ interface EditorPaneContentProps {
   readOnly?: boolean;
   onChange?: (value: string) => void;
   onSave?: (value: string) => void;
+  onLanguageChange?: (language: string) => void;
   className?: string;
+  showToolbar?: boolean;
 }
 
 // ============================================================================
-// Terminal Noir Theme
+// Terminal Noir Theme Registration
 // ============================================================================
 
-const terminalNoirTheme: editor.IStandaloneThemeData = {
-  base: 'vs-dark',
-  inherit: true,
-  rules: [
-    { token: '', foreground: 'f0f0f5', background: '0d0d12' },
-    { token: 'comment', foreground: '546e7a', fontStyle: 'italic' },
-    { token: 'keyword', foreground: 'c792ea' },
-    { token: 'string', foreground: 'c3e88d' },
-    { token: 'number', foreground: 'f78c6c' },
-    { token: 'function', foreground: '82aaff' },
-    { token: 'variable', foreground: 'f0f0f5' },
-    { token: 'type', foreground: 'ffcb6b' },
-    { token: 'class', foreground: 'ffcb6b' },
-    { token: 'interface', foreground: 'ffcb6b' },
-    { token: 'constant', foreground: '00e5ff' },
-    { token: 'tag', foreground: 'f07178' },
-    { token: 'attribute.name', foreground: 'c792ea' },
-    { token: 'attribute.value', foreground: 'c3e88d' },
-    { token: 'delimiter', foreground: '9898a8' },
-    { token: 'operator', foreground: '89ddff' },
-  ],
-  colors: {
-    'editor.background': '#0d0d12',
-    'editor.foreground': '#f0f0f5',
-    'editor.lineHighlightBackground': '#1a1a21',
-    'editor.selectionBackground': '#22222b',
-    'editor.inactiveSelectionBackground': '#1e1e26',
-    'editorLineNumber.foreground': '#5c5c6e',
-    'editorLineNumber.activeForeground': '#9898a8',
-    'editorCursor.foreground': '#00e5ff',
-    'editor.selectionHighlightBackground': '#2a2a35',
-    'editorIndentGuide.background': '#1e1e26',
-    'editorIndentGuide.activeBackground': '#2a2a35',
-    'editorBracketMatch.background': '#2a2a35',
-    'editorBracketMatch.border': '#00e5ff',
-    'editorWidget.background': '#141419',
-    'editorWidget.border': '#2a2a35',
-    'editorSuggestWidget.background': '#141419',
-    'editorSuggestWidget.border': '#2a2a35',
-    'editorSuggestWidget.selectedBackground': '#22222b',
-    'editorHoverWidget.background': '#141419',
-    'editorHoverWidget.border': '#2a2a35',
-    'scrollbarSlider.background': '#2a2a3580',
-    'scrollbarSlider.hoverBackground': '#3a3a4880',
-    'scrollbarSlider.activeBackground': '#5c5c6e80',
-  },
-};
+let themeRegistered = false;
+
+function registerTerminalNoirTheme() {
+  if (themeRegistered) return;
+
+  try {
+    monaco.editor.defineTheme('terminal-noir', {
+      base: 'vs-dark',
+      inherit: true,
+      rules: [
+        { token: '', foreground: 'f0f0f5', background: '0d0d12' },
+        { token: 'comment', foreground: '546e7a', fontStyle: 'italic' },
+        { token: 'keyword', foreground: 'c792ea' },
+        { token: 'string', foreground: 'c3e88d' },
+        { token: 'number', foreground: 'f78c6c' },
+        { token: 'function', foreground: '82aaff' },
+        { token: 'variable', foreground: 'f0f0f5' },
+        { token: 'type', foreground: 'ffcb6b' },
+        { token: 'class', foreground: 'ffcb6b' },
+        { token: 'interface', foreground: 'ffcb6b' },
+        { token: 'constant', foreground: '00e5ff' },
+        { token: 'tag', foreground: 'f07178' },
+        { token: 'attribute.name', foreground: 'c792ea' },
+        { token: 'attribute.value', foreground: 'c3e88d' },
+        { token: 'delimiter', foreground: '9898a8' },
+        { token: 'operator', foreground: '89ddff' },
+      ],
+      colors: {
+        'editor.background': '#0d0d12',
+        'editor.foreground': '#f0f0f5',
+        'editor.lineHighlightBackground': '#1a1a21',
+        'editor.selectionBackground': '#22222b',
+        'editor.inactiveSelectionBackground': '#1e1e26',
+        'editorLineNumber.foreground': '#5c5c6e',
+        'editorLineNumber.activeForeground': '#9898a8',
+        'editorCursor.foreground': '#00e5ff',
+        'editor.selectionHighlightBackground': '#2a2a35',
+        'editorIndentGuide.background': '#1e1e26',
+        'editorIndentGuide.activeBackground': '#2a2a35',
+        'editorBracketMatch.background': '#2a2a35',
+        'editorBracketMatch.border': '#00e5ff',
+        'editorWidget.background': '#141419',
+        'editorWidget.border': '#2a2a35',
+        'editorSuggestWidget.background': '#141419',
+        'editorSuggestWidget.border': '#2a2a35',
+        'editorSuggestWidget.selectedBackground': '#22222b',
+        'editorHoverWidget.background': '#141419',
+        'editorHoverWidget.border': '#2a2a35',
+        'scrollbarSlider.background': '#2a2a3580',
+        'scrollbarSlider.hoverBackground': '#3a3a4880',
+        'scrollbarSlider.activeBackground': '#5c5c6e80',
+      },
+    });
+    themeRegistered = true;
+  } catch {
+    // Theme registration may fail if Monaco not fully initialized
+  }
+}
 
 // ============================================================================
 // Editor Pane Content (individual Monaco instance)
@@ -93,11 +107,12 @@ function EditorPaneContent({
   readOnly = false,
   onChange,
   onSave,
+  onLanguageChange,
   className,
+  showToolbar = true,
 }: EditorPaneContentProps) {
-  const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
-  const monacoRef = useRef<Monaco | null>(null);
-  const vimStatusRef = useRef<HTMLDivElement | null>(null);
+  const editorRef = useRef<VSCodeEditorRef>(null);
+  const [currentLanguage, setCurrentLanguage] = useState(language);
 
   const settings = useEditorStore((s) => s.settings);
   const updateTabCursorPosition = useEditorStore((s) => s.updateTabCursorPosition);
@@ -106,32 +121,12 @@ function EditorPaneContent({
   const [cursorLine, setCursorLine] = useState(1);
   const [cursorColumn, setCursorColumn] = useState(1);
   const [symbols, setSymbols] = useState<BreadcrumbSymbol[]>([]);
-  const [vimMode] = useState<string>('NORMAL');
-
-  // Initialize key mode
-  const initKeyMode = useCallback(
-    async (editorInstance: editor.IStandaloneCodeEditor, keyMode: KeyMode) => {
-      // Clean up existing modes
-      disposeVimMode(editorInstance);
-      disposeEmacsMode(editorInstance);
-
-      if (keyMode === 'vim' && vimStatusRef.current) {
-        await initVimMode(editorInstance, vimStatusRef.current);
-      } else if (keyMode === 'emacs') {
-        await initEmacsMode(editorInstance);
-      }
-    },
-    []
-  );
 
   // Handle editor mount
-  const handleEditorDidMount: OnMount = useCallback(
-    async (editorInstance: editor.IStandaloneCodeEditor, monaco: Monaco) => {
-      editorRef.current = editorInstance;
-      monacoRef.current = monaco;
-
-      // Define and set theme
-      monaco.editor.defineTheme('terminal-noir', terminalNoirTheme);
+  const handleEditorMount = useCallback(
+    async (editorInstance: monaco.editor.IStandaloneCodeEditor) => {
+      // Register theme
+      registerTerminalNoirTheme();
       monaco.editor.setTheme('terminal-noir');
 
       // Register snippets
@@ -147,37 +142,57 @@ function EditorPaneContent({
         }
       });
 
-      // Track cursor position
-      editorInstance.onDidChangeCursorPosition((e) => {
-        setCursorLine(e.position.lineNumber);
-        setCursorColumn(e.position.column);
-
-        const tab = getTabByPath(path);
-        if (tab) {
-          updateTabCursorPosition(tab.id, e.position.lineNumber, e.position.column);
-        }
-      });
-
       // Get document symbols for breadcrumbs
+      // Note: Document symbols are provided by language services via DocumentSymbolProvider
+      // This requires language server integration which may not be available for all languages
       const updateSymbols = async () => {
         const model = editorInstance.getModel();
         if (!model) return;
 
         try {
-          const rawSymbols = await monaco.languages.getDocumentSymbols(model);
-          if (rawSymbols) {
-            const convertSymbols = (syms: languages.DocumentSymbol[]): BreadcrumbSymbol[] => {
-              return syms.map((sym: languages.DocumentSymbol) => ({
-                name: sym.name,
-                kind: convertMonacoSymbolKind(sym.kind),
-                range: {
-                  startLine: sym.range.startLineNumber,
-                  endLine: sym.range.endLineNumber,
-                },
-                children: sym.children ? convertSymbols(sym.children) : undefined,
-              }));
-            };
-            setSymbols(convertSymbols(rawSymbols));
+          // Try to get document symbols using the DocumentSymbolProviderRegistry
+          // This is the monaco-vscode-api compatible approach
+          const providers = (
+            monaco.languages as unknown as {
+              DocumentSymbolProviderRegistry?: {
+                all: (model: monaco.editor.ITextModel) => Array<{
+                  provideDocumentSymbols: (
+                    model: monaco.editor.ITextModel,
+                    token: monaco.CancellationToken
+                  ) => Promise<monaco.languages.DocumentSymbol[] | null>;
+                }>;
+              };
+            }
+          ).DocumentSymbolProviderRegistry;
+
+          if (providers) {
+            const allProviders = providers.all(model);
+            const firstProvider = allProviders[0];
+            if (firstProvider) {
+              const tokenSource = new monaco.CancellationTokenSource();
+              const rawSymbols = await firstProvider.provideDocumentSymbols(
+                model,
+                tokenSource.token
+              );
+              tokenSource.dispose();
+
+              if (rawSymbols) {
+                const convertSymbols = (
+                  syms: monaco.languages.DocumentSymbol[]
+                ): BreadcrumbSymbol[] => {
+                  return syms.map((sym) => ({
+                    name: sym.name,
+                    kind: convertMonacoSymbolKind(sym.kind),
+                    range: {
+                      startLine: sym.range.startLineNumber,
+                      endLine: sym.range.endLineNumber,
+                    },
+                    children: sym.children ? convertSymbols(sym.children) : undefined,
+                  }));
+                };
+                setSymbols(convertSymbols(rawSymbols));
+              }
+            }
           }
         } catch {
           // Symbols not available for this language
@@ -191,46 +206,64 @@ function EditorPaneContent({
 
       updateSymbols();
 
-      // Initialize key mode
-      await initKeyMode(editorInstance, settings.keyMode);
-
       // Focus the editor
       editorInstance.focus();
     },
-    [language, onSave, settings.keyMode, initKeyMode, path, getTabByPath, updateTabCursorPosition]
+    [language, onSave]
   );
 
-  // Update key mode when settings change
-  useEffect(() => {
-    if (editorRef.current) {
-      initKeyMode(editorRef.current, settings.keyMode);
-    }
-  }, [settings.keyMode, initKeyMode]);
+  // Handle cursor position change
+  const handleCursorChange = useCallback(
+    (position: monaco.Position) => {
+      setCursorLine(position.lineNumber);
+      setCursorColumn(position.column);
 
-  // Handle content changes
-  const handleChange = useCallback(
-    (newValue: string | undefined) => {
-      if (onChange && newValue !== undefined) {
-        onChange(newValue);
+      const tab = getTabByPath(path);
+      if (tab) {
+        updateTabCursorPosition(tab.id, position.lineNumber, position.column);
       }
     },
-    [onChange]
+    [path, getTabByPath, updateTabCursorPosition]
+  );
+
+  // Sync language with prop
+  useEffect(() => {
+    setCurrentLanguage(language);
+  }, [language]);
+
+  // Handle language change from toolbar
+  const handleLanguageChange = useCallback(
+    (newLanguage: string) => {
+      setCurrentLanguage(newLanguage);
+      onLanguageChange?.(newLanguage);
+    },
+    [onLanguageChange]
   );
 
   // Navigate to symbol
   const handleNavigateToSymbol = useCallback((symbol: BreadcrumbSymbol) => {
-    if (editorRef.current && symbol.range) {
-      editorRef.current.revealLineInCenter(symbol.range.startLine);
-      editorRef.current.setPosition({
+    if (symbol.range) {
+      editorRef.current?.scrollToLine(symbol.range.startLine);
+      editorRef.current?.setPosition({
         lineNumber: symbol.range.startLine,
         column: 1,
       });
-      editorRef.current.focus();
+      editorRef.current?.focus();
     }
   }, []);
 
   return (
     <div className={cn('flex h-full flex-col', className)}>
+      {/* Editor Toolbar */}
+      {showToolbar && (
+        <EditorToolbar
+          language={currentLanguage}
+          onLanguageChange={handleLanguageChange}
+          editorRef={{ current: editorRef.current?.getEditor() ?? null }}
+          monacoRef={{ current: monaco }}
+        />
+      )}
+
       {/* Breadcrumbs */}
       <Breadcrumbs
         path={path}
@@ -240,65 +273,43 @@ function EditorPaneContent({
         className="border-b border-border-subtle"
       />
 
-      {/* Monaco Editor */}
+      {/* VS Code Editor */}
       <div className="flex-1">
-        <Editor
-          height="100%"
-          language={language}
+        <VSCodeEditor
+          ref={editorRef}
           value={content}
-          path={path}
-          theme="terminal-noir"
-          onChange={handleChange}
-          onMount={handleEditorDidMount}
+          language={currentLanguage}
+          filePath={path}
+          theme="vs-dark"
+          readOnly={readOnly}
+          onChange={onChange}
+          onMount={handleEditorMount}
+          onCursorChange={handleCursorChange}
+          minimap={settings.minimap}
+          lineNumbers={settings.lineNumbers !== 'off'}
+          wordWrap={settings.wordWrap !== 'off'}
+          fontSize={settings.fontSize}
+          tabSize={settings.tabSize}
           options={{
-            readOnly,
-            minimap: { enabled: settings.minimap },
-            fontSize: settings.fontSize,
             fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
             fontLigatures: true,
             lineHeight: 1.6,
-            padding: { top: 8, bottom: 8 },
-            scrollBeyondLastLine: false,
-            smoothScrolling: true,
             cursorBlinking: settings.cursorBlinking,
-            cursorSmoothCaretAnimation: 'on',
             renderLineHighlight: 'line',
             renderWhitespace: settings.renderWhitespace,
             bracketPairColorization: { enabled: settings.bracketPairColorization },
-            guides: {
-              bracketPairs: true,
-              indentation: true,
-            },
-            folding: true,
-            foldingHighlight: true,
             formatOnPaste: settings.formatOnPaste,
-            tabSize: settings.tabSize,
-            wordWrap: settings.wordWrap,
-            lineNumbers: settings.lineNumbers,
-            automaticLayout: true,
+            inlineSuggest: {
+              enabled: settings.completionsEnabled,
+              mode: 'subword',
+            },
           }}
-          loading={
-            <div className="flex h-full items-center justify-center bg-surface">
-              <div className="text-text-muted">Loading editor...</div>
-            </div>
-          }
+          className="h-full"
         />
       </div>
 
       {/* Status Bar */}
-      <div className="flex h-6 items-center justify-between border-t border-border-subtle bg-elevated px-3 text-xs text-text-muted">
-        <div className="flex items-center gap-4">
-          {/* Vim status */}
-          {settings.keyMode === 'vim' && (
-            <div ref={vimStatusRef} className="font-mono text-accent-primary">
-              {vimMode}
-            </div>
-          )}
-          {settings.keyMode === 'emacs' && (
-            <div className="font-mono text-accent-secondary">Emacs</div>
-          )}
-        </div>
-
+      <div className="flex h-6 items-center justify-end border-t border-border-subtle bg-elevated px-3 text-xs text-text-muted">
         <div className="flex items-center gap-4">
           {/* Cursor position */}
           <span>
@@ -309,9 +320,6 @@ function EditorPaneContent({
           <span className="capitalize">{language}</span>
         </div>
       </div>
-
-      {/* Inject Vim status bar styles */}
-      <style dangerouslySetInnerHTML={{ __html: vimStatusBarStyles }} />
     </div>
   );
 }
@@ -325,12 +333,34 @@ export function EnhancedCodeEditor({ paneId, className }: EnhancedCodeEditorProp
   const tabs = useEditorStore((s) => s.tabs);
   const setTabDirty = useEditorStore((s) => s.setTabDirty);
   const pinTab = useEditorStore((s) => s.pinTab);
+  const currentSessionId = useSessionStore((s) => s.currentSessionId);
+  const [fileContent, setFileContent] = useState<string>('');
 
   // Get the active tab for this pane
   const activeTab = useMemo(() => {
     if (!pane?.activeTabId) return null;
     return tabs[pane.activeTabId] || null;
   }, [pane?.activeTabId, tabs]);
+
+  // Load file content when active tab changes
+  useEffect(() => {
+    const loadFileContent = async () => {
+      if (!activeTab || !currentSessionId) {
+        setFileContent('');
+        return;
+      }
+
+      try {
+        const response = await getFileContent(currentSessionId, activeTab.path);
+        setFileContent(response.content);
+      } catch (error) {
+        console.error('Failed to load file content:', error);
+        setFileContent('');
+      }
+    };
+
+    loadFileContent();
+  }, [activeTab, currentSessionId]);
 
   // Handle content change
   const handleChange = useCallback(
@@ -348,13 +378,18 @@ export function EnhancedCodeEditor({ paneId, className }: EnhancedCodeEditorProp
 
   // Handle save
   const handleSave = useCallback(
-    (_value: string) => {
-      if (activeTab) {
-        setTabDirty(activeTab.id, false);
-        // TODO: Implement API call to save file
+    async (value: string) => {
+      if (activeTab && currentSessionId) {
+        try {
+          await updateFileContent(currentSessionId, activeTab.path, value);
+          setTabDirty(activeTab.id, false);
+        } catch (error) {
+          console.error('Failed to save file:', error);
+          // Keep the tab dirty if save failed
+        }
       }
     },
-    [activeTab, setTabDirty]
+    [activeTab, currentSessionId, setTabDirty]
   );
 
   if (!pane) {
@@ -371,7 +406,7 @@ export function EnhancedCodeEditor({ paneId, className }: EnhancedCodeEditorProp
         <EditorPaneContent
           key={activeTab.id}
           path={activeTab.path}
-          content="" // TODO: Get content from file store or API
+          content={fileContent}
           language={activeTab.language}
           onChange={handleChange}
           onSave={handleSave}

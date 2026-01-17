@@ -16,6 +16,7 @@ from src.config import settings
 from src.cost import Budget, get_alert_manager, get_cost_tracker
 from src.database import get_db
 from src.database.models import (
+    Agent,
     BillingEvent,
     CreditBalance,
     CreditTransaction,
@@ -28,6 +29,7 @@ from src.database.models import (
     UsageRecord,
     User,
     UserSubscription,
+    Workspace,
 )
 from src.middleware.auth import get_current_user_id, get_optional_user_id
 from src.middleware.rate_limit import RATE_LIMIT_SENSITIVE, RATE_LIMIT_STANDARD, limiter
@@ -41,6 +43,47 @@ logger = structlog.get_logger()
 
 # Usage alert thresholds (percentage of quota)
 USAGE_WARNING_THRESHOLD = 80
+
+# BUSINESS LOGIC: Subscription state machine validation
+# Valid subscription states and allowed transitions
+SUBSCRIPTION_STATES = frozenset(
+    {"active", "canceled", "past_due", "trialing", "paused", "incomplete"}
+)
+SUBSCRIPTION_TRANSITIONS: dict[str, frozenset[str]] = {
+    "trialing": frozenset(
+        {"active", "canceled", "past_due"}
+    ),  # Trial can activate, cancel, or become past_due
+    "active": frozenset(
+        {"canceled", "past_due", "paused"}
+    ),  # Active can cancel, become past_due, or pause
+    "past_due": frozenset({"active", "canceled"}),  # Past_due can be resolved or canceled
+    "paused": frozenset({"active", "canceled"}),  # Paused can resume or cancel
+    "incomplete": frozenset({"active", "canceled"}),  # Incomplete can complete or be canceled
+    "canceled": frozenset(
+        {"active"}
+    ),  # Canceled can only be reactivated (requires new subscription)
+}
+
+
+def validate_subscription_transition(current_status: str, new_status: str) -> bool:
+    """Validate that a subscription status transition is allowed.
+
+    Args:
+        current_status: The current subscription status
+        new_status: The desired new status
+
+    Returns:
+        True if transition is valid, False otherwise
+    """
+    if current_status == new_status:
+        return True  # No-op is always valid
+
+    if current_status not in SUBSCRIPTION_STATES or new_status not in SUBSCRIPTION_STATES:
+        return False
+
+    allowed = SUBSCRIPTION_TRANSITIONS.get(current_status, frozenset())
+    return new_status in allowed
+
 
 router = APIRouter(prefix="/billing", tags=["billing"])
 
@@ -386,6 +429,10 @@ async def get_or_create_credit_balance(
 ) -> CreditBalance:
     """Get or create credit balance for user.
 
+    SECURITY: Uses proper locking and retry to prevent race conditions
+    where concurrent requests could create duplicate balances or
+    overdraw the balance.
+
     Args:
         db: Database session
         user_id: User ID
@@ -394,6 +441,8 @@ async def get_or_create_credit_balance(
     Returns:
         CreditBalance instance
     """
+    from sqlalchemy.exc import IntegrityError
+
     query = select(CreditBalance).where(CreditBalance.user_id == user_id)
     if for_update:
         query = query.with_for_update()
@@ -402,15 +451,28 @@ async def get_or_create_credit_balance(
     balance = result.scalar_one_or_none()
 
     if not balance:
-        balance = CreditBalance(user_id=user_id)
-        db.add(balance)
-        await db.flush()
-        # Re-fetch with lock if needed
-        if for_update:
-            result = await db.execute(
-                select(CreditBalance).where(CreditBalance.user_id == user_id).with_for_update()
-            )
+        # Race condition handling: if two requests try to create simultaneously,
+        # one will fail with IntegrityError (unique constraint on user_id)
+        try:
+            balance = CreditBalance(user_id=user_id)
+            db.add(balance)
+            await db.flush()
+        except IntegrityError:
+            # Another request created the balance - rollback and re-fetch
+            await db.rollback()
+            # SECURITY: Re-apply lock after rollback to prevent race conditions
+            retry_query = select(CreditBalance).where(CreditBalance.user_id == user_id)
+            if for_update:
+                retry_query = retry_query.with_for_update()
+            result = await db.execute(retry_query)
             balance = result.scalar_one()
+        else:
+            # Re-fetch with lock if needed to ensure consistent state
+            if for_update:
+                result = await db.execute(
+                    select(CreditBalance).where(CreditBalance.user_id == user_id).with_for_update()
+                )
+                balance = result.scalar_one()
 
     return balance
 
@@ -451,6 +513,36 @@ async def get_user_by_id(db: AsyncSession, user_id: str) -> User:
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return user
+
+
+async def generate_invoice_number(db: AsyncSession, user_id: str) -> str:
+    """Generate a unique invoice number atomically.
+
+    Uses SQL COUNT() for efficiency and includes timestamp for uniqueness.
+    Format: INV-{user_prefix}-{YYMMDD}-{sequence}
+
+    Args:
+        db: Database session
+        user_id: User ID
+
+    Returns:
+        Unique invoice number string
+    """
+    import secrets
+
+    from sqlalchemy import func as sqlfunc
+
+    # Use COUNT() for efficient counting instead of loading all records
+    count_result = await db.execute(
+        select(sqlfunc.count(Invoice.id)).where(Invoice.user_id == user_id)
+    )
+    invoice_count = count_result.scalar() or 0
+
+    # Include date and random suffix for collision resistance
+    date_part = datetime.now(UTC).strftime("%y%m%d")
+    random_suffix = secrets.token_hex(2).upper()  # 4 hex chars
+
+    return f"INV-{user_id[:8].upper()}-{date_part}-{invoice_count + 1:04d}-{random_suffix}"
 
 
 async def reset_expired_quotas(db: AsyncSession) -> int:
@@ -503,23 +595,26 @@ async def expire_credits(db: AsyncSession) -> int:
     """Expire credits where expires_at <= now.
 
     This should be called periodically by a background task.
+    Uses row-level locking to prevent race conditions with concurrent tasks.
 
     Returns:
         Number of credit transactions expired
     """
     now = datetime.now(UTC)
 
-    # Find unexpired credits that should be expired
+    # Find unexpired credits that should be expired - lock rows to prevent race conditions
     result = await db.execute(
-        select(CreditTransaction).where(
+        select(CreditTransaction)
+        .where(
             CreditTransaction.expires_at.isnot(None),
             CreditTransaction.expires_at <= now,
-            CreditTransaction.expired == False,  # noqa: E712
+            CreditTransaction.expired == False,
             CreditTransaction.transaction_type.in_(
                 ["purchase", "bonus", "referral", "subscription_credit"]
             ),
             CreditTransaction.amount_cents > 0,  # Only expire positive transactions
         )
+        .with_for_update(skip_locked=True)  # Skip rows locked by other transactions
     )
     transactions = result.scalars().all()
 
@@ -543,11 +638,11 @@ async def expire_credits(db: AsyncSession) -> int:
             expires_at=tx.expires_at.isoformat() if tx.expires_at else None,
         )
 
-    # Update balances for affected users
+    # Update balances for affected users - lock balance rows to prevent race conditions
     for user_id, expired_amount in users_affected.items():
-        # Get current balance
+        # Get current balance with lock
         balance_result = await db.execute(
-            select(CreditBalance).where(CreditBalance.user_id == user_id)
+            select(CreditBalance).where(CreditBalance.user_id == user_id).with_for_update()
         )
         balance = balance_result.scalar_one_or_none()
 
@@ -563,7 +658,7 @@ async def expire_credits(db: AsyncSession) -> int:
             )
             db.add(expiry_tx)
 
-            # Update balance
+            # Update balance atomically using the locked row
             balance.balance_cents = new_balance
 
             # Log billing event
@@ -577,6 +672,7 @@ async def expire_credits(db: AsyncSession) -> int:
             )
             db.add(event)
 
+    await db.flush()  # Write changes while holding locks
     return expired_count
 
 
@@ -588,7 +684,7 @@ async def update_expiring_soon_credits(db: AsyncSession) -> int:
     Returns:
         Number of balances updated
     """
-    from sqlalchemy import func as sqlfunc  # noqa: PLC0415
+    from sqlalchemy import func as sqlfunc
 
     now = datetime.now(UTC)
     thirty_days = now + timedelta(days=30)
@@ -606,7 +702,7 @@ async def update_expiring_soon_credits(db: AsyncSession) -> int:
                 CreditTransaction.expires_at.isnot(None),
                 CreditTransaction.expires_at > now,
                 CreditTransaction.expires_at <= thirty_days,
-                CreditTransaction.expired == False,  # noqa: E712
+                CreditTransaction.expired == False,
                 CreditTransaction.amount_cents > 0,
             )
         )
@@ -636,7 +732,7 @@ async def process_subscription_period_ends(db: AsyncSession) -> tuple[int, int]:
     # Find subscriptions that should be canceled
     cancel_result = await db.execute(
         select(UserSubscription).where(
-            UserSubscription.cancel_at_period_end == True,  # noqa: E712
+            UserSubscription.cancel_at_period_end == True,
             UserSubscription.current_period_end <= now,
             UserSubscription.status.in_(["active", "trialing"]),
             # Only process non-Stripe subscriptions (Stripe handles its own)
@@ -776,6 +872,9 @@ async def deduct_credits_for_overage(
     )
     db.add(transaction)
 
+    # Flush changes while holding the lock to ensure atomicity
+    await db.flush()
+
     logger.info(
         "Deducted credits for overage",
         user_id=user_id,
@@ -900,7 +999,7 @@ async def list_subscription_plans(
     """List all active subscription plans."""
     result = await db.execute(
         select(SubscriptionPlan)
-        .where(SubscriptionPlan.is_active == True)  # noqa: E712
+        .where(SubscriptionPlan.is_active == True)
         .order_by(SubscriptionPlan.sort_order),
     )
     plans = result.scalars().all()
@@ -1108,7 +1207,7 @@ async def create_subscription(
             period_end = now.replace(month=now.month + 1)
         except ValueError:
             # Handle months with fewer days (e.g., Jan 31 -> Feb 28)
-            import calendar  # noqa: PLC0415
+            import calendar
 
             next_month = now.month + 1
             next_year = now.year
@@ -1188,9 +1287,7 @@ async def create_subscription(
     await db.flush()
 
     # Generate invoice for the subscription (even for free plans for record-keeping)
-    invoice_count_result = await db.execute(select(Invoice).where(Invoice.user_id == user_id))
-    invoice_count = len(list(invoice_count_result.scalars().all()))
-    invoice_number = f"INV-{user_id[:8].upper()}-{invoice_count + 1:04d}"
+    invoice_number = await generate_invoice_number(db, user_id)
 
     invoice = Invoice(
         user_id=user_id,
@@ -1642,6 +1739,16 @@ async def process_refund(
     if not invoice.stripe_invoice_id:
         raise HTTPException(status_code=400, detail="Invoice has no Stripe reference")
 
+    # Validate refund amount doesn't exceed invoice total
+    if data.amount_cents is not None:
+        if data.amount_cents <= 0:
+            raise HTTPException(status_code=400, detail="Refund amount must be positive")
+        if data.amount_cents > invoice.total_cents:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Refund amount cannot exceed invoice total of ${cents_to_dollars(invoice.total_cents):.2f}",
+            )
+
     # Get Stripe invoice to find payment intent
     try:
         stripe_invoice = stripe.Invoice.retrieve(invoice.stripe_invoice_id)
@@ -1665,7 +1772,10 @@ async def process_refund(
 
     except stripe.error.StripeError as e:
         logger.exception("Failed to process refund", error=str(e))
-        raise HTTPException(status_code=500, detail=f"Refund failed: {e!s}") from e
+        # Don't expose internal Stripe error details to client
+        raise HTTPException(
+            status_code=500, detail="Refund processing failed. Please try again or contact support."
+        ) from e
 
     # Update invoice status
     if data.amount_cents and data.amount_cents < invoice.total_cents:
@@ -1675,17 +1785,25 @@ async def process_refund(
 
     # Get user for credit balance update
     user = await get_user_by_id(db, user_id)
-    balance = await get_or_create_credit_balance(db, user_id)
+    # SECURITY: Use row-level lock to prevent race conditions during balance update
+    balance = await get_or_create_credit_balance(db, user_id, for_update=True)
+
+    # Calculate refund amount and update balance
+    refund_amount = data.amount_cents or invoice.total_cents
+
+    # CRITICAL FIX: Refund INCREASES balance (user is getting money back)
+    # The transaction amount is negative for accounting purposes, but the balance
+    # goes UP because the user now has those credits available again.
+    balance.balance_cents += refund_amount
 
     # Create refund transaction record
-    refund_amount = data.amount_cents or invoice.total_cents
     transaction = CreditTransaction(
         user_id=user_id,
         amount_cents=-refund_amount,  # Negative since it's a refund
         transaction_type="refund",
         description=f"Refund for invoice {invoice.invoice_number}",
         stripe_charge_id=refund.id,
-        balance_after_cents=balance.balance_cents,
+        balance_after_cents=balance.balance_cents,  # Now reflects updated balance
     )
     db.add(transaction)
 
@@ -2043,6 +2161,18 @@ async def get_usage_history(
     """Get detailed usage history."""
     user_id = get_current_user_id(request)
 
+    # SECURITY: If session_id is provided, verify the user owns that session
+    # This is defense-in-depth - the query also filters by user_id
+    if params.session_id:
+        session_check = await db.execute(
+            select(Session.id).where(
+                Session.id == params.session_id,
+                Session.owner_id == user_id,
+            )
+        )
+        if not session_check.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Session not found")
+
     query = select(UsageRecord).where(UsageRecord.user_id == user_id)
 
     if params.usage_type:
@@ -2353,7 +2483,7 @@ async def list_hardware_specs(
     """
     result = await db.execute(
         select(HardwareSpec)
-        .where(HardwareSpec.is_available == True)  # noqa: E712
+        .where(HardwareSpec.is_available == True)
         .order_by(HardwareSpec.sort_order),
     )
     specs = result.scalars().all()
@@ -2488,23 +2618,31 @@ async def list_billing_events(
 
 
 class UsageEventInput(BaseModel):
-    """Input for a single usage event."""
+    """Input for a single usage event.
 
-    id: str
-    user_id: str
-    session_id: str | None = None
-    workspace_id: str | None = None
-    agent_id: str | None = None
-    usage_type: str  # tokens, compute, storage, api_calls
-    quantity: int
-    unit: str
-    unit_price_cents: int
-    total_cost_cents: int
-    model: str | None = None
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    tier: str | None = None
-    duration_seconds: int | None = None
+    SECURITY: All numeric fields have bounds to prevent integer overflow attacks.
+    Maximum values are defined in settings to prevent overflow in PostgreSQL INTEGER columns.
+    """
+
+    # SECURITY: id and user_id use pattern validation to prevent idempotency key collisions
+    # Colons and other special chars could cause parsing issues in idempotency keys
+    id: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9_\-]+$")
+    user_id: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9_\-]+$")
+    session_id: str | None = Field(default=None, max_length=100)
+    workspace_id: str | None = Field(default=None, max_length=100)
+    agent_id: str | None = Field(default=None, max_length=100)
+    usage_type: str = Field(..., min_length=1, max_length=50)  # tokens, compute, storage, api_calls
+    quantity: int = Field(..., ge=0, le=settings.POSTGRES_INT_MAX)
+    unit: str = Field(..., min_length=1, max_length=20)
+    unit_price_cents: int = Field(..., ge=0, le=settings.MAX_COST_CENTS)
+    total_cost_cents: int = Field(..., ge=0, le=settings.MAX_COST_CENTS)
+    model: str | None = Field(default=None, max_length=100)
+    input_tokens: int | None = Field(default=None, ge=0, le=settings.MAX_QUANTITY_TOKENS)
+    output_tokens: int | None = Field(default=None, ge=0, le=settings.MAX_QUANTITY_TOKENS)
+    tier: str | None = Field(default=None, max_length=50)
+    duration_seconds: int | None = Field(
+        default=None, ge=0, le=settings.MAX_QUANTITY_COMPUTE_SECONDS
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime | None = None
 
@@ -2524,53 +2662,92 @@ class RecordUsageResponse(BaseModel):
 
 
 def _verify_service_token(authorization: str | None) -> bool:
-    """Verify the internal service token."""
+    """Verify the internal service token.
+
+    SECURITY: Always requires a valid token, even in development.
+    This prevents accidental deployment with auth bypass.
+    """
+    import secrets
+
     if not authorization:
+        logger.warning("Missing authorization header for service token")
         return False
 
     if not authorization.startswith("Bearer "):
+        logger.warning("Invalid authorization format - expected Bearer token")
         return False
 
     token = authorization[7:]
 
     # Check against configured service token
-    expected_token = getattr(settings, "INTERNAL_SERVICE_TOKEN", None)
-    if expected_token and token == expected_token:
-        return True
+    expected_token = settings.INTERNAL_SERVICE_TOKEN
+    if not expected_token:
+        # SECURITY: Fail closed - if no token configured, reject all requests
+        logger.error(
+            "INTERNAL_SERVICE_TOKEN not configured - rejecting service request",
+            environment=settings.ENVIRONMENT,
+        )
+        return False
 
-    # Also allow API key for development
-    return settings.ENVIRONMENT == "development"
+    # Constant-time comparison to prevent timing attacks
+    return secrets.compare_digest(token.encode(), expected_token.encode())
 
 
 def _apply_margin(base_cost_cents: int, margin_percent: int) -> int:
-    """Apply margin percentage to base cost.
+    """Apply margin percentage to base cost using Decimal for precision.
 
     Args:
         base_cost_cents: The base provider cost in cents
-        margin_percent: The margin percentage (e.g., 15 for 15%)
+        margin_percent: The margin percentage (e.g., 15 for 15%), must be 0-100
 
     Returns:
-        Total cost in cents (base + margin)
+        Total cost in cents (base + margin), rounded up to avoid revenue loss
     """
-    if margin_percent <= 0:
+    # Validate margin percentage
+    if margin_percent < 0:
+        margin_percent = 0
+    elif margin_percent > 100:
+        margin_percent = 100
+
+    if margin_percent == 0:
         return base_cost_cents
-    margin_amount = (base_cost_cents * margin_percent) // 100
-    return base_cost_cents + margin_amount
+
+    # Use Decimal for precise calculation to avoid integer division truncation
+    base = Decimal(str(base_cost_cents))
+    margin = Decimal(str(margin_percent)) / Decimal(100)
+    total = base * (1 + margin)
+
+    # Round up (ceiling) to avoid revenue loss on fractional cents
+    import math
+
+    return math.ceil(total)
 
 
 def _apply_margin_to_price(base_price: float, margin_percent: int) -> float:
-    """Apply margin percentage to a price in dollars.
+    """Apply margin percentage to a price in dollars using Decimal for precision.
 
     Args:
         base_price: The base provider cost in dollars
-        margin_percent: The margin percentage (e.g., 15 for 15%)
+        margin_percent: The margin percentage (e.g., 15 for 15%), must be 0-100
 
     Returns:
         Total price in dollars (base + margin)
     """
-    if margin_percent <= 0:
+    # Validate margin percentage
+    if margin_percent < 0:
+        margin_percent = 0
+    elif margin_percent > 100:
+        margin_percent = 100
+
+    if margin_percent == 0:
         return base_price
-    return base_price * (1 + margin_percent / 100)
+
+    # Use Decimal for precise calculation
+    base = Decimal(str(base_price))
+    margin = Decimal(str(margin_percent)) / Decimal(100)
+    total = base * (1 + margin)
+
+    return float(total)
 
 
 async def _get_user_margin(
@@ -2617,6 +2794,121 @@ async def _get_user_margin(
     return 0
 
 
+def _safe_add(a: int, b: int, max_value: int = settings.POSTGRES_INT_MAX) -> int:
+    """Safely add two integers with overflow protection.
+
+    SECURITY: Prevents integer overflow attacks that could bypass quota limits.
+
+    Args:
+        a: First operand
+        b: Second operand
+        max_value: Maximum allowed result (default: PostgreSQL INT max)
+
+    Returns:
+        Sum capped at max_value
+
+    Raises:
+        ValueError: If either operand is negative or result would overflow
+    """
+
+    class NegativeQuantityError(ValueError):
+        def __init__(self) -> None:
+            super().__init__("Negative quantities not allowed")
+
+    if a < 0 or b < 0:
+        raise NegativeQuantityError
+
+    result = a + b
+    if result > max_value:
+
+        class QuantityOverflowError(ValueError):
+            def __init__(self, result: int, max_value: int) -> None:
+                super().__init__(f"Overflow: {result} > {max_value}")
+
+        raise QuantityOverflowError(result, max_value)
+
+    return result
+
+
+def _calculate_cost_split_decimal(
+    base_cost: int,
+    total_cost: int,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    pricing: Any,
+) -> tuple[int, int, int, int]:
+    """Calculate cost split between input and output tokens using Decimal.
+
+    SECURITY: Uses Decimal arithmetic to prevent precision loss that could
+    result in missing or extra cents over many transactions.
+
+    Returns:
+        Tuple of (input_base, input_total, output_base, output_total) in cents
+    """
+    from decimal import ROUND_HALF_UP
+
+    if not input_tokens and not output_tokens:
+        return 0, 0, 0, 0
+
+    if not output_tokens:
+        return base_cost, total_cost, 0, 0
+
+    if not input_tokens:
+        return 0, 0, base_cost, total_cost
+
+    # Use Decimal for precise ratio calculation
+    if pricing and input_tokens and output_tokens:
+        input_cost_contribution = (
+            Decimal(input_tokens)
+            * Decimal(str(pricing.input_price_per_million))
+            / Decimal(1_000_000)
+        )
+        output_cost_contribution = (
+            Decimal(output_tokens)
+            * Decimal(str(pricing.output_price_per_million))
+            / Decimal(1_000_000)
+        )
+        total_contribution = input_cost_contribution + output_cost_contribution
+
+        if total_contribution > 0:
+            input_ratio = input_cost_contribution / total_contribution
+        else:
+            input_ratio = Decimal("0.5")
+    else:
+        # Fallback to 50/50 if no pricing info
+        input_ratio = Decimal("0.5")
+
+    # Apply ratio with proper rounding (ROUND_HALF_UP for fairness)
+    input_base = int(
+        (Decimal(base_cost) * input_ratio).quantize(Decimal(1), rounding=ROUND_HALF_UP)
+    )
+    input_total = int(
+        (Decimal(total_cost) * input_ratio).quantize(Decimal(1), rounding=ROUND_HALF_UP)
+    )
+
+    # Compute output as remainder to ensure totals match exactly
+    output_base = base_cost - input_base
+    output_total = total_cost - input_total
+
+    # VALIDATION: Ensure split is valid (non-negative values)
+    # This guards against edge cases like negative costs or extreme ratios
+    if output_base < 0 or output_total < 0:
+        logger.warning(
+            "Cost split resulted in negative output values, using 50/50 fallback",
+            base_cost=base_cost,
+            total_cost=total_cost,
+            input_base=input_base,
+            input_total=input_total,
+        )
+        # Fallback to 50/50 split
+        input_base = base_cost // 2
+        input_total = total_cost // 2
+        output_base = base_cost - input_base
+        output_total = total_cost - input_total
+
+    return input_base, input_total, output_base, output_total
+
+
 async def _record_single_event(
     db: AsyncSession,
     event: UsageEventInput,
@@ -2625,6 +2917,12 @@ async def _record_single_event(
 
     Base cost from provider is stored for internal tracking.
     Total cost (with margin) is what the user is charged.
+
+    SECURITY IMPROVEMENTS:
+    - Idempotency check prevents duplicate event processing
+    - Uses safe_add to prevent integer overflow
+    - Uses Decimal for precise cost splitting
+    - Locks both quota AND credit balance atomically to prevent race conditions
 
     PAYG (Pay-as-you-go) Logic:
     - If usage is within quota, record it normally
@@ -2635,6 +2933,58 @@ async def _record_single_event(
     - If no credits available and quota exceeded, reject the usage
     """
     try:
+        # SECURITY: Idempotency check - prevent duplicate event processing
+        idempotency_key = f"{event.user_id}:{event.id}"
+        existing_result = await db.execute(
+            select(UsageRecord.id).where(UsageRecord.idempotency_key == idempotency_key).limit(1)
+        )
+        if existing_result.scalar_one_or_none():
+            logger.info(
+                "Duplicate usage event - already processed",
+                event_id=event.id,
+                user_id=event.user_id,
+            )
+            return True, None  # Return success - already processed
+
+        # SECURITY: Validate workspace ownership if workspace_id is provided
+        # This prevents billing inflation by recording usage on other users' workspaces
+        # Note: Workspaces belong to sessions, so we check ownership through the session
+        if event.workspace_id:
+            workspace_result = await db.execute(
+                select(Workspace.id)
+                .join(Session, Workspace.id == Session.workspace_id)
+                .where(
+                    Workspace.id == event.workspace_id,
+                    Session.owner_id == event.user_id,
+                )
+            )
+            if not workspace_result.scalar_one_or_none():
+                logger.warning(
+                    "Usage event rejected - workspace not owned by user",
+                    event_id=event.id,
+                    user_id=event.user_id,
+                    workspace_id=event.workspace_id,
+                )
+                return False, "Workspace not found or not owned by user"
+
+        # SECURITY: Validate agent belongs to session/workspace if agent_id is provided
+        # This prevents usage attribution manipulation
+        if event.agent_id and event.session_id:
+            agent_result = await db.execute(
+                select(Agent.id).where(
+                    Agent.id == event.agent_id,
+                    Agent.session_id == event.session_id,
+                )
+            )
+            if not agent_result.scalar_one_or_none():
+                logger.warning(
+                    "Usage event rejected - agent not in session",
+                    event_id=event.id,
+                    agent_id=event.agent_id,
+                    session_id=event.session_id,
+                )
+                return False, "Agent not found in session"
+
         # Get margin for this user and usage type
         margin_percent = await _get_user_margin(db, event.user_id, event.usage_type)
 
@@ -2659,106 +3009,95 @@ async def _record_single_event(
             )
             quota = quota_result.scalar_one_or_none()
 
-            if quota:
-                new_usage = quota.current_usage + event.quantity
-                if new_usage > quota.limit_value:
-                    # Quota exceeded - check overage handling
-                    overage_tokens = new_usage - quota.limit_value
-
-                    # Get the user's plan to use proper overage rate
-                    overage_rate_cents = 0
-                    sub_result = await db.execute(
-                        select(UserSubscription)
-                        .where(UserSubscription.user_id == event.user_id)
-                        .where(UserSubscription.status.in_(["active", "trialing"]))
-                    )
-                    subscription = sub_result.scalar_one_or_none()
-                    if subscription:
-                        plan_result = await db.execute(
-                            select(SubscriptionPlan).where(
-                                SubscriptionPlan.id == subscription.plan_id
-                            )
-                        )
-                        plan = plan_result.scalar_one_or_none()
-                        if plan and plan.overage_token_rate_cents:
-                            # Rate is per 1000 tokens
-                            overage_rate_cents = plan.overage_token_rate_cents
-
-                    # Calculate overage cost using plan rate (rate is per 1000 tokens)
-                    if overage_rate_cents > 0:
-                        overage_cost = (overage_tokens * overage_rate_cents) // 1000
-                    else:
-                        # Fallback: prorate from current event cost
-                        overage_cost = (
-                            (total_cost * overage_tokens) // event.quantity
-                            if event.quantity > 0
-                            else 0
-                        )
-
-                    if quota.overage_allowed:
-                        # Try to deduct from prepaid credits
-                        credit_deducted = await deduct_credits_for_overage(
-                            db,
-                            event.user_id,
-                            overage_cost,
-                            "tokens",
-                            f"Token overage: {overage_tokens} tokens at plan rate",
-                        )
-                        if not credit_deducted:
-                            # Insufficient credits to cover overage - block usage
-                            await check_and_send_limit_reached(db, event.user_id, quota)
-                            return (
-                                False,
-                                f"Token quota exceeded and insufficient credits "
-                                f"(need {cents_to_dollars(overage_cost):.4f}, have insufficient balance)",
-                            )
-
-                        is_overage = True
-                    else:
-                        await check_and_send_limit_reached(db, event.user_id, quota)
-                        return False, "Token quota exceeded and overage not allowed"
-
-                # Check for usage warning (80% threshold)
-                usage_percent = (
-                    (new_usage / quota.limit_value * 100) if quota.limit_value > 0 else 0
+            # SECURITY: Require quota record to exist - prevents quota bypass
+            if not quota:
+                logger.error(
+                    "User missing token quota record - rejecting usage",
+                    user_id=event.user_id,
+                    event_id=event.id,
                 )
-                await check_and_send_usage_warning(db, event.user_id, quota, usage_percent)
+                return (
+                    False,
+                    "Usage quota not configured. Please contact support.",
+                )
+
+            # SECURITY: Use safe_add to prevent integer overflow
+            new_usage = _safe_add(quota.current_usage, event.quantity)
+            if new_usage > quota.limit_value:
+                # Quota exceeded - check overage handling
+                overage_tokens = new_usage - quota.limit_value
+
+                # Get the user's plan to use proper overage rate
+                overage_rate_cents = 0
+                sub_result = await db.execute(
+                    select(UserSubscription)
+                    .where(UserSubscription.user_id == event.user_id)
+                    .where(UserSubscription.status.in_(["active", "trialing"]))
+                )
+                subscription = sub_result.scalar_one_or_none()
+                if subscription:
+                    plan_result = await db.execute(
+                        select(SubscriptionPlan).where(SubscriptionPlan.id == subscription.plan_id)
+                    )
+                    plan = plan_result.scalar_one_or_none()
+                    if plan and plan.overage_token_rate_cents:
+                        # Rate is per 1000 tokens
+                        overage_rate_cents = plan.overage_token_rate_cents
+
+                # Calculate overage cost using plan rate (rate is per 1000 tokens)
+                # SECURITY: Use math.ceil to round up to prevent revenue loss
+                import math
+
+                if overage_rate_cents > 0:
+                    overage_cost = math.ceil((overage_tokens * overage_rate_cents) / 1000)
+                else:
+                    # Fallback: prorate from current event cost
+                    overage_cost = (
+                        math.ceil((total_cost * overage_tokens) / event.quantity)
+                        if event.quantity > 0
+                        else 0
+                    )
+
+                if quota.overage_allowed:
+                    # Try to deduct from prepaid credits
+                    credit_deducted = await deduct_credits_for_overage(
+                        db,
+                        event.user_id,
+                        overage_cost,
+                        "tokens",
+                        f"Token overage: {overage_tokens} tokens at plan rate",
+                    )
+                    if not credit_deducted:
+                        # Insufficient credits to cover overage - block usage
+                        await check_and_send_limit_reached(db, event.user_id, quota)
+                        return (
+                            False,
+                            f"Token quota exceeded and insufficient credits "
+                            f"(need {cents_to_dollars(overage_cost):.4f}, have insufficient balance)",
+                        )
+
+                    is_overage = True
+                else:
+                    await check_and_send_limit_reached(db, event.user_id, quota)
+                    return False, "Token quota exceeded and overage not allowed"
+
+            # Check for usage warning (80% threshold)
+            usage_percent = (new_usage / quota.limit_value * 100) if quota.limit_value > 0 else 0
+            await check_and_send_usage_warning(db, event.user_id, quota, usage_percent)
 
             # Record input and output separately with proportional cost splitting
             if event.input_tokens or event.output_tokens:
-                # Calculate proportional cost split based on model pricing
-                from podex_shared.models.billing import MODEL_PRICING  # noqa: PLC0415
+                # SECURITY: Use Decimal-based cost split to prevent precision loss
+                from podex_shared.models.billing import MODEL_PRICING
 
                 pricing = MODEL_PRICING.get(event.model or "")
-
-                if pricing and event.input_tokens and event.output_tokens:
-                    # Calculate actual cost contribution from input and output
-                    input_cost_contribution = (
-                        event.input_tokens * float(pricing.input_price_per_million) / 1_000_000
-                    )
-                    output_cost_contribution = (
-                        event.output_tokens * float(pricing.output_price_per_million) / 1_000_000
-                    )
-                    total_contribution = input_cost_contribution + output_cost_contribution
-
-                    if total_contribution > 0:
-                        input_ratio = input_cost_contribution / total_contribution
-                        output_ratio = output_cost_contribution / total_contribution
-                    else:
-                        input_ratio = output_ratio = 0.5
-                else:
-                    # Fallback to 50/50 if no pricing info
-                    input_ratio = output_ratio = 0.5
+                input_base, input_total, output_base, output_total = _calculate_cost_split_decimal(
+                    base_cost, total_cost, event.input_tokens, event.output_tokens, pricing
+                )
 
                 if event.input_tokens:
-                    if event.output_tokens:
-                        input_base = int(base_cost * input_ratio)
-                        input_total = int(total_cost * input_ratio)
-                    else:
-                        input_base = base_cost
-                        input_total = total_cost
-
                     input_record = UsageRecord(
+                        idempotency_key=f"{idempotency_key}:input",
                         user_id=event.user_id,
                         session_id=event.session_id,
                         workspace_id=event.workspace_id,
@@ -2776,14 +3115,8 @@ async def _record_single_event(
                     db.add(input_record)
 
                 if event.output_tokens:
-                    if event.input_tokens:
-                        output_base = int(base_cost * output_ratio)
-                        output_total = int(total_cost * output_ratio)
-                    else:
-                        output_base = base_cost
-                        output_total = total_cost
-
                     output_record = UsageRecord(
+                        idempotency_key=f"{idempotency_key}:output",
                         user_id=event.user_id,
                         session_id=event.session_id,
                         workspace_id=event.workspace_id,
@@ -2800,16 +3133,12 @@ async def _record_single_event(
                     )
                     db.add(output_record)
 
-            # Update token quota using effective tokens (with margin applied)
-            await db.execute(
-                update(UsageQuota)
-                .where(UsageQuota.user_id == event.user_id)
-                .where(UsageQuota.quota_type == "tokens")
-                .values(
-                    current_usage=UsageQuota.current_usage
-                    + int(event.quantity * (1 + margin_percent / 100))
-                ),
-            )
+            # Update token quota using the locked row to prevent race conditions
+            # We already have the quota locked from SELECT FOR UPDATE above
+            if quota:
+                effective_tokens = int(event.quantity * (1 + margin_percent / 100))
+                quota.current_usage += effective_tokens
+                await db.flush()  # Write the change while still holding the lock
 
         elif event.usage_type in ("compute", "compute_seconds"):
             # Check compute quota first - use FOR UPDATE to prevent race conditions
@@ -2822,7 +3151,8 @@ async def _record_single_event(
             quota = quota_result.scalar_one_or_none()
 
             if quota:
-                new_usage = quota.current_usage + total_cost
+                # SECURITY: Use safe_add to prevent integer overflow
+                new_usage = _safe_add(quota.current_usage, total_cost)
                 if new_usage > quota.limit_value:
                     # Quota exceeded - check overage handling
                     overage_cost = new_usage - quota.limit_value
@@ -2857,6 +3187,7 @@ async def _record_single_event(
                 await check_and_send_usage_warning(db, event.user_id, quota, usage_percent)
 
             record = UsageRecord(
+                idempotency_key=idempotency_key,
                 user_id=event.user_id,
                 session_id=event.session_id,
                 workspace_id=event.workspace_id,
@@ -2872,14 +3203,11 @@ async def _record_single_event(
             )
             db.add(record)
 
-            # Update compute quota using total cost with margin (in cents)
-            # This properly accounts for different tier costs + margin
-            await db.execute(
-                update(UsageQuota)
-                .where(UsageQuota.user_id == event.user_id)
-                .where(UsageQuota.quota_type == "compute_credits")
-                .values(current_usage=UsageQuota.current_usage + total_cost),
-            )
+            # Update compute quota using the locked row to prevent race conditions
+            # We already have the quota locked from SELECT FOR UPDATE above
+            if quota:
+                quota.current_usage = _safe_add(quota.current_usage, total_cost)
+                await db.flush()  # Write the change while still holding the lock
 
         elif event.usage_type == "storage":
             # Storage quota check - use FOR UPDATE to prevent race conditions
@@ -2894,9 +3222,11 @@ async def _record_single_event(
             # Convert bytes to GB (approximate) for quota tracking
             # Storage events use bytes as quantity, convert to GB for comparison
             quantity_gb = event.quantity / (1024 * 1024 * 1024)  # bytes to GB
+            quantity_gb_int = int(quantity_gb)
 
             if quota:
-                new_usage_gb = quota.current_usage + quantity_gb
+                # SECURITY: Use safe_add to prevent integer overflow
+                new_usage_gb = _safe_add(quota.current_usage, quantity_gb_int)
                 if new_usage_gb > quota.limit_value and not quota.overage_allowed:
                     await check_and_send_limit_reached(db, event.user_id, quota)
                     return False, "Storage quota exceeded and overage not allowed"
@@ -2908,6 +3238,7 @@ async def _record_single_event(
                 await check_and_send_usage_warning(db, event.user_id, quota, usage_percent)
 
             record = UsageRecord(
+                idempotency_key=idempotency_key,
                 user_id=event.user_id,
                 session_id=event.session_id,
                 workspace_id=event.workspace_id,
@@ -2921,17 +3252,14 @@ async def _record_single_event(
             )
             db.add(record)
 
-            # Update storage quota (in GB)
+            # Update storage quota using the locked row to prevent race conditions
             if quota:
-                await db.execute(
-                    update(UsageQuota)
-                    .where(UsageQuota.user_id == event.user_id)
-                    .where(UsageQuota.quota_type == "storage_gb")
-                    .values(current_usage=UsageQuota.current_usage + quantity_gb),
-                )
+                quota.current_usage = _safe_add(quota.current_usage, quantity_gb_int)
+                await db.flush()  # Write the change while still holding the lock
 
         elif event.usage_type == "api_calls":
             record = UsageRecord(
+                idempotency_key=idempotency_key,
                 user_id=event.user_id,
                 session_id=event.session_id,
                 usage_type="api_calls",
@@ -3275,6 +3603,9 @@ async def set_session_budget(
     """Set a budget for a session."""
     user_id = get_current_user_id(request)
 
+    # SECURITY: Verify user owns this session before allowing budget creation
+    await _verify_session_access(db, session_id, user_id)
+
     budget = Budget(
         user_id=user_id,
         session_id=session_id,
@@ -3375,6 +3706,10 @@ async def get_budget_status(
     """Get current budget status with spending."""
     user_id = get_current_user_id(request)
 
+    # SECURITY: Verify user owns the session if session_id is provided
+    if session_id:
+        await _verify_session_access(db, session_id, user_id)
+
     manager = get_alert_manager()
     statuses = await manager.get_budget_status(user_id, session_id)
 
@@ -3416,9 +3751,11 @@ async def delete_budget(
     user_id = get_current_user_id(request)
 
     manager = get_alert_manager()
-    success = await manager.delete_budget(budget_id)
+    # SECURITY: Pass user_id to verify ownership before deletion
+    success = await manager.delete_budget(budget_id, user_id=user_id)
 
     if not success:
+        # Return 404 for both not found and unauthorized to prevent enumeration
         raise HTTPException(status_code=404, detail="Budget not found")
 
     return {"success": True}

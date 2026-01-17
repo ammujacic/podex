@@ -29,7 +29,7 @@ class ComputeManager(ABC):
 
     Implemented by:
     - DockerComputeManager: Local development using Docker containers
-    - AWSComputeManager: Production using ECS Fargate / Firecracker
+    - GCPComputeManager: Production using Cloud Run / GKE
     """
 
     @abstractmethod
@@ -66,8 +66,8 @@ class ComputeManager(ABC):
 
         Args:
             workspace_id: The workspace ID to delete
-            preserve_files: If True, sync files to S3 before deletion.
-                          If False, also delete the S3 files.
+            preserve_files: If True, sync files to GCS before deletion.
+                          If False, also delete the GCS files.
         """
 
     @abstractmethod

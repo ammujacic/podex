@@ -669,7 +669,7 @@ class MCPExecutionClient:
             logger.exception("MCP tool execution failed", error=str(e))
             return MCPToolExecutionResult(success=False, error=str(e))
 
-    async def _execute_http(  # noqa: PLR0911
+    async def _execute_http(
         self,
         tool_name: str,
         arguments: dict[str, Any],

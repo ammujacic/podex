@@ -41,19 +41,23 @@ services:
     networks:
       - podex-test
 
-  # === LOCAL AWS SERVICES (Test) ===
-  localstack-test:
-    image: localstack/localstack:latest
+  # === LOCAL GCP SERVICES (Test) ===
+  fake-gcs-test:
+    image: fsouza/fake-gcs-server:latest
+    command: >
+      sh -c "
+        /app/fake-gcs-server -scheme http -port 4443 -external-url http://localhost:4443 &
+        sleep 5 &&
+        curl -X POST -H 'Content-Type: application/json' -d '{\"name\":\"podex-test-workspaces\"}' http://localhost:4443/storage/v1/b 2>/dev/null || echo 'Test bucket exists or failed to create' &&
+        echo 'Fake GCS server initialized with test bucket' &&
+        wait
+      "
     ports:
-      - "4567:4566"
-    environment:
-      SERVICES: s3,dynamodb,sqs,sns,secretsmanager
-      DEBUG: 0
-      EAGER_SERVICE_LOADING: 1
+      - "4444:4443"
     tmpfs:
-      - /var/lib/localstack
+      - /data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:4443/_internal/healthcheck"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -96,14 +100,14 @@ services:
       PORT: 3001
       DATABASE_URL: postgresql+asyncpg://test:test@postgres-test:5432/podex_test
       REDIS_URL: redis://redis-test:6379
-      # AWS / LocalStack
-      AWS_ENDPOINT: http://localstack-test:4566
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
-      # S3 Storage
-      S3_BUCKET: podex-test-workspaces
-      S3_WORKSPACE_PREFIX: workspaces
+      # GCP Configuration
+      GCP_PROJECT_ID: podex-test
+      GCP_REGION: us-central1
+      # GCS Storage
+      GCS_BUCKET: podex-test-workspaces
+      STORAGE_EMULATOR_HOST: http://fake-gcs-test:4443
+      # LLM Provider (Vertex AI)
+      LLM_PROVIDER: vertex
       # CORS
       CORS_ORIGINS: '["http://localhost:3000", "http://localhost:3010"]'
       # Auth
@@ -132,7 +136,7 @@ services:
         condition: service_healthy
       redis-test:
         condition: service_healthy
-      localstack-test:
+      fake-gcs-test:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
@@ -158,12 +162,12 @@ services:
       PORT: 3002
       DATABASE_URL: postgresql+asyncpg://test:test@postgres-test:5432/podex_test
       REDIS_URL: redis://redis-test:6379
-      # AWS / LocalStack
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
-      S3_BUCKET: podex-test-workspaces
-      S3_ENDPOINT_URL: http://localstack-test:4566
+      # GCP Configuration
+      GCP_PROJECT_ID: podex-test
+      GCP_REGION: us-central1
+      # GCS Storage
+      GCS_BUCKET: podex-test-workspaces
+      STORAGE_EMULATOR_HOST: http://fake-gcs-test:4443
       # LLM Provider - use mock for testing
       LLM_PROVIDER: mock
       # Mock API key for testing
@@ -180,7 +184,7 @@ services:
         condition: service_healthy
       redis-test:
         condition: service_healthy
-      localstack-test:
+      fake-gcs-test:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
@@ -205,10 +209,12 @@ services:
       COMPUTE_ENVIRONMENT: test
       COMPUTE_MODE: mock
       COMPUTE_REDIS_URL: redis://redis-test:6379
-      COMPUTE_AWS_REGION: us-east-1
-      COMPUTE_AWS_ENDPOINT: http://localstack-test:4566
-      COMPUTE_S3_BUCKET: podex-test-workspaces
-      COMPUTE_S3_PREFIX: workspaces
+      # GCP Configuration
+      GCP_PROJECT_ID: podex-test
+      GCP_REGION: us-central1
+      COMPUTE_GCS_BUCKET: podex-test-workspaces
+      STORAGE_EMULATOR_HOST: http://fake-gcs-test:4443
+      COMPUTE_GCS_PREFIX: workspaces
       COMPUTE_INTERNAL_API_KEY: test-internal-key
       COMPUTE_CORS_ORIGINS: '["http://localhost:3000", "http://localhost:3010"]'
       # API Service (for usage tracking)
@@ -220,7 +226,7 @@ services:
     depends_on:
       redis-test:
         condition: service_healthy
-      localstack-test:
+      fake-gcs-test:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
@@ -281,11 +287,13 @@ services:
       ENVIRONMENT: test
       DATABASE_URL: postgresql+asyncpg://test:test@postgres-test:5432/podex_test
       REDIS_URL: redis://redis-test:6379
-      AWS_ENDPOINT: http://localstack-test:4566
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
-      S3_BUCKET: podex-test-workspaces
+      # GCP Configuration
+      GCP_PROJECT_ID: podex-test
+      GCP_REGION: us-central1
+      GCS_BUCKET: podex-test-workspaces
+      STORAGE_EMULATOR_HOST: http://fake-gcs-test:4443
+      # LLM Provider (Vertex AI)
+      LLM_PROVIDER: vertex
       JWT_SECRET_KEY: test-secret-key-for-testing
       STRIPE_SECRET_KEY: sk_test_mock
       STRIPE_API_BASE: http://stripe-mock:12111
@@ -299,7 +307,7 @@ services:
         condition: service_healthy
       redis-test:
         condition: service_healthy
-      localstack-test:
+      fake-gcs-test:
         condition: service_healthy
       stripe-mock:
         condition: service_healthy
@@ -327,11 +335,11 @@ services:
       ENVIRONMENT: test
       DATABASE_URL: postgresql+asyncpg://test:test@postgres-test:5432/podex_test
       REDIS_URL: redis://redis-test:6379
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
-      S3_BUCKET: podex-test-workspaces
-      S3_ENDPOINT_URL: http://localstack-test:4566
+      # GCP Configuration
+      GCP_PROJECT_ID: podex-test
+      GCP_REGION: us-central1
+      GCS_BUCKET: podex-test-workspaces
+      STORAGE_EMULATOR_HOST: http://fake-gcs-test:4443
       LLM_PROVIDER: mock
       ANTHROPIC_API_KEY: sk-ant-test-mock-key
       # API Service (for usage tracking)
@@ -346,7 +354,7 @@ services:
         condition: service_healthy
       redis-test:
         condition: service_healthy
-      localstack-test:
+      fake-gcs-test:
         condition: service_healthy
     networks:
       - podex-test

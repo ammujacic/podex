@@ -39,6 +39,43 @@ DANGEROUS_OPERATIONS = {
 }
 
 
+# SECURITY: Git options that can execute arbitrary code or commands
+_DANGEROUS_GIT_OPTIONS = frozenset(
+    {
+        "-c",  # Can set arbitrary config like core.pager='shell command'
+        "--config",
+        "--exec-path",
+        "--git-dir",
+        "--work-tree",
+        "-C",  # Change directory - could escape workspace
+    }
+)
+
+
+def _validate_git_args(args: list[str]) -> str | None:
+    """Validate git arguments for security issues.
+
+    Args:
+        args: Git command arguments to validate.
+
+    Returns:
+        Error message if validation fails, None if valid.
+    """
+    for _i, arg in enumerate(args):
+        # Check for dangerous options
+        for dangerous in _DANGEROUS_GIT_OPTIONS:
+            if arg == dangerous or arg.startswith(f"{dangerous}="):
+                return f"Git option '{dangerous}' is not allowed for security reasons"
+
+        # Check for shell metacharacters in arguments
+        dangerous_chars = ["&&", "||", ";", "|", "`", "$(", "${", "<(", ">(", "\n", "\r"]
+        for dc in dangerous_chars:
+            if dc in arg:
+                return f"Git argument contains forbidden character sequence: {dc!r}"
+
+    return None
+
+
 async def _run_git_command(
     workspace_path: Path,
     args: list[str],
@@ -54,6 +91,11 @@ async def _run_git_command(
     Returns:
         Tuple of (success, stdout, stderr)
     """
+    # SECURITY: Validate git arguments
+    validation_error = _validate_git_args(args)
+    if validation_error:
+        return False, "", validation_error
+
     cmd = ["git", *args]
 
     try:
@@ -65,6 +107,9 @@ async def _run_git_command(
             env={
                 **os.environ,
                 "GIT_TERMINAL_PROMPT": "0",  # Disable prompts
+                # SECURITY: Disable pager to prevent shell command execution
+                "GIT_PAGER": "cat",
+                "PAGER": "cat",
             },
         )
 

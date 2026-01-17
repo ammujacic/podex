@@ -52,15 +52,15 @@ class TestSettingsDefaults:
         settings = Settings()
         assert settings.REDIS_URL == "redis://localhost:6379"
 
-    def test_aws_region_default(self) -> None:
-        """Test default AWS region."""
+    def test_gcp_region_default(self) -> None:
+        """Test default GCP region."""
         settings = Settings()
-        assert settings.AWS_REGION == "us-east-1"
+        assert settings.GCP_REGION == "us-east5"
 
-    def test_aws_endpoint_default(self) -> None:
-        """Test default AWS endpoint."""
+    def test_gcs_endpoint_default(self) -> None:
+        """Test default GCS endpoint (for local emulator)."""
         settings = Settings()
-        assert settings.AWS_ENDPOINT is None
+        assert settings.GCS_ENDPOINT_URL is None
 
 
 class TestAuthSettings:
@@ -208,7 +208,7 @@ class TestSecuritySettings:
     def test_csrf_enabled_in_dev_default(self) -> None:
         """Test CSRF in dev default."""
         settings = Settings()
-        assert settings.CSRF_ENABLED_IN_DEV is False
+        assert settings.CSRF_ENABLED_IN_DEV is True
 
 
 class TestSentrySettings:
@@ -298,10 +298,10 @@ class TestJWTSecretValidation:
         long_secret = "x" * MIN_JWT_SECRET_LENGTH
         with patch.dict(
             os.environ,
-            {"ENVIRONMENT": "production", "COMPUTE_INTERNAL_API_KEY": "test-key"},
+            {"ENVIRONMENT": "production", "JWT_SECRET_KEY": long_secret, "COMPUTE_INTERNAL_API_KEY": "test-key", "INTERNAL_SERVICE_TOKEN": "test-token"},
             clear=False,
         ):
-            settings = Settings(JWT_SECRET_KEY=long_secret)
+            settings = Settings()
             assert long_secret == settings.JWT_SECRET_KEY
 
 
@@ -366,23 +366,23 @@ class TestGetSettingsCached:
         assert settings1 is settings2
 
 
-class TestS3Settings:
-    """Tests for S3 settings."""
+class TestGCSSettings:
+    """Tests for GCS settings."""
 
-    def test_s3_bucket_default(self) -> None:
-        """Test default S3 bucket."""
+    def test_gcs_bucket_default(self) -> None:
+        """Test default GCS bucket."""
         settings = Settings()
-        assert settings.S3_BUCKET == "podex-workspaces"
+        assert settings.GCS_BUCKET == "podex-workspaces"
 
-    def test_s3_workspace_prefix_default(self) -> None:
-        """Test default S3 workspace prefix."""
+    def test_gcs_workspace_prefix_default(self) -> None:
+        """Test default GCS workspace prefix."""
         settings = Settings()
-        assert settings.S3_WORKSPACE_PREFIX == "workspaces"
+        assert settings.GCS_WORKSPACE_PREFIX == "workspaces"
 
-    def test_voice_audio_s3_prefix_default(self) -> None:
-        """Test default voice audio S3 prefix."""
+    def test_voice_audio_gcs_prefix_default(self) -> None:
+        """Test default voice audio GCS prefix."""
         settings = Settings()
-        assert settings.VOICE_AUDIO_S3_PREFIX == "audio/voice"
+        assert settings.VOICE_AUDIO_GCS_PREFIX == "audio/voice"
 
 
 class TestEmailSettings:

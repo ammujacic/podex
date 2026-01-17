@@ -2,33 +2,27 @@
 
 import base64
 import contextlib
-import json
 import logging
-from typing import Annotated, Any
-from uuid import uuid4
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from podex_shared import generate_tts_summary, get_command_description, parse_voice_command
-from podex_shared.aws import get_polly_client, get_transcribe_client
-from podex_shared.aws.polly import PollyClient, SynthesisOptions
-from podex_shared.aws.s3 import S3Client
-from podex_shared.aws.transcribe import TranscribeClient, TranscriptionJobConfig
+from podex_shared.gcp import get_speech_client, get_tts_client
+from podex_shared.gcp.stt import SpeechClient
+from podex_shared.gcp.tts import TTSClient
 from src.config import settings
-from src.database import get_db
 from src.database.models import Agent as AgentModel
 from src.database.models import Message as MessageModel
 from src.database.models import Session as SessionModel
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, RATE_LIMIT_UPLOAD, limiter
+from src.routes.dependencies import DbSession, get_current_user_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-# Type alias for database session dependency
-DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 # Maximum characters allowed for neural voice synthesis
 MAX_NEURAL_VOICE_TEXT_LENGTH = 3000
@@ -36,6 +30,20 @@ MAX_NEURAL_VOICE_TEXT_LENGTH = 3000
 # Audio file size limits
 MAX_AUDIO_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 MIN_AUDIO_FILE_SIZE = 100  # Minimum size for valid audio
+
+# SECURITY: Timeouts for voice processing to prevent resource exhaustion
+WHISPER_TRANSCRIPTION_TIMEOUT = 120  # 2 minutes max for transcription
+TTS_SYNTHESIS_TIMEOUT = 60  # 1 minute max for TTS synthesis
+
+
+class VisionAPIError(HTTPException):
+    """Exception raised for Vision API errors."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            status_code=503,
+            detail=f"Vision API error: {message}",
+        )
 
 
 # ============== Pydantic Models ==============
@@ -128,14 +136,6 @@ class VoiceCommandResponse(BaseModel):
 # ============== Helper Functions ==============
 
 
-def get_current_user_id(request: Request) -> str:
-    """Get current user ID from request state."""
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return str(user_id)
-
-
 async def verify_session_access(
     session_id: str,
     request: Request,
@@ -169,24 +169,16 @@ async def verify_session_access(
     return session
 
 
-def _get_polly_client() -> PollyClient:
-    """Get Polly client based on environment."""
-    use_mock = settings.ENVIRONMENT == "development" or settings.AWS_ENDPOINT is not None
-    return get_polly_client(
-        region=settings.AWS_REGION,
-        endpoint_url=settings.AWS_ENDPOINT,
-        use_mock=use_mock,
-    )
+def _get_tts_client() -> TTSClient:
+    """Get Google Cloud TTS client based on environment."""
+    use_mock = settings.ENVIRONMENT == "development"
+    return get_tts_client(use_mock=use_mock)
 
 
-def _get_transcribe_client() -> TranscribeClient:
-    """Get Transcribe client based on environment."""
-    use_mock = settings.ENVIRONMENT == "development" or settings.AWS_ENDPOINT is not None
-    return get_transcribe_client(
-        region=settings.AWS_REGION,
-        endpoint_url=settings.AWS_ENDPOINT,
-        use_mock=use_mock,
-    )
+def _get_speech_client() -> SpeechClient:
+    """Get Google Cloud Speech-to-Text client based on environment."""
+    use_mock = settings.ENVIRONMENT == "development"
+    return get_speech_client(use_mock=use_mock)
 
 
 # ============== Voice List Endpoints ==============
@@ -199,11 +191,11 @@ async def list_voices(
     response: Response,  # noqa: ARG001
     language: str | None = None,
 ) -> list[VoiceInfoResponse]:
-    """List available TTS voices from AWS Polly."""
+    """List available TTS voices from Google Cloud TTS."""
     get_current_user_id(request)
 
-    polly = _get_polly_client()
-    voices = await polly.list_voices(language_code=language)
+    tts = _get_tts_client()
+    voices = await tts.list_voices(language_code=language)
 
     return [
         VoiceInfoResponse(
@@ -212,7 +204,7 @@ async def list_voices(
             language_code=v.language_code,
             language_name=v.language_name,
             gender=v.gender,
-            engine=v.engine,
+            engine="neural",  # GCP TTS uses neural by default
         )
         for v in voices
     ]
@@ -251,9 +243,9 @@ async def get_agent_voice_config(
     return VoiceConfig(
         tts_enabled=config.get("tts_enabled", False),
         auto_play=config.get("auto_play", False),
-        voice_id=config.get("voice_id", settings.DEFAULT_POLLY_VOICE_ID),
+        voice_id=config.get("voice_id", settings.DEFAULT_TTS_VOICE_ID),
         speed=config.get("speed", 1.0),
-        language=config.get("language", settings.DEFAULT_TRANSCRIBE_LANGUAGE),
+        language=config.get("language", settings.DEFAULT_SPEECH_LANGUAGE),
     )
 
 
@@ -262,7 +254,7 @@ async def get_agent_voice_config(
     response_model=VoiceConfig,
 )
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def update_agent_voice_config(  # noqa: PLR0913
+async def update_agent_voice_config(
     session_id: str,
     agent_id: str,
     request: Request,
@@ -303,9 +295,9 @@ async def update_agent_voice_config(  # noqa: PLR0913
     return VoiceConfig(
         tts_enabled=config.get("tts_enabled", False),
         auto_play=config.get("auto_play", False),
-        voice_id=config.get("voice_id", settings.DEFAULT_POLLY_VOICE_ID),
+        voice_id=config.get("voice_id", settings.DEFAULT_TTS_VOICE_ID),
         speed=config.get("speed", 1.0),
-        language=config.get("language", settings.DEFAULT_TRANSCRIBE_LANGUAGE),
+        language=config.get("language", settings.DEFAULT_SPEECH_LANGUAGE),
     )
 
 
@@ -332,7 +324,7 @@ def _parse_transcription_result(
     transcript_data: dict[str, Any],
     audio_data: bytes,
 ) -> tuple[str, float, int]:
-    """Parse AWS Transcribe output and return text, confidence, duration."""
+    """Parse transcription output and return text, confidence, duration."""
     results = transcript_data.get("results", {})
     transcripts = results.get("transcripts", [])
     text = transcripts[0].get("transcript", "") if transcripts else ""
@@ -352,39 +344,21 @@ def _parse_transcription_result(
     return text, avg_confidence, duration_ms
 
 
-async def _cleanup_transcription_files(
-    s3: S3Client,
-    input_key: str,
-    output_key: str,
-    job_name: str,
-    transcribe: TranscribeClient,
-) -> None:
-    """Clean up S3 files and transcription job."""
-    try:
-        await s3.delete_object(input_key)
-        await s3.delete_object(f"{output_key}.json")
-    except Exception:
-        logger.debug("Failed to clean up S3 transcription files: %s", input_key)
-
-    with contextlib.suppress(Exception):
-        await transcribe.delete_transcription_job(job_name)
-
-
 @router.post(
     "/sessions/{session_id}/transcribe",
     response_model=TranscribeResponse,
 )
 @limiter.limit(RATE_LIMIT_UPLOAD)
 async def transcribe_audio(
-    session_id: str,
+    session_id: str,  # noqa: ARG001
     request: Request,
     response: Response,  # noqa: ARG001
     data: TranscribeRequest,
 ) -> TranscribeResponse:
-    """Transcribe audio to text using AWS Transcribe.
+    """Transcribe audio to text using Google Cloud Speech-to-Text.
 
-    Uploads audio to S3, starts a transcription job, and polls for completion.
-    For short audio (< 60 seconds), this typically completes within 10-30 seconds.
+    Uses synchronous transcription for low-latency responses.
+    For short audio (< 60 seconds), this typically completes within seconds.
     """
     get_current_user_id(request)
 
@@ -411,68 +385,23 @@ async def transcribe_audio(
             logger.exception("Whisper transcription failed")
             raise HTTPException(status_code=500, detail=f"Transcription failed: {e}") from e
 
-    transcribe = _get_transcribe_client()
+    # Production: Use Google Cloud Speech-to-Text (synchronous transcription)
+    speech = _get_speech_client()
 
-    # Production: Upload to S3 and start transcription job
-    s3 = S3Client(
-        bucket=settings.S3_BUCKET,
-        prefix=settings.VOICE_AUDIO_S3_PREFIX,
-        region=settings.AWS_REGION,
-        endpoint_url=settings.AWS_ENDPOINT,
-    )
-
-    # Generate unique job name and keys
-    job_id = str(uuid4())
-    job_name = f"transcribe-{session_id[:8]}-{job_id[:8]}"
-    input_key = f"input/{session_id}/{job_id}.{data.format}"
-    output_key = f"output/{session_id}/{job_id}"
-
-    # Upload audio to S3
-    await s3.put_object(
-        input_key,
-        audio_data,
-        content_type=f"audio/{data.format}",
-    )
-
-    s3_uri = f"s3://{settings.S3_BUCKET}/{settings.VOICE_AUDIO_S3_PREFIX}/{input_key}"
-
-    # Start transcription job
-    config = TranscriptionJobConfig(
-        job_name=job_name,
-        s3_uri=s3_uri,
-        output_bucket=settings.S3_BUCKET,
-        output_key=f"{settings.VOICE_AUDIO_S3_PREFIX}/{output_key}",
-        language_code=data.language,
-        media_format=data.format,
-    )
-
-    await transcribe.start_transcription_job(config)
-
-    # Wait for transcription to complete
-    aws_result = await transcribe.wait_for_transcription(
-        job_name,
-        max_attempts=120,  # Up to 10 minutes
-        delay_seconds=5,
-    )
-
-    if not aws_result:
-        # Clean up
-        await s3.delete_object(input_key)
-        raise HTTPException(status_code=500, detail="Transcription failed or timed out")
-
-    # Fetch and parse the transcript from S3
+    # Transcribe audio directly (GCP Speech supports synchronous transcription)
     try:
-        transcript_json = await s3.get_object_text(f"{output_key}.json")
-        transcript_data = json.loads(transcript_json)
-        text, avg_confidence, duration_ms = _parse_transcription_result(
-            transcript_data,
-            audio_data,
+        result = await speech.transcribe(
+            audio_data=audio_data,
+            encoding=data.format.upper(),
+            language_code=data.language or "en-US",
         )
-    except FileNotFoundError:
-        text, avg_confidence, duration_ms = "", 0.0, 0
-    finally:
-        # Clean up S3 files and transcription job
-        await _cleanup_transcription_files(s3, input_key, output_key, job_name, transcribe)
+
+        text = result.transcript
+        avg_confidence = result.confidence
+        duration_ms = int(result.duration_seconds * 1000) if result.duration_seconds else 0
+    except Exception as e:
+        logger.exception("GCP Speech transcription failed")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {e}") from e
 
     if not text:
         raise HTTPException(status_code=500, detail="No transcript generated")
@@ -501,7 +430,7 @@ async def synthesize_speech(
     """Synthesize text to speech.
 
     Uses pyttsx3 (local system voices) in development mode,
-    AWS Polly in production.
+    Google Cloud TTS in production.
     """
     get_current_user_id(request)
 
@@ -537,28 +466,27 @@ async def synthesize_speech(
             logger.exception("pyttsx3 synthesis failed")
             raise HTTPException(status_code=500, detail=f"Synthesis failed: {e}") from e
 
-    # Production: Use AWS Polly
-    polly = _get_polly_client()
-    voice_id = data.voice_id or settings.DEFAULT_POLLY_VOICE_ID
+    # Production: Use Google Cloud TTS
+    tts = _get_tts_client()
+    voice_id = data.voice_id or settings.DEFAULT_TTS_VOICE_ID
 
-    options = SynthesisOptions(
-        voice_id=voice_id,
-        output_format=data.format,
-        engine=settings.DEFAULT_POLLY_ENGINE,
+    tts_result = await tts.synthesize_speech(
+        text=data.text,
+        voice_name=voice_id,
+        audio_encoding=data.format.upper(),
     )
-    polly_result = await polly.synthesize_speech(text=data.text, options=options)
 
     # Encode audio as base64 for direct response
-    audio_b64 = base64.b64encode(polly_result.audio_data).decode("utf-8")
+    audio_b64 = base64.b64encode(tts_result.audio_data).decode("utf-8")
 
     # Estimate duration (~60ms per character for natural speech)
     duration_ms = len(data.text) * 60
 
     return SynthesizeResponse(
-        audio_url="",  # Would be S3 URL in production
+        audio_url="",  # Would be GCS URL in production
         audio_b64=audio_b64,
         duration_ms=duration_ms,
-        content_type=polly_result.content_type,
+        content_type=tts_result.content_type,
     )
 
 
@@ -567,7 +495,7 @@ async def synthesize_speech(
     response_model=SynthesizeResponse,
 )
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def synthesize_message(  # noqa: PLR0913
+async def synthesize_message(
     session_id: str,
     agent_id: str,
     message_id: str,
@@ -628,7 +556,7 @@ async def synthesize_message(  # noqa: PLR0913
     agent = agent_result.scalar_one_or_none()
 
     voice_config: dict[str, Any] | None = agent.voice_config if agent else None
-    default_voice = settings.DEFAULT_POLLY_VOICE_ID
+    default_voice = settings.DEFAULT_TTS_VOICE_ID
     voice_id = voice_config.get("voice_id", default_voice) if voice_config else default_voice
 
     # Use local pyttsx3 in development mode
@@ -653,23 +581,22 @@ async def synthesize_message(  # noqa: PLR0913
             logger.exception("pyttsx3 message synthesis failed")
             raise HTTPException(status_code=500, detail=f"Synthesis failed: {e}") from e
 
-    # Production: Use AWS Polly
-    polly = _get_polly_client()
-    synth_options = SynthesisOptions(
-        voice_id=voice_id,
-        output_format="mp3",
-        engine=settings.DEFAULT_POLLY_ENGINE,
+    # Production: Use Google Cloud TTS
+    tts = _get_tts_client()
+    tts_result = await tts.synthesize_speech(
+        text=text_to_speak,
+        voice_name=voice_id,
+        audio_encoding="MP3",
     )
-    synth_result = await polly.synthesize_speech(text=text_to_speak, options=synth_options)
 
-    audio_b64 = base64.b64encode(synth_result.audio_data).decode("utf-8")
+    audio_b64 = base64.b64encode(tts_result.audio_data).decode("utf-8")
     duration_ms = len(text_to_speak) * 60
 
     return SynthesizeResponse(
         audio_url="",
         audio_b64=audio_b64,
         duration_ms=duration_ms,
-        content_type=synth_result.content_type,
+        content_type=tts_result.content_type,
     )
 
 
@@ -746,7 +673,7 @@ async def extract_text_from_image(
 
     Supports base64-encoded images in common formats (PNG, JPEG, WebP).
 
-    This endpoint uses AWS Textract for OCR. In development mode,
+    This endpoint uses Google Cloud Vision for OCR. In development mode,
     it falls back to pytesseract if available.
     """
     get_current_user_id(request)
@@ -770,7 +697,7 @@ async def extract_text_from_image(
     if len(image_bytes) < min_image_size:
         raise HTTPException(status_code=400, detail="Image too small to process")
 
-    # Use local OCR in development, AWS Textract in production
+    # Use local OCR in development, GCP Vision in production
     if settings.ENVIRONMENT == "development":
         # Try pytesseract for local OCR
         try:
@@ -790,8 +717,8 @@ async def extract_text_from_image(
                 confidence=0.0,
             )
     else:
-        # Use AWS Textract for production
-        return await _aws_ocr(image_bytes, data.language)
+        # Use GCP Vision for production
+        return await _gcp_vision_ocr(image_bytes, data.language)
 
 
 async def _local_ocr(image_bytes: bytes, language: str) -> OCRResponse:
@@ -800,14 +727,14 @@ async def _local_ocr(image_bytes: bytes, language: str) -> OCRResponse:
     Requires: pip install pytesseract pillow
     And tesseract-ocr system package installed.
     """
-    from io import BytesIO  # noqa: PLC0415
+    from io import BytesIO
 
-    from PIL import Image  # noqa: PLC0415
+    from PIL import Image
 
     try:
-        import pytesseract  # noqa: PLC0415
+        import pytesseract
     except ImportError as e:
-        raise ImportError("pytesseract not installed. Run: pip install pytesseract") from e  # noqa: TRY003
+        raise ImportError("pytesseract not installed") from e  # noqa: TRY003
 
     # Load image
     img = Image.open(BytesIO(image_bytes))
@@ -868,60 +795,57 @@ async def _local_ocr(image_bytes: bytes, language: str) -> OCRResponse:
     )
 
 
-async def _aws_ocr(image_bytes: bytes, language: str) -> OCRResponse:
-    """Perform OCR using AWS Textract."""
-    import aioboto3  # noqa: PLC0415
-
-    session = aioboto3.Session()
+async def _gcp_vision_ocr(image_bytes: bytes, language: str) -> OCRResponse:
+    """Perform OCR using Google Cloud Vision API."""
+    from google.cloud import vision
 
     try:
-        async with session.client(
-            "textract",
-            region_name=settings.AWS_REGION,
-            endpoint_url=settings.AWS_ENDPOINT,
-        ) as textract:
-            # Detect text in image
-            ocr_response = await textract.detect_document_text(Document={"Bytes": image_bytes})
+        client = vision.ImageAnnotatorClient()
+        image = vision.Image(content=image_bytes)
 
-            # Parse response
-            blocks: list[OCRTextBlock] = []
-            full_text_parts: list[str] = []
-            confidences: list[float] = []
+        # Perform text detection
+        response = client.text_detection(image=image)
 
-            for block in ocr_response.get("Blocks", []):
-                if block["BlockType"] == "LINE":
-                    text = block.get("Text", "")
-                    confidence = block.get("Confidence", 0) / 100.0
+        if response.error.message:
 
-                    # Get bounding box
-                    bbox = block.get("Geometry", {}).get("BoundingBox", {})
+            def _raise_vision_api_error() -> None:
+                raise VisionAPIError(response.error.message)  # noqa: TRY301
 
-                    blocks.append(
-                        OCRTextBlock(
-                            text=text,
-                            confidence=confidence,
-                            bounding_box={
-                                "left": bbox.get("Left", 0),
-                                "top": bbox.get("Top", 0),
-                                "width": bbox.get("Width", 0),
-                                "height": bbox.get("Height", 0),
-                            },
-                        )
+            _raise_vision_api_error()
+
+        # Parse response
+        blocks: list[OCRTextBlock] = []
+        full_text = ""
+
+        for text_annotation in response.text_annotations:
+            if text_annotation == response.text_annotations[0]:
+                # First annotation is the full text
+                full_text = text_annotation.description
+            else:
+                # Subsequent annotations are individual words/blocks
+                vertices = text_annotation.bounding_poly.vertices
+                blocks.append(
+                    OCRTextBlock(
+                        text=text_annotation.description,
+                        confidence=0.95,  # Vision API doesn't provide per-block confidence
+                        bounding_box={
+                            "left": vertices[0].x if vertices else 0,
+                            "top": vertices[0].y if vertices else 0,
+                            "width": (vertices[2].x - vertices[0].x) if len(vertices) > 2 else 0,
+                            "height": (vertices[2].y - vertices[0].y) if len(vertices) > 2 else 0,
+                        },
                     )
-                    full_text_parts.append(text)
-                    confidences.append(confidence)
+                )
 
-            avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
-
-            return OCRResponse(
-                text="\n".join(full_text_parts),
-                blocks=blocks,
-                language=language,
-                confidence=avg_confidence,
-            )
+        return OCRResponse(
+            text=full_text,
+            blocks=blocks,
+            language=language,
+            confidence=0.95,
+        )
 
     except Exception as e:
-        logger.exception("AWS Textract error")
+        logger.exception("GCP Vision OCR error")
         raise HTTPException(status_code=503, detail=f"OCR service error: {e}") from e
 
 
@@ -941,13 +865,13 @@ async def _whisper_transcribe(
     language: str | None = None,
 ) -> LocalTranscribeResponse:
     """Transcribe audio using Whisper model."""
-    import asyncio  # noqa: PLC0415
-    import tempfile  # noqa: PLC0415
+    import asyncio
+    import tempfile
 
     try:
-        import whisper  # noqa: PLC0415
+        import whisper
     except ImportError as e:
-        raise ImportError("whisper not installed. Run: pip install openai-whisper") from e  # noqa: TRY003
+        raise ImportError("whisper not installed") from e  # noqa: TRY003
 
     # Write audio to temp file (Whisper needs a file path)
     with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
@@ -969,7 +893,17 @@ async def _whisper_transcribe(
             result: dict[str, Any] = model.transcribe(temp_path, **options)
             return result
 
-        result = await loop.run_in_executor(None, _transcribe)
+        # SECURITY: Add timeout to prevent resource exhaustion from long-running transcriptions
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, _transcribe),
+                timeout=WHISPER_TRANSCRIPTION_TIMEOUT,
+            )
+        except TimeoutError:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Transcription timed out after {WHISPER_TRANSCRIPTION_TIMEOUT} seconds",
+            )
 
         return LocalTranscribeResponse(
             text=result.get("text", "").strip(),
@@ -979,7 +913,7 @@ async def _whisper_transcribe(
 
     finally:
         # Clean up temp file
-        from pathlib import Path  # noqa: PLC0415
+        from pathlib import Path
 
         with contextlib.suppress(OSError):
             Path(temp_path).unlink()
@@ -994,23 +928,23 @@ class LocalSynthesizeResponse(BaseModel):
     voice_used: str
 
 
-async def _pyttsx3_synthesize(  # noqa: PLR0915
+async def _pyttsx3_synthesize(
     text: str,
     voice_id: str | None = None,
     rate: int = 150,
     volume: float = 1.0,
 ) -> LocalSynthesizeResponse:
     """Synthesize speech using pyttsx3."""
-    import asyncio  # noqa: PLC0415
-    import os  # noqa: PLC0415
-    import sys  # noqa: PLC0415
-    import tempfile  # noqa: PLC0415
-    from pathlib import Path  # noqa: PLC0415
+    import asyncio
+    import os
+    import sys
+    import tempfile
+    from pathlib import Path
 
     try:
-        import pyttsx3  # noqa: PLC0415
+        import pyttsx3
     except ImportError as e:
-        raise ImportError("pyttsx3 not installed. Run: pip install pyttsx3") from e  # noqa: TRY003
+        raise ImportError("pyttsx3 not installed") from e  # noqa: TRY003
 
     # Create temp file for output
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
@@ -1050,23 +984,31 @@ async def _pyttsx3_synthesize(  # noqa: PLR0915
                 # Suppress stderr to hide pyttsx3 espeak ReferenceError warnings
                 # These errors are harmless but noisy - they occur in espeak's C callbacks
                 stderr_backup = sys.stderr
-                try:
-                    sys.stderr = open(os.devnull, "w")  # noqa: SIM115, PTH123
-                    engine.runAndWait()
-                finally:
-                    sys.stderr.close()
-                    sys.stderr = stderr_backup
+                with open(os.devnull, "w") as devnull:
+                    sys.stderr = devnull
+                    try:
+                        engine.runAndWait()
+                    finally:
+                        sys.stderr = stderr_backup
 
                 return voice_used
             finally:
                 # Properly cleanup engine to prevent weak reference errors
-                try:  # noqa: SIM105
+                with contextlib.suppress(Exception):
                     engine.stop()
-                except Exception:  # noqa: S110
-                    pass  # Ignore cleanup errors
                 del engine
 
-        voice_used = await loop.run_in_executor(None, _synthesize)
+        # SECURITY: Add timeout to prevent resource exhaustion from long-running synthesis
+        try:
+            voice_used = await asyncio.wait_for(
+                loop.run_in_executor(None, _synthesize),
+                timeout=TTS_SYNTHESIS_TIMEOUT,
+            )
+        except TimeoutError:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Speech synthesis timed out after {TTS_SYNTHESIS_TIMEOUT} seconds",
+            )
 
         # Read the audio file
         audio_data = Path(temp_path).read_bytes()
@@ -1112,7 +1054,7 @@ async def list_local_voices(
     get_current_user_id(request)
 
     try:
-        import pyttsx3  # noqa: PLC0415
+        import pyttsx3
     except ImportError as e:
         raise HTTPException(
             status_code=503,

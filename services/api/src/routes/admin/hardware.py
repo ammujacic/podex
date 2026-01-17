@@ -40,6 +40,14 @@ class CreateHardwareSpecRequest(BaseModel):
     gpu_memory_gb: int | None = Field(default=None, ge=1, le=80)
     gpu_count: int = Field(default=0, ge=0, le=8)
 
+    # Compute routing flags
+    is_gpu: bool = Field(
+        default=False, description="Whether this tier has GPU/accelerator hardware"
+    )
+    requires_gke: bool = Field(
+        default=False, description="Whether this tier requires GKE (Cloud Run doesn't support GPUs)"
+    )
+
     # Storage
     storage_gb_default: int = Field(default=20, ge=5, le=1000)
     storage_gb_max: int = Field(default=100, ge=10, le=10000)
@@ -62,6 +70,8 @@ class UpdateHardwareSpecRequest(BaseModel):
     gpu_type: str | None = None
     gpu_memory_gb: int | None = Field(default=None, ge=1, le=80)
     gpu_count: int | None = Field(default=None, ge=0, le=8)
+    is_gpu: bool | None = None
+    requires_gke: bool | None = None
     storage_gb_default: int | None = Field(default=None, ge=5, le=1000)
     storage_gb_max: int | None = Field(default=None, ge=10, le=10000)
     hourly_rate_cents: int | None = Field(default=None, ge=0)
@@ -82,6 +92,8 @@ class AdminHardwareSpecResponse(BaseModel):
     gpu_type: str | None
     gpu_memory_gb: int | None
     gpu_count: int
+    is_gpu: bool
+    requires_gke: bool
     storage_gb_default: int
     storage_gb_max: int
     hourly_rate_cents: int
@@ -114,7 +126,7 @@ async def list_hardware_specs(
     query = select(HardwareSpec).order_by(HardwareSpec.hourly_rate_cents)
 
     if not include_unavailable:
-        query = query.where(HardwareSpec.is_available == True)  # noqa: E712
+        query = query.where(HardwareSpec.is_available == True)
 
     result = await db.execute(query)
     specs = result.scalars().all()
@@ -141,6 +153,8 @@ async def list_hardware_specs(
                 gpu_type=spec.gpu_type,
                 gpu_memory_gb=spec.gpu_memory_gb,
                 gpu_count=spec.gpu_count,
+                is_gpu=spec.is_gpu,
+                requires_gke=spec.requires_gke,
                 storage_gb_default=spec.storage_gb_default,
                 storage_gb_max=spec.storage_gb_max,
                 hourly_rate_cents=spec.hourly_rate_cents,
@@ -183,6 +197,8 @@ async def create_hardware_spec(
         gpu_type=data.gpu_type,
         gpu_memory_gb=data.gpu_memory_gb,
         gpu_count=data.gpu_count,
+        is_gpu=data.is_gpu,
+        requires_gke=data.requires_gke,
         storage_gb_default=data.storage_gb_default,
         storage_gb_max=data.storage_gb_max,
         hourly_rate_cents=data.hourly_rate_cents,
@@ -207,6 +223,8 @@ async def create_hardware_spec(
         gpu_type=spec.gpu_type,
         gpu_memory_gb=spec.gpu_memory_gb,
         gpu_count=spec.gpu_count,
+        is_gpu=spec.is_gpu,
+        requires_gke=spec.requires_gke,
         storage_gb_default=spec.storage_gb_default,
         storage_gb_max=spec.storage_gb_max,
         hourly_rate_cents=spec.hourly_rate_cents,
@@ -251,6 +269,8 @@ async def get_hardware_spec(
         gpu_type=spec.gpu_type,
         gpu_memory_gb=spec.gpu_memory_gb,
         gpu_count=spec.gpu_count,
+        is_gpu=spec.is_gpu,
+        requires_gke=spec.requires_gke,
         storage_gb_default=spec.storage_gb_default,
         storage_gb_max=spec.storage_gb_max,
         hourly_rate_cents=spec.hourly_rate_cents,
@@ -336,247 +356,3 @@ async def delete_hardware_spec(
     logger.info("Admin deleted hardware spec", admin_id=admin_id, tier=spec.tier)
 
     return {"message": "Hardware spec marked as unavailable"}
-
-
-# ==================== Seed Default Hardware Specs ====================
-
-DEFAULT_HARDWARE_SPECS = [
-    # ==================== x86_64 CPU Tiers ====================
-    # Tier names must match WorkspaceTier enum in shared/models/workspace.py
-    {
-        "tier": "x86_starter",
-        "display_name": "Starter (x86)",
-        "description": "Basic x86 development environment",
-        "architecture": "x86_64",
-        "vcpu": 2,
-        "memory_mb": 4096,
-        "gpu_type": None,
-        "gpu_memory_gb": None,
-        "gpu_count": 0,
-        "storage_gb_default": 20,
-        "storage_gb_max": 50,
-        "hourly_rate_cents": 5,
-        "is_available": True,
-        "requires_subscription": None,
-        "sort_order": 0,
-    },
-    {
-        "tier": "x86_pro",
-        "display_name": "Pro (x86)",
-        "description": "Standard x86 development environment",
-        "architecture": "x86_64",
-        "vcpu": 4,
-        "memory_mb": 8192,
-        "gpu_type": None,
-        "gpu_memory_gb": None,
-        "gpu_count": 0,
-        "storage_gb_default": 50,
-        "storage_gb_max": 100,
-        "hourly_rate_cents": 15,
-        "is_available": True,
-        "requires_subscription": "pro",
-        "sort_order": 1,
-    },
-    {
-        "tier": "x86_power",
-        "display_name": "Power (x86)",
-        "description": "High-performance x86 environment",
-        "architecture": "x86_64",
-        "vcpu": 8,
-        "memory_mb": 16384,
-        "gpu_type": None,
-        "gpu_memory_gb": None,
-        "gpu_count": 0,
-        "storage_gb_default": 100,
-        "storage_gb_max": 200,
-        "hourly_rate_cents": 35,
-        "is_available": True,
-        "requires_subscription": "team",
-        "sort_order": 2,
-    },
-    # ==================== ARM64 CPU Tiers (Default/Recommended) ====================
-    {
-        "tier": "starter",
-        "display_name": "Starter (ARM)",
-        "description": "Basic ARM development - great price/performance",
-        "architecture": "arm64",
-        "vcpu": 2,
-        "memory_mb": 4096,
-        "gpu_type": None,
-        "gpu_memory_gb": None,
-        "gpu_count": 0,
-        "storage_gb_default": 20,
-        "storage_gb_max": 50,
-        "hourly_rate_cents": 4,
-        "is_available": True,
-        "requires_subscription": None,
-        "sort_order": 10,
-    },
-    {
-        "tier": "pro",
-        "display_name": "Pro (ARM)",
-        "description": "Standard ARM development - efficient compute",
-        "architecture": "arm64",
-        "vcpu": 4,
-        "memory_mb": 8192,
-        "gpu_type": None,
-        "gpu_memory_gb": None,
-        "gpu_count": 0,
-        "storage_gb_default": 50,
-        "storage_gb_max": 100,
-        "hourly_rate_cents": 12,
-        "is_available": True,
-        "requires_subscription": "pro",
-        "sort_order": 11,
-    },
-    {
-        "tier": "power",
-        "display_name": "Power (ARM)",
-        "description": "High-performance ARM environment",
-        "architecture": "arm64",
-        "vcpu": 8,
-        "memory_mb": 16384,
-        "gpu_type": None,
-        "gpu_memory_gb": None,
-        "gpu_count": 0,
-        "storage_gb_default": 100,
-        "storage_gb_max": 200,
-        "hourly_rate_cents": 28,
-        "is_available": True,
-        "requires_subscription": "team",
-        "sort_order": 12,
-    },
-    {
-        "tier": "enterprise",
-        "display_name": "Enterprise (ARM)",
-        "description": "Maximum performance ARM environment",
-        "architecture": "arm64",
-        "vcpu": 16,
-        "memory_mb": 32768,
-        "gpu_type": None,
-        "gpu_memory_gb": None,
-        "gpu_count": 0,
-        "storage_gb_default": 200,
-        "storage_gb_max": 500,
-        "hourly_rate_cents": 60,
-        "is_available": True,
-        "requires_subscription": "team",
-        "sort_order": 13,
-    },
-    # ==================== GPU Tiers (x86 only) ====================
-    {
-        "tier": "gpu_starter",
-        "display_name": "GPU Starter",
-        "description": "NVIDIA T4 - inference and light training",
-        "architecture": "x86_64",
-        "vcpu": 4,
-        "memory_mb": 16384,
-        "gpu_type": "NVIDIA T4",
-        "gpu_memory_gb": 16,
-        "gpu_count": 1,
-        "storage_gb_default": 100,
-        "storage_gb_max": 200,
-        "hourly_rate_cents": 80,
-        "is_available": True,
-        "requires_subscription": "pro",
-        "sort_order": 20,
-    },
-    {
-        "tier": "gpu_pro",
-        "display_name": "GPU Pro",
-        "description": "NVIDIA A10G - efficient AI/ML workloads",
-        "architecture": "x86_64",
-        "vcpu": 8,
-        "memory_mb": 32768,
-        "gpu_type": "NVIDIA L4",
-        "gpu_memory_gb": 24,
-        "gpu_count": 1,
-        "storage_gb_default": 150,
-        "storage_gb_max": 300,
-        "hourly_rate_cents": 120,
-        "is_available": True,
-        "requires_subscription": "team",
-        "sort_order": 21,
-    },
-    {
-        "tier": "gpu_power",
-        "display_name": "GPU Power",
-        "description": "NVIDIA A100 - serious ML training and large models",
-        "architecture": "x86_64",
-        "vcpu": 16,
-        "memory_mb": 65536,
-        "gpu_type": "NVIDIA A100",
-        "gpu_memory_gb": 40,
-        "gpu_count": 1,
-        "storage_gb_default": 500,
-        "storage_gb_max": 1000,
-        "hourly_rate_cents": 350,
-        "is_available": True,
-        "requires_subscription": "enterprise",
-        "sort_order": 22,
-    },
-    # ==================== ML Accelerator Tiers ====================
-    {
-        "tier": "ml_inference",
-        "display_name": "ML Inference",
-        "description": "AWS Inferentia2 - cost-effective ML inference",
-        "architecture": "x86_64",
-        "vcpu": 4,
-        "memory_mb": 32768,
-        "gpu_type": "AWS Inferentia2",
-        "gpu_memory_gb": 32,
-        "gpu_count": 1,
-        "storage_gb_default": 100,
-        "storage_gb_max": 500,
-        "hourly_rate_cents": 100,
-        "is_available": True,
-        "requires_subscription": "pro",
-        "sort_order": 30,
-    },
-    {
-        "tier": "ml_training",
-        "display_name": "ML Training",
-        "description": "AWS Trainium - optimized for ML training workloads",
-        "architecture": "x86_64",
-        "vcpu": 8,
-        "memory_mb": 65536,
-        "gpu_type": "AWS Trainium",
-        "gpu_memory_gb": 32,
-        "gpu_count": 1,
-        "storage_gb_default": 500,
-        "storage_gb_max": 2000,
-        "hourly_rate_cents": 200,
-        "is_available": True,
-        "requires_subscription": "team",
-        "sort_order": 31,
-    },
-]
-
-
-@router.post("/seed")
-@limiter.limit(RATE_LIMIT_STANDARD)
-@require_admin
-async def seed_default_hardware_specs(
-    request: Request,
-    response: Response,
-    db: DbSession,
-) -> dict[str, int]:
-    """Seed default hardware specifications (admin only)."""
-    admin_id = get_admin_user_id(request)
-    created = 0
-
-    for spec_data in DEFAULT_HARDWARE_SPECS:
-        result = await db.execute(
-            select(HardwareSpec).where(HardwareSpec.tier == spec_data["tier"])
-        )
-        if result.scalar_one_or_none():
-            continue
-
-        spec = HardwareSpec(**spec_data)
-        db.add(spec)
-        created += 1
-
-    await db.commit()
-    logger.info("Admin seeded hardware specs", admin_id=admin_id, created=created)
-
-    return {"created": created, "total": len(DEFAULT_HARDWARE_SPECS)}

@@ -141,7 +141,7 @@ async def get_effective_mcp_config(
     result = await db.execute(
         select(MCPServer).where(
             MCPServer.user_id == user_id,
-            MCPServer.is_enabled == True,  # noqa: E712
+            MCPServer.is_enabled == True,
         ),
     )
     servers = result.scalars().all()

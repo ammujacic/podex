@@ -192,7 +192,7 @@ export interface FileChange {
 
 /**
  * LLM Provider types:
- * - 'podex': Podex Native (AWS Bedrock) - default, works out of the box
+ * - 'podex': Podex Native (Google Vertex AI) - default, works out of the box
  * - Other providers require user API keys
  */
 export type LLMProvider = 'podex' | 'anthropic' | 'openai' | 'google' | 'ollama' | 'lmstudio';
@@ -275,7 +275,7 @@ export interface AttachmentFile {
 }
 
 export type LLMModel =
-  // Podex Native (AWS Bedrock)
+  // Podex Native (Vertex AI)
   | 'anthropic.claude-opus-4-5-20251101-v1:0'
   | 'anthropic.claude-opus-4-1-20250805-v1:0'
   | 'anthropic.claude-sonnet-4-5-20250929-v1:0'

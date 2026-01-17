@@ -150,7 +150,7 @@ class TestSettingsComputeMode:
         settings = Settings(compute_mode="docker")
         assert settings.compute_mode == "docker"
 
-    def test_settings_compute_mode_aws(self) -> None:
-        """Test settings for aws compute mode."""
-        settings = Settings(compute_mode="aws")
-        assert settings.compute_mode == "aws"
+    def test_settings_compute_mode_gcp(self) -> None:
+        """Test settings for gcp compute mode."""
+        settings = Settings(compute_mode="gcp")
+        assert settings.compute_mode == "gcp"

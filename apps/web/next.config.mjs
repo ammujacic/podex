@@ -1,4 +1,5 @@
 import { withSentryConfig } from '@sentry/nextjs';
+import withSerwist from '@serwist/next';
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -34,6 +35,9 @@ const nextConfig = {
       path: {
         browser: './empty.ts',
       },
+      // Redirect monaco-editor imports to monaco-vscode-editor-api
+      'monaco-editor': '@codingame/monaco-vscode-editor-api',
+      'monaco-editor/esm/vs/editor/editor.api': '@codingame/monaco-vscode-editor-api',
     },
   },
 };
@@ -82,5 +86,12 @@ const sentryWebpackPluginOptions = {
   release: process.env.NEXT_PUBLIC_SENTRY_RELEASE || 'podex-web@0.1.0',
 };
 
-// Wrap the config with Sentry
-export default withSentryConfig(nextConfig, sentryWebpackPluginOptions);
+// Serwist PWA configuration
+const withSerwistConfig = withSerwist({
+  swSrc: 'src/app/sw.ts',
+  swDest: 'public/sw.js',
+  disable: process.env.NODE_ENV !== 'production',
+});
+
+// Wrap the config: Serwist -> Sentry
+export default withSentryConfig(withSerwistConfig(nextConfig), sentryWebpackPluginOptions);

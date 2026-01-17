@@ -2,8 +2,6 @@
 
 from datetime import UTC, datetime
 
-import pytest
-
 from podex_shared.models.session import (
     AgentLayout,
     AgentState,

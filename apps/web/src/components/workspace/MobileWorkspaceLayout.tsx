@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, Component, type ReactNode } from 'react';
 import { useUIStore } from '@/stores/ui';
 import { useSessionStore } from '@/stores/session';
 import { MobileWorkspaceHeader } from './MobileWorkspaceHeader';
@@ -9,6 +9,7 @@ import { MobileAgentView } from './MobileAgentView';
 import { MobileWidgetSheet, type WidgetId } from './MobileWidgetSheet';
 import { MobileFileViewerSheet } from './MobileFileViewerSheet';
 import {
+  Bug,
   FolderTree,
   GitBranch,
   Search,
@@ -17,7 +18,71 @@ import {
   Puzzle,
   BarChart3,
   Terminal,
+  RefreshCw,
 } from 'lucide-react';
+
+// Error boundary for agent view to prevent crashes from taking down the whole layout
+interface AgentViewErrorBoundaryProps {
+  children: ReactNode;
+  agentName?: string;
+  onReset?: () => void;
+}
+
+interface AgentViewErrorBoundaryState {
+  hasError: boolean;
+  error?: Error;
+}
+
+class AgentViewErrorBoundary extends Component<
+  AgentViewErrorBoundaryProps,
+  AgentViewErrorBoundaryState
+> {
+  constructor(props: AgentViewErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(error: Error): AgentViewErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error('AgentView error:', error, errorInfo);
+  }
+
+  handleReset = () => {
+    this.setState({ hasError: false, error: undefined });
+    this.props.onReset?.();
+  };
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full p-6 text-center">
+          <AlertCircle className="h-12 w-12 text-status-error mb-4" />
+          <h3 className="text-lg font-semibold text-text-primary mb-2">
+            {this.props.agentName
+              ? `${this.props.agentName} encountered an error`
+              : 'Something went wrong'}
+          </h3>
+          <p className="text-sm text-text-secondary mb-4 max-w-xs">
+            {this.state.error?.message ||
+              'An unexpected error occurred while rendering this agent.'}
+          </p>
+          <button
+            onClick={this.handleReset}
+            className="flex items-center gap-2 px-4 py-2 bg-accent-primary text-text-inverse rounded-lg hover:bg-accent-primary/90 transition-colors"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Try Again
+          </button>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 // Lazy imports for widget content
 import { FilesPanel } from './FilesPanel';
@@ -28,6 +93,7 @@ import { AgentsPanel } from './AgentsPanel';
 import { MCPPanel } from './MCPPanel';
 import { UsageSidebarPanel } from './UsageSidebarPanel';
 import { TerminalPanel } from './TerminalPanel';
+import { SentryPanel } from './SentryPanel';
 
 interface MobileWorkspaceLayoutProps {
   sessionId: string;
@@ -144,6 +210,12 @@ export function MobileWorkspaceLayout({ sessionId }: MobileWorkspaceLayoutProps)
         </div>
       ),
     },
+    sentry: {
+      title: 'Sentry',
+      icon: <Bug className="h-5 w-5" />,
+      height: 'full',
+      component: <SentryPanel sessionId={sessionId} />,
+    },
   };
 
   const activeWidget = mobileActiveWidget as WidgetId | null;
@@ -171,12 +243,18 @@ export function MobileWorkspaceLayout({ sessionId }: MobileWorkspaceLayoutProps)
             onAddAgent={handleAddAgent}
           />
         ) : activeAgentId ? (
-          <MobileAgentView
-            sessionId={sessionId}
-            agentId={activeAgentId}
-            onSwipeLeft={handleSwipeLeft}
-            onSwipeRight={handleSwipeRight}
-          />
+          <AgentViewErrorBoundary
+            key={activeAgentId}
+            agentName={currentAgent?.name}
+            onReset={() => setActiveAgentId(activeAgentId)}
+          >
+            <MobileAgentView
+              sessionId={sessionId}
+              agentId={activeAgentId}
+              onSwipeLeft={handleSwipeLeft}
+              onSwipeRight={handleSwipeRight}
+            />
+          </AgentViewErrorBoundary>
         ) : (
           <div className="flex items-center justify-center h-full">
             <p className="text-text-secondary">No agent selected</p>

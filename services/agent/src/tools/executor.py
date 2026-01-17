@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import fnmatch
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -119,6 +118,17 @@ from src.tools.orchestrator_tools import (  # noqa: E402
     get_task_status,
     synthesize_results,
     wait_for_tasks,
+)
+from src.tools.skill_tools import (  # noqa: E402
+    CreateSkillConfig,
+    create_skill,
+    delete_skill,
+    execute_skill,
+    get_skill,
+    get_skill_stats,
+    list_skills,
+    match_skills,
+    recommend_skills,
 )
 from src.tools.task_tools import TaskConfig, create_task  # noqa: E402
 from src.tools.vision_tools import analyze_screenshot, design_to_code  # noqa: E402
@@ -268,18 +278,22 @@ class ToolExecutor:
         Returns:
             PermissionResult indicating if action is allowed.
         """
+        # SECURITY: Deploy tools should also be subject to mode restrictions
+        # as they can execute arbitrary shell commands
+        DEPLOY_TOOLS = {"deploy_preview", "run_e2e_tests"}
+
         # Plan mode: only read tools allowed
         if self.agent_mode == AgentMode.PLAN:
-            if tool_name in WRITE_TOOLS or tool_name in COMMAND_TOOLS:
+            if tool_name in WRITE_TOOLS or tool_name in COMMAND_TOOLS or tool_name in DEPLOY_TOOLS:
                 return PermissionResult(
                     allowed=False,
                     error=f"Tool '{tool_name}' not allowed in Plan mode (read-only)",
                 )
             return PermissionResult(allowed=True)
 
-        # Ask mode: everything needs approval for writes/commands
+        # Ask mode: everything needs approval for writes/commands/deploys
         if self.agent_mode == AgentMode.ASK:
-            if tool_name in WRITE_TOOLS or tool_name in COMMAND_TOOLS:
+            if tool_name in WRITE_TOOLS or tool_name in COMMAND_TOOLS or tool_name in DEPLOY_TOOLS:
                 return PermissionResult(
                     allowed=True,
                     requires_approval=True,
@@ -287,7 +301,7 @@ class ToolExecutor:
                 )
             return PermissionResult(allowed=True)
 
-        # Auto mode: writes allowed, commands need allowlist or approval
+        # Auto mode: writes allowed, commands need allowlist or approval, deploys need approval
         if self.agent_mode == AgentMode.AUTO:
             if tool_name in COMMAND_TOOLS:
                 command = arguments.get("command", "")
@@ -298,6 +312,13 @@ class ToolExecutor:
                     allowed=True,
                     requires_approval=True,
                     can_add_to_allowlist=True,
+                )
+            # Deploy tools always need approval in Auto mode (they execute shell commands)
+            if tool_name in DEPLOY_TOOLS:
+                return PermissionResult(
+                    allowed=True,
+                    requires_approval=True,
+                    can_add_to_allowlist=False,
                 )
             return PermissionResult(allowed=True)
 
@@ -311,6 +332,11 @@ class ToolExecutor:
     def _is_command_allowed(self, command: str) -> bool:
         """Check if command matches any pattern in the allowlist.
 
+        SECURITY: Uses strict matching to prevent command injection via pattern abuse.
+        - Exact matches only for full commands
+        - Base command matching with strict prefix validation
+        - NO fnmatch glob patterns to prevent "npm*" matching "npm rm -rf /"
+
         Args:
             command: The command to check.
 
@@ -322,18 +348,60 @@ class ToolExecutor:
         if not self.command_allowlist:
             return False
 
-        # Get base command (first word)
-        base_cmd = command.split()[0] if command else ""
+        # Normalize command - strip whitespace
+        command = command.strip()
+        if not command:
+            return False
+
+        # Get base command (first word) for matching
+        parts = command.split()
+        base_cmd = parts[0] if parts else ""
 
         for pattern in self.command_allowlist:
-            # Check full command match
-            if fnmatch.fnmatch(command, pattern):
+            pattern = pattern.strip()
+            if not pattern:
+                continue
+
+            # SECURITY: Reject glob patterns entirely - they're too dangerous
+            # Patterns like "npm*" or "*" could match malicious commands
+            if any(c in pattern for c in "*?[]"):
+                logger.warning(
+                    "Glob pattern in allowlist rejected for security",
+                    pattern=pattern,
+                    command=command,
+                )
+                continue
+
+            # Exact match of full command
+            if command == pattern:
                 return True
-            # Check base command match
-            if fnmatch.fnmatch(base_cmd, pattern):
+
+            # Exact match of base command only
+            # This allows "npm" to match "npm install" but NOT "npm && rm -rf /"
+            if base_cmd == pattern:
+                # Additional safety: ensure no shell metacharacters in the command
+                dangerous_chars = {"&&", "||", ";", "|", "`", "$(", "${", "<(", ">("}
+                if any(dc in command for dc in dangerous_chars):
+                    logger.warning(
+                        "Command with shell metacharacters blocked despite base match",
+                        pattern=pattern,
+                        command=command,
+                    )
+                    return False
                 return True
-            # Exact match
-            if pattern in (command, base_cmd):
+
+            # Allow "npm install" pattern to match "npm install lodash"
+            # but require exact prefix match (no partial word matching)
+            if command.startswith(pattern + " ") or command == pattern:
+                # Additional safety: ensure no shell metacharacters
+                dangerous_chars = {"&&", "||", ";", "|", "`", "$(", "${", "<(", ">("}
+                if any(dc in command for dc in dangerous_chars):
+                    logger.warning(
+                        "Command with shell metacharacters blocked despite prefix match",
+                        pattern=pattern,
+                        command=command,
+                    )
+                    return False
                 return True
 
         return False
@@ -492,6 +560,15 @@ class ToolExecutor:
             "get_preview_status": self._handle_deploy_tools,
             "stop_preview": self._handle_deploy_tools,
             "run_e2e_tests": self._handle_deploy_tools,
+            # Skill tools
+            "list_skills": self._handle_skill_tools,
+            "get_skill": self._handle_skill_tools,
+            "match_skills": self._handle_skill_tools,
+            "execute_skill": self._handle_skill_tools,
+            "create_skill": self._handle_skill_tools,
+            "delete_skill": self._handle_skill_tools,
+            "get_skill_stats": self._handle_skill_tools,
+            "recommend_skills": self._handle_skill_tools,
         }
 
         handler = handlers.get(tool_name)
@@ -870,6 +947,61 @@ class ToolExecutor:
             result = await run_e2e_tests(e2e_config)
             return cast("dict[str, Any]", json.loads(result))
         return {"success": False, "error": f"Unknown deploy tool: {tool_name}"}
+
+    async def _handle_skill_tools(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Handle skill management tools."""
+        if tool_name == "list_skills":
+            result = await list_skills(
+                tags=arguments.get("tags"),
+                author=arguments.get("author"),
+            )
+            return cast("dict[str, Any]", json.loads(result))
+        if tool_name == "get_skill":
+            result = await get_skill(name=arguments.get("name", ""))
+            return cast("dict[str, Any]", json.loads(result))
+        if tool_name == "match_skills":
+            result = await match_skills(
+                task=arguments.get("task", ""),
+                min_score=arguments.get("min_score", 0.3),
+                limit=arguments.get("limit", 5),
+            )
+            return cast("dict[str, Any]", json.loads(result))
+        if tool_name == "execute_skill":
+            result = await execute_skill(
+                skill_name=arguments.get("skill_name", ""),
+                context=arguments.get("context"),
+                stop_on_failure=arguments.get("stop_on_failure", True),
+            )
+            return cast("dict[str, Any]", json.loads(result))
+        if tool_name == "create_skill":
+            config = CreateSkillConfig(
+                name=arguments.get("name", ""),
+                description=arguments.get("description", ""),
+                steps=arguments.get("steps", []),
+                tags=arguments.get("tags", []),
+                triggers=arguments.get("triggers", []),
+                save=arguments.get("save", True),
+            )
+            result = await create_skill(config)
+            return cast("dict[str, Any]", json.loads(result))
+        if tool_name == "delete_skill":
+            result = await delete_skill(name=arguments.get("name", ""))
+            return cast("dict[str, Any]", json.loads(result))
+        if tool_name == "get_skill_stats":
+            result = await get_skill_stats(name=str(arguments.get("name", "")))
+            return cast("dict[str, Any]", json.loads(result))
+        if tool_name == "recommend_skills":
+            result = await recommend_skills(
+                agent_role=str(arguments.get("agent_role", "")),
+                recent_tasks=arguments.get("recent_tasks"),
+                limit=arguments.get("limit", 3),
+            )
+            return cast("dict[str, Any]", json.loads(result))
+        return {"success": False, "error": f"Unknown skill tool: {tool_name}"}
 
     def _make_mcp_error(self, error_type: str, message: str) -> dict[str, Any]:
         """Create a standardized MCP error response.

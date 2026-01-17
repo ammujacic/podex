@@ -1,6 +1,5 @@
 """Comprehensive tests for compute service configuration."""
 
-import pytest
 
 from src.config import Settings
 
@@ -32,25 +31,25 @@ class TestSettingsDefaults:
         assert settings.workspace_image == "podex/workspace:latest"
         assert settings.docker_network == "podex-dev"
 
-    def test_aws_settings_defaults(self) -> None:
-        """Test default AWS settings."""
+    def test_gcp_settings_defaults(self) -> None:
+        """Test default GCP settings."""
         settings = Settings()
-        assert settings.aws_region == "us-east-1"
-        assert settings.aws_endpoint is None
-        assert settings.ecs_cluster_name == "podex-dev"
-        assert settings.ecs_task_definition == "podex-workspace-x86-dev"
+        assert settings.gcp_region == "us-east5"
+        assert settings.gcp_project_id is None
+        assert settings.gke_cluster_name == "podex-workspaces"
+        assert settings.gke_namespace == "workspaces"
 
     def test_redis_settings_default(self) -> None:
         """Test default Redis settings."""
         settings = Settings()
         assert settings.redis_url == "redis://localhost:6379"
 
-    def test_s3_settings_defaults(self) -> None:
-        """Test default S3 settings."""
+    def test_gcs_settings_defaults(self) -> None:
+        """Test default GCS settings."""
         settings = Settings()
-        assert settings.s3_bucket == "podex-workspaces"
-        assert settings.s3_prefix == "workspaces"
-        assert settings.s3_sync_interval == 30
+        assert settings.gcs_bucket == "podex-workspaces"
+        assert settings.gcs_prefix == "workspaces"
+        assert settings.gcs_sync_interval == 30
 
     def test_tier_cpu_defaults(self) -> None:
         """Test default tier CPU settings."""
@@ -79,8 +78,8 @@ class TestSettingsCustom:
 
     def test_custom_compute_mode(self) -> None:
         """Test custom compute mode."""
-        settings = Settings(compute_mode="aws")
-        assert settings.compute_mode == "aws"
+        settings = Settings(compute_mode="gcp")
+        assert settings.compute_mode == "gcp"
 
     def test_custom_docker_settings(self) -> None:
         """Test custom Docker settings."""
@@ -91,32 +90,14 @@ class TestSettingsCustom:
         assert settings.docker_host == "tcp://localhost:2375"
         assert settings.max_workspaces == 20
 
-    def test_custom_aws_endpoint(self) -> None:
-        """Test custom AWS endpoint (LocalStack)."""
+    def test_custom_gcp_settings(self) -> None:
+        """Test custom GCP settings."""
         settings = Settings(
-            aws_endpoint="http://localhost:4566",
-            aws_region="us-west-2",
+            gcp_project_id="my-project",
+            gcp_region="us-central1",
         )
-        assert settings.aws_endpoint == "http://localhost:4566"
-        assert settings.aws_region == "us-west-2"
-
-
-class TestSettingsGPU:
-    """Tests for GPU capacity provider settings."""
-
-    def test_gpu_capacity_providers(self) -> None:
-        """Test GPU capacity provider defaults."""
-        settings = Settings()
-        assert settings.gpu_capacity_provider_t4 == "gpu-t4-provider"
-        assert settings.gpu_capacity_provider_a10g == "gpu-a10g-provider"
-        assert settings.gpu_capacity_provider_a100 == "gpu-a100-provider"
-        assert settings.gpu_capacity_provider_arm_t4g == "gpu-arm-t4g-provider"
-
-    def test_ml_capacity_providers(self) -> None:
-        """Test ML accelerator capacity provider defaults."""
-        settings = Settings()
-        assert settings.ml_capacity_provider_inferentia2 == "ml-inferentia2-provider"
-        assert settings.ml_capacity_provider_trainium == "ml-trainium-provider"
+        assert settings.gcp_project_id == "my-project"
+        assert settings.gcp_region == "us-central1"
 
 
 class TestSettingsSentry:

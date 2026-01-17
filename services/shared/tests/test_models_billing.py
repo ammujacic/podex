@@ -1,9 +1,7 @@
 """Comprehensive tests for billing models."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
-
-import pytest
 
 from podex_shared.models.billing import (
     MODEL_PRICING,
@@ -18,7 +16,6 @@ from podex_shared.models.billing import (
     ModelPricing,
     PurchaseCreditsRequest,
     QuotaInfo,
-    SubscriptionInfo,
     SubscriptionPlanInfo,
     SubscriptionPlanType,
     SubscriptionStatus,
@@ -155,7 +152,7 @@ class TestUsageRecordInfo:
 
     def test_usage_record_info(self) -> None:
         """Test creating UsageRecordInfo."""
-        now = datetime.utcnow()
+        now = datetime.now()
         record = UsageRecordInfo(
             id="record-123",
             user_id="user-456",
@@ -176,7 +173,7 @@ class TestUsageSummary:
 
     def test_usage_summary_defaults(self) -> None:
         """Test UsageSummary default values."""
-        now = datetime.utcnow()
+        now = datetime.now()
         summary = UsageSummary(
             period_start=now,
             period_end=now,
@@ -221,7 +218,7 @@ class TestCreditBalanceInfo:
 
     def test_credit_balance_info(self) -> None:
         """Test creating CreditBalanceInfo."""
-        now = datetime.utcnow()
+        now = datetime.now()
         balance = CreditBalanceInfo(
             user_id="user-123",
             balance=Decimal("100.00"),
@@ -238,7 +235,7 @@ class TestCreditTransactionInfo:
 
     def test_credit_transaction_info(self) -> None:
         """Test creating CreditTransactionInfo."""
-        now = datetime.utcnow()
+        now = datetime.now()
         transaction = CreditTransactionInfo(
             id="tx-123",
             user_id="user-456",
@@ -257,7 +254,7 @@ class TestInvoiceInfo:
 
     def test_invoice_info(self) -> None:
         """Test creating InvoiceInfo."""
-        now = datetime.utcnow()
+        now = datetime.now()
         invoice = InvoiceInfo(
             id="inv-123",
             user_id="user-456",
@@ -279,7 +276,7 @@ class TestBillingEventInfo:
 
     def test_billing_event_info(self) -> None:
         """Test creating BillingEventInfo."""
-        now = datetime.utcnow()
+        now = datetime.now()
         event = BillingEventInfo(
             id="event-123",
             user_id="user-456",

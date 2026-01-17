@@ -86,7 +86,7 @@ async def get_public_settings(
     _ = request  # Required for rate limiter
     result = await db.execute(
         select(PlatformSetting)
-        .where(PlatformSetting.is_public == True)  # noqa: E712
+        .where(PlatformSetting.is_public == True)
         .order_by(PlatformSetting.category, PlatformSetting.key)
     )
     settings = result.scalars().all()
@@ -113,7 +113,7 @@ async def get_public_setting(
     result = await db.execute(
         select(PlatformSetting)
         .where(PlatformSetting.key == key)
-        .where(PlatformSetting.is_public == True)  # noqa: E712
+        .where(PlatformSetting.is_public == True)
     )
     setting = result.scalar_one_or_none()
 
@@ -505,141 +505,3 @@ async def reset_setting_to_default(
         updated_at=setting.updated_at,
         updated_by=str(setting.updated_by) if setting.updated_by else None,
     )
-
-
-# ==================== Seed Default Settings ====================
-
-DEFAULT_SETTINGS = [
-    {
-        "key": "agent_defaults",
-        "value": {
-            "architect": {"model": "claude-3-opus", "temperature": 0.7, "max_tokens": 8192},
-            "coder": {"model": "claude-3-sonnet", "temperature": 0.3, "max_tokens": 4096},
-            "reviewer": {"model": "claude-3-sonnet", "temperature": 0.5, "max_tokens": 4096},
-            "tester": {"model": "claude-3-haiku", "temperature": 0.3, "max_tokens": 2048},
-        },
-        "description": "Default AI agent model configurations",
-        "category": "agents",
-        "is_public": False,
-    },
-    {
-        "key": "model_providers",
-        "value": {
-            "providers": [
-                {
-                    "id": "anthropic",
-                    "name": "Anthropic",
-                    "models": ["claude-3-opus", "claude-3-sonnet", "claude-3-haiku"],
-                },
-                {
-                    "id": "openai",
-                    "name": "OpenAI",
-                    "models": ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"],
-                },
-                {
-                    "id": "google",
-                    "name": "Google",
-                    "models": ["gemini-1.5-pro", "gemini-1.5-flash"],
-                },
-                {
-                    "id": "ollama",
-                    "name": "Ollama (Local)",
-                    "models": ["llama3", "codellama", "mistral"],
-                },
-            ]
-        },
-        "description": "Available LLM providers and their models",
-        "category": "agents",
-        "is_public": True,
-    },
-    {
-        "key": "voice_defaults",
-        "value": {
-            "tts_enabled": False,
-            "auto_play": False,
-            "voice_id": None,
-            "speed": 1.0,
-            "language": "en-US",
-        },
-        "description": "Default text-to-speech settings",
-        "category": "voice",
-        "is_public": True,
-    },
-    {
-        "key": "editor_defaults",
-        "value": {
-            "key_mode": "default",
-            "font_size": 13,
-            "tab_size": 2,
-            "word_wrap": "off",
-            "minimap": False,
-            "line_numbers": True,
-            "bracket_pair_colorization": True,
-        },
-        "description": "Default code editor settings",
-        "category": "editor",
-        "is_public": True,
-    },
-    {
-        "key": "feature_flags",
-        "value": {
-            "voice_enabled": True,
-            "collaboration_enabled": True,
-            "custom_agents_enabled": True,
-            "git_integration_enabled": True,
-            "planning_mode_enabled": True,
-            "vision_enabled": True,
-        },
-        "description": "Platform-wide feature toggles",
-        "category": "features",
-        "is_public": True,
-    },
-    {
-        "key": "platform_limits",
-        "value": {
-            "max_concurrent_agents": 3,
-            "max_sessions_per_user": 10,
-            "max_file_size_mb": 50,
-            "max_upload_size_mb": 100,
-        },
-        "description": "Global platform constraints and limits",
-        "category": "limits",
-        "is_public": True,
-    },
-]
-
-
-@router.post("/seed")
-@limiter.limit(RATE_LIMIT_STANDARD)
-@require_admin
-async def seed_default_settings(
-    request: Request,
-    response: Response,
-    db: DbSession,
-) -> dict[str, int]:
-    """Seed default platform settings (admin only)."""
-    admin_id = get_admin_user_id(request)
-    created = 0
-
-    for setting_data in DEFAULT_SETTINGS:
-        result = await db.execute(
-            select(PlatformSetting).where(PlatformSetting.key == setting_data["key"])
-        )
-        if result.scalar_one_or_none():
-            continue
-
-        setting = PlatformSetting(
-            key=setting_data["key"],
-            value=setting_data["value"],
-            description=setting_data["description"],
-            category=setting_data["category"],
-            is_public=setting_data["is_public"],
-            updated_by=admin_id,
-        )
-        db.add(setting)
-        created += 1
-
-    await db.commit()
-    logger.info("Admin seeded platform settings", admin_id=admin_id, created=created)
-
-    return {"created": created, "total": len(DEFAULT_SETTINGS)}

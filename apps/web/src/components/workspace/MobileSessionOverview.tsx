@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react';
 import {
+  Bell,
   Bot,
   Plus,
   MessageSquare,
@@ -14,6 +15,14 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSessionStore, type Agent } from '@/stores/session';
+import { useAttentionStore } from '@/stores/attention';
+import {
+  getAgentColor,
+  getAttentionTypeStyles,
+  getAttentionTypeLabel,
+  formatTime,
+} from '@/lib/ui-utils';
+import { AvatarAttentionBadge } from '@/components/ui/AttentionBadge';
 
 interface MobileSessionOverviewProps {
   sessionId: string;
@@ -29,27 +38,16 @@ export function MobileSessionOverview({
   const session = useSessionStore((state) => state.sessions[sessionId]);
   const streamingMessages = useSessionStore((state) => state.streamingMessages);
 
+  // Attention state
+  const { getUnreadCountForAgent, getHighestPriorityAttention, hasUnreadForAgent } =
+    useAttentionStore();
+
   const agents = useMemo(() => session?.agents ?? [], [session?.agents]);
 
   const isAgentProcessing = (agentId: string) => {
     return Object.values(streamingMessages).some(
       (msg) => msg.agentId === agentId && msg.isStreaming
     );
-  };
-
-  const getAgentColor = (agent: Agent) => {
-    if (agent.color) return agent.color;
-    const colors = [
-      '#8B5CF6', // Purple
-      '#3B82F6', // Blue
-      '#10B981', // Green
-      '#F59E0B', // Amber
-      '#EF4444', // Red
-      '#EC4899', // Pink
-      '#06B6D4', // Cyan
-    ];
-    const index = agent.name.charCodeAt(0) % colors.length;
-    return colors[index];
   };
 
   const getLastMessagePreview = (agent: Agent) => {
@@ -63,11 +61,7 @@ export function MobileSessionOverview({
   const getLastMessageTime = (agent: Agent) => {
     const lastMessage = agent.messages?.[agent.messages.length - 1];
     if (!lastMessage?.timestamp) return null;
-    const date =
-      typeof lastMessage.timestamp === 'string'
-        ? new Date(lastMessage.timestamp)
-        : lastMessage.timestamp;
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return formatTime(lastMessage.timestamp);
   };
 
   return (
@@ -109,13 +103,22 @@ export function MobileSessionOverview({
 
       {/* Agents list */}
       <div className="px-4 py-3" data-tour="agents-list">
-        <h2 className="text-xs font-semibold text-text-tertiary uppercase tracking-wide mb-3">
+        <h2
+          id="agents-list-heading"
+          className="text-xs font-semibold text-text-tertiary uppercase tracking-wide mb-3"
+        >
           Active Agents ({agents.length})
         </h2>
 
         {agents.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12 text-center">
-            <div className="w-16 h-16 rounded-full bg-surface-hover flex items-center justify-center mb-4">
+          <div
+            className="flex flex-col items-center justify-center py-12 text-center"
+            role="status"
+          >
+            <div
+              className="w-16 h-16 rounded-full bg-surface-hover flex items-center justify-center mb-4"
+              aria-hidden="true"
+            >
               <Bot className="h-8 w-8 text-text-tertiary" />
             </div>
             <h3 className="text-lg font-semibold text-text-primary mb-2">No agents yet</h3>
@@ -125,80 +128,120 @@ export function MobileSessionOverview({
             <button
               onClick={onAddAgent}
               className={cn(
-                'flex items-center gap-2 px-4 py-2 rounded-lg',
+                'flex items-center gap-2 px-4 py-2 rounded-lg min-h-[44px]',
                 'bg-accent-primary text-text-inverse',
                 'active:bg-accent-primary/90',
                 'transition-colors touch-manipulation'
               )}
             >
-              <Plus className="h-4 w-4" />
+              <Plus className="h-4 w-4" aria-hidden="true" />
               <span className="font-medium">Create Agent</span>
             </button>
           </div>
         ) : (
-          <div className="space-y-2">
+          <ul className="space-y-2" role="list" aria-labelledby="agents-list-heading">
             {agents.map((agent) => {
               const isProcessing = isAgentProcessing(agent.id);
               const color = getAgentColor(agent);
               const lastMessageTime = getLastMessageTime(agent);
               const messageCount = agent.messages?.length ?? 0;
 
+              // Attention state for this agent
+              const agentUnreadCount = getUnreadCountForAgent(sessionId, agent.id);
+              const agentHasUnread = hasUnreadForAgent(sessionId, agent.id);
+              const agentHighestPriority = getHighestPriorityAttention(sessionId, agent.id);
+              const attentionStyles = agentHighestPriority
+                ? getAttentionTypeStyles(agentHighestPriority.type)
+                : null;
+
               return (
-                <button
-                  key={agent.id}
-                  onClick={() => onAgentSelect(agent.id)}
-                  className={cn(
-                    'w-full flex items-center gap-3 p-4 rounded-xl',
-                    'bg-surface-hover border border-border-subtle',
-                    'active:bg-surface-active',
-                    'transition-colors touch-manipulation text-left'
-                  )}
-                >
-                  {/* Agent avatar */}
-                  <div
-                    className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0"
-                    style={{ backgroundColor: `${color}20` }}
-                  >
-                    {isProcessing ? (
-                      <Loader2 className="h-6 w-6 animate-spin" style={{ color }} />
-                    ) : (
-                      <Bot className="h-6 w-6" style={{ color }} />
+                <li key={agent.id}>
+                  <button
+                    onClick={() => onAgentSelect(agent.id)}
+                    aria-label={`${agent.name}${isProcessing ? ', working' : ''}${agentHasUnread ? `, ${agentUnreadCount} unread notifications` : ''}`}
+                    className={cn(
+                      'w-full flex items-center gap-3 p-4 rounded-xl min-h-[72px]',
+                      'bg-surface-hover border border-border-subtle',
+                      'active:bg-surface-active',
+                      'transition-colors touch-manipulation text-left',
+                      'focus:outline-none focus:ring-2 focus:ring-accent-primary focus:ring-offset-1',
+                      // Highlight if has unread attention
+                      agentHasUnread && attentionStyles && `ring-1 ${attentionStyles.ring}`
                     )}
-                  </div>
-
-                  {/* Agent info */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-semibold text-text-primary truncate">{agent.name}</h3>
-                      {isProcessing && (
-                        <span className="text-2xs px-1.5 py-0.5 rounded bg-accent-primary/10 text-accent-primary font-medium">
-                          Working
-                        </span>
+                  >
+                    {/* Agent avatar */}
+                    <div
+                      className="relative w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0"
+                      style={{ backgroundColor: `${color}20` }}
+                      aria-hidden="true"
+                    >
+                      {isProcessing ? (
+                        <Loader2 className="h-6 w-6 animate-spin" style={{ color }} />
+                      ) : (
+                        <Bot className="h-6 w-6" style={{ color }} />
+                      )}
+                      {/* Unread attention badge on avatar */}
+                      {agentHasUnread && (
+                        <AvatarAttentionBadge count={agentUnreadCount} hasUnread={agentHasUnread} />
                       )}
                     </div>
-                    <p className="text-sm text-text-secondary truncate mt-0.5">
-                      {getLastMessagePreview(agent)}
-                    </p>
-                    <div className="flex items-center gap-3 mt-1 text-xs text-text-tertiary">
-                      <span className="flex items-center gap-1">
-                        <MessageSquare className="h-3 w-3" />
-                        {messageCount} {messageCount === 1 ? 'message' : 'messages'}
-                      </span>
-                      {lastMessageTime && (
+
+                    {/* Agent info */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-semibold text-text-primary truncate">{agent.name}</h3>
+                        {isProcessing && (
+                          <span
+                            className="text-2xs px-1.5 py-0.5 rounded bg-accent-primary/10 text-accent-primary font-medium"
+                            role="status"
+                          >
+                            Working
+                          </span>
+                        )}
+                        {/* Attention type badge */}
+                        {agentHighestPriority && attentionStyles && (
+                          <span
+                            className={cn(
+                              'text-2xs px-1.5 py-0.5 rounded font-medium flex items-center gap-1',
+                              attentionStyles.bg.replace('/20', '/10'),
+                              attentionStyles.text
+                            )}
+                            role="status"
+                          >
+                            <Bell className="h-2.5 w-2.5" aria-hidden="true" />
+                            {getAttentionTypeLabel(agentHighestPriority.type)}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-sm text-text-secondary truncate mt-0.5">
+                        {getLastMessagePreview(agent)}
+                      </p>
+                      <div className="flex items-center gap-3 mt-1 text-xs text-text-tertiary">
                         <span className="flex items-center gap-1">
-                          <Clock className="h-3 w-3" />
-                          {lastMessageTime}
+                          <MessageSquare className="h-3 w-3" aria-hidden="true" />
+                          <span>
+                            {messageCount} {messageCount === 1 ? 'message' : 'messages'}
+                          </span>
                         </span>
-                      )}
+                        {lastMessageTime && (
+                          <span className="flex items-center gap-1">
+                            <Clock className="h-3 w-3" aria-hidden="true" />
+                            <time>{lastMessageTime}</time>
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  </div>
 
-                  {/* Chevron */}
-                  <ChevronRight className="h-5 w-5 text-text-tertiary flex-shrink-0" />
-                </button>
+                    {/* Chevron */}
+                    <ChevronRight
+                      className="h-5 w-5 text-text-tertiary flex-shrink-0"
+                      aria-hidden="true"
+                    />
+                  </button>
+                </li>
               );
             })}
-          </div>
+          </ul>
         )}
       </div>
 

@@ -6,8 +6,9 @@ import time
 from typing import Annotated, Any, Literal
 
 import structlog
-from anthropic import AsyncAnthropic
+from anthropic import AsyncAnthropic, AsyncAnthropicVertex
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 from src.config import settings
@@ -91,13 +92,172 @@ class BugDetectionResponse(BaseModel):
 
 
 # ============================================================================
-# LLM Client
+# LLM Clients - Multi-provider support
 # ============================================================================
 
 
-def get_anthropic_client() -> AsyncAnthropic:
-    """Get Anthropic client for completions."""
-    return AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+class CompletionProvider:
+    """Multi-provider LLM interface for code completions."""
+
+    _anthropic_client: AsyncAnthropic | None = None
+    _ollama_client: AsyncOpenAI | None = None
+    _vertex_client: AsyncAnthropicVertex | None = None
+
+    @classmethod
+    def get_anthropic_client(cls) -> AsyncAnthropic:
+        """Get or create Anthropic client."""
+        if cls._anthropic_client is None:
+            cls._anthropic_client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        return cls._anthropic_client
+
+    @classmethod
+    def get_ollama_client(cls) -> AsyncOpenAI:
+        """Get or create Ollama client (OpenAI-compatible API)."""
+        if cls._ollama_client is None:
+            cls._ollama_client = AsyncOpenAI(
+                base_url=f"{settings.OLLAMA_URL}/v1",
+                api_key="ollama",  # Ollama doesn't require a real API key
+            )
+        return cls._ollama_client
+
+    @classmethod
+    def get_vertex_client(cls) -> AsyncAnthropicVertex:
+        """Get or create Vertex AI client for Claude models."""
+        if cls._vertex_client is None:
+            if not settings.GCP_PROJECT_ID:
+
+                class GCPProjectIDRequiredError(ValueError):
+                    def __init__(self) -> None:
+                        super().__init__("GCP_PROJECT_ID required for Vertex AI")
+
+                raise GCPProjectIDRequiredError
+            cls._vertex_client = AsyncAnthropicVertex(
+                project_id=settings.GCP_PROJECT_ID,
+                region=settings.GCP_REGION,
+            )
+        return cls._vertex_client
+
+    @classmethod
+    async def complete(
+        cls,
+        prompt: str,
+        system_prompt: str,
+        max_tokens: int = 128,
+        temperature: float = 0.2,
+    ) -> str:
+        """Generate completion using configured provider.
+
+        Uses LLM_PROVIDER setting:
+        - vertex (default): Claude Haiku on Google Cloud Vertex AI
+        - ollama: Local LLM via Ollama
+        - anthropic: Direct Anthropic API
+        """
+        provider = settings.LLM_PROVIDER
+
+        try:
+            if provider == "vertex":
+                return await cls._complete_vertex(prompt, system_prompt, max_tokens, temperature)
+            if provider == "ollama":
+                return await cls._complete_ollama(prompt, system_prompt, max_tokens, temperature)
+            if provider == "anthropic":
+                return await cls._complete_anthropic(prompt, system_prompt, max_tokens, temperature)
+            # Fallback to vertex for unknown provider
+            logger.warning("Unknown LLM provider, falling back to vertex", provider=provider)
+            return await cls._complete_vertex(prompt, system_prompt, max_tokens, temperature)
+        except Exception as e:
+            # If primary provider fails and we have Ollama configured, try it as fallback
+            if provider != "ollama" and settings.OLLAMA_URL:
+                logger.warning(
+                    "Primary provider failed, trying Ollama fallback",
+                    provider=provider,
+                    error=str(e),
+                )
+                try:
+                    return await cls._complete_ollama(
+                        prompt, system_prompt, max_tokens, temperature
+                    )
+                except Exception as fallback_error:
+                    logger.exception("Ollama fallback also failed", error=str(fallback_error))
+                    raise e from fallback_error
+            raise
+
+    @classmethod
+    async def _complete_vertex(
+        cls,
+        prompt: str,
+        system_prompt: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
+        """Complete using Google Cloud Vertex AI with Claude Haiku."""
+        # Use Claude 3.5 Haiku on Vertex AI for fast completions
+        model_id = "claude-3-5-haiku-20241022"
+
+        client = cls.get_vertex_client()
+        response = await client.messages.create(
+            model=model_id,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system_prompt,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        # Extract text from Anthropic format response
+        for block in response.content:
+            if block.type == "text":
+                return block.text.strip()
+
+        return ""
+
+    @classmethod
+    async def _complete_ollama(
+        cls,
+        prompt: str,
+        system_prompt: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
+        """Complete using Ollama (local LLM)."""
+        client = cls.get_ollama_client()
+        model = settings.OLLAMA_MODEL  # e.g., "qwen2.5-coder:14b"
+
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+        if response.choices and response.choices[0].message.content:
+            return response.choices[0].message.content.strip()
+        return ""
+
+    @classmethod
+    async def _complete_anthropic(
+        cls,
+        prompt: str,
+        system_prompt: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
+        """Complete using direct Anthropic API."""
+        client = cls.get_anthropic_client()
+
+        response = await client.messages.create(
+            model="claude-3-5-haiku-20241022",
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system_prompt,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        for block in response.content:
+            if block.type == "text":
+                return block.text.strip()
+        return ""
 
 
 # ============================================================================
@@ -190,22 +350,13 @@ async def get_inline_completion(
 ### Completion:"""
 
     try:
-        client = get_anthropic_client()
-
-        api_response = await client.messages.create(
-            model="claude-3-5-haiku-20241022",  # Fast model for completions
+        # Use multi-provider completion
+        completion = await CompletionProvider.complete(
+            prompt=prompt,
+            system_prompt=COMPLETION_SYSTEM_PROMPT,
             max_tokens=body.max_tokens,
-            temperature=0.2,  # Low temperature for more predictable completions
-            system=COMPLETION_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,  # Low temperature for predictable completions
         )
-
-        # Extract the completion text
-        completion = ""
-        for block in api_response.content:
-            if block.type == "text":
-                completion = block.text.strip()
-                break
 
         # Clean up the completion
         # Remove markdown code blocks if the model added them
@@ -217,7 +368,7 @@ async def get_inline_completion(
         logger.info(
             "Completion generated",
             completion_length=len(completion),
-            tokens_used=api_response.usage.output_tokens,
+            provider=settings.LLM_PROVIDER,
         )
 
         return InlineCompletionResponse(
@@ -271,7 +422,7 @@ EXPLANATION: [Detailed explanation]
 CONCEPTS: [Comma-separated list of key concepts]"""
 
     try:
-        client = get_anthropic_client()
+        client = CompletionProvider.get_anthropic_client()
 
         api_response = await client.messages.create(
             model="claude-3-5-sonnet-20241022",
@@ -362,7 +513,7 @@ Return a JSON array of any issues found. Each issue should have:
 Return ONLY valid JSON, no other text. If no issues found, return: []"""
 
     try:
-        client = get_anthropic_client()
+        client = CompletionProvider.get_anthropic_client()
 
         api_response = await client.messages.create(
             model="claude-3-5-sonnet-20241022",

@@ -1,15 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogFooter,
-  DialogTitle,
-  DialogDescription,
-} from '@podex/ui';
-import { Brain, Info } from 'lucide-react';
+import { Brain, Info, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ThinkingConfig } from '@podex/shared';
 import { THINKING_PRESETS } from '@podex/shared';
@@ -63,21 +55,40 @@ export function ThinkingConfigDialog({
     setBudgetTokens(parseInt(e.target.value, 10));
   }, []);
 
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Brain className="h-5 w-5 text-blue-400" />
-            Extended Thinking Settings
-          </DialogTitle>
-          <DialogDescription>
-            Configure extended thinking for{' '}
-            <span className="font-medium text-text-primary">{modelName}</span>
-          </DialogDescription>
-        </DialogHeader>
+  if (!open) return null;
 
-        <div className="px-6 py-4 space-y-6">
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      {/* Backdrop */}
+      <div
+        className="absolute inset-0 bg-void/80 backdrop-blur-sm"
+        onClick={() => onOpenChange(false)}
+      />
+
+      {/* Modal */}
+      <div className="relative w-full max-w-md mx-4 max-h-[85vh] flex flex-col rounded-xl border border-border-default bg-surface shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-border-subtle px-4 sm:px-6 py-4 shrink-0">
+          <div>
+            <h2 className="flex items-center gap-2 text-lg font-semibold text-text-primary">
+              <Brain className="h-5 w-5 text-purple-400" />
+              Extended Thinking Settings
+            </h2>
+            <p className="text-sm text-text-muted mt-1">
+              Configure extended thinking for{' '}
+              <span className="font-medium text-text-primary">{modelName}</span>
+            </p>
+          </div>
+          <button
+            onClick={() => onOpenChange(false)}
+            className="rounded-md p-2 text-text-muted hover:bg-overlay hover:text-text-primary transition-colors"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 space-y-6">
           {/* Enable/Disable Toggle */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -141,7 +152,7 @@ export function ThinkingConfigDialog({
           {/* Presets */}
           <div className={cn('space-y-2', !enabled && 'opacity-50 pointer-events-none')}>
             <label className="text-sm font-medium text-text-primary">Presets</label>
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {Object.entries(THINKING_PRESETS).map(([key, preset]) => (
                 <button
                   key={key}
@@ -177,21 +188,22 @@ export function ThinkingConfigDialog({
           </div>
         </div>
 
-        <DialogFooter>
+        {/* Footer */}
+        <div className="flex justify-end gap-3 border-t border-border-subtle px-4 sm:px-6 py-4 shrink-0">
           <button
             onClick={() => onOpenChange(false)}
-            className="px-4 py-2 text-sm font-medium text-text-secondary hover:bg-overlay rounded-lg transition-colors"
+            className="px-4 py-2 text-sm font-medium text-text-secondary hover:bg-overlay rounded-lg transition-colors cursor-pointer"
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
-            className="px-4 py-2 text-sm font-medium bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+            className="px-4 py-2 text-sm font-medium bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors cursor-pointer"
           >
             Save
           </button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </div>
+      </div>
+    </div>
   );
 }

@@ -11,6 +11,7 @@ import {
   File,
   Filter,
 } from 'lucide-react';
+import { NoProblemsEmptyState, SearchEmptyState } from '@/components/ui/EmptyState';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { create } from 'zustand';
@@ -531,11 +532,11 @@ export function ProblemsPanel({ onDiagnosticClick, onClose, className }: Problem
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
         {fileGroups.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12 text-center">
-            <AlertCircle className="h-8 w-8 text-accent-success" />
-            <p className="mt-2 text-sm text-text-muted">No problems detected</p>
-            <p className="text-xs text-text-muted">Your workspace is clean!</p>
-          </div>
+          filterText ? (
+            <SearchEmptyState query={filterText} />
+          ) : (
+            <NoProblemsEmptyState />
+          )
         ) : (
           fileGroups.map((file) => (
             <FileGroup
@@ -600,11 +601,11 @@ export function ProblemsStatus({ onClick, className }: ProblemsStatusProps) {
 // Monaco Integration Hook
 // ============================================================================
 
-import type { editor } from 'monaco-editor';
+import type * as monaco from '@codingame/monaco-vscode-editor-api';
 
 export function useMonacoDiagnostics(
-  monacoInstance: typeof import('monaco-editor') | null,
-  editorInstance: editor.IStandaloneCodeEditor | null
+  monacoInstance: typeof monaco | null,
+  editorInstance: monaco.editor.IStandaloneCodeEditor | null
 ) {
   const setDiagnostics = useDiagnosticsStore((s) => s.setDiagnostics);
 

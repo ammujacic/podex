@@ -1,19 +1,22 @@
 'use client';
 
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import type { LucideIcon } from 'lucide-react';
 import { CheckCircle, AlertCircle, MessageCircle, AlertTriangle } from 'lucide-react';
 import { onSocketEvent, type AgentAttentionEvent, type AgentAttentionType } from '@/lib/socket';
 import { useAttentionStore, type AgentAttention } from '@/stores/attention';
-import { synthesizeSpeech } from '@/lib/api';
+import { synthesizeSpeech, markAttentionRead } from '@/lib/api';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
+import { useOnFocusReturn, useVisibilityStore } from '@/hooks/useVisibilityTracking';
 
 interface UseAgentAttentionOptions {
   sessionId: string;
   enabled?: boolean;
   showToasts?: boolean;
   useTTS?: boolean;
+  /** Auto-mark notifications as read when tab regains focus. Default: true */
+  autoMarkReadOnFocus?: boolean;
 }
 
 // Map attention types to icons
@@ -68,6 +71,7 @@ export function useAgentAttention({
   enabled = true,
   showToasts = true,
   useTTS = true,
+  autoMarkReadOnFocus = true,
 }: UseAgentAttentionOptions) {
   const {
     addAttention,
@@ -79,9 +83,67 @@ export function useAgentAttention({
     getAttentionsForSession,
     getUnreadCount,
     openPanel,
+    panelOpen,
   } = useAttentionStore();
 
   const { playAudioBase64 } = useAudioPlayback({ sessionId });
+  const isFocused = useVisibilityStore((state) => state.isFocused);
+
+  // Track IDs of notifications that arrived while unfocused
+  const unfocusedNotificationIds = useRef<Set<string>>(new Set());
+
+  // Auto-mark notifications as read when user returns focus
+  // Only mark if the notification panel is open OR user has been away for a while
+  useOnFocusReturn(
+    useCallback(
+      (unfocusedDuration) => {
+        if (!autoMarkReadOnFocus || !enabled) return;
+
+        const unreadCount = getUnreadCount(sessionId);
+        if (unreadCount === 0) return;
+
+        // If panel is open or user was away for more than 5 seconds,
+        // mark all notifications that arrived while unfocused as read
+        if (panelOpen || unfocusedDuration > 5000) {
+          // Mark all as read (they've been "seen" by returning to the tab)
+          const attentions = getAttentionsForSession(sessionId);
+          const unreadIds = attentions.filter((a) => !a.read).map((a) => a.id);
+
+          // Mark locally and sync with backend
+          unreadIds.forEach((id) => {
+            markAsRead(sessionId, id);
+            // Fire and forget backend sync
+            markAttentionRead(sessionId, id).catch((err) => {
+              console.error('Failed to sync attention read status:', err);
+            });
+          });
+
+          // Clear tracked unfocused notifications
+          unfocusedNotificationIds.current.clear();
+        }
+      },
+      [
+        autoMarkReadOnFocus,
+        enabled,
+        sessionId,
+        panelOpen,
+        getUnreadCount,
+        getAttentionsForSession,
+        markAsRead,
+      ]
+    ),
+    { minUnfocusedTime: 1000, enabled: autoMarkReadOnFocus && enabled }
+  );
+
+  // Track notifications that arrive while unfocused
+  const trackUnfocusedNotification = useCallback(
+    (attentionId: string) => {
+      if (!isFocused) {
+        unfocusedNotificationIds.current.add(attentionId);
+      }
+    },
+    [isFocused]
+  );
 
   // Announce attention via TTS
   const announceAttention = useCallback(
@@ -126,6 +188,9 @@ export function useAgentAttention({
 
       addAttention(attention);
 
+      // Track if this arrived while unfocused
+      trackUnfocusedNotification(event.id);
+
       // Show toast notification
       if (showToasts) {
         const Icon = ATTENTION_ICONS[event.type];
@@ -150,7 +215,7 @@ export function useAgentAttention({
       // Announce via TTS
       announceAttention(event);
     },
-    [sessionId, showToasts, addAttention, announceAttention, openPanel]
+    [sessionId, showToasts, addAttention, announceAttention, openPanel, trackUnfocusedNotification]
   );
 
   // Handle attention read event (from other clients)

@@ -13,7 +13,8 @@ export type WidgetId =
   | 'mcp'
   | 'extensions'
   | 'usage'
-  | 'terminal';
+  | 'terminal'
+  | 'sentry';
 
 interface MobileWidgetSheetProps {
   isOpen: boolean;
@@ -77,8 +78,8 @@ export function MobileWidgetSheet({
 
     setIsDragging(false);
 
-    // Determine action based on drag distance
-    const threshold = 50;
+    // Determine action based on drag distance - increased threshold for better UX
+    const threshold = 80;
 
     if (dragOffset > threshold) {
       // Dragged down
@@ -135,20 +136,34 @@ export function MobileWidgetSheet({
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
+          role="slider"
+          aria-label="Drag to resize or close"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={currentHeight === 'full' ? 100 : 50}
         >
-          <div className="w-10 h-1.5 bg-border-strong rounded-full" />
+          <div
+            className={cn(
+              'w-10 h-1.5 bg-border-strong rounded-full transition-all',
+              isDragging && 'w-14 bg-accent-primary'
+            )}
+          />
         </div>
 
         {/* Header */}
         <div className="px-4 pb-3 border-b border-border-subtle flex-shrink-0">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              {icon && <span className="text-text-secondary">{icon}</span>}
+              {icon && (
+                <span className="text-text-secondary" aria-hidden="true">
+                  {icon}
+                </span>
+              )}
               <h2 className="text-lg font-semibold text-text-primary">{title}</h2>
             </div>
             <button
               onClick={onClose}
-              className="p-2 -mr-2 rounded-lg hover:bg-surface-hover transition-colors touch-manipulation"
+              className="p-2 -mr-2 rounded-lg hover:bg-surface-hover transition-colors touch-manipulation min-w-[44px] min-h-[44px] flex items-center justify-center"
               aria-label="Close"
             >
               <X className="h-5 w-5 text-text-secondary" />
