@@ -305,7 +305,7 @@ class MockSpeechClient(SpeechClient):
     def __init__(self, **kwargs: Any):
         """Initialize mock client."""
         self.project_id = kwargs.get("project_id")
-        self._client = None
+        self._client: speech.SpeechClient | None = None
         self._jobs: dict[str, dict[str, Any]] = {}
 
     async def transcribe_audio(

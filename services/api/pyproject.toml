@@ -270,7 +270,6 @@ plugins = ["pydantic.mypy"]
 module = [
     "socketio.*",
     "redis.*",
-    "google.cloud.*",
     "google.api_core.*",
     "structlog.*",
     "passlib.*",

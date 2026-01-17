@@ -315,7 +315,7 @@ class MockTTSClient(TTSClient):
     def __init__(self, **kwargs: Any):
         """Initialize mock client (ignores project_id)."""
         self.project_id = kwargs.get("project_id")
-        self._client = None
+        self._client: texttospeech.TextToSpeechClient | None = None
 
     async def synthesize_speech(
         self,

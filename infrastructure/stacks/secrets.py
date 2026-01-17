@@ -11,7 +11,7 @@ import pulumi_random as random
 
 def create_secrets(project_id: str, env: str) -> dict[str, Any]:
     """Create Secret Manager secrets (6 free versions)."""
-    secrets = {}
+    secrets: dict[str, Any] = {}
 
     # 1. JWT Secret (auto-generated)
     jwt_value = random.RandomPassword(

@@ -4,9 +4,20 @@ All node pools are scaled to 0 by default = NO COST when idle.
 Nodes are created on-demand when workspaces are launched.
 """
 
-from typing import Any
+from typing import Any, TypedDict
 
 import pulumi_gcp as gcp
+
+
+class GpuConfig(TypedDict):
+    """Configuration for a GPU node pool."""
+
+    name: str
+    machine_type: str
+    gpu_type: str
+    gpu_count: int
+    max_nodes: int
+    disk_size: int
 
 
 def create_gke_cluster(
@@ -125,7 +136,7 @@ def create_gke_cluster(
 
 def create_gpu_node_pools(cluster: gcp.container.Cluster, env: str) -> dict[str, Any]:
     """Create GPU node pools, all scaled to 0 (no cost when idle)."""
-    gpu_configs = [
+    gpu_configs: list[GpuConfig] = [
         {
             "name": "t4",
             "machine_type": "n1-standard-4",

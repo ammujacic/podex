@@ -95,7 +95,6 @@ strict = true
 [[tool.mypy.overrides]]
 module = [
     "redis.*",
-    "google.cloud.*",
     "google.api_core.*",
     "structlog.*",
     "anthropic.*",

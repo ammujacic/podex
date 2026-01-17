@@ -35,7 +35,7 @@ def create_monitoring(
     Returns:
         Dict of monitoring resources
     """
-    resources = {}
+    resources: dict[str, Any] = {}
 
     # ==========================================
     # Notification Channels

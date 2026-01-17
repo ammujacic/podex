@@ -89,6 +89,10 @@ module = [
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+module = ["google.cloud.*"]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
 module = ["src.managers.*"]
 # Docker SDK has complex overloaded types that don't work well with asyncio.to_thread
 disallow_any_generics = false

@@ -7,10 +7,24 @@ Free tier includes:
 - 360,000 GiB-seconds/month
 """
 
-from typing import Any
+from typing import Any, TypedDict
 
 import pulumi
 import pulumi_gcp as gcp
+
+
+class ServiceConfig(TypedDict):
+    """Configuration for a Cloud Run service."""
+
+    name: str
+    port: int
+    cpu: str
+    memory: str
+    max_instances: int
+    needs_db: bool
+    needs_redis: bool
+    needs_storage: bool
+    needs_vertex: bool
 
 
 def create_cloud_run_services(
@@ -68,7 +82,7 @@ def create_cloud_run_services(
     )
 
     # Service configurations
-    svc_configs = [
+    svc_configs: list[ServiceConfig] = [
         {
             "name": "api",
             "port": 3001,
@@ -231,7 +245,7 @@ def create_cloud_run_services(
                             lambda base, name=cfg["name"]: f"{base}/{name}:latest"
                         ),
                         ports=[
-                            gcp.cloudrunv2.ServiceTemplateContainerPortArgs(
+                            gcp.cloudrunv2.ServiceTemplateContainerPortsArgs(
                                 container_port=cfg["port"],
                             )
                         ],
