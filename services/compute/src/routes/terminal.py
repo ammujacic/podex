@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import struct
-from typing import Annotated, Any
+from typing import Annotated, Any, ClassVar
 
 import docker
 import structlog
@@ -150,15 +150,26 @@ class TmuxTerminalSession:
     - Session keeps running even when no clients are attached
     """
 
-    def __init__(self, container_id: str, workspace_id: str, session_name: str) -> None:
+    # Supported shells and their paths
+    SHELL_PATHS: ClassVar[dict[str, str]] = {
+        "bash": "/bin/bash",
+        "zsh": "/bin/zsh",
+        "fish": "/usr/bin/fish",
+    }
+
+    def __init__(
+        self, container_id: str, workspace_id: str, session_name: str, shell: str = "bash"
+    ) -> None:
         self.container_id = container_id
         self.workspace_id = workspace_id
         self.session_name = session_name  # Unique name for the tmux session
+        self.shell = shell if shell in self.SHELL_PATHS else "bash"
         self.client = docker.from_env()
         self.exec_id: str | None = None
         self.socket: Any = None
         self.websocket: WebSocket | None = None  # Reference to client WebSocket for shutdown
         self._running = False
+        self._using_tmux = False
 
     async def _exec_in_container(self, cmd: list[str], tty: bool = False) -> tuple[int, str]:
         """Execute a command in the container and return (exit_code, output)."""
@@ -218,8 +229,10 @@ class TmuxTerminalSession:
         return exit_code == 0
 
     async def _create_tmux_session(self) -> bool:
-        """Create a new tmux session."""
-        # Create detached tmux session
+        """Create a new tmux session with the configured shell."""
+        shell_path = self.SHELL_PATHS.get(self.shell, "/bin/bash")
+
+        # Create detached tmux session with the specified shell
         exit_code, output = await self._exec_in_container(
             [
                 "tmux",
@@ -229,12 +242,14 @@ class TmuxTerminalSession:
                 self.session_name,  # Session name
                 "-c",
                 "/home/dev",  # Start directory
+                shell_path,  # Shell to use
             ]
         )
         if exit_code != 0:
             logger.warning(
                 "Failed to create tmux session",
                 session_name=self.session_name,
+                shell=self.shell,
                 exit_code=exit_code,
                 output=output,
             )
@@ -244,6 +259,7 @@ class TmuxTerminalSession:
             "Created new tmux session",
             workspace_id=self.workspace_id,
             session_name=self.session_name,
+            shell=self.shell,
         )
         return True
 
@@ -300,17 +316,19 @@ class TmuxTerminalSession:
         return True
 
     async def _start_without_tmux(self) -> bool:
-        """Start terminal session using plain bash (no persistence)."""
+        """Start terminal session without tmux (no persistence)."""
+        shell_path = self.SHELL_PATHS.get(self.shell, "/bin/bash")
         logger.warning(
-            "tmux not available, starting plain bash session (no persistence)",
+            "tmux not available, starting plain shell session (no persistence)",
             workspace_id=self.workspace_id,
             session_name=self.session_name,
+            shell=self.shell,
         )
 
         exec_instance = await asyncio.to_thread(
             self.client.api.exec_create,
             self.container_id,
-            cmd=["/bin/bash"],
+            cmd=[shell_path],
             stdin=True,
             stdout=True,
             stderr=True,
@@ -330,9 +348,10 @@ class TmuxTerminalSession:
         self._using_tmux = False
 
         logger.info(
-            "Terminal session started (bash, no tmux)",
+            "Terminal session started (no tmux)",
             workspace_id=self.workspace_id,
             session_name=self.session_name,
+            shell=self.shell,
             exec_id=self.exec_id[:12] if self.exec_id else None,
         )
         return True
@@ -578,6 +597,7 @@ async def terminal_websocket(  # noqa: PLR0915
     session_id: str | None = Query(
         default=None, description="Terminal agent session ID for reconnection"
     ),
+    shell: str = Query(default="bash", description="Shell to use (bash, zsh, fish)"),
 ) -> None:
     """Interactive terminal WebSocket endpoint with tmux session persistence.
 
@@ -591,6 +611,7 @@ async def terminal_websocket(  # noqa: PLR0915
     - session_id: Optional session identifier for terminal agents. If provided,
                   creates/attaches to a named tmux session that persists across
                   reconnections. If not provided, uses workspace_id as session name.
+    - shell: Shell to use for the terminal (bash, zsh, fish). Defaults to bash.
     """
     await websocket.accept()
 
@@ -608,6 +629,7 @@ async def terminal_websocket(  # noqa: PLR0915
         container_id=container_id[:12],
         session_id=session_id,
         tmux_session=tmux_session_name,
+        shell=shell,
     )
 
     # Check if shutdown is in progress
@@ -618,8 +640,8 @@ async def terminal_websocket(  # noqa: PLR0915
         )
         return
 
-    # Create/attach to tmux session
-    session = TmuxTerminalSession(container_id, workspace_id, tmux_session_name)
+    # Create/attach to tmux session with specified shell
+    session = TmuxTerminalSession(container_id, workspace_id, tmux_session_name, shell=shell)
     if not await session.start():
         await websocket.close(
             code=status.WS_1011_INTERNAL_ERROR,

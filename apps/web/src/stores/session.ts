@@ -320,6 +320,62 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
             ...session,
             agents: session.agents.map((a) => {
               if (a.id !== agentId) return a;
+
+              // Deduplication: check if message already exists by ID
+              if (a.messages.some((m) => m.id === message.id)) {
+                return a; // Message already exists, don't add duplicate
+              }
+
+              // Deduplication: for user messages with temp IDs (optimistic updates),
+              // check if a real message with same content already exists (race condition fix)
+              if (message.role === 'user' && message.id.startsWith('temp-')) {
+                const existingRealMessage = a.messages.find(
+                  (m) =>
+                    m.role === 'user' && m.content === message.content && !m.id.startsWith('temp-')
+                );
+                if (existingRealMessage) {
+                  return a; // Real message already exists, don't add temp duplicate
+                }
+              }
+
+              // Deduplication: for user messages with real IDs,
+              // check if a temp message with same content exists
+              if (message.role === 'user' && !message.id.startsWith('temp-')) {
+                const existingTempMessage = a.messages.find(
+                  (m) =>
+                    m.role === 'user' && m.content === message.content && m.id.startsWith('temp-')
+                );
+                if (existingTempMessage) {
+                  // Replace temp message with real one
+                  return {
+                    ...a,
+                    messages: a.messages.map((m) =>
+                      m.id === existingTempMessage.id ? { ...m, id: message.id } : m
+                    ),
+                  };
+                }
+              }
+
+              // Deduplication: for assistant messages, check by content
+              // (streaming messages finalized and then agent_message arrives)
+              if (message.role === 'assistant') {
+                const existingByContent = a.messages.find(
+                  (m) => m.role === 'assistant' && m.content === message.content
+                );
+                if (existingByContent) {
+                  // Update the ID to the real one if different (for audio playback to work)
+                  if (existingByContent.id !== message.id) {
+                    return {
+                      ...a,
+                      messages: a.messages.map((m) =>
+                        m.id === existingByContent.id ? { ...m, id: message.id } : m
+                      ),
+                    };
+                  }
+                  return a; // Same content already exists, don't add duplicate
+                }
+              }
+
               // Add message and enforce limit to prevent localStorage overflow
               const newMessages = [...a.messages, message];
               const limitedMessages =

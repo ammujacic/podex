@@ -165,12 +165,19 @@ run:
 	@echo "$(GREEN)Ollama is running with models available$(NC)"
 	@echo ""
 	@echo "$(CYAN)Starting development environment...$(NC)"
+	@# Detect host IP for mobile access
+	@HOST_IP=$$(ipconfig getifaddr en0 2>/dev/null || hostname -I 2>/dev/null | awk '{print $$1}' || echo "localhost"); \
+	echo "$(CYAN)Detected host IP: $$HOST_IP$(NC)"; \
+	NEXT_PUBLIC_API_URL=http://$$HOST_IP:3001 \
+	NEXT_PUBLIC_WS_URL=ws://$$HOST_IP:3001 \
+	CORS_ORIGINS='["http://localhost:3000","http://'$$HOST_IP':3000"]' \
 	LLM_PROVIDER=ollama docker-compose up -d
 	@echo ""
-	@echo "$(GREEN)Services started!$(NC)"
-	@echo "  Web:    http://localhost:3000"
-	@echo "  API:    http://localhost:3001"
-	@echo "  Ollama: http://localhost:11434"
+	@HOST_IP=$$(ipconfig getifaddr en0 2>/dev/null || echo "localhost"); \
+	echo "$(GREEN)Services started!$(NC)"; \
+	echo "  Web:    http://localhost:3000 (or http://$$HOST_IP:3000 from mobile)"; \
+	echo "  API:    http://localhost:3001 (or http://$$HOST_IP:3001 from mobile)"; \
+	echo "  Ollama: http://localhost:11434"
 	@echo ""
 	@echo "$(CYAN)To view logs: make logs$(NC)"
 	@echo "$(CYAN)To stop: make stop$(NC)"

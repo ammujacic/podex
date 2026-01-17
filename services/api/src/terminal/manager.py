@@ -49,12 +49,15 @@ class TerminalManager:
         self.sessions: dict[str, TerminalSession] = {}
         self._lock = asyncio.Lock()
 
-    def _get_compute_terminal_url(self, workspace_id: str, session_id: str | None = None) -> str:
+    def _get_compute_terminal_url(
+        self, workspace_id: str, session_id: str | None = None, shell: str = "bash"
+    ) -> str:
         """Get the WebSocket URL for the compute service terminal.
 
         Args:
             workspace_id: ID of the workspace container.
             session_id: Optional session ID for tmux session persistence.
+            shell: Shell to use for the terminal (bash, zsh, fish).
 
         Returns:
             WebSocket URL for the terminal endpoint.
@@ -68,18 +71,18 @@ class TerminalManager:
 
         url = f"{ws_url}/terminal/{workspace_id}"
 
-        # Add session_id as query parameter if provided
+        # Build query parameters
+        params = {"shell": shell}
         if session_id:
-            params = urlencode({"session_id": session_id})
-            url = f"{url}?{params}"
-
-        return url
+            params["session_id"] = session_id
+        return f"{url}?{urlencode(params)}"
 
     async def create_session(
         self,
         workspace_id: str,
         on_output: Callable[[str, str], Any],
         session_id: str | None = None,
+        shell: str = "bash",
     ) -> TerminalSession:
         """Create or reconnect to a terminal session.
 
@@ -89,6 +92,7 @@ class TerminalManager:
             session_id: Optional unique session ID. If provided, creates a named
                        tmux session that can be reconnected. If not provided,
                        uses workspace_id as session ID.
+            shell: Shell to use for the terminal (bash, zsh, fish).
 
         Returns:
             The created or reconnected terminal session.
@@ -116,7 +120,7 @@ class TerminalManager:
                 del self.sessions[effective_session_id]
 
             # Connect to compute service terminal WebSocket
-            terminal_url = self._get_compute_terminal_url(workspace_id, effective_session_id)
+            terminal_url = self._get_compute_terminal_url(workspace_id, effective_session_id, shell)
             logger.info(
                 "Connecting to compute terminal",
                 workspace_id=workspace_id,

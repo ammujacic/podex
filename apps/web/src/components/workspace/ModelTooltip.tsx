@@ -29,6 +29,7 @@ export function ModelTooltip({
         <TooltipContent
           side={side}
           align={align}
+          sideOffset={8}
           className="w-72 p-0 bg-surface border-border-default"
         >
           <div className="p-3 space-y-3">

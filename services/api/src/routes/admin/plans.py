@@ -59,7 +59,6 @@ class CreatePlanRequest(BaseModel):
 
     # Included allowances
     tokens_included: int = Field(ge=0)
-    compute_hours_included: int = Field(ge=0, default=0)
     compute_credits_cents_included: int = Field(ge=0, default=0)
     storage_gb_included: int = Field(ge=0)
 
@@ -101,7 +100,6 @@ class UpdatePlanRequest(BaseModel):
     price_monthly_cents: int | None = Field(ge=0, default=None)
     price_yearly_cents: int | None = Field(ge=0, default=None)
     tokens_included: int | None = Field(ge=0, default=None)
-    compute_hours_included: int | None = Field(ge=0, default=None)
     compute_credits_cents_included: int | None = Field(ge=0, default=None)
     storage_gb_included: int | None = Field(ge=0, default=None)
     max_agents: int | None = Field(ge=1, default=None)
@@ -134,7 +132,6 @@ class AdminPlanResponse(BaseModel):
     price_yearly_cents: int
     currency: str
     tokens_included: int
-    compute_hours_included: int
     compute_credits_cents_included: int
     storage_gb_included: int
     max_agents: int
@@ -206,7 +203,6 @@ async def list_plans(
                 price_yearly_cents=plan.price_yearly_cents,
                 currency=plan.currency,
                 tokens_included=plan.tokens_included,
-                compute_hours_included=plan.compute_hours_included,
                 compute_credits_cents_included=plan.compute_credits_cents_included,
                 storage_gb_included=plan.storage_gb_included,
                 max_agents=plan.max_agents,
@@ -260,7 +256,6 @@ async def create_plan(
         price_yearly_cents=data.price_yearly_cents,
         currency=data.currency,
         tokens_included=data.tokens_included,
-        compute_hours_included=data.compute_hours_included,
         compute_credits_cents_included=data.compute_credits_cents_included,
         storage_gb_included=data.storage_gb_included,
         max_agents=data.max_agents,
@@ -297,7 +292,6 @@ async def create_plan(
         price_yearly_cents=plan.price_yearly_cents,
         currency=plan.currency,
         tokens_included=plan.tokens_included,
-        compute_hours_included=plan.compute_hours_included,
         compute_credits_cents_included=plan.compute_credits_cents_included,
         storage_gb_included=plan.storage_gb_included,
         max_agents=plan.max_agents,
@@ -360,7 +354,6 @@ async def get_plan(
         price_yearly_cents=plan.price_yearly_cents,
         currency=plan.currency,
         tokens_included=plan.tokens_included,
-        compute_hours_included=plan.compute_hours_included,
         compute_credits_cents_included=plan.compute_credits_cents_included,
         storage_gb_included=plan.storage_gb_included,
         max_agents=plan.max_agents,
@@ -478,15 +471,14 @@ DEFAULT_PLANS = [
         "price_yearly_cents": 0,
         "currency": "USD",
         "tokens_included": 100000,
-        "compute_hours_included": 10,
-        "compute_credits_cents_included": 0,
+        "compute_credits_cents_included": 500,
         "storage_gb_included": 5,
         "max_agents": 1,
         "max_sessions": 3,
         "max_team_members": 1,
         "overage_allowed": False,
         "llm_margin_percent": 0,
-        "compute_margin_percent": 0,
+        "compute_margin_percent": 20,
         "features": {
             "private_projects": False,
             "git_integration": True,
@@ -510,7 +502,6 @@ DEFAULT_PLANS = [
         "price_yearly_cents": 29000,
         "currency": "USD",
         "tokens_included": 1000000,
-        "compute_hours_included": 100,
         "compute_credits_cents_included": 2000,
         "storage_gb_included": 50,
         "max_agents": 5,
@@ -518,7 +509,7 @@ DEFAULT_PLANS = [
         "max_team_members": 5,
         "overage_allowed": True,
         "llm_margin_percent": 20,
-        "compute_margin_percent": 15,
+        "compute_margin_percent": 20,
         "features": {
             "private_projects": True,
             "git_integration": True,
@@ -544,7 +535,6 @@ DEFAULT_PLANS = [
         "price_yearly_cents": 99000,
         "currency": "USD",
         "tokens_included": 5000000,
-        "compute_hours_included": 500,
         "compute_credits_cents_included": 5000,
         "storage_gb_included": 200,
         "max_agents": 20,
@@ -579,7 +569,6 @@ DEFAULT_PLANS = [
         "price_yearly_cents": 0,
         "currency": "USD",
         "tokens_included": 100000000,
-        "compute_hours_included": 2000,
         "compute_credits_cents_included": 100000,
         "storage_gb_included": 1000,
         "max_agents": 100,
@@ -587,7 +576,7 @@ DEFAULT_PLANS = [
         "max_team_members": 100,
         "overage_allowed": True,
         "llm_margin_percent": 30,
-        "compute_margin_percent": 25,
+        "compute_margin_percent": 20,
         "features": {
             "private_projects": True,
             "git_integration": True,

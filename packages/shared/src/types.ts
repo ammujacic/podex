@@ -245,8 +245,12 @@ export interface ModelInfo {
   goodFor: string[];
   description: string;
   reasoningEffort: 'low' | 'medium' | 'high';
-  inputPricePerMillion?: number;
-  outputPricePerMillion?: number;
+  inputPricePerMillion?: number; // Base cost (provider cost)
+  outputPricePerMillion?: number; // Base cost (provider cost)
+  // User-specific pricing (with margin applied)
+  userInputPricePerMillion?: number;
+  userOutputPricePerMillion?: number;
+  llmMarginPercent?: number;
 }
 
 /**

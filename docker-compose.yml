@@ -97,7 +97,7 @@ services:
       S3_BUCKET: podex-workspaces
       S3_WORKSPACE_PREFIX: workspaces
       # CORS
-      CORS_ORIGINS: '["http://localhost:3000"]'
+      CORS_ORIGINS: ${CORS_ORIGINS:-'["http://localhost:3000"]'}
       # Auth
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-secret-key-for-local-development}
       FRONTEND_URL: http://localhost:3000
@@ -229,7 +229,7 @@ services:
       # Internal API key (for secure inter-service communication)
       COMPUTE_INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
       # CORS
-      COMPUTE_CORS_ORIGINS: '["http://localhost:3000"]'
+      COMPUTE_CORS_ORIGINS: ${CORS_ORIGINS:-'["http://localhost:3000"]'}
       # API Service (for usage tracking)
       COMPUTE_API_BASE_URL: http://api:3001
       COMPUTE_INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-service-token}
@@ -276,8 +276,8 @@ services:
           cpus: '2.0'
     environment:
       NODE_ENV: development
-      NEXT_PUBLIC_API_URL: http://localhost:3001
-      NEXT_PUBLIC_WS_URL: ws://localhost:3001
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:3001}
       # Sentry
       NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
       NEXT_PUBLIC_ENVIRONMENT: development

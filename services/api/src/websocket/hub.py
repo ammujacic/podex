@@ -523,10 +523,16 @@ async def terminal_attach(sid: str, data: dict[str, str]) -> None:
     """Attach to terminal session with authentication and authorization."""
     workspace_id = data.get("workspace_id")
     auth_token = data.get("auth_token")
+    shell = data.get("shell", "bash")  # Default to bash if not specified
 
     if not workspace_id:
         await sio.emit("terminal_error", {"error": "workspace_id required"}, to=sid)
         return
+
+    # Validate shell option
+    valid_shells = {"bash", "zsh", "fish"}
+    if shell not in valid_shells:
+        shell = "bash"
 
     # Verify auth token and get user ID
     user_id = _verify_auth_token(auth_token)
@@ -558,17 +564,18 @@ async def terminal_attach(sid: str, data: dict[str, str]) -> None:
         )
 
     try:
-        _session = await terminal_manager.create_session(workspace_id, on_output)
+        _session = await terminal_manager.create_session(workspace_id, on_output, shell=shell)
         logger.info(
             "Client attached to terminal",
             sid=sid,
             workspace_id=workspace_id,
+            shell=shell,
         )
 
         # Send welcome message - terminal runs in workspace container at /home/dev
         await sio.emit(
             "terminal_ready",
-            {"workspace_id": workspace_id, "cwd": "/home/dev"},
+            {"workspace_id": workspace_id, "cwd": "/home/dev", "shell": shell},
             to=sid,
         )
     except Exception as e:

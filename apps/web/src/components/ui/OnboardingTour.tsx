@@ -687,6 +687,54 @@ export const WORKSPACE_TOUR_STEPS: TourStep[] = [
   },
 ];
 
+// Mobile-specific workspace tour steps
+export const MOBILE_WORKSPACE_TOUR_STEPS: TourStep[] = [
+  {
+    id: 'welcome',
+    target: '[data-tour="workspace-header"]',
+    title: 'Welcome to Your Workspace',
+    description:
+      "This is your mobile development environment. You'll see all your AI agents here and can access tools from the menu.",
+    placement: 'bottom',
+    spotlight: true,
+  },
+  {
+    id: 'agents-overview',
+    target: '[data-tour="agents-list"]',
+    title: 'Your AI Agents',
+    description:
+      'Tap any agent to start chatting. Each agent can help with different tasks - coding, debugging, or exploring your codebase.',
+    placement: 'bottom',
+    spotlight: true,
+  },
+  {
+    id: 'new-agent',
+    target: '[data-tour="new-agent-button"]',
+    title: 'Create New Agents',
+    description:
+      'Tap here to create a new AI agent. You can have multiple agents working on different parts of your project!',
+    placement: 'bottom',
+    spotlight: true,
+  },
+  {
+    id: 'hamburger-menu',
+    target: '[data-tour="hamburger-menu"]',
+    title: 'Access All Tools',
+    description:
+      'Tap the menu icon to access files, git, search, terminal, and other tools. Everything opens as a slide-up panel!',
+    placement: 'bottom',
+    spotlight: true,
+  },
+  {
+    id: 'ready',
+    target: '[data-tour="workspace-header"]',
+    title: "You're All Set!",
+    description: 'Tap an agent to start coding. Use voice input for hands-free development!',
+    placement: 'bottom',
+    spotlight: false,
+  },
+];
+
 export const DASHBOARD_TOUR_STEPS: TourStep[] = [
   {
     id: 'dashboard-welcome',

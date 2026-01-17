@@ -14,8 +14,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
-from src.database.models import LLMModel, PlatformSetting, UserConfig
+from src.database.models import (
+    LLMModel,
+    PlatformSetting,
+    SubscriptionPlan,
+    UserConfig,
+    UserSubscription,
+)
 from src.middleware.admin import get_admin_user_id, require_admin, require_super_admin
+from src.middleware.auth import get_optional_user_id
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
 logger = structlog.get_logger()
@@ -1171,13 +1178,64 @@ class PublicModelResponse(BaseModel):
     context_window: int
     max_output_tokens: int
     is_default: bool
-    input_cost_per_million: float | None = None
-    output_cost_per_million: float | None = None
+    input_cost_per_million: float | None = None  # Base cost (provider cost)
+    output_cost_per_million: float | None = None  # Base cost (provider cost)
     good_for: list[str] = Field(default_factory=list, description="Use cases this model excels at")
+    # User-specific pricing (with margin applied)
+    user_input_cost_per_million: float | None = None
+    user_output_cost_per_million: float | None = None
+    llm_margin_percent: int | None = None
 
 
 # Create a separate router for public endpoints
 public_router = APIRouter()
+
+
+async def _get_llm_margin(db: AsyncSession, user_id: str) -> int:
+    """Get the LLM margin percentage for a user based on their subscription plan.
+
+    Args:
+        db: Database session
+        user_id: The user ID
+
+    Returns:
+        LLM margin percentage (0 if no subscription)
+    """
+    # Get user's active subscription
+    sub_result = await db.execute(
+        select(UserSubscription)
+        .where(UserSubscription.user_id == user_id)
+        .where(UserSubscription.status.in_(["active", "trialing"])),
+    )
+    subscription = sub_result.scalar_one_or_none()
+
+    if not subscription:
+        return 0
+
+    # Get the plan
+    plan_result = await db.execute(
+        select(SubscriptionPlan).where(SubscriptionPlan.id == subscription.plan_id),
+    )
+    plan = plan_result.scalar_one_or_none()
+
+    return plan.llm_margin_percent if plan else 0
+
+
+def _apply_margin_to_price(base_price: float | None, margin_percent: int) -> float | None:
+    """Apply margin percentage to a price.
+
+    Args:
+        base_price: The base provider cost
+        margin_percent: The margin percentage (e.g., 15 for 15%)
+
+    Returns:
+        Price with margin applied, or None if base_price is None
+    """
+    if base_price is None:
+        return None
+    if margin_percent <= 0:
+        return base_price
+    return base_price * (1 + margin_percent / 100)
 
 
 @public_router.get("/available", response_model=list[PublicModelResponse])
@@ -1192,6 +1250,8 @@ async def list_available_models(
     """List all available LLM models for users.
 
     Returns only enabled platform models (not user-key models).
+    If the user is authenticated, includes user-specific pricing with their
+    subscription plan's LLM margin applied.
     """
     query = (
         select(LLMModel)
@@ -1208,24 +1268,43 @@ async def list_available_models(
     result = await db.execute(query)
     models = result.scalars().all()
 
-    return [
-        PublicModelResponse(
-            model_id=m.model_id,
-            display_name=m.display_name,
-            provider=m.provider,
-            family=m.family,
-            description=(m.model_metadata or {}).get("description"),
-            cost_tier=m.cost_tier,
-            capabilities=m.capabilities or {},
-            context_window=m.context_window,
-            max_output_tokens=m.max_output_tokens,
-            is_default=m.is_default,
-            input_cost_per_million=m.input_cost_per_million,
-            output_cost_per_million=m.output_cost_per_million,
-            good_for=(m.model_metadata or {}).get("good_for", []),
+    # Get user-specific margin if authenticated
+    user_id = get_optional_user_id(request)
+    llm_margin = 0
+    if user_id:
+        llm_margin = await _get_llm_margin(db, user_id)
+
+    responses = []
+    for m in models:
+        user_input = (
+            _apply_margin_to_price(m.input_cost_per_million, llm_margin) if user_id else None
         )
-        for m in models
-    ]
+        user_output = (
+            _apply_margin_to_price(m.output_cost_per_million, llm_margin) if user_id else None
+        )
+
+        responses.append(
+            PublicModelResponse(
+                model_id=m.model_id,
+                display_name=m.display_name,
+                provider=m.provider,
+                family=m.family,
+                description=(m.model_metadata or {}).get("description"),
+                cost_tier=m.cost_tier,
+                capabilities=m.capabilities or {},
+                context_window=m.context_window,
+                max_output_tokens=m.max_output_tokens,
+                is_default=m.is_default,
+                input_cost_per_million=m.input_cost_per_million,
+                output_cost_per_million=m.output_cost_per_million,
+                good_for=(m.model_metadata or {}).get("good_for", []),
+                user_input_cost_per_million=user_input,
+                user_output_cost_per_million=user_output,
+                llm_margin_percent=llm_margin if user_id else None,
+            )
+        )
+
+    return responses
 
 
 @public_router.get("/defaults", response_model=AgentDefaultsResponse)

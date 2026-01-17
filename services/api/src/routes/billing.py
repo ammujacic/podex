@@ -29,7 +29,7 @@ from src.database.models import (
     User,
     UserSubscription,
 )
-from src.middleware.auth import get_current_user_id
+from src.middleware.auth import get_current_user_id, get_optional_user_id
 from src.middleware.rate_limit import RATE_LIMIT_SENSITIVE, RATE_LIMIT_STANDARD, limiter
 from src.services.email import EmailTemplate, get_email_service
 
@@ -109,7 +109,6 @@ class SubscriptionPlanResponse(BaseModel):
     price_yearly: float
     currency: str
     tokens_included: int
-    compute_hours_included: int  # Legacy - for backward compat
     compute_credits_included: float  # Compute credits in dollars
     storage_gb_included: int
     max_agents: int
@@ -343,10 +342,13 @@ class HardwareSpecResponse(BaseModel):
     gpu_count: int
     storage_gb_default: int
     storage_gb_max: int
-    hourly_rate: float
+    hourly_rate: float  # Base cost (provider cost)
     is_available: bool
     requires_subscription: str | None
     region_availability: list[str]
+    # User-specific pricing (with margin applied)
+    user_hourly_rate: float | None = None
+    compute_margin_percent: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -913,7 +915,6 @@ async def list_subscription_plans(
             price_yearly=cents_to_dollars(plan.price_yearly_cents),
             currency=plan.currency,
             tokens_included=plan.tokens_included,
-            compute_hours_included=plan.compute_hours_included,
             compute_credits_included=cents_to_dollars(plan.compute_credits_cents_included),
             storage_gb_included=plan.storage_gb_included,
             max_agents=plan.max_agents,
@@ -955,7 +956,6 @@ async def get_subscription_plan(
         price_yearly=cents_to_dollars(plan.price_yearly_cents),
         currency=plan.currency,
         tokens_included=plan.tokens_included,
-        compute_hours_included=plan.compute_hours_included,
         compute_credits_included=cents_to_dollars(plan.compute_credits_cents_included),
         storage_gb_included=plan.storage_gb_included,
         max_agents=plan.max_agents,
@@ -982,7 +982,6 @@ def _build_plan_response(plan: SubscriptionPlan) -> SubscriptionPlanResponse:
         price_yearly=cents_to_dollars(plan.price_yearly_cents),
         currency=plan.currency,
         tokens_included=plan.tokens_included,
-        compute_hours_included=plan.compute_hours_included,
         compute_credits_included=cents_to_dollars(plan.compute_credits_cents_included),
         storage_gb_included=plan.storage_gb_included,
         max_agents=plan.max_agents,
@@ -2347,7 +2346,11 @@ async def list_hardware_specs(
     response: Response,
     db: DbSession,
 ) -> list[HardwareSpecResponse]:
-    """List available hardware specifications."""
+    """List available hardware specifications.
+
+    If the user is authenticated, includes user-specific pricing with their
+    subscription plan's compute margin applied.
+    """
     result = await db.execute(
         select(HardwareSpec)
         .where(HardwareSpec.is_available == True)  # noqa: E712
@@ -2355,27 +2358,41 @@ async def list_hardware_specs(
     )
     specs = result.scalars().all()
 
-    return [
-        HardwareSpecResponse(
-            id=spec.id,
-            tier=spec.tier,
-            display_name=spec.display_name,
-            description=spec.description,
-            architecture=spec.architecture,
-            vcpu=spec.vcpu,
-            memory_mb=spec.memory_mb,
-            gpu_type=spec.gpu_type,
-            gpu_memory_gb=spec.gpu_memory_gb,
-            gpu_count=spec.gpu_count,
-            storage_gb_default=spec.storage_gb_default,
-            storage_gb_max=spec.storage_gb_max,
-            hourly_rate=cents_to_dollars(spec.hourly_rate_cents),
-            is_available=spec.is_available,
-            requires_subscription=spec.requires_subscription,
-            region_availability=spec.region_availability,
+    # Get user-specific margin if authenticated
+    user_id = get_optional_user_id(request)
+    compute_margin = 0
+    if user_id:
+        compute_margin = await _get_user_margin(db, user_id, "compute")
+
+    responses = []
+    for spec in specs:
+        base_rate = cents_to_dollars(spec.hourly_rate_cents)
+        user_rate = _apply_margin_to_price(base_rate, compute_margin) if user_id else None
+
+        responses.append(
+            HardwareSpecResponse(
+                id=spec.id,
+                tier=spec.tier,
+                display_name=spec.display_name,
+                description=spec.description,
+                architecture=spec.architecture,
+                vcpu=spec.vcpu,
+                memory_mb=spec.memory_mb,
+                gpu_type=spec.gpu_type,
+                gpu_memory_gb=spec.gpu_memory_gb,
+                gpu_count=spec.gpu_count,
+                storage_gb_default=spec.storage_gb_default,
+                storage_gb_max=spec.storage_gb_max,
+                hourly_rate=base_rate,
+                is_available=spec.is_available,
+                requires_subscription=spec.requires_subscription,
+                region_availability=spec.region_availability,
+                user_hourly_rate=user_rate,
+                compute_margin_percent=compute_margin if user_id else None,
+            )
         )
-        for spec in specs
-    ]
+
+    return responses
 
 
 @router.get("/hardware-specs/{tier}", response_model=HardwareSpecResponse)
@@ -2386,12 +2403,25 @@ async def get_hardware_spec(
     tier: str,
     db: DbSession,
 ) -> HardwareSpecResponse:
-    """Get a specific hardware specification."""
+    """Get a specific hardware specification.
+
+    If the user is authenticated, includes user-specific pricing with their
+    subscription plan's compute margin applied.
+    """
     result = await db.execute(select(HardwareSpec).where(HardwareSpec.tier == tier))
     spec = result.scalar_one_or_none()
 
     if not spec:
         raise HTTPException(status_code=404, detail="Hardware spec not found")
+
+    # Get user-specific margin if authenticated
+    user_id = get_optional_user_id(request)
+    compute_margin = 0
+    if user_id:
+        compute_margin = await _get_user_margin(db, user_id, "compute")
+
+    base_rate = cents_to_dollars(spec.hourly_rate_cents)
+    user_rate = _apply_margin_to_price(base_rate, compute_margin) if user_id else None
 
     return HardwareSpecResponse(
         id=spec.id,
@@ -2406,10 +2436,12 @@ async def get_hardware_spec(
         gpu_count=spec.gpu_count,
         storage_gb_default=spec.storage_gb_default,
         storage_gb_max=spec.storage_gb_max,
-        hourly_rate=cents_to_dollars(spec.hourly_rate_cents),
+        hourly_rate=base_rate,
         is_available=spec.is_available,
         requires_subscription=spec.requires_subscription,
         region_availability=spec.region_availability,
+        user_hourly_rate=user_rate,
+        compute_margin_percent=compute_margin if user_id else None,
     )
 
 
@@ -2524,6 +2556,21 @@ def _apply_margin(base_cost_cents: int, margin_percent: int) -> int:
         return base_cost_cents
     margin_amount = (base_cost_cents * margin_percent) // 100
     return base_cost_cents + margin_amount
+
+
+def _apply_margin_to_price(base_price: float, margin_percent: int) -> float:
+    """Apply margin percentage to a price in dollars.
+
+    Args:
+        base_price: The base provider cost in dollars
+        margin_percent: The margin percentage (e.g., 15 for 15%)
+
+    Returns:
+        Total price in dollars (base + margin)
+    """
+    if margin_percent <= 0:
+        return base_price
+    return base_price * (1 + margin_percent / 100)
 
 
 async def _get_user_margin(

@@ -22,7 +22,10 @@ const orbitron = Orbitron({
 });
 
 export const metadata: Metadata = {
-  title: 'Podex - Your AI Development Pods in the Cloud',
+  title: {
+    default: 'Podex',
+    template: '%s | Podex',
+  },
   description: 'Web-based agentic IDE platform for AI-powered development',
   keywords: ['IDE', 'AI', 'development', 'agents', 'coding', 'programming'],
   authors: [{ name: 'Podex Team' }],
@@ -35,12 +38,12 @@ export const metadata: Metadata = {
     type: 'website',
     locale: 'en_US',
     siteName: 'Podex',
-    title: 'Podex - Your AI Development Pods in the Cloud',
+    title: 'Podex | Code from anywhere',
     description: 'Web-based agentic IDE platform for AI-powered development',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Podex - Your AI Development Pods in the Cloud',
+    title: 'Podex | Code from anywhere',
     description: 'Web-based agentic IDE platform for AI-powered development',
   },
   robots: {

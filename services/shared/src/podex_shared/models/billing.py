@@ -97,7 +97,6 @@ class SubscriptionPlanInfo(BaseModel):
 
     # Included allowances
     tokens_included: int  # Monthly token allowance
-    compute_hours_included: int  # Monthly compute hours
     storage_gb_included: int  # Storage included
 
     # Limits

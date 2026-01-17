@@ -180,6 +180,22 @@ def get_current_user_id(request: Request) -> str:
     return str(user_id)
 
 
+def get_optional_user_id(request: Request) -> str | None:
+    """Get current user ID if authenticated, None otherwise.
+
+    Use this for endpoints that work for both authenticated and unauthenticated
+    users but want to provide additional info when authenticated.
+
+    Args:
+        request: The FastAPI request object
+
+    Returns:
+        The authenticated user's ID, or None if not authenticated
+    """
+    user_id = getattr(request.state, "user_id", None)
+    return str(user_id) if user_id else None
+
+
 async def get_current_user(request: Request) -> dict[str, str | None]:
     """Get current user info from request state.
 

@@ -35,6 +35,7 @@ import {
 } from '@/lib/api';
 import { useUser } from '@/stores/auth';
 import { HardwareSelector } from '@/components/billing/HardwareSelector';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 // Template icon configuration with CDN URLs (Simple Icons)
 const templateIconConfig: Record<string, { url: string }> = {
@@ -114,6 +115,7 @@ const osVersions = [
 type ComputeTarget = 'cloud' | string; // 'cloud' or local_pod_id
 
 export default function NewSessionPage() {
+  useDocumentTitle('New Pod');
   const router = useRouter();
   const user = useUser();
   const [step, setStep] = useState<Step>('template');

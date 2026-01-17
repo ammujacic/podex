@@ -71,6 +71,7 @@ import {
   togglePlanMode,
   restoreCheckpoint,
   updateAgentSettings,
+  isQuotaError,
 } from '@/lib/api';
 import { useVoiceCapture } from '@/hooks/useVoiceCapture';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
@@ -86,6 +87,7 @@ import { WorktreeStatus } from './WorktreeStatus';
 import { ModelTooltip, ModelCapabilityBadges } from './ModelTooltip';
 import { ThinkingConfigDialog } from './ThinkingConfigDialog';
 import { SlashCommandMenu, isBuiltInCommand, type BuiltInCommand } from './SlashCommandMenu';
+import { CreditExhaustedBanner } from './CreditExhaustedBanner';
 import {
   compactAgentContext,
   getAvailableModels,
@@ -301,6 +303,8 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   // Slash command menu state
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [slashQuery, setSlashQuery] = useState('');
+  // Credit/quota error state
+  const [showCreditError, setShowCreditError] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -476,7 +480,23 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       console.error('Failed to send message:', error);
       // Could remove the optimistic message or show error state
       updateAgent(sessionId, agent.id, { status: 'error' });
-      toast.error('Failed to send message. Please try again.');
+
+      // Check if this is a quota/credit error and show specific message with CTAs
+      if (isQuotaError(error)) {
+        setShowCreditError(true);
+        toast.error('Credit limit reached', {
+          description: 'You have run out of credits or exceeded your quota.',
+          action: {
+            label: 'Buy Credits',
+            onClick: () => {
+              window.location.href = '/settings/billing/credits';
+            },
+          },
+          duration: 10000,
+        });
+      } else {
+        toast.error('Failed to send message. Please try again.');
+      }
     } finally {
       setIsSending(false);
     }
@@ -1894,6 +1914,17 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         {/* Scroll anchor */}
         <div ref={messagesEndRef} />
       </div>
+
+      {/* Credit exhaustion banner */}
+      {showCreditError && (
+        <div className="px-3 pb-2">
+          <CreditExhaustedBanner
+            type="credits"
+            size="sm"
+            onDismiss={() => setShowCreditError(false)}
+          />
+        </div>
+      )}
 
       {/* Input area */}
       <div className="border-t border-border-subtle p-3" data-tour="agent-input">

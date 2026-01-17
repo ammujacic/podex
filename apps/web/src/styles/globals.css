@@ -967,6 +967,21 @@
   animation: badge-bounce 0.3s ease-out;
 }
 
+@keyframes scale-fade-in {
+  from {
+    transform: scale(0.9);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.animate-scale-fade-in {
+  animation: scale-fade-in 150ms ease-out;
+}
+
 /* ============================================
    REDUCED MOTION
    ============================================ */

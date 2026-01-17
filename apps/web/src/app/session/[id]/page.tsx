@@ -28,7 +28,13 @@ import {
 import type { Agent, AgentMessage } from '@/stores/session';
 import { useUser, useAuthStore } from '@/stores/auth';
 import { useSessionStore } from '@/stores/session';
-import { useOnboardingTour, WORKSPACE_TOUR_STEPS } from '@/components/ui/OnboardingTour';
+import {
+  useOnboardingTour,
+  WORKSPACE_TOUR_STEPS,
+  MOBILE_WORKSPACE_TOUR_STEPS,
+} from '@/components/ui/OnboardingTour';
+import { useSessionTitle } from '@/hooks/useDocumentTitle';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 // Agent colors for mapping
 const agentColors = ['agent-1', 'agent-2', 'agent-3', 'agent-4', 'agent-5', 'agent-6'];
@@ -65,9 +71,13 @@ export default function SessionPage() {
   // Onboarding tour
   const { startTour, hasCompleted } = useOnboardingTour();
   const hasTriggeredTourRef = useRef(false);
+  const isMobile = useIsMobile();
 
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Set document title with session name and notifications
+  useSessionTitle(session?.name, sessionId);
   const [error, setError] = useState<string | null>(null);
   const [podStatus, setPodStatus] = useState<'starting' | 'running' | 'stopped' | 'error'>(
     'starting'
@@ -286,14 +296,16 @@ export default function SessionPage() {
       // Small delay to ensure UI is fully rendered
       const timer = setTimeout(() => {
         if (!hasCompleted('workspace-tour')) {
-          startTour(WORKSPACE_TOUR_STEPS, 'workspace-tour');
+          // Use mobile-specific tour steps on mobile devices
+          const tourSteps = isMobile ? MOBILE_WORKSPACE_TOUR_STEPS : WORKSPACE_TOUR_STEPS;
+          startTour(tourSteps, 'workspace-tour');
         }
       }, 800);
 
       return () => clearTimeout(timer);
     }
     return undefined;
-  }, [podStatus, hasCompleted, startTour]);
+  }, [podStatus, hasCompleted, startTour, isMobile]);
 
   const handleRestart = async () => {
     setRestarting(true);

@@ -13,6 +13,7 @@ import {
   type InvoiceResponse,
 } from '@/lib/api';
 import { CreditCard, Download } from 'lucide-react';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 const formatCurrency = (amount: number, currency = 'USD') => {
   return new Intl.NumberFormat('en-US', {
@@ -49,6 +50,7 @@ const statusColors: Record<string, string> = {
 };
 
 export default function BillingPage() {
+  useDocumentTitle('Billing');
   const [subscription, setSubscription] = useState<SubscriptionResponse | null>(null);
   const [credits, setCredits] = useState<CreditBalanceResponse | null>(null);
   const [invoices, setInvoices] = useState<InvoiceResponse[]>([]);

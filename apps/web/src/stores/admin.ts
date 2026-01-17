@@ -110,7 +110,6 @@ export interface AdminPlan {
   price_yearly_cents: number;
   currency: string;
   tokens_included: number;
-  compute_hours_included: number;
   compute_credits_cents_included: number;
   storage_gb_included: number;
   max_agents: number;

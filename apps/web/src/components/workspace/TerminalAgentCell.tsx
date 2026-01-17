@@ -307,36 +307,6 @@ export const TerminalAgentCell = forwardRef<TerminalAgentCellRef, TerminalAgentC
       terminalInstanceRef.current?.focus();
     }, []);
 
-    // Use capture-phase listener to intercept keyboard shortcuts before platform handlers
-    // This ensures Cmd/Ctrl+P and other shortcuts go to the terminal (e.g., OpenCode)
-    // instead of triggering platform search
-    useEffect(() => {
-      const container = terminalRef.current;
-      if (!container) return;
-
-      const handleKeyDownCapture = (e: KeyboardEvent) => {
-        // Check if the terminal or its children have focus
-        if (!container.contains(document.activeElement) && document.activeElement !== container) {
-          return;
-        }
-
-        // Let Escape through to allow users to exit terminal focus
-        if (e.key === 'Escape') {
-          return;
-        }
-
-        // Stop propagation during capture phase to prevent platform shortcuts
-        e.stopPropagation();
-      };
-
-      // Use capture phase to intercept before other handlers
-      document.addEventListener('keydown', handleKeyDownCapture, true);
-
-      return () => {
-        document.removeEventListener('keydown', handleKeyDownCapture, true);
-      };
-    }, []);
-
     return (
       <div className="overflow-hidden flex flex-col h-full">
         {/* Header */}
@@ -443,8 +413,10 @@ export const TerminalAgentCell = forwardRef<TerminalAgentCellRef, TerminalAgentC
           <div
             ref={terminalRef}
             className="absolute inset-0"
-            onClick={focusTerminal}
-            tabIndex={0}
+            onMouseDown={focusTerminal}
+            onFocus={focusTerminal}
+            tabIndex={-1}
+            data-terminal-container
           />
         </div>
       </div>

@@ -143,6 +143,16 @@ interface UIState {
   setMobileMenuOpen: (open: boolean) => void;
   toggleMobileMenu: () => void;
 
+  // Mobile widgets (for workspace bottom sheets)
+  mobileActiveWidget: string | null;
+  openMobileWidget: (widgetId: string) => void;
+  closeMobileWidget: () => void;
+
+  // Mobile file viewer
+  mobileOpenFile: { path: string; content: string; language: string } | null;
+  openMobileFile: (path: string, content: string, language: string) => void;
+  closeMobileFile: () => void;
+
   // Reduced motion preference
   prefersReducedMotion: boolean;
   setPrefersReducedMotion: (prefers: boolean) => void;
@@ -514,6 +524,16 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
   isMobileMenuOpen: false,
   setMobileMenuOpen: (open) => set({ isMobileMenuOpen: open }),
   toggleMobileMenu: () => set((state) => ({ isMobileMenuOpen: !state.isMobileMenuOpen })),
+
+  // Mobile widgets (for workspace bottom sheets)
+  mobileActiveWidget: null,
+  openMobileWidget: (widgetId) => set({ mobileActiveWidget: widgetId }),
+  closeMobileWidget: () => set({ mobileActiveWidget: null }),
+
+  // Mobile file viewer
+  mobileOpenFile: null,
+  openMobileFile: (path, content, language) => set({ mobileOpenFile: { path, content, language } }),
+  closeMobileFile: () => set({ mobileOpenFile: null }),
 
   // Reduced motion preference
   prefersReducedMotion: false,

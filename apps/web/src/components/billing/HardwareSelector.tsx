@@ -15,9 +15,12 @@ interface HardwareSpec {
   gpuMemoryGb?: number;
   storageGbDefault: number;
   storageGbMax: number;
-  hourlyRate: number;
+  hourlyRate: number; // Base cost
   isAvailable: boolean;
   requiresSubscription?: string;
+  // User-specific pricing (with margin applied)
+  userHourlyRate?: number | null;
+  computeMarginPercent?: number | null;
 }
 
 interface HardwareSelectorProps {
@@ -156,9 +159,16 @@ export function HardwareSelector({
 
               {/* Price and access */}
               <div className="mt-4 pt-3 border-t border-neutral-700 flex items-center justify-between">
-                <span className="text-lg font-semibold text-white">
-                  {formatPrice(spec.hourlyRate)}
-                </span>
+                <div className="flex flex-col">
+                  <span className="text-lg font-semibold text-white">
+                    {formatPrice(spec.userHourlyRate ?? spec.hourlyRate)}
+                  </span>
+                  {spec.computeMarginPercent != null && spec.computeMarginPercent > 0 && (
+                    <span className="text-[10px] text-neutral-500">
+                      incl. {spec.computeMarginPercent}% plan fee
+                    </span>
+                  )}
+                </div>
                 {spec.requiresSubscription && !hasAccess && (
                   <span className="text-xs text-amber-400 capitalize">
                     Requires {spec.requiresSubscription}

@@ -72,6 +72,8 @@ import { DashboardSkeleton } from '@/components/ui/Skeleton';
 import { TimeRangeSelector, getDaysFromValue } from '@/components/dashboard/TimeRangeSelector';
 import { ConfirmDialog, useConfirmDialog } from '@/components/dashboard/ConfirmDialog';
 import { useClickOutside } from '@/hooks/useClickOutside';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
+import { MobileHeader } from '@/components/ui/MobileHeader';
 
 // Status colors and labels
 const defaultStatus = {
@@ -197,6 +199,7 @@ function TemplateIcon({
 }
 
 export default function DashboardPage() {
+  useDocumentTitle('Dashboard');
   const router = useRouter();
   const user = useUser();
   const isInitialized = useAuthStore((s) => s.isInitialized);
@@ -566,8 +569,11 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Header */}
-      <header className="bg-void/80 backdrop-blur-lg border-b border-border-subtle sticky top-0 z-50">
+      {/* Mobile Header */}
+      <MobileHeader />
+
+      {/* Desktop Header */}
+      <header className="hidden md:block bg-void/80 backdrop-blur-lg border-b border-border-subtle sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
             <Logo href="/dashboard" />

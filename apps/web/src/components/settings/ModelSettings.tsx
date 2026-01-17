@@ -821,22 +821,27 @@ function PodexModelRow({ model }: PodexModelRowProps) {
             <Clock className="h-3 w-3" />
             {(model.contextWindow / 1000).toFixed(0)}K context
           </span>
-          {/* Token Pricing */}
+          {/* Token Pricing - show user-specific pricing if available */}
           {(model.inputPricePerMillion !== undefined ||
             model.outputPricePerMillion !== undefined) && (
             <span
               className="flex items-center gap-1"
-              title={`Input: $${model.inputPricePerMillion?.toFixed(2) ?? '?'}/M tokens, Output: $${model.outputPricePerMillion?.toFixed(2) ?? '?'}/M tokens`}
+              title={`Input: $${(model.userInputPricePerMillion ?? model.inputPricePerMillion)?.toFixed(2) ?? '?'}/M tokens, Output: $${(model.userOutputPricePerMillion ?? model.outputPricePerMillion)?.toFixed(2) ?? '?'}/M tokens${model.llmMarginPercent ? ` (incl. ${model.llmMarginPercent}% plan fee)` : ''}`}
             >
               <DollarSign className="h-3 w-3" />
               <span className="text-green-400">
-                ${model.inputPricePerMillion?.toFixed(2) ?? '?'}
+                ${(model.userInputPricePerMillion ?? model.inputPricePerMillion)?.toFixed(2) ?? '?'}
               </span>
               <span>/</span>
               <span className="text-amber-400">
-                ${model.outputPricePerMillion?.toFixed(2) ?? '?'}
+                $
+                {(model.userOutputPricePerMillion ?? model.outputPricePerMillion)?.toFixed(2) ??
+                  '?'}
               </span>
               <span className="text-text-muted/60">/M</span>
+              {model.llmMarginPercent != null && model.llmMarginPercent > 0 && (
+                <span className="text-[9px] text-text-muted/50">+{model.llmMarginPercent}%</span>
+              )}
             </span>
           )}
         </div>
@@ -960,6 +965,10 @@ export function ModelSettings({ className }: ModelSettingsProps) {
             : 'low',
       inputPricePerMillion: m.input_cost_per_million ?? undefined,
       outputPricePerMillion: m.output_cost_per_million ?? undefined,
+      // User-specific pricing (with margin applied)
+      userInputPricePerMillion: m.user_input_cost_per_million ?? undefined,
+      userOutputPricePerMillion: m.user_output_cost_per_million ?? undefined,
+      llmMarginPercent: m.llm_margin_percent ?? undefined,
     }),
     []
   );

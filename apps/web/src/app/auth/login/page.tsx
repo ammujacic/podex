@@ -9,6 +9,7 @@ import { login, getOAuthURL } from '@/lib/api';
 import { useAuthError, useAuthLoading } from '@/stores/auth';
 import { toast } from 'sonner';
 import { Loader2, Github } from 'lucide-react';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 // Google icon component
 function GoogleIcon({ className }: { className?: string }) {
@@ -35,6 +36,7 @@ function GoogleIcon({ className }: { className?: string }) {
 }
 
 export default function LoginPage() {
+  useDocumentTitle('Login', { showNotifications: false });
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');

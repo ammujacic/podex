@@ -210,7 +210,7 @@ export function AgentModeSelector({
           </button>
         </div>
 
-        <div className="space-y-6 px-6 pb-2">
+        <div className="space-y-6 px-6 pt-4 pb-2">
           {/* Mode Selection */}
           <div className="space-y-3">
             <div className="grid gap-3">

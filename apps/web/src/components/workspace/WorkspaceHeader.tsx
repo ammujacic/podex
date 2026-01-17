@@ -26,6 +26,7 @@ import { useVoiceCommands } from '@/hooks/useVoiceCommands';
 import { cn } from '@/lib/utils';
 import { GitPanel } from './GitPanel';
 import { PresencePanel, usePresenceStore } from './PresencePanel';
+import { CreditWarningIndicator } from './CreditWarningIndicator';
 import { Logo } from '@/components/ui/Logo';
 
 interface WorkspaceHeaderProps {
@@ -357,6 +358,9 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
             </span>
           )}
         </button>
+
+        {/* Credit/Quota Warning Indicator */}
+        <CreditWarningIndicator />
 
         {/* Collaborators */}
         <div className="relative" ref={collaboratorsPanelRef}>

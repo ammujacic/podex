@@ -179,18 +179,18 @@ export function LiveDemoSection() {
         >
           <div className="absolute -inset-4 bg-gradient-to-r from-agent-1/10 via-agent-2/10 to-agent-3/10 rounded-3xl blur-2xl opacity-50" />
 
-          <div className="relative bg-void border border-border-default rounded-2xl p-8 lg:p-12">
+          <div className="relative bg-void border border-border-default rounded-2xl p-4 sm:p-8 lg:p-12">
             {/* User input */}
-            <div className="flex justify-center mb-8">
+            <div className="flex justify-center mb-4 sm:mb-8">
               <AnimatePresence mode="wait">
                 {phase >= 1 && (
                   <motion.div
                     initial={{ opacity: 0, y: -10 }}
                     animate={{ opacity: 1, y: 0 }}
-                    className="flex items-center gap-3 px-4 py-2 rounded-full bg-surface border border-border-default"
+                    className="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-2 rounded-full bg-surface border border-border-default max-w-full"
                   >
-                    <MessageSquare className="h-4 w-4 text-accent-primary" />
-                    <span className="text-sm text-text-primary font-mono">
+                    <MessageSquare className="h-4 w-4 text-accent-primary shrink-0" />
+                    <span className="text-xs sm:text-sm text-text-primary font-mono truncate">
                       &quot;Build a user authentication system&quot;
                     </span>
                   </motion.div>
@@ -199,20 +199,22 @@ export function LiveDemoSection() {
             </div>
 
             {/* Orchestrator */}
-            <div className="flex justify-center mb-6 relative z-10">
+            <div className="flex justify-center mb-4 sm:mb-6 relative z-10">
               <motion.div
-                className={`relative p-6 rounded-2xl border-2 transition-all duration-300 ${
+                className={`relative p-4 sm:p-6 rounded-xl sm:rounded-2xl border-2 transition-all duration-300 ${
                   phase >= 2 ? 'bg-agent-1/10 border-agent-1' : 'bg-surface border-border-default'
                 }`}
                 animate={phase >= 2 && phase < 5 ? { scale: [1, 1.02, 1] } : {}}
                 transition={{ duration: 1, repeat: Infinity }}
               >
-                <div className="flex items-center gap-4">
-                  <div className="p-3 rounded-xl bg-agent-1/20">
-                    <Workflow className="h-8 w-8 text-agent-1" />
+                <div className="flex items-center gap-3 sm:gap-4">
+                  <div className="p-2 sm:p-3 rounded-lg sm:rounded-xl bg-agent-1/20">
+                    <Workflow className="h-6 w-6 sm:h-8 sm:w-8 text-agent-1" />
                   </div>
-                  <div>
-                    <h3 className="font-bold text-text-primary text-lg">Orchestrator</h3>
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-text-primary text-base sm:text-lg">
+                      Orchestrator
+                    </h3>
                     <AnimatePresence mode="wait">
                       <motion.p
                         key={phase}
@@ -241,8 +243,8 @@ export function LiveDemoSection() {
               </motion.div>
             </div>
 
-            {/* Connection lines from Orchestrator to Agents */}
-            <div className="relative h-16 mb-2">
+            {/* Connection lines from Orchestrator to Agents - hidden on mobile */}
+            <div className="relative h-8 sm:h-16 mb-2 hidden sm:block">
               {/* Vertical line from orchestrator */}
               <AnimatePresence>
                 {phase >= 3 && (
@@ -319,7 +321,7 @@ export function LiveDemoSection() {
             </div>
 
             {/* Agent cards */}
-            <div className="grid grid-cols-3 gap-6 relative z-10">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-6 relative z-10">
               {agents.map((agent, i) => {
                 const status = agentStatuses[agent.id];
                 const isActive = status === 'working';
@@ -331,7 +333,7 @@ export function LiveDemoSection() {
                     initial={{ opacity: 0, y: 20 }}
                     animate={phase >= 3 ? { opacity: 1, y: 0 } : { opacity: 0.3, y: 0 }}
                     transition={{ duration: 0.3, delay: i * 0.1 }}
-                    className={`p-4 rounded-xl border transition-all duration-300 ${
+                    className={`p-3 sm:p-4 rounded-lg sm:rounded-xl border transition-all duration-300 ${
                       isDone
                         ? 'bg-accent-success/10 border-accent-success'
                         : isActive
@@ -339,23 +341,29 @@ export function LiveDemoSection() {
                           : 'bg-surface border-border-default'
                     }`}
                   >
-                    <div className="flex items-center gap-3 mb-3">
-                      <div className={`p-2 rounded-lg ${agent.bgClass.replace('/10', '/20')}`}>
-                        <agent.icon className={`h-5 w-5 ${agent.colorClass}`} />
+                    <div className="flex items-center gap-2 sm:gap-3 mb-2 sm:mb-3">
+                      <div
+                        className={`p-1.5 sm:p-2 rounded-md sm:rounded-lg shrink-0 ${agent.bgClass.replace('/10', '/20')}`}
+                      >
+                        <agent.icon className={`h-4 w-4 sm:h-5 sm:w-5 ${agent.colorClass}`} />
                       </div>
-                      <span className="font-semibold text-text-primary">{agent.name}</span>
+                      <span className="font-semibold text-text-primary text-sm sm:text-base truncate">
+                        {agent.name}
+                      </span>
                       {isActive && (
-                        <Loader2 className={`h-4 w-4 ${agent.colorClass} animate-spin ml-auto`} />
+                        <Loader2
+                          className={`h-4 w-4 ${agent.colorClass} animate-spin ml-auto shrink-0`}
+                        />
                       )}
-                      {isDone && <Check className="h-4 w-4 text-accent-success ml-auto" />}
+                      {isDone && <Check className="h-4 w-4 text-accent-success ml-auto shrink-0" />}
                     </div>
-                    <p className="text-xs text-text-muted mb-2">{agent.task}</p>
+                    <p className="text-xs text-text-muted mb-2 truncate">{agent.task}</p>
                     <AnimatePresence>
                       {isDone && (
                         <motion.div
                           initial={{ opacity: 0, height: 0 }}
                           animate={{ opacity: 1, height: 'auto' }}
-                          className="text-xs font-mono text-accent-success bg-accent-success/10 px-2 py-1 rounded"
+                          className="text-xs font-mono text-accent-success bg-accent-success/10 px-2 py-1 rounded truncate"
                         >
                           ✓ {agent.output}
                         </motion.div>
@@ -367,7 +375,7 @@ export function LiveDemoSection() {
             </div>
 
             {/* Progress indicator with controls */}
-            <div className="mt-8 flex items-center justify-center gap-4">
+            <div className="mt-6 sm:mt-8 flex items-center justify-center gap-3 sm:gap-4">
               <button
                 onClick={togglePlayback}
                 className="p-2 rounded-lg bg-surface border border-border-default hover:border-border-strong transition-colors"

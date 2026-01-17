@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useMemo } from 'react';
+import Link from 'next/link';
 import {
   X,
   Bot,
@@ -750,9 +751,25 @@ function CreateAgentModal({ sessionId, onClose }: { sessionId: string; onClose: 
                   </h4>
                   <p className="text-sm text-red-400/90">{error}</p>
                   {(error.includes('quota') || error.includes('exceeded')) && (
-                    <p className="text-xs text-red-400/70 mt-2">
-                      Remove an existing agent or upgrade your plan to add more agents.
-                    </p>
+                    <div className="mt-3">
+                      <p className="text-xs text-red-400/70 mb-2">
+                        Remove an existing agent or upgrade your plan to add more agents.
+                      </p>
+                      <div className="flex gap-2">
+                        <Link
+                          href="/settings/billing/credits"
+                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded bg-red-500 hover:bg-red-600 text-white transition-colors"
+                        >
+                          Buy Credits
+                        </Link>
+                        <Link
+                          href="/settings/billing/plans"
+                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded bg-red-500/20 hover:bg-red-500/30 text-red-300 transition-colors"
+                        >
+                          Upgrade Plan
+                        </Link>
+                      </div>
+                    </div>
                   )}
                 </div>
               </div>

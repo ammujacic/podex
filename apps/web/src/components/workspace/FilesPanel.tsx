@@ -13,7 +13,9 @@ import {
   CloudSync,
 } from 'lucide-react';
 import { useSessionStore, type FilePreview } from '@/stores/session';
+import { useUIStore } from '@/stores/ui';
 import { cn } from '@/lib/utils';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { getLanguageFromPath } from './CodeEditor';
 import { listFiles, getFileContent, type FileNode } from '@/lib/api';
 
@@ -160,6 +162,9 @@ function FileTreeNode({
 
 export function FilesPanel({ sessionId }: FilesPanelProps) {
   const { openFilePreview, sessions } = useSessionStore();
+  const openMobileFile = useUIStore((state) => state.openMobileFile);
+  const closeMobileWidget = useUIStore((state) => state.closeMobileWidget);
+  const isMobile = useIsMobile();
   const viewMode = sessions[sessionId]?.viewMode ?? 'grid';
   const [rootFiles, setRootFiles] = useState<FileNode[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
@@ -234,38 +239,51 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
 
   const handleFileClick = useCallback(
     async (path: string) => {
-      // Dock files in grid/focus mode, float in freeform mode
-      const shouldDock = viewMode !== 'freeform';
-
       try {
         const fileContent = await getFileContent(sessionId, path);
 
-        const preview: FilePreview = {
-          id: `preview-${Date.now()}`,
-          path: fileContent.path,
-          content: fileContent.content,
-          language: fileContent.language,
-          pinned: false,
-          position: { x: 100 + Math.random() * 200, y: 100 + Math.random() * 100 },
-          docked: shouldDock,
-        };
-
-        openFilePreview(sessionId, preview);
+        if (isMobile) {
+          // On mobile, use the mobile file viewer
+          closeMobileWidget(); // Close the files widget first
+          openMobileFile(fileContent.path, fileContent.content, fileContent.language);
+        } else {
+          // On desktop, use the normal file preview
+          const shouldDock = viewMode !== 'freeform';
+          const preview: FilePreview = {
+            id: `preview-${Date.now()}`,
+            path: fileContent.path,
+            content: fileContent.content,
+            language: fileContent.language,
+            pinned: false,
+            position: { x: 100 + Math.random() * 200, y: 100 + Math.random() * 100 },
+            docked: shouldDock,
+          };
+          openFilePreview(sessionId, preview);
+        }
       } catch (err) {
         console.error('Failed to load file content:', err);
-        const preview: FilePreview = {
-          id: `preview-${Date.now()}`,
-          path,
-          content: `// Failed to load content for ${path}`,
-          language: getLanguageFromPath(path),
-          pinned: false,
-          position: { x: 100 + Math.random() * 200, y: 100 + Math.random() * 100 },
-          docked: shouldDock,
-        };
-        openFilePreview(sessionId, preview);
+        const errorContent = `// Failed to load content for ${path}`;
+        const language = getLanguageFromPath(path);
+
+        if (isMobile) {
+          closeMobileWidget();
+          openMobileFile(path, errorContent, language);
+        } else {
+          const shouldDock = viewMode !== 'freeform';
+          const preview: FilePreview = {
+            id: `preview-${Date.now()}`,
+            path,
+            content: errorContent,
+            language,
+            pinned: false,
+            position: { x: 100 + Math.random() * 200, y: 100 + Math.random() * 100 },
+            docked: shouldDock,
+          };
+          openFilePreview(sessionId, preview);
+        }
       }
     },
-    [sessionId, openFilePreview, viewMode]
+    [sessionId, openFilePreview, viewMode, isMobile, openMobileFile, closeMobileWidget]
   );
 
   return (

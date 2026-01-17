@@ -4,8 +4,10 @@ import { useState } from 'react';
 import { User, Mail, Key, Shield, Trash2, Save, Loader2 } from 'lucide-react';
 import { Button } from '@podex/ui';
 import { useUser } from '@/stores/auth';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 export default function AccountPage() {
+  useDocumentTitle('Account');
   const user = useUser();
   const [saving, setSaving] = useState(false);
   const [displayName, setDisplayName] = useState(user?.name || '');

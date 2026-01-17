@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAdminStore } from '@/stores/admin';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 function formatCurrency(cents: number): string {
   return new Intl.NumberFormat('en-US', {
@@ -88,6 +89,7 @@ function MetricCard({
 }
 
 export default function AdminDashboard() {
+  useDocumentTitle('Admin Dashboard');
   const { dashboard, dashboardLoading, fetchDashboard, error } = useAdminStore();
 
   useEffect(() => {

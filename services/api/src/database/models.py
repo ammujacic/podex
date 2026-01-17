@@ -951,8 +951,6 @@ class SubscriptionPlan(Base):
 
     # Included allowances (monthly)
     tokens_included: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    # Legacy field - use compute_credits_cents_included instead
-    compute_hours_included: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     compute_credits_cents_included: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     storage_gb_included: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 

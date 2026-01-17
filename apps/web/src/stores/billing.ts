@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
+import { useShallow } from 'zustand/shallow';
 
 // =============================================================================
 // TYPES
@@ -355,15 +356,17 @@ export const useHardwareSpecs = () => useBillingStore((state) => state.hardwareS
 
 // Loading states
 export const useBillingLoading = () =>
-  useBillingStore((state) => ({
-    plans: state.plansLoading,
-    subscription: state.subscriptionLoading,
-    usage: state.usageLoading,
-    quotas: state.quotasLoading,
-    credits: state.creditsLoading,
-    invoices: state.invoicesLoading,
-    hardwareSpecs: state.hardwareSpecsLoading,
-  }));
+  useBillingStore(
+    useShallow((state) => ({
+      plans: state.plansLoading,
+      subscription: state.subscriptionLoading,
+      usage: state.usageLoading,
+      quotas: state.quotasLoading,
+      credits: state.creditsLoading,
+      invoices: state.invoicesLoading,
+      hardwareSpecs: state.hardwareSpecsLoading,
+    }))
+  );
 
 // Computed
 export const useCurrentPlan = () => useBillingStore((state) => state.subscription?.plan ?? null);
@@ -395,7 +398,23 @@ export const useCanUsePlanning = () =>
 
 // Quota warnings
 export const useQuotaWarnings = () =>
-  useBillingStore((state) => state.quotas.filter((q) => q.isWarning && !q.isExceeded));
+  useBillingStore(useShallow((state) => state.quotas.filter((q) => q.isWarning && !q.isExceeded)));
 
 export const useQuotaExceeded = () =>
-  useBillingStore((state) => state.quotas.filter((q) => q.isExceeded));
+  useBillingStore(useShallow((state) => state.quotas.filter((q) => q.isExceeded)));
+
+// Low credit balance (less than $1.00)
+export const useLowCredits = () =>
+  useBillingStore((state) => state.creditBalance && state.creditBalance.balance < 100);
+
+// Check if user has any quota issues (warning or exceeded)
+export const useHasQuotaIssues = () =>
+  useBillingStore((state) => state.quotas.some((q) => q.isWarning || q.isExceeded));
+
+// Get highest severity quota issue
+export const useQuotaSeverity = (): 'none' | 'warning' | 'exceeded' =>
+  useBillingStore((state) => {
+    if (state.quotas.some((q) => q.isExceeded)) return 'exceeded';
+    if (state.quotas.some((q) => q.isWarning)) return 'warning';
+    return 'none';
+  });

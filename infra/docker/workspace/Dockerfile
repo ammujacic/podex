@@ -31,6 +31,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     software-properties-common \
     # Terminal multiplexer for session persistence
     tmux \
+    # Alternative shells
+    zsh \
+    fish \
     # Build essentials
     build-essential \
     pkg-config \
@@ -135,12 +138,28 @@ ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 ENV PATH="/home/dev/.npm-global/bin:${PATH}"
 
-# Default shell configuration
+# Default shell configurations
 RUN echo 'export PS1="\[\033[01;32m\]\u@podex\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ "' >> ~/.bashrc && \
     echo 'export PATH="/home/dev/.npm-global/bin:$PATH"' >> ~/.bashrc && \
     echo 'alias ll="ls -la"' >> ~/.bashrc && \
     echo 'alias la="ls -A"' >> ~/.bashrc && \
     echo 'alias l="ls -CF"' >> ~/.bashrc
+
+# Zsh configuration
+RUN echo 'export PS1="%F{green}%n@podex%f:%F{blue}%~%f$ "' >> ~/.zshrc && \
+    echo 'export PATH="/home/dev/.npm-global/bin:$PATH"' >> ~/.zshrc && \
+    echo 'alias ll="ls -la"' >> ~/.zshrc && \
+    echo 'alias la="ls -A"' >> ~/.zshrc && \
+    echo 'alias l="ls -CF"' >> ~/.zshrc && \
+    echo 'autoload -Uz compinit && compinit' >> ~/.zshrc
+
+# Fish configuration
+RUN mkdir -p ~/.config/fish && \
+    echo 'set -gx PATH /home/dev/.npm-global/bin $PATH' >> ~/.config/fish/config.fish && \
+    echo 'alias ll="ls -la"' >> ~/.config/fish/config.fish && \
+    echo 'alias la="ls -A"' >> ~/.config/fish/config.fish && \
+    echo 'alias l="ls -CF"' >> ~/.config/fish/config.fish && \
+    echo 'function fish_prompt; set_color green; echo -n (whoami)"@podex"; set_color normal; echo -n ":"; set_color blue; echo -n (prompt_pwd); set_color normal; echo -n "\$ "; end' >> ~/.config/fish/config.fish
 
 # Expose common development ports
 EXPOSE 3000 3001 4000 5000 5173 8000 8080

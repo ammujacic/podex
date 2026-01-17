@@ -110,6 +110,12 @@ export function VoiceSettings({ className }: VoiceSettingsProps) {
 
   // Load audio input devices
   const loadAudioDevices = useCallback(async () => {
+    // Check if mediaDevices API is available (requires HTTPS or localhost)
+    if (!navigator.mediaDevices?.getUserMedia) {
+      console.warn('MediaDevices API not available - requires secure context (HTTPS)');
+      return;
+    }
+
     setLoadingDevices(true);
     try {
       // Request microphone permission to get device labels
@@ -159,6 +165,12 @@ export function VoiceSettings({ className }: VoiceSettingsProps) {
 
   // Test microphone
   const testMicrophone = async () => {
+    // Check if mediaDevices API is available (requires HTTPS or localhost)
+    if (!navigator.mediaDevices?.getUserMedia) {
+      console.warn('MediaDevices API not available - requires secure context (HTTPS)');
+      return;
+    }
+
     setTestingMic(true);
     try {
       const constraints: MediaStreamConstraints = {

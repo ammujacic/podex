@@ -8,7 +8,6 @@ import { useAuthStore } from '@/stores/auth';
 import { useUIStore } from '@/stores/ui';
 import { initializeAuth } from '@/lib/api';
 import { OnboardingTourProvider } from '@/components/ui/OnboardingTour';
-import { MobileNav } from '@/components/ui/MobileNav';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { useSettingsSync } from '@/hooks/useSettingsSync';
 
@@ -38,6 +37,12 @@ function KeyboardShortcuts({ children }: { children: ReactNode }) {
       const target = e.target as HTMLElement;
       const isInput =
         target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+
+      // Skip ALL shortcuts when terminal is focused - let the terminal handle keyboard input
+      // Check both .xterm and [data-terminal-container] to catch all terminal focus states
+      const isTerminalFocused =
+        target.closest('.xterm') !== null || target.closest('[data-terminal-container]') !== null;
+      if (isTerminalFocused) return;
 
       // Require modifier key
       const isModifierKey = e.metaKey || e.ctrlKey;
@@ -132,39 +137,6 @@ function ThemeInitializer({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-// Mobile navigation wrapper - only shows on dashboard/non-workspace pages
-function MobileNavWrapper() {
-  const [mounted, setMounted] = useState(false);
-  const [pathname, setPathname] = useState('');
-
-  useEffect(() => {
-    setMounted(true);
-    setPathname(window.location.pathname);
-
-    // Listen for route changes
-    const handleRouteChange = () => {
-      setPathname(window.location.pathname);
-    };
-
-    window.addEventListener('popstate', handleRouteChange);
-    return () => window.removeEventListener('popstate', handleRouteChange);
-  }, []);
-
-  if (!mounted) return null;
-
-  // Pages that should show mobile nav
-  const showMobileNav =
-    pathname === '/dashboard' ||
-    pathname === '/settings' ||
-    pathname.startsWith('/settings/') ||
-    pathname === '/agents' ||
-    pathname.startsWith('/agents/');
-
-  if (!showMobileNav) return null;
-
-  return <MobileNav />;
-}
-
 export function Providers({ children }: ProvidersProps) {
   const [queryClient] = useState(
     () =>
@@ -225,7 +197,6 @@ export function Providers({ children }: ProvidersProps) {
                 {children}
 
                 {/* Global components */}
-                <MobileNavWrapper />
                 <AriaLiveRegion />
               </KeyboardShortcuts>
             </OnboardingTourProvider>
@@ -255,7 +226,7 @@ function ThemedToaster() {
     <Toaster
       theme={effectiveTheme as 'light' | 'dark'}
       position="bottom-right"
-      offset={80} // Above mobile nav
+      offset={16}
       toastOptions={{
         duration: 4000,
         style: {

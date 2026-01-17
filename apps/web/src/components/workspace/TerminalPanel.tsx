@@ -6,6 +6,7 @@ import { io, type Socket } from 'socket.io-client';
 import { useUIStore } from '@/stores/ui';
 import { useAuthStore } from '@/stores/auth';
 import { useSessionStore } from '@/stores/session';
+import { getUserConfig } from '@/lib/api/user-config';
 import { cn } from '@/lib/utils';
 
 export interface TerminalPanelProps {
@@ -44,11 +45,35 @@ const terminalTheme = {
 };
 
 export function TerminalPanel({ sessionId }: TerminalPanelProps) {
+  const [defaultShell, setDefaultShell] = useState<string>('bash');
   const [tabs, setTabs] = useState<TerminalTab[]>([
     { id: 'terminal-1', name: 'Terminal 1', shell: 'bash' },
   ]);
   const [activeTabId, setActiveTabId] = useState('terminal-1');
   const [nextTabId, setNextTabId] = useState(2);
+
+  // Load user's default shell preference
+  useEffect(() => {
+    async function loadDefaultShell() {
+      try {
+        const config = await getUserConfig();
+        if (config?.default_shell) {
+          setDefaultShell(config.default_shell);
+          // Update the initial tab with the user's preferred shell
+          setTabs((prev) => {
+            if (prev.length === 1 && prev[0]?.id === 'terminal-1') {
+              const firstTab = prev[0];
+              return [{ id: firstTab.id, name: firstTab.name, shell: config.default_shell }];
+            }
+            return prev;
+          });
+        }
+      } catch {
+        // Silently use default shell on error
+      }
+    }
+    loadDefaultShell();
+  }, []);
 
   const terminalRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const termInstances = useRef<Record<string, import('@xterm/xterm').Terminal>>({});
@@ -65,9 +90,12 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
   const workspaceId = session?.workspaceId || sessionId;
 
   const initTerminalForTab = useCallback(
-    async (tabId: string) => {
+    async (tabId: string, tabShell?: string) => {
       const container = terminalRefs.current[tabId];
       if (!container || termInstances.current[tabId]) return;
+
+      // Get shell from parameter or find it from tabs
+      const shell = tabShell || tabs.find((t) => t.id === tabId)?.shell || defaultShell;
 
       const { Terminal } = await import('@xterm/xterm');
       const { FitAddon } = await import('@xterm/addon-fit');
@@ -119,12 +147,13 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
         term.writeln('\x1b[36m╰─────────────────────────────────────────╯\x1b[0m');
         term.writeln('');
 
-        // Attach to terminal with unique terminal_id
+        // Attach to terminal with unique terminal_id and shell preference
         // Note: Don't send terminal_resize here - wait for terminal_ready
         socket.emit('terminal_attach', {
           workspace_id: workspaceId,
           terminal_id: tabId,
           auth_token: tokens?.accessToken,
+          shell: shell,
         });
       });
 
@@ -201,7 +230,7 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
       resizeHandlers.current[tabId] = handleResize;
       window.addEventListener('resize', handleResize);
     },
-    [workspaceId, tokens]
+    [workspaceId, tokens, tabs, defaultShell]
   );
 
   // Initialize terminal when tab becomes active
@@ -260,10 +289,13 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
 
   const handleAddTerminal = useCallback(() => {
     const newTabId = `terminal-${nextTabId}`;
-    setTabs((prev) => [...prev, { id: newTabId, name: `Terminal ${nextTabId}`, shell: 'bash' }]);
+    setTabs((prev) => [
+      ...prev,
+      { id: newTabId, name: `Terminal ${nextTabId}`, shell: defaultShell },
+    ]);
     setNextTabId((prev) => prev + 1);
     setActiveTabId(newTabId);
-  }, [nextTabId]);
+  }, [nextTabId, defaultShell]);
 
   const handleCloseTab = useCallback(
     (tabId: string, e: React.MouseEvent) => {
@@ -306,18 +338,20 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
         // If no tabs left, close the terminal panel
         if (newTabs.length === 0) {
           setTerminalVisible(false);
-          return [{ id: 'terminal-1', name: 'Terminal 1', shell: 'bash' }];
+          return [{ id: 'terminal-1', name: 'Terminal 1', shell: defaultShell }];
         }
 
         return newTabs;
       });
     },
-    [activeTabId, workspaceId, setTerminalVisible]
+    [activeTabId, workspaceId, setTerminalVisible, defaultShell]
   );
 
   const handleReconnect = useCallback(() => {
     const socket = sockets.current[activeTabId];
     const term = termInstances.current[activeTabId];
+    const currentTab = tabs.find((t) => t.id === activeTabId);
+    const shell = currentTab?.shell || defaultShell;
 
     if (term) {
       term.writeln('\r\n\x1b[33m[Reconnecting...]\x1b[0m\r\n');
@@ -331,6 +365,7 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
           workspace_id: workspaceId,
           terminal_id: activeTabId,
           auth_token: tokens?.accessToken,
+          shell: shell,
         });
       }, 100);
     } else {
@@ -338,9 +373,10 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
         workspace_id: workspaceId,
         terminal_id: activeTabId,
         auth_token: tokens?.accessToken,
+        shell: shell,
       });
     }
-  }, [activeTabId, workspaceId, tokens]);
+  }, [activeTabId, workspaceId, tokens, tabs, defaultShell]);
 
   return (
     <div className="flex h-full flex-col bg-surface">

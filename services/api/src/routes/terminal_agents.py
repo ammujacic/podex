@@ -306,6 +306,89 @@ class TerminalAgentSessionManager:
         async with self._lock:
             return self.sessions.get(session_id)
 
+    async def reattach_session(
+        self,
+        session_id: str,
+        workspace_id: str,
+        agent_type: TerminalIntegratedAgentType,
+        env_profile: ExternalAgentEnvProfile | None,
+        user_id: str,
+    ) -> dict[str, Any]:
+        """Reattach to an existing terminal agent session after disconnect.
+
+        This is used when a client reconnects after a page refresh or network
+        interruption. The tmux session is still running in the container,
+        so we just need to re-establish the connection without re-running
+        the startup command.
+        """
+        async with self._lock:
+            # If session already exists in memory, return it
+            if session_id in self.sessions:
+                return self.sessions[session_id]
+
+            # Create output queue for this session
+            output_queue: asyncio.Queue[str] = asyncio.Queue()
+            self._output_queues[session_id] = output_queue
+
+            # Create callback to capture terminal output
+            async def on_output(_ws_id: str, output: str) -> None:
+                """Store output in queue for WebSocket clients."""
+                if session_id in self._output_queues:
+                    await self._output_queues[session_id].put(output)
+
+            logger.info(
+                "Reattaching to terminal agent session",
+                session_id=session_id,
+                workspace_id=workspace_id,
+                agent_type=agent_type.slug,
+            )
+
+            try:
+                # Re-establish terminal connection via terminal_manager
+                # This will reattach to the existing tmux session
+                await terminal_manager.create_session(
+                    workspace_id=workspace_id,
+                    on_output=on_output,
+                    session_id=session_id,  # Use same session ID to reattach to tmux
+                )
+
+                # NOTE: We do NOT send the startup command here since the agent
+                # is already running in the existing tmux session
+
+                session_data = {
+                    "session_id": session_id,
+                    "workspace_id": workspace_id,
+                    "agent_type": agent_type,
+                    "env_profile": env_profile,
+                    "working_directory": "/home/dev",  # Default, not stored in DB
+                    "status": "running",
+                    "created_at": time.time(),
+                    "last_heartbeat": time.time(),
+                    "user_id": user_id,
+                    "reattached": True,  # Flag to indicate this was a reattach
+                }
+
+                self.sessions[session_id] = session_data
+
+                logger.info(
+                    "Terminal agent session reattached",
+                    session_id=session_id,
+                    workspace_id=workspace_id,
+                )
+
+                return session_data
+
+            except Exception as e:
+                # Clean up on failure
+                self._output_queues.pop(session_id, None)
+                await terminal_manager.close_session(session_id)
+                logger.exception(
+                    "Failed to reattach terminal agent session",
+                    session_id=session_id,
+                    error=str(e),
+                )
+                raise RuntimeError("Reattach failed") from e  # noqa: TRY003
+
     async def close_session(self, session_id: str) -> bool:
         """Close a terminal agent session."""
         async with self._lock:
@@ -778,7 +861,7 @@ async def close_terminal_agent_session(
 
 
 @router.websocket("/{session_id}/ws")
-async def terminal_agent_websocket(
+async def terminal_agent_websocket(  # noqa: PLR0915
     websocket: WebSocket,
     session_id: str,
     db: DbSession,
@@ -809,16 +892,85 @@ async def terminal_agent_websocket(
         await websocket.close(code=1008)  # Policy violation - not owner
         return
 
-    # Check if terminal session exists
+    # Check if terminal session exists in memory
     if not await terminal_session_manager.get_session(session_id):
-        await websocket.send_json(
-            {
-                "type": "error",
-                "message": "Terminal agent session not found. Please restart the agent.",
-            }
-        )
-        await websocket.close(code=1011)  # Internal error - session lost
-        return
+        # Session not in memory - try to reattach if DB says it's still running
+        # This handles page refresh / reconnection scenarios where the tmux
+        # session is still alive but the in-memory state was lost
+        if db_session.status == "running":
+            logger.info(
+                "Attempting to reattach to terminal agent session",
+                session_id=session_id,
+                workspace_id=db_session.workspace_id,
+            )
+
+            # Load agent type for reattachment
+            agent_type_result = await db.execute(
+                select(TerminalIntegratedAgentType).where(
+                    TerminalIntegratedAgentType.id == db_session.agent_type_id
+                )
+            )
+            agent_type = agent_type_result.scalar_one_or_none()
+
+            if not agent_type:
+                await websocket.send_json(
+                    {"type": "error", "message": "Agent type not found. Please restart the agent."}
+                )
+                await websocket.close(code=1011)
+                return
+
+            # Load env profile if one was used
+            env_profile: ExternalAgentEnvProfile | None = None
+            if db_session.env_profile_id:
+                env_profile_result = await db.execute(
+                    select(ExternalAgentEnvProfile).where(
+                        ExternalAgentEnvProfile.id == db_session.env_profile_id
+                    )
+                )
+                env_profile = env_profile_result.scalar_one_or_none()
+
+            try:
+                # Attempt to reattach to the existing tmux session
+                await terminal_session_manager.reattach_session(
+                    session_id=session_id,
+                    workspace_id=db_session.workspace_id,
+                    agent_type=agent_type,
+                    env_profile=env_profile,
+                    user_id=user_id,
+                )
+                logger.info(
+                    "Successfully reattached to terminal agent session",
+                    session_id=session_id,
+                )
+            except Exception as e:
+                # Reattach failed - tmux session may have died
+                logger.warning(
+                    "Failed to reattach to terminal agent session",
+                    session_id=session_id,
+                    error=str(e),
+                )
+                # Mark session as exited since we can't reconnect
+                db_session.status = "exited"
+                await db.commit()
+
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "message": "Terminal session ended. Please restart the agent.",
+                    }
+                )
+                await websocket.close(code=1011)
+                return
+        else:
+            # DB session is not running - can't reattach
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "message": "Terminal agent session not found. Please restart the agent.",
+                }
+            )
+            await websocket.close(code=1011)
+            return
 
     try:
         while not terminal_session_manager.is_shutting_down:

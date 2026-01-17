@@ -12,7 +12,7 @@ import {
   MoreVertical,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useAdminStore, type AdminUser } from '@/stores/admin';
+import { useAdminStore, type AdminUser, type AdminPlan } from '@/stores/admin';
 
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString('en-US', {
@@ -31,12 +31,16 @@ function formatCurrency(cents: number): string {
 
 interface UserRowProps {
   user: AdminUser;
+  plans: AdminPlan[];
   onRoleChange: (userId: string, role: string) => void;
   onToggleActive: (userId: string, isActive: boolean) => void;
 }
 
-function UserRow({ user, onRoleChange, onToggleActive }: UserRowProps) {
+function UserRow({ user, plans, onRoleChange, onToggleActive }: UserRowProps) {
   const [showMenu, setShowMenu] = useState(false);
+  const planName = user.subscription_plan
+    ? plans.find((p) => p.id === user.subscription_plan)?.name
+    : null;
 
   return (
     <tr className="border-b border-border-subtle hover:bg-overlay/30 transition-colors">
@@ -84,16 +88,19 @@ function UserRow({ user, onRoleChange, onToggleActive }: UserRowProps) {
       </td>
       <td className="px-4 py-3 text-text-secondary text-sm">
         {user.subscription_status ? (
-          <span
-            className={cn(
-              'px-2 py-1 rounded text-xs',
-              user.subscription_status === 'active'
-                ? 'bg-green-500/20 text-green-500'
-                : 'bg-yellow-500/20 text-yellow-500'
-            )}
-          >
-            {user.subscription_status}
-          </span>
+          <div className="flex flex-col gap-1">
+            {planName && <span className="text-text-primary font-medium">{planName}</span>}
+            <span
+              className={cn(
+                'px-2 py-1 rounded text-xs w-fit',
+                user.subscription_status === 'active'
+                  ? 'bg-green-500/20 text-green-500'
+                  : 'bg-yellow-500/20 text-yellow-500'
+              )}
+            >
+              {user.subscription_status}
+            </span>
+          </div>
         ) : (
           <span className="text-text-muted">No subscription</span>
         )}
@@ -151,7 +158,12 @@ export default function UsersManagement() {
   const [statusFilter, setStatusFilter] = useState<boolean | ''>('');
   const pageSize = 20;
 
-  const { users, usersTotal, usersLoading, fetchUsers, updateUser, error } = useAdminStore();
+  const { users, usersTotal, usersLoading, fetchUsers, updateUser, plans, fetchPlans, error } =
+    useAdminStore();
+
+  useEffect(() => {
+    fetchPlans();
+  }, [fetchPlans]);
 
   useEffect(() => {
     const filters: Record<string, string> = {};
@@ -279,6 +291,7 @@ export default function UsersManagement() {
                   <UserRow
                     key={user.id}
                     user={user}
+                    plans={plans}
                     onRoleChange={handleRoleChange}
                     onToggleActive={handleToggleActive}
                   />

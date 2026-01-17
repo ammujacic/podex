@@ -291,6 +291,27 @@ export function UsageSidebarPanel({ sessionId, isVisible = true }: UsageSidebarP
                     style={{ width: `${Math.min(tokenQuota.usagePercentage, 100)}%` }}
                   />
                 </div>
+                {/* CTA buttons when quota exceeded or at warning */}
+                {(tokenQuota.isExceeded || tokenQuota.isWarning) && (
+                  <div className="mt-2 flex gap-1.5">
+                    <Link
+                      href="/settings/billing/credits"
+                      className={`flex-1 text-center text-[10px] font-medium px-2 py-1 rounded transition-colors ${
+                        tokenQuota.isExceeded
+                          ? 'bg-accent-error/20 text-accent-error hover:bg-accent-error/30'
+                          : 'bg-accent-warning/20 text-accent-warning hover:bg-accent-warning/30'
+                      }`}
+                    >
+                      Buy Credits
+                    </Link>
+                    <Link
+                      href="/settings/billing/plans"
+                      className="flex-1 text-center text-[10px] font-medium px-2 py-1 rounded bg-elevated hover:bg-overlay text-text-secondary transition-colors"
+                    >
+                      Upgrade
+                    </Link>
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -172,6 +172,32 @@ export function isAbortError(error: unknown): boolean {
   );
 }
 
+// Helper to check if an error is a quota/credit exhaustion error
+export function isQuotaError(error: unknown): boolean {
+  if (error instanceof ApiRequestError) {
+    const msg = error.message.toLowerCase();
+    // 402 Payment Required or 403 Forbidden with quota-related message
+    return (
+      error.status === 402 ||
+      (error.status === 403 &&
+        (msg.includes('quota') ||
+          msg.includes('credit') ||
+          msg.includes('exceeded') ||
+          msg.includes('insufficient')))
+    );
+  }
+  if (error instanceof Error) {
+    const msg = error.message.toLowerCase();
+    return (
+      msg.includes('quota') ||
+      msg.includes('credit') ||
+      msg.includes('exceeded') ||
+      msg.includes('insufficient')
+    );
+  }
+  return false;
+}
+
 // Request options with optional abort signal
 interface RequestOptions {
   includeAuth?: boolean;
@@ -1902,7 +1928,6 @@ export interface SubscriptionPlanResponse {
   price_yearly: number;
   currency: string;
   tokens_included: number;
-  compute_hours_included: number; // Legacy - for backward compatibility
   compute_credits_included: number; // Compute credits in dollars
   storage_gb_included: number;
   max_agents: number;
@@ -2035,10 +2060,13 @@ export interface HardwareSpecResponse {
   gpu_count: number;
   storage_gb_default: number;
   storage_gb_max: number;
-  hourly_rate: number;
+  hourly_rate: number; // Base cost (provider cost)
   is_available: boolean;
   requires_subscription: string | null;
   region_availability: string[];
+  // User-specific pricing (with margin applied)
+  user_hourly_rate: number | null;
+  compute_margin_percent: number | null;
 }
 
 // Subscription Plans
@@ -3613,9 +3641,13 @@ export interface PublicModel {
   context_window: number;
   max_output_tokens: number;
   is_default: boolean;
-  input_cost_per_million: number | null;
-  output_cost_per_million: number | null;
+  input_cost_per_million: number | null; // Base cost (provider cost)
+  output_cost_per_million: number | null; // Base cost (provider cost)
   good_for: string[];
+  // User-specific pricing (with margin applied)
+  user_input_cost_per_million: number | null;
+  user_output_cost_per_million: number | null;
+  llm_margin_percent: number | null;
 }
 
 export interface AgentTypeDefaults {
