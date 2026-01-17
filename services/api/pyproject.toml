@@ -29,6 +29,8 @@ dependencies = [
     "pyotp>=2.9.0",
     "qrcode[pil]>=7.4.0",
     "python-multipart>=0.0.6",
+    # Security fix: CVE-2026-23490 requires pyasn1 >=0.6.2
+    "pyasn1>=0.6.2",
     # Local voice services (dev mode uses these instead of AWS)
     "openai-whisper>=20231117",
     "pyttsx3>=2.90",
@@ -294,6 +296,10 @@ module = [
     "pywebpush.*",
 ]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["google.cloud.*"]
+ignore_errors = true
 
 [[tool.mypy.overrides]]
 module = ["src.websocket.hub", "src.websocket.local_pod_hub", "src.routes.*", "src.middleware.rate_limit"]

@@ -511,31 +511,37 @@ jobs:
   # ==========================================
   # Infrastructure Checks
   # ==========================================
-  infra-typecheck:
-    name: Infrastructure Type Check
+  infra-check:
+    name: Infrastructure Check
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: infra
+        working-directory: infrastructure
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'pnpm'
-          cache-dependency-path: pnpm-lock.yaml
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: uv sync --extra dev
 
-      - name: Type check
-        run: pnpm typecheck
+      - name: Run Ruff check
+        run: uv run ruff check .
 
-      - name: CDK synth
-        run: pnpm synth
+      - name: Run Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Run mypy
+        run: uv run mypy .
+
+      - name: Run tests
+        run: uv run pytest tests/ -x --tb=short
 
   # ==========================================
   # Security Scanning
@@ -631,6 +637,7 @@ jobs:
       - frontend-build
       - docker-build
       - security-scan
+      - infra-check
     steps:
       - name: All tests passed
         run: echo "All tests passed successfully!"
