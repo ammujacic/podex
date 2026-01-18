@@ -15,7 +15,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from google.cloud import storage  # type: ignore[import-untyped]
+from google.cloud import storage  # type: ignore[import-untyped,attr-defined]
 from google.cloud.exceptions import NotFound  # type: ignore[import-untyped]
 
 from src.config import settings

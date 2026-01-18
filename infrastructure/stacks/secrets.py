@@ -36,7 +36,6 @@ def create_secrets(project_id: str, env: str) -> dict[str, Any]:
 
     secrets["jwt"] = jwt_secret
     secrets["jwt_value"] = jwt_value.result
-
     # 2. Database password (auto-generated)
     db_password = random.RandomPassword(
         f"db-password-{env}",
@@ -60,7 +59,6 @@ def create_secrets(project_id: str, env: str) -> dict[str, Any]:
 
     secrets["db_password"] = db_secret
     secrets["db_password_value"] = db_password.result
-
     # 3. Redis password (auto-generated)
     redis_password = random.RandomPassword(
         f"redis-password-{env}",
@@ -84,7 +82,6 @@ def create_secrets(project_id: str, env: str) -> dict[str, Any]:
 
     secrets["redis_password"] = redis_secret
     secrets["redis_password_value"] = redis_password.result
-
     # 4. Internal API key (for service-to-service auth)
     internal_api_key = random.RandomPassword(
         f"internal-api-key-{env}",
@@ -108,7 +105,6 @@ def create_secrets(project_id: str, env: str) -> dict[str, Any]:
 
     secrets["internal_api_key"] = internal_secret
     secrets["internal_api_key_value"] = internal_api_key.result
-
     # 5-6. Placeholder secrets (set manually via console or CLI)
     # These are for optional external services
     for name in ["sendgrid-api-key", "stripe-api-key"]:

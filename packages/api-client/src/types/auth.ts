@@ -35,14 +35,14 @@ export interface AuthResponse {
     avatar_url: string | null;
     role: string;
   };
-  access_token: string;
-  refresh_token: string;
+  access_token: string | null; // null when using httpOnly cookies in production
+  refresh_token: string | null; // null when using httpOnly cookies in production
   expires_in: number;
 }
 
 export interface TokenResponse {
-  access_token: string;
-  refresh_token: string;
+  access_token: string | null; // null when using httpOnly cookies in production
+  refresh_token: string | null; // null when using httpOnly cookies in production
   token_type: string;
   expires_in: number;
 }
@@ -53,8 +53,8 @@ export interface OAuthURLResponse {
 }
 
 export interface OAuthTokenResponse {
-  access_token: string;
-  refresh_token: string;
+  access_token: string | null; // null when using httpOnly cookies in production
+  refresh_token: string | null; // null when using httpOnly cookies in production
   token_type: string;
   expires_in: number;
   user: {

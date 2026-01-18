@@ -14,8 +14,8 @@ from pathlib import PurePosixPath
 from typing import Any, cast
 
 import structlog
-from google.cloud import storage
-from google.cloud.exceptions import NotFound
+from google.cloud import storage  # type: ignore[attr-defined,import-untyped]
+from google.cloud.exceptions import NotFound  # type: ignore[import-untyped]
 
 logger = structlog.get_logger()
 

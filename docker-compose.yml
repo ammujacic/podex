@@ -113,7 +113,7 @@ services:
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       # Email (console logging for dev)
       EMAIL_BACKEND: console
-      # Admin user credentials (for seeding) - NOTE: Change in production!
+      # Admin user credentials (for seeding) - NOTE: Change in production!ot
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@podex.dev}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-LocalDev_Change_In_Prod_123!}
       # Internal service URLs

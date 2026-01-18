@@ -1346,7 +1346,7 @@ async def _transcribe_audio_chunks(chunks: list[str], language: str = "en-US") -
         use_mock = settings.ENVIRONMENT == "development"
         speech_client = get_speech_client(use_mock=use_mock)
 
-        result = await speech_client.transcribe(
+        result = await speech_client.transcribe(  # type: ignore[attr-defined]
             audio_data=combined_audio,
             encoding="WEBM_OPUS",
             language_code=language,

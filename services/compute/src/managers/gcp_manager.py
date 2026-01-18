@@ -13,7 +13,7 @@ import httpx
 import structlog
 
 try:
-    from google.cloud import run_v2  # type: ignore[import-untyped]
+    from google.cloud import run_v2  # type: ignore[import-untyped,attr-defined]
     from google.cloud.run_v2.types import (  # type: ignore[import-untyped]
         Container,
         EnvVar,

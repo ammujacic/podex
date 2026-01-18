@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, cast
 
-from google.cloud import texttospeech
+from google.cloud import texttospeech  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +119,7 @@ class TTSClient:
             "mulaw": texttospeech.AudioEncoding.MULAW,
             "alaw": texttospeech.AudioEncoding.ALAW,
         }
-        return format_map.get(output_format, texttospeech.AudioEncoding.MP3)
+        return format_map.get(output_format, texttospeech.AudioEncoding.MP3)  # type: ignore[return-value]
 
     def _get_content_type(self, output_format: str) -> str:
         """Get MIME type for output format."""
@@ -315,7 +315,7 @@ class MockTTSClient(TTSClient):
     def __init__(self, **kwargs: Any):
         """Initialize mock client (ignores project_id)."""
         self.project_id = kwargs.get("project_id")
-        self._client: texttospeech.TextToSpeechClient | None = None
+        self._client: texttospeech.TextToSpeechClient | None = None  # type: ignore[assignment]
 
     async def synthesize_speech(
         self,

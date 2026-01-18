@@ -23,7 +23,12 @@ from src.middleware.rate_limit import (
     store_oauth_state,
     validate_oauth_state,
 )
-from src.routes.auth import _OAUTH2_TYPE_STR, create_access_token, create_refresh_token
+from src.routes.auth import (
+    _OAUTH2_TYPE_STR,
+    create_access_token,
+    create_refresh_token,
+    set_auth_cookies,
+)
 
 logger = structlog.get_logger()
 
@@ -60,10 +65,15 @@ class OAuthCallbackRequest(BaseModel):
 
 
 class OAuthTokenResponse(BaseModel):
-    """OAuth token response."""
+    """OAuth token response.
 
-    access_token: str
-    refresh_token: str
+    SECURITY:
+    - In production (COOKIE_SECURE=true): Tokens are ONLY in httpOnly cookies
+    - In development (COOKIE_SECURE=false): Tokens also returned in body
+    """
+
+    access_token: str | None = None  # Only set when COOKIE_SECURE=false
+    refresh_token: str | None = None  # Only set when COOKIE_SECURE=false
     token_type: str = _OAUTH2_TYPE_STR
     expires_in: int
     user: dict[str, Any]
@@ -319,7 +329,7 @@ async def _link_or_create_user(db: AsyncSession, user_info: OAuthUserInfo) -> Us
     return user
 
 
-def _build_token_response(user: User) -> OAuthTokenResponse:
+def _build_token_response(user: User, response: Response) -> OAuthTokenResponse:
     """Build OAuth token response for authenticated user."""
     # Get user role from database
     user_role = getattr(user, "role", "member") or "member"
@@ -327,9 +337,14 @@ def _build_token_response(user: User) -> OAuthTokenResponse:
     access_token_info = create_access_token(user.id, role=user_role)
     refresh_token_info = create_refresh_token(user.id)
 
+    # Set httpOnly cookies for authentication (same as login/register)
+    set_auth_cookies(response, access_token_info.token, refresh_token_info.token)
+
+    # In production (COOKIE_SECURE=true), tokens are ONLY in httpOnly cookies
+    # In development (COOKIE_SECURE=false), also return in body for compatibility
     return OAuthTokenResponse(
-        access_token=access_token_info.token,
-        refresh_token=refresh_token_info.token,
+        access_token=access_token_info.token if not settings.COOKIE_SECURE else None,
+        refresh_token=refresh_token_info.token if not settings.COOKIE_SECURE else None,
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         user={
             "id": user.id,
@@ -392,7 +407,7 @@ async def github_callback(
     )
     user = await _find_or_create_oauth_user(db, oauth_user_info)
 
-    return _build_token_response(user)
+    return _build_token_response(user, response)
 
 
 # ============== Google OAuth ==============
@@ -449,4 +464,4 @@ async def google_callback(
     )
     user = await _find_or_create_oauth_user(db, oauth_user_info)
 
-    return _build_token_response(user)
+    return _build_token_response(user, response)

@@ -41,7 +41,7 @@ export function WorkspaceLayout({ sessionId, children }: WorkspaceLayoutProps) {
   useAgentSocket({
     sessionId,
     userId: user?.id ?? '',
-    authToken: tokens?.accessToken,
+    authToken: tokens?.accessToken ?? undefined,
   });
 
   // Connect to context window events and fetch initial usage

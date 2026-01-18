@@ -390,7 +390,7 @@ async def transcribe_audio(
 
     # Transcribe audio directly (GCP Speech supports synchronous transcription)
     try:
-        result = await speech.transcribe(
+        result = await speech.transcribe(  # type: ignore[attr-defined]
             audio_data=audio_data,
             encoding=data.format.upper(),
             language_code=data.language or "en-US",
@@ -470,7 +470,7 @@ async def synthesize_speech(
     tts = _get_tts_client()
     voice_id = data.voice_id or settings.DEFAULT_TTS_VOICE_ID
 
-    tts_result = await tts.synthesize_speech(
+    tts_result = await tts.synthesize_speech(  # type: ignore[call-arg]
         text=data.text,
         voice_name=voice_id,
         audio_encoding=data.format.upper(),
@@ -583,7 +583,7 @@ async def synthesize_message(
 
     # Production: Use Google Cloud TTS
     tts = _get_tts_client()
-    tts_result = await tts.synthesize_speech(
+    tts_result = await tts.synthesize_speech(  # type: ignore[call-arg]
         text=text_to_speak,
         voice_name=voice_id,
         audio_encoding="MP3",
@@ -797,7 +797,7 @@ async def _local_ocr(image_bytes: bytes, language: str) -> OCRResponse:
 
 async def _gcp_vision_ocr(image_bytes: bytes, language: str) -> OCRResponse:
     """Perform OCR using Google Cloud Vision API."""
-    from google.cloud import vision
+    from google.cloud import vision  # type: ignore[attr-defined,import-untyped]
 
     try:
         client = vision.ImageAnnotatorClient()

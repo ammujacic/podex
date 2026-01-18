@@ -124,11 +124,14 @@ class UserResponse(BaseModel):
 class AuthResponse(BaseModel):
     """Auth response with user info.
 
-    SECURITY: Tokens are set via httpOnly cookies, not returned in body.
-    This prevents XSS attacks from stealing tokens.
+    SECURITY:
+    - In production (COOKIE_SECURE=true): Tokens are ONLY in httpOnly cookies (XSS protection)
+    - In development (COOKIE_SECURE=false): Tokens also returned in body for compatibility
     """
 
     user: UserResponse
+    access_token: str | None = None  # Only set when COOKIE_SECURE=false
+    refresh_token: str | None = None  # Only set when COOKIE_SECURE=false
     token_type: str = _OAUTH2_TYPE_STR
     expires_in: int
     mfa_required: bool = False
@@ -262,10 +265,11 @@ async def login(
         user.id, refresh_token_info.jti, refresh_token_info.expires_in_seconds
     )
 
-    # Set httpOnly cookies for secure token storage
-    # SECURITY: Tokens are NOT returned in response body to prevent XSS theft
+    # Set httpOnly cookies for secure token storage (XSS protection)
     set_auth_cookies(response, access_token_info.token, refresh_token_info.token)
 
+    # In production (COOKIE_SECURE=true), tokens are ONLY in httpOnly cookies
+    # In development (COOKIE_SECURE=false), also return in body for compatibility
     return AuthResponse(
         user=UserResponse(
             id=user.id,
@@ -274,6 +278,8 @@ async def login(
             avatar_url=user.avatar_url,
             role=user_role,
         ),
+        access_token=access_token_info.token if not settings.COOKIE_SECURE else None,
+        refresh_token=refresh_token_info.token if not settings.COOKIE_SECURE else None,
         expires_in=access_token_info.expires_in_seconds,
     )
 
@@ -347,9 +353,11 @@ async def register(
         user.id, refresh_token_info.jti, refresh_token_info.expires_in_seconds
     )
 
-    # Set httpOnly cookies for secure token storage
+    # Set httpOnly cookies for secure token storage (XSS protection)
     set_auth_cookies(response, access_token_info.token, refresh_token_info.token)
 
+    # In production (COOKIE_SECURE=true), tokens are ONLY in httpOnly cookies
+    # In development (COOKIE_SECURE=false), also return in body for compatibility
     return AuthResponse(
         user=UserResponse(
             id=user.id,
@@ -358,6 +366,8 @@ async def register(
             avatar_url=user.avatar_url,
             role=user_role,
         ),
+        access_token=access_token_info.token if not settings.COOKIE_SECURE else None,
+        refresh_token=refresh_token_info.token if not settings.COOKIE_SECURE else None,
         expires_in=access_token_info.expires_in_seconds,
     )
 

@@ -554,7 +554,7 @@ async def sync_dotfiles_from_repo(
             )
 
         # Upload specified files to GCS
-        from google.cloud import storage
+        from google.cloud import storage  # type: ignore[attr-defined,import-untyped]
 
         gcs_client = storage.Client(project=settings.GCP_PROJECT_ID)
         bucket = gcs_client.bucket(settings.GCS_BUCKET)

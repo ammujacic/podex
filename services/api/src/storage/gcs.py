@@ -10,8 +10,8 @@ from functools import lru_cache
 from pathlib import PurePosixPath
 from typing import Any
 
-from google.cloud import storage
-from google.cloud.exceptions import NotFound
+from google.cloud import storage  # type: ignore[attr-defined,import-untyped]
+from google.cloud.exceptions import NotFound  # type: ignore[import-untyped]
 
 from src.config import settings
 from src.exceptions import FileNotFoundInStorageError

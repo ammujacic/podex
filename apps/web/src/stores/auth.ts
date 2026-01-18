@@ -10,8 +10,8 @@ export interface User {
 }
 
 export interface AuthTokens {
-  accessToken: string;
-  refreshToken: string;
+  accessToken: string | null; // null when using httpOnly cookies in production
+  refreshToken: string | null; // null when using httpOnly cookies in production
   expiresAt: number;
 }
 
@@ -77,6 +77,7 @@ export const useAuthStore = create<AuthState>()(
 
 // Selector hooks for convenience
 export const useUser = () => useAuthStore((state) => state.user);
-export const useIsAuthenticated = () => useAuthStore((state) => !!state.user && !!state.tokens);
+// User presence indicates authentication (tokens may be null when using httpOnly cookies in prod)
+export const useIsAuthenticated = () => useAuthStore((state) => !!state.user);
 export const useAuthLoading = () => useAuthStore((state) => state.isLoading);
 export const useAuthError = () => useAuthStore((state) => state.error);
