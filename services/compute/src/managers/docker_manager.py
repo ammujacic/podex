@@ -8,10 +8,10 @@ import re
 import shlex
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Iterator
 
 import docker
 import httpx
@@ -1103,11 +1103,14 @@ class DockerComputeManager(ComputeManager):
 
             # Start exec with stream=True for automatic demuxing
             # (socket=True gives raw multiplexed bytes that need manual header parsing)
-            output_generator = await asyncio.to_thread(
-                self.client.api.exec_start,
-                exec_id,
-                stream=True,
-                demux=True,  # Separate stdout/stderr
+            output_generator = cast(
+                "Iterator[tuple[bytes | None, bytes | None]]",
+                await asyncio.to_thread(
+                    self.client.api.exec_start,
+                    exec_id,
+                    stream=True,
+                    demux=True,  # Separate stdout/stderr
+                ),
             )
 
             start_time = asyncio.get_event_loop().time()
