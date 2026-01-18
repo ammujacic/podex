@@ -7,6 +7,8 @@ Free tier includes:
 - 360,000 GiB-seconds/month
 """
 
+from __future__ import annotations
+
 from typing import Any, TypedDict
 
 import pulumi
