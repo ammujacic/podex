@@ -16,7 +16,7 @@ class PlatformSetting(Base):
     __tablename__ = "platform_settings"
 
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
-    value: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    value: Mapped[dict[str, Any] | list[Any]] = mapped_column(JSONB, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     category: Mapped[str] = mapped_column(String(50), default="general", nullable=False, index=True)
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

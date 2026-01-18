@@ -11,6 +11,7 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.audit_logger import AuditAction, AuditLogger, AuditStatus
 from src.config import settings
 from src.database.connection import get_db
 from src.database.models import PlatformSetting, SubscriptionPlan, User, UserSubscription
@@ -214,6 +215,13 @@ async def login(
     user = result.scalar_one_or_none()
 
     if not user:
+        # Log failed login attempt (user not found)
+        audit = AuditLogger(db).set_context(request=request)
+        await audit.log_auth(
+            AuditAction.AUTH_LOGIN_FAILED,
+            status=AuditStatus.FAILURE,
+            details={"email": body.email, "reason": "user_not_found"},
+        )
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     # Check if user has a password (not OAuth-only user)
@@ -225,6 +233,14 @@ async def login(
 
     # Verify password
     if not verify_password(body.password, user.password_hash):
+        # Log failed login attempt (bad password)
+        audit = AuditLogger(db).set_context(request=request, user_id=user.id, user_email=user.email)
+        await audit.log_auth(
+            AuditAction.AUTH_LOGIN_FAILED,
+            status=AuditStatus.FAILURE,
+            details={"reason": "invalid_password"},
+            resource_id=user.id,
+        )
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     # Check if user is active
@@ -246,6 +262,16 @@ async def login(
         )
 
         if not verification.success:
+            # Log failed MFA verification
+            audit = AuditLogger(db).set_context(
+                request=request, user_id=user.id, user_email=user.email
+            )
+            await audit.log_auth(
+                AuditAction.AUTH_LOGIN_FAILED,
+                status=AuditStatus.FAILURE,
+                details={"reason": "invalid_mfa_code"},
+                resource_id=user.id,
+            )
             raise HTTPException(status_code=401, detail="Invalid MFA code")
 
         # Update backup codes if one was used
@@ -267,6 +293,15 @@ async def login(
 
     # Set httpOnly cookies for secure token storage (XSS protection)
     set_auth_cookies(response, access_token_info.token, refresh_token_info.token)
+
+    # Log successful login
+    audit = AuditLogger(db).set_context(request=request, user_id=user.id, user_email=user.email)
+    await audit.log_auth(
+        AuditAction.AUTH_LOGIN,
+        status=AuditStatus.SUCCESS,
+        details={"mfa_used": user.mfa_enabled},
+        resource_id=user.id,
+    )
 
     # In production (COOKIE_SECURE=true), tokens are ONLY in httpOnly cookies
     # In development (COOKIE_SECURE=false), also return in body for compatibility
@@ -298,7 +333,11 @@ async def register(
         select(PlatformSetting).where(PlatformSetting.key == "feature_flags")
     )
     feature_flags = feature_flags_result.scalar_one_or_none()
-    if feature_flags and not feature_flags.value.get("registration_enabled", True):
+    if (
+        feature_flags
+        and isinstance(feature_flags.value, dict)
+        and not feature_flags.value.get("registration_enabled", True)
+    ):
         raise HTTPException(
             status_code=403,
             detail="Registration is currently disabled. Please contact an administrator.",
@@ -366,6 +405,17 @@ async def register(
 
     # Set httpOnly cookies for secure token storage (XSS protection)
     set_auth_cookies(response, access_token_info.token, refresh_token_info.token)
+
+    # Log user registration
+    audit = AuditLogger(db).set_context(request=request, user_id=user.id, user_email=user.email)
+    await audit.log(
+        AuditAction.USER_CREATED,
+        category="user",
+        status=AuditStatus.SUCCESS,
+        resource_type="user",
+        resource_id=user.id,
+        details={"email": user.email, "name": user.name},
+    )
 
     # In production (COOKIE_SECURE=true), tokens are ONLY in httpOnly cookies
     # In development (COOKIE_SECURE=false), also return in body for compatibility
@@ -493,6 +543,7 @@ class LogoutRequest(BaseModel):
 async def logout(
     request: Request,
     response: Response,
+    db: DbSession,
     body: LogoutRequest | None = None,
 ) -> LogoutResponse:
     """Log out user by clearing authentication cookies.
@@ -500,16 +551,27 @@ async def logout(
     This endpoint clears the httpOnly cookies that store auth tokens.
     Optionally revokes all sessions for the user if requested.
     """
+    user_id = getattr(request.state, "user_id", None)
+    user_email = getattr(request.state, "user_email", None)
+
     clear_auth_cookies(response)
 
+    # Log logout
+    if user_id:
+        audit = AuditLogger(db).set_context(request=request, user_id=user_id, user_email=user_email)
+        await audit.log_auth(
+            AuditAction.AUTH_LOGOUT,
+            status=AuditStatus.SUCCESS,
+            resource_id=user_id,
+            details={"revoke_all_sessions": body.revoke_all_sessions if body else False},
+        )
+
     # Optionally revoke all user tokens (e.g., "log out everywhere")
-    if body and body.revoke_all_sessions:
-        user_id = getattr(request.state, "user_id", None)
-        if user_id:
-            revoked_count = await revoke_all_user_tokens(user_id)
-            return LogoutResponse(
-                message=f"Logged out successfully. Revoked {revoked_count} active sessions."
-            )
+    if body and body.revoke_all_sessions and user_id:
+        revoked_count = await revoke_all_user_tokens(user_id)
+        return LogoutResponse(
+            message=f"Logged out successfully. Revoked {revoked_count} active sessions."
+        )
 
     return LogoutResponse()
 
@@ -625,6 +687,14 @@ async def change_password(
     # Update password
     user.password_hash = hash_password(body.new_password)
     await db.commit()
+
+    # Log password change
+    audit = AuditLogger(db).set_context(request=request, user_id=user.id, user_email=user.email)
+    await audit.log_auth(
+        AuditAction.AUTH_PASSWORD_CHANGED,
+        status=AuditStatus.SUCCESS,
+        resource_id=user.id,
+    )
 
     # SECURITY: Revoke all existing tokens on password change
     # This ensures any compromised sessions are terminated

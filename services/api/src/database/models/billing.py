@@ -184,7 +184,11 @@ class UserSubscription(Base):
     )
 
     # Relationships
-    user: Mapped["User"] = relationship("User")
+    user: Mapped["User"] = relationship("User", foreign_keys=[user_id])
+    sponsored_by: Mapped["User | None"] = relationship(
+        "User",
+        foreign_keys=[sponsored_by_id],
+    )
     plan: Mapped["SubscriptionPlan"] = relationship(
         "SubscriptionPlan",
         back_populates="subscriptions",

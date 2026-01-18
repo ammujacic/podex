@@ -22,6 +22,7 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { api } from '@/lib/api';
 
 interface ComplianceStats {
   total_policies: number;
@@ -451,9 +452,8 @@ export default function CompliancePage() {
 
   const fetchStats = useCallback(async () => {
     try {
-      const response = await fetch('/api/admin/compliance/stats', { credentials: 'include' });
-      if (!response.ok) throw new Error('Failed to fetch stats');
-      setStats(await response.json());
+      const data = await api.get<ComplianceStats>('/api/admin/compliance/stats');
+      setStats(data);
     } catch (err) {
       console.error('Failed to fetch compliance stats:', err);
     }
@@ -461,11 +461,8 @@ export default function CompliancePage() {
 
   const fetchPolicies = useCallback(async () => {
     try {
-      const response = await fetch('/api/admin/compliance/retention/policies', {
-        credentials: 'include',
-      });
-      if (!response.ok) throw new Error('Failed to fetch policies');
-      setPolicies(await response.json());
+      const data = await api.get<DataRetentionPolicy[]>('/api/admin/compliance/retention/policies');
+      setPolicies(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     }
@@ -473,11 +470,8 @@ export default function CompliancePage() {
 
   const fetchReviews = useCallback(async () => {
     try {
-      const response = await fetch('/api/admin/compliance/access-reviews', {
-        credentials: 'include',
-      });
-      if (!response.ok) throw new Error('Failed to fetch reviews');
-      setReviews(await response.json());
+      const data = await api.get<AccessReview[]>('/api/admin/compliance/access-reviews');
+      setReviews(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     }
@@ -485,11 +479,8 @@ export default function CompliancePage() {
 
   const fetchExports = useCallback(async () => {
     try {
-      const response = await fetch('/api/admin/compliance/data-exports', {
-        credentials: 'include',
-      });
-      if (!response.ok) throw new Error('Failed to fetch exports');
-      setExports(await response.json());
+      const data = await api.get<DataExportRequest[]>('/api/admin/compliance/data-exports');
+      setExports(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     }
@@ -506,19 +497,11 @@ export default function CompliancePage() {
 
   const handleSavePolicy = async (data: Partial<DataRetentionPolicy>) => {
     try {
-      const url = editingPolicy
-        ? `/api/admin/compliance/retention/policies/${editingPolicy.id}`
-        : '/api/admin/compliance/retention/policies';
-      const method = editingPolicy ? 'PATCH' : 'POST';
-
-      const response = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(data),
-      });
-
-      if (!response.ok) throw new Error('Failed to save policy');
+      if (editingPolicy) {
+        await api.patch(`/api/admin/compliance/retention/policies/${editingPolicy.id}`, data);
+      } else {
+        await api.post('/api/admin/compliance/retention/policies', data);
+      }
 
       setShowPolicyModal(false);
       setEditingPolicy(undefined);
@@ -533,11 +516,7 @@ export default function CompliancePage() {
     if (!confirm('Are you sure you want to delete this policy?')) return;
 
     try {
-      const response = await fetch(`/api/admin/compliance/retention/policies/${policyId}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      });
-      if (!response.ok) throw new Error('Failed to delete policy');
+      await api.delete(`/api/admin/compliance/retention/policies/${policyId}`);
       fetchPolicies();
       fetchStats();
     } catch (err) {
@@ -547,12 +526,10 @@ export default function CompliancePage() {
 
   const handleRunPolicy = async (policyId: string, dryRun: boolean = true) => {
     try {
-      const response = await fetch(
+      const results = await api.post<Record<string, unknown>>(
         `/api/admin/compliance/retention/run?policy_id=${policyId}&dry_run=${dryRun}`,
-        { method: 'POST', credentials: 'include' }
+        {}
       );
-      if (!response.ok) throw new Error('Failed to run policy');
-      const results = await response.json();
       alert(`Policy executed${dryRun ? ' (dry run)' : ''}:\n${JSON.stringify(results, null, 2)}`);
       if (!dryRun) {
         fetchPolicies();
@@ -565,13 +542,7 @@ export default function CompliancePage() {
 
   const handleSaveReview = async (data: Partial<AccessReview>) => {
     try {
-      const response = await fetch('/api/admin/compliance/access-reviews', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(data),
-      });
-      if (!response.ok) throw new Error('Failed to create review');
+      await api.post('/api/admin/compliance/access-reviews', data);
       setShowReviewModal(false);
       fetchReviews();
       fetchStats();
@@ -582,11 +553,7 @@ export default function CompliancePage() {
 
   const handleProcessExport = async (requestId: string) => {
     try {
-      const response = await fetch(`/api/admin/compliance/data-exports/${requestId}/process`, {
-        method: 'POST',
-        credentials: 'include',
-      });
-      if (!response.ok) throw new Error('Failed to process export');
+      await api.post(`/api/admin/compliance/data-exports/${requestId}/process`, {});
       fetchExports();
       fetchStats();
     } catch (err) {

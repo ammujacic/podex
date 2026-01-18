@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.audit_logger import AuditAction, AuditLogger
 from src.database import get_db
 from src.database.models import LLMProvider, PlatformSetting
 from src.middleware.admin import get_admin_user_id, require_admin, require_super_admin
@@ -27,7 +28,7 @@ class CreateSettingRequest(BaseModel):
     """Create platform setting request."""
 
     key: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-z0-9_]+$")
-    value: dict[str, Any]
+    value: dict[str, Any] | list[Any]
     description: str | None = None
     category: str = Field(default="general", max_length=50)
     is_public: bool = False
@@ -36,7 +37,7 @@ class CreateSettingRequest(BaseModel):
 class UpdateSettingRequest(BaseModel):
     """Update platform setting request."""
 
-    value: dict[str, Any] | None = None
+    value: dict[str, Any] | list[Any] | None = None
     description: str | None = None
     category: str | None = None
     is_public: bool | None = None
@@ -46,7 +47,7 @@ class AdminSettingResponse(BaseModel):
     """Admin setting response."""
 
     key: str
-    value: dict[str, Any]
+    value: dict[str, Any] | list[Any]
     description: str | None
     category: str
     is_public: bool
@@ -61,7 +62,7 @@ class PublicSettingResponse(BaseModel):
     """Public setting response (limited fields)."""
 
     key: str
-    value: dict[str, Any]
+    value: dict[str, Any] | list[Any]
     category: str
 
 
@@ -162,6 +163,247 @@ async def list_settings(
     ]
 
 
+# ==================== LLM Provider Models ====================
+
+
+class LLMProviderResponse(BaseModel):
+    """Admin LLM provider response."""
+
+    id: str
+    slug: str
+    name: str
+    description: str | None
+    icon: str | None
+    color: str | None
+    logo_url: str | None
+    is_local: bool
+    default_url: str | None
+    docs_url: str | None
+    setup_guide_url: str | None
+    requires_api_key: bool
+    supports_streaming: bool
+    supports_tools: bool
+    supports_vision: bool
+    is_enabled: bool
+    sort_order: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CreateLLMProviderRequest(BaseModel):
+    """Create a new LLM provider."""
+
+    slug: str = Field(..., min_length=1, max_length=50, pattern=r"^[a-z][a-z0-9-]*$")
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str | None = None
+    icon: str | None = None
+    color: str | None = None
+    logo_url: str | None = None
+    is_local: bool = False
+    default_url: str | None = None
+    docs_url: str | None = None
+    setup_guide_url: str | None = None
+    requires_api_key: bool = True
+    supports_streaming: bool = True
+    supports_tools: bool = True
+    supports_vision: bool = False
+    is_enabled: bool = True
+    sort_order: int = 100
+
+
+class UpdateLLMProviderRequest(BaseModel):
+    """Update an LLM provider."""
+
+    name: str | None = None
+    description: str | None = None
+    icon: str | None = None
+    color: str | None = None
+    logo_url: str | None = None
+    is_local: bool | None = None
+    default_url: str | None = None
+    docs_url: str | None = None
+    setup_guide_url: str | None = None
+    requires_api_key: bool | None = None
+    supports_streaming: bool | None = None
+    supports_tools: bool | None = None
+    supports_vision: bool | None = None
+    is_enabled: bool | None = None
+    sort_order: int | None = None
+
+
+# ==================== LLM Provider Endpoints ====================
+# NOTE: These must be defined BEFORE the /{key} catch-all route
+
+
+def _provider_to_response(provider: LLMProvider) -> LLMProviderResponse:
+    """Convert LLMProvider model to response."""
+    return LLMProviderResponse(
+        id=provider.id,
+        slug=provider.slug,
+        name=provider.name,
+        description=provider.description,
+        icon=provider.icon,
+        color=provider.color,
+        logo_url=provider.logo_url,
+        is_local=provider.is_local,
+        default_url=provider.default_url,
+        docs_url=provider.docs_url,
+        setup_guide_url=provider.setup_guide_url,
+        requires_api_key=provider.requires_api_key,
+        supports_streaming=provider.supports_streaming,
+        supports_tools=provider.supports_tools,
+        supports_vision=provider.supports_vision,
+        is_enabled=provider.is_enabled,
+        sort_order=provider.sort_order,
+        created_at=provider.created_at,
+        updated_at=provider.updated_at,
+    )
+
+
+@router.get("/providers", response_model=list[LLMProviderResponse])
+@limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
+async def list_providers(
+    request: Request,
+    response: Response,
+    db: DbSession,
+    include_disabled: Annotated[bool, Query()] = True,
+) -> list[LLMProviderResponse]:
+    """List all LLM providers (admin view includes disabled)."""
+    query = select(LLMProvider).order_by(LLMProvider.sort_order)
+
+    if not include_disabled:
+        query = query.where(LLMProvider.is_enabled == True)
+
+    result = await db.execute(query)
+    providers = result.scalars().all()
+
+    return [_provider_to_response(p) for p in providers]
+
+
+@router.get("/providers/{slug}", response_model=LLMProviderResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
+async def get_provider(
+    slug: str,
+    request: Request,
+    response: Response,
+    db: DbSession,
+) -> LLMProviderResponse:
+    """Get a specific LLM provider."""
+    result = await db.execute(select(LLMProvider).where(LLMProvider.slug == slug))
+    provider = result.scalar_one_or_none()
+
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    return _provider_to_response(provider)
+
+
+@router.post("/providers", response_model=LLMProviderResponse, status_code=201)
+@limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
+async def create_provider(
+    data: CreateLLMProviderRequest,
+    request: Request,
+    response: Response,
+    db: DbSession,
+) -> LLMProviderResponse:
+    """Create a new LLM provider."""
+    admin_id = get_admin_user_id(request)
+
+    # Check if provider already exists
+    existing = await db.execute(select(LLMProvider).where(LLMProvider.slug == data.slug))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Provider already exists")
+
+    provider = LLMProvider(
+        slug=data.slug,
+        name=data.name,
+        description=data.description,
+        icon=data.icon,
+        color=data.color,
+        logo_url=data.logo_url,
+        is_local=data.is_local,
+        default_url=data.default_url,
+        docs_url=data.docs_url,
+        setup_guide_url=data.setup_guide_url,
+        requires_api_key=data.requires_api_key,
+        supports_streaming=data.supports_streaming,
+        supports_tools=data.supports_tools,
+        supports_vision=data.supports_vision,
+        is_enabled=data.is_enabled,
+        sort_order=data.sort_order,
+    )
+
+    db.add(provider)
+    await db.commit()
+    await db.refresh(provider)
+
+    logger.info("Admin created LLM provider", admin_id=admin_id, slug=data.slug)
+
+    return _provider_to_response(provider)
+
+
+@router.patch("/providers/{slug}", response_model=LLMProviderResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
+async def update_provider(
+    slug: str,
+    data: UpdateLLMProviderRequest,
+    request: Request,
+    response: Response,
+    db: DbSession,
+) -> LLMProviderResponse:
+    """Update an LLM provider."""
+    admin_id = get_admin_user_id(request)
+
+    result = await db.execute(select(LLMProvider).where(LLMProvider.slug == slug))
+    provider = result.scalar_one_or_none()
+
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    # Update only provided fields
+    update_data = data.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(provider, field, value)
+
+    await db.commit()
+    await db.refresh(provider)
+
+    logger.info("Admin updated LLM provider", admin_id=admin_id, slug=slug)
+
+    return _provider_to_response(provider)
+
+
+@router.delete("/providers/{slug}")
+@limiter.limit(RATE_LIMIT_STANDARD)
+@require_super_admin
+async def delete_provider(
+    slug: str,
+    request: Request,
+    response: Response,
+    db: DbSession,
+) -> dict[str, str]:
+    """Delete an LLM provider (super admin only)."""
+    admin_id = get_admin_user_id(request)
+
+    result = await db.execute(select(LLMProvider).where(LLMProvider.slug == slug))
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    await db.execute(delete(LLMProvider).where(LLMProvider.slug == slug))
+    await db.commit()
+
+    logger.info("Admin deleted LLM provider", admin_id=admin_id, slug=slug)
+
+    return {"message": "Provider deleted", "slug": slug}
+
+
 @router.get("/by-category", response_model=list[SettingsByCategoryResponse])
 @limiter.limit(RATE_LIMIT_STANDARD)
 @require_admin
@@ -229,6 +471,15 @@ async def create_setting(
     await db.commit()
     await db.refresh(setting)
 
+    # Audit log: setting created
+    audit = AuditLogger(db).set_context(request=request, user_id=admin_id)
+    await audit.log_admin_action(
+        AuditAction.ADMIN_SETTINGS_CHANGED,
+        resource_type="platform_setting",
+        resource_id=setting.key,
+        details={"action": "created", "category": setting.category},
+    )
+
     logger.info("Admin created platform setting", admin_id=admin_id, key=setting.key)
 
     return AdminSettingResponse(
@@ -290,6 +541,9 @@ async def update_setting(
 
     update_data = data.model_dump(exclude_unset=True)
 
+    # Capture old values for audit log
+    old_values = {field: getattr(setting, field) for field in update_data}
+
     for field, value in update_data.items():
         setattr(setting, field, value)
 
@@ -297,6 +551,16 @@ async def update_setting(
 
     await db.commit()
     await db.refresh(setting)
+
+    # Audit log: setting updated
+    audit = AuditLogger(db).set_context(request=request, user_id=admin_id)
+    await audit.log_admin_action(
+        AuditAction.ADMIN_SETTINGS_CHANGED,
+        resource_type="platform_setting",
+        resource_id=key,
+        details={"action": "updated"},
+        changes={"before": old_values, "after": update_data},
+    )
 
     logger.info(
         "Admin updated platform setting",
@@ -334,6 +598,15 @@ async def delete_setting(
     if not setting:
         raise HTTPException(status_code=404, detail="Setting not found")
 
+    # Audit log: setting deleted
+    audit = AuditLogger(db).set_context(request=request, user_id=admin_id)
+    await audit.log_admin_action(
+        AuditAction.ADMIN_SETTINGS_CHANGED,
+        resource_type="platform_setting",
+        resource_id=key,
+        details={"action": "deleted", "category": setting.category},
+    )
+
     await db.delete(setting)
     await db.commit()
 
@@ -348,7 +621,7 @@ async def delete_setting(
 class BulkUpdateSettingsRequest(BaseModel):
     """Bulk update settings request."""
 
-    settings: dict[str, dict[str, Any]]  # key -> value
+    settings: dict[str, dict[str, Any] | list[Any]]  # key -> value
 
 
 @router.post("/bulk", response_model=list[AdminSettingResponse])
@@ -505,243 +778,3 @@ async def reset_setting_to_default(
         updated_at=setting.updated_at,
         updated_by=str(setting.updated_by) if setting.updated_by else None,
     )
-
-
-# ==================== LLM Provider Models ====================
-
-
-class LLMProviderResponse(BaseModel):
-    """Admin LLM provider response."""
-
-    id: str
-    slug: str
-    name: str
-    description: str | None
-    icon: str | None
-    color: str | None
-    logo_url: str | None
-    is_local: bool
-    default_url: str | None
-    docs_url: str | None
-    setup_guide_url: str | None
-    requires_api_key: bool
-    supports_streaming: bool
-    supports_tools: bool
-    supports_vision: bool
-    is_enabled: bool
-    sort_order: int
-    created_at: datetime
-    updated_at: datetime
-
-    class Config:
-        from_attributes = True
-
-
-class CreateLLMProviderRequest(BaseModel):
-    """Create a new LLM provider."""
-
-    slug: str = Field(..., min_length=1, max_length=50, pattern=r"^[a-z][a-z0-9-]*$")
-    name: str = Field(..., min_length=1, max_length=100)
-    description: str | None = None
-    icon: str | None = None
-    color: str | None = None
-    logo_url: str | None = None
-    is_local: bool = False
-    default_url: str | None = None
-    docs_url: str | None = None
-    setup_guide_url: str | None = None
-    requires_api_key: bool = True
-    supports_streaming: bool = True
-    supports_tools: bool = True
-    supports_vision: bool = False
-    is_enabled: bool = True
-    sort_order: int = 100
-
-
-class UpdateLLMProviderRequest(BaseModel):
-    """Update an LLM provider."""
-
-    name: str | None = None
-    description: str | None = None
-    icon: str | None = None
-    color: str | None = None
-    logo_url: str | None = None
-    is_local: bool | None = None
-    default_url: str | None = None
-    docs_url: str | None = None
-    setup_guide_url: str | None = None
-    requires_api_key: bool | None = None
-    supports_streaming: bool | None = None
-    supports_tools: bool | None = None
-    supports_vision: bool | None = None
-    is_enabled: bool | None = None
-    sort_order: int | None = None
-
-
-# ==================== LLM Provider Endpoints ====================
-
-
-def _provider_to_response(provider: LLMProvider) -> LLMProviderResponse:
-    """Convert LLMProvider model to response."""
-    return LLMProviderResponse(
-        id=provider.id,
-        slug=provider.slug,
-        name=provider.name,
-        description=provider.description,
-        icon=provider.icon,
-        color=provider.color,
-        logo_url=provider.logo_url,
-        is_local=provider.is_local,
-        default_url=provider.default_url,
-        docs_url=provider.docs_url,
-        setup_guide_url=provider.setup_guide_url,
-        requires_api_key=provider.requires_api_key,
-        supports_streaming=provider.supports_streaming,
-        supports_tools=provider.supports_tools,
-        supports_vision=provider.supports_vision,
-        is_enabled=provider.is_enabled,
-        sort_order=provider.sort_order,
-        created_at=provider.created_at,
-        updated_at=provider.updated_at,
-    )
-
-
-@router.get("/providers", response_model=list[LLMProviderResponse])
-@limiter.limit(RATE_LIMIT_STANDARD)
-@require_admin
-async def list_providers(
-    request: Request,
-    response: Response,
-    db: DbSession,
-    include_disabled: Annotated[bool, Query()] = True,
-) -> list[LLMProviderResponse]:
-    """List all LLM providers (admin view includes disabled)."""
-    query = select(LLMProvider).order_by(LLMProvider.sort_order)
-
-    if not include_disabled:
-        query = query.where(LLMProvider.is_enabled == True)
-
-    result = await db.execute(query)
-    providers = result.scalars().all()
-
-    return [_provider_to_response(p) for p in providers]
-
-
-@router.get("/providers/{slug}", response_model=LLMProviderResponse)
-@limiter.limit(RATE_LIMIT_STANDARD)
-@require_admin
-async def get_provider(
-    slug: str,
-    request: Request,
-    response: Response,
-    db: DbSession,
-) -> LLMProviderResponse:
-    """Get a specific LLM provider."""
-    result = await db.execute(select(LLMProvider).where(LLMProvider.slug == slug))
-    provider = result.scalar_one_or_none()
-
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
-
-    return _provider_to_response(provider)
-
-
-@router.post("/providers", response_model=LLMProviderResponse, status_code=201)
-@limiter.limit(RATE_LIMIT_STANDARD)
-@require_super_admin
-async def create_provider(
-    data: CreateLLMProviderRequest,
-    request: Request,
-    response: Response,
-    db: DbSession,
-) -> LLMProviderResponse:
-    """Create a new LLM provider (super admin only)."""
-    admin_id = get_admin_user_id(request)
-
-    # Check if provider already exists
-    existing = await db.execute(select(LLMProvider).where(LLMProvider.slug == data.slug))
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Provider already exists")
-
-    provider = LLMProvider(
-        slug=data.slug,
-        name=data.name,
-        description=data.description,
-        icon=data.icon,
-        color=data.color,
-        logo_url=data.logo_url,
-        is_local=data.is_local,
-        default_url=data.default_url,
-        docs_url=data.docs_url,
-        setup_guide_url=data.setup_guide_url,
-        requires_api_key=data.requires_api_key,
-        supports_streaming=data.supports_streaming,
-        supports_tools=data.supports_tools,
-        supports_vision=data.supports_vision,
-        is_enabled=data.is_enabled,
-        sort_order=data.sort_order,
-    )
-
-    db.add(provider)
-    await db.commit()
-    await db.refresh(provider)
-
-    logger.info("Admin created LLM provider", admin_id=admin_id, slug=data.slug)
-
-    return _provider_to_response(provider)
-
-
-@router.patch("/providers/{slug}", response_model=LLMProviderResponse)
-@limiter.limit(RATE_LIMIT_STANDARD)
-@require_admin
-async def update_provider(
-    slug: str,
-    data: UpdateLLMProviderRequest,
-    request: Request,
-    response: Response,
-    db: DbSession,
-) -> LLMProviderResponse:
-    """Update an LLM provider."""
-    admin_id = get_admin_user_id(request)
-
-    result = await db.execute(select(LLMProvider).where(LLMProvider.slug == slug))
-    provider = result.scalar_one_or_none()
-
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
-
-    # Update only provided fields
-    update_data = data.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(provider, field, value)
-
-    await db.commit()
-    await db.refresh(provider)
-
-    logger.info("Admin updated LLM provider", admin_id=admin_id, slug=slug)
-
-    return _provider_to_response(provider)
-
-
-@router.delete("/providers/{slug}")
-@limiter.limit(RATE_LIMIT_STANDARD)
-@require_super_admin
-async def delete_provider(
-    slug: str,
-    request: Request,
-    response: Response,
-    db: DbSession,
-) -> dict[str, str]:
-    """Delete an LLM provider (super admin only)."""
-    admin_id = get_admin_user_id(request)
-
-    result = await db.execute(select(LLMProvider).where(LLMProvider.slug == slug))
-    if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Provider not found")
-
-    await db.execute(delete(LLMProvider).where(LLMProvider.slug == slug))
-    await db.commit()
-
-    logger.info("Admin deleted LLM provider", admin_id=admin_id, slug=slug)
-
-    return {"message": "Provider deleted", "slug": slug}

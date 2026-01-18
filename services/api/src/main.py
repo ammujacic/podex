@@ -85,6 +85,7 @@ from src.routes import (
     templates,
     terminal_agents,
     uploads,
+    user_compliance,
     user_config,
     voice,
     webhooks,
@@ -998,7 +999,7 @@ async def seed_admin() -> None:
                 "email": admin_email,
                 "password": admin_password,
                 "name": "Admin User",
-                "role": "admin",
+                "role": "super_admin",
                 "plan_slug": "pro",
             }
         )
@@ -1459,6 +1460,7 @@ api_v1.include_router(claude_code.router, tags=["claude-code"])
 api_v1.include_router(openai_codex.router, tags=["openai-codex"])
 api_v1.include_router(gemini_cli.router, tags=["gemini-cli"])
 api_v1.include_router(cli_sync.router, tags=["cli-sync"])
+api_v1.include_router(user_compliance.router, prefix="/compliance", tags=["compliance"])
 
 # Mount v1 API at /api/v1
 app.include_router(api_v1, prefix="/api/v1")

@@ -29,6 +29,7 @@ dependencies = [
     "pyotp>=2.9.0",
     "qrcode[pil]>=7.4.0",
     "python-multipart>=0.0.6",
+    "toml>=0.10.2",
     # Security fix: CVE-2026-23490 requires pyasn1 >=0.6.2
     "pyasn1>=0.6.2",
     # Local voice services (dev mode uses these instead of AWS)

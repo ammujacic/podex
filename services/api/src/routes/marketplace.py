@@ -99,7 +99,7 @@ async def list_marketplace_skills(
     page_size: int = Query(20, ge=1, le=100),
     category: str | None = Query(None),
     search: str | None = Query(None),
-    sort_by: str = Query("popular", regex="^(popular|recent|name)$"),
+    sort_by: str = Query("popular", pattern="^(popular|recent|name)$"),
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),  # noqa: ARG001
 ) -> MarketplaceListResponse:

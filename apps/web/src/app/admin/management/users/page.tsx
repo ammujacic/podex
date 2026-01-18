@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAdminStore, type AdminUser, type AdminPlan } from '@/stores/admin';
+import { useUser } from '@/stores/auth';
 import { UserDetailsModal } from '@/components/admin/UserDetailsModal';
 
 function formatDate(dateString: string): string {
@@ -34,12 +35,20 @@ function formatCurrency(cents: number): string {
 interface UserRowProps {
   user: AdminUser;
   plans: AdminPlan[];
+  currentUserRole: string;
   onRoleChange: (userId: string, role: string) => void;
   onToggleActive: (userId: string, isActive: boolean) => void;
   onViewDetails: (user: AdminUser) => void;
 }
 
-function UserRow({ user, plans, onRoleChange, onToggleActive, onViewDetails }: UserRowProps) {
+function UserRow({
+  user,
+  plans,
+  currentUserRole,
+  onRoleChange,
+  onToggleActive,
+  onViewDetails,
+}: UserRowProps) {
   const [showMenu, setShowMenu] = useState(false);
   const planName = user.subscription_plan
     ? plans.find((p) => p.id === user.subscription_plan)?.name
@@ -76,7 +85,7 @@ function UserRow({ user, plans, onRoleChange, onToggleActive, onViewDetails }: U
         >
           <option value="member">Member</option>
           <option value="admin">Admin</option>
-          <option value="super_admin">Super Admin</option>
+          {currentUserRole === 'super_admin' && <option value="super_admin">Super Admin</option>}
         </select>
       </td>
       <td className="px-4 py-3">
@@ -173,6 +182,7 @@ export default function UsersManagement() {
   const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
   const pageSize = 20;
 
+  const currentUser = useUser();
   const { users, usersTotal, usersLoading, fetchUsers, updateUser, plans, fetchPlans, error } =
     useAdminStore();
 
@@ -255,8 +265,8 @@ export default function UsersManagement() {
       )}
 
       {/* Table */}
-      <div className="bg-surface rounded-xl border border-border-subtle overflow-hidden">
-        <div className="overflow-x-auto">
+      <div className="bg-surface rounded-xl border border-border-subtle">
+        <div className="overflow-x-auto overflow-y-visible">
           <table className="w-full">
             <thead className="bg-elevated">
               <tr>
@@ -307,6 +317,7 @@ export default function UsersManagement() {
                     key={user.id}
                     user={user}
                     plans={plans}
+                    currentUserRole={currentUser?.role || 'member'}
                     onRoleChange={handleRoleChange}
                     onToggleActive={handleToggleActive}
                     onViewDetails={setSelectedUser}

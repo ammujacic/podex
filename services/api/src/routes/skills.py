@@ -1210,7 +1210,7 @@ async def get_skill_timeline(
 
 @router.get("/analytics/trends", response_model=SkillTrendResponse)
 async def get_skill_trends(
-    period: str = Query("weekly", regex="^(daily|weekly|monthly)$"),
+    period: str = Query("weekly", pattern="^(daily|weekly|monthly)$"),
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> SkillTrendResponse:

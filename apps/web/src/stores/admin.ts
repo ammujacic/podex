@@ -625,10 +625,10 @@ export const useAdminStore = create<AdminState>()(
       fetchProviders: async (includeDisabled = true) => {
         set({ providersLoading: true, error: null });
         try {
-          const data = await api.get<{ providers: AdminLLMProvider[] }>(
+          const providers = await api.get<AdminLLMProvider[]>(
             `/api/admin/settings/providers?include_disabled=${includeDisabled}`
           );
-          set({ providers: data.providers, providersLoading: false });
+          set({ providers, providersLoading: false });
         } catch (err) {
           set({ error: (err as Error).message, providersLoading: false });
         }

@@ -2,20 +2,33 @@
 
 from __future__ import annotations
 
+import json
+import tempfile
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.audit_logger import AuditAction, AuditLogger
 from src.database import get_db
 from src.database.models import (
     AccessReview,
+    Agent,
+    AuditLog,
     DataExportRequest,
     DataRetentionPolicy,
+    Message,
+    Session,
+    UsageRecord,
     User,
+    UserConfig,
+    UserSubscription,
 )
 from src.middleware.admin import get_admin_user_id
 
@@ -207,7 +220,6 @@ async def create_retention_policy(
     admin: dict[str, Any] = Depends(get_admin_user),
 ) -> DataRetentionPolicyResponse:
     """Create a new data retention policy."""
-    from uuid import uuid4
 
     # Check for duplicate data_type
     existing = await db.execute(
@@ -319,15 +331,117 @@ async def run_retention_policies(
         records_archived = 0
         records_deleted = 0
 
-        # For now, return simulated results
-        # In production, this would query the actual data tables and archive/delete
-        if not dry_run:
-            # Update policy execution tracking
+        now = datetime.now(UTC)
+        retention_cutoff = now - timedelta(days=policy.retention_days)
+        archive_cutoff = (
+            now - timedelta(days=policy.archive_after_days) if policy.archive_after_days else None
+        )
+        delete_archived_cutoff = (
+            now - timedelta(days=policy.archive_after_days + policy.delete_after_archive_days)
+            if policy.archive_after_days and policy.delete_after_archive_days
+            else None
+        )
+
+        try:
+            if policy.data_type == "audit_logs":
+                # Delete old audit logs beyond retention period
+                if not dry_run:
+                    delete_result = await db.execute(
+                        delete(AuditLog).where(AuditLog.created_at < retention_cutoff)
+                    )
+                    records_deleted = getattr(delete_result, "rowcount", 0)
+                else:
+                    # Count for dry run
+                    count_result = await db.execute(
+                        select(func.count(AuditLog.id)).where(
+                            AuditLog.created_at < retention_cutoff
+                        )
+                    )
+                    records_deleted = count_result.scalar() or 0
+
+            elif policy.data_type == "sessions":
+                # Archive sessions older than archive_after_days
+                if archive_cutoff:
+                    if not dry_run:
+                        archive_result = await db.execute(
+                            update(Session)
+                            .where(
+                                Session.created_at < archive_cutoff,
+                                Session.archived_at.is_(None),
+                            )
+                            .values(archived_at=now, archived_by=admin.get("id"))
+                        )
+                        records_archived = getattr(archive_result, "rowcount", 0)
+                    else:
+                        count_result = await db.execute(
+                            select(func.count(Session.id)).where(
+                                Session.created_at < archive_cutoff,
+                                Session.archived_at.is_(None),
+                            )
+                        )
+                        records_archived = count_result.scalar() or 0
+
+                # Delete archived sessions older than delete_after_archive_days
+                if delete_archived_cutoff:
+                    if not dry_run:
+                        delete_result = await db.execute(
+                            delete(Session).where(
+                                Session.archived_at.is_not(None),
+                                Session.archived_at < delete_archived_cutoff,
+                            )
+                        )
+                        records_deleted = getattr(delete_result, "rowcount", 0)
+                    else:
+                        count_result = await db.execute(
+                            select(func.count(Session.id)).where(
+                                Session.archived_at.is_not(None),
+                                Session.archived_at < delete_archived_cutoff,
+                            )
+                        )
+                        records_deleted = count_result.scalar() or 0
+
+            elif policy.data_type == "messages":
+                # Delete messages from sessions older than retention period
+                # Messages are cascade deleted with sessions, but this allows direct cleanup
+                if not dry_run:
+                    delete_result = await db.execute(
+                        delete(Message).where(Message.created_at < retention_cutoff)
+                    )
+                    records_deleted = getattr(delete_result, "rowcount", 0)
+                else:
+                    count_result = await db.execute(
+                        select(func.count(Message.id)).where(Message.created_at < retention_cutoff)
+                    )
+                    records_deleted = count_result.scalar() or 0
+
+            elif policy.data_type == "usage_records":
+                # Delete old usage records
+                if not dry_run:
+                    delete_result = await db.execute(
+                        delete(UsageRecord).where(UsageRecord.created_at < retention_cutoff)
+                    )
+                    records_deleted = getattr(delete_result, "rowcount", 0)
+                else:
+                    count_result = await db.execute(
+                        select(func.count(UsageRecord.id)).where(
+                            UsageRecord.created_at < retention_cutoff
+                        )
+                    )
+                    records_deleted = count_result.scalar() or 0
+
+            else:
+                errors.append(f"Unknown data type: {policy.data_type}")
+
+        except Exception as e:
+            errors.append(str(e))
+
+        # Update policy execution tracking
+        if not dry_run and not errors:
             await db.execute(
                 update(DataRetentionPolicy)
                 .where(DataRetentionPolicy.id == policy.id)
                 .values(
-                    last_executed_at=datetime.now(UTC),
+                    last_executed_at=now,
                     records_archived=policy.records_archived + records_archived,
                     records_deleted=policy.records_deleted + records_deleted,
                 )
@@ -348,6 +462,20 @@ async def run_retention_policies(
 
     if not dry_run:
         await db.commit()
+
+        # Audit log the retention execution
+        audit = AuditLogger(db).set_context(user_id=admin.get("id"))
+        await audit.log_admin_action(
+            AuditAction.ADMIN_DATA_EXPORTED,
+            resource_type="retention_policy",
+            details={
+                "action": "retention_executed",
+                "policies_executed": len(results),
+                "total_archived": sum(r.records_archived for r in results),
+                "total_deleted": sum(r.records_deleted for r in results),
+                "dry_run": dry_run,
+            },
+        )
 
     return results
 
@@ -392,7 +520,6 @@ async def initiate_access_review(
     admin: dict[str, Any] = Depends(get_admin_user),
 ) -> AccessReviewResponse:
     """Initiate a new access review."""
-    from uuid import uuid4
 
     review = AccessReview(
         id=str(uuid4()),
@@ -544,10 +671,15 @@ async def list_data_export_requests(
 @router.post("/data-exports/{request_id}/process", response_model=DataExportRequestResponse)
 async def process_data_export(
     request_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     admin: dict[str, Any] = Depends(get_admin_user),
 ) -> DataExportRequestResponse:
-    """Process a pending data export request."""
+    """Process a pending data export request.
+
+    This endpoint collects all user data based on requested categories
+    and generates a JSON export file.
+    """
     query = select(DataExportRequest).where(DataExportRequest.id == request_id)
     result = await db.execute(query)
     export_request = result.scalar_one_or_none()
@@ -564,21 +696,261 @@ async def process_data_export(
             detail=f"Request is already {export_request.status}",
         )
 
-    # In production, this would trigger an async job to collect and package user data
-    # For now, mark as processing
+    now = datetime.now(UTC)
+
+    # Mark as processing
     await db.execute(
         update(DataExportRequest)
         .where(DataExportRequest.id == request_id)
         .values(
             status="processing",
             processed_by=admin.get("id"),
-            started_at=datetime.now(UTC),
+            started_at=now,
         )
     )
     await db.commit()
-    await db.refresh(export_request)
 
+    try:
+        # Collect user data based on requested categories
+        user_id = export_request.user_id
+        categories = export_request.data_categories
+        export_data: dict[str, Any] = {
+            "export_metadata": {
+                "request_id": request_id,
+                "user_id": user_id,
+                "request_type": export_request.request_type,
+                "data_categories": categories,
+                "generated_at": now.isoformat(),
+            }
+        }
+
+        # Profile data
+        if "profile" in categories:
+            user_result = await db.execute(select(User).where(User.id == user_id))
+            user = user_result.scalar_one_or_none()
+            if user:
+                export_data["profile"] = {
+                    "id": user.id,
+                    "email": user.email,
+                    "name": user.name,
+                    "avatar_url": user.avatar_url,
+                    "oauth_provider": user.oauth_provider,
+                    "is_active": user.is_active,
+                    "role": user.role,
+                    "mfa_enabled": user.mfa_enabled,
+                    "account_type": user.account_type,
+                    "created_at": user.created_at.isoformat() if user.created_at else None,
+                    "updated_at": user.updated_at.isoformat() if user.updated_at else None,
+                }
+
+        # Sessions data
+        if "sessions" in categories:
+            sessions_result = await db.execute(
+                select(Session).where(Session.owner_id == user_id).limit(1000)
+            )
+            sessions = sessions_result.scalars().all()
+            export_data["sessions"] = [
+                {
+                    "id": s.id,
+                    "name": s.name,
+                    "git_url": s.git_url,
+                    "branch": s.branch,
+                    "status": s.status,
+                    "created_at": s.created_at.isoformat() if s.created_at else None,
+                    "archived_at": s.archived_at.isoformat() if s.archived_at else None,
+                }
+                for s in sessions
+            ]
+
+        # Messages data
+        if "messages" in categories:
+            # Get messages from user's sessions (via agents)
+            messages_query = (
+                select(Message)
+                .join(Agent, Message.agent_id == Agent.id)
+                .join(Session, Agent.session_id == Session.id)
+                .where(Session.owner_id == user_id)
+                .limit(5000)
+            )
+            messages_result = await db.execute(messages_query)
+            messages = messages_result.scalars().all()
+            export_data["messages"] = [
+                {
+                    "id": m.id,
+                    "role": m.role,
+                    "content": m.content[:1000] if m.content else None,  # Truncate large messages
+                    "created_at": m.created_at.isoformat() if m.created_at else None,
+                }
+                for m in messages
+            ]
+
+        # Billing data
+        if "billing" in categories:
+            # Usage records
+            usage_result = await db.execute(
+                select(UsageRecord).where(UsageRecord.user_id == user_id).limit(1000)
+            )
+            usage_records = usage_result.scalars().all()
+
+            # Subscription
+            sub_result = await db.execute(
+                select(UserSubscription).where(UserSubscription.user_id == user_id)
+            )
+            subscription = sub_result.scalar_one_or_none()
+
+            export_data["billing"] = {
+                "subscription": {
+                    "plan_id": subscription.plan_id if subscription else None,
+                    "status": subscription.status if subscription else None,
+                    "billing_cycle": subscription.billing_cycle if subscription else None,
+                }
+                if subscription
+                else None,
+                "usage_records": [
+                    {
+                        "id": u.id,
+                        "usage_type": u.usage_type,
+                        "quantity": u.quantity,
+                        "unit": u.unit,
+                        "cost_usd": u.total_cost_cents / 100.0 if u.total_cost_cents else None,
+                        "created_at": u.created_at.isoformat() if u.created_at else None,
+                    }
+                    for u in usage_records
+                ],
+            }
+
+        # Settings/Config data
+        if "settings" in categories:
+            config_result = await db.execute(
+                select(UserConfig).where(UserConfig.user_id == user_id)
+            )
+            config = config_result.scalar_one_or_none()
+            if config:
+                export_data["settings"] = {
+                    "sync_dotfiles": config.sync_dotfiles,
+                    "dotfiles_repo": config.dotfiles_repo,
+                    "dotfiles_branch": config.dotfiles_branch,
+                    "default_shell": config.default_shell,
+                    "default_editor": config.default_editor,
+                    "git_name": config.git_name,
+                    "git_email": config.git_email,
+                    "theme": config.theme,
+                    "editor_theme": config.editor_theme,
+                    "updated_at": config.updated_at.isoformat() if config.updated_at else None,
+                }
+            else:
+                export_data["settings"] = {}
+
+        # Write export to temporary file
+        export_dir = Path(tempfile.gettempdir())
+        export_filename = f"data_export_{user_id}_{request_id}.json"
+        export_path = export_dir / export_filename
+
+        # Note: Using blocking file I/O here as this is an admin export operation
+        # that runs infrequently and the data needs to be written synchronously
+        with export_path.open("w") as f:
+            json.dump(export_data, f, indent=2, default=str)
+
+        file_size = export_path.stat().st_size
+        download_expires = now + timedelta(days=7)
+
+        # Update request with completion info
+        await db.execute(
+            update(DataExportRequest)
+            .where(DataExportRequest.id == request_id)
+            .values(
+                status="completed",
+                completed_at=now,
+                export_file_path=str(export_path),
+                export_file_size_bytes=file_size,
+                download_expires_at=download_expires,
+            )
+        )
+        await db.commit()
+
+        # Audit log the export
+        audit = AuditLogger(db).set_context(request=request, user_id=admin.get("id"))
+        await audit.log_admin_action(
+            AuditAction.ADMIN_DATA_EXPORTED,
+            resource_type="data_export",
+            resource_id=request_id,
+            details={
+                "target_user_id": user_id,
+                "categories": categories,
+                "file_size_bytes": file_size,
+            },
+        )
+
+    except Exception as e:
+        # Mark as failed
+        await db.execute(
+            update(DataExportRequest)
+            .where(DataExportRequest.id == request_id)
+            .values(
+                status="failed",
+                error_message=str(e),
+                completed_at=now,
+            )
+        )
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Export failed: {e!s}",
+        )
+
+    await db.refresh(export_request)
     return DataExportRequestResponse.model_validate(export_request)
+
+
+@router.get("/data-exports/{request_id}/download")
+async def download_data_export(
+    request_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin: dict[str, Any] = Depends(get_admin_user),
+) -> FileResponse:
+    """Download a completed data export file."""
+    query = select(DataExportRequest).where(DataExportRequest.id == request_id)
+    result = await db.execute(query)
+    export_request = result.scalar_one_or_none()
+
+    if not export_request:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Export request not found",
+        )
+
+    if export_request.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Export is not ready (status: {export_request.status})",
+        )
+
+    if not export_request.export_file_path or not Path(export_request.export_file_path).exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Export file not found",
+        )
+
+    now = datetime.now(UTC)
+    if export_request.download_expires_at and export_request.download_expires_at < now:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Export download has expired",
+        )
+
+    # Increment download count
+    await db.execute(
+        update(DataExportRequest)
+        .where(DataExportRequest.id == request_id)
+        .values(download_count=export_request.download_count + 1)
+    )
+    await db.commit()
+
+    return FileResponse(
+        path=export_request.export_file_path,
+        filename=f"data_export_{export_request.user_id}.json",
+        media_type="application/json",
+    )
 
 
 # ============================================================================

@@ -196,14 +196,14 @@ async def list_models(
 
 @router.post("", response_model=ModelResponse, status_code=201)
 @limiter.limit(RATE_LIMIT_STANDARD)
-@require_super_admin
+@require_admin
 async def create_model(
     request: Request,
     response: Response,
     data: CreateModelRequest,
     db: DbSession,
 ) -> ModelResponse:
-    """Create a new LLM model (super admin only)."""
+    """Create a new LLM model."""
     admin_id = get_admin_user_id(request)
 
     # Check for duplicate model_id
@@ -323,9 +323,11 @@ async def get_agent_defaults(
         # Return cost-effective defaults - Sonnet for most roles, Haiku for chat
         return AgentDefaultsResponse(defaults=_get_default_agent_model_config())
 
-    return AgentDefaultsResponse(
-        defaults={k: AgentTypeDefaults(**v) for k, v in setting.value.items()}
-    )
+    if isinstance(setting.value, dict):
+        return AgentDefaultsResponse(
+            defaults={k: AgentTypeDefaults(**v) for k, v in setting.value.items()}
+        )
+    return AgentDefaultsResponse(defaults=_get_default_agent_model_config())
 
 
 @router.put("/agent-defaults/{agent_type}", response_model=AgentDefaultsResponse)
@@ -393,7 +395,7 @@ async def update_agent_default(
         db.add(setting)
 
     # Update the specific agent type
-    current_value = setting.value or {}
+    current_value = setting.value if isinstance(setting.value, dict) else {}
     current_value[agent_type] = {
         "model_id": data.model_id,
         "temperature": data.temperature
@@ -416,9 +418,11 @@ async def update_agent_default(
         model_id=data.model_id,
     )
 
-    return AgentDefaultsResponse(
-        defaults={k: AgentTypeDefaults(**v) for k, v in setting.value.items()}
-    )
+    if isinstance(setting.value, dict):
+        return AgentDefaultsResponse(
+            defaults={k: AgentTypeDefaults(**v) for k, v in setting.value.items()}
+        )
+    return AgentDefaultsResponse(defaults=_get_default_agent_model_config())
 
 
 # ==================== Model CRUD Routes (with path parameters) ====================
@@ -676,9 +680,11 @@ async def get_public_agent_defaults(
         # Return cost-effective defaults - Sonnet for most roles, Haiku for chat
         return AgentDefaultsResponse(defaults=_get_default_agent_model_config())
 
-    return AgentDefaultsResponse(
-        defaults={k: AgentTypeDefaults(**v) for k, v in setting.value.items()}
-    )
+    if isinstance(setting.value, dict):
+        return AgentDefaultsResponse(
+            defaults={k: AgentTypeDefaults(**v) for k, v in setting.value.items()}
+        )
+    return AgentDefaultsResponse(defaults=_get_default_agent_model_config())
 
 
 # ==================== User Provider Models ====================

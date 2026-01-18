@@ -8,11 +8,12 @@ This deploys the complete GCP-native infrastructure:
 - Secret Manager (6 versions FREE)
 - GKE cluster with GPU node pools (scaled to 0 = FREE)
 - Cloud DNS + managed SSL
+- Docker images (optional, built and pushed to Artifact Registry)
 """
 
 import pulumi
 
-from stacks import compute, database, dns, gke, monitoring, network, redis, secrets, storage
+from stacks import compute, database, dns, gke, images, monitoring, network, redis, secrets, storage
 
 # Configuration
 config = pulumi.Config()
@@ -22,7 +23,11 @@ region = gcp_config.get("region") or "us-east1"
 env = config.get("env") or pulumi.get_stack()
 domain = config.get("domain") or "podex.dev"
 
+# Docker image building (set to true to build images as part of deployment)
+build_images = config.get_bool("build_images") or False
+
 pulumi.log.info(f"Deploying Podex infrastructure to {project_id} ({env})")
+pulumi.log.info(f"Build Docker images: {build_images}")
 
 # ============================================
 # 1. Secrets (FREE - 6 versions)
@@ -75,7 +80,23 @@ gke_result = gke.create_gke_cluster(project_id, region, env, vpc)
 gpu_pools = gke.create_gpu_node_pools(gke_result["cluster"], env)
 
 # ============================================
-# 7. Cloud Run Services (FREE TIER)
+# 7. Docker Images (optional)
+# ============================================
+image_refs = None
+if build_images:
+    pulumi.log.info("Building Docker images (linux/amd64 for Cloud Run)...")
+    docker_images = images.create_docker_images(
+        project_id=project_id,
+        region=region,
+        env=env,
+        artifact_repo=artifact_repo,
+    )
+    image_refs = images.get_image_refs(docker_images)
+else:
+    pulumi.log.info("Skipping Docker image build (use --config build_images=true to enable)")
+
+# ============================================
+# 8. Cloud Run Services (FREE TIER)
 # ============================================
 pulumi.log.info("Creating Cloud Run services...")
 services = compute.create_cloud_run_services(
@@ -88,10 +109,11 @@ services = compute.create_cloud_run_services(
     secrets=secrets_result,
     bucket=bucket,
     vpc=vpc,
+    image_refs=image_refs,
 )
 
 # ============================================
-# 8. DNS + SSL (Custom Domain)
+# 9. DNS + SSL (Custom Domain)
 # ============================================
 pulumi.log.info("Creating DNS and SSL...")
 dns_result = dns.create_dns_and_ssl(
@@ -103,7 +125,7 @@ dns_result = dns.create_dns_and_ssl(
 )
 
 # ============================================
-# 9. Monitoring (FREE)
+# 10. Monitoring (FREE)
 # ============================================
 pulumi.log.info("Creating monitoring...")
 monitoring_result = monitoring.create_monitoring(

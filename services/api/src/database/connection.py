@@ -20,6 +20,7 @@ from src.database.models import (
     CustomCommand,
     HardwareSpec,
     LLMModel,
+    LLMProvider,
     PlatformSetting,
     PodTemplate,
     SkillTemplate,
@@ -123,6 +124,7 @@ async def seed_database() -> None:
         DEFAULT_HARDWARE_SPECS,
         DEFAULT_MODELS,
         DEFAULT_PLANS,
+        DEFAULT_PROVIDERS,
         DEFAULT_SETTINGS,
         DEFAULT_SKILL_TEMPLATES,
         DEFAULT_SYSTEM_SKILLS,
@@ -138,6 +140,7 @@ async def seed_database() -> None:
                 "templates": 0,
                 "settings": 0,
                 "terminal_agents": 0,
+                "llm_providers": 0,
                 "llm_models": 0,
                 "global_commands": 0,
                 "agent_roles": 0,
@@ -216,6 +219,15 @@ async def seed_database() -> None:
                     )
                     totals["terminal_agents"] += 1
 
+            # Seed LLM providers (must come before models)
+            for provider_data in DEFAULT_PROVIDERS:
+                result = await db.execute(
+                    select(LLMProvider).where(LLMProvider.slug == provider_data["slug"])
+                )
+                if not result.scalar_one_or_none():
+                    db.add(LLMProvider(**provider_data))
+                    totals["llm_providers"] += 1
+
             # Seed LLM models
             for model_data in DEFAULT_MODELS:
                 result = await db.execute(
@@ -284,6 +296,12 @@ async def seed_database() -> None:
                             description=role_data.get("description"),
                             system_prompt=role_data["system_prompt"],
                             tools=role_data["tools"],
+                            category=role_data.get("category", "development"),
+                            gradient_start=role_data.get("gradient_start"),
+                            gradient_end=role_data.get("gradient_end"),
+                            features=role_data.get("features"),
+                            example_prompts=role_data.get("example_prompts"),
+                            requires_subscription=role_data.get("requires_subscription"),
                             default_model=role_data.get("default_model"),
                             default_temperature=role_data.get("default_temperature"),
                             default_max_tokens=role_data.get("default_max_tokens"),
@@ -323,6 +341,7 @@ async def seed_database() -> None:
                     templates=totals["templates"],
                     settings=totals["settings"],
                     terminal_agents=totals["terminal_agents"],
+                    llm_providers=totals["llm_providers"],
                     llm_models=totals["llm_models"],
                     global_commands=totals["global_commands"],
                     agent_tools=totals["agent_tools"],

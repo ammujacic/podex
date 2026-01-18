@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import { api } from '@/lib/api';
 
 // Types matching the API
 interface MarketplaceSkill {
@@ -619,9 +620,13 @@ export default function MarketplaceManagement() {
     try {
       setLoading(true);
       const statusParam = statusFilter === 'all' ? '' : `?status_filter=${statusFilter}`;
-      const response = await fetch(`/api/v1/admin/marketplace${statusParam}`);
-      if (!response.ok) throw new Error('Failed to fetch marketplace skills');
-      const data = await response.json();
+      const data = await api.get<{
+        skills: MarketplaceSkill[];
+        total: number;
+        pending_count: number;
+        approved_count: number;
+        rejected_count: number;
+      }>(`/api/admin/marketplace${statusParam}`);
       setSkills(data.skills || []);
       setStats({
         total: data.total,
@@ -644,15 +649,7 @@ export default function MarketplaceManagement() {
 
   const handleApprove = async (skillId: string) => {
     try {
-      const response = await fetch(`/api/v1/admin/marketplace/${skillId}/approve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ is_default: false }),
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.detail || 'Failed to approve skill');
-      }
+      await api.post(`/api/admin/marketplace/${skillId}/approve`, { is_default: false });
       toast.success('Skill approved and added to system skills');
       fetchSkills();
     } catch (err) {
@@ -664,12 +661,7 @@ export default function MarketplaceManagement() {
 
   const handleReject = async (skillId: string, reason: string) => {
     try {
-      const response = await fetch(`/api/v1/admin/marketplace/${skillId}/reject`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason }),
-      });
-      if (!response.ok) throw new Error('Failed to reject skill');
+      await api.post(`/api/admin/marketplace/${skillId}/reject`, { reason });
       toast.success('Skill rejected');
       fetchSkills();
     } catch (err) {
@@ -681,10 +673,7 @@ export default function MarketplaceManagement() {
 
   const handleDelete = async (skillId: string) => {
     try {
-      const response = await fetch(`/api/v1/admin/marketplace/${skillId}`, {
-        method: 'DELETE',
-      });
-      if (!response.ok) throw new Error('Failed to delete skill');
+      await api.delete(`/api/admin/marketplace/${skillId}`);
       toast.success('Skill deleted');
       fetchSkills();
     } catch (err) {

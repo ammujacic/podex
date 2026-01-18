@@ -1141,54 +1141,56 @@ export function ModelSettings({ className }: ModelSettingsProps) {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              {agentRoles.map((roleConfig) => {
-                const Icon = getRoleIcon(roleConfig.role);
-                return (
-                  <div
-                    key={roleConfig.role}
-                    className="flex items-center justify-between py-2.5 px-3 rounded-lg bg-elevated"
-                  >
-                    <div className="flex items-center gap-2">
-                      <Icon className="h-4 w-4" style={{ color: roleConfig.color }} />
-                      <span className="text-sm text-text-secondary capitalize font-medium">
-                        {roleConfig.name}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {isSaving === roleConfig.role && (
-                        <Loader2 className="h-3 w-3 animate-spin text-accent-primary" />
-                      )}
-                      <select
-                        value={
-                          userModelDefaults[roleConfig.role] ||
-                          platformDefaults[roleConfig.role]?.model_id ||
-                          ''
-                        }
-                        onChange={(e) => handleRoleDefaultChange(roleConfig.role, e.target.value)}
-                        disabled={isSaving === roleConfig.role || platformModels.length === 0}
-                        className="px-2 py-1 rounded-lg bg-overlay border border-border-subtle text-text-primary text-xs focus:outline-none focus:ring-1 focus:ring-accent-primary disabled:opacity-50"
-                      >
-                        <optgroup label="Podex Native">
-                          {platformModels.map((m) => (
-                            <option key={m.model_id} value={m.model_id}>
-                              {m.display_name.replace('Claude ', '').replace('Llama ', '')}
-                            </option>
-                          ))}
-                        </optgroup>
-                        {userProviderModels.length > 0 && (
-                          <optgroup label="Your API Keys">
-                            {userProviderModels.map((model) => (
-                              <option key={model.model_id} value={model.model_id}>
-                                {model.display_name}
+              {agentRoles
+                .filter((roleConfig) => roleConfig.category !== 'terminal')
+                .map((roleConfig) => {
+                  const Icon = getRoleIcon(roleConfig.role);
+                  return (
+                    <div
+                      key={roleConfig.role}
+                      className="flex items-center justify-between py-2.5 px-3 rounded-lg bg-elevated"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Icon className="h-4 w-4" style={{ color: roleConfig.color }} />
+                        <span className="text-sm text-text-secondary capitalize font-medium">
+                          {roleConfig.name}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {isSaving === roleConfig.role && (
+                          <Loader2 className="h-3 w-3 animate-spin text-accent-primary" />
+                        )}
+                        <select
+                          value={
+                            userModelDefaults[roleConfig.role] ||
+                            platformDefaults[roleConfig.role]?.model_id ||
+                            ''
+                          }
+                          onChange={(e) => handleRoleDefaultChange(roleConfig.role, e.target.value)}
+                          disabled={isSaving === roleConfig.role || platformModels.length === 0}
+                          className="px-2 py-1 rounded-lg bg-overlay border border-border-subtle text-text-primary text-xs focus:outline-none focus:ring-1 focus:ring-accent-primary disabled:opacity-50"
+                        >
+                          <optgroup label="Podex Native">
+                            {platformModels.map((m) => (
+                              <option key={m.model_id} value={m.model_id}>
+                                {m.display_name.replace('Claude ', '').replace('Llama ', '')}
                               </option>
                             ))}
                           </optgroup>
-                        )}
-                      </select>
+                          {userProviderModels.length > 0 && (
+                            <optgroup label="Your API Keys">
+                              {userProviderModels.map((model) => (
+                                <option key={model.model_id} value={model.model_id}>
+                                  {model.display_name}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                        </select>
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
             </div>
           )}
         </section>

@@ -298,6 +298,12 @@ export interface AgentRoleConfig {
   description: string | null;
   system_prompt: string;
   tools: string[];
+  category: string; // development, terminal, system, custom
+  gradient_start: string | null;
+  gradient_end: string | null;
+  features: string[] | null;
+  example_prompts: string[] | null;
+  requires_subscription: string | null;
   default_model: string | null;
   default_temperature: number | null;
   default_max_tokens: number | null;

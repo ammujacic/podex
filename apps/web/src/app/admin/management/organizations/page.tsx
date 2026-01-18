@@ -20,6 +20,7 @@ import {
 import { Button } from '@podex/ui';
 import { api } from '@/lib/api';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
+import { useUser } from '@/stores/auth';
 
 interface AdminOrganization {
   id: string;
@@ -49,6 +50,8 @@ interface OrgPricingDefaults {
 
 export default function AdminOrganizationsPage() {
   useDocumentTitle('Admin - Organizations');
+  const currentUser = useUser();
+  const isSuperAdmin = currentUser?.role === 'super_admin';
 
   const [organizations, setOrganizations] = useState<AdminOrganization[]>([]);
   const [loading, setLoading] = useState(true);
@@ -483,25 +486,27 @@ export default function AdminOrganizationsPage() {
                   Platform margin applied to this organization&apos;s usage
                 </p>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-text-secondary mb-1">
-                  Add Credits ($)
-                </label>
-                <div className="relative">
-                  <input
-                    type="number"
-                    value={editCredits}
-                    onChange={(e) => setEditCredits(e.target.value)}
-                    min={0}
-                    placeholder="0.00"
-                    className="w-full px-3 py-2 pl-8 bg-elevated border border-border-default rounded-lg text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
-                  />
-                  <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
+              {isSuperAdmin && (
+                <div>
+                  <label className="block text-sm font-medium text-text-secondary mb-1">
+                    Add Credits ($)
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      value={editCredits}
+                      onChange={(e) => setEditCredits(e.target.value)}
+                      min={0}
+                      placeholder="0.00"
+                      className="w-full px-3 py-2 pl-8 bg-elevated border border-border-default rounded-lg text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
+                    />
+                    <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
+                  </div>
+                  <p className="text-xs text-text-muted mt-1">
+                    Add promotional or adjustment credits
+                  </p>
                 </div>
-                <p className="text-xs text-text-muted mt-1">
-                  Add promotional or adjustment credits (super admin only)
-                </p>
-              </div>
+              )}
             </div>
 
             <div className="flex justify-end gap-3">

@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAdminStore, type AdminLLMProvider } from '@/stores/admin';
+import { useUser } from '@/stores/auth';
 import { toast } from 'sonner';
 
 // ============================================================================
@@ -27,12 +28,19 @@ import { toast } from 'sonner';
 
 interface ProviderCardProps {
   provider: AdminLLMProvider;
+  isSuperAdmin: boolean;
   onEdit: (provider: AdminLLMProvider) => void;
   onToggleEnabled: (slug: string, isEnabled: boolean) => void;
   onDelete: (slug: string) => void;
 }
 
-function ProviderCard({ provider, onEdit, onToggleEnabled, onDelete }: ProviderCardProps) {
+function ProviderCard({
+  provider,
+  isSuperAdmin,
+  onEdit,
+  onToggleEnabled,
+  onDelete,
+}: ProviderCardProps) {
   const [isDeleting, setIsDeleting] = useState(false);
 
   const handleDelete = async () => {
@@ -93,18 +101,20 @@ function ProviderCard({ provider, onEdit, onToggleEnabled, onDelete }: ProviderC
           >
             {provider.is_enabled ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
           </button>
-          <button
-            onClick={handleDelete}
-            disabled={isDeleting}
-            className="p-2 hover:bg-red-500/10 rounded-lg transition-colors text-text-muted hover:text-red-500"
-            title="Delete provider"
-          >
-            {isDeleting ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Trash2 className="h-4 w-4" />
-            )}
-          </button>
+          {isSuperAdmin && (
+            <button
+              onClick={handleDelete}
+              disabled={isDeleting}
+              className="p-2 hover:bg-red-500/10 rounded-lg transition-colors text-text-muted hover:text-red-500"
+              title="Delete provider"
+            >
+              {isDeleting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4" />
+              )}
+            </button>
+          )}
         </div>
       </div>
 
@@ -421,6 +431,8 @@ function ProviderFormModal({ provider, onClose, onSave }: ProviderFormModalProps
 // ============================================================================
 
 export default function ProvidersManagement() {
+  const currentUser = useUser();
+  const isSuperAdmin = currentUser?.role === 'super_admin';
   const {
     providers,
     providersLoading,
@@ -528,6 +540,7 @@ export default function ProvidersManagement() {
             <ProviderCard
               key={provider.slug}
               provider={provider}
+              isSuperAdmin={isSuperAdmin}
               onEdit={setEditingProvider}
               onToggleEnabled={handleToggleEnabled}
               onDelete={deleteProvider}

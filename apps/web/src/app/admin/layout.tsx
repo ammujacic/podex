@@ -125,10 +125,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
               <ul className="space-y-1">
                 {section.items.map((item) => {
                   const Icon = item.icon;
-                  const isActive =
-                    item.href === '/admin'
-                      ? pathname === '/admin'
-                      : pathname === item.href || pathname.startsWith(item.href + '/');
+                  // Use exact matching - all nav items are explicit routes
+                  const isActive = pathname === item.href;
 
                   return (
                     <li key={item.href}>

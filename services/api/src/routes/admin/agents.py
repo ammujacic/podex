@@ -35,6 +35,12 @@ class AgentRoleConfigResponse(BaseModel):
     description: str | None
     system_prompt: str
     tools: list[str]
+    category: str  # development, terminal, system, custom
+    gradient_start: str | None
+    gradient_end: str | None
+    features: list[str] | None
+    example_prompts: list[str] | None
+    requires_subscription: str | None
     default_model: str | None
     default_temperature: float | None
     default_max_tokens: int | None

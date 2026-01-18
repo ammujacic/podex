@@ -292,13 +292,14 @@ async def get_skills_analytics(
     success_rate = (successful / total_executions * 100) if total_executions > 0 else 0.0
 
     # Skills by category
+    category_expr = SystemSkill.skill_metadata["category"].astext
     category_result = await db.execute(
         select(
-            SystemSkill.skill_metadata["category"].astext.label("category"),
+            category_expr.label("category"),
             func.count(SystemSkill.id).label("count"),
         )
         .where(SystemSkill.is_active == True)
-        .group_by(SystemSkill.skill_metadata["category"].astext)
+        .group_by(category_expr)
     )
     skills_by_category: dict[str, int] = {}
     for row in category_result:
@@ -424,14 +425,14 @@ async def get_skill_analytics(
 
 @router.post("", response_model=SystemSkillResponse, status_code=201)
 @limiter.limit(RATE_LIMIT_STANDARD)
-@require_super_admin
+@require_admin
 async def create_system_skill(
     request: Request,
     response: Response,
     data: CreateSkillRequest,
     db: DbSession,
 ) -> SystemSkillResponse:
-    """Create a new system skill (super admin only)."""
+    """Create a new system skill."""
     admin_id = get_admin_user_id(request)
 
     # Check for duplicate slug
@@ -659,14 +660,14 @@ async def duplicate_skill(
 
 @router.post("/import", response_model=SystemSkillResponse, status_code=201)
 @limiter.limit(RATE_LIMIT_STANDARD)
-@require_super_admin
+@require_admin
 async def import_skill(
     request: Request,
     response: Response,
     data: ImportSkillRequest,
     db: DbSession,
 ) -> SystemSkillResponse:
-    """Import a skill from YAML/JSON format (super admin only)."""
+    """Import a skill from YAML/JSON format."""
     admin_id = get_admin_user_id(request)
     skill_data = data.data
 

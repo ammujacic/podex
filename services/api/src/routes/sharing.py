@@ -9,6 +9,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.audit_logger import AuditAction, AuditLogger
 from src.database.models import Session as SessionModel
 from src.database.models import SessionShare
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
@@ -204,6 +205,18 @@ async def share_session(
         if data.user_id not in session_state.shared_with:
             session_state.shared_with.append(data.user_id)
 
+    # Audit log: session shared
+    audit = AuditLogger(db).set_context(request=request, user_id=user_id)
+    await audit.log_session_event(
+        AuditAction.SESSION_SHARED,
+        session_id=session_id,
+        details={
+            "shared_with_id": data.user_id,
+            "shared_with_email": data.email,
+            "sharing_mode": data.sharing_mode.value,
+        },
+    )
+
     return ShareResponse(
         id=share.id,
         session_id=share.session_id,
@@ -247,6 +260,18 @@ async def create_share_link(
         session_state.share_link = share_code
         session_state.default_sharing_mode = data.sharing_mode
 
+    # Audit log: share link created
+    audit = AuditLogger(db).set_context(request=request, user_id=user_id)
+    await audit.log_session_event(
+        AuditAction.SESSION_SHARED,
+        session_id=session_id,
+        details={
+            "action": "share_link_created",
+            "sharing_mode": data.sharing_mode.value,
+            "expires_at": expires_at.isoformat() if expires_at else None,
+        },
+    )
+
     return ShareLinkResponse(
         share_link=f"/s/{share_code}",
         share_code=share_code,
@@ -276,6 +301,14 @@ async def revoke_share_link(
     session_state = await session_sync_manager.get_session_state(session_id)
     if session_state:
         session_state.share_link = None
+
+    # Audit log: share link revoked
+    audit = AuditLogger(db).set_context(request=request, user_id=user_id)
+    await audit.log_session_event(
+        AuditAction.SESSION_SHARED,
+        session_id=session_id,
+        details={"action": "share_link_revoked"},
+    )
 
     return {"message": "Share link revoked"}
 

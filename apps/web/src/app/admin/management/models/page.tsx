@@ -29,6 +29,7 @@ import {
   type AgentDefaultsResponse,
 } from '@/lib/api';
 import { toast } from 'sonner';
+import { useUser } from '@/stores/auth';
 
 // Cost tier badge colors
 const costTierColors: Record<string, string> = {
@@ -48,12 +49,13 @@ const providerDisplayNames: Record<string, string> = {
 
 interface ModelCardProps {
   model: AdminModel;
+  isSuperAdmin: boolean;
   onEdit: (model: AdminModel) => void;
   onToggleEnabled: (modelId: string, isEnabled: boolean) => void;
   onDelete: (modelId: string) => void;
 }
 
-function ModelCard({ model, onEdit, onToggleEnabled, onDelete }: ModelCardProps) {
+function ModelCard({ model, isSuperAdmin, onEdit, onToggleEnabled, onDelete }: ModelCardProps) {
   const [isDeleting, setIsDeleting] = useState(false);
 
   const handleDelete = async () => {
@@ -105,18 +107,20 @@ function ModelCard({ model, onEdit, onToggleEnabled, onDelete }: ModelCardProps)
           >
             {model.is_enabled ? <X className="h-4 w-4" /> : <Check className="h-4 w-4" />}
           </button>
-          <button
-            onClick={handleDelete}
-            disabled={isDeleting}
-            className="p-2 hover:bg-red-500/10 text-red-500 rounded-lg transition-colors disabled:opacity-50"
-            title="Delete model"
-          >
-            {isDeleting ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Trash2 className="h-4 w-4" />
-            )}
-          </button>
+          {isSuperAdmin && (
+            <button
+              onClick={handleDelete}
+              disabled={isDeleting}
+              className="p-2 hover:bg-red-500/10 text-red-500 rounded-lg transition-colors disabled:opacity-50"
+              title="Delete model"
+            >
+              {isDeleting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4" />
+              )}
+            </button>
+          )}
         </div>
       </div>
 
@@ -587,6 +591,9 @@ export default function ModelsManagement() {
   const [defaults, setDefaults] = useState<AgentDefaultsResponse | null>(null);
   const [seeding, setSeeding] = useState(false);
 
+  const currentUser = useUser();
+  const isSuperAdmin = currentUser?.role === 'super_admin';
+
   const fetchModels = useCallback(async () => {
     try {
       setLoading(true);
@@ -769,6 +776,7 @@ export default function ModelsManagement() {
                       <ModelCard
                         key={model.id}
                         model={model}
+                        isSuperAdmin={isSuperAdmin}
                         onEdit={(m) => {
                           setEditingModel(m);
                           setShowEditModal(true);

@@ -402,6 +402,154 @@ async def get_my_organization(
     )
 
 
+# ============================================================================
+# User Context (must be before /{org_id} routes for proper route matching)
+# ============================================================================
+
+
+@router.get("/me", response_model=UserOrgContextResponse | None)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def get_my_org_context(
+    request: Request,
+    db: DbSession,
+) -> UserOrgContextResponse | None:
+    """Get current user's organization context and limits."""
+    ctx = await get_user_org_context(request, db)
+    if ctx is None:
+        return None
+
+    # Get limit status
+    limits_service = OrgLimitsService(db)
+    limit_status = await limits_service.get_limit_status(ctx.member, ctx.organization)
+
+    org = ctx.organization
+    return UserOrgContextResponse(
+        organization=OrganizationResponse(
+            id=org.id,
+            name=org.name,
+            slug=org.slug,
+            credit_model=org.credit_model,
+            credit_pool_cents=org.credit_pool_cents,
+            auto_join_enabled=org.auto_join_enabled,
+            auto_join_domains=org.auto_join_domains,
+            is_active=org.is_active,
+            logo_url=org.logo_url,
+            website=org.website,
+            onboarding_completed=org.onboarding_completed,
+            created_at=org.created_at,
+            updated_at=org.updated_at,
+        ),
+        role=ctx.role,
+        is_blocked=ctx.member.is_blocked,
+        limits={
+            "spending_limit_cents": limit_status.spending_limit_cents,
+            "current_spending_cents": limit_status.current_spending_cents,
+            "remaining_spending_cents": limit_status.remaining_spending_cents,
+            "allocated_credits_cents": limit_status.allocated_credits_cents,
+            "used_credits_cents": limit_status.used_credits_cents,
+            "remaining_allocated_cents": limit_status.remaining_allocated_cents,
+            "allowed_models": limit_status.allowed_models,
+            "allowed_instance_types": limit_status.allowed_instance_types,
+            "storage_limit_gb": limit_status.storage_limit_gb,
+            "is_at_limit": limit_status.is_at_limit,
+        },
+    )
+
+
+@router.get("/me/limits", response_model=dict[str, Any])
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def get_my_limits(
+    request: Request,
+    db: DbSession,
+) -> dict[str, Any]:
+    """Get current user's resource limits and usage."""
+    ctx = await get_user_org_context(request, db)
+    if ctx is None:
+        raise HTTPException(
+            status_code=400,
+            detail="You are not a member of an organization",
+        )
+
+    limits_service = OrgLimitsService(db)
+    status = await limits_service.get_limit_status(ctx.member, ctx.organization)
+
+    return {
+        "credit_model": status.credit_model,
+        "spending": {
+            "limit_cents": status.spending_limit_cents,
+            "current_cents": status.current_spending_cents,
+            "remaining_cents": status.remaining_spending_cents,
+        },
+        "allocated": {
+            "total_cents": status.allocated_credits_cents,
+            "used_cents": status.used_credits_cents,
+            "remaining_cents": status.remaining_allocated_cents,
+        },
+        "billing_period": {
+            "spending_cents": status.billing_period_spending_cents,
+        },
+        "resources": {
+            "allowed_models": status.allowed_models,
+            "allowed_instance_types": status.allowed_instance_types,
+            "storage_limit_gb": status.storage_limit_gb,
+            "feature_access": status.feature_access,
+        },
+        "status": {
+            "is_blocked": status.is_blocked,
+            "blocked_reason": status.blocked_reason,
+            "is_at_limit": status.is_at_limit,
+        },
+    }
+
+
+@router.delete("/me")
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def leave_organization(
+    request: Request,
+    db: DbSession,
+) -> dict[str, str]:
+    """Leave the current organization.
+
+    Owners cannot leave - they must delete the org or transfer ownership.
+    """
+    ctx = await get_user_org_context(request, db)
+    if ctx is None:
+        raise HTTPException(
+            status_code=400,
+            detail="You are not a member of an organization",
+        )
+
+    if ctx.role == "owner":
+        raise HTTPException(
+            status_code=400,
+            detail="Organization owners cannot leave. "
+            "Transfer ownership or delete the organization.",
+        )
+
+    # Reactivate personal billing
+    user = await db.get(User, ctx.user_id)
+    if user:
+        user.personal_billing_suspended = False
+        user.personal_billing_suspended_at = None
+        user.account_type = "personal"
+
+    await db.delete(ctx.member)
+    await db.commit()
+
+    logger.info(
+        "User left organization",
+        org_id=ctx.org_id,
+        user_id=ctx.user_id,
+    )
+
+    return {"message": "You have left the organization"}
+
+
+# ============================================================================
+# Organization by ID (/{org_id} routes - must come after /me routes)
+# ============================================================================
+
+
 @router.get("/{org_id}", response_model=OrganizationResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
 @require_org_member
@@ -1504,149 +1652,6 @@ async def join_via_domain(
         role=org.auto_join_default_role,
         message=f"Welcome to {org.name}!",
     )
-
-
-# ============================================================================
-# User Context
-# ============================================================================
-
-
-@router.get("/me", response_model=UserOrgContextResponse | None)
-@limiter.limit(RATE_LIMIT_STANDARD)
-async def get_my_org_context(
-    request: Request,
-    db: DbSession,
-) -> UserOrgContextResponse | None:
-    """Get current user's organization context and limits."""
-    ctx = await get_user_org_context(request, db)
-    if ctx is None:
-        return None
-
-    # Get limit status
-    limits_service = OrgLimitsService(db)
-    limit_status = await limits_service.get_limit_status(ctx.member, ctx.organization)
-
-    org = ctx.organization
-    return UserOrgContextResponse(
-        organization=OrganizationResponse(
-            id=org.id,
-            name=org.name,
-            slug=org.slug,
-            credit_model=org.credit_model,
-            credit_pool_cents=org.credit_pool_cents,
-            auto_join_enabled=org.auto_join_enabled,
-            auto_join_domains=org.auto_join_domains,
-            is_active=org.is_active,
-            logo_url=org.logo_url,
-            website=org.website,
-            onboarding_completed=org.onboarding_completed,
-            created_at=org.created_at,
-            updated_at=org.updated_at,
-        ),
-        role=ctx.role,
-        is_blocked=ctx.member.is_blocked,
-        limits={
-            "spending_limit_cents": limit_status.spending_limit_cents,
-            "current_spending_cents": limit_status.current_spending_cents,
-            "remaining_spending_cents": limit_status.remaining_spending_cents,
-            "allocated_credits_cents": limit_status.allocated_credits_cents,
-            "used_credits_cents": limit_status.used_credits_cents,
-            "remaining_allocated_cents": limit_status.remaining_allocated_cents,
-            "allowed_models": limit_status.allowed_models,
-            "allowed_instance_types": limit_status.allowed_instance_types,
-            "storage_limit_gb": limit_status.storage_limit_gb,
-            "is_at_limit": limit_status.is_at_limit,
-        },
-    )
-
-
-@router.get("/me/limits", response_model=dict[str, Any])
-@limiter.limit(RATE_LIMIT_STANDARD)
-async def get_my_limits(
-    request: Request,
-    db: DbSession,
-) -> dict[str, Any]:
-    """Get current user's resource limits and usage."""
-    ctx = await get_user_org_context(request, db)
-    if ctx is None:
-        raise HTTPException(
-            status_code=400,
-            detail="You are not a member of an organization",
-        )
-
-    limits_service = OrgLimitsService(db)
-    status = await limits_service.get_limit_status(ctx.member, ctx.organization)
-
-    return {
-        "credit_model": status.credit_model,
-        "spending": {
-            "limit_cents": status.spending_limit_cents,
-            "current_cents": status.current_spending_cents,
-            "remaining_cents": status.remaining_spending_cents,
-        },
-        "allocated": {
-            "total_cents": status.allocated_credits_cents,
-            "used_cents": status.used_credits_cents,
-            "remaining_cents": status.remaining_allocated_cents,
-        },
-        "billing_period": {
-            "spending_cents": status.billing_period_spending_cents,
-        },
-        "resources": {
-            "allowed_models": status.allowed_models,
-            "allowed_instance_types": status.allowed_instance_types,
-            "storage_limit_gb": status.storage_limit_gb,
-            "feature_access": status.feature_access,
-        },
-        "status": {
-            "is_blocked": status.is_blocked,
-            "blocked_reason": status.blocked_reason,
-            "is_at_limit": status.is_at_limit,
-        },
-    }
-
-
-@router.delete("/me")
-@limiter.limit(RATE_LIMIT_STANDARD)
-async def leave_organization(
-    request: Request,
-    db: DbSession,
-) -> dict[str, str]:
-    """Leave the current organization.
-
-    Owners cannot leave - they must delete the org or transfer ownership.
-    """
-    ctx = await get_user_org_context(request, db)
-    if ctx is None:
-        raise HTTPException(
-            status_code=400,
-            detail="You are not a member of an organization",
-        )
-
-    if ctx.role == "owner":
-        raise HTTPException(
-            status_code=400,
-            detail="Organization owners cannot leave. "
-            "Transfer ownership or delete the organization.",
-        )
-
-    # Reactivate personal billing
-    user = await db.get(User, ctx.user_id)
-    if user:
-        user.personal_billing_suspended = False
-        user.personal_billing_suspended_at = None
-        user.account_type = "personal"
-
-    await db.delete(ctx.member)
-    await db.commit()
-
-    logger.info(
-        "User left organization",
-        org_id=ctx.org_id,
-        user_id=ctx.user_id,
-    )
-
-    return {"message": "You have left the organization"}
 
 
 # ============================================================================

@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.audit_logger import AuditAction, AuditLogger
 from src.cache import (
     cache_delete,
     cache_get,
@@ -325,6 +326,14 @@ async def create_session(
     # Invalidate user's sessions list cache (O(1) version increment)
     await invalidate_user_sessions(user_id)
 
+    # Audit log: session created
+    audit = AuditLogger(db).set_context(request=request, user_id=user_id)
+    await audit.log_session_event(
+        AuditAction.SESSION_CREATED,
+        session_id=session.id,
+        details={"name": session.name, "git_url": session.git_url, "branch": session.branch},
+    )
+
     return SessionResponse(
         id=session.id,
         name=session.name,
@@ -599,8 +608,19 @@ async def delete_session(
     if session.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
 
+    # Capture session info before deletion for audit log
+    session_name = session.name
+
     await db.delete(session)
     await db.commit()
+
+    # Audit log: session deleted
+    audit = AuditLogger(db).set_context(request=request, user_id=user_id)
+    await audit.log_session_event(
+        AuditAction.SESSION_DELETED,
+        session_id=session_id,
+        details={"name": session_name},
+    )
 
     # Invalidate caches
     await cache_delete(session_key(session_id))

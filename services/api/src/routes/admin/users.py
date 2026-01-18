@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.audit_logger import AuditAction, AuditLogger
 from src.database import get_db
 from src.database.models import (
     CreditBalance,
@@ -394,11 +395,26 @@ async def update_user(
     await db.commit()
     await db.refresh(user)
 
+    # Audit log: user updated by admin
+    changes = data.model_dump(exclude_unset=True)
+    audit_action = AuditAction.USER_UPDATED
+    if "role" in changes:
+        audit_action = AuditAction.USER_ROLE_CHANGED
+
+    audit = AuditLogger(db).set_context(request=request, user_id=admin_id)
+    await audit.log_admin_action(
+        audit_action,
+        resource_type="user",
+        resource_id=user_id,
+        details={"target_email": user.email},
+        changes={"after": changes},
+    )
+
     logger.info(
         "Admin updated user",
         admin_id=admin_id,
         user_id=user_id,
-        changes=data.model_dump(exclude_unset=True),
+        changes=changes,
     )
 
     # Re-fetch user with updated data
@@ -425,6 +441,16 @@ async def activate_user(
     await db.commit()
 
     admin_id = get_admin_user_id(request)
+
+    # Audit log: user activated
+    audit = AuditLogger(db).set_context(request=request, user_id=admin_id)
+    await audit.log_admin_action(
+        AuditAction.USER_UPDATED,
+        resource_type="user",
+        resource_id=user_id,
+        details={"action": "activated", "target_email": user.email},
+    )
+
     logger.info("Admin activated user", admin_id=admin_id, user_id=user_id)
 
     return {"message": "User activated"}
@@ -454,6 +480,15 @@ async def deactivate_user(
 
     user.is_active = False
     await db.commit()
+
+    # Audit log: user suspended/deactivated
+    audit = AuditLogger(db).set_context(request=request, user_id=admin_id)
+    await audit.log_admin_action(
+        AuditAction.ADMIN_USER_SUSPENDED,
+        resource_type="user",
+        resource_id=user_id,
+        details={"action": "deactivated", "target_email": user.email},
+    )
 
     logger.info("Admin deactivated user", admin_id=admin_id, user_id=user_id)
 

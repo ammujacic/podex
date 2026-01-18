@@ -24,6 +24,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import { useUser } from '@/stores/auth';
+import { api } from '@/lib/api';
 
 // Types matching the API
 interface SkillStep {
@@ -102,6 +104,7 @@ const categoryColors: Record<string, string> = {
 interface SkillCardProps {
   skill: SystemSkill;
   analytics?: SkillAnalytics;
+  isSuperAdmin: boolean;
   onEdit: (skill: SystemSkill) => void;
   onToggleActive: (skillId: string, isActive: boolean) => void;
   onDelete: (skillId: string) => void;
@@ -112,6 +115,7 @@ interface SkillCardProps {
 function SkillCard({
   skill,
   analytics,
+  isSuperAdmin,
   onEdit,
   onToggleActive,
   onDelete,
@@ -194,18 +198,20 @@ function SkillCard({
           >
             {skill.is_active ? <X className="h-4 w-4" /> : <Check className="h-4 w-4" />}
           </button>
-          <button
-            onClick={handleDelete}
-            disabled={isDeleting}
-            className="p-2 hover:bg-red-500/10 text-red-500 rounded-lg transition-colors disabled:opacity-50"
-            title="Delete"
-          >
-            {isDeleting ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Trash2 className="h-4 w-4" />
-            )}
-          </button>
+          {isSuperAdmin && (
+            <button
+              onClick={handleDelete}
+              disabled={isDeleting}
+              className="p-2 hover:bg-red-500/10 text-red-500 rounded-lg transition-colors disabled:opacity-50"
+              title="Delete"
+            >
+              {isDeleting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4" />
+              )}
+            </button>
+          )}
         </div>
       </div>
 
@@ -895,12 +901,13 @@ export default function SkillsManagement() {
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
 
+  const currentUser = useUser();
+  const isSuperAdmin = currentUser?.role === 'super_admin';
+
   const fetchSkills = useCallback(async () => {
     try {
       setLoading(true);
-      const response = await fetch('/api/v1/admin/skills');
-      if (!response.ok) throw new Error('Failed to fetch skills');
-      const data = await response.json();
+      const data = await api.get<{ items: SystemSkill[] }>('/api/v1/admin/skills');
       setSkills(data.items || []);
       setError(null);
     } catch (err) {
@@ -913,9 +920,7 @@ export default function SkillsManagement() {
 
   const fetchAnalytics = useCallback(async () => {
     try {
-      const response = await fetch('/api/v1/admin/skills/analytics?days=30');
-      if (!response.ok) return;
-      const data: SkillsAnalyticsSummary = await response.json();
+      const data = await api.get<SkillsAnalyticsSummary>('/api/v1/admin/skills/analytics?days=30');
       setAnalyticsSummary(data);
       // Build map from top skills for per-skill analytics
       const analyticsMap: Record<string, SkillAnalytics> = {};
@@ -938,12 +943,7 @@ export default function SkillsManagement() {
       const skill = skills.find((s) => s.id === skillId);
       if (!skill) return;
 
-      const response = await fetch(`/api/v1/admin/skills/${skill.slug}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ is_active: isActive }),
-      });
-      if (!response.ok) throw new Error('Failed to update skill');
+      await api.patch(`/api/v1/admin/skills/${skill.slug}`, { is_active: isActive });
 
       setSkills((prev) => prev.map((s) => (s.id === skillId ? { ...s, is_active: isActive } : s)));
       toast.success(isActive ? 'Skill enabled' : 'Skill disabled');
@@ -956,23 +956,14 @@ export default function SkillsManagement() {
   const handleSaveSkill = async (data: Partial<SystemSkill>) => {
     try {
       if (editingSkill) {
-        const response = await fetch(`/api/v1/admin/skills/${editingSkill.slug}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(data),
-        });
-        if (!response.ok) throw new Error('Failed to update skill');
-        const updated = await response.json();
+        const updated = await api.patch<SystemSkill>(
+          `/api/v1/admin/skills/${editingSkill.slug}`,
+          data
+        );
         setSkills((prev) => prev.map((s) => (s.id === editingSkill.id ? updated : s)));
         toast.success('Skill updated');
       } else {
-        const response = await fetch('/api/v1/admin/skills', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(data),
-        });
-        if (!response.ok) throw new Error('Failed to create skill');
-        const created = await response.json();
+        const created = await api.post<SystemSkill>('/api/v1/admin/skills', data);
         setSkills((prev) => [...prev, created]);
         toast.success('Skill created');
       }
@@ -988,10 +979,7 @@ export default function SkillsManagement() {
       const skill = skills.find((s) => s.id === skillId);
       if (!skill) return;
 
-      const response = await fetch(`/api/v1/admin/skills/${skill.slug}`, {
-        method: 'DELETE',
-      });
-      if (!response.ok) throw new Error('Failed to delete skill');
+      await api.delete(`/api/v1/admin/skills/${skill.slug}`);
 
       setSkills((prev) => prev.filter((s) => s.id !== skillId));
       toast.success('Skill deleted');
@@ -1003,11 +991,7 @@ export default function SkillsManagement() {
 
   const handleDuplicateSkill = async (slug: string) => {
     try {
-      const response = await fetch(`/api/v1/admin/skills/${slug}/duplicate`, {
-        method: 'POST',
-      });
-      if (!response.ok) throw new Error('Failed to duplicate skill');
-      const duplicated = await response.json();
+      const duplicated = await api.post<SystemSkill>(`/api/v1/admin/skills/${slug}/duplicate`, {});
       setSkills((prev) => [...prev, duplicated]);
       toast.success('Skill duplicated');
     } catch (err) {
@@ -1018,16 +1002,17 @@ export default function SkillsManagement() {
 
   const handleExportSkill = async (slug: string) => {
     try {
-      const response = await fetch(`/api/v1/admin/skills/${slug}/export`);
-      if (!response.ok) throw new Error('Failed to export skill');
-      const yamlContent = await response.text();
+      const exportData = await api.get<Record<string, unknown>>(
+        `/api/v1/admin/skills/${slug}/export`
+      );
+      const jsonContent = JSON.stringify(exportData, null, 2);
 
       // Download as file
-      const blob = new Blob([yamlContent], { type: 'text/yaml' });
+      const blob = new Blob([jsonContent], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${slug}.yaml`;
+      a.download = `${slug}.json`;
       a.click();
       URL.revokeObjectURL(url);
 
@@ -1284,6 +1269,7 @@ export default function SkillsManagement() {
               key={skill.id}
               skill={skill}
               analytics={analytics[skill.slug]}
+              isSuperAdmin={isSuperAdmin}
               onEdit={(s) => {
                 setEditingSkill(s);
                 setShowEditModal(true);

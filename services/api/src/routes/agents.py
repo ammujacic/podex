@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from podex_shared import generate_tts_summary
 from src.agent_client import agent_client
+from src.audit_logger import AuditAction, AuditLogger
 from src.config import settings
 from src.database import Agent as AgentModel
 from src.database import (
@@ -605,9 +606,9 @@ async def get_default_model_for_role(db: AsyncSession, role: str) -> str:
     )
     setting = result.scalar_one_or_none()
 
-    if setting and setting.value:
+    if setting and setting.value and isinstance(setting.value, dict):
         defaults = setting.value
-        if role in defaults and "model_id" in defaults[role]:
+        if role in defaults and isinstance(defaults[role], dict) and "model_id" in defaults[role]:
             return str(defaults[role]["model_id"])
 
     # Return fallback model if no default configured for this role
@@ -1837,6 +1838,16 @@ async def create_agent(
     await db.commit()
     await db.refresh(agent)
 
+    # Audit log: agent created
+    user_id = get_current_user_id(request)
+    audit = AuditLogger(db).set_context(request=request, user_id=user_id)
+    await audit.log_agent_event(
+        AuditAction.AGENT_CREATED,
+        agent_id=agent.id,
+        session_id=session_id,
+        details={"name": agent.name, "role": agent.role, "model": agent.model, "mode": agent.mode},
+    )
+
     # Look up model display name
     model_display_name = await get_model_display_name(db, agent.model)
 
@@ -2013,6 +2024,16 @@ async def update_agent_mode(
             "mode": agent.mode,
             "command_allowlist": agent.command_allowlist,
         },
+    )
+
+    # Audit log: agent mode changed
+    user_id = get_current_user_id(request)
+    audit = AuditLogger(db).set_context(request=request, user_id=user_id)
+    await audit.log_agent_event(
+        AuditAction.AGENT_MODE_CHANGED,
+        agent_id=agent_id,
+        session_id=session_id,
+        details={"mode": agent.mode, "name": agent.name},
     )
 
     logger.info(
@@ -2203,8 +2224,23 @@ async def delete_agent(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
+    # Capture agent info before deletion for audit log
+    agent_name = agent.name
+    agent_role = agent.role
+
     await db.delete(agent)
     await db.commit()
+
+    # Audit log: agent deleted
+    user_id = get_current_user_id(request)
+    audit = AuditLogger(db).set_context(request=request, user_id=user_id)
+    await audit.log_agent_event(
+        AuditAction.AGENT_DELETED,
+        agent_id=agent_id,
+        session_id=session_id,
+        details={"name": agent_name, "role": agent_role},
+    )
+
     return {"message": "Agent deleted"}
 
 

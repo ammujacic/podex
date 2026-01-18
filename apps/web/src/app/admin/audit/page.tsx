@@ -18,6 +18,7 @@ import {
   Eye,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { api } from '@/lib/api';
 
 interface AuditLog {
   id: string;
@@ -379,12 +380,7 @@ export default function AuditLogsPage() {
       if (startDate) params.set('start_date', new Date(startDate).toISOString());
       if (endDate) params.set('end_date', new Date(endDate).toISOString());
 
-      const response = await fetch(`/api/admin/audit?${params}`, {
-        credentials: 'include',
-      });
-      if (!response.ok) throw new Error('Failed to fetch audit logs');
-
-      const data: AuditListResponse = await response.json();
+      const data = await api.get<AuditListResponse>(`/api/admin/audit?${params}`);
       setLogs(data.logs);
       setTotal(data.total);
       setTotalPages(data.total_pages);
@@ -401,12 +397,7 @@ export default function AuditLogsPage() {
       if (startDate) params.set('start_date', new Date(startDate).toISOString());
       if (endDate) params.set('end_date', new Date(endDate).toISOString());
 
-      const response = await fetch(`/api/admin/audit/stats?${params}`, {
-        credentials: 'include',
-      });
-      if (!response.ok) return;
-
-      const data: AuditStats = await response.json();
+      const data = await api.get<AuditStats>(`/api/admin/audit/stats?${params}`);
       setStats(data);
     } catch {
       // Stats are non-critical
@@ -415,12 +406,7 @@ export default function AuditLogsPage() {
 
   const fetchCategories = useCallback(async () => {
     try {
-      const response = await fetch('/api/admin/audit/categories', {
-        credentials: 'include',
-      });
-      if (!response.ok) return;
-
-      const data: string[] = await response.json();
+      const data = await api.get<string[]>('/api/admin/audit/categories');
       setCategories(data);
     } catch {
       // Non-critical

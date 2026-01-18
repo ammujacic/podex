@@ -96,6 +96,9 @@ class Settings(BaseSettings):
         # Check if we're in a production-like environment
         # Note: _info.data may not have ENVIRONMENT yet during validation
         if env == "production":
+            # In production, reject the dev default secret
+            if v == "dev-secret-key-for-local-development":
+                raise DefaultSecretKeyError
             # In production, require explicit JWT_SECRET_KEY from environment
             if not os.environ.get("JWT_SECRET_KEY"):
                 raise DefaultSecretKeyError

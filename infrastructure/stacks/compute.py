@@ -37,8 +37,14 @@ def create_cloud_run_services(
     secrets: dict[str, Any],
     bucket: gcp.storage.Bucket,
     vpc: dict[str, Any],
+    image_refs: dict[str, pulumi.Output[str]] | None = None,
 ) -> dict[str, Any]:
-    """Create Cloud Run services (FREE TIER)."""
+    """Create Cloud Run services (FREE TIER).
+
+    Args:
+        image_refs: Optional dict of service name -> image digest from pulumi-docker.
+                   If provided, uses exact image digests; otherwise uses :latest tag.
+    """
     services: dict[str, Any] = {}
 
     # Service account for Cloud Run
@@ -268,7 +274,10 @@ def create_cloud_run_services(
                 containers=[
                     gcp.cloudrunv2.ServiceTemplateContainerArgs(
                         name=cfg["name"],
-                        image=image_base.apply(
+                        # Use exact image digest if built by Pulumi, otherwise use :latest
+                        image=image_refs[cfg["name"]]
+                        if image_refs and cfg["name"] in image_refs
+                        else image_base.apply(
                             lambda base, svc_name=cfg["name"]: f"{base}/{svc_name}:latest"  # type: ignore[misc]
                         ),
                         ports=gcp.cloudrunv2.ServiceTemplateContainerPortsArgs(

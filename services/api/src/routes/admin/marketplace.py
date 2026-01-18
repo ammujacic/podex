@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
 from src.database.models import MarketplaceSkill, SkillExecution, SystemSkill, User
-from src.middleware.admin import require_admin
+from src.middleware.admin import require_admin_dependency
 
 router = APIRouter(prefix="/marketplace", tags=["admin-marketplace"])
 
@@ -85,11 +85,11 @@ class RejectSkillRequest(BaseModel):
 
 @router.get("", response_model=MarketplaceListAdminResponse)
 async def list_all_marketplace_skills(
-    status_filter: str | None = Query(None, regex="^(pending|approved|rejected)$"),
+    status_filter: str | None = Query(None, pattern="^(pending|approved|rejected)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-    admin: dict[str, str | None] = Depends(require_admin),
+    admin: dict[str, str | None] = Depends(require_admin_dependency),
 ) -> MarketplaceListAdminResponse:
     """List all marketplace skills for admin review."""
     # Build query
@@ -149,7 +149,7 @@ async def list_all_marketplace_skills(
 async def get_marketplace_skill_admin(
     skill_id: str,
     db: AsyncSession = Depends(get_db),
-    admin: dict[str, str | None] = Depends(require_admin),
+    admin: dict[str, str | None] = Depends(require_admin_dependency),
 ) -> MarketplaceSkillAdminResponse:
     """Get full details of a marketplace skill for review."""
     query = (
@@ -181,7 +181,7 @@ async def approve_marketplace_skill(
     skill_id: str,
     request: ApproveSkillRequest,
     db: AsyncSession = Depends(get_db),
-    admin: dict[str, str | None] = Depends(require_admin),
+    admin: dict[str, str | None] = Depends(require_admin_dependency),
 ) -> MarketplaceSkillAdminResponse:
     """Approve a marketplace skill submission."""
     admin_id = admin["id"]
@@ -256,7 +256,7 @@ async def reject_marketplace_skill(
     skill_id: str,
     request: RejectSkillRequest,
     db: AsyncSession = Depends(get_db),
-    admin: dict[str, str | None] = Depends(require_admin),
+    admin: dict[str, str | None] = Depends(require_admin_dependency),
 ) -> MarketplaceSkillAdminResponse:
     """Reject a marketplace skill submission."""
     admin_id = admin["id"]
@@ -293,7 +293,7 @@ async def reject_marketplace_skill(
 async def delete_marketplace_skill(
     skill_id: str,
     db: AsyncSession = Depends(get_db),
-    admin: dict[str, str | None] = Depends(require_admin),
+    admin: dict[str, str | None] = Depends(require_admin_dependency),
 ) -> None:
     """Delete a marketplace skill (and its system skill if approved)."""
     # Get the skill
@@ -328,7 +328,7 @@ async def get_skill_popularity(
     days: int = Query(30, ge=1, le=365),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-    admin: dict[str, str | None] = Depends(require_admin),
+    admin: dict[str, str | None] = Depends(require_admin_dependency),
 ) -> dict[str, Any]:
     """Get skill popularity analytics."""
     end_date = datetime.now(UTC)
