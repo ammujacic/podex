@@ -1,5 +1,5 @@
 config:
-  gcp:project: podex-dev
+  gcp:project: proven-center-484709-k4
   gcp:region: us-east1
   podex-infra:domain: podex.dev
   podex-infra:env: dev

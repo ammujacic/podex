@@ -1,9 +1,93 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Save, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
+import { Save, RefreshCw, ChevronDown, ChevronRight, ToggleLeft, ToggleRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAdminStore, type PlatformSetting } from '@/stores/admin';
+
+// Feature flag metadata for friendly display
+const FEATURE_FLAG_META: Record<string, { label: string; description: string }> = {
+  registration_enabled: {
+    label: 'User Registration',
+    description: 'Allow new users to register accounts',
+  },
+  voice_enabled: {
+    label: 'Voice Features',
+    description: 'Enable text-to-speech and voice input',
+  },
+  collaboration_enabled: {
+    label: 'Collaboration',
+    description: 'Enable real-time collaboration features',
+  },
+  custom_agents_enabled: {
+    label: 'Custom Agents',
+    description: 'Allow users to create custom AI agents',
+  },
+  git_integration_enabled: {
+    label: 'Git Integration',
+    description: 'Enable Git repository connections',
+  },
+  planning_mode_enabled: {
+    label: 'Planning Mode',
+    description: 'Enable AI planning mode for agents',
+  },
+  vision_enabled: {
+    label: 'Vision',
+    description: 'Enable image analysis capabilities',
+  },
+};
+
+interface QuickSettingsProps {
+  featureFlags: Record<string, boolean> | null;
+  onToggle: (flag: string, value: boolean) => void;
+  saving: boolean;
+}
+
+function QuickSettings({ featureFlags, onToggle, saving }: QuickSettingsProps) {
+  if (!featureFlags) return null;
+
+  return (
+    <div className="mb-8 p-6 bg-surface rounded-lg border border-border-subtle">
+      <h2 className="text-lg font-semibold text-text-primary mb-4">Quick Settings</h2>
+      <p className="text-sm text-text-muted mb-6">
+        Toggle platform features on or off. Changes take effect immediately.
+      </p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {Object.entries(featureFlags).map(([flag, enabled]) => {
+          const meta = FEATURE_FLAG_META[flag] || {
+            label: flag.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+            description: '',
+          };
+          return (
+            <button
+              key={flag}
+              onClick={() => onToggle(flag, !enabled)}
+              disabled={saving}
+              className={cn(
+                'flex items-center justify-between p-4 rounded-lg border transition-colors text-left',
+                enabled
+                  ? 'bg-green-500/10 border-green-500/30 hover:bg-green-500/20'
+                  : 'bg-elevated border-border-subtle hover:bg-overlay'
+              )}
+            >
+              <div>
+                <p className="font-medium text-text-primary">{meta.label}</p>
+                {meta.description && (
+                  <p className="text-sm text-text-muted mt-0.5">{meta.description}</p>
+                )}
+              </div>
+              {enabled ? (
+                <ToggleRight className="h-6 w-6 text-green-500 flex-shrink-0" />
+              ) : (
+                <ToggleLeft className="h-6 w-6 text-text-muted flex-shrink-0" />
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 interface SettingEditorProps {
   setting: PlatformSetting;
@@ -96,10 +180,15 @@ function SettingEditor({ setting, onSave }: SettingEditorProps) {
 export default function SettingsManagement() {
   const { settings, settingsLoading, fetchSettings, updateSetting, error } = useAdminStore();
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [savingFlags, setSavingFlags] = useState(false);
 
   useEffect(() => {
     fetchSettings();
   }, [fetchSettings]);
+
+  // Get feature flags setting
+  const featureFlagsSetting = settings.find((s) => s.key === 'feature_flags');
+  const featureFlags = featureFlagsSetting?.value as Record<string, boolean> | null;
 
   // Group settings by category
   const categories = settings.reduce<Record<string, PlatformSetting[]>>((acc, setting) => {
@@ -115,6 +204,16 @@ export default function SettingsManagement() {
 
   const handleSave = async (key: string, value: Record<string, unknown>) => {
     await updateSetting(key, value);
+  };
+
+  const handleFeatureFlagToggle = async (flag: string, value: boolean) => {
+    if (!featureFlags) return;
+    setSavingFlags(true);
+    try {
+      await updateSetting('feature_flags', { ...featureFlags, [flag]: value });
+    } finally {
+      setSavingFlags(false);
+    }
   };
 
   return (
@@ -135,6 +234,15 @@ export default function SettingsManagement() {
 
       {error && (
         <div className="bg-red-500/10 text-red-500 p-4 rounded-lg mb-6">Error: {error}</div>
+      )}
+
+      {/* Quick Settings for feature flags */}
+      {!settingsLoading && featureFlags && (
+        <QuickSettings
+          featureFlags={featureFlags}
+          onToggle={handleFeatureFlagToggle}
+          saving={savingFlags}
+        />
       )}
 
       <div className="flex gap-8">

@@ -55,6 +55,13 @@ from .checkpoints import (
     PendingChangeSet,
 )
 
+# CLI sync models
+from .cli_sync import (
+    CLISyncConflict,
+    CLISyncLog,
+    CLISyncStatus,
+)
+
 # Context management models
 from .context import (
     CompactionLog,
@@ -168,6 +175,9 @@ __all__ = [
     "AuditLog",
     "Base",
     "BillingEvent",
+    "CLISyncConflict",
+    "CLISyncLog",
+    "CLISyncStatus",
     "ChangeSetFile",
     "CheckpointFile",
     "CompactionLog",

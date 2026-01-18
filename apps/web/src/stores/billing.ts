@@ -42,6 +42,9 @@ export interface Subscription {
   canceledAt: string | null;
   trialEnd: string | null;
   createdAt: string;
+  // Sponsorship fields
+  is_sponsored?: boolean;
+  sponsor_reason?: string;
 }
 
 export interface UsageSummary {
@@ -109,6 +112,8 @@ export interface CreditTransaction {
   description: string;
   expiresAt: string | null;
   createdAt: string;
+  // Admin tracking - for credits awarded by admin
+  awarded_by_id?: string | null;
 }
 
 export interface Invoice {

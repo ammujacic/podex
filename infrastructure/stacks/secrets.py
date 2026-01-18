@@ -1,6 +1,9 @@
 """Secret Manager configuration.
 
-GCP Free Tier: 6 active secret versions
+Note: GCP Free Tier provides 6 active secret versions.
+We use 8 secrets (2 over free tier):
+  - 4 auto-generated: JWT, DB password, Redis password, Internal API key
+  - 4 placeholders: SendGrid, Stripe, Admin email, Admin password
 """
 
 from typing import Any
@@ -10,7 +13,7 @@ import pulumi_random as random
 
 
 def create_secrets(project_id: str, env: str) -> dict[str, Any]:
-    """Create Secret Manager secrets (6 free versions)."""
+    """Create Secret Manager secrets (8 total: 4 auto-generated + 4 placeholders)."""
     secrets: dict[str, Any] = {}
 
     # 1. JWT Secret (auto-generated)
@@ -122,5 +125,37 @@ def create_secrets(project_id: str, env: str) -> dict[str, Any]:
             secret_data="PLACEHOLDER_SET_VIA_CONSOLE",
         )
         secrets[name.replace("-", "_")] = secret
+
+    # 7-8. Admin credentials for initial admin account seeding
+    # Set these via GCP Console or CLI for production:
+    #   gcloud secrets versions add podex-admin-email-{env} --data-file=-
+    #   gcloud secrets versions add podex-admin-password-{env} --data-file=-
+    admin_email_secret = gcp.secretmanager.Secret(
+        f"admin-email-{env}",
+        secret_id=f"podex-admin-email-{env}",
+        replication=gcp.secretmanager.SecretReplicationArgs(
+            auto=gcp.secretmanager.SecretReplicationAutoArgs(),
+        ),
+    )
+    gcp.secretmanager.SecretVersion(
+        f"admin-email-version-{env}",
+        secret=admin_email_secret.id,
+        secret_data="PLACEHOLDER_SET_VIA_CONSOLE",
+    )
+    secrets["admin_email"] = admin_email_secret
+
+    admin_password_secret = gcp.secretmanager.Secret(
+        f"admin-password-{env}",
+        secret_id=f"podex-admin-password-{env}",
+        replication=gcp.secretmanager.SecretReplicationArgs(
+            auto=gcp.secretmanager.SecretReplicationAutoArgs(),
+        ),
+    )
+    gcp.secretmanager.SecretVersion(
+        f"admin-password-version-{env}",
+        secret=admin_password_secret.id,
+        secret_data="PLACEHOLDER_SET_VIA_CONSOLE",
+    )
+    secrets["admin_password"] = admin_password_secret
 
     return secrets

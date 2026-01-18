@@ -56,6 +56,8 @@ class TestSecretsConfiguration:
             "internal_api_key_value",
             "sendgrid_api_key",
             "stripe_api_key",
+            "admin_email",
+            "admin_password",
         ]
 
         for secret_key in expected_secrets:
@@ -64,11 +66,11 @@ class TestSecretsConfiguration:
         # Verify RandomPassword was called for the required secrets (4 times)
         assert mock_random_password.call_count == 4
 
-        # Verify Secret was called for all secrets (6 times: 4 generated + 2 placeholders)
-        assert mock_secret.call_count == 6
+        # Verify Secret was called for all secrets (8 times: 4 generated + 4 placeholders)
+        assert mock_secret.call_count == 8
 
-        # Verify SecretVersion was called for all secrets (6 times)
-        assert mock_secret_version.call_count == 6
+        # Verify SecretVersion was called for all secrets (8 times)
+        assert mock_secret_version.call_count == 8
 
     def test_secret_ids_follow_naming_convention(self, project_id: str, env: str) -> None:
         """Test that secret IDs follow the expected naming convention."""
@@ -79,6 +81,8 @@ class TestSecretsConfiguration:
             f"podex-internal-api-key-{env}",
             f"podex-sendgrid-api-key-{env}",
             f"podex-stripe-api-key-{env}",
+            f"podex-admin-email-{env}",
+            f"podex-admin-password-{env}",
         ]
 
         # We can't easily test the actual creation without mocking,

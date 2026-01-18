@@ -44,6 +44,7 @@ from src.routes import (
     changes,
     checkpoints,
     claude_code,
+    cli_sync,
     commands,
     completion,
     context,
@@ -951,13 +952,20 @@ def run_migrations() -> None:
         raise MigrationFileNotFoundError(str(e)) from e
 
 
-async def seed_dev_admin() -> None:
-    """Seed development users if they don't exist.
+async def seed_admin() -> None:
+    """Seed admin user if credentials are provided.
 
-    Only runs in development mode when DEV_SEED_ADMIN is True.
-    Creates both admin and regular test users with Pro subscriptions.
+    In development: Seeds admin and test users when DEV_SEED_ADMIN is True.
+    In production: Seeds admin user only when ADMIN_EMAIL/PASSWORD are provided.
+
+    This allows bootstrapping an initial admin account in production deployments.
+    The admin credentials should be set via GCP Secret Manager.
     """
-    if settings.ENVIRONMENT != "development" or not settings.DEV_SEED_ADMIN:
+    is_dev = settings.ENVIRONMENT == "development"
+
+    # In development, respect DEV_SEED_ADMIN setting
+    # In production, always try to seed admin if credentials are provided
+    if is_dev and not settings.DEV_SEED_ADMIN:
         return
 
     from passlib.context import CryptContext
@@ -971,17 +979,21 @@ async def seed_dev_admin() -> None:
 
     pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-    # Dev users to seed - SECURITY: No hardcoded defaults, require explicit env vars
+    # Admin credentials - SECURITY: No hardcoded defaults, require explicit env vars
     admin_email = os.environ.get("ADMIN_EMAIL")
     admin_password = os.environ.get("ADMIN_PASSWORD")
-    test_email = os.environ.get("TEST_EMAIL")
-    test_password = os.environ.get("TEST_PASSWORD")
 
-    dev_users = []
+    # Skip placeholder values from GCP Secret Manager
+    if admin_email == "PLACEHOLDER_SET_VIA_CONSOLE":
+        admin_email = None
+    if admin_password == "PLACEHOLDER_SET_VIA_CONSOLE":
+        admin_password = None
+
+    users_to_seed = []
 
     # Only create admin user if credentials are explicitly provided
     if admin_email and admin_password:
-        dev_users.append(
+        users_to_seed.append(
             {
                 "email": admin_email,
                 "password": admin_password,
@@ -990,29 +1002,32 @@ async def seed_dev_admin() -> None:
                 "plan_slug": "pro",
             }
         )
-    else:
-        logger.warning(
-            "Admin dev user not created: ADMIN_EMAIL and ADMIN_PASSWORD env vars required"
-        )
+    elif is_dev:
+        logger.warning("Admin user not created: ADMIN_EMAIL and ADMIN_PASSWORD env vars required")
 
-    # Only create test user if credentials are explicitly provided
-    if test_email and test_password:
-        dev_users.append(
-            {
-                "email": test_email,
-                "password": test_password,
-                "name": "Test User",
-                "role": "member",
-                "plan_slug": "free",
-            }
-        )
-    else:
-        logger.warning("Test dev user not created: TEST_EMAIL and TEST_PASSWORD env vars required")
+    # Test user only in development
+    if is_dev:
+        test_email = os.environ.get("TEST_EMAIL")
+        test_password = os.environ.get("TEST_PASSWORD")
 
-    if not dev_users:
-        logger.info(
-            "No dev users to seed - set ADMIN_EMAIL/ADMIN_PASSWORD or TEST_EMAIL/TEST_PASSWORD"
-        )
+        if test_email and test_password:
+            users_to_seed.append(
+                {
+                    "email": test_email,
+                    "password": test_password,
+                    "name": "Test User",
+                    "role": "member",
+                    "plan_slug": "free",
+                }
+            )
+        else:
+            logger.warning("Test user not created: TEST_EMAIL and TEST_PASSWORD env vars required")
+
+    if not users_to_seed:
+        if is_dev:
+            logger.info(
+                "No users to seed - set ADMIN_EMAIL/ADMIN_PASSWORD or TEST_EMAIL/TEST_PASSWORD"
+            )
         return
 
     async for db in get_db():
@@ -1024,9 +1039,9 @@ async def seed_dev_admin() -> None:
             plans = {plan.slug: plan for plan in plans_result.scalars().all()}
 
             if not plans:
-                logger.warning("Plans not found, dev users will be created without subscriptions")
+                logger.warning("Plans not found, users will be created without subscriptions")
 
-            for user_data in dev_users:
+            for user_data in users_to_seed:
                 plan_slug = user_data.get("plan_slug", "free")
                 plan = plans.get(plan_slug)
 
@@ -1035,7 +1050,7 @@ async def seed_dev_admin() -> None:
                 existing_user = result.scalar_one_or_none()
 
                 if existing_user:
-                    logger.debug("Dev user already exists", email=user_data["email"])
+                    logger.debug("Seeded user already exists", email=user_data["email"])
                     # Check if user has a subscription
                     if plan:
                         sub_result = await db.execute(
@@ -1046,7 +1061,7 @@ async def seed_dev_admin() -> None:
                         existing_sub = sub_result.scalar_one_or_none()
                         if not existing_sub:
                             logger.info(
-                                "Creating subscription for existing dev user",
+                                "Creating subscription for existing seeded user",
                                 email=user_data["email"],
                                 plan=plan_slug,
                             )
@@ -1066,7 +1081,7 @@ async def seed_dev_admin() -> None:
                 await db.flush()  # Flush to get user.id
 
                 logger.info(
-                    "Created dev user",
+                    "Seeded user created",
                     email=user_data["email"],
                     role=user_data["role"],
                 )
@@ -1075,7 +1090,7 @@ async def seed_dev_admin() -> None:
                 if plan:
                     await _create_dev_subscription(db, user.id, plan)
                     logger.info(
-                        "Created subscription for dev user",
+                        "Created subscription for seeded user",
                         email=user_data["email"],
                         plan=plan_slug,
                     )
@@ -1158,7 +1173,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     await seed_database()
 
     # Seed development admin user (only in development mode)
-    await seed_dev_admin()
+    await seed_admin()
 
     # Initialize session sync (Redis Pub/Sub for cross-instance sync)
     await init_session_sync()
@@ -1443,6 +1458,7 @@ api_v1.include_router(extensions.router, prefix="/extensions", tags=["extensions
 api_v1.include_router(claude_code.router, tags=["claude-code"])
 api_v1.include_router(openai_codex.router, tags=["openai-codex"])
 api_v1.include_router(gemini_cli.router, tags=["gemini-cli"])
+api_v1.include_router(cli_sync.router, tags=["cli-sync"])
 
 # Mount v1 API at /api/v1
 app.include_router(api_v1, prefix="/api/v1")

@@ -36,6 +36,7 @@ def create_cloud_run_services(
     redis_vm: dict[str, Any],
     secrets: dict[str, Any],
     bucket: gcp.storage.Bucket,
+    vpc: dict[str, Any],
 ) -> dict[str, Any]:
     """Create Cloud Run services (FREE TIER)."""
     services: dict[str, Any] = {}
@@ -65,13 +66,14 @@ def create_cloud_run_services(
             member=service_account.email.apply(lambda e: f"serviceAccount:{e}"),
         )
 
-    # VPC Connector for Cloud Run to access VPC resources (Redis VM)
+    # VPC Connector for Cloud Run to access VPC resources (Redis VM, Cloud SQL)
+    # Using 10.9.0.0/28 to avoid overlap with GKE services range (10.8.0.0/20)
     vpc_connector = gcp.vpcaccess.Connector(
         f"podex-connector-{env}",
         name=f"podex-connector-{env}",
         region=region,
-        ip_cidr_range="10.8.0.0/28",
-        network="default",  # Using default network for simplicity
+        ip_cidr_range="10.9.0.0/28",
+        network=vpc["network"].name,
         min_instances=2,
         max_instances=3,
     )
@@ -217,6 +219,31 @@ def create_cloud_run_services(
                 )
             )
 
+        # Admin credentials (API service only - for initial admin seeding)
+        if cfg["name"] == "api":
+            envs.append(
+                gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
+                    name="ADMIN_EMAIL",
+                    value_source=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceArgs(
+                        secret_key_ref=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceSecretKeyRefArgs(
+                            secret=secrets["admin_email"].secret_id,
+                            version="latest",
+                        ),
+                    ),
+                )
+            )
+            envs.append(
+                gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
+                    name="ADMIN_PASSWORD",
+                    value_source=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceArgs(
+                        secret_key_ref=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceSecretKeyRefArgs(
+                            secret=secrets["admin_password"].secret_id,
+                            version="latest",
+                        ),
+                    ),
+                )
+            )
+
         # Create the service
         service = gcp.cloudrunv2.Service(
             f"podex-{cfg['name']}-{env}",
@@ -241,12 +268,12 @@ def create_cloud_run_services(
                 containers=[
                     gcp.cloudrunv2.ServiceTemplateContainerArgs(
                         name=cfg["name"],
-                        image=image_base.apply(lambda base, c=cfg: f"{base}/{c['name']}:latest"),
-                        ports=[
-                            gcp.cloudrunv2.ServiceTemplateContainerPortsArgs(
-                                container_port=cfg["port"],
-                            )
-                        ],
+                        image=image_base.apply(
+                            lambda base, svc_name=cfg["name"]: f"{base}/{svc_name}:latest"  # type: ignore[misc]
+                        ),
+                        ports=gcp.cloudrunv2.ServiceTemplateContainerPortsArgs(
+                            container_port=cfg["port"],
+                        ),
                         resources=gcp.cloudrunv2.ServiceTemplateContainerResourcesArgs(
                             limits={
                                 "cpu": cfg["cpu"],

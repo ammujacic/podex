@@ -1,18 +1,22 @@
 """Admin user management routes."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Any, cast
+from uuid import uuid4
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
 from src.database.models import (
     CreditBalance,
+    CreditTransaction,
     Session,
+    SubscriptionPlan,
+    UsageQuota,
     User,
     UserSubscription,
 )
@@ -46,6 +50,10 @@ class AdminUserResponse(BaseModel):
     subscription_status: str | None = None
     subscription_plan: str | None = None
     credit_balance_cents: int = 0
+
+    # Sponsorship data
+    is_sponsored: bool = False
+    sponsored_by_name: str | None = None
 
     class Config:
         from_attributes = True
@@ -83,6 +91,65 @@ class BulkUpdateResponse(BaseModel):
     updated: int
     failed: int
     errors: list[str] = []
+
+
+class SponsorSubscriptionRequest(BaseModel):
+    """Request to sponsor a user's subscription."""
+
+    plan_id: str
+    reason: str | None = None
+
+
+class SponsorSubscriptionResponse(BaseModel):
+    """Response after sponsoring a subscription."""
+
+    message: str
+    subscription_id: str
+    plan_name: str
+    is_sponsored: bool
+
+
+class AwardCreditsRequest(BaseModel):
+    """Request to award credits to a user."""
+
+    amount_cents: int = Field(ge=1, le=10000000)  # $0.01 to $100k
+    reason: str = Field(min_length=1, max_length=500)
+    expires_at: datetime | None = None
+
+
+class AwardCreditsResponse(BaseModel):
+    """Response after awarding credits."""
+
+    transaction_id: str
+    amount_cents: int
+    new_balance_cents: int
+    expires_at: datetime | None
+
+
+class QuotaInfo(BaseModel):
+    """Individual quota information."""
+
+    quota_type: str
+    current_usage: float
+    limit_value: float
+    usage_percent: float
+    warning_sent: bool
+    overage_allowed: bool
+
+
+class UserUsageResponse(BaseModel):
+    """User usage and quotas response."""
+
+    user_id: str
+    tokens_used: int = 0
+    tokens_limit: int = 0
+    compute_cents_used: int = 0
+    compute_cents_limit: int = 0
+    storage_gb_used: float = 0
+    storage_gb_limit: float = 0
+    quotas: list[QuotaInfo] = []
+    credit_balance_cents: int = 0
+    total_bonus_cents: int = 0
 
 
 # ==================== Endpoints ====================
@@ -176,12 +243,29 @@ async def list_users(
     balances_result = await db.execute(balances_query)
     balances = {bal.user_id: bal for bal in balances_result.scalars()}
 
+    # Batch query: Get sponsor names for sponsored subscriptions
+    sponsor_ids = [
+        sub.sponsored_by_id
+        for sub in subscriptions.values()
+        if sub.is_sponsored and sub.sponsored_by_id
+    ]
+    sponsor_names: dict[str, str] = {}
+    if sponsor_ids:
+        sponsors_query = select(User.id, User.name, User.email).where(User.id.in_(sponsor_ids))
+        sponsors_result = await db.execute(sponsors_query)
+        sponsor_names = {row.id: row.name or row.email for row in sponsors_result}
+
     # Build response with aggregated data (no N+1 queries)
     items = []
     for user in users:
         session_count = session_counts.get(user.id, 0)
         subscription = subscriptions.get(user.id)
         credit_balance = balances.get(user.id)
+
+        # Get sponsor name if subscription is sponsored
+        sponsored_by_name = None
+        if subscription and subscription.is_sponsored and subscription.sponsored_by_id:
+            sponsored_by_name = sponsor_names.get(subscription.sponsored_by_id)
 
         items.append(
             AdminUserResponse(
@@ -198,6 +282,8 @@ async def list_users(
                 subscription_status=subscription.status if subscription else None,
                 subscription_plan=str(subscription.plan_id) if subscription else None,
                 credit_balance_cents=credit_balance.balance_cents if credit_balance else 0,
+                is_sponsored=subscription.is_sponsored if subscription else False,
+                sponsored_by_name=sponsored_by_name,
             )
         )
 
@@ -242,6 +328,16 @@ async def get_user(
     balance_result = await db.execute(select(CreditBalance).where(CreditBalance.user_id == user.id))
     credit_balance = balance_result.scalar_one_or_none()
 
+    # Get sponsor name if subscription is sponsored
+    sponsored_by_name = None
+    if subscription and subscription.is_sponsored and subscription.sponsored_by_id:
+        sponsor_result = await db.execute(
+            select(User.name, User.email).where(User.id == subscription.sponsored_by_id)
+        )
+        sponsor_row = sponsor_result.one_or_none()
+        if sponsor_row:
+            sponsored_by_name = sponsor_row.name or sponsor_row.email
+
     return AdminUserResponse(
         id=str(user.id),
         email=user.email,
@@ -256,6 +352,8 @@ async def get_user(
         subscription_status=subscription.status if subscription else None,
         subscription_plan=str(subscription.plan_id) if subscription else None,
         credit_balance_cents=credit_balance.balance_cents if credit_balance else 0,
+        is_sponsored=subscription.is_sponsored if subscription else False,
+        sponsored_by_name=sponsored_by_name,
     )
 
 
@@ -420,3 +518,277 @@ async def bulk_update_users(
     )
 
     return BulkUpdateResponse(updated=updated, failed=failed, errors=errors)
+
+
+# ==================== Sponsorship Endpoints ====================
+
+
+@router.post("/{user_id}/sponsor-subscription", response_model=SponsorSubscriptionResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
+async def sponsor_subscription(
+    user_id: str,
+    request: Request,
+    response: Response,
+    data: SponsorSubscriptionRequest,
+    db: DbSession,
+) -> SponsorSubscriptionResponse:
+    """Sponsor a user's subscription - gives them full plan access at $0."""
+    admin_id = get_admin_user_id(request)
+
+    # Verify user exists
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user = user_result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Verify plan exists
+    plan_result = await db.execute(
+        select(SubscriptionPlan).where(SubscriptionPlan.id == data.plan_id)
+    )
+    plan = plan_result.scalar_one_or_none()
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    # Check if user already has an active subscription
+    existing_sub_result = await db.execute(
+        select(UserSubscription)
+        .where(UserSubscription.user_id == user_id)
+        .where(UserSubscription.status.in_(["active", "trialing"]))
+    )
+    existing_sub = existing_sub_result.scalar_one_or_none()
+
+    now = datetime.now(UTC)
+
+    if existing_sub:
+        # Update existing subscription to be sponsored
+        existing_sub.plan_id = data.plan_id
+        existing_sub.is_sponsored = True
+        existing_sub.sponsored_by_id = admin_id
+        existing_sub.sponsored_at = now
+        existing_sub.sponsor_reason = data.reason
+        existing_sub.status = "active"
+        subscription = existing_sub
+    else:
+        # Create new sponsored subscription
+        subscription = UserSubscription(
+            id=str(uuid4()),
+            user_id=user_id,
+            plan_id=data.plan_id,
+            status="active",
+            billing_cycle="monthly",
+            current_period_start=now,
+            current_period_end=now.replace(year=now.year + 10),  # Long expiry for sponsored
+            is_sponsored=True,
+            sponsored_by_id=admin_id,
+            sponsored_at=now,
+            sponsor_reason=data.reason,
+        )
+        db.add(subscription)
+
+    await db.commit()
+    await db.refresh(subscription)
+
+    logger.info(
+        "Admin sponsored user subscription",
+        admin_id=admin_id,
+        user_id=user_id,
+        plan_id=data.plan_id,
+        reason=data.reason,
+    )
+
+    return SponsorSubscriptionResponse(
+        message="Subscription sponsored successfully",
+        subscription_id=str(subscription.id),
+        plan_name=plan.name,
+        is_sponsored=True,
+    )
+
+
+@router.delete("/{user_id}/sponsor-subscription")
+@limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
+async def remove_sponsorship(
+    user_id: str,
+    request: Request,
+    response: Response,
+    db: DbSession,
+) -> dict[str, str]:
+    """Remove sponsorship from a user's subscription."""
+    admin_id = get_admin_user_id(request)
+
+    # Get sponsored subscription
+    sub_result = await db.execute(
+        select(UserSubscription)
+        .where(UserSubscription.user_id == user_id)
+        .where(UserSubscription.is_sponsored == True)
+    )
+    subscription = sub_result.scalar_one_or_none()
+
+    if not subscription:
+        raise HTTPException(status_code=404, detail="No sponsored subscription found")
+
+    # Remove sponsorship (keep subscription but mark as not sponsored)
+    subscription.is_sponsored = False
+    subscription.sponsored_by_id = None
+    subscription.sponsored_at = None
+    subscription.sponsor_reason = None
+
+    await db.commit()
+
+    logger.info(
+        "Admin removed sponsorship",
+        admin_id=admin_id,
+        user_id=user_id,
+    )
+
+    return {"message": "Sponsorship removed"}
+
+
+# ==================== Usage & Credits Endpoints ====================
+
+
+@router.get("/{user_id}/usage", response_model=UserUsageResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
+async def get_user_usage(
+    user_id: str,
+    request: Request,
+    response: Response,
+    db: DbSession,
+) -> UserUsageResponse:
+    """Get a user's usage and quota information."""
+    # Verify user exists
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user = user_result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Get all quotas for user
+    quotas_result = await db.execute(select(UsageQuota).where(UsageQuota.user_id == user_id))
+    quotas = quotas_result.scalars().all()
+
+    # Get credit balance
+    balance_result = await db.execute(select(CreditBalance).where(CreditBalance.user_id == user_id))
+    credit_balance = balance_result.scalar_one_or_none()
+
+    # Build quota info list
+    quota_infos = []
+    tokens_used = 0
+    tokens_limit = 0
+    compute_cents_used = 0
+    compute_cents_limit = 0
+    storage_gb_used = 0.0
+    storage_gb_limit = 0.0
+
+    for quota in quotas:
+        usage_percent = (
+            (quota.current_usage / quota.limit_value * 100) if quota.limit_value > 0 else 0
+        )
+        quota_infos.append(
+            QuotaInfo(
+                quota_type=quota.quota_type,
+                current_usage=float(quota.current_usage),
+                limit_value=float(quota.limit_value),
+                usage_percent=usage_percent,
+                warning_sent=quota.warning_sent_at is not None,
+                overage_allowed=quota.overage_allowed,
+            )
+        )
+
+        # Aggregate by type
+        if quota.quota_type == "tokens":
+            tokens_used = int(quota.current_usage)
+            tokens_limit = int(quota.limit_value)
+        elif quota.quota_type == "compute_hours":
+            compute_cents_used = int(quota.current_usage * 100)  # Convert to cents
+            compute_cents_limit = int(quota.limit_value * 100)
+        elif quota.quota_type == "storage_gb":
+            storage_gb_used = float(quota.current_usage)
+            storage_gb_limit = float(quota.limit_value)
+
+    return UserUsageResponse(
+        user_id=user_id,
+        tokens_used=tokens_used,
+        tokens_limit=tokens_limit,
+        compute_cents_used=compute_cents_used,
+        compute_cents_limit=compute_cents_limit,
+        storage_gb_used=storage_gb_used,
+        storage_gb_limit=storage_gb_limit,
+        quotas=quota_infos,
+        credit_balance_cents=credit_balance.balance_cents if credit_balance else 0,
+        total_bonus_cents=credit_balance.total_bonus_cents if credit_balance else 0,
+    )
+
+
+@router.post("/{user_id}/credits", response_model=AwardCreditsResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
+async def award_credits(
+    user_id: str,
+    request: Request,
+    response: Response,
+    data: AwardCreditsRequest,
+    db: DbSession,
+) -> AwardCreditsResponse:
+    """Award bonus credits to a user."""
+    admin_id = get_admin_user_id(request)
+
+    # Verify user exists
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user = user_result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Get or create credit balance with locking to prevent race conditions
+    balance_result = await db.execute(
+        select(CreditBalance).where(CreditBalance.user_id == user_id).with_for_update()
+    )
+    credit_balance = balance_result.scalar_one_or_none()
+
+    if not credit_balance:
+        # Create new credit balance
+        credit_balance = CreditBalance(
+            id=str(uuid4()),
+            user_id=user_id,
+            balance_cents=0,
+            total_bonus_cents=0,
+        )
+        db.add(credit_balance)
+        await db.flush()
+
+    # Update balance
+    new_balance = credit_balance.balance_cents + data.amount_cents
+    credit_balance.balance_cents = new_balance
+    credit_balance.total_bonus_cents += data.amount_cents
+
+    # Create transaction record
+    transaction = CreditTransaction(
+        id=str(uuid4()),
+        user_id=user_id,
+        amount_cents=data.amount_cents,
+        currency="USD",
+        transaction_type="bonus",
+        description=f"Admin bonus: {data.reason}",
+        awarded_by_id=admin_id,
+        expires_at=data.expires_at,
+        balance_after_cents=new_balance,
+    )
+    db.add(transaction)
+
+    await db.commit()
+
+    logger.info(
+        "Admin awarded credits",
+        admin_id=admin_id,
+        user_id=user_id,
+        amount_cents=data.amount_cents,
+        reason=data.reason,
+    )
+
+    return AwardCreditsResponse(
+        transaction_id=str(transaction.id),
+        amount_cents=data.amount_cents,
+        new_balance_cents=new_balance,
+        expires_at=data.expires_at,
+    )

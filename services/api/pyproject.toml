@@ -53,6 +53,8 @@ dev = [
     "mypy>=1.8.0",
     "types-redis>=4.6.0",
     "types-passlib>=1.7.7",
+    "types-aiofiles>=24.1.0",
+    "types-PyYAML>=6.0.0",
     "respx>=0.20.2",
 ]
 
@@ -271,6 +273,7 @@ module = [
     "socketio.*",
     "redis.*",
     "google.api_core.*",
+    "google.cloud.*",
     "structlog.*",
     "passlib.*",
     "jose.*",
@@ -295,10 +298,6 @@ module = [
     "pywebpush.*",
 ]
 ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["google.cloud.*"]
-ignore_errors = true
 
 [[tool.mypy.overrides]]
 module = ["src.websocket.hub", "src.websocket.local_pod_hub", "src.routes.*", "src.middleware.rate_limit"]

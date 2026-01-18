@@ -264,3 +264,82 @@ class DotfilesSync:
             raise
 
         return files
+
+    # CLI Sync Methods
+
+    async def sync_cli_configs_to_workspace(
+        self,
+        user_id: UUID,
+        workspace_path: str,
+        cli_agents: list[str] | None = None,
+    ) -> int:
+        """
+        Sync CLI config files from GCS to workspace.
+
+        This ensures the workspace has the latest CLI configs including:
+        - ~/.claude/config.json (MCPs)
+        - ~/.claude/commands/ (custom commands)
+        - ~/.codex/config.toml
+        - ~/.gemini/settings.json
+        - ~/.gemini/skills/
+
+        Args:
+            user_id: User ID
+            workspace_path: Path to workspace directory
+            cli_agents: List of CLI agents to sync. If None, sync all.
+
+        Returns:
+            Number of files synced
+        """
+        cli_paths = []
+
+        if cli_agents is None or "claude_code" in cli_agents:
+            cli_paths.extend([".claude/config.json", ".claude/commands/"])
+
+        if cli_agents is None or "codex" in cli_agents:
+            cli_paths.append(".codex/")
+
+        if cli_agents is None or "gemini_cli" in cli_agents:
+            cli_paths.extend([".gemini/settings.json", ".gemini/skills/"])
+
+        return await self.sync_to_workspace(
+            user_id=user_id,
+            workspace_path=workspace_path,
+            paths=cli_paths,
+        )
+
+    async def sync_cli_configs_from_workspace(
+        self,
+        user_id: UUID,
+        workspace_path: str,
+        cli_agents: list[str] | None = None,
+    ) -> int:
+        """
+        Sync CLI config files from workspace back to GCS.
+
+        Called when workspace detects CLI config changes for bidirectional sync.
+
+        Args:
+            user_id: User ID
+            workspace_path: Path to workspace directory
+            cli_agents: List of CLI agents to sync. If None, sync all.
+
+        Returns:
+            Number of files synced
+        """
+        cli_paths = []
+
+        if cli_agents is None or "claude_code" in cli_agents:
+            cli_paths.extend([".claude/config.json", ".claude/commands/"])
+
+        if cli_agents is None or "codex" in cli_agents:
+            cli_paths.append(".codex/")
+
+        if cli_agents is None or "gemini_cli" in cli_agents:
+            cli_paths.extend([".gemini/settings.json", ".gemini/skills/"])
+
+        return await self.sync_from_workspace(
+            user_id=user_id,
+            workspace_path=workspace_path,
+            paths=cli_paths,
+        )

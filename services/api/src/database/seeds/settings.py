@@ -156,6 +156,7 @@ DEFAULT_SETTINGS = [
     {
         "key": "feature_flags",
         "value": {
+            "registration_enabled": True,
             "voice_enabled": True,
             "collaboration_enabled": True,
             "custom_agents_enabled": True,

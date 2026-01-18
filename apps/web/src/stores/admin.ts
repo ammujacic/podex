@@ -99,6 +99,35 @@ export interface AdminUser {
   subscription_status: string | null;
   subscription_plan: string | null;
   credit_balance_cents: number;
+  is_sponsored: boolean;
+  sponsored_by_name: string | null;
+}
+
+export interface UserUsage {
+  user_id: string;
+  tokens_used: number;
+  tokens_limit: number;
+  compute_cents_used: number;
+  compute_cents_limit: number;
+  storage_gb_used: number;
+  storage_gb_limit: number;
+  quotas: Array<{
+    quota_type: string;
+    current_usage: number;
+    limit_value: number;
+    usage_percent: number;
+    warning_sent: boolean;
+    overage_allowed: boolean;
+  }>;
+  credit_balance_cents: number;
+  total_bonus_cents: number;
+}
+
+export interface AwardCreditsResponse {
+  transaction_id: string;
+  amount_cents: number;
+  new_balance_cents: number;
+  expires_at: string | null;
 }
 
 export interface AdminPlan {
@@ -304,6 +333,15 @@ interface AdminState {
     data: Omit<AdminLLMProvider, 'created_at' | 'updated_at' | 'logo_url'>
   ) => Promise<AdminLLMProvider>;
   deleteProvider: (slug: string) => Promise<void>;
+  // User sponsorship and credits actions
+  sponsorUser: (userId: string, planId: string, reason?: string) => Promise<void>;
+  removeSponsor: (userId: string) => Promise<void>;
+  fetchUserUsage: (userId: string) => Promise<UserUsage>;
+  awardCredits: (
+    userId: string,
+    amountCents: number,
+    reason: string
+  ) => Promise<AwardCreditsResponse>;
   clearError: () => void;
 }
 
@@ -624,6 +662,58 @@ export const useAdminStore = create<AdminState>()(
         try {
           await api.delete(`/api/admin/settings/providers/${slug}`);
           await get().fetchProviders();
+        } catch (err) {
+          set({ error: (err as Error).message });
+          throw err;
+        }
+      },
+
+      // User sponsorship and credits actions
+      sponsorUser: async (userId: string, planId: string, reason?: string) => {
+        set({ error: null });
+        try {
+          await api.post(`/api/admin/users/${userId}/sponsor-subscription`, {
+            plan_id: planId,
+            reason,
+          });
+          await get().fetchUsers();
+        } catch (err) {
+          set({ error: (err as Error).message });
+          throw err;
+        }
+      },
+
+      removeSponsor: async (userId: string) => {
+        set({ error: null });
+        try {
+          await api.delete(`/api/admin/users/${userId}/sponsor-subscription`);
+          await get().fetchUsers();
+        } catch (err) {
+          set({ error: (err as Error).message });
+          throw err;
+        }
+      },
+
+      fetchUserUsage: async (userId: string) => {
+        set({ error: null });
+        try {
+          const data = await api.get<UserUsage>(`/api/admin/users/${userId}/usage`);
+          return data;
+        } catch (err) {
+          set({ error: (err as Error).message });
+          throw err;
+        }
+      },
+
+      awardCredits: async (userId: string, amountCents: number, reason: string) => {
+        set({ error: null });
+        try {
+          const data = await api.post<AwardCreditsResponse>(`/api/admin/users/${userId}/credits`, {
+            amount_cents: amountCents,
+            reason,
+          });
+          await get().fetchUsers();
+          return data;
         } catch (err) {
           set({ error: (err as Error).message });
           throw err;

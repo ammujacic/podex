@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Loader2, AlertCircle, Check, X } from 'lucide-react';
+import { Loader2, AlertCircle, Check, X, Crown } from 'lucide-react';
 import { useBillingData } from '@/hooks/useBillingData';
 import { PlanCard } from '@/components/billing';
 import { Button } from '@podex/ui';
@@ -202,6 +202,12 @@ export default function PlansPage() {
                 <span className="px-3 py-1 bg-accent-success/20 text-accent-success text-xs font-medium rounded-full">
                   Current Plan
                 </span>
+                {subscription.is_sponsored && (
+                  <span className="px-3 py-1 bg-purple-500/20 text-purple-400 text-xs font-medium rounded-full flex items-center gap-1">
+                    <Crown className="w-3 h-3" />
+                    Sponsored
+                  </span>
+                )}
               </div>
               {subscription.plan.description && (
                 <p className="text-sm text-text-muted mb-4">{subscription.plan.description}</p>

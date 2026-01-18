@@ -88,6 +88,9 @@ class UserConfig(Base):
     # Format: openai: sk-..., anthropic: sk-ant-..., google: ...
     llm_api_keys: Mapped[dict[str, str] | None] = mapped_column(EncryptedJSON)
 
+    # CLI sync preferences - controls how skills/MCPs sync to CLI wrapper agents
+    cli_sync_preferences: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=dict)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

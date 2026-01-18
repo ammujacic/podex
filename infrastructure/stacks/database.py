@@ -107,9 +107,13 @@ def create_cloud_sql(
     )
 
     # Database URL for asyncpg
-    db_url = pulumi.Output.all(instance.public_ip_address, secrets["db_password_value"]).apply(
-        lambda args: f"postgresql+asyncpg://podex:{args[1]}@{args[0]}:5432/podex"
-    )
+    # Use private IP for Cloud Run (connects via VPC connector)
+    # Falls back to public IP if private IP is not available
+    db_url = pulumi.Output.all(
+        instance.private_ip_address,
+        instance.public_ip_address,
+        secrets["db_password_value"],
+    ).apply(lambda args: f"postgresql+asyncpg://podex:{args[2]}@{args[0] or args[1]}:5432/podex")
 
     gcp.secretmanager.SecretVersion(
         f"database-url-version-{env}",

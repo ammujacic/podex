@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.database.connection import get_db
-from src.database.models import SubscriptionPlan, User, UserSubscription
+from src.database.models import PlatformSetting, SubscriptionPlan, User, UserSubscription
 from src.middleware.rate_limit import RATE_LIMIT_AUTH, RATE_LIMIT_SENSITIVE, limiter
 from src.services.mfa import get_mfa_service
 from src.services.token_blacklist import (
@@ -293,6 +293,17 @@ async def register(
     db: DbSession,
 ) -> AuthResponse:
     """Register new user."""
+    # Check if registration is enabled
+    feature_flags_result = await db.execute(
+        select(PlatformSetting).where(PlatformSetting.key == "feature_flags")
+    )
+    feature_flags = feature_flags_result.scalar_one_or_none()
+    if feature_flags and not feature_flags.value.get("registration_enabled", True):
+        raise HTTPException(
+            status_code=403,
+            detail="Registration is currently disabled. Please contact an administrator.",
+        )
+
     # Validate password complexity
     password_validation = validate_password(body.password)
     if not password_validation.is_valid:

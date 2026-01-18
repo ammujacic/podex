@@ -1683,6 +1683,9 @@ export interface SubscriptionResponse {
   canceled_at: string | null;
   trial_end: string | null;
   created_at: string;
+  // Sponsorship fields
+  is_sponsored?: boolean;
+  sponsor_reason?: string | null;
 }
 
 export interface UsageSummaryResponse {

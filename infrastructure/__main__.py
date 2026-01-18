@@ -87,6 +87,7 @@ services = compute.create_cloud_run_services(
     redis_vm=redis_vm,
     secrets=secrets_result,
     bucket=bucket,
+    vpc=vpc,
 )
 
 # ============================================
@@ -126,9 +127,12 @@ pulumi.export("agent_url", services["agent"].uri)
 pulumi.export("compute_url", services["compute"].uri)
 pulumi.export("web_url", services["web"].uri)
 
-# Custom domain
+# Custom domains
 pulumi.export("custom_domain", f"https://{domain}")
+pulumi.export("app_domain", f"https://app.{domain}")
 pulumi.export("api_domain", f"https://api.{domain}")
+pulumi.export("agent_domain", f"https://agent.{domain}")
+pulumi.export("compute_domain", f"https://compute.{domain}")
 pulumi.export("dns_nameservers", dns_result["zone"].name_servers)
 
 # Database

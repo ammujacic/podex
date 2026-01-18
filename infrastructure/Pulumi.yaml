@@ -2,5 +2,5 @@ name: podex-infra
 runtime:
   name: python
   options:
-    virtualenv: venv
+    virtualenv: .venv
 description: Podex GCP Infrastructure - Minimal Dev Stack

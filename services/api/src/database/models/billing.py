@@ -162,6 +162,15 @@ class UserSubscription(Base):
     # Metadata
     subscription_metadata: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB)
 
+    # Sponsorship - admin can sponsor a user's subscription (full plan, $0 cost)
+    is_sponsored: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    sponsored_by_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="SET NULL"),
+    )
+    sponsored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sponsor_reason: Mapped[str | None] = mapped_column(Text)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -346,6 +355,12 @@ class CreditTransaction(Base):
     # Stripe integration
     stripe_payment_intent_id: Mapped[str | None] = mapped_column(String(255), index=True)
     stripe_charge_id: Mapped[str | None] = mapped_column(String(255))
+
+    # Admin tracking - for credits awarded by admin
+    awarded_by_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="SET NULL"),
+    )
 
     # Expiration (for promotional credits)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)

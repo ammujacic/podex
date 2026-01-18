@@ -8,11 +8,13 @@ import {
   ChevronRight,
   UserCheck,
   UserX,
-  Shield,
+  Eye,
   MoreVertical,
+  Crown,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAdminStore, type AdminUser, type AdminPlan } from '@/stores/admin';
+import { UserDetailsModal } from '@/components/admin/UserDetailsModal';
 
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString('en-US', {
@@ -34,9 +36,10 @@ interface UserRowProps {
   plans: AdminPlan[];
   onRoleChange: (userId: string, role: string) => void;
   onToggleActive: (userId: string, isActive: boolean) => void;
+  onViewDetails: (user: AdminUser) => void;
 }
 
-function UserRow({ user, plans, onRoleChange, onToggleActive }: UserRowProps) {
+function UserRow({ user, plans, onRoleChange, onToggleActive, onViewDetails }: UserRowProps) {
   const [showMenu, setShowMenu] = useState(false);
   const planName = user.subscription_plan
     ? plans.find((p) => p.id === user.subscription_plan)?.name
@@ -89,7 +92,15 @@ function UserRow({ user, plans, onRoleChange, onToggleActive }: UserRowProps) {
       <td className="px-4 py-3 text-text-secondary text-sm">
         {user.subscription_status ? (
           <div className="flex flex-col gap-1">
-            {planName && <span className="text-text-primary font-medium">{planName}</span>}
+            <div className="flex items-center gap-2">
+              {planName && <span className="text-text-primary font-medium">{planName}</span>}
+              {user.is_sponsored && (
+                <span className="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 text-xs font-medium rounded flex items-center gap-1">
+                  <Crown className="w-3 h-3" />
+                  Sponsored
+                </span>
+              )}
+            </div>
             <span
               className={cn(
                 'px-2 py-1 rounded text-xs w-fit',
@@ -119,6 +130,16 @@ function UserRow({ user, plans, onRoleChange, onToggleActive }: UserRowProps) {
             <div className="absolute right-0 top-8 bg-surface border border-border-subtle rounded-lg shadow-lg py-1 z-10 min-w-[160px]">
               <button
                 onClick={() => {
+                  onViewDetails(user);
+                  setShowMenu(false);
+                }}
+                className="w-full px-4 py-2 text-left text-sm hover:bg-overlay flex items-center gap-2"
+              >
+                <Eye className="h-4 w-4 text-accent-primary" />
+                <span>View Details</span>
+              </button>
+              <button
+                onClick={() => {
                   onToggleActive(user.id, !user.is_active);
                   setShowMenu(false);
                 }}
@@ -136,13 +157,6 @@ function UserRow({ user, plans, onRoleChange, onToggleActive }: UserRowProps) {
                   </>
                 )}
               </button>
-              <button
-                onClick={() => setShowMenu(false)}
-                className="w-full px-4 py-2 text-left text-sm hover:bg-overlay flex items-center gap-2"
-              >
-                <Shield className="h-4 w-4" />
-                <span>View Details</span>
-              </button>
             </div>
           )}
         </div>
@@ -156,6 +170,7 @@ export default function UsersManagement() {
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<boolean | ''>('');
+  const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
   const pageSize = 20;
 
   const { users, usersTotal, usersLoading, fetchUsers, updateUser, plans, fetchPlans, error } =
@@ -294,6 +309,7 @@ export default function UsersManagement() {
                     plans={plans}
                     onRoleChange={handleRoleChange}
                     onToggleActive={handleToggleActive}
+                    onViewDetails={setSelectedUser}
                   />
                 ))
               )}
@@ -328,6 +344,14 @@ export default function UsersManagement() {
           </div>
         </div>
       </div>
+
+      {/* User Details Modal */}
+      <UserDetailsModal
+        isOpen={selectedUser !== null}
+        onClose={() => setSelectedUser(null)}
+        user={selectedUser}
+        plans={plans}
+      />
     </div>
   );
 }
