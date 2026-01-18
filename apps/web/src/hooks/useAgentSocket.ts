@@ -18,8 +18,11 @@ import {
   type AgentStreamEndEvent,
   type AgentAutoModeSwitchEvent,
   type AgentConfigUpdateEvent,
+  type WorkspaceStatusEvent,
+  type PermissionRequestEvent,
 } from '@/lib/socket';
 import { sendAgentMessage } from '@/lib/api';
+import { parseModelIdToDisplayName } from '@/lib/model-utils';
 import { toast } from 'sonner';
 
 interface UseAgentSocketOptions {
@@ -41,6 +44,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
   const appendStreamingToken = useSessionStore((state) => state.appendStreamingToken);
   const appendThinkingToken = useSessionStore((state) => state.appendThinkingToken);
   const finalizeStreamingMessage = useSessionStore((state) => state.finalizeStreamingMessage);
+  const setWorkspaceStatus = useSessionStore((state) => state.setWorkspaceStatus);
 
   // Use stable ref for callbacks to avoid re-running effects
   const callbacksRef = useStoreCallbacks({
@@ -51,6 +55,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
     appendStreamingToken,
     appendThinkingToken,
     finalizeStreamingMessage,
+    setWorkspaceStatus,
   });
 
   useEffect(() => {
@@ -74,7 +79,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
           id: data.id,
           role: data.role,
           content: data.content,
-          timestamp: new Date(data.created_at),
+          timestamp: data.created_at ? new Date(data.created_at) : new Date(),
           toolCalls: data.tool_calls || undefined,
         };
         callbacksRef.current.addAgentMessage(sessionId, data.agent_id, message);
@@ -90,7 +95,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
           id: data.id,
           role: data.role,
           content: data.content,
-          timestamp: new Date(data.created_at),
+          timestamp: data.created_at ? new Date(data.created_at) : new Date(),
           toolCalls: data.tool_calls || undefined,
         };
         callbacksRef.current.addAgentMessage(sessionId, data.agent_id, message);
@@ -141,7 +146,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
         id: data.id,
         role: data.role,
         content: data.content,
-        timestamp: new Date(data.created_at),
+        timestamp: data.created_at ? new Date(data.created_at) : new Date(),
         // Include tool calls if present
         toolCalls: data.tool_calls || undefined,
       };
@@ -152,7 +157,6 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
     // Handle agent status changes
     const unsubStatus = onSocketEvent('agent_status', (data: AgentStatusEvent) => {
       if (data.session_id !== sessionId) return;
-
       callbacksRef.current.updateAgent(sessionId, data.agent_id, { status: data.status });
     });
 
@@ -261,7 +265,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
           // Show toast for CLI-initiated changes
           if (data.source === 'cli') {
             if (data.updates.model) {
-              toast.info(`Model switched to ${data.updates.model}`, {
+              toast.info(`Model switched to ${parseModelIdToDisplayName(data.updates.model)}`, {
                 description: 'Changed via CLI command',
               });
             }
@@ -275,6 +279,48 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       }
     );
 
+    // Handle workspace status changes (standby, running, error, etc.)
+    const unsubWorkspaceStatus = onSocketEvent('workspace_status', (data: WorkspaceStatusEvent) => {
+      // Update the session's workspace status in the store
+      callbacksRef.current.setWorkspaceStatus(sessionId, data.status, data.standby_at || null);
+
+      // Show toast notification for status changes
+      if (data.status === 'standby') {
+        toast.info('Workspace moved to standby', {
+          description: 'Your workspace was paused due to inactivity. Click Resume to continue.',
+        });
+      } else if (data.status === 'error' && data.error) {
+        toast.error('Workspace error', {
+          description: data.error,
+        });
+      }
+    });
+
+    // Handle Claude Code CLI permission requests
+    const unsubPermissionRequest = onSocketEvent(
+      'permission_request',
+      (data: PermissionRequestEvent) => {
+        if (data.session_id !== sessionId) return;
+
+        // Update the agent with the pending permission request
+        callbacksRef.current.updateAgent(sessionId, data.agent_id, {
+          pendingPermission: {
+            requestId: data.request_id,
+            command: data.command,
+            description: data.description,
+            toolName: data.tool_name,
+            timestamp: data.timestamp,
+          },
+        });
+
+        // Show toast notification that approval is needed
+        toast.warning('Permission Required', {
+          description: `An agent wants to execute: ${data.command?.slice(0, 50)}${(data.command?.length ?? 0) > 50 ? '...' : ''}`,
+          duration: 10000,
+        });
+      }
+    );
+
     // Cleanup on unmount
     return () => {
       unsubMessage();
@@ -285,6 +331,8 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       unsubThinkingToken();
       unsubStreamEnd();
       unsubConfigUpdate();
+      unsubWorkspaceStatus();
+      unsubPermissionRequest();
       leaveSession(sessionId, userId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

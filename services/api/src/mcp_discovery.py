@@ -144,9 +144,13 @@ class MCPDiscoveryClient:
                 )
 
                 if init_response.get("error"):
+                    stderr_output = await self._get_stderr_output()
+                    error_msg = f"Initialization failed: {init_response['error']}"
+                    if stderr_output:
+                        error_msg = f"{error_msg}. Details: {stderr_output}"
                     return MCPDiscoveryResult(
                         success=False,
-                        error=f"Initialization failed: {init_response['error']}",
+                        error=error_msg,
                     )
 
                 # List tools
@@ -203,8 +207,17 @@ class MCPDiscoveryClient:
                 error=f"Command not found: {self._config.command}",
             )
         except Exception as e:
-            logger.exception("MCP discovery failed", error=str(e))
-            return MCPDiscoveryResult(success=False, error=str(e))
+            # Try to get stderr output for better error messages
+            stderr_output = await self._get_stderr_output()
+            error_msg = str(e) if str(e) else "Unknown error"
+            if stderr_output:
+                error_msg = (
+                    f"{error_msg}: {stderr_output}"
+                    if error_msg != "Unknown error"
+                    else stderr_output
+                )
+            logger.exception("MCP discovery failed", error=error_msg)
+            return MCPDiscoveryResult(success=False, error=error_msg)
 
     async def _send_request(
         self,
@@ -269,11 +282,26 @@ class MCPDiscoveryClient:
                 await self._reader_task
 
         if self._process:
-            self._process.terminate()
+            with contextlib.suppress(ProcessLookupError):
+                self._process.terminate()
             try:
                 await asyncio.wait_for(self._process.wait(), timeout=5)
             except TimeoutError:
-                self._process.kill()
+                with contextlib.suppress(ProcessLookupError):
+                    self._process.kill()
+
+    async def _get_stderr_output(self) -> str:
+        """Read stderr output from the process."""
+        if not self._process or not self._process.stderr:
+            return ""
+        try:
+            stderr_data = await asyncio.wait_for(
+                self._process.stderr.read(),
+                timeout=1,
+            )
+            return stderr_data.decode().strip()
+        except (TimeoutError, Exception):
+            return ""
 
     async def _discover_sse(self) -> MCPDiscoveryResult:
         """Discover via SSE (Server-Sent Events) transport.

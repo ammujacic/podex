@@ -18,24 +18,6 @@ import { useSwipeableItem, triggerHaptic, useLongPress } from '@/hooks/useGestur
 import { useUIStore } from '@/stores/ui';
 import type { FileNode } from '@/lib/api';
 
-// Match backend FileSync.exclude_patterns for what is *not* auto-synced.
-const NON_SYNCED_SEGMENTS = [
-  'node_modules',
-  '.git',
-  '__pycache__',
-  '.venv',
-  'venv',
-  '.next',
-  'dist',
-  'build',
-  '.cache',
-];
-
-function isPathAutoSynced(path: string): boolean {
-  const segments = path.split('/').filter(Boolean);
-  return !segments.some((segment) => NON_SYNCED_SEGMENTS.includes(segment));
-}
-
 interface MobileFileItemProps {
   item: FileNode;
   depth: number;
@@ -47,6 +29,7 @@ interface MobileFileItemProps {
   isLoading?: boolean;
   onToggleFolder?: () => void;
   children?: React.ReactNode;
+  isPathSynced?: (path: string) => boolean;
 }
 
 export function MobileFileItem({
@@ -60,9 +43,10 @@ export function MobileFileItem({
   isLoading = false,
   onToggleFolder,
   children,
+  isPathSynced,
 }: MobileFileItemProps) {
   const openMobileFileActions = useUIStore((state) => state.openMobileFileActions);
-  const isSynced = isPathAutoSynced(item.path || item.name || '');
+  const isSynced = isPathSynced ? isPathSynced(item.path || item.name || '') : false;
   const paddingLeft = 12 + depth * 16;
 
   // Handle swipe gestures

@@ -158,30 +158,46 @@ async def get_dashboard_stats(
     # Get usage records for all-time and this month
     # UsageRecord: quantity (amount), usage_type (tokens_input/output/etc), total_cost_cents
     # Filter for token types only to get accurate token counts
-    total_usage_result = await db.execute(
+    total_tokens_result = await db.execute(
         select(
             func.coalesce(func.sum(UsageRecord.quantity), 0).label("tokens"),
             func.count(UsageRecord.id).label("calls"),
-            func.coalesce(func.sum(UsageRecord.total_cost_cents), 0).label("cost_cents"),
         ).where(
             UsageRecord.user_id == user_id,
             UsageRecord.usage_type.in_(["tokens_input", "tokens_output"]),
         )
     )
-    total_usage = total_usage_result.one()
+    total_tokens = total_tokens_result.one()
 
-    month_usage_result = await db.execute(
+    month_tokens_result = await db.execute(
         select(
             func.coalesce(func.sum(UsageRecord.quantity), 0).label("tokens"),
             func.count(UsageRecord.id).label("calls"),
-            func.coalesce(func.sum(UsageRecord.total_cost_cents), 0).label("cost_cents"),
         ).where(
             UsageRecord.user_id == user_id,
             UsageRecord.usage_type.in_(["tokens_input", "tokens_output"]),
             UsageRecord.created_at >= month_start,
         )
     )
-    month_usage = month_usage_result.one()
+    month_tokens = month_tokens_result.one()
+
+    # Get total cost from ALL usage types (tokens + compute)
+    total_cost_result = await db.execute(
+        select(
+            func.coalesce(func.sum(UsageRecord.total_cost_cents), 0).label("cost_cents"),
+        ).where(UsageRecord.user_id == user_id)
+    )
+    total_cost = total_cost_result.scalar() or 0
+
+    month_cost_result = await db.execute(
+        select(
+            func.coalesce(func.sum(UsageRecord.total_cost_cents), 0).label("cost_cents"),
+        ).where(
+            UsageRecord.user_id == user_id,
+            UsageRecord.created_at >= month_start,
+        )
+    )
+    month_cost = month_cost_result.scalar() or 0
 
     # Build pod stats
     pods: list[PodStats] = []
@@ -228,12 +244,12 @@ async def get_dashboard_stats(
 
     return DashboardStats(
         usage=UsageStats(
-            total_tokens_used=int(total_usage.tokens),
-            total_api_calls=int(total_usage.calls),
-            total_cost=float(total_usage.cost_cents) / 100.0,
-            tokens_this_month=int(month_usage.tokens),
-            api_calls_this_month=int(month_usage.calls),
-            cost_this_month=float(month_usage.cost_cents) / 100.0,
+            total_tokens_used=int(total_tokens.tokens),
+            total_api_calls=int(total_tokens.calls),
+            total_cost=float(total_cost) / 100.0,
+            tokens_this_month=int(month_tokens.tokens),
+            api_calls_this_month=int(month_tokens.calls),
+            cost_this_month=float(month_cost) / 100.0,
         ),
         pods=pods[:10],  # Return top 10 most recent
         total_pods=len(sessions),

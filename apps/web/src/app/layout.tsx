@@ -118,6 +118,7 @@ export default function RootLayout({
       className={`${inter.variable} ${jetbrainsMono.variable} ${orbitron.variable}`}
       suppressHydrationWarning
       data-theme="dark"
+      data-scroll-behavior="smooth"
     >
       <head>
         {/* Preconnect to critical origins */}

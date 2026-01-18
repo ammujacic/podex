@@ -22,16 +22,17 @@ export function ResizableGridCard({ agent, sessionId, maxCols = 3 }: ResizableGr
 
   const handleResize = useCallback(
     (newSpan: GridSpan) => {
-      const clampedSpan = {
+      const clampedSpan: GridSpan = {
         colSpan: Math.min(newSpan.colSpan, maxCols),
         rowSpan: newSpan.rowSpan,
+        colStart: newSpan.colStart,
       };
       updateAgentGridSpan(sessionId, agent.id, clampedSpan);
     },
     [sessionId, agent.id, maxCols, updateAgentGridSpan]
   );
 
-  const { isResizing, previewSpan, handleResizeStart } = useGridResize({
+  const { isResizing, previewSpan, resizeDirection, handleResizeStart } = useGridResize({
     initialSpan: gridSpan,
     maxCols,
     maxRows: 2,
@@ -54,7 +55,9 @@ export function ResizableGridCard({ agent, sessionId, maxCols = 3 }: ResizableGr
           : 'border-border-default'
       )}
       style={{
-        gridColumn: `span ${displaySpan.colSpan}`,
+        gridColumn: displaySpan.colStart
+          ? `${displaySpan.colStart} / span ${displaySpan.colSpan}`
+          : `span ${displaySpan.colSpan}`,
         gridRow: `span ${displaySpan.rowSpan}`,
         minHeight: displaySpan.rowSpan === 1 ? '300px' : '616px',
         maxHeight: displaySpan.rowSpan === 1 ? '300px' : '616px',
@@ -74,9 +77,45 @@ export function ResizableGridCard({ agent, sessionId, maxCols = 3 }: ResizableGr
         <AgentCard agent={agent} sessionId={sessionId} expanded />
       </div>
 
+      {/* Drag resize handle in bottom-left corner */}
+      <div
+        onMouseDown={(e) => cardRef.current && handleResizeStart(e, cardRef.current, 'bottom-left')}
+        className={cn(
+          'absolute bottom-0 left-0 w-6 h-6 cursor-sw-resize z-10 group',
+          'flex items-end justify-start p-1'
+        )}
+        title="Drag to resize"
+      >
+        {/* Resize grip visual - mirrored for left side */}
+        <div
+          className={cn(
+            'w-3 h-3 transition-colors',
+            isResizing && (resizeDirection === 'left' || resizeDirection === 'bottom-left')
+              ? 'opacity-100'
+              : 'opacity-50 group-hover:opacity-100'
+          )}
+        >
+          <svg viewBox="0 0 12 12" className="w-full h-full scale-x-[-1]">
+            <path
+              d="M10 2L2 10M10 6L6 10M10 10L10 10"
+              stroke={
+                isResizing && (resizeDirection === 'left' || resizeDirection === 'bottom-left')
+                  ? 'var(--accent-primary)'
+                  : 'currentColor'
+              }
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              className="text-text-muted"
+            />
+          </svg>
+        </div>
+      </div>
+
       {/* Drag resize handle in bottom-right corner */}
       <div
-        onMouseDown={(e) => cardRef.current && handleResizeStart(e, cardRef.current)}
+        onMouseDown={(e) =>
+          cardRef.current && handleResizeStart(e, cardRef.current, 'bottom-right')
+        }
         className={cn(
           'absolute bottom-0 right-0 w-6 h-6 cursor-se-resize z-10 group',
           'flex items-end justify-end p-1'
@@ -87,13 +126,19 @@ export function ResizableGridCard({ agent, sessionId, maxCols = 3 }: ResizableGr
         <div
           className={cn(
             'w-3 h-3 transition-colors',
-            isResizing ? 'opacity-100' : 'opacity-50 group-hover:opacity-100'
+            isResizing && (resizeDirection === 'right' || resizeDirection === 'bottom-right')
+              ? 'opacity-100'
+              : 'opacity-50 group-hover:opacity-100'
           )}
         >
           <svg viewBox="0 0 12 12" className="w-full h-full">
             <path
               d="M10 2L2 10M10 6L6 10M10 10L10 10"
-              stroke={isResizing ? 'var(--accent-primary)' : 'currentColor'}
+              stroke={
+                isResizing && (resizeDirection === 'right' || resizeDirection === 'bottom-right')
+                  ? 'var(--accent-primary)'
+                  : 'currentColor'
+              }
               strokeWidth="1.5"
               strokeLinecap="round"
               className="text-text-muted"
@@ -106,7 +151,12 @@ export function ResizableGridCard({ agent, sessionId, maxCols = 3 }: ResizableGr
       {isResizing && (
         <>
           <div className="absolute bottom-0 left-0 right-0 h-1 bg-accent-primary/30" />
-          <div className="absolute top-0 bottom-0 right-0 w-1 bg-accent-primary/30" />
+          {(resizeDirection === 'right' || resizeDirection === 'bottom-right') && (
+            <div className="absolute top-0 bottom-0 right-0 w-1 bg-accent-primary/30" />
+          )}
+          {(resizeDirection === 'left' || resizeDirection === 'bottom-left') && (
+            <div className="absolute top-0 bottom-0 left-0 w-1 bg-accent-primary/30" />
+          )}
         </>
       )}
     </div>

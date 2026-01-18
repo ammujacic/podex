@@ -3,57 +3,55 @@
 import { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import { motion, useDragControls, useMotionValue } from 'framer-motion';
 import { GripVertical, Maximize2, Minimize2, X } from 'lucide-react';
-import { type Agent, type AgentPosition, useSessionStore } from '@/stores/session';
-import { TerminalAgentCell, type TerminalAgentCellRef } from './TerminalAgentCell';
+import { type AgentPosition, useSessionStore } from '@/stores/session';
+import { useEditorStore } from '@/stores/editor';
+import { EnhancedCodeEditor } from '@/components/editor/EnhancedCodeEditor';
 import { cn } from '@/lib/utils';
 
-interface DraggableTerminalCardProps {
-  agent: Agent;
+interface DraggableEditorCardProps {
   sessionId: string;
-  workspaceId: string;
+  paneId?: string;
   containerRef: React.RefObject<HTMLDivElement | null>;
-  onRemove?: () => void;
 }
 
 const MIN_WIDTH = 400;
 const MIN_HEIGHT = 300;
-const DEFAULT_WIDTH = 500;
-const DEFAULT_HEIGHT = 400;
+const DEFAULT_WIDTH = 600;
+const DEFAULT_HEIGHT = 500;
 
-export function DraggableTerminalCard({
-  agent,
+export function DraggableEditorCard({
   sessionId,
-  workspaceId,
+  paneId = 'main',
   containerRef,
-  onRemove,
-}: DraggableTerminalCardProps) {
-  const { updateAgentPosition, bringAgentToFront } = useSessionStore();
+}: DraggableEditorCardProps) {
+  const { sessions, updateEditorFreeformPosition, removeEditorGridCard } = useSessionStore();
+  const pane = useEditorStore((s) => s.panes[paneId]);
+  const closeAllTabs = useEditorStore((s) => s.closeAllTabs);
+
   const dragControls = useDragControls();
   const cardRef = useRef<HTMLDivElement>(null);
-  const terminalRef = useRef<TerminalAgentCellRef>(null);
   const [isResizing, setIsResizing] = useState(false);
   const [resizeStart, setResizeStart] = useState({ x: 0, y: 0, width: 0, height: 0 });
   const [isMaximized, setIsMaximized] = useState(false);
   const [preMaximizePosition, setPreMaximizePosition] = useState<AgentPosition | null>(null);
+  const [localZIndex, setLocalZIndex] = useState(100);
 
-  // Store initial random offset in ref to keep it stable
-  const initialOffsetRef = useRef({
-    x: 50 + Math.random() * 100,
-    y: 50 + Math.random() * 50,
-  });
+  const session = sessions[sessionId];
+  const hasTabs = pane && pane.tabs.length > 0;
+  const tabCount = pane?.tabs.length ?? 0;
 
   // Memoize position to avoid creating new object on every render
   const position = useMemo<AgentPosition>(() => {
     return (
-      agent.position ?? {
-        x: initialOffsetRef.current.x,
-        y: initialOffsetRef.current.y,
+      session?.editorFreeformPosition ?? {
+        x: 100,
+        y: 100,
         width: DEFAULT_WIDTH,
         height: DEFAULT_HEIGHT,
-        zIndex: 1,
+        zIndex: 100,
       }
     );
-  }, [agent.position]);
+  }, [session?.editorFreeformPosition]);
 
   // Use motion values for smooth dragging
   const x = useMotionValue(position.x);
@@ -70,34 +68,43 @@ export function DraggableTerminalCard({
 
   // Sync initial position to store if not set (only once)
   useEffect(() => {
-    if (!agent.position && !hasInitializedRef.current) {
+    if (!session?.editorFreeformPosition && !hasInitializedRef.current) {
       hasInitializedRef.current = true;
-      updateAgentPosition(sessionId, agent.id, position);
+      updateEditorFreeformPosition(sessionId, position);
     }
-  }, [agent.id, agent.position, sessionId, updateAgentPosition, position]);
+  }, [session?.editorFreeformPosition, sessionId, updateEditorFreeformPosition, position]);
+
+  // Auto-remove when all tabs are closed
+  useEffect(() => {
+    if (pane && pane.tabs.length === 0 && session?.editorGridCardId) {
+      removeEditorGridCard(sessionId);
+    }
+  }, [pane, session?.editorGridCardId, removeEditorGridCard, sessionId]);
+
+  const bringToFront = useCallback(() => {
+    setLocalZIndex((prev) => prev + 1);
+    updateEditorFreeformPosition(sessionId, { zIndex: localZIndex + 1 });
+  }, [sessionId, updateEditorFreeformPosition, localZIndex]);
 
   const handleDragStart = useCallback(() => {
-    bringAgentToFront(sessionId, agent.id);
-  }, [bringAgentToFront, sessionId, agent.id]);
+    bringToFront();
+  }, [bringToFront]);
 
   const handleDragEnd = useCallback(() => {
-    // Get the current position from motion values
     const newX = x.get();
     const newY = y.get();
 
-    // Clamp position within container bounds
     const container = containerRef.current;
     if (container) {
       const bounds = container.getBoundingClientRect();
       const clampedX = Math.max(0, Math.min(newX, bounds.width - position.width));
       const clampedY = Math.max(0, Math.min(newY, bounds.height - position.height));
 
-      // Update both motion values and store
       x.set(clampedX);
       y.set(clampedY);
-      updateAgentPosition(sessionId, agent.id, { x: clampedX, y: clampedY });
+      updateEditorFreeformPosition(sessionId, { x: clampedX, y: clampedY });
     } else {
-      updateAgentPosition(sessionId, agent.id, { x: newX, y: newY });
+      updateEditorFreeformPosition(sessionId, { x: newX, y: newY });
     }
   }, [
     x,
@@ -106,15 +113,14 @@ export function DraggableTerminalCard({
     position.width,
     position.height,
     sessionId,
-    agent.id,
-    updateAgentPosition,
+    updateEditorFreeformPosition,
   ]);
 
   const handleResizeStart = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      bringAgentToFront(sessionId, agent.id);
+      bringToFront();
       setIsResizing(true);
       setResizeStart({
         x: e.clientX,
@@ -123,7 +129,7 @@ export function DraggableTerminalCard({
         height: position.height,
       });
     },
-    [bringAgentToFront, sessionId, agent.id, position.width, position.height]
+    [bringToFront, position.width, position.height]
   );
 
   const handleMouseMove = useCallback(
@@ -136,17 +142,13 @@ export function DraggableTerminalCard({
       const newWidth = Math.max(MIN_WIDTH, resizeStart.width + deltaX);
       const newHeight = Math.max(MIN_HEIGHT, resizeStart.height + deltaY);
 
-      updateAgentPosition(sessionId, agent.id, { width: newWidth, height: newHeight });
+      updateEditorFreeformPosition(sessionId, { width: newWidth, height: newHeight });
     },
-    [isResizing, resizeStart, sessionId, agent.id, updateAgentPosition]
+    [isResizing, resizeStart, sessionId, updateEditorFreeformPosition]
   );
 
   const handleMouseUp = useCallback(() => {
     setIsResizing(false);
-    // Trigger terminal refit after resize
-    requestAnimationFrame(() => {
-      terminalRef.current?.fit();
-    });
   }, []);
 
   useEffect(() => {
@@ -165,19 +167,17 @@ export function DraggableTerminalCard({
     if (!container) return;
 
     if (isMaximized && preMaximizePosition) {
-      // Restore to previous position
       x.set(preMaximizePosition.x);
       y.set(preMaximizePosition.y);
-      updateAgentPosition(sessionId, agent.id, preMaximizePosition);
+      updateEditorFreeformPosition(sessionId, preMaximizePosition);
       setIsMaximized(false);
       setPreMaximizePosition(null);
     } else {
-      // Save current position and maximize
       setPreMaximizePosition(position);
       const bounds = container.getBoundingClientRect();
       x.set(0);
       y.set(0);
-      updateAgentPosition(sessionId, agent.id, {
+      updateEditorFreeformPosition(sessionId, {
         x: 0,
         y: 0,
         width: bounds.width - 16,
@@ -185,26 +185,30 @@ export function DraggableTerminalCard({
       });
       setIsMaximized(true);
     }
-
-    // Trigger terminal refit after maximize/restore
-    requestAnimationFrame(() => {
-      terminalRef.current?.fit();
-    });
   }, [
     containerRef,
     isMaximized,
     preMaximizePosition,
     position,
     sessionId,
-    agent.id,
-    updateAgentPosition,
+    updateEditorFreeformPosition,
     x,
     y,
   ]);
 
+  const handleClose = useCallback(() => {
+    closeAllTabs(paneId);
+    removeEditorGridCard(sessionId);
+  }, [closeAllTabs, paneId, removeEditorGridCard, sessionId]);
+
   const handleCardClick = useCallback(() => {
-    bringAgentToFront(sessionId, agent.id);
-  }, [bringAgentToFront, sessionId, agent.id]);
+    bringToFront();
+  }, [bringToFront]);
+
+  // Don't render if no editor card exists
+  if (!session?.editorGridCardId) {
+    return null;
+  }
 
   return (
     <motion.div
@@ -234,7 +238,13 @@ export function DraggableTerminalCard({
         >
           <div className="flex items-center gap-1 text-text-muted">
             <GripVertical className="h-4 w-4" />
-            <span className="text-xs font-medium">{agent.name}</span>
+            <div className="h-2 w-2 rounded-full bg-accent-primary shrink-0" />
+            <span className="text-xs font-medium">Editor</span>
+            {tabCount > 0 && (
+              <span className="text-xs text-text-muted ml-1">
+                {tabCount} file{tabCount !== 1 ? 's' : ''}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-1">
             <button
@@ -244,36 +254,39 @@ export function DraggableTerminalCard({
             >
               {isMaximized ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}
             </button>
-            {onRemove && (
-              <button
-                onClick={onRemove}
-                className="p-1 rounded text-text-muted hover:text-red-400 hover:bg-red-500/10"
-                title="Remove agent"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            )}
+            <button
+              onClick={handleClose}
+              className="p-1 rounded text-text-muted hover:text-accent-error hover:bg-overlay"
+              title="Close Editor"
+            >
+              <X className="h-3 w-3" />
+            </button>
           </div>
         </div>
 
-        {/* Terminal content - flex-1 to fill remaining space */}
-        <div className="flex-1 min-h-0">
-          <TerminalAgentCell
-            ref={terminalRef}
-            agent={agent}
-            sessionId={sessionId}
-            workspaceId={workspaceId}
-            hideHeader
-          />
+        {/* Editor content */}
+        <div className="flex-1 min-h-0 overflow-hidden">
+          {hasTabs ? (
+            <EnhancedCodeEditor paneId={paneId} className="h-full" />
+          ) : (
+            <div className="flex h-full flex-col items-center justify-center text-text-muted">
+              <div className="mb-2 text-3xl opacity-20">{'</>'}</div>
+              <p className="text-sm">No files open</p>
+              <p className="mt-1 text-xs opacity-60">
+                Open a file from the sidebar or use{' '}
+                <kbd className="rounded bg-overlay px-1.5 py-0.5 text-xs">Cmd+P</kbd>
+              </p>
+            </div>
+          )}
         </div>
 
-        {/* Resize handle - z-20 to be above terminal content (z-10) */}
+        {/* Resize handle */}
         <div
           className={cn(
-            'absolute bottom-0 right-0 w-6 h-6 cursor-se-resize z-20',
-            'after:absolute after:bottom-1 after:right-1 after:w-3 after:h-3',
+            'absolute bottom-0 right-0 w-4 h-4 cursor-se-resize z-10',
+            'after:absolute after:bottom-1 after:right-1 after:w-2 after:h-2',
             'after:border-r-2 after:border-b-2 after:border-text-muted after:opacity-50',
-            'hover:after:opacity-100 hover:after:border-accent-primary'
+            'hover:after:opacity-100'
           )}
           onMouseDown={handleResizeStart}
         />

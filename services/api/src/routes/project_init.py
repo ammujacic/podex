@@ -203,8 +203,8 @@ async def detect_project_info(
                     if line.startswith("module "):
                         project_name = line.split()[-1].split("/")[-1]
                         break
-    except Exception:
-        pass  # Project name detection failure is non-critical
+    except Exception as e:
+        logger.debug("Project name detection failure (non-critical)", error=str(e))
 
     return ProjectInfo(
         name=project_name,
@@ -438,8 +438,8 @@ async def init_project(
                 created=False,
                 message="AGENTS.md already exists",
             )
-    except Exception:
-        pass  # File doesn't exist, continue with generation
+    except Exception as e:
+        logger.debug("AGENTS.md does not exist, will create new file", error=str(e))
 
     # Detect project info
     project_info = await detect_project_info(workspace_id, user_id)

@@ -301,6 +301,13 @@ export const AgentCardInput = React.memo<AgentCardInputProps>(function AgentCard
                 ? 'Listening...'
                 : `Type / for commands or ask ${agentName.toLowerCase()}...`
             }
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            data-1p-ignore
+            data-lpignore="true"
+            data-form-type="other"
             className="w-full bg-elevated border border-border-default rounded-md px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-border-focus focus:outline-none selection:bg-accent-primary selection:text-white min-h-[44px]"
             disabled={isRecording}
             aria-label="Message input"

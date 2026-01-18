@@ -1017,6 +1017,103 @@
 /* Monaco editor customization */
 .monaco-editor {
   font-family: var(--font-mono) !important;
+  background-color: #0d0d12 !important;
+}
+
+.monaco-editor .view-lines {
+  background-color: #0d0d12 !important;
+}
+
+.monaco-editor .margin {
+  background-color: #0d0d12 !important;
+}
+
+/* Sticky scroll (context line at top) */
+.monaco-editor .sticky-scroll,
+.monaco-editor .sticky-scroll-container,
+.monaco-editor .sticky-widget,
+.monaco-editor .monaco-scrollable-element.editor-scrollable.vs-dark {
+  background-color: #0d0d12 !important;
+}
+
+.monaco-editor .sticky-line-root,
+.monaco-editor .sticky-line-content,
+.monaco-editor .sticky-line-number,
+.monaco-editor .sticky-line {
+  background-color: #0d0d12 !important;
+}
+
+/* Sticky scroll container and all children */
+.monaco-editor .sticky-scroll-container * {
+  background-color: #0d0d12 !important;
+}
+
+.monaco-editor .sticky-scroll {
+  border-bottom: 1px solid #2a2a35 !important;
+}
+
+/* Cursor styling - purple primary color */
+.monaco-editor .cursor,
+.monaco-editor .cursors-layer .cursor {
+  background-color: #8B5CF6 !important;
+  border-color: #8B5CF6 !important;
+  width: 2px !important;
+}
+
+.monaco-editor .cursor-blink {
+  animation: cursor-blink 1s ease-in-out infinite !important;
+}
+
+@keyframes cursor-blink {
+  0%, 49% {
+    opacity: 1;
+  }
+  50%, 100% {
+    opacity: 0;
+  }
+}
+
+/* Text selection styling - purple with opacity */
+/* Monaco renders selections in .view-overlays layer with specific classes */
+.monaco-editor .view-overlay {
+  pointer-events: none !important;
+}
+
+/* Main selection overlay - this is the key class Monaco uses */
+.monaco-editor .view-overlays .selected-text,
+.monaco-editor .cslr.selected-text {
+  background: rgba(139, 92, 246, 0.4) !important;
+  z-index: 1 !important;
+  opacity: 1 !important;
+}
+
+/* Active/focused selection */
+.monaco-editor.focused .view-overlays .selected-text {
+  background: rgba(139, 92, 246, 0.5) !important;
+}
+
+/* Selection on current line */
+.monaco-editor .view-overlays .current-line ~ .selected-text {
+  background: rgba(139, 92, 246, 0.5) !important;
+}
+
+/* Selection highlight (matching selections) */
+.monaco-editor .view-overlays .selectionHighlight {
+  background: rgba(139, 92, 246, 0.2) !important;
+}
+
+/* Browser native selection fallback for any text Monaco doesn't catch */
+.monaco-editor *::selection {
+  background: rgba(139, 92, 246, 0.4) !important;
+}
+
+.monaco-editor *::-moz-selection {
+  background: rgba(139, 92, 246, 0.4) !important;
+}
+
+.monaco-editor .monaco-editor-background,
+.monaco-editor .inputarea.ime-input {
+  background-color: #0d0d12 !important;
 }
 
 .monaco-editor .minimap {

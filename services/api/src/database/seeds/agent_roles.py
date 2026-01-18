@@ -287,10 +287,10 @@ Which tools should this agent have access to? Available tools:
 
 ## 4. Model Selection
 Which AI model should power this agent?
-- **claude-opus-4-5-20251101**: Most capable, best for complex reasoning
-- **claude-sonnet-4-20250514**: Good balance of speed and capability (recommended default)
+- **opus**: Most capable, best for complex reasoning
+- **sonnet**: Good balance of speed and capability (recommended default)
+- **haiku**: Fast and efficient for simple tasks
 - **gpt-4o**: OpenAI's flagship model
-- **gpt-4o-mini**: Faster, more economical
 
 ## 5. Temperature (optional)
 How creative vs deterministic should responses be?
@@ -391,7 +391,7 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Break down this project into tasks",
         ],
         "requires_subscription": None,
-        "default_model": "claude-sonnet-4-5-20250929",
+        "default_model": "claude-sonnet-4-5",
         "default_temperature": 0.7,
         "default_max_tokens": 8192,
         "sort_order": 10,
@@ -416,7 +416,7 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Add error handling to this code",
         ],
         "requires_subscription": None,
-        "default_model": "claude-sonnet-4-5-20250929",
+        "default_model": "claude-sonnet-4-5",
         "default_temperature": 0.3,
         "default_max_tokens": 4096,
         "sort_order": 20,
@@ -441,7 +441,7 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Suggest improvements for this code",
         ],
         "requires_subscription": None,
-        "default_model": "claude-sonnet-4-20250514",
+        "default_model": "claude-sonnet-4",
         "default_temperature": 0.5,
         "default_max_tokens": 4096,
         "sort_order": 30,
@@ -466,7 +466,7 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Improve test coverage",
         ],
         "requires_subscription": None,
-        "default_model": "claude-sonnet-4-5-20250929",
+        "default_model": "claude-sonnet-4-5",
         "default_temperature": 0.3,
         "default_max_tokens": 4096,
         "sort_order": 40,
@@ -491,7 +491,7 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Review authentication implementation",
         ],
         "requires_subscription": None,
-        "default_model": "claude-sonnet-4-5-20250929",
+        "default_model": "claude-sonnet-4-5",
         "default_temperature": 0.3,
         "default_max_tokens": 4096,
         "sort_order": 50,
@@ -516,7 +516,7 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Configure Kubernetes deployment",
         ],
         "requires_subscription": None,
-        "default_model": "claude-sonnet-4-5-20250929",
+        "default_model": "claude-sonnet-4-5",
         "default_temperature": 0.5,
         "default_max_tokens": 4096,
         "sort_order": 60,
@@ -553,7 +553,7 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Create a new API endpoint end-to-end",
         ],
         "requires_subscription": "pro",
-        "default_model": "claude-sonnet-4-5-20250929",
+        "default_model": "claude-sonnet-4-5",
         "default_temperature": 0.5,
         "default_max_tokens": 8192,
         "sort_order": 70,
@@ -582,7 +582,7 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Make an agent for database queries",
         ],
         "requires_subscription": "pro",
-        "default_model": "claude-sonnet-4-5-20250929",
+        "default_model": "claude-sonnet-4-5",
         "default_temperature": 0.5,
         "default_max_tokens": 8192,
         "sort_order": 80,
@@ -607,7 +607,7 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Write API documentation",
         ],
         "requires_subscription": None,
-        "default_model": "claude-sonnet-4-20250514",
+        "default_model": "claude-sonnet-4",
         "default_temperature": 0.7,
         "default_max_tokens": 4096,
         "sort_order": 90,
@@ -632,7 +632,7 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Brainstorm ideas for this feature",
         ],
         "requires_subscription": None,
-        "default_model": "claude-haiku-4-5-20251001",
+        "default_model": "claude-haiku-4-5",
         "default_temperature": 0.7,
         "default_max_tokens": 2048,
         "sort_order": 100,
@@ -657,7 +657,7 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "What's the best approach for this?",
         ],
         "requires_subscription": None,
-        "default_model": "claude-sonnet-4-5-20250929",
+        "default_model": "claude-sonnet-4-5",
         "default_temperature": 0.5,
         "default_max_tokens": 4096,
         "sort_order": 1000,
@@ -682,7 +682,7 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Refactor this codebase",
         ],
         "requires_subscription": None,
-        "default_model": "claude-sonnet-4-5-20250929",
+        "default_model": "sonnet",  # Simple alias for Claude Code CLI
         "default_temperature": None,  # Managed by Claude Code
         "default_max_tokens": None,  # Managed by Claude Code
         "sort_order": 5,  # Show near the top
@@ -707,7 +707,7 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Debug this issue",
         ],
         "requires_subscription": None,
-        "default_model": "gpt-5-codex",
+        "default_model": "gpt-5",  # Simple alias for Codex CLI
         "default_temperature": None,  # Managed by Codex
         "default_max_tokens": None,  # Managed by Codex
         "sort_order": 6,  # Show near the top after Claude Code
@@ -732,7 +732,7 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Search and refactor",
         ],
         "requires_subscription": None,
-        "default_model": "gemini-2.0-flash",
+        "default_model": "gemini-2.5-pro",  # Simple alias for Gemini CLI
         "default_temperature": None,  # Managed by Gemini
         "default_max_tokens": None,  # Managed by Gemini
         "sort_order": 7,  # Show near the top after Codex

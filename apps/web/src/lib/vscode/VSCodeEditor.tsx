@@ -16,8 +16,8 @@ export interface VSCodeEditorProps {
   language?: string;
   /** File path (used for model URI) */
   filePath?: string;
-  /** Theme: 'vs-dark', 'vs', or 'hc-black' */
-  theme?: 'vs-dark' | 'vs' | 'hc-black';
+  /** Theme: built-in themes ('vs-dark', 'vs', 'hc-black') or custom theme name */
+  theme?: string;
   /** Editor options */
   options?: monaco.editor.IStandaloneEditorConstructionOptions;
   /** Read-only mode */
@@ -158,85 +158,126 @@ export const VSCodeEditor = forwardRef<VSCodeEditorRef, VSCodeEditorProps>(funct
   useEffect(() => {
     if (!isInitialized || !containerRef.current || editorRef.current) return;
 
-    // Create model URI from file path
-    const uri = filePath
-      ? monaco.Uri.file(filePath)
-      : monaco.Uri.parse(`inmemory://model/${Date.now()}`);
+    let cancelled = false;
+    let retryTimeout: ReturnType<typeof setTimeout> | null = null;
 
-    // Check if model already exists
-    let model = monaco.editor.getModel(uri);
-    if (!model) {
-      model = monaco.editor.createModel(value, language, uri);
-    } else {
-      // Update existing model
-      if (model.getValue() !== value) {
-        model.setValue(value);
+    const attemptCreateEditor = (retryCount = 0) => {
+      if (cancelled || editorRef.current || !containerRef.current) return;
+
+      // Create model URI from file path
+      const uri = filePath
+        ? monaco.Uri.file(filePath)
+        : monaco.Uri.parse(`inmemory://model/${Date.now()}`);
+
+      // Check if model already exists
+      let model = monaco.editor.getModel(uri);
+      if (!model) {
+        model = monaco.editor.createModel(value, language, uri);
+      } else {
+        // Update existing model
+        if (model.getValue() !== value) {
+          model.setValue(value);
+        }
+        if (model.getLanguageId() !== language) {
+          monaco.editor.setModelLanguage(model, language);
+        }
       }
-      if (model.getLanguageId() !== language) {
-        monaco.editor.setModelLanguage(model, language);
+
+      // Create editor with error handling for race conditions
+      let editor: monaco.editor.IStandaloneCodeEditor;
+      try {
+        editor = monaco.editor.create(containerRef.current, {
+          model,
+          theme,
+          readOnly,
+          automaticLayout: true,
+          minimap: { enabled: minimap },
+          lineNumbers: lineNumbers ? 'on' : 'off',
+          wordWrap: wordWrap ? 'on' : 'off',
+          fontSize,
+          tabSize,
+          scrollBeyondLastLine: false,
+          smoothScrolling: true,
+          cursorBlinking: 'smooth',
+          cursorSmoothCaretAnimation: 'on',
+          renderWhitespace: 'selection',
+          folding: true,
+          foldingStrategy: 'indentation',
+          showFoldingControls: 'mouseover',
+          bracketPairColorization: { enabled: true },
+          guides: {
+            bracketPairs: true,
+            indentation: true,
+          },
+          padding: { top: 8, bottom: 8 },
+          // Explicitly enable text selection
+          selectionHighlight: true,
+          occurrencesHighlight: 'singleFile',
+          selectOnLineNumbers: true,
+          domReadOnly: false,
+          ...options,
+        });
+      } catch (err) {
+        console.error('[VSCodeEditor] Failed to create editor:', err);
+        // Retry a few times if services aren't fully loaded yet
+        if (retryCount < 3) {
+          retryTimeout = setTimeout(() => attemptCreateEditor(retryCount + 1), 100);
+          return;
+        }
+        setError('Failed to create editor. Please refresh the page.');
+        return;
       }
-    }
 
-    // Create editor
-    const editor = monaco.editor.create(containerRef.current, {
-      model,
-      theme,
-      readOnly,
-      automaticLayout: true,
-      minimap: { enabled: minimap },
-      lineNumbers: lineNumbers ? 'on' : 'off',
-      wordWrap: wordWrap ? 'on' : 'off',
-      fontSize,
-      tabSize,
-      scrollBeyondLastLine: false,
-      smoothScrolling: true,
-      cursorBlinking: 'smooth',
-      cursorSmoothCaretAnimation: 'on',
-      renderWhitespace: 'selection',
-      folding: true,
-      foldingStrategy: 'indentation',
-      showFoldingControls: 'mouseover',
-      bracketPairColorization: { enabled: true },
-      guides: {
-        bracketPairs: true,
-        indentation: true,
-      },
-      padding: { top: 8, bottom: 8 },
-      ...options,
-    });
+      if (cancelled) {
+        editor.dispose();
+        return;
+      }
 
-    editorRef.current = editor;
+      editorRef.current = editor;
 
-    // Scroll to line if specified
-    if (scrollToLine) {
-      editor.revealLineInCenter(scrollToLine);
-    }
+      // Scroll to line if specified
+      if (scrollToLine) {
+        editor.revealLineInCenter(scrollToLine);
+      }
 
-    // Set up change listener
-    const changeDisposable = editor.onDidChangeModelContent(() => {
-      onChangeRef.current?.(editor.getValue());
-    });
+      // Set up change listener
+      const changeDisposable = editor.onDidChangeModelContent(() => {
+        onChangeRef.current?.(editor.getValue());
+      });
 
-    // Set up cursor change listener
-    const cursorDisposable = editor.onDidChangeCursorPosition((e) => {
-      onCursorChangeRef.current?.(e.position);
-    });
+      // Set up cursor change listener
+      const cursorDisposable = editor.onDidChangeCursorPosition((e) => {
+        onCursorChangeRef.current?.(e.position);
+      });
 
-    // Set up selection change listener
-    const selectionDisposable = editor.onDidChangeCursorSelection((e) => {
-      onSelectionChangeRef.current?.(e.selection);
-    });
+      // Set up selection change listener
+      const selectionDisposable = editor.onDidChangeCursorSelection((e) => {
+        onSelectionChangeRef.current?.(e.selection);
+      });
 
-    // Notify mount
-    onMountRef.current?.(editor);
+      // Notify mount
+      onMountRef.current?.(editor);
+
+      // Store cleanup function
+      cleanupRef.current = () => {
+        changeDisposable.dispose();
+        cursorDisposable.dispose();
+        selectionDisposable.dispose();
+        editor.dispose();
+        editorRef.current = null;
+      };
+    };
+
+    // Store cleanup ref for async creation
+    const cleanupRef = { current: null as (() => void) | null };
+
+    attemptCreateEditor();
 
     // Cleanup
     return () => {
-      changeDisposable.dispose();
-      cursorDisposable.dispose();
-      selectionDisposable.dispose();
-      editor.dispose();
-      editorRef.current = null;
+      cancelled = true;
+      if (retryTimeout) clearTimeout(retryTimeout);
+      cleanupRef.current?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [

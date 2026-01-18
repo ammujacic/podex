@@ -6,7 +6,13 @@ const nextConfig = {
   reactStrictMode: true,
   // Allow dev server access from local network (mobile testing)
   allowedDevOrigins: ['192.168.*.*', '10.*.*.*', '172.16.*.*'],
-  transpilePackages: ['@podex/shared', '@podex/ui'],
+  transpilePackages: [
+    '@podex/shared',
+    '@podex/ui',
+    // Monaco VSCode packages with .wasm dependencies that can't be externalized
+    'vscode-oniguruma',
+    '@codingame/monaco-vscode-textmate-service-override',
+  ],
   experimental: {
     optimizePackageImports: ['lucide-react', '@radix-ui/react-icons'],
   },

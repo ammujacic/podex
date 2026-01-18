@@ -105,6 +105,7 @@ export interface LayoutChangeEvent {
     | 'active_agent'
     | 'agent_layout'
     | 'file_preview_layout'
+    | 'editor_layout'
     | 'sidebar'
     | 'full_sync';
   payload: Record<string, unknown>;
@@ -204,6 +205,30 @@ export interface ApprovalResponseEvent {
   approval_id: string;
   approved: boolean;
   added_to_allowlist: boolean;
+}
+
+// Permission request from Claude Code CLI
+export interface PermissionRequestEvent {
+  session_id: string;
+  agent_id: string;
+  request_id: string;
+  command: string | null;
+  description: string | null;
+  tool_name: string;
+  action_type: 'command_execute';
+  action_details: {
+    command: string | null;
+    tool_name: string;
+  };
+  timestamp: string;
+}
+
+export interface PermissionDecisionEvent {
+  session_id: string;
+  agent_id: string;
+  request_id: string;
+  approved: boolean;
+  timestamp: string;
 }
 
 export interface AgentModeUpdateEvent {
@@ -496,6 +521,16 @@ export interface AgentConfigUpdateEvent {
   timestamp: string;
 }
 
+/**
+ * Event emitted when workspace status changes (running, standby, error, etc.)
+ */
+export interface WorkspaceStatusEvent {
+  workspace_id: string;
+  status: 'pending' | 'running' | 'standby' | 'stopped' | 'error';
+  standby_at?: string;
+  error?: string;
+}
+
 export interface SocketEvents {
   agent_message: (data: AgentMessageEvent) => void;
   agent_status: (data: AgentStatusEvent) => void;
@@ -521,6 +556,9 @@ export interface SocketEvents {
   // Agent approval events
   approval_request: (data: ApprovalRequestEvent) => void;
   approval_response: (data: ApprovalResponseEvent) => void;
+  // Claude Code CLI permission events
+  permission_request: (data: PermissionRequestEvent) => void;
+  permission_decision: (data: PermissionDecisionEvent) => void;
   agent_mode_update: (data: AgentModeUpdateEvent) => void;
   agent_auto_mode_switch: (data: AgentAutoModeSwitchEvent) => void;
   // Context window events
@@ -559,6 +597,8 @@ export interface SocketEvents {
   skill_complete: (data: SkillCompleteEvent) => void;
   // CLI agent config sync events
   agent_config_update: (data: AgentConfigUpdateEvent) => void;
+  // Workspace status events
+  workspace_status: (data: WorkspaceStatusEvent) => void;
 }
 
 // Track active session for auto-rejoin on reconnect
@@ -885,6 +925,28 @@ export function emitApprovalResponse(
     approval_id: approvalId,
     approved,
     added_to_allowlist: addToAllowlist,
+  });
+}
+
+// Claude Code CLI permission response
+export function emitPermissionResponse(
+  sessionId: string,
+  agentId: string,
+  requestId: string,
+  approved: boolean,
+  command: string | null = null,
+  toolName: string | null = null,
+  addToAllowlist: boolean = false
+): void {
+  const sock = getSocket();
+  sock.emit('permission_response', {
+    session_id: sessionId,
+    agent_id: agentId,
+    request_id: requestId,
+    approved,
+    command,
+    tool_name: toolName,
+    add_to_allowlist: addToAllowlist,
   });
 }
 

@@ -252,6 +252,87 @@ def create_cloud_run_services(
                 )
             )
 
+        # =========================================
+        # Optional external service secrets
+        # Empty values are handled gracefully by services
+        # =========================================
+
+        # Sentry - each service gets its own DSN
+        sentry_env_name = "NEXT_PUBLIC_SENTRY_DSN" if cfg["name"] == "web" else "SENTRY_DSN"
+        sentry_secret_key = f"sentry_dsn_{cfg['name']}"  # e.g., sentry_dsn_api
+        envs.append(
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
+                name=sentry_env_name,
+                value_source=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceArgs(
+                    secret_key_ref=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceSecretKeyRefArgs(
+                        secret=secrets[sentry_secret_key].secret_id,
+                        version="latest",
+                    ),
+                ),
+            )
+        )
+
+        # API service - OAuth, Stripe, VAPID, SendGrid
+        if cfg["name"] == "api":
+            api_secrets = [
+                ("GITHUB_CLIENT_ID", "github_client_id"),
+                ("GITHUB_CLIENT_SECRET", "github_client_secret"),
+                ("GOOGLE_CLIENT_ID", "google_client_id"),
+                ("GOOGLE_CLIENT_SECRET", "google_client_secret"),
+                ("STRIPE_SECRET_KEY", "stripe_secret_key"),
+                ("STRIPE_WEBHOOK_SECRET", "stripe_webhook_secret"),
+                ("STRIPE_PUBLISHABLE_KEY", "stripe_publishable_key"),
+                ("VAPID_PUBLIC_KEY", "vapid_public_key"),
+                ("VAPID_PRIVATE_KEY", "vapid_private_key"),
+                ("VAPID_EMAIL", "vapid_email"),
+                ("SENDGRID_API_KEY", "sendgrid_api_key"),
+            ]
+            for env_name, secret_key in api_secrets:
+                envs.append(
+                    gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
+                        name=env_name,
+                        value_source=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceArgs(
+                            secret_key_ref=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceSecretKeyRefArgs(
+                                secret=secrets[secret_key].secret_id,
+                                version="latest",
+                            ),
+                        ),
+                    )
+                )
+
+        # Agent service - LLM API keys
+        if cfg["name"] == "agent":
+            agent_secrets = [
+                ("ANTHROPIC_API_KEY", "anthropic_api_key"),
+                ("OPENAI_API_KEY", "openai_api_key"),
+            ]
+            for env_name, secret_key in agent_secrets:
+                envs.append(
+                    gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
+                        name=env_name,
+                        value_source=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceArgs(
+                            secret_key_ref=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceSecretKeyRefArgs(
+                                secret=secrets[secret_key].secret_id,
+                                version="latest",
+                            ),
+                        ),
+                    )
+                )
+
+        # Web service - VAPID public key for push notifications
+        if cfg["name"] == "web":
+            envs.append(
+                gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
+                    name="NEXT_PUBLIC_VAPID_PUBLIC_KEY",
+                    value_source=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceArgs(
+                        secret_key_ref=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceSecretKeyRefArgs(
+                            secret=secrets["vapid_public_key"].secret_id,
+                            version="latest",
+                        ),
+                    ),
+                )
+            )
+
         # Create the service
         service = gcp.cloudrunv2.Service(
             f"podex-{cfg['name']}-{env}",

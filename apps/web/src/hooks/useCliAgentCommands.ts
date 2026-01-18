@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '@/lib/api';
 
 /**
@@ -30,8 +30,14 @@ export interface CliCapabilities {
   thinkingDescription: string;
   /** Supported modes */
   supportedModes: ('plan' | 'ask' | 'auto' | 'sovereign')[];
-  /** Supported models with display names */
-  supportedModels: { id: string; name: string; default?: boolean }[];
+  /** Supported models with display names and capabilities */
+  supportedModels: {
+    id: string;
+    name: string;
+    default?: boolean;
+    supportsVision?: boolean;
+    supportsThinking?: boolean;
+  }[];
   /** Whether vision/images are supported */
   visionSupported: boolean;
   /** Whether file attachments are supported */
@@ -54,9 +60,9 @@ export const CLI_CAPABILITIES: Record<CliAgentType, CliCapabilities> = {
     thinkingDescription: 'Extended thinking with configurable token budget (1K-32K tokens)',
     supportedModes: ['plan', 'ask', 'auto'],
     supportedModels: [
-      { id: 'sonnet', name: 'Claude Sonnet 4', default: true },
-      { id: 'opus', name: 'Claude Opus 4' },
-      { id: 'haiku', name: 'Claude Haiku 3.5' },
+      { id: 'sonnet', name: 'Sonnet', default: true, supportsVision: true, supportsThinking: true },
+      { id: 'opus', name: 'Opus', supportsVision: true, supportsThinking: true },
+      { id: 'haiku', name: 'Haiku', supportsVision: true, supportsThinking: false },
     ],
     visionSupported: true,
     attachmentsSupported: true,
@@ -71,10 +77,10 @@ export const CLI_CAPABILITIES: Record<CliAgentType, CliCapabilities> = {
       'Extended reasoning with effort levels (low/medium/high) for o3/o4-mini models',
     supportedModes: ['ask', 'auto', 'sovereign'],
     supportedModels: [
-      { id: 'gpt-5', name: 'GPT-5', default: true },
-      { id: 'o3', name: 'o3' },
-      { id: 'o4-mini', name: 'o4-mini' },
-      { id: 'gpt-4.1', name: 'GPT-4.1' },
+      { id: 'gpt-5', name: 'GPT-5', default: true, supportsVision: true, supportsThinking: false },
+      { id: 'o3', name: 'o3', supportsVision: true, supportsThinking: true },
+      { id: 'o4-mini', name: 'o4-mini', supportsVision: true, supportsThinking: true },
+      { id: 'gpt-4.1', name: 'GPT-4.1', supportsVision: true, supportsThinking: false },
     ],
     visionSupported: true,
     attachmentsSupported: true,
@@ -88,9 +94,25 @@ export const CLI_CAPABILITIES: Record<CliAgentType, CliCapabilities> = {
     thinkingDescription: 'Extended thinking is not directly configurable in Gemini CLI',
     supportedModes: ['ask', 'auto', 'sovereign'],
     supportedModels: [
-      { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', default: true },
-      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
-      { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
+      {
+        id: 'gemini-2.5-pro',
+        name: 'Gemini 2.5 Pro',
+        default: true,
+        supportsVision: true,
+        supportsThinking: true,
+      },
+      {
+        id: 'gemini-2.5-flash',
+        name: 'Gemini 2.5 Flash',
+        supportsVision: true,
+        supportsThinking: true,
+      },
+      {
+        id: 'gemini-2.0-flash',
+        name: 'Gemini 2.0 Flash',
+        supportsVision: true,
+        supportsThinking: false,
+      },
     ],
     visionSupported: true,
     attachmentsSupported: true,
@@ -128,10 +150,56 @@ export function isCliFeatureSupported(
 /**
  * Get supported models for a CLI agent.
  */
-export function getCliSupportedModels(
-  agentType: CliAgentType
-): { id: string; name: string; default?: boolean }[] {
+export function getCliSupportedModels(agentType: CliAgentType): {
+  id: string;
+  name: string;
+  default?: boolean;
+  supportsVision?: boolean;
+  supportsThinking?: boolean;
+}[] {
   return CLI_CAPABILITIES[agentType].supportedModels;
+}
+
+/**
+ * Normalize a full model ID to CLI model short name.
+ * E.g., "claude-sonnet-4-5-20250929" -> "sonnet"
+ */
+export function normalizeCliModelId(modelId: string, agentType: CliAgentType): string {
+  const lowerModelId = modelId.toLowerCase();
+  const supportedModels = CLI_CAPABILITIES[agentType].supportedModels;
+
+  // Check exact match first
+  const exactMatch = supportedModels.find((m) => m.id === modelId);
+  if (exactMatch) return exactMatch.id;
+
+  // For Claude Code: match sonnet/opus/haiku in the model ID
+  if (agentType === 'claude-code') {
+    if (lowerModelId.includes('opus')) return 'opus';
+    if (lowerModelId.includes('sonnet')) return 'sonnet';
+    if (lowerModelId.includes('haiku')) return 'haiku';
+  }
+
+  // For OpenAI Codex: match model names
+  if (agentType === 'openai-codex') {
+    if (lowerModelId.includes('gpt-5')) return 'gpt-5';
+    if (lowerModelId.includes('o3')) return 'o3';
+    if (lowerModelId.includes('o4-mini')) return 'o4-mini';
+    if (lowerModelId.includes('gpt-4.1') || lowerModelId.includes('gpt-4-1')) return 'gpt-4.1';
+  }
+
+  // For Gemini CLI: match model names
+  if (agentType === 'gemini-cli') {
+    if (lowerModelId.includes('2.5-pro') || lowerModelId.includes('2-5-pro'))
+      return 'gemini-2.5-pro';
+    if (lowerModelId.includes('2.5-flash') || lowerModelId.includes('2-5-flash'))
+      return 'gemini-2.5-flash';
+    if (lowerModelId.includes('2.0-flash') || lowerModelId.includes('2-0-flash'))
+      return 'gemini-2.0-flash';
+  }
+
+  // Return the default model if no match
+  const defaultModel = supportedModels.find((m) => m.default);
+  return defaultModel?.id ?? supportedModels[0]?.id ?? modelId;
 }
 
 /**
@@ -189,11 +257,12 @@ const BUILTIN_COMMANDS: Record<CliAgentType, SlashCommand[]> = {
 
 /**
  * API route prefixes for each CLI agent type.
+ * These should match the backend router prefixes under /api/v1.
  */
 const API_PREFIXES: Record<CliAgentType, string> = {
-  'claude-code': '/claude-code',
-  'openai-codex': '/openai-codex',
-  'gemini-cli': '/gemini-cli',
+  'claude-code': '/api/v1/claude-code',
+  'openai-codex': '/api/v1/openai-codex',
+  'gemini-cli': '/api/v1/gemini-cli',
 };
 
 interface UseCliAgentCommandsReturn {
@@ -212,7 +281,7 @@ export function useCliAgentCommands(agentType: CliAgentType): UseCliAgentCommand
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const builtinCommands = BUILTIN_COMMANDS[agentType] || [];
+  const builtinCommands = useMemo(() => BUILTIN_COMMANDS[agentType] || [], [agentType]);
   const apiPrefix = API_PREFIXES[agentType];
 
   const fetchCommands = useCallback(async () => {

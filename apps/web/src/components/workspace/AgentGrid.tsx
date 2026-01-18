@@ -6,6 +6,7 @@ import { useSessionStore, type Agent } from '@/stores/session';
 import { AgentCard } from './AgentCard';
 import { DraggableAgentCard } from './DraggableAgentCard';
 import { DraggableTerminalCard } from './DraggableTerminalCard';
+import { DraggableEditorCard } from './DraggableEditorCard';
 import { ResizableGridCard } from './ResizableGridCard';
 import { ResizableTerminalCard } from './ResizableTerminalCard';
 import { TerminalAgentCell } from './TerminalAgentCell';
@@ -14,12 +15,15 @@ import { EditorGridCard } from './EditorGridCard';
 import { GridProvider } from './GridContext';
 import { useUIStore } from '@/stores/ui';
 import { CodeEditor } from './CodeEditor';
+import { EnhancedCodeEditor } from '@/components/editor/EnhancedCodeEditor';
+import { deleteAgent as deleteAgentApi } from '@/lib/api';
 
 // Error boundary for individual agent cards to prevent one broken card from crashing the entire grid
 interface AgentCardErrorBoundaryProps {
   children: ReactNode;
   agentName: string;
   onReset?: () => void;
+  onRemove?: () => void;
 }
 
 interface AgentCardErrorBoundaryState {
@@ -49,10 +53,24 @@ class AgentCardErrorBoundary extends Component<
     this.props.onReset?.();
   };
 
+  handleRemove = () => {
+    this.props.onRemove?.();
+  };
+
   render() {
     if (this.state.hasError) {
       return (
-        <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-red-500/30 bg-red-500/5 p-6 text-center min-h-[300px]">
+        <div className="relative flex flex-col items-center justify-center gap-3 rounded-lg border border-red-500/30 bg-red-500/5 p-6 text-center min-h-[300px]">
+          {/* Close button in top-right corner */}
+          {this.props.onRemove && (
+            <button
+              onClick={this.handleRemove}
+              className="absolute top-2 right-2 p-1.5 rounded-md text-text-muted hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+              title="Remove agent"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
           <div className="flex h-12 w-12 items-center justify-center rounded-full bg-red-500/10">
             <AlertTriangle className="h-6 w-6 text-red-400" />
           </div>
@@ -64,13 +82,24 @@ class AgentCardErrorBoundary extends Component<
               {this.state.error?.message || 'Something went wrong'}
             </p>
           </div>
-          <button
-            onClick={this.handleReset}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-md text-xs bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors cursor-pointer"
-          >
-            <RefreshCw className="h-3 w-3" />
-            Try Again
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={this.handleReset}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-md text-xs bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors cursor-pointer"
+            >
+              <RefreshCw className="h-3 w-3" />
+              Try Again
+            </button>
+            {this.props.onRemove && (
+              <button
+                onClick={this.handleRemove}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-md text-xs bg-elevated text-text-muted hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+              >
+                <X className="h-3 w-3" />
+                Remove
+              </button>
+            )}
+          </div>
         </div>
       );
     }
@@ -149,14 +178,27 @@ const demoAgents: Agent[] = [
 ];
 
 export function AgentGrid({ sessionId }: AgentGridProps) {
-  const { sessions, setActiveAgent, removeAgent, closeFilePreview } = useSessionStore();
+  const { sessions, setActiveAgent, closeFilePreview } = useSessionStore();
   const { openModal } = useUIStore();
   const containerRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
 
   // Use demo agents if session doesn't exist yet
   const session = sessions[sessionId];
-  const agents = session?.agents ?? demoAgents;
+  // Filter out corrupted agents (missing required fields like color) to prevent render errors
+  const rawAgents = session?.agents ?? demoAgents;
+  const agents = rawAgents.filter((agent): agent is Agent => {
+    if (!agent || typeof agent !== 'object') return false;
+    if (!agent.id || !agent.name) return false;
+    // Ensure color exists - if missing, auto-fix it
+    if (!agent.color) {
+      // Silently fix corrupted agent by assigning a default color
+      const index = rawAgents.indexOf(agent);
+      const defaultColors = ['agent-1', 'agent-2', 'agent-3', 'agent-4', 'agent-5', 'agent-6'];
+      (agent as Agent).color = defaultColors[index % defaultColors.length] ?? 'agent-1';
+    }
+    return true;
+  });
   const viewMode = session?.viewMode ?? 'grid';
   const activeAgentId = session?.activeAgentId;
   const workspaceId = session?.workspaceId ?? '';
@@ -166,6 +208,19 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
 
   const handleAddAgent = () => {
     openModal('create-agent');
+  };
+
+  // Remove agent from both backend and frontend
+  const handleRemoveAgent = async (agent: Agent) => {
+    try {
+      // Delete from backend first
+      await deleteAgentApi(sessionId, agent.id);
+    } catch (err) {
+      console.error('Failed to delete agent from backend:', err);
+      // Still remove from frontend even if backend fails
+    }
+    // Remove from local store (and localStorage via persist)
+    handleRemoveAgent(agent);
   };
 
   const handleRemoveTerminalAgent = async (agent: Agent) => {
@@ -180,7 +235,7 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
       }
     }
     // Remove from store
-    removeAgent(sessionId, agent.id);
+    handleRemoveAgent(agent);
   };
 
   // Freeform mode: draggable and resizable windows
@@ -195,7 +250,11 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
           // Check if this is a terminal agent
           if (agent.terminalSessionId) {
             return (
-              <AgentCardErrorBoundary key={agent.id} agentName={agent.name}>
+              <AgentCardErrorBoundary
+                key={agent.id}
+                agentName={agent.name}
+                onRemove={() => handleRemoveTerminalAgent(agent)}
+              >
                 <DraggableTerminalCard
                   agent={agent}
                   sessionId={sessionId}
@@ -209,11 +268,20 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
 
           // Regular Podex agent
           return (
-            <AgentCardErrorBoundary key={agent.id} agentName={agent.name}>
+            <AgentCardErrorBoundary
+              key={agent.id}
+              agentName={agent.name}
+              onRemove={() => handleRemoveAgent(agent)}
+            >
               <DraggableAgentCard agent={agent} sessionId={sessionId} containerRef={containerRef} />
             </AgentCardErrorBoundary>
           );
         })}
+
+        {/* Draggable editor card in freeform mode */}
+        {editorGridCardId && (
+          <DraggableEditorCard sessionId={sessionId} paneId="main" containerRef={containerRef} />
+        )}
 
         {/* Floating add agent button */}
         <button
@@ -228,15 +296,17 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
   }
 
   // Focus mode: show only the active agent (or first agent if none selected)
-  // Also supports showing file previews as tabs
+  // Also supports showing file previews and editor as tabs
   if (viewMode === 'focus' && agents.length > 0) {
     const focusedAgent = activeAgentId ? agents.find((a) => a.id === activeAgentId) : agents[0];
     // Check if activeAgentId is actually a file preview ID
     const focusedFilePreview = activeAgentId
       ? dockedPreviews.find((p) => p.id === activeAgentId)
       : null;
+    // Check if activeAgentId is the editor
+    const isEditorFocused = activeAgentId === 'editor';
 
-    if (focusedAgent || focusedFilePreview) {
+    if (focusedAgent || focusedFilePreview || isEditorFocused || editorGridCardId) {
       return (
         <div className="h-full flex flex-col" data-tour="agent-grid">
           {/* Agent and file preview tabs in focus mode */}
@@ -286,6 +356,24 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
               );
             })}
 
+            {/* Editor tab */}
+            {editorGridCardId && (
+              <>
+                <div className="h-4 w-px bg-border-subtle mx-1" />
+                <button
+                  onClick={() => setActiveAgent(sessionId, 'editor')}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm whitespace-nowrap transition-colors cursor-pointer ${
+                    isEditorFocused
+                      ? 'bg-overlay text-text-primary'
+                      : 'text-text-secondary hover:text-text-primary hover:bg-overlay/50'
+                  }`}
+                >
+                  <div className="h-2 w-2 rounded-full bg-accent-primary shrink-0" />
+                  Editor
+                </button>
+              </>
+            )}
+
             <button
               onClick={handleAddAgent}
               className="flex items-center gap-1 px-3 py-1.5 rounded-md text-sm text-text-muted hover:text-text-primary hover:bg-overlay/50 cursor-pointer"
@@ -298,7 +386,12 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
           {/* Focused content view */}
           <div className="flex-1 p-4 overflow-auto">
             <div className="h-full max-w-4xl mx-auto">
-              {focusedFilePreview ? (
+              {isEditorFocused ? (
+                // Render editor
+                <div className="h-full rounded-lg border border-border-default bg-surface overflow-hidden flex flex-col">
+                  <EnhancedCodeEditor paneId="main" className="h-full" />
+                </div>
+              ) : focusedFilePreview ? (
                 // Render file preview
                 <div className="h-full rounded-lg border border-border-default bg-surface overflow-hidden flex flex-col">
                   <div className="flex items-center justify-between px-3 py-2 border-b border-border-subtle bg-elevated shrink-0">
@@ -324,7 +417,14 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
                 </div>
               ) : focusedAgent ? (
                 // Render agent
-                <AgentCardErrorBoundary agentName={focusedAgent.name}>
+                <AgentCardErrorBoundary
+                  agentName={focusedAgent.name}
+                  onRemove={() =>
+                    focusedAgent.terminalSessionId
+                      ? handleRemoveTerminalAgent(focusedAgent)
+                      : handleRemoveAgent(focusedAgent)
+                  }
+                >
                   {focusedAgent.terminalSessionId ? (
                     <div className="h-full rounded-lg border border-border-default bg-surface overflow-hidden">
                       <TerminalAgentCell
@@ -355,7 +455,11 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
             // Check if this is a terminal agent
             if (agent.terminalSessionId) {
               return (
-                <AgentCardErrorBoundary key={agent.id} agentName={agent.name}>
+                <AgentCardErrorBoundary
+                  key={agent.id}
+                  agentName={agent.name}
+                  onRemove={() => handleRemoveTerminalAgent(agent)}
+                >
                   <ResizableTerminalCard
                     agent={agent}
                     sessionId={sessionId}
@@ -369,7 +473,11 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
 
             // Regular Podex agent
             return (
-              <AgentCardErrorBoundary key={agent.id} agentName={agent.name}>
+              <AgentCardErrorBoundary
+                key={agent.id}
+                agentName={agent.name}
+                onRemove={() => handleRemoveAgent(agent)}
+              >
                 <ResizableGridCard agent={agent} sessionId={sessionId} maxCols={2} />
               </AgentCardErrorBoundary>
             );

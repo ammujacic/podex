@@ -76,18 +76,8 @@ class VertexAIProvider:
 
         Handles various model ID formats:
         - Direct Vertex AI model ID (e.g., "claude-sonnet-4-20250514")
-        - Legacy Anthropic format (e.g., "anthropic.claude-sonnet-4-20250514-v1:0")
         - Friendly names (resolved via admin-configured model list)
         """
-        # Handle legacy Anthropic model ID format (anthropic.claude-*)
-        if model.startswith("anthropic."):
-            # Strip prefix and version suffix to get Vertex format
-            # anthropic.claude-sonnet-4-20250514-v1:0 -> claude-sonnet-4-20250514
-            clean = model.replace("anthropic.", "")
-            # Remove version suffix like -v1:0
-            if "-v" in clean:
-                clean = clean.split("-v")[0]
-            return clean
 
         # Check if model capabilities exist in cache (admin-configured)
         caps = get_model_capabilities(model)

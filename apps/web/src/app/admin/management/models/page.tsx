@@ -264,7 +264,7 @@ function EditModelModal({ model, onClose, onSave }: EditModelModalProps) {
                 value={formData.model_id}
                 onChange={(e) => setFormData({ ...formData, model_id: e.target.value })}
                 className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
-                placeholder="anthropic.claude-3-sonnet-20240229-v1:0"
+                placeholder="claude-4.5-sonnet"
                 required
                 disabled={!!model}
               />
@@ -513,6 +513,12 @@ function AgentDefaultsModal({ defaults, models, onClose, onSave }: AgentDefaults
   ];
 
   const handleSave = async (agentType: string, modelId: string) => {
+    // Skip if value hasn't actually changed
+    const currentValue = localDefaults[agentType] || '';
+    if (modelId === currentValue) {
+      return;
+    }
+
     setSaving(agentType);
     try {
       await onSave(agentType, modelId);
@@ -623,6 +629,12 @@ export default function ModelsManagement() {
   }, [fetchModels, fetchDefaults]);
 
   const handleToggleEnabled = async (modelId: string, isEnabled: boolean) => {
+    // Skip if value hasn't actually changed
+    const currentModel = models.find((m) => m.id === modelId);
+    if (currentModel?.is_enabled === isEnabled) {
+      return;
+    }
+
     try {
       await adminUpdateModel(modelId, { is_enabled: isEnabled });
       setModels((prev) =>

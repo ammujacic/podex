@@ -2,7 +2,7 @@
 
 import { forwardRef, type ComponentPropsWithoutRef, type ElementRef } from 'react';
 import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu';
-import { Check, ChevronRight, Circle } from 'lucide-react';
+import { Check, ChevronRight } from 'lucide-react';
 import { cn } from './utils';
 
 const DropdownMenu = DropdownMenuPrimitive.Root;
@@ -38,11 +38,12 @@ DropdownMenuSubTrigger.displayName = DropdownMenuPrimitive.SubTrigger.displayNam
 const DropdownMenuSubContent = forwardRef<
   ElementRef<typeof DropdownMenuPrimitive.SubContent>,
   ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.SubContent>
->(({ className, ...props }, ref) => (
+>(({ className, style, ...props }, ref) => (
   <DropdownMenuPrimitive.SubContent
     ref={ref}
     className={cn(
-      'z-50 min-w-[8rem] overflow-hidden rounded-md border border-[#2a2a35] bg-[#0d0d12] p-1 shadow-lg',
+      'z-50 min-w-[8rem] overflow-hidden rounded-md p-1 shadow-lg',
+      'outline-none ring-0 focus:outline-none focus:ring-0',
       'data-[state=open]:animate-in data-[state=closed]:animate-out',
       'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
       'data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
@@ -52,6 +53,11 @@ const DropdownMenuSubContent = forwardRef<
       'data-[side=top]:slide-in-from-bottom-2',
       className
     )}
+    style={{
+      backgroundColor: '#0d0d12',
+      border: '1px solid #2a2a35',
+      ...style,
+    }}
     {...props}
   />
 ));
@@ -60,13 +66,14 @@ DropdownMenuSubContent.displayName = DropdownMenuPrimitive.SubContent.displayNam
 const DropdownMenuContent = forwardRef<
   ElementRef<typeof DropdownMenuPrimitive.Content>,
   ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content>
->(({ className, sideOffset = 4, ...props }, ref) => (
+>(({ className, sideOffset = 4, style, ...props }, ref) => (
   <DropdownMenuPrimitive.Portal>
     <DropdownMenuPrimitive.Content
       ref={ref}
       sideOffset={sideOffset}
       className={cn(
-        'z-50 min-w-[8rem] overflow-hidden rounded-md border border-[#2a2a35] bg-[#0d0d12] p-1 shadow-lg',
+        'z-50 min-w-[8rem] overflow-hidden rounded-md p-1 shadow-lg',
+        'outline-none ring-0 focus:outline-none focus:ring-0',
         'data-[state=open]:animate-in data-[state=closed]:animate-out',
         'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
         'data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
@@ -76,6 +83,11 @@ const DropdownMenuContent = forwardRef<
         'data-[side=top]:slide-in-from-bottom-2',
         className
       )}
+      style={{
+        backgroundColor: '#0d0d12',
+        border: '1px solid #2a2a35',
+        ...style,
+      }}
       {...props}
     />
   </DropdownMenuPrimitive.Portal>
@@ -91,8 +103,8 @@ const DropdownMenuItem = forwardRef<
   <DropdownMenuPrimitive.Item
     ref={ref}
     className={cn(
-      'relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors',
-      'text-[#f0f0f5] focus:bg-[#1a1a21] focus:text-[#f0f0f5]',
+      'relative flex cursor-pointer select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors',
+      'text-[#f0f0f5] hover:bg-[#1a1a21] focus:bg-[#1a1a21] focus:text-[#f0f0f5]',
       'data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       inset && 'pl-8',
       className
@@ -134,8 +146,10 @@ const DropdownMenuRadioItem = forwardRef<
   <DropdownMenuPrimitive.RadioItem
     ref={ref}
     className={cn(
-      'relative flex cursor-default select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-sm outline-none transition-colors',
-      'text-[#f0f0f5] focus:bg-[#1a1a21]',
+      'relative flex cursor-pointer select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-sm outline-none transition-colors',
+      'text-[#f0f0f5]',
+      'hover:bg-purple-500/15',
+      'data-[state=checked]:bg-purple-500/25',
       'data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       className
     )}
@@ -143,7 +157,7 @@ const DropdownMenuRadioItem = forwardRef<
   >
     <span className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
       <DropdownMenuPrimitive.ItemIndicator>
-        <Circle className="h-2 w-2 fill-current" />
+        <span className="h-2.5 w-2.5 rounded-full bg-purple-500" />
       </DropdownMenuPrimitive.ItemIndicator>
     </span>
     {children}

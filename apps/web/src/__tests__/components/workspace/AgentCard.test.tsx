@@ -52,13 +52,22 @@ vi.mock('@/lib/socket', () => ({
   onSocketEvent: vi.fn(() => () => {}),
 }));
 
-vi.mock('@/lib/api', () => ({
-  sendAgentMessage: vi.fn(),
-  deleteAgent: vi.fn(),
-  synthesizeMessage: vi.fn(),
-  getAvailableModels: vi.fn().mockResolvedValue([]),
-  getUserProviderModels: vi.fn().mockResolvedValue([]),
-}));
+vi.mock('@/lib/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api')>();
+  return {
+    ...actual,
+    sendAgentMessage: vi.fn(),
+    deleteAgent: vi.fn(),
+    synthesizeMessage: vi.fn(),
+    getAvailableModels: vi.fn().mockResolvedValue([]),
+    getUserProviderModels: vi.fn().mockResolvedValue([]),
+    getPlatformConfig: vi.fn().mockResolvedValue({
+      features: {},
+      limits: {},
+    }),
+    getAgentRoleConfigs: vi.fn().mockResolvedValue([]),
+  };
+});
 
 describe('AgentCard', () => {
   const mockAgent: Agent = {
@@ -89,8 +98,8 @@ describe('AgentCard', () => {
 
   it('displays agent model', () => {
     render(<AgentCard {...defaultProps} />);
-    // Component displays model ID when no model info is available
-    expect(screen.getByText('claude-opus-4-5-20251101')).toBeInTheDocument();
+    // Component displays parsed model name when no model info is available
+    expect(screen.getByText('Opus 4.5')).toBeInTheDocument();
   });
 
   it('shows active status', () => {

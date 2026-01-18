@@ -204,6 +204,13 @@ class WorkspaceConfig(BaseModel):
         description="Docker image for the workspace (template's base_image if not specified)",
     )
 
+    # Dotfiles sync configuration
+    sync_dotfiles: bool = Field(default=True, description="Whether to sync dotfiles")
+    dotfiles_paths: list[str] | None = Field(
+        default=None,
+        description="List of dotfile paths to sync (e.g., '.bashrc', '.claude/')",
+    )
+
 
 class HardwareSpec(BaseModel):
     """Hardware specification for a compute tier."""

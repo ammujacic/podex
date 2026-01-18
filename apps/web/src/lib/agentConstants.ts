@@ -105,7 +105,10 @@ export function getAgentTextColor(color: string): string {
 
 /**
  * Get mode configuration for an agent mode.
+ * Returns 'ask' mode config as default for undefined or invalid modes.
  */
 export function getModeConfig(mode: AgentMode | undefined) {
-  return modeConfig[mode || 'ask'];
+  const config = modeConfig[mode || 'ask'];
+  // Fallback to 'ask' if mode is invalid (not in modeConfig)
+  return config ?? modeConfig.ask;
 }

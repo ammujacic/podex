@@ -236,75 +236,6 @@ async def create_model(
     return _model_to_response(model)
 
 
-# ==================== Agent Type Defaults Routes ====================
-# NOTE: These routes MUST be defined before /{model_id} to avoid path conflicts
-
-
-def _get_default_agent_model_config() -> dict[str, AgentTypeDefaults]:
-    """Get cost-effective default model settings for all agent types.
-
-    Uses Sonnet for most roles (best balance of quality/cost),
-    Haiku for chat (fast responses), and standard Sonnet for simpler tasks.
-    """
-    return {
-        "architect": AgentTypeDefaults(
-            model_id="claude-sonnet-4-5-20250929",
-            temperature=0.7,
-            max_tokens=8192,
-        ),
-        "coder": AgentTypeDefaults(
-            model_id="claude-sonnet-4-5-20250929",
-            temperature=0.3,
-            max_tokens=4096,
-        ),
-        "reviewer": AgentTypeDefaults(
-            model_id="claude-sonnet-4-20250514",
-            temperature=0.5,
-            max_tokens=4096,
-        ),
-        "tester": AgentTypeDefaults(
-            model_id="claude-sonnet-4-5-20250929",
-            temperature=0.3,
-            max_tokens=4096,
-        ),
-        "chat": AgentTypeDefaults(
-            model_id="claude-haiku-4-5-20251001",
-            temperature=0.7,
-            max_tokens=2048,
-        ),
-        "security": AgentTypeDefaults(
-            model_id="claude-sonnet-4-5-20250929",
-            temperature=0.3,
-            max_tokens=4096,
-        ),
-        "devops": AgentTypeDefaults(
-            model_id="claude-sonnet-4-5-20250929",
-            temperature=0.5,
-            max_tokens=4096,
-        ),
-        "documentator": AgentTypeDefaults(
-            model_id="claude-sonnet-4-20250514",
-            temperature=0.7,
-            max_tokens=4096,
-        ),
-        "agent_builder": AgentTypeDefaults(
-            model_id="claude-sonnet-4-5-20250929",
-            temperature=0.5,
-            max_tokens=8192,
-        ),
-        "orchestrator": AgentTypeDefaults(
-            model_id="claude-sonnet-4-5-20250929",
-            temperature=0.5,
-            max_tokens=8192,
-        ),
-        "custom": AgentTypeDefaults(
-            model_id="claude-sonnet-4-5-20250929",
-            temperature=0.5,
-            max_tokens=4096,
-        ),
-    }
-
-
 @router.get("/agent-defaults", response_model=AgentDefaultsResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
 @require_admin
@@ -319,15 +250,15 @@ async def get_agent_defaults(
     )
     setting = result.scalar_one_or_none()
 
-    if not setting:
-        # Return cost-effective defaults - Sonnet for most roles, Haiku for chat
-        return AgentDefaultsResponse(defaults=_get_default_agent_model_config())
-
-    if isinstance(setting.value, dict):
-        return AgentDefaultsResponse(
-            defaults={k: AgentTypeDefaults(**v) for k, v in setting.value.items()}
+    if not setting or not isinstance(setting.value, dict):
+        raise HTTPException(
+            status_code=500,
+            detail="agent_model_defaults not configured. Run database seeds.",
         )
-    return AgentDefaultsResponse(defaults=_get_default_agent_model_config())
+
+    return AgentDefaultsResponse(
+        defaults={k: AgentTypeDefaults(**v) for k, v in setting.value.items()}
+    )
 
 
 @router.put("/agent-defaults/{agent_type}", response_model=AgentDefaultsResponse)
@@ -354,6 +285,10 @@ async def update_agent_default(
         "documentator",
         "agent_builder",
         "orchestrator",
+        "custom",
+        "claude-code",
+        "gemini-cli",
+        "openai-codex",
     }
 
     if agent_type not in valid_agent_types:
@@ -372,30 +307,20 @@ async def update_agent_default(
     if not model.is_enabled:
         raise HTTPException(status_code=400, detail=f"Model {data.model_id} is disabled")
 
-    # Get or create the setting
+    # Get the setting from database
     result = await db.execute(
         select(PlatformSetting).where(PlatformSetting.key == "agent_model_defaults")
     )
     setting = result.scalar_one_or_none()
 
-    if not setting:
-        # Create with cost-effective default values
-        defaults = {
-            k: {"model_id": v.model_id, "temperature": v.temperature, "max_tokens": v.max_tokens}
-            for k, v in _get_default_agent_model_config().items()
-        }
-        setting = PlatformSetting(
-            key="agent_model_defaults",
-            value=defaults,
-            description="Default model settings per agent type",
-            category="agents",
-            is_public=False,
-            updated_by=admin_id,
+    if not setting or not isinstance(setting.value, dict):
+        raise HTTPException(
+            status_code=500,
+            detail="agent_model_defaults not configured. Run database seeds.",
         )
-        db.add(setting)
 
     # Update the specific agent type
-    current_value = setting.value if isinstance(setting.value, dict) else {}
+    current_value = setting.value
     current_value[agent_type] = {
         "model_id": data.model_id,
         "temperature": data.temperature
@@ -418,11 +343,9 @@ async def update_agent_default(
         model_id=data.model_id,
     )
 
-    if isinstance(setting.value, dict):
-        return AgentDefaultsResponse(
-            defaults={k: AgentTypeDefaults(**v) for k, v in setting.value.items()}
-        )
-    return AgentDefaultsResponse(defaults=_get_default_agent_model_config())
+    return AgentDefaultsResponse(
+        defaults={k: AgentTypeDefaults(**v) for k, v in setting.value.items()}
+    )
 
 
 # ==================== Model CRUD Routes (with path parameters) ====================
@@ -676,15 +599,15 @@ async def get_public_agent_defaults(
     )
     setting = result.scalar_one_or_none()
 
-    if not setting:
-        # Return cost-effective defaults - Sonnet for most roles, Haiku for chat
-        return AgentDefaultsResponse(defaults=_get_default_agent_model_config())
-
-    if isinstance(setting.value, dict):
-        return AgentDefaultsResponse(
-            defaults={k: AgentTypeDefaults(**v) for k, v in setting.value.items()}
+    if not setting or not isinstance(setting.value, dict):
+        raise HTTPException(
+            status_code=500,
+            detail="agent_model_defaults not configured. Run database seeds.",
         )
-    return AgentDefaultsResponse(defaults=_get_default_agent_model_config())
+
+    return AgentDefaultsResponse(
+        defaults={k: AgentTypeDefaults(**v) for k, v in setting.value.items()}
+    )
 
 
 # ==================== User Provider Models ====================

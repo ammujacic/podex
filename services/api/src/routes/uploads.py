@@ -780,9 +780,9 @@ async def upload_image_base64(
 
         width, height = await asyncio.to_thread(_get_dimensions)
     except ImportError:
-        pass  # PIL not available
-    except Exception:
-        pass  # Failed to read image dimensions, not critical
+        logger.debug("PIL not available, cannot extract image dimensions")
+    except Exception as e:
+        logger.debug("Failed to read image dimensions (non-critical)", error=str(e))
 
     # Generate unique filename
     file_id = str(uuid4())

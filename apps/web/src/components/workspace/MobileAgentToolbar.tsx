@@ -466,24 +466,14 @@ export function MobileAgentToolbar({ sessionId, agent, onSendCommand }: MobileAg
           </button>
         )}
 
-        {/* Claude Code indicator and commands */}
+        {/* Claude Code indicator */}
         {isClaudeCodeAgent && (
-          <>
-            <span
-              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#FF6B35]/20 text-[#FF6B35] text-xs flex-shrink-0 min-h-[44px]"
-              aria-label="Claude Code agent"
-            >
-              <ClaudeIcon className="h-3 w-3" />
-            </span>
-            <button
-              onClick={() => setShowSlashCommands(true)}
-              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-surface-hover text-xs text-text-secondary hover:text-text-primary transition-colors flex-shrink-0 min-h-[44px]"
-              aria-label="Slash commands"
-            >
-              <Slash className="h-3 w-3" aria-hidden="true" />
-              <span>Cmds</span>
-            </button>
-          </>
+          <span
+            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#FF6B35]/20 text-[#FF6B35] text-xs flex-shrink-0 min-h-[44px]"
+            aria-label="Claude Code agent"
+          >
+            <ClaudeIcon className="h-3 w-3" />
+          </span>
         )}
 
         {/* OpenAI Codex indicator */}
@@ -504,6 +494,18 @@ export function MobileAgentToolbar({ sessionId, agent, onSendCommand }: MobileAg
           >
             <GeminiIcon className="h-3 w-3" />
           </span>
+        )}
+
+        {/* CLI agent slash commands button */}
+        {isCliAgent && (
+          <button
+            onClick={() => setShowSlashCommands(true)}
+            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-surface-hover text-xs text-text-secondary hover:text-text-primary transition-colors flex-shrink-0 min-h-[44px]"
+            aria-label="Slash commands"
+          >
+            <Slash className="h-3 w-3" aria-hidden="true" />
+            <span>Cmds</span>
+          </button>
         )}
 
         {/* Podex native agent indicator */}
@@ -674,8 +676,8 @@ export function MobileAgentToolbar({ sessionId, agent, onSendCommand }: MobileAg
         height="auto"
       >
         <div className="space-y-2">
-          {/* Claude Code specific options */}
-          {isClaudeCodeAgent && (
+          {/* CLI agent specific options */}
+          {isCliAgent && (
             <button
               onClick={handleReauthenticate}
               disabled={isReauthenticating}
@@ -716,12 +718,13 @@ export function MobileAgentToolbar({ sessionId, agent, onSendCommand }: MobileAg
         </div>
       </MobileBottomSheet>
 
-      {/* Claude Code slash commands sheet */}
-      {isClaudeCodeAgent && (
+      {/* CLI Agent slash commands sheet */}
+      {isCliAgent && cliType && (
         <SlashCommandSheet
           isOpen={showSlashCommands}
           onClose={() => setShowSlashCommands(false)}
           onSelect={handleSlashCommandSelect}
+          agentType={cliType}
         />
       )}
     </>

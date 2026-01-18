@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { Loader2, Mic, Paperclip, Send, X } from 'lucide-react';
+import { Loader2, LogIn, Mic, Paperclip, RefreshCw, Send, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { type Agent, type AgentMode, useSessionStore } from '@/stores/session';
 import { useAttentionStore } from '@/stores/attention';
@@ -15,6 +15,7 @@ import {
   mapCostTierToTier,
   mapCostTierToReasoningEffort,
   createShortModelName,
+  parseModelIdToDisplayName,
 } from '@/lib/model-utils';
 import {
   sendAgentMessage,
@@ -39,7 +40,7 @@ import {
 } from '@/lib/api';
 import { useVoiceCapture } from '@/hooks/useVoiceCapture';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
-import { onSocketEvent, type AgentMessageEvent } from '@/lib/socket';
+import { onSocketEvent, emitPermissionResponse, type AgentMessageEvent } from '@/lib/socket';
 import { SUPPORTED_IMAGE_TYPES, MAX_ATTACHMENT_SIZE_MB } from '@podex/shared';
 import type { ThinkingConfig, AttachmentFile, ModelInfo, LLMProvider } from '@podex/shared';
 
@@ -55,13 +56,16 @@ import { CompactionDialog } from './CompactionDialog';
 import { ThinkingConfigDialog } from './ThinkingConfigDialog';
 import { SlashCommandMenu, isBuiltInCommand, type BuiltInCommand } from './SlashCommandMenu';
 import { CreditExhaustedBanner } from './CreditExhaustedBanner';
-import { SlashCommandSheet, SlashCommandDialog } from './SlashCommandSheet';
-import { useClaudeCodeAuth } from '@/hooks/useClaudeCodeCommands';
+import { SlashCommandDialog } from './SlashCommandSheet';
+import { ApprovalDialog } from './ApprovalDialog';
 import {
   isCliAgentRole,
   getCliAgentType,
   getCliSupportedModels,
+  normalizeCliModelId,
+  useCliAgentAuth,
 } from '@/hooks/useCliAgentCommands';
+import { useUIStore } from '@/stores/ui';
 
 export interface AgentCardProps {
   agent: Agent;
@@ -243,16 +247,63 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       onPlayEnd: () => {},
     });
 
-  // Claude Code auth (only used for claude-code agents)
-  const isClaudeCodeAgent = agent.role === 'claude-code';
-  const { reauthenticate: claudeCodeReauthenticate } = useClaudeCodeAuth(
-    isClaudeCodeAgent ? agent.id : undefined
-  );
+  // CLI agent auth (for claude-code, openai-codex, gemini-cli)
+  const isCliAgent = isCliAgentRole(agent.role);
+  const cliAgentType = getCliAgentType(agent.role);
+  const {
+    authStatus: cliAuthStatus,
+    reauthenticate: claudeCodeReauthenticate,
+    checkAuth: checkCliAuth,
+  } = useCliAgentAuth(cliAgentType ?? 'claude-code', isCliAgent ? agent.id : undefined);
 
-  // Claude Code handlers (non-message handlers)
+  // Terminal toggle for CLI auth
+  const { toggleTerminal, terminalVisible } = useUIStore();
+
+  // Check if CLI agent needs authentication (blocks input until authenticated)
+  const cliNeedsAuth =
+    isCliAgent &&
+    agent.messages.length === 0 &&
+    (cliAuthStatus === null || cliAuthStatus?.needsAuth);
+
+  // CLI agent handlers (non-message handlers)
   const handleOpenSlashCommands = useCallback(() => {
     setSlashCommandSheetOpen(true);
   }, []);
+
+  // Get CLI command name for the agent
+  const getCliCommand = useCallback(() => {
+    switch (agent.role) {
+      case 'claude-code':
+        return 'claude';
+      case 'openai-codex':
+        return 'codex';
+      case 'gemini-cli':
+        return 'gemini';
+      default:
+        return agent.role;
+    }
+  }, [agent.role]);
+
+  // Handle CLI agent login - opens terminal for interactive auth
+  const handleCliLogin = useCallback(() => {
+    // Open terminal if not visible
+    if (!terminalVisible) {
+      toggleTerminal();
+    }
+
+    const cliCommand = getCliCommand();
+    toast.success(`Terminal opened! Run "${cliCommand}" and type "/login" to authenticate.`, {
+      duration: 8000,
+    });
+  }, [terminalVisible, toggleTerminal, getCliCommand]);
+
+  // Handle refresh auth status
+  const handleRefreshAuth = useCallback(async () => {
+    if (checkCliAuth) {
+      toast.info('Checking authentication status...');
+      await checkCliAuth();
+    }
+  }, [checkCliAuth]);
 
   const handleClaudeCodeReauthenticate = useCallback(async () => {
     try {
@@ -334,12 +385,54 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   );
 
   const currentModelInfo = useMemo(() => {
+    // For CLI agents, look up model in CLI_CAPABILITIES
+    const cliType = getCliAgentType(agent.role);
+    if (cliType) {
+      const cliModels = getCliSupportedModels(cliType);
+      const normalizedModelId = normalizeCliModelId(agent.model, cliType);
+      const cliModel = cliModels.find((m) => m.id === normalizedModelId);
+      if (cliModel) {
+        const supportsVision = cliModel.supportsVision ?? true;
+        const supportsThinking = cliModel.supportsThinking ?? false;
+        return {
+          id: cliModel.id,
+          provider: 'anthropic' as LLMProvider,
+          displayName: cliModel.name,
+          shortName: cliModel.name,
+          tier: 'flagship' as const,
+          contextWindow: 200000,
+          maxOutputTokens: 64000,
+          supportsVision,
+          supportsThinking,
+          thinkingStatus: supportsThinking ? ('available' as const) : ('not_supported' as const),
+          capabilities: [
+            'chat' as const,
+            'code' as const,
+            ...(supportsVision ? (['vision'] as const) : []),
+            'function_calling' as const,
+          ],
+          goodFor: [] as string[],
+          description: '',
+          reasoningEffort: 'medium' as const,
+          isUserKey: false,
+        };
+      }
+    }
+
+    // For Podex agents, look up in user/backend models
     const userModel = userProviderModels.find((m) => m.model_id === agent.model);
     if (userModel) return userModelToInfo(userModel);
     const backendModel = backendModels.find((m) => m.model_id === agent.model);
     if (backendModel) return backendModelToInfo(backendModel);
     return undefined;
-  }, [agent.model, backendModels, userProviderModels, backendModelToInfo, userModelToInfo]);
+  }, [
+    agent.model,
+    agent.role,
+    backendModels,
+    userProviderModels,
+    backendModelToInfo,
+    userModelToInfo,
+  ]);
 
   const modelsByTier = useMemo(() => {
     const flagship: ExtendedModelInfo[] = [];
@@ -347,34 +440,36 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     const fast: ExtendedModelInfo[] = [];
     const userApi: ExtendedModelInfo[] = [];
 
-    // For CLI agents, return CLI-specific models instead of Podex models
+    // For CLI agents, use the hardcoded CLI models directly
     const cliType = getCliAgentType(agent.role);
     if (cliType) {
       const cliModels = getCliSupportedModels(cliType);
-      // Put CLI models in the "flagship" tier for display
       for (const m of cliModels) {
-        const cliModelInfo: ExtendedModelInfo = {
+        const supportsVision = m.supportsVision ?? true;
+        const supportsThinking = m.supportsThinking ?? false;
+        // Create minimal ExtendedModelInfo for CLI models
+        flagship.push({
           id: m.id,
+          provider: 'anthropic' as LLMProvider, // CLI-specific, not Podex
           displayName: m.name,
           shortName: m.name,
-          provider:
-            cliType === 'claude-code'
-              ? 'anthropic'
-              : cliType === 'openai-codex'
-                ? 'openai'
-                : ('google' as LLMProvider),
           tier: 'flagship',
-          reasoningEffort: 'medium',
           contextWindow: 200000,
-          maxOutputTokens: 16000,
-          supportsVision: true,
-          supportsThinking: cliType !== 'gemini-cli',
-          thinkingStatus: cliType === 'gemini-cli' ? 'not_supported' : 'available',
-          capabilities: ['code', 'chat'],
-          goodFor: ['coding', 'analysis'],
-          description: `${m.name} via ${cliType}`,
-        };
-        flagship.push(cliModelInfo);
+          maxOutputTokens: 64000,
+          supportsVision,
+          supportsThinking,
+          thinkingStatus: supportsThinking ? 'available' : 'not_supported',
+          capabilities: [
+            'chat',
+            'code',
+            ...(supportsVision ? (['vision'] as const) : []),
+            'function_calling',
+          ],
+          goodFor: [],
+          description: '',
+          reasoningEffort: 'medium',
+          isUserKey: false,
+        });
       }
       return { flagship, balanced, fast, userApi };
     }
@@ -395,87 +490,90 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
 
   const getModelDisplayName = useCallback(
     (modelId: string) => {
+      // Only strip "Claude " since Sonnet/Opus/Haiku are recognizable on their own
+      // Keep "Llama " since "3.1 8B" alone is not recognizable
       if (agent.modelDisplayName) {
-        return agent.modelDisplayName.replace('Claude ', '').replace('Llama ', '');
+        return agent.modelDisplayName.replace('Claude ', '');
       }
       const userModel = userProviderModels.find((m) => m.model_id === modelId);
-      if (userModel)
-        return userModel.display_name
-          .replace('Claude ', '')
-          .replace('Llama ', '')
-          .replace(' (Direct)', '');
+      if (userModel) return userModel.display_name.replace('Claude ', '').replace(' (Direct)', '');
       const backendModel = backendModels.find((m) => m.model_id === modelId);
-      if (backendModel)
-        return backendModel.display_name.replace('Claude ', '').replace('Llama ', '');
-      return modelId;
+      if (backendModel) return backendModel.display_name.replace('Claude ', '');
+      // Fallback: parse raw model ID into user-friendly name
+      return parseModelIdToDisplayName(modelId);
     },
     [agent.modelDisplayName, backendModels, userProviderModels]
   );
 
   // Message handlers
-  const handleSendMessage = useCallback(async () => {
-    if ((!message.trim() && attachments.length === 0) || isSending) return;
+  const handleSendMessage = useCallback(
+    async (overrideMessage?: string) => {
+      const effectiveMessage = overrideMessage ?? message;
+      if ((!effectiveMessage.trim() && attachments.length === 0) || isSending) return;
 
-    const messageContent = message.trim();
-    const currentAttachments = [...attachments];
-    setIsSending(true);
-    setMessage('');
-    setAttachments([]);
+      const messageContent = effectiveMessage.trim();
+      const currentAttachments = [...attachments];
+      setIsSending(true);
+      setMessage('');
+      setAttachments([]);
 
-    const userMessage = {
-      id: `temp-${Date.now()}`,
-      role: 'user' as const,
-      content: messageContent,
-      timestamp: new Date(),
-    };
-    addAgentMessage(sessionId, agent.id, userMessage);
-    updateAgent(sessionId, agent.id, { status: 'active' });
+      const userMessage = {
+        id: `temp-${Date.now()}`,
+        role: 'user' as const,
+        content: messageContent,
+        timestamp: new Date(),
+      };
+      addAgentMessage(sessionId, agent.id, userMessage);
+      updateAgent(sessionId, agent.id, { status: 'active' });
 
-    try {
-      await sendAgentMessage(sessionId, agent.id, messageContent, {
-        attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
-        thinkingConfig: agent.thinkingConfig,
-      });
-    } catch (error) {
-      console.error('Failed to send message:', error);
-      updateAgent(sessionId, agent.id, { status: 'error' });
-
-      if (isQuotaError(error)) {
-        setShowCreditError(true);
-        toast.error('Credit limit reached', {
-          description: 'You have run out of credits or exceeded your quota.',
-          action: { label: 'Buy Credits', onClick: () => router.push('/settings/billing/credits') },
-          duration: 10000,
+      try {
+        await sendAgentMessage(sessionId, agent.id, messageContent, {
+          attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
+          thinkingConfig: agent.thinkingConfig,
         });
-      } else {
-        toast.error('Failed to send message. Please try again.');
-      }
-    } finally {
-      setIsSending(false);
-    }
-  }, [
-    message,
-    attachments,
-    isSending,
-    sessionId,
-    agent.id,
-    agent.thinkingConfig,
-    addAgentMessage,
-    updateAgent,
-    router,
-  ]);
+      } catch (error) {
+        console.error('Failed to send message:', error);
+        updateAgent(sessionId, agent.id, { status: 'error' });
 
-  // Handle slash command selection for Claude Code agents (must be after handleSendMessage)
-  const handleClaudeCodeSlashCommand = useCallback(
+        if (isQuotaError(error)) {
+          setShowCreditError(true);
+          toast.error('Credit limit reached', {
+            description: 'You have run out of credits or exceeded your quota.',
+            action: {
+              label: 'Buy Credits',
+              onClick: () => router.push('/settings/billing/credits'),
+            },
+            duration: 10000,
+          });
+        } else {
+          toast.error('Failed to send message. Please try again.');
+        }
+      } finally {
+        setIsSending(false);
+      }
+    },
+    [
+      message,
+      attachments,
+      isSending,
+      sessionId,
+      agent.id,
+      agent.thinkingConfig,
+      addAgentMessage,
+      updateAgent,
+      router,
+    ]
+  );
+
+  // Handle slash command selection for CLI agents (must be after handleSendMessage)
+  const handleCliSlashCommand = useCallback(
     (commandName: string) => {
       // Close the sheet
       setSlashCommandSheetOpen(false);
 
-      // Set the command in the input and send it
-      setMessage(`/${commandName}`);
-      setTimeout(() => {
-        handleSendMessage();
-      }, 0);
+      // Clear the input and send the command directly
+      setMessage('');
+      handleSendMessage(`/${commandName}`);
     },
     [handleSendMessage]
   );
@@ -486,8 +584,8 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       setMessage(value);
 
       if (value.startsWith('/')) {
-        // For Claude Code agents, show their specific command sheet
-        if (isClaudeCodeAgent) {
+        // For CLI agents (claude-code, openai-codex, gemini-cli), show their specific command sheet
+        if (isCliAgent) {
           setSlashCommandSheetOpen(true);
         } else {
           // For regular agents, show the standard slash menu
@@ -499,7 +597,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         setSlashQuery('');
       }
     },
-    [isClaudeCodeAgent]
+    [isCliAgent]
   );
 
   const handleSlashCommandSelect = useCallback(
@@ -533,8 +631,8 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
               setMessage('');
               return;
             case 'checkpoint':
-              setMessage('/checkpoint - Create a checkpoint of the current changes');
-              setTimeout(() => handleSendMessage(), 0);
+              setMessage('');
+              handleSendMessage('/checkpoint - Create a checkpoint of the current changes');
               return;
             case 'undo':
               if (agentCheckpoints.length > 0) {
@@ -577,8 +675,8 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
           return;
         }
 
-        setMessage(`/${builtIn.name}`);
-        setTimeout(() => handleSendMessage(), 0);
+        setMessage('');
+        handleSendMessage(`/${builtIn.name}`);
       } else {
         const custom = command as CustomCommand;
 
@@ -597,8 +695,8 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         } else {
           try {
             const result = await executeCommand(custom.id, {});
-            setMessage(result.prompt);
-            setTimeout(() => handleSendMessage(), 0);
+            setMessage('');
+            handleSendMessage(result.prompt);
           } catch (error) {
             console.error('Failed to execute command:', error);
             toast.error(`Failed to execute /${custom.name}`);
@@ -673,6 +771,28 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       setRenameDialogOpen(false);
     },
     [agent.id, sessionId, updateAgent]
+  );
+
+  // Permission approval handler (for Claude Code CLI)
+  const handlePermissionApproval = useCallback(
+    (approved: boolean, addedToAllowlist: boolean) => {
+      if (!agent.pendingPermission) return;
+
+      // Emit the permission response via WebSocket
+      emitPermissionResponse(
+        sessionId,
+        agent.id,
+        agent.pendingPermission.requestId,
+        approved,
+        agent.pendingPermission.command,
+        agent.pendingPermission.toolName,
+        addedToAllowlist
+      );
+
+      // Clear the pending permission from the agent
+      updateAgent(sessionId, agent.id, { pendingPermission: undefined });
+    },
+    [sessionId, agent.id, agent.pendingPermission, updateAgent]
   );
 
   const handleDuplicate = useCallback(async () => {
@@ -910,7 +1030,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       ref={cardRef}
       tabIndex={0}
       className={cn(
-        'flex flex-col rounded-lg border bg-surface overflow-hidden transition-all outline-none focus:ring-2 focus:ring-accent-primary/50',
+        'relative flex flex-col rounded-lg border bg-surface overflow-hidden transition-all outline-none focus:ring-2 focus:ring-accent-primary/50',
         agent.status === 'active' ? borderColor : 'border-border-default',
         agent.status === 'active' && 'shadow-glow',
         expanded && 'h-full',
@@ -958,8 +1078,8 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         onRename={() => setRenameDialogOpen(true)}
         onDuplicate={handleDuplicate}
         onDelete={() => setDeleteDialogOpen(true)}
-        onOpenSlashCommands={isClaudeCodeAgent ? handleOpenSlashCommands : undefined}
-        onReauthenticate={isClaudeCodeAgent ? handleClaudeCodeReauthenticate : undefined}
+        onOpenSlashCommands={isCliAgent ? handleOpenSlashCommands : undefined}
+        onReauthenticate={isCliAgent ? handleClaudeCodeReauthenticate : undefined}
       />
 
       {/* Messages area */}
@@ -972,22 +1092,73 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         role="log"
         aria-label="Messages"
       >
-        <AgentMessageList
-          messages={agent.messages}
-          sessionId={sessionId}
-          agentId={agent.id}
-          playingMessageId={playingMessageId}
-          synthesizingMessageId={synthesizingMessageId}
-          deletingMessageId={deletingMessageId}
-          onDeleteMessage={handleDeleteMessage}
-          onPlayMessage={handlePlayMessage}
-          onPlanApprove={async (planId) => {
-            await approvePlan(sessionId, planId);
-          }}
-          onPlanReject={async (planId) => {
-            await rejectPlan(sessionId, planId, 'User rejected');
-          }}
-        />
+        {/* CLI Agent Login Prompt - shown when auth is needed or unknown and no messages yet */}
+        {isCliAgent &&
+          agent.messages.length === 0 &&
+          (cliAuthStatus === null || cliAuthStatus?.needsAuth) && (
+            <div className="flex h-full items-center justify-center">
+              <div className="text-center space-y-4 max-w-sm">
+                <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-accent-primary/10">
+                  <LogIn className="h-6 w-6 text-accent-primary" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-medium text-text-primary mb-1">
+                    Authentication Required
+                  </h3>
+                  <p className="text-xs text-text-muted">
+                    {agent.role === 'claude-code'
+                      ? 'Sign in with your Anthropic account to use Claude Code.'
+                      : agent.role === 'openai-codex'
+                        ? 'Sign in with your OpenAI account to use Codex.'
+                        : 'Sign in to use this CLI agent.'}
+                  </p>
+                </div>
+                <div className="flex items-center justify-center gap-3">
+                  <button
+                    onClick={handleCliLogin}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-primary text-text-inverse text-sm font-medium hover:bg-accent-primary/90 transition-colors"
+                  >
+                    <LogIn className="h-4 w-4" />
+                    Sign In
+                  </button>
+                  <button
+                    onClick={handleRefreshAuth}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-bg-tertiary text-text-primary text-sm font-medium hover:bg-bg-secondary transition-colors border border-border-default"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    Refresh
+                  </button>
+                </div>
+                <p className="text-xs text-text-muted mt-3">
+                  After signing in via Terminal, click Refresh to continue.
+                </p>
+              </div>
+            </div>
+          )}
+
+        {/* Regular message list - hidden when showing login prompt */}
+        {!(
+          isCliAgent &&
+          agent.messages.length === 0 &&
+          (cliAuthStatus === null || cliAuthStatus?.needsAuth)
+        ) && (
+          <AgentMessageList
+            messages={agent.messages}
+            sessionId={sessionId}
+            agentId={agent.id}
+            playingMessageId={playingMessageId}
+            synthesizingMessageId={synthesizingMessageId}
+            deletingMessageId={deletingMessageId}
+            onDeleteMessage={handleDeleteMessage}
+            onPlayMessage={handlePlayMessage}
+            onPlanApprove={async (planId) => {
+              await approvePlan(sessionId, planId);
+            }}
+            onPlanReject={async (planId) => {
+              await rejectPlan(sessionId, planId, 'User rejected');
+            }}
+          />
+        )}
 
         {/* Streaming message */}
         <AgentStreamingMessage
@@ -1147,7 +1318,9 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                   : `Type / for commands or ask ${agent.name.toLowerCase()}...`
               }
               className="w-full bg-elevated border border-border-default rounded-md px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-border-focus focus:outline-none selection:bg-accent-primary selection:text-white"
-              disabled={isRecording}
+              disabled={isRecording || cliNeedsAuth}
+              autoComplete="off"
+              data-1p-ignore
             />
             {showSlashMenu && (
               <SlashCommandMenu
@@ -1157,14 +1330,36 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                 onClose={() => setShowSlashMenu(false)}
               />
             )}
+            {/* Claude Code CLI Permission Approval - inline above input */}
+            {agent.pendingPermission && (
+              <ApprovalDialog
+                approval={{
+                  id: agent.pendingPermission.requestId,
+                  agent_id: agent.id,
+                  session_id: sessionId,
+                  action_type: 'command_execute',
+                  action_details: {
+                    command: agent.pendingPermission.command ?? undefined,
+                    tool_name: agent.pendingPermission.toolName,
+                  },
+                  status: 'pending',
+                  expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+                  created_at: agent.pendingPermission.timestamp,
+                }}
+                agentMode={agent.mode}
+                onClose={() => handlePermissionApproval(false, false)}
+                onApprovalComplete={handlePermissionApproval}
+              />
+            )}
           </div>
 
           <button
-            onClick={handleSendMessage}
+            onClick={() => handleSendMessage()}
             disabled={
               (!message.trim() && attachments.length === 0) ||
               isSending ||
               isRecording ||
+              cliNeedsAuth ||
               (attachments.length > 0 && !currentModelInfo?.supportsVision)
             }
             className={cn(
@@ -1267,20 +1462,14 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         agentRole={agent.role}
       />
 
-      {/* Claude Code Slash Command Sheets */}
-      {isClaudeCodeAgent && (
-        <>
-          <SlashCommandSheet
-            isOpen={slashCommandSheetOpen}
-            onClose={() => setSlashCommandSheetOpen(false)}
-            onSelect={handleClaudeCodeSlashCommand}
-          />
-          <SlashCommandDialog
-            isOpen={slashCommandSheetOpen}
-            onClose={() => setSlashCommandSheetOpen(false)}
-            onSelect={handleClaudeCodeSlashCommand}
-          />
-        </>
+      {/* CLI Agent Slash Commands - single responsive component */}
+      {isCliAgent && cliAgentType && (
+        <SlashCommandDialog
+          isOpen={slashCommandSheetOpen}
+          onClose={() => setSlashCommandSheetOpen(false)}
+          onSelect={handleCliSlashCommand}
+          agentType={cliAgentType}
+        />
       )}
     </div>
   );

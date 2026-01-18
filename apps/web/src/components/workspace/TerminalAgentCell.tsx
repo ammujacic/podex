@@ -24,6 +24,8 @@ interface TerminalAgentCellProps {
   sessionId: string;
   workspaceId: string;
   onRemove?: () => void;
+  /** Hide the header (useful when wrapped by DraggableTerminalCard which has its own header) */
+  hideHeader?: boolean;
 }
 
 export interface TerminalAgentCellRef {
@@ -31,7 +33,7 @@ export interface TerminalAgentCellRef {
 }
 
 export const TerminalAgentCell = forwardRef<TerminalAgentCellRef, TerminalAgentCellProps>(
-  function TerminalAgentCell({ agent, sessionId, workspaceId, onRemove }, ref) {
+  function TerminalAgentCell({ agent, sessionId, workspaceId, onRemove, hideHeader = false }, ref) {
     const containerRef = useRef<HTMLDivElement>(null);
     const terminalRef = useRef<HTMLDivElement>(null);
     const terminalInstanceRef = useRef<Terminal | null>(null);
@@ -334,89 +336,91 @@ export const TerminalAgentCell = forwardRef<TerminalAgentCellRef, TerminalAgentC
 
     return (
       <div className="overflow-hidden flex flex-col h-full">
-        {/* Header */}
-        <div className="flex items-center justify-between p-3 border-b border-border-subtle shrink-0">
-          <div className="flex items-center gap-2">
-            <TerminalIcon className="h-4 w-4 text-text-muted" />
-            <span className="font-medium text-text-primary">{agent.name}</span>
-            <div
-              className={cn(
-                'flex items-center gap-1 text-xs px-2 py-0.5 rounded-full',
-                isConnected
-                  ? 'bg-green-500/10 text-green-400'
-                  : error
-                    ? 'bg-red-500/10 text-red-400'
-                    : isConnecting
-                      ? 'bg-yellow-500/10 text-yellow-400'
-                      : 'bg-gray-500/10 text-gray-400'
-              )}
-            >
+        {/* Header - can be hidden when wrapped by a parent with its own header */}
+        {!hideHeader && (
+          <div className="flex items-center justify-between p-3 border-b border-border-subtle shrink-0">
+            <div className="flex items-center gap-2">
+              <TerminalIcon className="h-4 w-4 text-text-muted" />
+              <span className="font-medium text-text-primary">{agent.name}</span>
               <div
                 className={cn(
-                  'w-1.5 h-1.5 rounded-full',
+                  'flex items-center gap-1 text-xs px-2 py-0.5 rounded-full',
                   isConnected
-                    ? 'bg-green-400'
+                    ? 'bg-green-500/10 text-green-400'
                     : error
-                      ? 'bg-red-400'
+                      ? 'bg-red-500/10 text-red-400'
                       : isConnecting
-                        ? 'bg-yellow-400 animate-pulse'
-                        : 'bg-gray-400'
+                        ? 'bg-yellow-500/10 text-yellow-400'
+                        : 'bg-gray-500/10 text-gray-400'
                 )}
-              />
-              {isConnected
-                ? 'Connected'
-                : error
-                  ? 'Error'
-                  : isConnecting
-                    ? 'Connecting...'
-                    : 'Disconnected'}
+              >
+                <div
+                  className={cn(
+                    'w-1.5 h-1.5 rounded-full',
+                    isConnected
+                      ? 'bg-green-400'
+                      : error
+                        ? 'bg-red-400'
+                        : isConnecting
+                          ? 'bg-yellow-400 animate-pulse'
+                          : 'bg-gray-400'
+                  )}
+                />
+                {isConnected
+                  ? 'Connected'
+                  : error
+                    ? 'Error'
+                    : isConnecting
+                      ? 'Connecting...'
+                      : 'Disconnected'}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1">
+              <button
+                onClick={restartTerminal}
+                aria-label="Restart terminal"
+                className="p-1.5 text-text-muted hover:text-text-primary hover:bg-overlay rounded transition-colors cursor-pointer"
+                title="Restart terminal"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+              </button>
+
+              {!isConnected && !isConnecting && (
+                <button
+                  onClick={connectToTerminal}
+                  aria-label="Connect to terminal"
+                  className="p-1.5 text-green-400 hover:text-green-300 hover:bg-green-500/10 rounded transition-colors cursor-pointer"
+                  title="Connect"
+                >
+                  <Play className="h-3.5 w-3.5" />
+                </button>
+              )}
+
+              {isConnected && (
+                <button
+                  onClick={disconnectFromTerminal}
+                  aria-label="Disconnect from terminal"
+                  className="p-1.5 text-yellow-400 hover:text-yellow-300 hover:bg-yellow-500/10 rounded transition-colors cursor-pointer"
+                  title="Disconnect"
+                >
+                  <Square className="h-3.5 w-3.5" />
+                </button>
+              )}
+
+              {onRemove && (
+                <button
+                  onClick={onRemove}
+                  aria-label="Remove agent"
+                  className="p-1.5 text-text-muted hover:text-red-400 hover:bg-red-500/10 rounded transition-colors cursor-pointer"
+                  title="Remove agent"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
             </div>
           </div>
-
-          <div className="flex items-center gap-1">
-            <button
-              onClick={restartTerminal}
-              aria-label="Restart terminal"
-              className="p-1.5 text-text-muted hover:text-text-primary hover:bg-overlay rounded transition-colors cursor-pointer"
-              title="Restart terminal"
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-            </button>
-
-            {!isConnected && !isConnecting && (
-              <button
-                onClick={connectToTerminal}
-                aria-label="Connect to terminal"
-                className="p-1.5 text-green-400 hover:text-green-300 hover:bg-green-500/10 rounded transition-colors cursor-pointer"
-                title="Connect"
-              >
-                <Play className="h-3.5 w-3.5" />
-              </button>
-            )}
-
-            {isConnected && (
-              <button
-                onClick={disconnectFromTerminal}
-                aria-label="Disconnect from terminal"
-                className="p-1.5 text-yellow-400 hover:text-yellow-300 hover:bg-yellow-500/10 rounded transition-colors cursor-pointer"
-                title="Disconnect"
-              >
-                <Square className="h-3.5 w-3.5" />
-              </button>
-            )}
-
-            {onRemove && (
-              <button
-                onClick={onRemove}
-                aria-label="Remove agent"
-                className="p-1.5 text-text-muted hover:text-red-400 hover:bg-red-500/10 rounded transition-colors cursor-pointer"
-                title="Remove agent"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            )}
-          </div>
-        </div>
+        )}
 
         {/* Terminal Content */}
         <div ref={containerRef} className="flex-1 relative overflow-hidden bg-black">

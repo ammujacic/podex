@@ -28,7 +28,9 @@ export const SimpleResult = React.memo<SimpleResultProps>(function SimpleResult(
       </details>
     );
   }
-  return <div className="mt-1 pl-4 text-text-muted text-xs truncate">{str}</div>;
+  return (
+    <div className="mt-1 pl-4 text-text-muted text-xs whitespace-pre-wrap break-words">{str}</div>
+  );
 });
 
 interface GenericSuccessResultProps {
@@ -65,7 +67,9 @@ export const GenericSuccessResult = React.memo<GenericSuccessResultProps>(
             {success ? 'Success' : 'Failed'}
           </span>
         </div>
-        {message && <div className="mt-1 text-text-muted truncate">{message}</div>}
+        {message && (
+          <div className="mt-1 text-text-muted whitespace-pre-wrap break-words">{message}</div>
+        )}
       </div>
     );
   }

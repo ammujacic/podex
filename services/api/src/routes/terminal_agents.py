@@ -14,7 +14,15 @@ from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from jose import JWTError, jwt
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -29,6 +37,7 @@ from src.database import (
     User,
     get_db,
 )
+from src.middleware.admin import require_admin
 from src.middleware.auth import get_current_user
 from src.services.token_blacklist import is_token_revoked
 from src.terminal.manager import terminal_manager
@@ -750,14 +759,12 @@ class UpdateTerminalAgentTypeRequest(BaseModel):
 
 
 @router.get("/admin/terminal-agent-types", response_model=list[TerminalAgentTypeDetailResponse])
+@require_admin
 async def admin_list_terminal_agent_types(
-    current_user: CurrentUser,
+    _request: Request,
     db: DbSession,
 ) -> list[TerminalAgentTypeDetailResponse]:
     """Admin: List all terminal agent types (requires admin role)."""
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-
     result = await db.execute(select(TerminalIntegratedAgentType))
     agent_types = result.scalars().all()
 
@@ -783,35 +790,33 @@ async def admin_list_terminal_agent_types(
 
 
 @router.post("/admin/terminal-agent-types", response_model=TerminalAgentTypeResponse)
+@require_admin
 async def admin_create_terminal_agent_type(
-    request: CreateTerminalAgentTypeRequest,
-    current_user: CurrentUser,
+    request: Request,
+    data: CreateTerminalAgentTypeRequest,
     db: DbSession,
 ) -> TerminalAgentTypeResponse:
     """Admin: Create a new terminal agent type."""
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-
     # Check if slug already exists
     result = await db.execute(
-        select(TerminalIntegratedAgentType).where(TerminalIntegratedAgentType.slug == request.slug)
+        select(TerminalIntegratedAgentType).where(TerminalIntegratedAgentType.slug == data.slug)
     )
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Slug already exists")
 
     agent_type = TerminalIntegratedAgentType(
-        name=request.name,
-        slug=request.slug,
-        logo_url=request.logo_url,
-        description=request.description,
-        check_installed_command=request.check_installed_command,
-        version_command=request.version_command,
-        install_command=request.install_command,
-        update_command=request.update_command,
-        run_command=request.run_command,
-        default_env_template=request.default_env_template,
+        name=data.name,
+        slug=data.slug,
+        logo_url=data.logo_url,
+        description=data.description,
+        check_installed_command=data.check_installed_command,
+        version_command=data.version_command,
+        install_command=data.install_command,
+        update_command=data.update_command,
+        run_command=data.run_command,
+        default_env_template=data.default_env_template,
         is_enabled=True,
-        created_by_admin_id=current_user["id"],
+        created_by_admin_id=request.state.user_id,
     )
     db.add(agent_type)
     await db.commit()
@@ -829,16 +834,14 @@ async def admin_create_terminal_agent_type(
 
 
 @router.put("/admin/terminal-agent-types/{agent_id}", response_model=TerminalAgentTypeResponse)
+@require_admin
 async def admin_update_terminal_agent_type(
+    _request: Request,
     agent_id: str,
-    request: UpdateTerminalAgentTypeRequest,
-    current_user: CurrentUser,
+    data: UpdateTerminalAgentTypeRequest,
     db: DbSession,
 ) -> TerminalAgentTypeResponse:
     """Admin: Update a terminal agent type."""
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-
     result = await db.execute(
         select(TerminalIntegratedAgentType).where(TerminalIntegratedAgentType.id == UUID(agent_id))
     )
@@ -847,37 +850,37 @@ async def admin_update_terminal_agent_type(
         raise HTTPException(status_code=404, detail="Agent type not found")
 
     # Update fields if provided
-    if request.name is not None:
-        agent_type.name = request.name
-    if request.slug is not None:
+    if data.name is not None:
+        agent_type.name = data.name
+    if data.slug is not None:
         # Check if new slug conflicts with another agent
         slug_check = await db.execute(
             select(TerminalIntegratedAgentType).where(
-                TerminalIntegratedAgentType.slug == request.slug,
+                TerminalIntegratedAgentType.slug == data.slug,
                 TerminalIntegratedAgentType.id != UUID(agent_id),
             )
         )
         if slug_check.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="Slug already exists")
-        agent_type.slug = request.slug
-    if request.logo_url is not None:
-        agent_type.logo_url = request.logo_url
-    if request.description is not None:
-        agent_type.description = request.description
-    if request.check_installed_command is not None:
-        agent_type.check_installed_command = request.check_installed_command
-    if request.version_command is not None:
-        agent_type.version_command = request.version_command
-    if request.install_command is not None:
-        agent_type.install_command = request.install_command
-    if request.update_command is not None:
-        agent_type.update_command = request.update_command
-    if request.run_command is not None:
-        agent_type.run_command = request.run_command
-    if request.default_env_template is not None:
-        agent_type.default_env_template = request.default_env_template
-    if request.is_enabled is not None:
-        agent_type.is_enabled = request.is_enabled
+        agent_type.slug = data.slug
+    if data.logo_url is not None:
+        agent_type.logo_url = data.logo_url
+    if data.description is not None:
+        agent_type.description = data.description
+    if data.check_installed_command is not None:
+        agent_type.check_installed_command = data.check_installed_command
+    if data.version_command is not None:
+        agent_type.version_command = data.version_command
+    if data.install_command is not None:
+        agent_type.install_command = data.install_command
+    if data.update_command is not None:
+        agent_type.update_command = data.update_command
+    if data.run_command is not None:
+        agent_type.run_command = data.run_command
+    if data.default_env_template is not None:
+        agent_type.default_env_template = data.default_env_template
+    if data.is_enabled is not None:
+        agent_type.is_enabled = data.is_enabled
 
     agent_type.updated_at = func.now()
     await db.commit()
@@ -896,15 +899,13 @@ async def admin_update_terminal_agent_type(
 
 
 @router.delete("/admin/terminal-agent-types/{agent_id}")
+@require_admin
 async def admin_delete_terminal_agent_type(
+    _request: Request,
     agent_id: str,
-    current_user: CurrentUser,
     db: DbSession,
 ) -> dict[str, str]:
     """Admin: Delete a terminal agent type."""
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-
     result = await db.execute(
         select(TerminalIntegratedAgentType).where(TerminalIntegratedAgentType.id == UUID(agent_id))
     )

@@ -1,38 +1,67 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
-import {
-  Maximize2,
-  Minimize2,
-  X,
-  LayoutGrid,
-  Columns,
-  Rows,
-  Terminal as TerminalIcon,
-} from 'lucide-react';
+import { useEffect, useCallback, useState, useRef } from 'react';
 import { useUIStore } from '@/stores/ui';
 import { useSessionStore } from '@/stores/session';
 import { getUserConfig } from '@/lib/api/user-config';
-import { cn } from '@/lib/utils';
-import { useTerminalStore, isTerminalSplit, type TerminalLayout } from '@/stores/terminal';
+import { useTerminalStore } from '@/stores/terminal';
 import { SplitTerminalLayout } from './SplitTerminalLayout';
+import { cn } from '@/lib/utils';
+
+const MIN_HEIGHT = 150;
+const MAX_HEIGHT = 800;
 
 export interface TerminalPanelProps {
   sessionId: string;
 }
 
 export function TerminalPanel({ sessionId }: TerminalPanelProps) {
-  const [useSplitMode, setUseSplitMode] = useState(true);
   const { setTerminalVisible, terminalHeight, setTerminalHeight } = useUIStore();
   const session = useSessionStore((state) => state.sessions[sessionId]);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartY = useRef(0);
+  const dragStartHeight = useRef(0);
+
+  // Handle resize drag
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      setIsDragging(true);
+      dragStartY.current = e.clientY;
+      dragStartHeight.current = terminalHeight;
+    },
+    [terminalHeight]
+  );
+
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      // Dragging up increases height, dragging down decreases
+      const delta = dragStartY.current - e.clientY;
+      const newHeight = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, dragStartHeight.current + delta));
+      setTerminalHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging, setTerminalHeight]);
 
   // Get actual workspace_id from session, fallback to sessionId
   const workspaceId = session?.workspaceId || sessionId;
 
-  const { initLayout, setDefaultShell, getLayout, splitPane, activePaneId } = useTerminalStore();
+  const { initLayout, setDefaultShell, getLayout } = useTerminalStore();
 
   const layout = getLayout(sessionId);
-  const currentActivePaneId = activePaneId[sessionId] || '';
 
   // Load user's default shell preference and init layout
   useEffect(() => {
@@ -52,28 +81,6 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
     loadConfig();
   }, [sessionId, initLayout, setDefaultShell]);
 
-  // Count panes for display
-  const countPanes = useCallback((l: TerminalLayout | null): number => {
-    if (!l) return 0;
-    if (!isTerminalSplit(l)) return 1;
-    return l.panes.reduce((sum, child) => sum + countPanes(child), 0);
-  }, []);
-
-  const paneCount = countPanes(layout);
-  const hasSplits = paneCount > 1;
-
-  const handleSplitHorizontal = useCallback(() => {
-    if (currentActivePaneId) {
-      splitPane(sessionId, currentActivePaneId, 'horizontal');
-    }
-  }, [sessionId, currentActivePaneId, splitPane]);
-
-  const handleSplitVertical = useCallback(() => {
-    if (currentActivePaneId) {
-      splitPane(sessionId, currentActivePaneId, 'vertical');
-    }
-  }, [sessionId, currentActivePaneId, splitPane]);
-
   if (!layout) {
     return (
       <div className="flex h-full items-center justify-center bg-surface">
@@ -84,84 +91,28 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
 
   return (
     <div className="flex h-full flex-col bg-surface">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border-subtle px-2 py-1">
-        {/* Left side - title and pane count */}
-        <div className="flex items-center gap-2">
-          <TerminalIcon className="h-4 w-4 text-accent-primary" />
-          <span className="text-sm font-medium text-text-primary">Terminal</span>
-          {hasSplits && (
-            <span className="text-xs text-text-muted bg-overlay px-1.5 py-0.5 rounded">
-              {paneCount} panes
-            </span>
-          )}
-        </div>
+      {/* Draggable resize handle at top - visible purple border */}
+      <div
+        onMouseDown={handleMouseDown}
+        className={cn(
+          'h-1 cursor-row-resize flex-shrink-0 transition-colors',
+          'bg-accent-primary/40',
+          'hover:bg-accent-primary/70',
+          isDragging && 'bg-accent-primary'
+        )}
+        title="Drag to resize terminal"
+      />
 
-        {/* Right side - controls */}
-        <div className="flex items-center gap-1">
-          {/* Split controls */}
-          <div className="flex items-center gap-0.5 mr-2 border-r border-border-subtle pr-2">
-            <button
-              onClick={handleSplitHorizontal}
-              className={cn(
-                'rounded p-1 text-text-muted hover:bg-overlay hover:text-text-secondary',
-                'transition-colors'
-              )}
-              title="Split Horizontally (Cmd+Shift+D)"
-            >
-              <Columns className="h-4 w-4" />
-            </button>
-            <button
-              onClick={handleSplitVertical}
-              className={cn(
-                'rounded p-1 text-text-muted hover:bg-overlay hover:text-text-secondary',
-                'transition-colors'
-              )}
-              title="Split Vertically (Cmd+Shift+E)"
-            >
-              <Rows className="h-4 w-4" />
-            </button>
-            {hasSplits && (
-              <button
-                onClick={() => setUseSplitMode(!useSplitMode)}
-                className={cn(
-                  'rounded p-1 transition-colors',
-                  useSplitMode
-                    ? 'text-accent-primary bg-accent-primary/10'
-                    : 'text-text-muted hover:bg-overlay hover:text-text-secondary'
-                )}
-                title="Toggle Split View"
-              >
-                <LayoutGrid className="h-4 w-4" />
-              </button>
-            )}
-          </div>
-
-          {/* Size controls */}
-          <button
-            onClick={() => setTerminalHeight(terminalHeight === 300 ? 500 : 300)}
-            className="rounded p-1 text-text-muted hover:bg-overlay hover:text-text-secondary"
-            title={terminalHeight === 300 ? 'Maximize' : 'Minimize'}
-          >
-            {terminalHeight === 300 ? (
-              <Maximize2 className="h-4 w-4" />
-            ) : (
-              <Minimize2 className="h-4 w-4" />
-            )}
-          </button>
-          <button
-            onClick={() => setTerminalVisible(false)}
-            className="rounded p-1 text-text-muted hover:bg-overlay hover:text-text-secondary"
-            title="Close Terminal"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      </div>
-
-      {/* Terminal content */}
+      {/* Terminal content - pane headers provide all controls */}
       <div className="flex-1 relative" style={{ minHeight: 0 }}>
-        <SplitTerminalLayout sessionId={sessionId} workspaceId={workspaceId} layout={layout} />
+        <SplitTerminalLayout
+          sessionId={sessionId}
+          workspaceId={workspaceId}
+          layout={layout}
+          terminalHeight={terminalHeight}
+          setTerminalHeight={setTerminalHeight}
+          setTerminalVisible={setTerminalVisible}
+        />
       </div>
 
       {/* Keyboard shortcuts hint */}

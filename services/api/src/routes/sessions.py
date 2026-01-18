@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from src.audit_logger import AuditAction, AuditLogger
 from src.cache import (
@@ -23,7 +24,14 @@ from src.cache import (
 )
 from src.compute_client import compute_client
 from src.config import settings
-from src.database import FileChange, PodTemplate, SubscriptionPlan, UserSubscription
+from src.database import Agent as AgentModel
+from src.database import (
+    FileChange,
+    PlatformSetting,
+    PodTemplate,
+    SubscriptionPlan,
+    UserSubscription,
+)
 from src.database import Session as SessionModel
 from src.database import Workspace as WorkspaceModel
 from src.exceptions import ComputeClientError, ComputeServiceHTTPError
@@ -37,6 +45,30 @@ from src.routes.dependencies import DbSession, get_current_user_id
 logger = structlog.get_logger()
 
 router = APIRouter()
+
+# First agent always gets cyan color
+DEFAULT_AGENT_COLOR = "#00e5ff"
+
+
+async def _get_default_model_for_role(db: AsyncSession, role: str) -> str:
+    """Get the default model for an agent role from platform settings."""
+    result = await db.execute(
+        select(PlatformSetting).where(PlatformSetting.key == "agent_model_defaults")
+    )
+    setting = result.scalar_one_or_none()
+
+    if setting and setting.value and isinstance(setting.value, dict):
+        defaults = setting.value
+        if role in defaults and isinstance(defaults[role], dict) and "model_id" in defaults[role]:
+            return str(defaults[role]["model_id"])
+
+    raise HTTPException(
+        status_code=500,
+        detail=(
+            f"No default model configured for role '{role}'. "
+            "Check agent_model_defaults in platform settings."
+        ),
+    )
 
 
 @dataclass
@@ -210,17 +242,22 @@ async def build_workspace_config(
         "tier": tier or "starter",  # Default to starter tier if not specified
     }
 
-    # Fetch user's git configuration if user_id provided
+    # Fetch user's configuration if user_id provided
     if user_id:
         user_config_result = await db.execute(
             select(UserConfig).where(UserConfig.user_id == user_id)
         )
         user_config = user_config_result.scalar_one_or_none()
         if user_config:
+            # Git configuration
             if user_config.git_name:
                 config["git_name"] = user_config.git_name
             if user_config.git_email:
                 config["git_email"] = user_config.git_email
+            # Dotfiles sync configuration
+            config["sync_dotfiles"] = user_config.sync_dotfiles
+            if user_config.dotfiles_paths:
+                config["dotfiles_paths"] = user_config.dotfiles_paths
 
     if template_id:
         # Fetch template configuration
@@ -333,6 +370,33 @@ async def create_session(
         session_id=session.id,
         details={"name": session.name, "git_url": session.git_url, "branch": session.branch},
     )
+
+    # Create default Chat agent for the session
+    try:
+        default_model = await _get_default_model_for_role(db, "chat")
+        default_agent = AgentModel(
+            session_id=session.id,
+            name="Chat",
+            role="chat",
+            model=default_model,
+            status="idle",
+            mode="auto",
+            config={"color": DEFAULT_AGENT_COLOR},
+        )
+        db.add(default_agent)
+        await db.commit()
+        logger.info(
+            "Created default Chat agent for session",
+            session_id=str(session.id),
+            agent_id=str(default_agent.id),
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to create default Chat agent",
+            session_id=str(session.id),
+            error=str(e),
+        )
+        # Don't fail session creation if default agent creation fails
 
     return SessionResponse(
         id=session.id,
@@ -641,6 +705,9 @@ class LayoutResponse(BaseModel):
     file_preview_layouts: dict[str, dict[str, Any]] = {}
     sidebar_open: bool = True
     sidebar_width: int = 280
+    editor_grid_card_id: str | None = None
+    editor_grid_span: dict[str, Any] | None = None
+    editor_freeform_position: dict[str, Any] | None = None
 
 
 class LayoutUpdateRequest(BaseModel):
@@ -652,6 +719,9 @@ class LayoutUpdateRequest(BaseModel):
     file_preview_layouts: dict[str, dict[str, Any]] | None = None
     sidebar_open: bool | None = None
     sidebar_width: int | None = None
+    editor_grid_card_id: str | None = None
+    editor_grid_span: dict[str, Any] | None = None
+    editor_freeform_position: dict[str, Any] | None = None
 
 
 @router.get("/{session_id}/layout", response_model=LayoutResponse)
@@ -676,6 +746,9 @@ async def get_session_layout(
         file_preview_layouts=layout.get("file_preview_layouts", {}),
         sidebar_open=layout.get("sidebar_open", True),
         sidebar_width=layout.get("sidebar_width", 280),
+        editor_grid_card_id=layout.get("editor_grid_card_id"),
+        editor_grid_span=layout.get("editor_grid_span"),
+        editor_freeform_position=layout.get("editor_freeform_position"),
     )
 
 
@@ -708,10 +781,18 @@ async def update_session_layout(
         layout["sidebar_open"] = data.sidebar_open
     if data.sidebar_width is not None:
         layout["sidebar_width"] = data.sidebar_width
+    if data.editor_grid_card_id is not None:
+        layout["editor_grid_card_id"] = data.editor_grid_card_id
+    if data.editor_grid_span is not None:
+        layout["editor_grid_span"] = data.editor_grid_span
+    if data.editor_freeform_position is not None:
+        layout["editor_freeform_position"] = data.editor_freeform_position
 
     # Save back to session
     settings["layout"] = layout
     session.settings = settings
+    # Mark settings as modified for SQLAlchemy to detect JSONB changes
+    flag_modified(session, "settings")
     await db.commit()
 
     return LayoutResponse(
@@ -721,6 +802,9 @@ async def update_session_layout(
         file_preview_layouts=layout.get("file_preview_layouts", {}),
         sidebar_open=layout.get("sidebar_open", True),
         sidebar_width=layout.get("sidebar_width", 280),
+        editor_grid_card_id=layout.get("editor_grid_card_id"),
+        editor_grid_span=layout.get("editor_grid_span"),
+        editor_freeform_position=layout.get("editor_freeform_position"),
     )
 
 
@@ -749,6 +833,8 @@ async def update_agent_layout(
     layout["agent_layouts"] = agent_layouts
     settings["layout"] = layout
     session.settings = settings
+    # Mark settings as modified for SQLAlchemy to detect JSONB changes
+    flag_modified(session, "settings")
     await db.commit()
 
     return current
@@ -779,9 +865,47 @@ async def update_file_preview_layout(
     layout["file_preview_layouts"] = file_preview_layouts
     settings["layout"] = layout
     session.settings = settings
+    # Mark settings as modified for SQLAlchemy to detect JSONB changes
+    flag_modified(session, "settings")
     await db.commit()
 
     return current
+
+
+@router.patch("/{session_id}/layout/editor")
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def update_editor_layout(
+    session_id: str,
+    request: Request,
+    response: Response,
+    data: dict[str, Any],
+    db: DbSession,
+) -> dict[str, Any]:
+    """Update the editor grid card's layout."""
+    session = await get_session_or_404(session_id, request, db)
+
+    settings: dict[str, Any] = session.settings or {}
+    layout: dict[str, Any] = settings.get("layout", {})
+
+    # Update editor layout fields
+    if "editor_grid_card_id" in data:
+        layout["editor_grid_card_id"] = data["editor_grid_card_id"]
+    if "editor_grid_span" in data:
+        layout["editor_grid_span"] = data["editor_grid_span"]
+    if "editor_freeform_position" in data:
+        layout["editor_freeform_position"] = data["editor_freeform_position"]
+
+    settings["layout"] = layout
+    session.settings = settings
+    # Mark settings as modified for SQLAlchemy to detect JSONB changes
+    flag_modified(session, "settings")
+    await db.commit()
+
+    return {
+        "editor_grid_card_id": layout.get("editor_grid_card_id"),
+        "editor_grid_span": layout.get("editor_grid_span"),
+        "editor_freeform_position": layout.get("editor_freeform_position"),
+    }
 
 
 # ==================== Standby Settings Routes ====================
@@ -1303,6 +1427,66 @@ async def ensure_workspace_provisioned(
         ) from e
 
 
+async def update_workspace_activity(
+    session: SessionModel,
+    db: AsyncSession,
+) -> None:
+    """Update workspace activity timestamp and handle standby->running transition.
+
+    This function:
+    1. Updates workspace.last_activity to prevent idle detection from triggering
+    2. If workspace was in "standby" state (but container auto-restarted),
+       transitions it back to "running" and notifies connected clients
+
+    Should be called after any successful workspace operation (file access,
+    terminal usage, agent activity, etc.) to keep the workspace alive.
+    """
+    if not session.workspace_id:
+        return
+
+    from sqlalchemy import select
+
+    from src.websocket.hub import emit_to_session
+
+    # Fetch workspace
+    result = await db.execute(
+        select(WorkspaceModel).where(WorkspaceModel.id == session.workspace_id)
+    )
+    workspace = result.scalar_one_or_none()
+
+    if not workspace:
+        return
+
+    now = datetime.now(UTC)
+    workspace.last_activity = now
+
+    # Handle standby -> running transition
+    # This happens when the compute service auto-restarts a stopped container
+    if workspace.status == "standby":
+        workspace.status = "running"
+        workspace.standby_at = None
+
+        logger.info(
+            "Workspace auto-resumed from standby",
+            workspace_id=str(workspace.id),
+            session_id=str(session.id),
+        )
+
+        # Notify connected clients about the status change
+        await emit_to_session(
+            str(session.id),
+            "workspace_status",
+            {
+                "workspace_id": str(workspace.id),
+                "status": "running",
+                "standby_at": None,
+                "last_activity": now.isoformat(),
+            },
+        )
+
+    await db.commit()
+
+
 @router.get("/{session_id}/files", response_model=list[FileNode])
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def list_files(
@@ -1325,6 +1509,8 @@ async def list_files(
             # Ensure workspace is provisioned before accessing
             await ensure_workspace_provisioned(session, user_id, db)
             files = await compute_client.list_files(session.workspace_id, user_id, path)
+            # Update activity timestamp and handle standby->running sync
+            await update_workspace_activity(session, db)
             # Transform compute service response to FileNode format
             # Pass base_path so file paths are correctly constructed for nested directories
             base_path = "" if path == "." else path
@@ -1393,6 +1579,8 @@ async def get_file_content(
             # Ensure workspace is provisioned before accessing
             await ensure_workspace_provisioned(session, user_id, db)
             result = await compute_client.read_file(session.workspace_id, user_id, safe_path)
+            # Update activity timestamp and handle standby->running sync
+            await update_workspace_activity(session, db)
             return FileContent(
                 path=safe_path,
                 content=result.get("content", ""),
@@ -1444,6 +1632,8 @@ async def create_file(
             # Ensure workspace is provisioned before accessing
             await ensure_workspace_provisioned(session, user_id, db)
             await compute_client.write_file(session.workspace_id, user_id, safe_path, data.content)
+            # Update activity timestamp and handle standby->running sync
+            await update_workspace_activity(session, db)
             return FileContent(
                 path=safe_path,
                 content=data.content,
@@ -1490,6 +1680,8 @@ async def update_file_content(
             # Ensure workspace is provisioned before accessing
             await ensure_workspace_provisioned(session, user_id, db)
             await compute_client.write_file(session.workspace_id, user_id, safe_path, data.content)
+            # Update activity timestamp and handle standby->running sync
+            await update_workspace_activity(session, db)
             return FileContent(
                 path=safe_path,
                 content=data.content,
@@ -1535,6 +1727,8 @@ async def delete_file(
             # Ensure workspace is provisioned before accessing
             await ensure_workspace_provisioned(session, user_id, db)
             await compute_client.delete_file(session.workspace_id, user_id, safe_path)
+            # Update activity timestamp and handle standby->running sync
+            await update_workspace_activity(session, db)
         except ComputeClientError as e:
             if e.status_code == HTTPStatus.NOT_FOUND:
                 raise HTTPException(status_code=404, detail="File not found") from e
@@ -1585,6 +1779,8 @@ async def move_file(
             )
             # Delete the source
             await compute_client.delete_file(session.workspace_id, user_id, safe_source)
+            # Update activity timestamp and handle standby->running sync
+            await update_workspace_activity(session, db)
         except ComputeClientError as e:
             if e.status_code == HTTPStatus.NOT_FOUND:
                 raise HTTPException(status_code=404, detail="Source file not found") from e
@@ -1696,6 +1892,8 @@ async def bulk_delete_files(
             except Exception as e:
                 failed.append({"path": path, "error": str(e)})
 
+        # Update activity timestamp and handle standby->running sync
+        await update_workspace_activity(session, db)
         await db.commit()
 
     logger.info(
@@ -1800,6 +1998,8 @@ async def bulk_move_files(
             except Exception as e:
                 failed.append({"source": source, "dest": dest, "error": str(e)})
 
+        # Update activity timestamp and handle standby->running sync
+        await update_workspace_activity(session, db)
         await db.commit()
 
     logger.info(

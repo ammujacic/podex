@@ -17,10 +17,7 @@ class MCPCategory(str, Enum):
 
     FILESYSTEM = "filesystem"
     VERSION_CONTROL = "version_control"
-    DATABASE = "database"
     WEB = "web"
-    COMMUNICATION = "communication"
-    CONTAINERS = "containers"
     MEMORY = "memory"
     MONITORING = "monitoring"
 
@@ -45,15 +42,16 @@ DEFAULT_MCP_SERVERS: list[dict[str, Any]] = [
     {
         "slug": "git",
         "name": "Git",
-        "description": "Git operations: status, diff, commit, branch management",
+        "description": "Git operations: clone, commit, branch, diff, log, status, push, pull",
         "category": MCPCategory.VERSION_CONTROL,
         "transport": "stdio",
         "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-git"],
+        "args": ["-y", "@mseep/git-mcp-server"],
         "env_vars": {},
         "required_env": [],
         "icon": "git-branch",
         "is_builtin": True,
+        "docs_url": "https://github.com/mseep/git-mcp-server",
     },
     # ============== Version Control ==============
     {
@@ -65,10 +63,10 @@ DEFAULT_MCP_SERVERS: list[dict[str, Any]] = [
         "command": "npx",
         "args": ["-y", "@modelcontextprotocol/server-github"],
         "env_vars": {},
-        "required_env": ["GITHUB_TOKEN"],
+        "required_env": ["GITHUB_PERSONAL_ACCESS_TOKEN"],
         "icon": "github",
         "is_builtin": False,
-        "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/github",
+        "docs_url": "https://github.com/github/github-mcp-server",
     },
     # ============== Web ==============
     {
@@ -84,20 +82,6 @@ DEFAULT_MCP_SERVERS: list[dict[str, Any]] = [
         "icon": "globe",
         "is_builtin": False,
         "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
-    },
-    {
-        "slug": "brave-search",
-        "name": "Brave Search",
-        "description": "Web and news search via Brave Search API",
-        "category": MCPCategory.WEB,
-        "transport": "stdio",
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-brave-search"],
-        "env_vars": {},
-        "required_env": ["BRAVE_API_KEY"],
-        "icon": "search",
-        "is_builtin": False,
-        "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search",
     },
     {
         "slug": "puppeteer",
@@ -128,79 +112,6 @@ DEFAULT_MCP_SERVERS: list[dict[str, Any]] = [
         "is_builtin": False,
         "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
     },
-    # ============== Databases ==============
-    {
-        "slug": "postgres",
-        "name": "PostgreSQL",
-        "description": "Query and manage PostgreSQL databases",
-        "category": MCPCategory.DATABASE,
-        "transport": "stdio",
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-postgres"],
-        "env_vars": {},
-        "required_env": ["POSTGRES_CONNECTION_STRING"],
-        "icon": "database",
-        "is_builtin": False,
-        "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/postgres",
-    },
-    {
-        "slug": "sqlite",
-        "name": "SQLite",
-        "description": "Query and manage SQLite databases in workspace",
-        "category": MCPCategory.DATABASE,
-        "transport": "stdio",
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-sqlite"],
-        "env_vars": {},
-        "required_env": [],  # Path passed as arg, defaults to workspace
-        "icon": "database",
-        "is_builtin": False,
-        "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/sqlite",
-    },
-    # ============== Communication ==============
-    {
-        "slug": "slack",
-        "name": "Slack",
-        "description": "Read and send Slack messages, manage channels",
-        "category": MCPCategory.COMMUNICATION,
-        "transport": "stdio",
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-slack"],
-        "env_vars": {},
-        "required_env": ["SLACK_BOT_TOKEN", "SLACK_TEAM_ID"],
-        "icon": "slack",
-        "is_builtin": False,
-        "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/slack",
-    },
-    # ============== Containers ==============
-    {
-        "slug": "docker",
-        "name": "Docker",
-        "description": "Manage Docker containers, images, and volumes",
-        "category": MCPCategory.CONTAINERS,
-        "transport": "stdio",
-        "command": "npx",
-        "args": ["-y", "mcp-server-docker"],
-        "env_vars": {},
-        "required_env": [],  # Uses docker socket
-        "icon": "docker",
-        "is_builtin": False,
-        "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/docker",
-    },
-    {
-        "slug": "kubernetes",
-        "name": "Kubernetes",
-        "description": "Manage Kubernetes clusters, pods, and deployments",
-        "category": MCPCategory.CONTAINERS,
-        "transport": "stdio",
-        "command": "npx",
-        "args": ["-y", "mcp-server-kubernetes"],
-        "env_vars": {},
-        "required_env": [],  # Uses kubeconfig
-        "icon": "kubernetes",
-        "is_builtin": False,
-        "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/kubernetes",
-    },
     # ============== Monitoring ==============
     {
         "slug": "sentry",
@@ -209,11 +120,13 @@ DEFAULT_MCP_SERVERS: list[dict[str, Any]] = [
         "category": MCPCategory.MONITORING,
         "transport": "stdio",
         "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-sentry"],
+        "args": ["-y", "@sentry/mcp-server@latest"],
         "env_vars": {},
-        "required_env": ["SENTRY_AUTH_TOKEN"],
+        # SENTRY_ACCESS_TOKEN is required; SENTRY_HOST is optional for self-hosted
+        "required_env": ["SENTRY_ACCESS_TOKEN"],
+        "optional_env": ["SENTRY_HOST"],
         "icon": "sentry",
         "is_builtin": False,
-        "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/sentry",
+        "docs_url": "https://docs.sentry.io/product/sentry-mcp/",
     },
 ]

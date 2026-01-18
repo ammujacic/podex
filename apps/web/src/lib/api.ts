@@ -1205,6 +1205,9 @@ export interface SessionLayoutState {
   file_preview_layouts: Record<string, FilePreviewLayoutState>;
   sidebar_open: boolean;
   sidebar_width: number;
+  editor_grid_card_id: string | null;
+  editor_grid_span: GridSpanLayout | null;
+  editor_freeform_position: PositionLayout | null;
 }
 
 export interface LayoutUpdateRequest {
@@ -1214,6 +1217,9 @@ export interface LayoutUpdateRequest {
   file_preview_layouts?: Record<string, FilePreviewLayoutState>;
   sidebar_open?: boolean;
   sidebar_width?: number;
+  editor_grid_card_id?: string | null;
+  editor_grid_span?: GridSpanLayout | null;
+  editor_freeform_position?: PositionLayout | null;
 }
 
 export async function getSessionLayout(sessionId: string): Promise<SessionLayoutState> {
@@ -1244,6 +1250,19 @@ export async function updateFilePreviewLayout(
     `/api/sessions/${sessionId}/layout/file-preview/${previewId}`,
     data
   );
+}
+
+export interface EditorLayoutState {
+  editor_grid_card_id: string | null;
+  editor_grid_span: GridSpanLayout | null;
+  editor_freeform_position: PositionLayout | null;
+}
+
+export async function updateEditorLayout(
+  sessionId: string,
+  data: Partial<EditorLayoutState>
+): Promise<EditorLayoutState> {
+  return api.patch<EditorLayoutState>(`/api/sessions/${sessionId}/layout/editor`, data);
 }
 
 // ==================== Agent Templates ====================
@@ -2197,6 +2216,15 @@ export async function enableMCPDefault(
 
 export async function disableMCPDefault(slug: string): Promise<{ message: string }> {
   return api.post<{ message: string }>(`/api/mcp/defaults/${slug}/disable`, {});
+}
+
+export async function testMCPDefault(
+  slug: string,
+  envVars?: Record<string, string>
+): Promise<MCPTestConnectionResponse> {
+  return api.post<MCPTestConnectionResponse>(`/api/mcp/defaults/${slug}/test`, {
+    env_vars: envVars,
+  });
 }
 
 // User MCP Servers

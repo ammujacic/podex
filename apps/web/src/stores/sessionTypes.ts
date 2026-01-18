@@ -15,6 +15,7 @@ export interface AgentPosition {
 export interface GridSpan {
   colSpan: number; // 1-3 columns
   rowSpan: number; // 1-2 rows
+  colStart?: number; // Optional explicit column start position (1-based)
 }
 
 /** Agent permission modes */
@@ -36,6 +37,15 @@ export type AgentRole =
   | 'openai-codex'
   | 'gemini-cli';
 
+/** Pending permission request from Claude Code CLI */
+export interface PendingPermission {
+  requestId: string;
+  command: string | null;
+  description: string | null;
+  toolName: string;
+  timestamp: string;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -56,6 +66,8 @@ export interface Agent {
   commandAllowlist?: string[]; // Allowed commands for Auto mode (glob patterns)
   // Extended thinking configuration
   thinkingConfig?: ThinkingConfig;
+  // Pending permission request (Claude Code CLI)
+  pendingPermission?: PendingPermission;
 }
 
 // ============================================================================
@@ -136,6 +148,8 @@ export interface Session {
   // Consolidated editor grid card
   editorGridCardId: string | null;
   editorGridSpan?: GridSpan;
+  // Editor position for freeform mode
+  editorFreeformPosition?: AgentPosition;
 }
 
 // ============================================================================

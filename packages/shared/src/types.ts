@@ -92,7 +92,7 @@ export interface AgentInstance {
   sessionId: string;
   name: string;
   role: AgentRole;
-  model: LLMModel;
+  model: string;
   status: AgentStatus;
   color: AgentColor;
   systemPrompt?: string;
@@ -261,36 +261,6 @@ export interface AttachmentFile {
   preview?: string;
   status: 'pending' | 'uploading' | 'ready' | 'error';
   error?: string;
-}
-
-export type LLMModel =
-  // Podex Native (Vertex AI)
-  | 'anthropic.claude-opus-4-5-20251101-v1:0'
-  | 'anthropic.claude-opus-4-1-20250805-v1:0'
-  | 'anthropic.claude-sonnet-4-5-20250929-v1:0'
-  | 'anthropic.claude-sonnet-4-20250514-v1:0'
-  | 'anthropic.claude-haiku-4-5-20251001-v1:0'
-  | 'anthropic.claude-3-5-haiku-20241022-v1:0'
-  | 'anthropic.claude-3-haiku-20240307-v1:0'
-  // Anthropic Direct API (legacy support)
-  | 'claude-opus-4-5-20251101'
-  | 'claude-sonnet-4-20250514'
-  | 'claude-3-5-haiku-20241022'
-  // OpenAI
-  | 'gpt-4o'
-  | 'gpt-4-turbo'
-  | 'gpt-3.5-turbo'
-  // Google
-  | 'gemini-1.5-pro'
-  | 'gemini-1.5-flash';
-
-export interface LLMConfig {
-  provider: LLMProvider;
-  model: LLMModel;
-  temperature?: number;
-  maxTokens?: number;
-  topP?: number;
-  thinkingConfig?: ThinkingConfig;
 }
 
 // ==========================================

@@ -448,12 +448,13 @@ export function SlashCommandMenu({
   return (
     <div
       ref={menuRef}
-      className="absolute z-50 w-80 max-h-80 overflow-y-auto rounded-lg border border-border-default bg-surface shadow-xl"
-      style={
-        position
+      className="absolute z-50 w-80 rounded-lg border border-border-default bg-surface shadow-xl flex flex-col"
+      style={{
+        ...(position
           ? { top: position.top, left: position.left }
-          : { bottom: '100%', left: 0, marginBottom: '4px' }
-      }
+          : { bottom: '100%', left: 0, marginBottom: '4px' }),
+        maxHeight: '320px',
+      }}
     >
       {isLoading ? (
         <div className="flex items-center justify-center py-8">
@@ -464,7 +465,10 @@ export function SlashCommandMenu({
           <p>No commands found for "{query}"</p>
         </div>
       ) : (
-        <div className="py-1">
+        <div
+          className="flex-1 overflow-y-auto overscroll-contain py-1"
+          onWheel={(e) => e.stopPropagation()}
+        >
           {/* Built-in commands by category */}
           {categoryOrder.map((category) => {
             const commands = groupedBuiltIn[category];

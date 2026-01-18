@@ -69,6 +69,7 @@
     "zustand": "^5.0.10"
   },
   "devDependencies": {
+    "@codingame/monaco-vscode-theme-service-override": "25.0.0",
     "@eslint/js": "^9.39.2",
     "@happy-dom/global-registrator": "^15.0.0",
     "@next/eslint-plugin-next": "^16.1.1",

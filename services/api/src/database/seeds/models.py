@@ -3,7 +3,7 @@
 DEFAULT_MODELS = [
     # Anthropic Claude Models (Vertex AI)
     {
-        "model_id": "claude-opus-4-5-20251101",
+        "model_id": "claude-opus-4-5",
         "display_name": "Claude Opus 4.5",
         "provider": "vertex",
         "family": "anthropic",
@@ -28,7 +28,7 @@ DEFAULT_MODELS = [
         },
     },
     {
-        "model_id": "claude-sonnet-4-5-20250929",
+        "model_id": "claude-sonnet-4-5",
         "display_name": "Claude Sonnet 4.5",
         "provider": "vertex",
         "family": "anthropic",
@@ -53,7 +53,7 @@ DEFAULT_MODELS = [
         },
     },
     {
-        "model_id": "claude-sonnet-4-20250514",
+        "model_id": "claude-sonnet-4",
         "display_name": "Claude Sonnet 4",
         "provider": "vertex",
         "family": "anthropic",
@@ -79,7 +79,7 @@ DEFAULT_MODELS = [
         },
     },
     {
-        "model_id": "claude-haiku-4-5-20251001",
+        "model_id": "claude-haiku-4-5",
         "display_name": "Claude Haiku 4.5",
         "provider": "vertex",
         "family": "anthropic",
@@ -104,7 +104,7 @@ DEFAULT_MODELS = [
         },
     },
     {
-        "model_id": "claude-3-5-haiku-20241022",
+        "model_id": "claude-3-5-haiku",
         "display_name": "Claude 3.5 Haiku",
         "provider": "vertex",
         "family": "anthropic",
@@ -155,7 +155,7 @@ DEFAULT_MODELS = [
         },
     },
     {
-        "model_id": "gemini-2.5-pro-preview",
+        "model_id": "gemini-2.5-pro",
         "display_name": "Gemini 2.5 Pro",
         "provider": "vertex",
         "family": "google",
@@ -181,7 +181,7 @@ DEFAULT_MODELS = [
     },
     # Llama Models (Vertex AI Model Garden)
     {
-        "model_id": "llama-3.1-70b-instruct",
+        "model_id": "meta-llama/llama-3.1-70b",
         "display_name": "Llama 3.1 70B",
         "provider": "vertex",
         "family": "llama",
@@ -206,7 +206,7 @@ DEFAULT_MODELS = [
         },
     },
     {
-        "model_id": "llama-3.1-8b-instruct",
+        "model_id": "meta-llama/llama-3.1-8b",
         "display_name": "Llama 3.1 8B",
         "provider": "vertex",
         "family": "llama",
@@ -236,7 +236,7 @@ DEFAULT_MODELS = [
     # ====================
     # Anthropic Direct API Models
     {
-        "model_id": "claude-opus-4-5-20251101-anthropic",
+        "model_id": "opus",
         "display_name": "Claude Opus 4.5 (Direct)",
         "provider": "anthropic",
         "family": "anthropic",
@@ -262,7 +262,7 @@ DEFAULT_MODELS = [
         },
     },
     {
-        "model_id": "claude-sonnet-4-5-20250929-anthropic",
+        "model_id": "sonnet",
         "display_name": "Claude Sonnet 4.5 (Direct)",
         "provider": "anthropic",
         "family": "anthropic",
@@ -288,7 +288,7 @@ DEFAULT_MODELS = [
         },
     },
     {
-        "model_id": "claude-3-5-haiku-20241022-anthropic",
+        "model_id": "haiku",
         "display_name": "Claude 3.5 Haiku (Direct)",
         "provider": "anthropic",
         "family": "anthropic",
@@ -315,8 +315,8 @@ DEFAULT_MODELS = [
     },
     # OpenAI Direct API Models
     {
-        "model_id": "gpt-4o",
-        "display_name": "GPT-4o",
+        "model_id": "gpt-5",
+        "display_name": "GPT-5",
         "provider": "openai",
         "family": "openai",
         "cost_tier": "high",
@@ -341,8 +341,8 @@ DEFAULT_MODELS = [
         },
     },
     {
-        "model_id": "gpt-4o-mini",
-        "display_name": "GPT-4o Mini",
+        "model_id": "o4-mini",
+        "display_name": "o4-mini",
         "provider": "openai",
         "family": "openai",
         "cost_tier": "low",
@@ -367,8 +367,8 @@ DEFAULT_MODELS = [
         },
     },
     {
-        "model_id": "gpt-4-turbo",
-        "display_name": "GPT-4 Turbo",
+        "model_id": "o3",
+        "display_name": "o3",
         "provider": "openai",
         "family": "openai",
         "cost_tier": "high",

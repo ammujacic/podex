@@ -8,6 +8,8 @@ import {
   SplitSquareHorizontal,
   SplitSquareVertical,
   RefreshCw,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { TerminalInstance } from './TerminalInstance';
@@ -23,6 +25,9 @@ interface SplitTerminalLayoutProps {
   sessionId: string;
   workspaceId: string;
   layout: TerminalLayout;
+  terminalHeight?: number;
+  setTerminalHeight?: (height: number) => void;
+  setTerminalVisible?: (visible: boolean) => void;
 }
 
 interface TerminalPaneViewProps {
@@ -31,6 +36,11 @@ interface TerminalPaneViewProps {
   pane: TerminalPane;
   isActive: boolean;
   onFocus: () => void;
+  // Panel-level controls (only shown in first pane)
+  showPanelControls?: boolean;
+  terminalHeight?: number;
+  setTerminalHeight?: (height: number) => void;
+  setTerminalVisible?: (visible: boolean) => void;
 }
 
 // Resizer component for split panes
@@ -94,6 +104,10 @@ function TerminalPaneView({
   pane,
   isActive,
   onFocus,
+  showPanelControls,
+  terminalHeight,
+  setTerminalHeight,
+  setTerminalVisible,
 }: TerminalPaneViewProps) {
   const { setActiveTab, addTab, closeTab, splitPane, closePane } = useTerminalStore();
   const terminalRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -209,6 +223,35 @@ function TerminalPaneView({
           >
             <X className="h-3.5 w-3.5" />
           </button>
+
+          {/* Panel-level controls (maximize/close entire terminal panel) */}
+          {showPanelControls && (
+            <>
+              <div className="w-px h-4 bg-border-subtle mx-1" />
+              {setTerminalHeight && (
+                <button
+                  onClick={() => setTerminalHeight(terminalHeight === 300 ? 500 : 300)}
+                  className="rounded p-1 text-text-muted hover:bg-overlay hover:text-text-secondary"
+                  title={terminalHeight === 300 ? 'Maximize' : 'Minimize'}
+                >
+                  {terminalHeight === 300 ? (
+                    <Maximize2 className="h-3.5 w-3.5" />
+                  ) : (
+                    <Minimize2 className="h-3.5 w-3.5" />
+                  )}
+                </button>
+              )}
+              {setTerminalVisible && (
+                <button
+                  onClick={() => setTerminalVisible(false)}
+                  className="rounded p-1 text-text-muted hover:bg-overlay hover:text-text-secondary"
+                  title="Close Terminal Panel"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </>
+          )}
         </div>
       </div>
 
@@ -243,6 +286,10 @@ function SplitLayoutRenderer({
   activePaneId,
   onFocusPane,
   parentSize: _parentSize,
+  isFirstPane = false,
+  terminalHeight,
+  setTerminalHeight,
+  setTerminalVisible,
 }: {
   sessionId: string;
   workspaceId: string;
@@ -250,6 +297,10 @@ function SplitLayoutRenderer({
   activePaneId: string;
   onFocusPane: (paneId: string) => void;
   parentSize?: { width: number; height: number };
+  isFirstPane?: boolean;
+  terminalHeight?: number;
+  setTerminalHeight?: (height: number) => void;
+  setTerminalVisible?: (visible: boolean) => void;
 }) {
   const { resizePane } = useTerminalStore();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -262,6 +313,10 @@ function SplitLayoutRenderer({
         pane={layout}
         isActive={layout.id === activePaneId}
         onFocus={() => onFocusPane(layout.id)}
+        showPanelControls={isFirstPane}
+        terminalHeight={terminalHeight}
+        setTerminalHeight={setTerminalHeight}
+        setTerminalVisible={setTerminalVisible}
       />
     );
   }
@@ -311,6 +366,10 @@ function SplitLayoutRenderer({
                 layout={child}
                 activePaneId={activePaneId}
                 onFocusPane={onFocusPane}
+                isFirstPane={isFirstPane && index === 0}
+                terminalHeight={terminalHeight}
+                setTerminalHeight={setTerminalHeight}
+                setTerminalVisible={setTerminalVisible}
               />
             </div>
 
@@ -329,7 +388,14 @@ function SplitLayoutRenderer({
 }
 
 // Main split terminal layout component
-export function SplitTerminalLayout({ sessionId, workspaceId, layout }: SplitTerminalLayoutProps) {
+export function SplitTerminalLayout({
+  sessionId,
+  workspaceId,
+  layout,
+  terminalHeight,
+  setTerminalHeight,
+  setTerminalVisible,
+}: SplitTerminalLayoutProps) {
   const { activePaneId, setActivePane, splitPane, focusNextPane, focusPrevPane } =
     useTerminalStore();
   const currentActivePaneId = activePaneId[sessionId] || '';
@@ -382,6 +448,10 @@ export function SplitTerminalLayout({ sessionId, workspaceId, layout }: SplitTer
         layout={layout}
         activePaneId={currentActivePaneId}
         onFocusPane={handleFocusPane}
+        isFirstPane
+        terminalHeight={terminalHeight}
+        setTerminalHeight={setTerminalHeight}
+        setTerminalVisible={setTerminalVisible}
       />
     </div>
   );

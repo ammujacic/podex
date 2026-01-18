@@ -14,7 +14,9 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml tsconfig.json ./
 
 # Copy all package.json files for workspace resolution
 COPY apps/web/package.json ./apps/web/
+COPY packages/api-client/package.json ./packages/api-client/
 COPY packages/shared/package.json ./packages/shared/
+COPY packages/state/package.json ./packages/state/
 COPY packages/ui/package.json ./packages/ui/
 
 # Install dependencies (--filter installs workspace dependencies too)
@@ -38,7 +40,9 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml tsconfig.json ./
 
 # Copy all package.json files
 COPY apps/web/package.json ./apps/web/
+COPY packages/api-client/package.json ./packages/api-client/
 COPY packages/shared/package.json ./packages/shared/
+COPY packages/state/package.json ./packages/state/
 COPY packages/ui/package.json ./packages/ui/
 
 # Install dependencies
@@ -50,7 +54,8 @@ COPY packages ./packages
 
 WORKDIR /app/apps/web
 
-# Build
+# Build in production mode for full optimizations (minification, tree-shaking, etc.)
+ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm build
 

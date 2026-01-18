@@ -438,6 +438,7 @@ class TmuxTerminalSession:
             return False
         try:
             # Resize the docker exec PTY
+            # Note: This may fail if exec process hasn't fully started yet
             await asyncio.to_thread(
                 self.client.api.exec_resize,
                 self.exec_id,
@@ -466,6 +467,22 @@ class TmuxTerminalSession:
                 cols=cols,
             )
             return True
+        except docker.errors.APIError as e:
+            # Silently ignore "exec process is not started" - this happens when
+            # resize is called before the exec process has fully initialized.
+            # The frontend will send another resize when the terminal is ready.
+            if "exec process is not started" in str(e):
+                logger.debug(
+                    "Terminal resize skipped - exec not yet started",
+                    workspace_id=self.workspace_id,
+                )
+                return False
+            logger.warning(
+                "Failed to resize terminal",
+                workspace_id=self.workspace_id,
+                error=str(e),
+            )
+            return False
         except Exception as e:
             logger.warning(
                 "Failed to resize terminal",

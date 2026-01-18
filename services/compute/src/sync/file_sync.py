@@ -25,6 +25,9 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+# Maximum file size for dotfiles sync (1MB)
+MAX_DOTFILE_SIZE_BYTES = 1048576
+
 
 class FileSync:
     """Synchronizes workspace files between GCS and containers.
@@ -63,7 +66,7 @@ class FileSync:
     async def sync_from_gcs(
         self,
         workspace_id: str,
-        target_path: str = "/home/project",
+        target_path: str = "/home/dev/projects",
     ) -> dict[str, Any]:
         """Sync files from GCS to the workspace container.
 
@@ -154,7 +157,7 @@ class FileSync:
     async def sync_to_gcs(
         self,
         workspace_id: str,
-        source_path: str = "/home/project",
+        source_path: str = "/home/dev/projects",
         exclude_patterns: list[str] | None = None,
     ) -> dict[str, Any]:
         """Sync files from the workspace container to GCS.
@@ -279,12 +282,16 @@ class FileSync:
     async def start_background_sync(
         self,
         workspace_id: str,
+        user_id: str | None = None,
+        dotfiles_paths: list[str] | None = None,
         interval: int | None = None,
     ) -> None:
         """Start periodic background sync for a workspace.
 
         Args:
             workspace_id: The workspace to sync
+            user_id: The user ID (required for dotfiles sync)
+            dotfiles_paths: Custom dotfiles paths (uses defaults if None)
             interval: Sync interval in seconds (defaults to settings)
         """
         if workspace_id in self._sync_tasks:
@@ -300,11 +307,25 @@ class FileSync:
             while True:
                 try:
                     await asyncio.sleep(sync_interval)
+                    # Sync workspace files
                     await self.sync_to_gcs(workspace_id)
+                    # Also sync dotfiles periodically so they're not lost on crash/timeout
+                    if user_id:
+                        await self.save_user_dotfiles(
+                            workspace_id=workspace_id,
+                            user_id=user_id,
+                            dotfiles_paths=dotfiles_paths,
+                        )
                 except asyncio.CancelledError:
                     # Final sync before stopping
                     logger.info("Background sync cancelled, performing final sync")
                     await self.sync_to_gcs(workspace_id)
+                    if user_id:
+                        await self.save_user_dotfiles(
+                            workspace_id=workspace_id,
+                            user_id=user_id,
+                            dotfiles_paths=dotfiles_paths,
+                        )
                     raise
                 except Exception:
                     logger.exception(
@@ -318,6 +339,7 @@ class FileSync:
         logger.info(
             "Started background sync",
             workspace_id=workspace_id,
+            user_id=user_id,
             interval=sync_interval,
         )
 
@@ -535,7 +557,7 @@ class FileSync:
         except Exception:
             logger.warning("Failed to set up git config", user_id=user_id)
 
-    async def save_user_dotfiles(
+    async def save_user_dotfiles(  # noqa: PLR0912, PLR0915
         self,
         workspace_id: str,
         user_id: str,
@@ -565,6 +587,12 @@ class FileSync:
                 ".vimrc",
                 ".config/starship.toml",
                 ".ssh/config",
+                # CLI agent config directories
+                ".claude/",
+                ".claude.json",
+                ".codex/",
+                ".gemini/",
+                ".opencode/",
             ]
 
         logger.info(
@@ -582,37 +610,133 @@ class FileSync:
             container_path = f"{source_path}/{dotfile}"
 
             try:
-                # Check if file exists
-                check_result = await self.compute.exec_command(
-                    workspace_id,
-                    f"test -f {container_path} && echo 'exists'",
-                )
+                # Check if path is a directory (ends with /)
+                if dotfile.endswith("/"):
+                    # List all files in the directory recursively
+                    find_result = await self.compute.exec_command(
+                        workspace_id,
+                        f"find {container_path} -type f 2>/dev/null || true",
+                    )
 
-                if "exists" not in check_result.stdout:
-                    continue
+                    if find_result.exit_code != 0 or not find_result.stdout.strip():
+                        continue
 
-                # Read file content (base64 encoded)
-                read_result = await self.compute.exec_command(
-                    workspace_id,
-                    f"base64 {container_path}",
-                )
+                    # Process each file in the directory
+                    for file_path in find_result.stdout.strip().split("\n"):
+                        if not file_path.strip():
+                            continue
 
-                if read_result.exit_code != 0:
-                    continue
+                        try:
+                            # Check file size - skip files larger than 1MB
+                            stat_cmd = (
+                                f"stat -f%z '{file_path}' 2>/dev/null || "
+                                f"stat -c%s '{file_path}' 2>/dev/null"
+                            )
+                            size_result = await self.compute.exec_command(
+                                workspace_id,
+                                stat_cmd,
+                                timeout=5,
+                            )
 
-                content = base64.b64decode(read_result.stdout.strip())
+                            if size_result.exit_code == 0:
+                                try:
+                                    file_size = int(size_result.stdout.strip())
+                                    if file_size > MAX_DOTFILE_SIZE_BYTES:
+                                        logger.debug(
+                                            "Skipping large file from dotfiles sync",
+                                            path=file_path,
+                                            size_mb=round(file_size / 1048576, 2),
+                                        )
+                                        continue
+                                except ValueError:
+                                    pass  # Can't parse size, try to sync anyway
 
-                # Upload to GCS
-                gcs_key = f"{prefix}/{dotfile}"
-                blob = self._bucket.blob(gcs_key)
-                blob.upload_from_string(content)
+                            # Read file content (base64 encoded)
+                            read_result = await self.compute.exec_command(
+                                workspace_id,
+                                f"base64 '{file_path}'",
+                                timeout=10,
+                            )
 
-                files_saved += 1
-                logger.debug(
-                    "Saved user dotfile to GCS",
-                    user_id=user_id,
-                    path=dotfile,
-                )
+                            if read_result.exit_code != 0:
+                                continue
+
+                            content = base64.b64decode(read_result.stdout.strip())
+
+                            # Calculate relative path from source_path
+                            relative_path = file_path[len(source_path) + 1 :]
+
+                            # Upload to GCS
+                            gcs_key = f"{prefix}/{relative_path}"
+                            blob = self._bucket.blob(gcs_key)
+                            blob.upload_from_string(content)
+
+                            files_saved += 1
+                            logger.debug(
+                                "Saved user dotfile to GCS",
+                                user_id=user_id,
+                                path=relative_path,
+                            )
+                        except Exception as e:
+                            errors.append({"path": file_path, "error": str(e)})
+                else:
+                    # Single file
+                    # Check if file exists
+                    check_result = await self.compute.exec_command(
+                        workspace_id,
+                        f"test -f {container_path} && echo 'exists'",
+                    )
+
+                    if "exists" not in check_result.stdout:
+                        continue
+
+                    # Check file size - skip files larger than 1MB
+                    stat_cmd = (
+                        f"stat -f%z '{container_path}' 2>/dev/null || "
+                        f"stat -c%s '{container_path}' 2>/dev/null"
+                    )
+                    size_result = await self.compute.exec_command(
+                        workspace_id,
+                        stat_cmd,
+                        timeout=5,
+                    )
+
+                    if size_result.exit_code == 0:
+                        try:
+                            file_size = int(size_result.stdout.strip())
+                            if file_size > MAX_DOTFILE_SIZE_BYTES:
+                                logger.debug(
+                                    "Skipping large file from dotfiles sync",
+                                    path=dotfile,
+                                    size_mb=round(file_size / 1048576, 2),
+                                )
+                                continue
+                        except ValueError:
+                            pass  # Can't parse size, try to sync anyway
+
+                    # Read file content (base64 encoded)
+                    read_result = await self.compute.exec_command(
+                        workspace_id,
+                        f"base64 {container_path}",
+                        timeout=10,
+                    )
+
+                    if read_result.exit_code != 0:
+                        continue
+
+                    content = base64.b64decode(read_result.stdout.strip())
+
+                    # Upload to GCS
+                    gcs_key = f"{prefix}/{dotfile}"
+                    blob = self._bucket.blob(gcs_key)
+                    blob.upload_from_string(content)
+
+                    files_saved += 1
+                    logger.debug(
+                        "Saved user dotfile to GCS",
+                        user_id=user_id,
+                        path=dotfile,
+                    )
 
             except Exception as e:
                 errors.append({"path": dotfile, "error": str(e)})

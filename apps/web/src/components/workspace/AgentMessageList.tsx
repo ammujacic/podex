@@ -2,8 +2,10 @@
 
 import React, { useState, useCallback } from 'react';
 import {
+  Check,
   ChevronDown,
   ChevronRight,
+  Copy,
   Lightbulb,
   Loader2,
   RefreshCw,
@@ -48,12 +50,23 @@ export const AgentMessageList = React.memo<AgentMessageListProps>(
     onPlanReject,
   }) {
     const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
+    const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
     const toggleThinking = useCallback((messageId: string) => {
       setExpandedThinking((prev) => ({
         ...prev,
         [messageId]: !prev[messageId],
       }));
+    }, []);
+
+    const handleCopyMessage = useCallback(async (messageId: string, content: string) => {
+      try {
+        await navigator.clipboard.writeText(content);
+        setCopiedMessageId(messageId);
+        setTimeout(() => setCopiedMessageId(null), 2000);
+      } catch (err) {
+        console.error('Failed to copy message:', err);
+      }
     }, []);
 
     if (messages.length === 0) {
@@ -66,8 +79,8 @@ export const AgentMessageList = React.memo<AgentMessageListProps>(
 
     return (
       <>
-        {messages.map((msg) => (
-          <div key={msg.id} className="space-y-2 group/message">
+        {messages.map((msg, index) => (
+          <div key={msg.id || `msg-${index}`} className="space-y-2 group/message">
             {/* Thinking block - collapsible for assistant messages */}
             {msg.role === 'assistant' && msg.thinking && (
               <div className="ml-0 max-w-[85%]">
@@ -120,6 +133,26 @@ export const AgentMessageList = React.memo<AgentMessageListProps>(
                   </span>
 
                   <div className="flex items-center gap-1">
+                    {/* Copy message button - visible on hover */}
+                    <button
+                      onClick={() => handleCopyMessage(msg.id, msg.content)}
+                      aria-label="Copy message"
+                      className={cn(
+                        'rounded p-2 -m-1 min-w-[36px] min-h-[36px] flex items-center justify-center transition-colors opacity-0 group-hover/message:opacity-100 cursor-pointer',
+                        msg.role === 'user'
+                          ? 'hover:bg-white/20 text-text-inverse/60 hover:text-text-inverse'
+                          : 'hover:bg-overlay text-text-muted hover:text-text-secondary',
+                        copiedMessageId === msg.id && 'opacity-100 text-green-400'
+                      )}
+                      title={copiedMessageId === msg.id ? 'Copied!' : 'Copy message'}
+                    >
+                      {copiedMessageId === msg.id ? (
+                        <Check className="h-4 w-4" />
+                      ) : (
+                        <Copy className="h-4 w-4" />
+                      )}
+                    </button>
+
                     {/* Delete message button - visible on hover */}
                     <button
                       onClick={() => onDeleteMessage(msg.id)}

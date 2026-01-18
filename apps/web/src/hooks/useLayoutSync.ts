@@ -8,8 +8,10 @@ import {
   updateSessionLayout,
   updateAgentLayout as apiUpdateAgentLayout,
   updateFilePreviewLayout as apiUpdateFilePreviewLayout,
+  updateEditorLayout as apiUpdateEditorLayout,
   type SessionLayoutState,
   type FilePreviewLayoutState,
+  type EditorLayoutState,
 } from '@/lib/api';
 import { onSocketEvent, emitLayoutChange, type LayoutChangeEvent } from '@/lib/socket';
 
@@ -89,6 +91,10 @@ export function useLayoutSync({ sessionId, enabled = true }: UseLayoutSyncOption
     updateFilePreviewGridSpan,
     dockFilePreview,
     pinFilePreview,
+    createEditorGridCard,
+    removeEditorGridCard,
+    updateEditorGridSpan,
+    updateEditorFreeformPosition,
   } = useSessionStore();
 
   const session = sessions[sessionId];
@@ -146,6 +152,44 @@ export function useLayoutSync({ sessionId, enabled = true }: UseLayoutSyncOption
         }
 
         isApplyingRemote.current = false;
+
+        // Apply editor grid card layout
+        // Re-fetch session from store to get latest state (closure may be stale)
+        const currentSession = useSessionStore.getState().sessions[sessionId];
+        if (serverLayout.editor_grid_card_id) {
+          // Server has editor - apply to local state
+          if (!currentSession?.editorGridCardId) {
+            isApplyingRemote.current = true;
+            createEditorGridCard(sessionId);
+            isApplyingRemote.current = false;
+          }
+          if (serverLayout.editor_grid_span) {
+            isApplyingRemote.current = true;
+            updateEditorGridSpan(sessionId, fromApiGridSpan(serverLayout.editor_grid_span));
+            isApplyingRemote.current = false;
+          }
+          if (serverLayout.editor_freeform_position) {
+            isApplyingRemote.current = true;
+            updateEditorFreeformPosition(
+              sessionId,
+              fromApiPosition(serverLayout.editor_freeform_position)
+            );
+            isApplyingRemote.current = false;
+          }
+        } else if (currentSession?.editorGridCardId) {
+          // Local has editor but server doesn't - sync local to server
+          const payload: Partial<EditorLayoutState> = {
+            editor_grid_card_id: currentSession.editorGridCardId,
+          };
+          if (currentSession.editorGridSpan) {
+            payload.editor_grid_span = toApiGridSpan(currentSession.editorGridSpan);
+          }
+          if (currentSession.editorFreeformPosition) {
+            payload.editor_freeform_position = toApiPosition(currentSession.editorFreeformPosition);
+          }
+          // Sync to server immediately (not debounced for initial sync)
+          apiUpdateEditorLayout(sessionId, payload).catch(console.error);
+        }
       } catch (error) {
         // Silently fail on connection errors - we'll work with local state
         const err = error as Error & { status?: number };
@@ -202,7 +246,7 @@ export function useLayoutSync({ sessionId, enabled = true }: UseLayoutSyncOption
   useEffect(() => {
     if (!enabled || !sessionId) return;
 
-    const unsubscribe = onSocketEvent('layout:change', (event) => {
+    const unsubscribe = onSocketEvent('layout:change', (event: LayoutChangeEvent) => {
       // Ignore our own events
       if (event.sender_device === deviceId.current) return;
       if (event.session_id !== sessionId) return;
@@ -253,6 +297,28 @@ export function useLayoutSync({ sessionId, enabled = true }: UseLayoutSyncOption
             break;
           }
 
+          case 'editor_layout': {
+            const { editor_grid_card_id, grid_span, position } = event.payload as {
+              editor_grid_card_id?: string | null;
+              grid_span?: { col_span: number; row_span: number };
+              position?: { x: number; y: number; width: number; height: number; z_index: number };
+            };
+            if (editor_grid_card_id !== undefined) {
+              if (editor_grid_card_id && !session?.editorGridCardId) {
+                createEditorGridCard(sessionId);
+              } else if (!editor_grid_card_id && session?.editorGridCardId) {
+                removeEditorGridCard(sessionId);
+              }
+            }
+            if (grid_span) {
+              updateEditorGridSpan(sessionId, fromApiGridSpan(grid_span));
+            }
+            if (position) {
+              updateEditorFreeformPosition(sessionId, fromApiPosition(position));
+            }
+            break;
+          }
+
           case 'full_sync': {
             // Full layout sync - reload from server
             getSessionLayout(sessionId).then((serverLayout) => {
@@ -283,6 +349,10 @@ export function useLayoutSync({ sessionId, enabled = true }: UseLayoutSyncOption
     updateFilePreviewGridSpan,
     dockFilePreview,
     pinFilePreview,
+    createEditorGridCard,
+    removeEditorGridCard,
+    updateEditorGridSpan,
+    updateEditorFreeformPosition,
   ]);
 
   // Sync functions to call from components
@@ -378,12 +448,56 @@ export function useLayoutSync({ sessionId, enabled = true }: UseLayoutSyncOption
     [emitChange, debouncedApiUpdateFilePreviewLayout]
   );
 
+  // Debounced API call for editor layout updates
+  const debouncedApiUpdateEditorLayout = useMemo(
+    () =>
+      debounce((payload: Partial<EditorLayoutState>) => {
+        apiUpdateEditorLayout(sessionIdRef.current, payload).catch(console.error);
+      }, 300),
+    []
+  );
+
+  const syncEditorGridCard = useCallback(
+    (editorGridCardId: string | null) => {
+      if (isApplyingRemote.current) return;
+      const payload = { editor_grid_card_id: editorGridCardId };
+      debouncedApiUpdateEditorLayout(payload);
+      emitChange('editor_layout', payload);
+    },
+    [emitChange, debouncedApiUpdateEditorLayout]
+  );
+
+  const syncEditorGridSpan = useCallback(
+    (gridSpan: GridSpan) => {
+      if (isApplyingRemote.current) return;
+      const apiSpan = toApiGridSpan(gridSpan);
+      const payload = { editor_grid_span: apiSpan };
+      debouncedApiUpdateEditorLayout(payload);
+      emitChange('editor_layout', { grid_span: apiSpan });
+    },
+    [emitChange, debouncedApiUpdateEditorLayout]
+  );
+
+  const syncEditorFreeformPosition = useCallback(
+    (position: AgentPosition) => {
+      if (isApplyingRemote.current) return;
+      const apiPos = toApiPosition(position);
+      const payload = { editor_freeform_position: apiPos };
+      debouncedApiUpdateEditorLayout(payload);
+      emitChange('editor_layout', { position: apiPos });
+    },
+    [emitChange, debouncedApiUpdateEditorLayout]
+  );
+
   return {
     syncViewMode,
     syncActiveAgent,
     syncAgentGridSpan,
     syncAgentPosition,
     syncFilePreviewLayout,
+    syncEditorGridCard,
+    syncEditorGridSpan,
+    syncEditorFreeformPosition,
     isApplyingRemote: isApplyingRemote.current,
   };
 }

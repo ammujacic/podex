@@ -12,6 +12,7 @@ import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { useSettingsSync } from '@/hooks/useSettingsSync';
 import { usePWAInit } from '@/hooks/usePWAInit';
 import { IOSInstallModal, OfflineIndicator } from '@/components/pwa';
+import { useInitializeConfig } from '@/stores/config';
 
 interface ProvidersProps {
   children: ReactNode;
@@ -145,6 +146,12 @@ function PWAInitializer({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+// Config initializer - loads platform config, providers, and agent roles
+function ConfigInitializer({ children }: { children: ReactNode }) {
+  useInitializeConfig();
+  return <>{children}</>;
+}
+
 export function Providers({ children }: ProvidersProps) {
   const [queryClient] = useState(
     () =>
@@ -199,22 +206,24 @@ export function Providers({ children }: ProvidersProps) {
     >
       <QueryClientProvider client={queryClient}>
         <AuthInitializer>
-          <ThemeInitializer>
-            <PWAInitializer>
-              <OnboardingTourProvider>
-                <KeyboardShortcuts>
-                  {children}
+          <ConfigInitializer>
+            <ThemeInitializer>
+              <PWAInitializer>
+                <OnboardingTourProvider>
+                  <KeyboardShortcuts>
+                    {children}
 
-                  {/* Global components */}
-                  <AriaLiveRegion />
+                    {/* Global components */}
+                    <AriaLiveRegion />
 
-                  {/* PWA components */}
-                  <IOSInstallModal />
-                  <OfflineIndicator />
-                </KeyboardShortcuts>
-              </OnboardingTourProvider>
-            </PWAInitializer>
-          </ThemeInitializer>
+                    {/* PWA components */}
+                    <IOSInstallModal />
+                    <OfflineIndicator />
+                  </KeyboardShortcuts>
+                </OnboardingTourProvider>
+              </PWAInitializer>
+            </ThemeInitializer>
+          </ConfigInitializer>
         </AuthInitializer>
 
         {/* Toast notifications with theme awareness */}

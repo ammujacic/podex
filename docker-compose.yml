@@ -2,23 +2,38 @@ services:
   # === LOCAL GCP SERVICES ===
   fake-gcs:
     image: fsouza/fake-gcs-server:latest
-    command: >
-      sh -c "
-        /app/fake-gcs-server -scheme http -port 4443 -external-url http://localhost:4443 &
-        sleep 5 &&
-        curl -X POST -H 'Content-Type: application/json' -d '{\"name\":\"podex-workspaces-dev\"}' http://localhost:4443/storage/v1/b 2>/dev/null || echo 'Dev bucket exists or failed to create' &&
-        echo 'Fake GCS server initialized with dev bucket' &&
-        wait
-      "
+    command:
+      - -scheme
+      - http
+      - -port
+      - "4443"
+      - -external-url
+      - http://fake-gcs:4443
+      - -log-level
+      - error
+      - -backend
+      - filesystem
+      - -filesystem-root
+      - /data
     ports:
       - "4443:4443"
     volumes:
       - gcs_data:/data
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "https://localhost:4443/storage/v1/b", "--no-check-certificate"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:4443/storage/v1/b"]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  gcs-init:
+    image: alpine:latest
+    command: sh -c "apk add --no-cache curl && sh /scripts/init-gcs.sh"
+    volumes:
+      - ./scripts/init-gcs.sh:/scripts/init-gcs.sh:ro
+    depends_on:
+      fake-gcs:
+        condition: service_healthy
+    restart: "no"
 
   # === DATABASE ===
   postgres:
@@ -205,6 +220,8 @@ services:
         condition: service_healthy
       fake-gcs:
         condition: service_healthy
+      api:
+        condition: service_started
 
   # === COMPUTE SERVICE ===
   compute:
@@ -268,7 +285,7 @@ services:
   # === USER WORKSPACE IMAGE (build only) ===
   workspace-base:
     build:
-      context: ./infra/docker/workspace
+      context: ./infrastructure/docker/workspace
       dockerfile: Dockerfile
     image: podex/workspace:latest
     profiles:
@@ -285,8 +302,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: 4G
-          cpus: '2.0'
+          memory: 16G
+          cpus: '8.0'
     environment:
       NODE_ENV: development
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}

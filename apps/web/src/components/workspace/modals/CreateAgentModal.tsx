@@ -167,8 +167,14 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
     );
   }, [searchQuery, builtinAgentOptions, customAgentOptions]);
 
+  // CLI agent roles that should be grouped separately
+  const CLI_AGENT_ROLES = ['claude-code', 'openai-codex', 'gemini-cli'];
+
   // Group filtered agents
-  const builtinFiltered = filteredAgents.filter((a) => !a.isCustom);
+  const builtinFiltered = filteredAgents.filter(
+    (a) => !a.isCustom && !CLI_AGENT_ROLES.includes(a.role)
+  );
+  const cliFiltered = filteredAgents.filter((a) => !a.isCustom && CLI_AGENT_ROLES.includes(a.role));
   const customFiltered = filteredAgents.filter((a) => a.isCustom);
 
   const handleCreate = async () => {
@@ -298,7 +304,7 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
             setSharingAgentId(null);
           }}
           className={cn(
-            'w-full flex items-start gap-3 rounded-lg border p-3 text-left transition-all min-h-[72px]',
+            'w-full flex items-center gap-3 rounded-lg border p-3 text-left transition-all min-h-[72px]',
             selectedAgent?.id === agent.id
               ? 'border-accent-primary bg-accent-primary/5 ring-1 ring-accent-primary'
               : 'border-border-default hover:border-border-subtle hover:bg-overlay'
@@ -519,6 +525,20 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
                 </div>
               ) : (
                 <div className="space-y-6" role="listbox" aria-label="Available agents">
+                  {/* Podex Integrated CLI agents */}
+                  {cliFiltered.length > 0 && (
+                    <div>
+                      <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-3">
+                        Podex Integrated
+                      </h3>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {cliFiltered.map((agent) => (
+                          <AgentButton key={agent.id} agent={agent} />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Built-in agents */}
                   {builtinFiltered.length > 0 && (
                     <div>

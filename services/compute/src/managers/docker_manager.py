@@ -10,6 +10,9 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
 import docker
 import httpx
 import structlog
@@ -134,6 +137,9 @@ class DockerComputeManager(ComputeManager):
                     )
 
                     self._workspaces[workspace_id] = workspace_info
+
+                    # Note: Don't restore dotfiles for rediscovered workspaces - they're already
+                    # running with files intact. Only restore when creating NEW workspaces.
 
                     logger.info(
                         "Rediscovered existing workspace",
@@ -300,6 +306,9 @@ class DockerComputeManager(ComputeManager):
                 metadata={
                     "container_name": container.name or "",
                     "last_billing_timestamp": now.isoformat(),
+                    # Store dotfiles config for sync on stop
+                    "sync_dotfiles": config.sync_dotfiles,
+                    "dotfiles_paths": config.dotfiles_paths,
                 },
             )
 
@@ -309,8 +318,12 @@ class DockerComputeManager(ComputeManager):
             if self._file_sync:
                 try:
                     await self._file_sync.sync_from_gcs(workspace_id)
-                    # Start background sync
-                    await self._file_sync.start_background_sync(workspace_id)
+                    # Start background sync (includes dotfiles)
+                    await self._file_sync.start_background_sync(
+                        workspace_id=workspace_id,
+                        user_id=user_id,
+                        dotfiles_paths=config.dotfiles_paths,
+                    )
                     workspace_info.metadata["gcs_sync_status"] = "success"
                 except Exception as e:
                     logger.exception(
@@ -320,6 +333,27 @@ class DockerComputeManager(ComputeManager):
                     # Store sync error in metadata for visibility
                     workspace_info.metadata["gcs_sync_status"] = "error"
                     workspace_info.metadata["gcs_sync_error"] = str(e)
+
+                # Sync user dotfiles (restore .claude/, .codex/, .gemini/ configs)
+                try:
+                    await self._file_sync.sync_user_dotfiles(
+                        workspace_id=workspace_id,
+                        user_id=user_id,
+                    )
+                    workspace_info.metadata["dotfiles_sync_status"] = "success"
+                    logger.info(
+                        "Synced user dotfiles to workspace",
+                        workspace_id=workspace_id,
+                        user_id=user_id,
+                    )
+                except Exception as e:
+                    logger.exception(
+                        "Failed to sync user dotfiles",
+                        workspace_id=workspace_id,
+                        user_id=user_id,
+                    )
+                    workspace_info.metadata["dotfiles_sync_status"] = "error"
+                    workspace_info.metadata["dotfiles_sync_error"] = str(e)
 
             # Ensure projects directory exists
             await self.exec_command(workspace_id, "mkdir -p /home/dev/projects", timeout=10)
@@ -540,6 +574,32 @@ class DockerComputeManager(ComputeManager):
                 workspace.metadata["gcs_sync_error"] = str(e)
                 sync_error = e
 
+            # Save user dotfiles (.claude/, .codex/, .gemini/ configs) before stopping
+            # Only sync if sync_dotfiles is enabled (default True for backwards compat)
+            sync_dotfiles = workspace.metadata.get("sync_dotfiles", True)
+            if sync_dotfiles:
+                try:
+                    dotfiles_paths = workspace.metadata.get("dotfiles_paths")
+                    await self._file_sync.save_user_dotfiles(
+                        workspace_id=workspace_id,
+                        user_id=workspace.user_id,
+                        dotfiles_paths=dotfiles_paths,
+                    )
+                    workspace.metadata["dotfiles_sync_status"] = "success"
+                    logger.info(
+                        "Saved user dotfiles before workspace stop",
+                        workspace_id=workspace_id,
+                        user_id=workspace.user_id,
+                    )
+                except Exception as e:
+                    logger.exception(
+                        "Failed to save user dotfiles before stop",
+                        workspace_id=workspace_id,
+                        user_id=workspace.user_id,
+                    )
+                    workspace.metadata["dotfiles_sync_status"] = "error"
+                    workspace.metadata["dotfiles_sync_error"] = str(e)
+
         try:
             container = await asyncio.to_thread(
                 self.client.containers.get,
@@ -564,6 +624,58 @@ class DockerComputeManager(ComputeManager):
         except NotFound:
             logger.warning("Container not found", workspace_id=workspace_id)
             workspace.status = WorkspaceStatus.ERROR
+
+    async def restart_workspace(self, workspace_id: str) -> None:
+        """Restart a stopped workspace container."""
+        workspace = self._workspaces.get(workspace_id)
+        if not workspace:
+            logger.warning("Workspace not found for restart", workspace_id=workspace_id)
+            raise ValueError(f"Workspace {workspace_id} not found")
+
+        if not workspace.container_id:
+            logger.warning("No container ID for restart", workspace_id=workspace_id)
+            raise ValueError(f"Workspace {workspace_id} has no container")
+
+        try:
+            container = await asyncio.to_thread(
+                self.client.containers.get,
+                workspace.container_id,
+            )
+
+            # Check if container is already running
+            container_status = container.status
+            if container_status == "running":
+                logger.info("Container already running", workspace_id=workspace_id)
+                workspace.status = WorkspaceStatus.RUNNING
+                workspace.last_activity = datetime.now(UTC)
+                return
+
+            # Start the stopped container
+            await asyncio.to_thread(container.start)
+
+            workspace.status = WorkspaceStatus.RUNNING
+            workspace.last_activity = datetime.now(UTC)
+
+            # Resume file sync if enabled
+            if self._file_sync:
+                try:
+                    await self._file_sync.start_background_sync(
+                        workspace_id=workspace_id,
+                        user_id=workspace.user_id,
+                        dotfiles_paths=workspace.metadata.get("dotfiles_paths"),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to resume file sync after restart",
+                        workspace_id=workspace_id,
+                        error=str(e),
+                    )
+
+            logger.info("Workspace restarted", workspace_id=workspace_id)
+        except NotFound:
+            logger.warning("Container not found for restart", workspace_id=workspace_id)
+            workspace.status = WorkspaceStatus.ERROR
+            raise ValueError(f"Container for workspace {workspace_id} not found") from None
 
     async def _track_compute_usage(
         self,
@@ -849,9 +961,23 @@ class DockerComputeManager(ComputeManager):
         workspace_id: str,
         command: str,
         working_dir: str | None = None,
-        timeout: int = 30,  # noqa: ARG002
+        timeout: int = 30,
     ) -> WorkspaceExecResponse:
-        """Execute a command in the workspace container."""
+        """Execute a command in the workspace container.
+
+        Args:
+            workspace_id: The workspace to execute in
+            command: The command to run
+            working_dir: Working directory for the command
+            timeout: Command timeout in seconds (default 30)
+
+        Returns:
+            WorkspaceExecResponse with exit_code, stdout, stderr
+
+        Raises:
+            ValueError: If workspace not found
+            TimeoutError: If command exceeds timeout
+        """
         # Use get_workspace which handles on-demand discovery of containers
         workspace = await self.get_workspace(workspace_id)
         if not workspace or not workspace.container_id:
@@ -864,13 +990,44 @@ class DockerComputeManager(ComputeManager):
                 workspace.container_id,
             )
 
-            # Execute command
-            exec_result = await asyncio.to_thread(
-                container.exec_run,
-                cmd=["bash", "-c", command],
-                workdir=working_dir or "/home/dev",
-                demux=True,  # Separate stdout/stderr
-            )
+            # Auto-restart if container is not running
+            if container.status != "running":
+                logger.info(
+                    "Container not running, auto-restarting",
+                    workspace_id=workspace_id,
+                    container_status=container.status,
+                )
+                await self.restart_workspace(workspace_id)
+                # Re-fetch the container after restart
+                container = await asyncio.to_thread(
+                    self.client.containers.get,
+                    workspace.container_id,
+                )
+
+            # Execute command with timeout
+            # Docker exec_run is synchronous, so wrap with asyncio timeout
+            try:
+                exec_result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        container.exec_run,
+                        cmd=["bash", "-c", command],
+                        workdir=working_dir or "/home/dev",
+                        demux=True,  # Separate stdout/stderr
+                    ),
+                    timeout=float(timeout),
+                )
+            except TimeoutError:
+                logger.warning(
+                    "Command timed out",
+                    workspace_id=workspace_id,
+                    command=command[:100],
+                    timeout=timeout,
+                )
+                return WorkspaceExecResponse(
+                    exit_code=-1,
+                    stdout="",
+                    stderr=f"Command timed out after {timeout} seconds",
+                )
 
             exit_code = exec_result.exit_code
             stdout_bytes, stderr_bytes = exec_result.output
@@ -883,6 +1040,138 @@ class DockerComputeManager(ComputeManager):
         except NotFound as e:
             msg = f"Container not found for workspace {workspace_id}"
             raise ValueError(msg) from e
+
+    async def exec_command_stream(  # noqa: PLR0915, PLR0912
+        self,
+        workspace_id: str,
+        command: str,
+        working_dir: str | None = None,
+        timeout: int = 60,
+    ) -> AsyncGenerator[str, None]:
+        """Execute a command using PTY and stream output chunks.
+
+        Uses a pseudo-terminal (PTY) to execute the command, which is
+        necessary for interactive commands like authentication flows
+        that display URLs and wait for user input.
+
+        Args:
+            workspace_id: The workspace ID
+            command: Shell command to execute
+            working_dir: Working directory (default: /home/dev)
+            timeout: Command timeout in seconds
+
+        Yields:
+            Output chunks as strings
+        """
+        workspace = await self.get_workspace(workspace_id)
+        if not workspace or not workspace.container_id:
+            msg = f"Workspace {workspace_id} not found"
+            raise ValueError(msg)
+
+        try:
+            container = await asyncio.to_thread(
+                self.client.containers.get,
+                workspace.container_id,
+            )
+
+            # Auto-restart if container is not running
+            if container.status != "running":
+                logger.info(
+                    "Container not running, auto-restarting for stream exec",
+                    workspace_id=workspace_id,
+                    container_status=container.status,
+                )
+                await self.restart_workspace(workspace_id)
+                container = await asyncio.to_thread(
+                    self.client.containers.get,
+                    workspace.container_id,
+                )
+
+            # Create exec WITHOUT PTY - CLI tools will output plain text
+            # instead of fancy ncurses-style terminal UI
+            exec_instance = await asyncio.to_thread(
+                self.client.api.exec_create,
+                workspace.container_id,
+                cmd=["bash", "-c", command],
+                stdin=False,
+                stdout=True,
+                stderr=True,
+                tty=False,  # No PTY - get plain text output
+                workdir=working_dir or "/home/dev",
+            )
+            exec_id = exec_instance["Id"]
+
+            # Start exec with stream=True for automatic demuxing
+            # (socket=True gives raw multiplexed bytes that need manual header parsing)
+            output_generator = await asyncio.to_thread(
+                self.client.api.exec_start,
+                exec_id,
+                stream=True,
+                demux=True,  # Separate stdout/stderr
+            )
+
+            start_time = asyncio.get_event_loop().time()
+            buffer = ""
+
+            # Iterate over the output generator
+            for stdout_chunk, stderr_chunk in output_generator:
+                # Check overall timeout
+                elapsed = asyncio.get_event_loop().time() - start_time
+                if elapsed > timeout:
+                    logger.warning(
+                        "Streaming exec timed out",
+                        workspace_id=workspace_id,
+                        timeout=timeout,
+                    )
+                    yield "\n⏱️ Command timed out\n"
+                    break
+
+                # Process stdout
+                if stdout_chunk:
+                    chunk = stdout_chunk.decode("utf-8", errors="replace")
+
+                    # Strip ANSI escape codes (terminal control sequences)
+                    chunk = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", chunk)
+                    chunk = re.sub(r"\x1b\][^\x07]*\x07", "", chunk)  # OSC sequences
+                    chunk = re.sub(r"\x1b[PX^_][^\x1b]*\x1b\\", "", chunk)  # DCS/SOS/PM/APC
+                    chunk = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", chunk)  # Control chars
+
+                    if chunk:
+                        buffer += chunk
+                        # Yield on newlines (end of JSON lines) for real-time streaming
+                        # SSE layer uses null bytes for line separation, so this is safe
+                        if "\n" in buffer:
+                            yield buffer
+                            buffer = ""
+
+                # Process stderr (also yield it for visibility)
+                if stderr_chunk:
+                    chunk = stderr_chunk.decode("utf-8", errors="replace")
+                    chunk = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", chunk)
+                    chunk = re.sub(r"\x1b\][^\x07]*\x07", "", chunk)
+                    chunk = re.sub(r"\x1b[PX^_][^\x1b]*\x1b\\", "", chunk)
+                    chunk = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", chunk)
+
+                    if chunk:
+                        buffer += chunk
+                        if "\n" in buffer:
+                            yield buffer
+                            buffer = ""
+
+            # Yield any remaining buffer
+            if buffer:
+                yield buffer
+
+        except NotFound as e:
+            msg = f"Container not found for workspace {workspace_id}"
+            raise ValueError(msg) from e
+        except Exception as e:
+            logger.exception(
+                "Streaming exec failed",
+                workspace_id=workspace_id,
+                error=str(e),
+            )
+            yield f"\n❌ Error: {e}\n"
 
     async def read_file(self, workspace_id: str, path: str) -> str:
         """Read a file from the workspace."""

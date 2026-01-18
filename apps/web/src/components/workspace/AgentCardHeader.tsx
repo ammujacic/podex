@@ -44,6 +44,7 @@ import type { Agent } from '@/stores/session';
 import type { ModelInfo } from '@podex/shared';
 import type { Worktree } from '@/stores/worktrees';
 import type { Checkpoint } from '@/stores/checkpoints';
+import { getCliAgentType, normalizeCliModelId } from '@/hooks/useCliAgentCommands';
 
 // Extended ModelInfo with user API flag
 type ExtendedModelInfo = ModelInfo & { isUserKey?: boolean };
@@ -132,6 +133,12 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
   const isOpenAICodexAgent = agent.role === 'openai-codex';
   const isGeminiCliAgent = agent.role === 'gemini-cli';
   const isCliAgent = isClaudeCodeAgent || isOpenAICodexAgent || isGeminiCliAgent;
+
+  // Normalize model ID for CLI agents (e.g., "claude-sonnet-4-5-20250929" -> "sonnet")
+  const cliAgentType = getCliAgentType(agent.role);
+  const normalizedModelId = cliAgentType
+    ? normalizeCliModelId(agent.model, cliAgentType)
+    : agent.model;
 
   const Icon = getRoleIcon(agent.role);
   const textColor = getAgentTextColor(agent.color);
@@ -309,7 +316,7 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                       className="cursor-pointer"
                     >
                       <div className="flex flex-col gap-0.5 w-full">
-                        <div className="flex items-center justify-between">
+                        <div className="flex items-center justify-between hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30">
                           <span className="text-sm truncate">
                             {cp.description || `Checkpoint #${cp.checkpointNumber}`}
                           </span>
@@ -416,80 +423,99 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
               <DropdownMenuLabel>Select Model</DropdownMenuLabel>
               <DropdownMenuSeparator />
 
-              {/* Flagship Tier */}
-              <DropdownMenuLabel className="text-xs text-amber-400">Flagship</DropdownMenuLabel>
-              <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                {modelsByTier.flagship.map((model) => (
-                  <ModelTooltip key={model.id} model={model} side="right">
+              {isCliAgent ? (
+                /* CLI agents: Simple flat list without categories */
+                <DropdownMenuRadioGroup value={normalizedModelId} onValueChange={onChangeModel}>
+                  {modelsByTier.flagship.map((model) => (
                     <DropdownMenuRadioItem
+                      key={model.id}
                       value={model.id}
-                      className="flex items-center justify-between cursor-pointer"
+                      className="flex items-center justify-between hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
                     >
-                      <span>{model.shortName}</span>
+                      <span>{model.displayName}</span>
                       <ModelCapabilityBadges model={model} compact />
                     </DropdownMenuRadioItem>
-                  </ModelTooltip>
-                ))}
-              </DropdownMenuRadioGroup>
-              <DropdownMenuSeparator />
-
-              {/* Balanced Tier */}
-              <DropdownMenuLabel className="text-xs text-blue-400">Balanced</DropdownMenuLabel>
-              <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                {modelsByTier.balanced.map((model) => (
-                  <ModelTooltip key={model.id} model={model} side="right">
-                    <DropdownMenuRadioItem
-                      value={model.id}
-                      className="flex items-center justify-between cursor-pointer"
-                    >
-                      <span>{model.shortName}</span>
-                      <ModelCapabilityBadges model={model} compact />
-                    </DropdownMenuRadioItem>
-                  </ModelTooltip>
-                ))}
-              </DropdownMenuRadioGroup>
-              <DropdownMenuSeparator />
-
-              {/* Fast Tier */}
-              <DropdownMenuLabel className="text-xs text-green-400">Fast</DropdownMenuLabel>
-              <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                {modelsByTier.fast.map((model) => (
-                  <ModelTooltip key={model.id} model={model} side="right">
-                    <DropdownMenuRadioItem
-                      value={model.id}
-                      className="flex items-center justify-between cursor-pointer"
-                    >
-                      <span>{model.shortName}</span>
-                      <ModelCapabilityBadges model={model} compact />
-                    </DropdownMenuRadioItem>
-                  </ModelTooltip>
-                ))}
-              </DropdownMenuRadioGroup>
-
-              {/* Your API Keys */}
-              {modelsByTier.userApi.length > 0 && (
+                  ))}
+                </DropdownMenuRadioGroup>
+              ) : (
+                /* Podex agents: Tiered categories */
                 <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuLabel className="text-xs text-purple-400 flex items-center gap-1">
-                    <Key className="h-3 w-3" />
-                    Your API Keys
-                  </DropdownMenuLabel>
+                  {/* Flagship Tier */}
+                  <DropdownMenuLabel className="text-xs text-amber-400">Flagship</DropdownMenuLabel>
                   <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                    {modelsByTier.userApi.map((model) => (
+                    {modelsByTier.flagship.map((model) => (
                       <ModelTooltip key={model.id} model={model} side="right">
                         <DropdownMenuRadioItem
                           value={model.id}
-                          className="flex items-center justify-between cursor-pointer"
+                          className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
                         >
-                          <span className="flex items-center gap-1">
-                            <Key className="h-3 w-3 text-purple-400" />
-                            {model.shortName}
-                          </span>
+                          <span>{model.shortName}</span>
                           <ModelCapabilityBadges model={model} compact />
                         </DropdownMenuRadioItem>
                       </ModelTooltip>
                     ))}
                   </DropdownMenuRadioGroup>
+                  <DropdownMenuSeparator />
+
+                  {/* Balanced Tier */}
+                  <DropdownMenuLabel className="text-xs text-blue-400">Balanced</DropdownMenuLabel>
+                  <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
+                    {modelsByTier.balanced.map((model) => (
+                      <ModelTooltip key={model.id} model={model} side="right">
+                        <DropdownMenuRadioItem
+                          value={model.id}
+                          className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
+                        >
+                          <span>{model.shortName}</span>
+                          <ModelCapabilityBadges model={model} compact />
+                        </DropdownMenuRadioItem>
+                      </ModelTooltip>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                  <DropdownMenuSeparator />
+
+                  {/* Fast Tier */}
+                  <DropdownMenuLabel className="text-xs text-green-400">Fast</DropdownMenuLabel>
+                  <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
+                    {modelsByTier.fast.map((model) => (
+                      <ModelTooltip key={model.id} model={model} side="right">
+                        <DropdownMenuRadioItem
+                          value={model.id}
+                          className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
+                        >
+                          <span>{model.shortName}</span>
+                          <ModelCapabilityBadges model={model} compact />
+                        </DropdownMenuRadioItem>
+                      </ModelTooltip>
+                    ))}
+                  </DropdownMenuRadioGroup>
+
+                  {/* Your API Keys */}
+                  {modelsByTier.userApi.length > 0 && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuLabel className="text-xs text-purple-400 flex items-center gap-1">
+                        <Key className="h-3 w-3" />
+                        Your API Keys
+                      </DropdownMenuLabel>
+                      <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
+                        {modelsByTier.userApi.map((model) => (
+                          <ModelTooltip key={model.id} model={model} side="right">
+                            <DropdownMenuRadioItem
+                              value={model.id}
+                              className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
+                            >
+                              <span className="flex items-center gap-1">
+                                <Key className="h-3 w-3 text-purple-400" />
+                                {model.shortName}
+                              </span>
+                              <ModelCapabilityBadges model={model} compact />
+                            </DropdownMenuRadioItem>
+                          </ModelTooltip>
+                        ))}
+                      </DropdownMenuRadioGroup>
+                    </>
+                  )}
                 </>
               )}
             </DropdownMenuContent>
@@ -524,73 +550,92 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
               Change Model
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent className="w-64">
-              {/* Flagship */}
-              <DropdownMenuLabel className="text-xs text-amber-400">Flagship</DropdownMenuLabel>
-              <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                {modelsByTier.flagship.map((model) => (
-                  <DropdownMenuRadioItem
-                    key={model.id}
-                    value={model.id}
-                    className="flex items-center justify-between cursor-pointer"
-                  >
-                    <span>{model.shortName}</span>
-                    <ModelCapabilityBadges model={model} compact />
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-              <DropdownMenuSeparator />
-              {/* Balanced */}
-              <DropdownMenuLabel className="text-xs text-blue-400">Balanced</DropdownMenuLabel>
-              <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                {modelsByTier.balanced.map((model) => (
-                  <DropdownMenuRadioItem
-                    key={model.id}
-                    value={model.id}
-                    className="flex items-center justify-between cursor-pointer"
-                  >
-                    <span>{model.shortName}</span>
-                    <ModelCapabilityBadges model={model} compact />
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-              <DropdownMenuSeparator />
-              {/* Fast */}
-              <DropdownMenuLabel className="text-xs text-green-400">Fast</DropdownMenuLabel>
-              <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                {modelsByTier.fast.map((model) => (
-                  <DropdownMenuRadioItem
-                    key={model.id}
-                    value={model.id}
-                    className="flex items-center justify-between cursor-pointer"
-                  >
-                    <span>{model.shortName}</span>
-                    <ModelCapabilityBadges model={model} compact />
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-              {/* Your API Keys */}
-              {modelsByTier.userApi.length > 0 && (
+              {isCliAgent ? (
+                /* CLI agents: Simple flat list */
+                <DropdownMenuRadioGroup value={normalizedModelId} onValueChange={onChangeModel}>
+                  {modelsByTier.flagship.map((model) => (
+                    <DropdownMenuRadioItem
+                      key={model.id}
+                      value={model.id}
+                      className="flex items-center justify-between hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
+                    >
+                      <span>{model.displayName}</span>
+                      <ModelCapabilityBadges model={model} compact />
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              ) : (
+                /* Podex agents: Tiered categories */
                 <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuLabel className="text-xs text-purple-400 flex items-center gap-1">
-                    <Key className="h-3 w-3" />
-                    Your API Keys
-                  </DropdownMenuLabel>
+                  {/* Flagship */}
+                  <DropdownMenuLabel className="text-xs text-amber-400">Flagship</DropdownMenuLabel>
                   <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                    {modelsByTier.userApi.map((model) => (
+                    {modelsByTier.flagship.map((model) => (
                       <DropdownMenuRadioItem
                         key={model.id}
                         value={model.id}
-                        className="flex items-center justify-between cursor-pointer"
+                        className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
                       >
-                        <span className="flex items-center gap-1">
-                          <Key className="h-3 w-3 text-purple-400" />
-                          {model.shortName}
-                        </span>
+                        <span>{model.shortName}</span>
                         <ModelCapabilityBadges model={model} compact />
                       </DropdownMenuRadioItem>
                     ))}
                   </DropdownMenuRadioGroup>
+                  <DropdownMenuSeparator />
+                  {/* Balanced */}
+                  <DropdownMenuLabel className="text-xs text-blue-400">Balanced</DropdownMenuLabel>
+                  <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
+                    {modelsByTier.balanced.map((model) => (
+                      <DropdownMenuRadioItem
+                        key={model.id}
+                        value={model.id}
+                        className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
+                      >
+                        <span>{model.shortName}</span>
+                        <ModelCapabilityBadges model={model} compact />
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                  <DropdownMenuSeparator />
+                  {/* Fast */}
+                  <DropdownMenuLabel className="text-xs text-green-400">Fast</DropdownMenuLabel>
+                  <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
+                    {modelsByTier.fast.map((model) => (
+                      <DropdownMenuRadioItem
+                        key={model.id}
+                        value={model.id}
+                        className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
+                      >
+                        <span>{model.shortName}</span>
+                        <ModelCapabilityBadges model={model} compact />
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                  {/* Your API Keys */}
+                  {modelsByTier.userApi.length > 0 && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuLabel className="text-xs text-purple-400 flex items-center gap-1">
+                        <Key className="h-3 w-3" />
+                        Your API Keys
+                      </DropdownMenuLabel>
+                      <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
+                        {modelsByTier.userApi.map((model) => (
+                          <DropdownMenuRadioItem
+                            key={model.id}
+                            value={model.id}
+                            className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
+                          >
+                            <span className="flex items-center gap-1">
+                              <Key className="h-3 w-3 text-purple-400" />
+                              {model.shortName}
+                            </span>
+                            <ModelCapabilityBadges model={model} compact />
+                          </DropdownMenuRadioItem>
+                        ))}
+                      </DropdownMenuRadioGroup>
+                    </>
+                  )}
                 </>
               )}
             </DropdownMenuSubContent>

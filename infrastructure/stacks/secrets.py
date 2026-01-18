@@ -1,9 +1,12 @@
 """Secret Manager configuration.
 
-Note: GCP Free Tier provides 6 active secret versions.
-We use 8 secrets (2 over free tier):
-  - 4 auto-generated: JWT, DB password, Redis password, Internal API key
-  - 4 placeholders: SendGrid, Stripe, Admin email, Admin password
+Creates secrets for all services. External service secrets are created as placeholders
+and should be set via GCP Console or CLI after deployment.
+
+Secrets are organized into:
+  - Auto-generated: JWT, DB password, Redis password, Internal API key
+  - Required placeholders: Admin email/password
+  - Optional external services: Sentry, Stripe, OAuth, VAPID, LLM APIs
 """
 
 from typing import Any
@@ -13,7 +16,7 @@ import pulumi_random as random
 
 
 def create_secrets(project_id: str, env: str) -> dict[str, Any]:
-    """Create Secret Manager secrets (8 total: 4 auto-generated + 4 placeholders)."""
+    """Create Secret Manager secrets for all services."""
     secrets: dict[str, Any] = {}
 
     # 1. JWT Secret (auto-generated)
@@ -108,28 +111,9 @@ def create_secrets(project_id: str, env: str) -> dict[str, Any]:
 
     secrets["internal_api_key"] = internal_secret
     secrets["internal_api_key_value"] = internal_api_key.result
-    # 5-6. Placeholder secrets (set manually via console or CLI)
-    # These are for optional external services
-    for name in ["sendgrid-api-key", "stripe-api-key"]:
-        secret = gcp.secretmanager.Secret(
-            f"{name}-{env}",
-            secret_id=f"podex-{name}-{env}",
-            replication=gcp.secretmanager.SecretReplicationArgs(
-                auto=gcp.secretmanager.SecretReplicationAutoArgs(),
-            ),
-        )
-        # Add placeholder version
-        gcp.secretmanager.SecretVersion(
-            f"{name}-version-{env}",
-            secret=secret.id,
-            secret_data="PLACEHOLDER_SET_VIA_CONSOLE",
-        )
-        secrets[name.replace("-", "_")] = secret
-
-    # 7-8. Admin credentials for initial admin account seeding
-    # Set these via GCP Console or CLI for production:
-    #   gcloud secrets versions add podex-admin-email-{env} --data-file=-
-    #   gcloud secrets versions add podex-admin-password-{env} --data-file=-
+    # =========================================
+    # Admin credentials (required for first login)
+    # =========================================
     admin_email_secret = gcp.secretmanager.Secret(
         f"admin-email-{env}",
         secret_id=f"podex-admin-email-{env}",
@@ -140,7 +124,7 @@ def create_secrets(project_id: str, env: str) -> dict[str, Any]:
     gcp.secretmanager.SecretVersion(
         f"admin-email-version-{env}",
         secret=admin_email_secret.id,
-        secret_data="PLACEHOLDER_SET_VIA_CONSOLE",
+        secret_data="admin@example.com",  # Change after deployment
     )
     secrets["admin_email"] = admin_email_secret
 
@@ -154,8 +138,60 @@ def create_secrets(project_id: str, env: str) -> dict[str, Any]:
     gcp.secretmanager.SecretVersion(
         f"admin-password-version-{env}",
         secret=admin_password_secret.id,
-        secret_data="PLACEHOLDER_SET_VIA_CONSOLE",
+        secret_data="ChangeThisPassword123!",  # Change after deployment
     )
     secrets["admin_password"] = admin_password_secret
+
+    # =========================================
+    # Optional external service secrets
+    # All use empty string as default (services should handle gracefully)
+    # =========================================
+    optional_secrets = [
+        # Error tracking - per-service DSNs
+        "sentry-dsn-api",
+        "sentry-dsn-agent",
+        "sentry-dsn-compute",
+        "sentry-dsn-web",
+        # Sentry build-time (for source maps upload)
+        "sentry-auth-token",
+        "sentry-org",
+        "sentry-project",
+        # Email
+        "sendgrid-api-key",
+        # Payments (Stripe)
+        "stripe-secret-key",
+        "stripe-webhook-secret",
+        "stripe-publishable-key",
+        # OAuth - GitHub
+        "github-client-id",
+        "github-client-secret",
+        # OAuth - Google
+        "google-client-id",
+        "google-client-secret",
+        # Push notifications (VAPID)
+        "vapid-public-key",
+        "vapid-private-key",
+        "vapid-email",
+        # LLM APIs (alternative to Vertex AI)
+        "anthropic-api-key",
+        "openai-api-key",
+    ]
+
+    for name in optional_secrets:
+        secret = gcp.secretmanager.Secret(
+            f"{name}-{env}",
+            secret_id=f"podex-{name}-{env}",
+            replication=gcp.secretmanager.SecretReplicationArgs(
+                auto=gcp.secretmanager.SecretReplicationAutoArgs(),
+            ),
+        )
+        # Empty string as default - services should check and handle gracefully
+        gcp.secretmanager.SecretVersion(
+            f"{name}-version-{env}",
+            secret=secret.id,
+            secret_data="",  # Empty = not configured
+        )
+        # Convert kebab-case to snake_case for dict key
+        secrets[name.replace("-", "_")] = secret
 
     return secrets

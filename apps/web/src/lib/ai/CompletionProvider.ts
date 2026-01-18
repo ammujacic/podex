@@ -120,6 +120,8 @@ export class AICompletionProvider {
   private cache: CompletionCache;
   private pendingRequest: AbortController | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private isRegistered = false;
+  private disposable: { dispose: () => void } | null = null;
 
   constructor(config: Partial<CompletionProviderConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -211,6 +213,7 @@ export class AICompletionProvider {
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'include', // Include cookies for authentication
         body: JSON.stringify({
           prefix: request.prefix,
           suffix: request.suffix,
@@ -334,9 +337,14 @@ export class AICompletionProvider {
   }
 
   /**
-   * Register the provider with Monaco
+   * Register the provider with Monaco (only registers once)
    */
   register(monacoInstance: typeof monaco, languages?: string[]): { dispose: () => void } {
+    // Prevent duplicate registrations
+    if (this.isRegistered && this.disposable) {
+      return this.disposable;
+    }
+
     const provider = this.createMonacoProvider();
     const targetLanguages = languages || ['*'];
 
@@ -344,13 +352,18 @@ export class AICompletionProvider {
       monacoInstance.languages.registerInlineCompletionsProvider(lang, provider)
     );
 
-    return {
+    this.isRegistered = true;
+    this.disposable = {
       dispose: () => {
         disposables.forEach((d) => d.dispose());
         this.cancelPendingRequest();
         this.cache.clear();
+        this.isRegistered = false;
+        this.disposable = null;
       },
     };
+
+    return this.disposable;
   }
 }
 

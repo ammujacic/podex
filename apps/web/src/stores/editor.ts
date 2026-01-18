@@ -714,6 +714,11 @@ export const useEditorStore = create<EditorState>()(
         partialize: (state) => ({
           settings: state.settings,
           recentlyClosed: state.recentlyClosed.slice(0, 5),
+          // Persist tabs and panes so editor state survives refresh
+          tabs: state.tabs,
+          panes: state.panes,
+          paneOrder: state.paneOrder,
+          activePaneId: state.activePaneId,
         }),
       }
     )

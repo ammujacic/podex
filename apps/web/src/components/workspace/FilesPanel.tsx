@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   ChevronRight,
   ChevronDown,
@@ -10,6 +10,8 @@ import {
   Loader2,
   RefreshCw,
   CloudSync,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { useSessionStore } from '@/stores/session';
 import { useEditorStore } from '@/stores/editor';
@@ -19,6 +21,7 @@ import { NoFilesEmptyState, ErrorEmptyState, EmptyFolderState } from '@/componen
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { getLanguageFromPath } from './CodeEditor';
 import { listFiles, getFileContent, type FileNode } from '@/lib/api';
+import { getUserConfig } from '@/lib/api/user-config';
 import { MobileFileItem } from './MobileFileItem';
 import { MobileFileActionsSheet } from './MobileFileActionsSheet';
 
@@ -36,6 +39,8 @@ interface FileTreeNodeProps {
   loadedFolders: Map<string, FileNode[]>;
   loadingFolders: Set<string>;
   onLoadFolder: (path: string) => void;
+  showHiddenFiles: boolean;
+  isPathSynced: (path: string) => boolean;
 }
 
 // Match backend FileSync.exclude_patterns for what is *not* auto-synced.
@@ -51,9 +56,69 @@ const NON_SYNCED_SEGMENTS = [
   '.cache',
 ];
 
-function isPathAutoSynced(path: string): boolean {
-  const segments = path.split('/').filter(Boolean);
-  return !segments.some((segment) => NON_SYNCED_SEGMENTS.includes(segment));
+// Paths that are always synced regardless of user settings
+const SYNCED_PREFIXES = ['projects/', 'projects'];
+
+// Default dotfiles (used when user config not available)
+const DEFAULT_DOTFILES = [
+  '.bashrc',
+  '.zshrc',
+  '.gitconfig',
+  '.npmrc',
+  '.vimrc',
+  '.profile',
+  '.config/starship.toml',
+  '.ssh/config',
+  '.claude/',
+  '.claude.json',
+  '.codex/',
+  '.gemini/',
+  '.opencode/',
+];
+
+/**
+ * Create a sync checker function based on user's dotfiles_paths
+ */
+function createSyncChecker(dotfilesPaths: string[]): (path: string) => boolean {
+  // Separate directories (ending with /) from files
+  const directories = dotfilesPaths.filter((p) => p.endsWith('/'));
+  const files = dotfilesPaths.filter((p) => !p.endsWith('/'));
+
+  return (path: string): boolean => {
+    const segments = path.split('/').filter(Boolean);
+
+    // Check if path contains excluded segments
+    if (segments.some((segment) => NON_SYNCED_SEGMENTS.includes(segment))) {
+      return false;
+    }
+
+    // Check if path is under a synced prefix (projects directory)
+    const isUnderSyncedPrefix = SYNCED_PREFIXES.some(
+      (prefix) => path === prefix || path.startsWith(prefix)
+    );
+
+    // Check if path is a synced directory or inside one
+    const isInSyncedDirectory = directories.some((dir) => {
+      const dirWithoutSlash = dir.slice(0, -1);
+      return (
+        path === dirWithoutSlash || path.startsWith(dir) || path.startsWith(dirWithoutSlash + '/')
+      );
+    });
+
+    // Check if path is a synced file
+    const isSyncedFile = files.some((file) => path === file);
+
+    return isUnderSyncedPrefix || isInSyncedDirectory || isSyncedFile;
+  };
+}
+
+function isHiddenFile(name: string): boolean {
+  return name.startsWith('.');
+}
+
+function filterFiles(files: FileNode[], showHidden: boolean): FileNode[] {
+  if (showHidden) return files;
+  return files.filter((file) => !isHiddenFile(file.name));
 }
 
 function FileTreeNode({
@@ -66,11 +131,14 @@ function FileTreeNode({
   loadedFolders,
   loadingFolders,
   onLoadFolder,
+  showHiddenFiles,
+  isPathSynced,
 }: FileTreeNodeProps) {
-  const isSynced = isPathAutoSynced(item.path || item.name || '');
+  const isSynced = isPathSynced(item.path || item.name || '');
   const isExpanded = expandedFolders.has(item.path);
   const isLoading = loadingFolders.has(item.path);
-  const children = loadedFolders.get(item.path);
+  const rawChildren = loadedFolders.get(item.path);
+  const children = rawChildren ? filterFiles(rawChildren, showHiddenFiles) : undefined;
   const paddingLeft = 8 + depth * 12; // Base padding + indentation per level
 
   const handleFolderClick = useCallback(() => {
@@ -129,6 +197,8 @@ function FileTreeNode({
                   loadedFolders={loadedFolders}
                   loadingFolders={loadingFolders}
                   onLoadFolder={onLoadFolder}
+                  showHiddenFiles={showHiddenFiles}
+                  isPathSynced={isPathSynced}
                 />
               ))}
             {children.length === 0 && <EmptyFolderState size="sm" />}
@@ -168,6 +238,8 @@ interface MobileFileTreeNodeProps {
   loadedFolders: Map<string, FileNode[]>;
   loadingFolders: Set<string>;
   onLoadFolder: (path: string) => void;
+  showHiddenFiles: boolean;
+  isPathSynced: (path: string) => boolean;
 }
 
 function MobileFileTreeNode({
@@ -181,10 +253,13 @@ function MobileFileTreeNode({
   loadedFolders,
   loadingFolders,
   onLoadFolder,
+  showHiddenFiles,
+  isPathSynced,
 }: MobileFileTreeNodeProps) {
   const isExpanded = expandedFolders.has(item.path);
   const isLoading = loadingFolders.has(item.path);
-  const children = loadedFolders.get(item.path);
+  const rawChildren = loadedFolders.get(item.path);
+  const children = rawChildren ? filterFiles(rawChildren, showHiddenFiles) : undefined;
 
   const handleToggleFolder = useCallback(() => {
     if (!isExpanded && !loadedFolders.has(item.path)) {
@@ -203,6 +278,7 @@ function MobileFileTreeNode({
       isExpanded={isExpanded}
       isLoading={isLoading}
       onToggleFolder={handleToggleFolder}
+      isPathSynced={isPathSynced}
     >
       {item.type === 'directory' && isExpanded && children && (
         <>
@@ -221,6 +297,8 @@ function MobileFileTreeNode({
                 loadedFolders={loadedFolders}
                 loadingFolders={loadingFolders}
                 onLoadFolder={onLoadFolder}
+                showHiddenFiles={showHiddenFiles}
+                isPathSynced={isPathSynced}
               />
             ))}
           {children.length === 0 && <EmptyFolderState size="sm" />}
@@ -247,6 +325,26 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [loadedFolders, setLoadedFolders] = useState<Map<string, FileNode[]>>(new Map());
   const [loadingFolders, setLoadingFolders] = useState<Set<string>>(new Set());
+  const [showHiddenFiles, setShowHiddenFiles] = useState(false);
+
+  // User's dotfiles sync configuration
+  const [userDotfilesPaths, setUserDotfilesPaths] = useState<string[]>(DEFAULT_DOTFILES);
+
+  // Fetch user config on mount
+  useEffect(() => {
+    getUserConfig()
+      .then((config) => {
+        if (config?.dotfiles_paths && config.dotfiles_paths.length > 0) {
+          setUserDotfilesPaths(config.dotfiles_paths);
+        }
+      })
+      .catch(() => {
+        // Use defaults if config fetch fails
+      });
+  }, []);
+
+  // Create sync checker based on user's settings
+  const isPathSynced = useMemo(() => createSyncChecker(userDotfilesPaths), [userDotfilesPaths]);
 
   const loadRootFiles = useCallback(async () => {
     setFilesLoading(true);
@@ -295,13 +393,42 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
     });
   }, []);
 
-  const handleRefresh = useCallback(() => {
-    // Reset all state and reload
-    setExpandedFolders(new Set());
+  const handleRefresh = useCallback(async () => {
+    // Preserve expanded folders while refreshing contents
+    const currentlyExpanded = new Set(expandedFolders);
+
+    // Clear loaded folder contents but keep expanded state
     setLoadedFolders(new Map());
     setLoadingFolders(new Set());
-    setHasLoaded(false);
-  }, []);
+
+    // Reload root files
+    setFilesLoading(true);
+    setFilesError(null);
+    try {
+      const fileTree = await listFiles(sessionId, '.');
+      setRootFiles(fileTree);
+
+      // Reload contents for all expanded folders
+      for (const path of currentlyExpanded) {
+        try {
+          const folderContents = await listFiles(sessionId, path);
+          setLoadedFolders((prev) => new Map(prev).set(path, folderContents));
+        } catch (err) {
+          console.error(`Failed to reload folder ${path}:`, err);
+          // Remove from expanded if we can't load it
+          setExpandedFolders((prev) => {
+            const next = new Set(prev);
+            next.delete(path);
+            return next;
+          });
+        }
+      }
+    } catch (err) {
+      setFilesError(err instanceof Error ? err.message : 'Failed to load files');
+    } finally {
+      setFilesLoading(false);
+    }
+  }, [expandedFolders, sessionId]);
 
   useEffect(() => {
     if (!hasLoaded && !filesLoading) {
@@ -397,14 +524,26 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
         <span className="text-xs font-medium text-text-muted uppercase tracking-wide">
           Explorer
         </span>
-        <button
-          onClick={handleRefresh}
-          disabled={filesLoading}
-          className="shrink-0 p-1 rounded text-text-muted hover:text-text-primary hover:bg-overlay disabled:opacity-50"
-          title="Refresh"
-        >
-          <RefreshCw className={cn('h-4 w-4', filesLoading && 'animate-spin')} />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setShowHiddenFiles(!showHiddenFiles)}
+            className={cn(
+              'shrink-0 p-1 rounded hover:bg-overlay',
+              showHiddenFiles ? 'text-text-primary' : 'text-text-muted hover:text-text-primary'
+            )}
+            title={showHiddenFiles ? 'Hide hidden files' : 'Show hidden files'}
+          >
+            {showHiddenFiles ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+          </button>
+          <button
+            onClick={handleRefresh}
+            disabled={filesLoading}
+            className="shrink-0 p-1 rounded text-text-muted hover:text-text-primary hover:bg-overlay disabled:opacity-50"
+            title="Refresh"
+          >
+            <RefreshCw className={cn('h-4 w-4', filesLoading && 'animate-spin')} />
+          </button>
+        </div>
       </div>
       {/* File tree */}
       <div className="flex-1 overflow-y-auto py-1">
@@ -418,7 +557,7 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
           <NoFilesEmptyState size="sm" />
         ) : isMobile ? (
           // Mobile: Use swipeable file items
-          rootFiles
+          filterFiles(rootFiles, showHiddenFiles)
             .filter((item) => item.path || item.name)
             .map((item, index) => (
               <MobileFileTreeNode
@@ -433,11 +572,13 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
                 loadedFolders={loadedFolders}
                 loadingFolders={loadingFolders}
                 onLoadFolder={loadFolder}
+                showHiddenFiles={showHiddenFiles}
+                isPathSynced={isPathSynced}
               />
             ))
         ) : (
           // Desktop: Use regular file tree
-          rootFiles
+          filterFiles(rootFiles, showHiddenFiles)
             .filter((item) => item.path || item.name)
             .map((item, index) => (
               <FileTreeNode
@@ -451,6 +592,8 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
                 loadedFolders={loadedFolders}
                 loadingFolders={loadingFolders}
                 onLoadFolder={loadFolder}
+                showHiddenFiles={showHiddenFiles}
+                isPathSynced={isPathSynced}
               />
             ))
         )}

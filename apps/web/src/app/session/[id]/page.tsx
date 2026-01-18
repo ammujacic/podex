@@ -21,7 +21,6 @@ import {
   getSession,
   listAgents,
   getAgentMessages,
-  createAgent,
   type Session,
   type AgentResponse,
 } from '@/lib/api';
@@ -160,27 +159,11 @@ export default function SessionPage() {
 
         setSession(data);
 
-        // Create a default Chat agent if no agents exist (needed for onboarding)
-        // Backend will use the platform default model for the 'chat' role
-        let agents = agentsData;
-        if (agents.length === 0) {
-          try {
-            const defaultAgent = await createAgent(sessionId, {
-              name: 'Chat',
-              role: 'chat',
-            });
-            agents = [defaultAgent];
-          } catch {
-            // If agent creation fails, continue without default agent
-            console.warn('Failed to create default Chat agent');
-          }
-        }
-
         if (isCancelled) return;
 
-        // Fetch messages for each agent
+        // Fetch messages for each agent (backend creates default Chat agent on session creation)
         const agentsWithMessages: Agent[] = await Promise.all(
-          agents.map(async (agentResponse: AgentResponse, index: number) => {
+          agentsData.map(async (agentResponse: AgentResponse, index: number) => {
             try {
               const messagesData = await getAgentMessages(sessionId, agentResponse.id);
               const messages: AgentMessage[] = messagesData.map((msg) => ({
@@ -241,10 +224,23 @@ export default function SessionPage() {
             editorGridCardId: null,
           });
         } else {
-          // Session exists (likely from localStorage) - sync agents from API
+          // Session exists (likely from localStorage) - sync from API
           // This ensures agents created in other views/devices are loaded
+          // and workspace ID is up to date (critical for terminal/file explorer sync)
+          const {
+            updateAgent,
+            addAgent: addAgentToSession,
+            updateSessionWorkspaceId,
+            removeAgent,
+          } = useSessionStore.getState();
+
+          // CRITICAL: Sync workspace ID from API to fix terminal/file explorer mismatch
+          // The localStorage may have a stale workspace ID from a previous session
+          if (data.workspace_id && data.workspace_id !== existingSession.workspaceId) {
+            updateSessionWorkspaceId(sessionId, data.workspace_id);
+          }
+
           // Merge agents: keep local state (messages, status) but ensure all API agents exist
-          const { updateAgent, addAgent: addAgentToSession } = useSessionStore.getState();
           const existingAgentIds = new Set(existingSession.agents.map((a: Agent) => a.id));
 
           for (const apiAgent of agentsWithMessages) {
@@ -264,8 +260,32 @@ export default function SessionPage() {
                   modelDisplayName: apiAgent.modelDisplayName,
                   status: apiAgent.status,
                   messages: mergedMessages,
+                  // Fix corrupted localStorage data: ensure color is always set
+                  color: localAgent.color || apiAgent.color,
+                  mode: localAgent.mode || apiAgent.mode,
                 });
               }
+            }
+          }
+
+          // Remove agents that exist locally but not in API (i.e., were deleted elsewhere)
+          // Also remove corrupted agents (missing id or essential fields)
+          const apiAgentIds = new Set(agentsWithMessages.map((a) => a.id));
+          for (const localAgent of existingSession.agents) {
+            // Skip terminal agents - they're managed separately and may not exist in API
+            if (localAgent.terminalSessionId) continue;
+
+            // Remove corrupted agents (missing required fields)
+            if (!localAgent.id || !localAgent.name) {
+              if (localAgent.id) {
+                removeAgent(sessionId, localAgent.id);
+              }
+              continue;
+            }
+
+            // Remove agents not found in backend
+            if (!apiAgentIds.has(localAgent.id)) {
+              removeAgent(sessionId, localAgent.id);
             }
           }
         }

@@ -147,8 +147,15 @@ DEFAULT_DOTFILES = [
     ".gitconfig",
     ".npmrc",
     ".vimrc",
+    ".profile",
     ".config/starship.toml",
     ".ssh/config",  # Only the config, not keys
+    # CLI agent config directories
+    ".claude/",
+    ".claude.json",
+    ".codex/",
+    ".gemini/",
+    ".opencode/",
 ]
 
 

@@ -4,6 +4,7 @@
  */
 
 import type { Agent } from '@/stores/session';
+import { parseModelIdToDisplayName } from '@/lib/model-utils';
 
 // ============================================================================
 // Status Colors
@@ -157,7 +158,7 @@ const MODEL_DISPLAY_NAMES: Record<string, string> = {
  * Get human-readable display name for a model ID
  */
 export function getModelDisplayName(modelId: string): string {
-  return MODEL_DISPLAY_NAMES[modelId] || modelId.split('/').pop() || modelId;
+  return MODEL_DISPLAY_NAMES[modelId] || parseModelIdToDisplayName(modelId);
 }
 
 // ============================================================================

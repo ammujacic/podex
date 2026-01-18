@@ -16,6 +16,7 @@ from src.config import settings
 from src.database.connection import async_session_factory
 from src.database.models import Session as SessionModel
 from src.database.models import SessionShare
+from src.routes.sessions import ensure_workspace_provisioned
 from src.session_sync.manager import session_sync_manager
 from src.session_sync.models import SharingMode, SyncAction, SyncActionType
 from src.terminal.manager import terminal_manager
@@ -623,6 +624,33 @@ async def terminal_attach(sid: str, data: dict[str, str]) -> None:
     if pending_cleanup:
         pending_cleanup.cancel()
 
+    # Ensure workspace is provisioned before connecting to terminal
+    try:
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(SessionModel).where(SessionModel.workspace_id == workspace_id)
+            )
+            session = result.scalar_one_or_none()
+            if session:
+                await ensure_workspace_provisioned(session, user_id, db)
+            else:
+                logger.warning(
+                    "No session found for workspace",
+                    workspace_id=workspace_id,
+                )
+    except Exception as e:
+        logger.warning(
+            "Failed to ensure workspace provisioned",
+            workspace_id=workspace_id,
+            error=str(e),
+        )
+        await sio.emit(
+            "terminal_error",
+            {"error": "Workspace not available. Please wait or refresh."},
+            to=sid,
+        )
+        return
+
     # Join terminal room
     await sio.enter_room(sid, f"terminal:{workspace_id}")
 
@@ -746,6 +774,56 @@ async def emit_to_session(session_id: str, event: str, data: dict[str, Any]) -> 
 
 
 # ============== Agent Streaming & Tool Visibility ==============
+
+
+async def emit_permission_request(
+    session_id: str,
+    agent_id: str,
+    request_id: str,
+    command: str | None,
+    description: str | None = None,
+    tool_name: str | None = None,
+) -> None:
+    """Emit permission request from Claude CLI to user for approval.
+
+    When Claude Code CLI wants to execute a command, it emits a permission_request
+    event. This function forwards that request to the frontend via WebSocket so the
+    user can approve or deny it.
+
+    Args:
+        session_id: The session ID
+        agent_id: The agent requesting permission
+        request_id: Unique ID for this permission request
+        command: The command to be executed (e.g., "git clone ...")
+        description: Optional description of what the command does
+        tool_name: Tool name (e.g., "Bash", "Write", etc.)
+    """
+    await sio.emit(
+        "permission_request",
+        {
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "request_id": request_id,
+            "command": command,
+            "description": description,
+            "tool_name": tool_name or "Bash",
+            "action_type": "command_execute",
+            "action_details": {
+                "command": command,
+                "tool_name": tool_name or "Bash",
+            },
+            "timestamp": datetime.now(UTC).isoformat(),
+        },
+        room=f"session:{session_id}",
+    )
+
+    logger.info(
+        "Permission request emitted",
+        session_id=session_id,
+        agent_id=agent_id,
+        request_id=request_id,
+        command_preview=command[:100] if command else None,
+    )
 
 
 async def emit_agent_token(
@@ -1825,6 +1903,196 @@ async def extension_unsubscribe(sid: str, _data: dict[str, str]) -> None:
     if user_id:
         await sio.leave_room(sid, f"user:{user_id}")
         logger.info("Client unsubscribed from extension sync", sid=sid, user_id=user_id)
+
+
+# ============== Permission Request/Response Events ==============
+
+# Pending permission contexts for retry after approval
+_pending_permission_contexts: dict[str, dict[str, Any]] = {}
+MAX_PENDING_CONTEXTS = 500  # Safety limit
+
+
+def store_pending_permission_context(
+    request_id: str,
+    session_id: str,
+    agent_id: str,
+    workspace_id: str,
+    user_id: str,
+    message: str,
+    mode: str,
+    model: str,
+    command: str | None = None,
+    tool_name: str | None = None,
+    allowed_tools: list[str] | None = None,
+    cli_session_id: str | None = None,
+    thinking_budget: int | None = None,
+) -> None:
+    """Store context for pending permission request to enable auto-retry after approval.
+
+    Args:
+        request_id: The permission request ID (matches tool_use_id)
+        session_id: Podex session ID
+        agent_id: Agent ID
+        workspace_id: Workspace ID for command execution
+        user_id: User ID for authorization
+        message: Original user message
+        mode: Agent mode (ask, auto, sovereign)
+        model: Model alias (sonnet, opus, haiku)
+        command: The command that needs permission
+        tool_name: Tool name (e.g., "Bash")
+        allowed_tools: Currently allowed tools list
+        cli_session_id: Claude CLI session ID for conversation continuity
+        thinking_budget: Extended thinking budget
+    """
+    # Evict oldest if at capacity
+    if len(_pending_permission_contexts) >= MAX_PENDING_CONTEXTS:
+        oldest_key = next(iter(_pending_permission_contexts))
+        del _pending_permission_contexts[oldest_key]
+        logger.warning(
+            "Pending permission context cache full, evicted oldest",
+            request_id=oldest_key,
+        )
+
+    _pending_permission_contexts[request_id] = {
+        "session_id": session_id,
+        "agent_id": agent_id,
+        "workspace_id": workspace_id,
+        "user_id": user_id,
+        "message": message,
+        "mode": mode,
+        "model": model,
+        "command": command,
+        "tool_name": tool_name or "Bash",
+        "allowed_tools": allowed_tools or [],
+        "cli_session_id": cli_session_id,
+        "thinking_budget": thinking_budget,
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+
+    logger.info(
+        "Stored pending permission context",
+        request_id=request_id,
+        session_id=session_id,
+        agent_id=agent_id,
+        command_preview=command[:100] if command else None,
+    )
+
+
+def get_pending_permission_context(request_id: str) -> dict[str, Any] | None:
+    """Get and remove pending permission context.
+
+    Returns the stored context if found, None otherwise.
+    Context is removed after retrieval (one-time use).
+    """
+    return _pending_permission_contexts.pop(request_id, None)
+
+
+@sio.event
+async def permission_response(sid: str, data: dict[str, Any]) -> None:
+    """Handle permission approval/denial from user.
+
+    Simple flow:
+    1. User approves/denies in UI
+    2. If approved, retry with sovereign mode (user explicitly approved)
+    3. Show the result
+    """
+    session_id = data.get("session_id")
+    agent_id = data.get("agent_id")
+    request_id = data.get("request_id")
+    approved = data.get("approved", False)
+
+    if not session_id or not agent_id or not request_id:
+        return
+
+    # Verify client is in the session room
+    client = _client_info.get(sid)
+    if not client or client.get("session_id") != session_id:
+        logger.warning("Permission response from unauthenticated client", sid=sid)
+        return
+
+    logger.info(
+        "Permission response",
+        session_id=session_id,
+        agent_id=agent_id,
+        request_id=request_id,
+        approved=approved,
+    )
+
+    # Broadcast the decision
+    await sio.emit(
+        "permission_decision",
+        {
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "request_id": request_id,
+            "approved": approved,
+        },
+        room=f"session:{session_id}",
+    )
+
+    # If approved, retry with sovereign mode
+    if approved:
+        context = get_pending_permission_context(request_id)
+        if not context:
+            logger.warning("No context found for permission", request_id=request_id)
+            return
+
+        # Import here to avoid circular import
+        from src.routes.claude_code import execute_claude_code_message
+
+        command = context.get("command")
+        tool_name = context.get("tool_name", "Bash")
+
+        # Show agent is working
+        await sio.emit(
+            "agent_status",
+            {"session_id": session_id, "agent_id": agent_id, "status": "active"},
+            room=f"session:{session_id}",
+        )
+
+        try:
+            # Retry with sovereign mode (user approved, so skip permissions)
+            result = await execute_claude_code_message(
+                workspace_id=context["workspace_id"],
+                user_id=context["user_id"],
+                message=f"Proceed with {tool_name}: {command}",
+                mode="sovereign",
+                model=context.get("model", "sonnet"),
+                max_turns=5,
+                thinking_budget=context.get("thinking_budget"),
+                cli_session_id=context.get("cli_session_id"),
+                session_id=session_id,
+                agent_id=agent_id,
+            )
+
+            # Emit the response
+            await sio.emit(
+                "agent_message",
+                {
+                    "session_id": session_id,
+                    "agent_id": agent_id,
+                    "id": str(uuid4()),
+                    "content": result.get("content", ""),
+                    "role": "assistant",
+                    "tool_calls": result.get("tool_calls"),
+                    "created_at": datetime.now(UTC).isoformat(),
+                },
+                room=f"session:{session_id}",
+            )
+
+            await sio.emit(
+                "agent_status",
+                {"session_id": session_id, "agent_id": agent_id, "status": "idle"},
+                room=f"session:{session_id}",
+            )
+
+        except Exception as e:
+            logger.exception("Retry failed", error=str(e))
+            await sio.emit(
+                "agent_status",
+                {"session_id": session_id, "agent_id": agent_id, "status": "error"},
+                room=f"session:{session_id}",
+            )
 
 
 # ============== Agent Mode Switch Events ==============

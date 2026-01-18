@@ -225,7 +225,7 @@ export function EditorToolbar({
           className={cn(
             'flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors',
             settings.minimap
-              ? 'text-accent-primary bg-accent-primary/10'
+              ? 'text-accent-primary bg-accent-primary/10 hover:bg-accent-primary/20'
               : 'text-text-muted hover:text-text-primary hover:bg-overlay'
           )}
           title={`Minimap: ${settings.minimap ? 'On' : 'Off'}`}
@@ -239,7 +239,7 @@ export function EditorToolbar({
           className={cn(
             'flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors',
             settings.wordWrap === 'on'
-              ? 'text-accent-primary bg-accent-primary/10'
+              ? 'text-accent-primary bg-accent-primary/10 hover:bg-accent-primary/20'
               : 'text-text-muted hover:text-text-primary hover:bg-overlay'
           )}
           title={`Word Wrap: ${settings.wordWrap === 'on' ? 'On' : 'Off'}`}
@@ -253,7 +253,7 @@ export function EditorToolbar({
           className={cn(
             'flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors',
             settings.renderWhitespace !== 'none'
-              ? 'text-accent-primary bg-accent-primary/10'
+              ? 'text-accent-primary bg-accent-primary/10 hover:bg-accent-primary/20'
               : 'text-text-muted hover:text-text-primary hover:bg-overlay'
           )}
           title={`Show Whitespace: ${settings.renderWhitespace !== 'none' ? 'On' : 'Off'}`}
@@ -271,7 +271,7 @@ export function EditorToolbar({
           className={cn(
             'flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors',
             settings.completionsEnabled
-              ? 'text-accent-primary bg-accent-primary/10'
+              ? 'text-accent-primary bg-accent-primary/10 hover:bg-accent-primary/20'
               : 'text-text-muted hover:text-text-primary hover:bg-overlay'
           )}
           title={`AI Completions: ${settings.completionsEnabled ? 'On' : 'Off'}`}

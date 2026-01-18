@@ -15,6 +15,8 @@ import {
   Activity,
   Clock,
   Award,
+  Terminal,
+  Workflow,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { api } from '@/lib/api';
@@ -24,6 +26,9 @@ function formatNumber(num: number): string {
   if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
   return num.toString();
 }
+
+// CLI agent roles that wrap external CLI tools
+const CLI_AGENT_ROLES = new Set(['claude-code', 'openai-codex', 'gemini-cli']);
 
 // Horizontal bar chart component
 interface BarChartProps {
@@ -183,10 +188,11 @@ interface RankingCardProps {
 }
 
 function RankingCard({ rank, name, value, color, percentage, lastUsed }: RankingCardProps) {
-  const medals = ['🥇', '🥈', '🥉'];
   return (
     <div className="flex items-center gap-4 p-4 bg-elevated rounded-xl hover:scale-[1.02] transition-transform">
-      <div className="text-2xl">{medals[rank] || `#${rank + 1}`}</div>
+      <div className="w-8 h-8 rounded-lg bg-surface flex items-center justify-center text-sm font-bold text-text-muted">
+        {rank + 1}
+      </div>
       <div
         className="w-12 h-12 rounded-xl flex items-center justify-center text-white font-bold text-lg"
         style={{ backgroundColor: color }}
@@ -287,7 +293,7 @@ export default function AgentRolesAdminPage() {
   const [formData, setFormData] = useState<CreateRoleForm>(defaultForm);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'roles' | 'stats'>('roles');
+  const [activeTab, setActiveTab] = useState<'cli' | 'roles' | 'stats'>('cli');
 
   useEffect(() => {
     loadData();
@@ -307,6 +313,10 @@ export default function AgentRolesAdminPage() {
       setLoading(false);
     }
   };
+
+  // Split roles into CLI wrapper agents and native orchestrated agents
+  const cliAgents = roles.filter((r) => CLI_AGENT_ROLES.has(r.role));
+  const nativeAgents = roles.filter((r) => !CLI_AGENT_ROLES.has(r.role));
 
   const handleCreate = async () => {
     setSaving(true);
@@ -420,51 +430,197 @@ export default function AgentRolesAdminPage() {
   }
 
   return (
-    <div className="p-6">
+    <div className="p-6 max-w-7xl mx-auto">
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold text-text-primary mb-2">Agent Management</h1>
+        <p className="text-text-muted">Configure native CLI agents and orchestrated agent roles</p>
+      </div>
+
+      {/* Tab Navigation */}
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-text-primary">Agent Role Management</h1>
-        <div className="flex items-center gap-3">
-          {/* Tab Switcher */}
-          <div className="flex bg-surface border border-border-subtle rounded-lg p-1">
-            <button
-              onClick={() => setActiveTab('roles')}
+        <div className="flex bg-surface border border-border-subtle rounded-xl p-1.5 gap-1">
+          <button
+            onClick={() => setActiveTab('cli')}
+            className={cn(
+              'px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2',
+              activeTab === 'cli'
+                ? 'bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-md'
+                : 'text-text-secondary hover:text-text-primary hover:bg-elevated'
+            )}
+          >
+            <Terminal className="h-4 w-4" />
+            CLI Agents
+            <span
               className={cn(
-                'px-3 py-1 rounded text-sm transition-colors',
-                activeTab === 'roles'
-                  ? 'bg-blue-600 text-white'
-                  : 'text-text-secondary hover:text-text-primary'
+                'px-1.5 py-0.5 rounded-full text-xs',
+                activeTab === 'cli' ? 'bg-white/20' : 'bg-elevated'
               )}
             >
-              Roles
-            </button>
-            <button
-              onClick={() => setActiveTab('stats')}
+              {cliAgents.filter((a) => a.is_enabled).length}
+            </span>
+          </button>
+          <button
+            onClick={() => setActiveTab('roles')}
+            className={cn(
+              'px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2',
+              activeTab === 'roles'
+                ? 'bg-gradient-to-r from-purple-600 to-purple-500 text-white shadow-md'
+                : 'text-text-secondary hover:text-text-primary hover:bg-elevated'
+            )}
+          >
+            <Workflow className="h-4 w-4" />
+            Agent Roles
+            <span
               className={cn(
-                'px-3 py-1 rounded text-sm transition-colors flex items-center gap-1',
-                activeTab === 'stats'
-                  ? 'bg-blue-600 text-white'
-                  : 'text-text-secondary hover:text-text-primary'
+                'px-1.5 py-0.5 rounded-full text-xs',
+                activeTab === 'roles' ? 'bg-white/20' : 'bg-elevated'
               )}
             >
-              <BarChart3 className="h-3 w-3" />
-              Usage
-            </button>
-          </div>
-          {activeTab === 'roles' && (
-            <button
-              onClick={() => setShowCreateForm(true)}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              <Plus className="h-4 w-4" />
-              Add Role
-            </button>
-          )}
+              {nativeAgents.filter((r) => r.is_enabled).length}
+            </span>
+          </button>
+          <button
+            onClick={() => setActiveTab('stats')}
+            className={cn(
+              'px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2',
+              activeTab === 'stats'
+                ? 'bg-gradient-to-r from-emerald-600 to-emerald-500 text-white shadow-md'
+                : 'text-text-secondary hover:text-text-primary hover:bg-elevated'
+            )}
+          >
+            <BarChart3 className="h-4 w-4" />
+            Usage Stats
+          </button>
         </div>
+        {(activeTab === 'roles' || activeTab === 'cli') && (
+          <button
+            onClick={() => setShowCreateForm(true)}
+            className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-600 to-purple-500 text-white rounded-xl hover:from-purple-700 hover:to-purple-600 transition-all shadow-md hover:shadow-lg"
+          >
+            <Plus className="h-4 w-4" />
+            Add Role
+          </button>
+        )}
       </div>
 
       {error && (
-        <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
-          <p className="text-red-700">{error}</p>
+        <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
+          <p className="text-red-400">{error}</p>
+        </div>
+      )}
+
+      {/* CLI Agents Tab */}
+      {activeTab === 'cli' && (
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-xl font-semibold text-text-primary">CLI Wrapper Agents</h2>
+            <p className="text-sm text-text-muted mt-1">
+              Agents that wrap external CLI tools like Claude Code, Codex, and Gemini CLI
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {cliAgents.map((agent) => (
+              <div
+                key={agent.id}
+                className={cn(
+                  'group relative p-5 rounded-2xl border transition-all duration-200 hover:scale-[1.02]',
+                  agent.is_enabled
+                    ? 'bg-gradient-to-br from-surface to-elevated border-border-subtle hover:border-blue-500/30 hover:shadow-lg hover:shadow-blue-500/5'
+                    : 'bg-surface/50 border-border-subtle opacity-60'
+                )}
+              >
+                {/* Subtle gradient accent */}
+                <div
+                  className="absolute inset-0 rounded-2xl opacity-5"
+                  style={{
+                    background: `linear-gradient(135deg, ${getColorValue(agent.color)} 0%, transparent 60%)`,
+                  }}
+                />
+
+                <div className="relative">
+                  <div className="flex items-start gap-4">
+                    <div className="relative">
+                      <div
+                        className="w-12 h-12 rounded-xl flex items-center justify-center text-white font-bold text-lg shadow-lg"
+                        style={{
+                          background: `linear-gradient(135deg, ${getColorValue(agent.color)} 0%, ${getColorValue(agent.color)}dd 100%)`,
+                        }}
+                      >
+                        <Terminal className="h-6 w-6" />
+                      </div>
+                      {agent.is_enabled && (
+                        <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-2 border-surface" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="font-semibold text-text-primary truncate">{agent.name}</h3>
+                      <p className="text-xs text-text-muted font-mono mt-0.5">{agent.role}</p>
+                    </div>
+                  </div>
+
+                  {agent.description && (
+                    <p className="text-sm text-text-secondary mt-3 line-clamp-2">
+                      {agent.description}
+                    </p>
+                  )}
+
+                  <div className="mt-4 pt-3 border-t border-border-subtle flex items-center justify-between">
+                    <div className="text-xs text-text-muted">
+                      <span className="font-semibold text-text-primary">
+                        {formatNumber(agent.usage_count)}
+                      </span>{' '}
+                      uses
+                    </div>
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => toggleEnabled(agent)}
+                        className={cn(
+                          'p-1.5 rounded-lg transition-colors',
+                          agent.is_enabled
+                            ? 'text-green-400 hover:bg-green-500/10'
+                            : 'text-text-muted hover:bg-elevated'
+                        )}
+                      >
+                        {agent.is_enabled ? (
+                          <Eye className="h-4 w-4" />
+                        ) : (
+                          <EyeOff className="h-4 w-4" />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => startEdit(agent)}
+                        className="p-1.5 text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
+                      >
+                        <Edit className="h-4 w-4" />
+                      </button>
+                      {!agent.is_system && (
+                        <button
+                          onClick={() => handleDelete(agent.id)}
+                          className="p-1.5 text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {cliAgents.length === 0 && (
+            <div className="text-center py-16 bg-surface rounded-2xl border border-border-subtle">
+              <Terminal className="h-12 w-12 text-text-muted mx-auto mb-4" />
+              <p className="text-text-muted">No CLI agents configured yet.</p>
+              <button
+                onClick={() => setShowCreateForm(true)}
+                className="mt-4 text-blue-400 hover:text-blue-300"
+              >
+                Create your first CLI agent
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -906,53 +1062,72 @@ export default function AgentRolesAdminPage() {
           )}
 
           {/* Roles List */}
-          <div className="space-y-4">
-            {roles.map((role) => (
-              <div key={role.id} className="p-4 bg-surface rounded-lg border border-border-subtle">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div
-                      className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold"
-                      style={{ backgroundColor: getColorValue(role.color) }}
-                    >
-                      {role.name[0]}
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-semibold text-text-primary">{role.name}</h3>
-                        {role.is_system && (
-                          <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded">
-                            System
-                          </span>
-                        )}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {nativeAgents.map((role) => (
+              <div
+                key={role.id}
+                className={cn(
+                  'group relative p-5 rounded-2xl border transition-all duration-200 hover:scale-[1.02]',
+                  role.is_enabled
+                    ? 'bg-gradient-to-br from-surface to-elevated border-border-subtle hover:shadow-lg'
+                    : 'bg-surface/50 border-border-subtle opacity-60'
+                )}
+                style={
+                  {
+                    '--role-color': getColorValue(role.color),
+                  } as React.CSSProperties
+                }
+              >
+                {/* Subtle gradient accent */}
+                <div
+                  className="absolute inset-0 rounded-2xl opacity-5"
+                  style={{
+                    background: `linear-gradient(135deg, ${getColorValue(role.color)} 0%, transparent 60%)`,
+                  }}
+                />
+
+                <div className="relative">
+                  <div className="flex items-start gap-4">
+                    <div className="relative">
+                      <div
+                        className="w-12 h-12 rounded-xl flex items-center justify-center text-white font-bold text-lg shadow-lg"
+                        style={{
+                          background: `linear-gradient(135deg, ${getColorValue(role.color)} 0%, ${getColorValue(role.color)}dd 100%)`,
+                        }}
+                      >
+                        {role.name[0]}
                       </div>
-                      <p className="text-sm text-text-muted">Role: {role.role}</p>
-                      {role.description && (
-                        <p className="text-sm text-text-secondary mt-1">{role.description}</p>
+                      {role.is_enabled && (
+                        <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-2 border-surface" />
                       )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="font-semibold text-text-primary truncate">{role.name}</h3>
+                      <p className="text-xs text-text-muted font-mono mt-0.5">{role.role}</p>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-4">
-                    <div className="text-right text-sm">
-                      <div className="text-text-primary font-semibold">
-                        {role.usage_count.toLocaleString()} uses
-                      </div>
-                      {role.last_used_at && (
-                        <div className="text-text-muted">
-                          Last: {new Date(role.last_used_at).toLocaleDateString()}
-                        </div>
-                      )}
-                    </div>
+                  {role.description && (
+                    <p className="text-sm text-text-secondary mt-3 line-clamp-2">
+                      {role.description}
+                    </p>
+                  )}
 
-                    <div className="flex items-center gap-2">
+                  <div className="mt-4 pt-3 border-t border-border-subtle flex items-center justify-between">
+                    <div className="text-xs text-text-muted">
+                      <span className="font-semibold text-text-primary">
+                        {formatNumber(role.usage_count)}
+                      </span>{' '}
+                      uses
+                    </div>
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
                         onClick={() => toggleEnabled(role)}
                         className={cn(
-                          'p-2 rounded-lg transition-colors',
+                          'p-1.5 rounded-lg transition-colors',
                           role.is_enabled
-                            ? 'text-green-600 hover:bg-green-50'
-                            : 'text-gray-400 hover:bg-gray-50'
+                            ? 'text-green-400 hover:bg-green-500/10'
+                            : 'text-text-muted hover:bg-elevated'
                         )}
                       >
                         {role.is_enabled ? (
@@ -961,18 +1136,16 @@ export default function AgentRolesAdminPage() {
                           <EyeOff className="h-4 w-4" />
                         )}
                       </button>
-
                       <button
                         onClick={() => startEdit(role)}
-                        className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                        className="p-1.5 text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors"
                       >
                         <Edit className="h-4 w-4" />
                       </button>
-
                       {!role.is_system && (
                         <button
                           onClick={() => handleDelete(role.id)}
-                          className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                          className="p-1.5 text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>
@@ -980,37 +1153,22 @@ export default function AgentRolesAdminPage() {
                     </div>
                   </div>
                 </div>
-
-                <div className="mt-3 flex flex-wrap gap-1">
-                  {role.tools.slice(0, 5).map((tool) => (
-                    <span
-                      key={tool}
-                      className="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded"
-                    >
-                      {tool}
-                    </span>
-                  ))}
-                  {role.tools.length > 5 && (
-                    <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded">
-                      +{role.tools.length - 5} more
-                    </span>
-                  )}
-                </div>
               </div>
             ))}
-
-            {roles.length === 0 && (
-              <div className="text-center py-12 text-text-muted">
-                <p>No agent roles configured yet.</p>
-                <button
-                  onClick={() => setShowCreateForm(true)}
-                  className="mt-4 text-blue-600 hover:text-blue-700"
-                >
-                  Create your first role
-                </button>
-              </div>
-            )}
           </div>
+
+          {nativeAgents.length === 0 && (
+            <div className="text-center py-16 bg-surface rounded-2xl border border-border-subtle">
+              <Workflow className="h-12 w-12 text-text-muted mx-auto mb-4" />
+              <p className="text-text-muted">No agent roles configured yet.</p>
+              <button
+                onClick={() => setShowCreateForm(true)}
+                className="mt-4 text-purple-400 hover:text-purple-300"
+              >
+                Create your first role
+              </button>
+            </div>
+          )}
         </>
       )}
     </div>

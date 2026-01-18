@@ -2,6 +2,7 @@
 
 import contextlib
 import time
+from collections.abc import AsyncGenerator
 from http import HTTPStatus
 from typing import Any
 
@@ -314,18 +315,184 @@ class ComputeClient:
         working_dir: str | None = None,
         exec_timeout: int = 60,
     ) -> dict[str, Any]:
-        """Execute a command in the workspace."""
-        result: dict[str, Any] = await self._request(
-            "POST",
-            f"/workspaces/{workspace_id}/exec",
-            user_id=user_id,
-            json={
-                "command": command,
-                "working_dir": working_dir,
-                "timeout": exec_timeout,
-            },
+        """Execute a command in the workspace.
+
+        Args:
+            workspace_id: The workspace ID.
+            user_id: User ID for authorization.
+            command: The command to execute.
+            working_dir: Working directory for the command.
+            exec_timeout: Timeout for command execution in seconds.
+
+        Returns:
+            Dict with exit_code, stdout, stderr.
+        """
+        # Use a longer HTTP timeout for long-running commands
+        # Add 30 seconds buffer for network overhead
+        http_timeout = max(exec_timeout + 30, 60)
+
+        logger.debug(
+            "Executing command in workspace",
+            workspace_id=workspace_id,
+            command=command[:100],
+            exec_timeout=exec_timeout,
+            http_timeout=http_timeout,
         )
-        return result
+
+        try:
+            # Create a custom client with appropriate timeout for this request
+            async with httpx.AsyncClient(
+                base_url=settings.COMPUTE_SERVICE_URL,
+                timeout=httpx.Timeout(float(http_timeout), connect=10.0),
+                headers={"X-Internal-API-Key": settings.COMPUTE_INTERNAL_API_KEY}
+                if settings.COMPUTE_INTERNAL_API_KEY
+                else {},
+            ) as client:
+                headers = {"X-User-ID": user_id}
+                response = await client.post(
+                    f"/workspaces/{workspace_id}/exec",
+                    headers=headers,
+                    json={
+                        "command": command,
+                        "working_dir": working_dir,
+                        "timeout": exec_timeout,
+                    },
+                )
+                response.raise_for_status()
+                result: dict[str, Any] = response.json()
+
+                logger.debug(
+                    "Command execution completed",
+                    workspace_id=workspace_id,
+                    exit_code=result.get("exit_code"),
+                    stdout_len=len(result.get("stdout", "")),
+                    stderr_len=len(result.get("stderr", "")),
+                )
+
+                return result
+        except httpx.TimeoutException:
+            logger.exception(
+                "Command execution timed out",
+                workspace_id=workspace_id,
+                command=command[:100],
+                exec_timeout=exec_timeout,
+            )
+            return {
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": f"Command timed out after {exec_timeout} seconds",
+            }
+        except httpx.HTTPStatusError as e:
+            logger.exception(
+                "Command execution HTTP error",
+                workspace_id=workspace_id,
+                command=command[:100],
+                status_code=e.response.status_code,
+                detail=e.response.text[:500] if e.response.text else None,
+            )
+            raise ComputeServiceHTTPError(
+                e.response.status_code,
+                e.response.text,
+            ) from e
+        except httpx.RequestError as e:
+            logger.exception(
+                "Command execution request error",
+                workspace_id=workspace_id,
+                command=command[:100],
+            )
+            raise ComputeServiceConnectionError(str(e)) from e
+
+    async def exec_command_stream(
+        self,
+        workspace_id: str,
+        user_id: str,
+        command: str,
+        working_dir: str | None = None,
+        exec_timeout: int = 60,
+    ) -> AsyncGenerator[str, None]:
+        """Execute a command and stream output chunks.
+
+        Uses Server-Sent Events to stream command output in real-time.
+        Useful for interactive commands like authentication flows.
+
+        Args:
+            workspace_id: The workspace ID.
+            user_id: User ID for authorization.
+            command: The command to execute.
+            working_dir: Working directory for the command.
+            exec_timeout: Timeout for command execution in seconds.
+
+        Yields:
+            Output chunks as strings.
+        """
+        http_timeout = max(exec_timeout + 30, 60)
+
+        logger.debug(
+            "Streaming command in workspace",
+            workspace_id=workspace_id,
+            command=command[:100],
+            exec_timeout=exec_timeout,
+        )
+
+        try:
+            async with httpx.AsyncClient(
+                base_url=settings.COMPUTE_SERVICE_URL,
+                timeout=httpx.Timeout(float(http_timeout), connect=10.0),
+                headers={"X-Internal-API-Key": settings.COMPUTE_INTERNAL_API_KEY}
+                if settings.COMPUTE_INTERNAL_API_KEY
+                else {},
+            ) as client:
+                headers = {"X-User-ID": user_id}
+                async with client.stream(
+                    "POST",
+                    f"/workspaces/{workspace_id}/exec-stream",
+                    headers=headers,
+                    json={
+                        "command": command,
+                        "working_dir": working_dir,
+                        "timeout": exec_timeout,
+                    },
+                ) as response:
+                    response.raise_for_status()
+
+                    # Process SSE stream
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            data = line[6:]  # Remove "data: " prefix
+                            if data == "[DONE]":
+                                break
+                            if data.startswith("ERROR:"):
+                                logger.warning(
+                                    "Streaming exec error",
+                                    workspace_id=workspace_id,
+                                    error=data,
+                                )
+                                yield data
+                                break
+                            # Unescape newlines from SSE format
+                            chunk = data.replace("\\n", "\n")
+                            yield chunk
+
+        except httpx.TimeoutException:
+            logger.exception(
+                "Streaming exec timed out",
+                workspace_id=workspace_id,
+                command=command[:100],
+            )
+            yield f"Command timed out after {exec_timeout} seconds"
+        except httpx.HTTPStatusError as e:
+            logger.exception(
+                "Streaming exec HTTP error",
+                workspace_id=workspace_id,
+                status_code=e.response.status_code,
+            )
+            yield f"Error: HTTP {e.response.status_code}"
+        except Exception as e:
+            logger.exception(
+                "Streaming exec error",
+                workspace_id=workspace_id,
+            )
+            yield f"Error: {e}"
 
     # ==================== Git Operations ====================
 

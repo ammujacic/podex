@@ -31,6 +31,7 @@ from src.compute_client import compute_client
 from src.database import Agent as AgentModel
 from src.database import Session as SessionModel
 from src.routes.dependencies import DbSession, get_current_user_id
+from src.routes.sessions import ensure_workspace_provisioned
 
 logger = structlog.get_logger()
 
@@ -122,12 +123,29 @@ async def check_auth_status(
             credentials_synced=False,
         )
 
+    # Ensure workspace is provisioned before running commands
+    try:
+        await ensure_workspace_provisioned(session, user_id, db)
+    except Exception as e:
+        logger.warning(
+            "Failed to provision workspace for Gemini auth check",
+            agent_id=agent_id,
+            workspace_id=session.workspace_id,
+            error=str(e),
+        )
+        return AuthStatusResponse(
+            authenticated=False,
+            needs_auth=True,
+            credentials_synced=False,
+        )
+
     # Check if credentials exist in workspace
+    # Note: Use absolute path /home/dev instead of ~ because exec runs as root
     try:
         result = await compute_client.exec_command(
             workspace_id=session.workspace_id,
             user_id=user_id,
-            command="test -f ~/.gemini/settings.json && echo 'authenticated'",
+            command="test -f /home/dev/.gemini/settings.json && echo 'authenticated'",
             exec_timeout=10,
         )
         authenticated = "authenticated" in result.get("stdout", "")
@@ -162,11 +180,15 @@ async def reauthenticate(
         raise HTTPException(status_code=400, detail="No workspace available")
 
     # Clear credentials
+    # Note: Use absolute path /home/dev instead of ~ because exec runs as root
     try:
         await compute_client.exec_command(
             workspace_id=session.workspace_id,
             user_id=user_id,
-            command="rm -rf ~/.gemini/settings.json ~/.config/gemini 2>/dev/null || true",
+            command=(
+                "rm -rf /home/dev/.gemini/settings.json /home/dev/.config/gemini "
+                "2>/dev/null || true"
+            ),
             exec_timeout=10,
         )
     except Exception as e:
@@ -248,6 +270,7 @@ async def execute_gemini_cli_message(
     thinking_budget: int | None = None,  # noqa: ARG001
     images: list[dict[str, Any]] | None = None,
     on_config_change: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    cli_session_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute a message using Gemini CLI in a workspace.
 
@@ -265,9 +288,10 @@ async def execute_gemini_cli_message(
         thinking_budget: Extended thinking budget (for Gemini 2.0 thinking)
         images: Optional list of image attachments
         on_config_change: Optional callback for config changes (model, mode, etc.)
+        cli_session_id: Gemini session ID to resume (for conversation continuity)
 
     Returns:
-        Dict with response content, tool calls, and metadata
+        Dict with response content, tool calls, and metadata (includes cli_session_id)
     """
     # Save images to workspace temp files if present
     image_paths: list[str] = []
@@ -295,7 +319,10 @@ async def execute_gemini_cli_message(
     # Build command
     escaped_message = shlex.quote(message)
 
+    # Use PATH prefix to find gemini in user's npm-global directory
+    # Note: Use absolute path /home/dev instead of ~ because exec runs as root
     parts = [
+        "PATH=/home/dev/.npm-global/bin:$PATH",
         "gemini",
         "--prompt",
         escaped_message,
@@ -321,6 +348,10 @@ async def execute_gemini_cli_message(
     elif denied_tools:
         # Gemini doesn't have direct deny, but we can use -e none then enable specific
         pass
+
+    # Resume existing session for conversation continuity
+    if cli_session_id:
+        parts.extend(["--resume", cli_session_id])
 
     # Add image files if present (Gemini supports --file for images)
     for img_path in image_paths:
@@ -351,6 +382,10 @@ async def execute_gemini_cli_message(
         content = ""
         thinking = ""
         tool_calls = []
+        captured_session_id: str | None = None  # Capture session ID for continuity
+        # Token usage tracking for context indicator
+        input_tokens = 0
+        output_tokens = 0
 
         for line in stdout.strip().split("\n"):
             if not line.strip():
@@ -386,19 +421,74 @@ async def execute_gemini_cli_message(
                         "message", str(event.get("error", "Unknown error"))
                     )
                     content += f"\n\n❌ Error: {error_msg}"
-                elif event_type in ("system", "config", "config_change") and on_config_change:
+                elif event_type in ("system", "init", "config", "config_change"):
+                    # Capture session ID for conversation continuity
+                    if "session_id" in event:
+                        captured_session_id = event["session_id"]
+                        logger.debug(
+                            "Captured Gemini CLI session ID",
+                            cli_session_id=captured_session_id,
+                        )
+                    elif "sessionId" in event:
+                        captured_session_id = event["sessionId"]
+                        logger.debug(
+                            "Captured Gemini CLI session ID",
+                            cli_session_id=captured_session_id,
+                        )
                     # Handle config changes (model, mode, etc.)
-                    config_updates = {}
-                    if "model" in event:
-                        config_updates["model"] = event["model"]
-                    if "mode" in event:
-                        config_updates["mode"] = event["mode"]
-                    if config_updates:
-                        await on_config_change(config_updates)
+                    if on_config_change:
+                        config_updates = {}
+                        if "model" in event:
+                            config_updates["model"] = event["model"]
+                        if "mode" in event:
+                            config_updates["mode"] = event["mode"]
+                        if config_updates:
+                            await on_config_change(config_updates)
+
+                elif event_type == "usage":
+                    # Token usage event from Gemini CLI
+                    input_tokens = event.get(
+                        "input_tokens", event.get("prompt_tokens", input_tokens)
+                    )
+                    output_tokens = event.get(
+                        "output_tokens", event.get("candidates_tokens", output_tokens)
+                    )
+
+                elif event_type == "result":
+                    # Result event may contain final usage stats
+                    usage = event.get("usage", event.get("usageMetadata", {}))
+                    if usage:
+                        input_tokens = usage.get(
+                            "input_tokens", usage.get("promptTokenCount", input_tokens)
+                        )
+                        output_tokens = usage.get(
+                            "output_tokens", usage.get("candidatesTokenCount", output_tokens)
+                        )
+
+                # Check for usage/usageMetadata in any event (Google Gemini API format)
+                if "usage" in event or "usageMetadata" in event:
+                    usage_data = event.get("usage", event.get("usageMetadata", {}))
+                    if isinstance(usage_data, dict):
+                        input_tokens = int(
+                            usage_data.get(
+                                "input_tokens", usage_data.get("promptTokenCount", input_tokens)
+                            )
+                            or input_tokens
+                        )
+                        output_tokens = int(
+                            usage_data.get(
+                                "output_tokens",
+                                usage_data.get("candidatesTokenCount", output_tokens),
+                            )
+                            or output_tokens
+                        )
 
             except json.JSONDecodeError:
                 # Non-JSON output - append to content
                 content += line + "\n"
+
+        # Calculate total tokens used for context tracking
+        tokens_used = input_tokens + output_tokens
 
         return {
             "content": content.strip(),
@@ -406,6 +496,10 @@ async def execute_gemini_cli_message(
             "tool_calls": tool_calls if tool_calls else None,
             "exit_code": exit_code,
             "success": exit_code == 0,
+            "cli_session_id": captured_session_id,  # For conversation continuity
+            "tokens_used": tokens_used,  # For context tracking
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
         }
 
     except Exception as e:
@@ -420,6 +514,10 @@ async def execute_gemini_cli_message(
             "tool_calls": None,
             "exit_code": 1,
             "success": False,
+            "cli_session_id": None,
+            "tokens_used": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
         }
 
 

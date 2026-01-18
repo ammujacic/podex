@@ -1,9 +1,11 @@
 """Workspace management routes."""
 
+from collections.abc import AsyncGenerator
 from typing import Annotated
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 
 from src.deps import AuthenticatedUser, InternalAuth, get_compute_manager
 from src.managers.base import ComputeManager
@@ -128,6 +130,21 @@ async def stop_workspace(
     await compute.stop_workspace(workspace_id)
 
 
+@router.post("/{workspace_id}/restart", status_code=status.HTTP_204_NO_CONTENT)
+async def restart_workspace(
+    workspace_id: str,
+    user_id: AuthenticatedUser,
+    _auth: InternalAuth,
+    compute: Annotated[ComputeManager, Depends(get_compute_manager)],
+) -> None:
+    """Restart a stopped workspace."""
+    await verify_workspace_ownership(workspace_id, user_id, compute)
+    try:
+        await compute.restart_workspace(workspace_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+
+
 @router.delete("/{workspace_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_workspace(
     workspace_id: str,
@@ -159,6 +176,55 @@ async def exec_command(
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+
+
+@router.post("/{workspace_id}/exec-stream")
+async def exec_command_stream(
+    workspace_id: str,
+    request: WorkspaceExecRequest,
+    user_id: AuthenticatedUser,
+    _auth: InternalAuth,
+    compute: Annotated[ComputeManager, Depends(get_compute_manager)],
+) -> StreamingResponse:
+    """Execute a command and stream output using Server-Sent Events.
+
+    This is useful for interactive commands like authentication flows
+    where output should be displayed in real-time.
+
+    Returns a text/event-stream with output chunks.
+    Each chunk is sent as: data: <chunk>\n\n
+    """
+    await verify_workspace_ownership(workspace_id, user_id, compute)
+
+    async def stream_output() -> AsyncGenerator[str, None]:
+        """Generate SSE events from command output."""
+        try:
+            async for chunk in compute.exec_command_stream(
+                workspace_id=workspace_id,
+                command=request.command,
+                working_dir=request.working_dir,
+                timeout=request.timeout,
+            ):
+                # SSE format: data: <chunk>\n\n
+                # Escape newlines for SSE transport
+                escaped = chunk.replace("\n", "\\n")
+                yield f"data: {escaped}\n\n"
+        except ValueError as e:
+            yield f"data: ERROR: {e}\n\n"
+        except Exception as e:
+            yield f"data: ERROR: {e}\n\n"
+        # Send end marker
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        stream_output(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+    )
 
 
 @router.get("/{workspace_id}/files")

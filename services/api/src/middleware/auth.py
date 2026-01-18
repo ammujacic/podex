@@ -15,6 +15,29 @@ from src.routes.auth import COOKIE_ACCESS_TOKEN
 
 logger = structlog.get_logger()
 
+
+def _create_error_response(
+    request: Request, content: str, status_code: int, media_type: str = "application/json"
+) -> Response:
+    """Create an error response with CORS headers.
+
+    This ensures 401/403 responses include CORS headers so the browser
+    can properly read the response instead of blocking it.
+    """
+    response = Response(content=content, status_code=status_code, media_type=media_type)
+
+    # Add CORS headers based on request origin
+    origin = request.headers.get("origin")
+    if origin and origin in settings.CORS_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Headers"] = (
+            "Authorization, Content-Type, Accept, Origin, X-Requested-With, X-Request-ID"
+        )
+
+    return response
+
+
 # Paths that don't require authentication
 # Use tuples: (path, is_prefix) where is_prefix=True allows subpaths
 PUBLIC_PATHS: list[tuple[str, bool]] = [
@@ -30,7 +53,6 @@ PUBLIC_PATHS: list[tuple[str, bool]] = [
     ("/api/auth/password/check", False),  # Public password strength check
     ("/api/billing/plans", True),  # Public subscription plans
     ("/api/billing/hardware-specs", True),  # Public hardware specs
-    ("/api/agent-templates", True),  # Public agent templates
     ("/api/oauth/github", True),  # OAuth callbacks have query params
     ("/api/oauth/google", True),
     ("/api/preview", True),  # Preview endpoints have subpaths
@@ -39,6 +61,8 @@ PUBLIC_PATHS: list[tuple[str, bool]] = [
     ("/api/billing/usage/record", False),  # Internal service endpoint (has own auth)
     ("/api/admin/settings/public", True),  # Public platform settings
     ("/socket.io", True),  # Socket.IO has subpaths
+    ("/api/agent-roles", True),  # Agent role configurations (non-sensitive)
+    ("/api/platform/config", False),  # Platform config for app bootstrap
 ]
 
 
@@ -89,11 +113,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     token = parts[1]
 
         if not token:
-            return Response(
-                content='{"detail": "Authentication required"}',
-                status_code=401,
-                media_type="application/json",
-            )
+            return _create_error_response(request, '{"detail": "Authentication required"}', 401)
 
         try:
             # Decode and validate JWT
@@ -106,10 +126,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             user_id = payload.get("sub")
             if not user_id:
                 logger.warning("JWT payload missing user ID")
-                return Response(
-                    content='{"detail": "Invalid token - missing user ID"}',
-                    status_code=401,
-                    media_type="application/json",
+                return _create_error_response(
+                    request, '{"detail": "Invalid token - missing user ID"}', 401
                 )
 
             # SECURITY: Require jti claim for token revocation support
@@ -117,22 +135,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
             token_jti = payload.get("jti")
             if not token_jti:
                 logger.warning("Token missing jti claim - cannot be revoked", user_id=user_id)
-                return Response(
-                    content='{"detail": "Invalid token format"}',
-                    status_code=401,
-                    media_type="application/json",
-                )
+                return _create_error_response(request, '{"detail": "Invalid token format"}', 401)
 
             # Check if token has been revoked (e.g., after password change or logout)
             from src.services.token_blacklist import is_token_revoked
 
             if await is_token_revoked(token_jti):
                 logger.warning("Revoked token used", user_id=user_id, jti=token_jti)
-                return Response(
-                    content='{"detail": "Token has been revoked"}',
-                    status_code=401,
-                    media_type="application/json",
-                )
+                return _create_error_response(request, '{"detail": "Token has been revoked"}', 401)
 
             # Verify user exists in database using proper async context manager
             async with async_session_factory() as db:
@@ -144,10 +154,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         "User not found in database",
                         user_id=user_id,
                     )
-                    return Response(
-                        content='{"detail": "Invalid token - user not found"}',
-                        status_code=401,
-                        media_type="application/json",
+                    return _create_error_response(
+                        request, '{"detail": "Invalid token - user not found"}', 401
                     )
 
                 # Check if user account is active
@@ -156,10 +164,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         "Deactivated user attempted access",
                         user_id=user_id,
                     )
-                    return Response(
-                        content='{"detail": "Account deactivated. Please contact support."}',
-                        status_code=403,
-                        media_type="application/json",
+                    return _create_error_response(
+                        request, '{"detail": "Account deactivated. Please contact support."}', 403
                     )
 
                 # Add user info to request state
@@ -175,11 +181,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         except JWTError as e:
             logger.warning("JWT validation failed", error=str(e))
-            return Response(
-                content='{"detail": "Invalid or expired token"}',
-                status_code=401,
-                media_type="application/json",
-            )
+            return _create_error_response(request, '{"detail": "Invalid or expired token"}', 401)
 
         return await call_next(request)
 

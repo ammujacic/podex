@@ -51,7 +51,7 @@ export default function OrganizationPage() {
       }
     };
     fetchContext();
-  }, [setContextLoading]);
+  }, [setContextLoading, setContext]);
 
   if (contextLoading) {
     return (

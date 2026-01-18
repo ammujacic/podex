@@ -1,13 +1,14 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Send, Mic, Paperclip, Loader2, StopCircle, X } from 'lucide-react';
+import { Send, Mic, Paperclip, Loader2, StopCircle, X, LogIn } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { useSessionStore, type AgentMessage } from '@/stores/session';
 import { sendAgentMessage, abortAgent, isQuotaError } from '@/lib/api';
 import { useSwipeGesture } from '@/hooks/useGestures';
 import { useVoiceCapture } from '@/hooks/useVoiceCapture';
+import { isCliAgentRole, getCliAgentType, useCliAgentAuth } from '@/hooks/useCliAgentCommands';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { CreditExhaustedBanner } from './CreditExhaustedBanner';
 import { MobileAgentToolbar } from './MobileAgentToolbar';
@@ -102,6 +103,20 @@ export function MobileAgentView({
   // Check if agent is processing
   const isProcessing = !!streamingMessage;
 
+  // CLI agent auth check
+  const isCliAgent = agent ? isCliAgentRole(agent.role) : false;
+  const cliAgentType = agent ? getCliAgentType(agent.role) : null;
+  const { authStatus: cliAuthStatus } = useCliAgentAuth(
+    cliAgentType ?? 'claude-code',
+    isCliAgent ? agentId : undefined
+  );
+
+  // Check if CLI agent needs authentication (blocks input until authenticated)
+  const cliNeedsAuth =
+    isCliAgent &&
+    (agent?.messages ?? []).length === 0 &&
+    (cliAuthStatus === null || cliAuthStatus?.needsAuth);
+
   // Voice capture integration
   const { isRecording, currentTranscript, startRecording, stopRecording, cancelRecording } =
     useVoiceCapture({
@@ -139,6 +154,31 @@ export function MobileAgentView({
   }, [finalizedMessages, streamingMessage?.content]);
 
   const addAgentMessage = useSessionStore((state) => state.addAgentMessage);
+
+  // Handle CLI agent login
+  const handleCliLogin = useCallback(async () => {
+    if (isSubmitting || !agent) return;
+
+    setIsSubmitting(true);
+    const loginMessage = '/login';
+
+    const userMessage: AgentMessage = {
+      id: generateTempId(),
+      role: 'user',
+      content: loginMessage,
+      timestamp: new Date(),
+    };
+    addAgentMessage(sessionId, agentId, userMessage);
+
+    try {
+      await sendAgentMessage(sessionId, agentId, loginMessage);
+    } catch (error) {
+      console.error('Failed to send login command:', error);
+      toast.error('Failed to initiate login. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, [isSubmitting, agent, sessionId, agentId, addAgentMessage]);
 
   const handleSubmit = useCallback(async () => {
     const trimmedInput = input.trim();
@@ -332,7 +372,48 @@ export function MobileAgentView({
 
       {/* Messages area - scrollable middle section */}
       <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-4">
-        {finalizedMessages.length === 0 && !streamingMessage ? (
+        {/* CLI Agent Login Prompt - shown when auth is needed or unknown and no messages yet */}
+        {isCliAgent &&
+        finalizedMessages.length === 0 &&
+        !streamingMessage &&
+        (cliAuthStatus === null || cliAuthStatus?.needsAuth) ? (
+          <div className="flex h-full items-center justify-center">
+            <div className="text-center space-y-4 max-w-sm px-4">
+              <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-accent-primary/10">
+                <LogIn className="h-7 w-7 text-accent-primary" />
+              </div>
+              <div>
+                <h3 className="text-base font-medium text-text-primary mb-1">
+                  Authentication Required
+                </h3>
+                <p className="text-sm text-text-muted">
+                  {agent.role === 'claude-code'
+                    ? 'Sign in with your Anthropic account to use Claude Code.'
+                    : agent.role === 'openai-codex'
+                      ? 'Sign in with your OpenAI account to use Codex.'
+                      : 'Sign in to use this CLI agent.'}
+                </p>
+              </div>
+              <button
+                onClick={handleCliLogin}
+                disabled={isSubmitting}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-accent-primary text-text-inverse text-sm font-medium hover:bg-accent-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px]"
+              >
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    Connecting...
+                  </>
+                ) : (
+                  <>
+                    <LogIn className="h-5 w-5" />
+                    Sign In
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        ) : finalizedMessages.length === 0 && !streamingMessage ? (
           <NoMessagesEmptyState agentName={agent.name} />
         ) : (
           <div className="space-y-4">
@@ -454,12 +535,14 @@ export function MobileAgentView({
                 onKeyDown={handleKeyDown}
                 placeholder="Message..."
                 rows={1}
+                disabled={cliNeedsAuth}
                 className={cn(
                   'w-full px-4 py-2.5 rounded-xl resize-none',
                   'bg-surface-hover border border-border-subtle',
                   'text-base text-text-primary placeholder:text-text-tertiary',
                   'focus:outline-none focus:ring-2 focus:ring-accent-primary/50',
-                  'overflow-y-auto'
+                  'overflow-y-auto',
+                  cliNeedsAuth && 'opacity-50 cursor-not-allowed'
                 )}
                 style={{
                   minHeight: '44px',
@@ -485,7 +568,7 @@ export function MobileAgentView({
             ) : input.trim() ? (
               <button
                 onClick={handleSubmit}
-                disabled={isSubmitting}
+                disabled={isSubmitting || cliNeedsAuth}
                 className={cn(
                   'p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg',
                   'bg-accent-primary text-text-inverse',
@@ -504,10 +587,12 @@ export function MobileAgentView({
             ) : (
               <button
                 onClick={handleVoiceToggle}
+                disabled={cliNeedsAuth}
                 className={cn(
                   'p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg',
                   'hover:bg-surface-hover active:bg-surface-active',
-                  'transition-colors touch-manipulation'
+                  'transition-colors touch-manipulation',
+                  cliNeedsAuth && 'opacity-50 cursor-not-allowed'
                 )}
                 aria-label="Voice input"
               >

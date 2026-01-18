@@ -6,6 +6,7 @@ Uses Cloud Run for serverless CPU workspaces and GKE for GPU workloads.
 import base64
 import shlex
 import uuid
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -313,6 +314,9 @@ class GCPComputeManager(ComputeManager):
                     "job_name": created_job.name,
                     "execution_name": execution.name,
                     "last_billing_timestamp": now.isoformat(),
+                    # Store dotfiles config for sync on stop
+                    "sync_dotfiles": config.sync_dotfiles,
+                    "dotfiles_paths": config.dotfiles_paths,
                 },
             )
 
@@ -366,6 +370,9 @@ class GCPComputeManager(ComputeManager):
             metadata={
                 "requires_gke": True,
                 "last_billing_timestamp": now.isoformat(),
+                # Store dotfiles config for sync on stop
+                "sync_dotfiles": config.sync_dotfiles,
+                "dotfiles_paths": config.dotfiles_paths,
             },
         )
 
@@ -377,6 +384,32 @@ class GCPComputeManager(ComputeManager):
         workspace = self._workspaces.get(workspace_id)
         if not workspace:
             return
+
+        # Save user dotfiles before stopping (if file_sync is available)
+        if self._file_sync:
+            sync_dotfiles = workspace.metadata.get("sync_dotfiles", True)
+            if sync_dotfiles:
+                try:
+                    dotfiles_paths = workspace.metadata.get("dotfiles_paths")
+                    await self._file_sync.save_user_dotfiles(
+                        workspace_id=workspace_id,
+                        user_id=workspace.user_id,
+                        dotfiles_paths=dotfiles_paths,
+                    )
+                    workspace.metadata["dotfiles_sync_status"] = "success"
+                    logger.info(
+                        "Saved user dotfiles before workspace stop",
+                        workspace_id=workspace_id,
+                        user_id=workspace.user_id,
+                    )
+                except Exception as e:
+                    logger.exception(
+                        "Failed to save user dotfiles before stop",
+                        workspace_id=workspace_id,
+                        user_id=workspace.user_id,
+                    )
+                    workspace.metadata["dotfiles_sync_status"] = "error"
+                    workspace.metadata["dotfiles_sync_error"] = str(e)
 
         try:
             execution_name = workspace.metadata.get("execution_name")
@@ -391,6 +424,27 @@ class GCPComputeManager(ComputeManager):
 
         except Exception as e:
             logger.exception("Failed to stop GCP workspace", error=str(e))
+
+    async def restart_workspace(self, workspace_id: str) -> None:
+        """Restart a stopped GCP workspace.
+
+        For Cloud Run jobs, this would require re-executing the job.
+        Currently not implemented - workspaces need to be recreated.
+        """
+        workspace = self._workspaces.get(workspace_id)
+        if not workspace:
+            raise ValueError(f"Workspace {workspace_id} not found")
+
+        # GCP Cloud Run jobs cannot be restarted - they need to be recreated
+        # The API layer should handle this by creating a new workspace
+        logger.warning(
+            "GCP workspace restart not supported, workspace needs recreation",
+            workspace_id=workspace_id,
+        )
+        raise ValueError(
+            "GCP workspaces cannot be restarted. "
+            "Please create a new workspace or use the web UI to resume."
+        )
 
     async def _track_compute_usage(
         self,
@@ -586,6 +640,77 @@ class GCPComputeManager(ComputeManager):
                 stdout="",
                 stderr=str(e),
             )
+
+    def set_file_sync(self, file_sync: Any) -> None:
+        """Set the file sync service for workspace file synchronization."""
+        self._file_sync = file_sync
+
+    async def exec_command_stream(
+        self,
+        workspace_id: str,
+        command: str,
+        working_dir: str | None = None,
+        timeout: int = 60,
+    ) -> AsyncGenerator[str, None]:
+        """Execute a command and stream output chunks.
+
+        For Cloud Run workspaces, we use the workspace's HTTP streaming endpoint.
+
+        Args:
+            workspace_id: The workspace ID
+            command: Shell command to execute
+            working_dir: Working directory (default: /home/dev)
+            timeout: Command timeout in seconds
+
+        Yields:
+            Output chunks as strings
+        """
+        workspace = self._workspaces.get(workspace_id)
+        if not workspace:
+            msg = f"Workspace {workspace_id} not found"
+            raise ValueError(msg)
+
+        safe_working_dir = shlex.quote(working_dir) if working_dir else "/home/dev"
+
+        try:
+            workspace_url = f"http://{workspace.host}:{workspace.port}"
+
+            async with (
+                httpx.AsyncClient(timeout=timeout) as client,
+                client.stream(
+                    "POST",
+                    f"{workspace_url}/exec-stream",
+                    json={
+                        "command": command,
+                        "working_dir": safe_working_dir,
+                    },
+                ) as response,
+            ):
+                response.raise_for_status()
+
+                # Process SSE stream from workspace
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:]  # Remove "data: " prefix
+                        if data == "[DONE]":
+                            break
+                        if data.startswith("ERROR:"):
+                            yield data
+                            break
+                        # Unescape newlines from SSE format
+                        chunk = data.replace("\\n", "\n")
+                        yield chunk
+
+        except httpx.TimeoutException:
+            logger.error(
+                "Streaming exec timed out",
+                workspace_id=workspace_id,
+                timeout=timeout,
+            )
+            yield f"Command timed out after {timeout} seconds"
+        except Exception as e:
+            logger.exception("Failed to stream command", workspace_id=workspace_id)
+            yield f"Error: {e}"
 
     async def read_file(self, workspace_id: str, path: str) -> str:
         """Read a file from the workspace via exec."""

@@ -325,17 +325,34 @@ async def standby_background_task() -> None:
                             continue
 
                         # Check if workspace has been idle long enough
-                        last_activity = workspace.last_activity or workspace.created_at
+                        # Use the most recent activity from either workspace or session
+                        # Session.updated_at is updated on any DB change (messages, etc.)
+                        workspace_activity = workspace.last_activity or workspace.created_at
+                        session_activity = session.updated_at or session.created_at
+                        last_activity = max(workspace_activity, session_activity)
                         idle_duration = now - last_activity
 
                         if idle_duration > timedelta(minutes=timeout_minutes):
                             try:
+                                from src.websocket.hub import emit_to_session
+
                                 # Stop the container
                                 await compute_client.stop_workspace(workspace.id, session.owner_id)
 
                                 # Update database
                                 workspace.status = "standby"
                                 workspace.standby_at = now
+
+                                # Notify connected clients about the status change
+                                await emit_to_session(
+                                    str(session.id),
+                                    "workspace_status",
+                                    {
+                                        "workspace_id": workspace.id,
+                                        "status": "standby",
+                                        "standby_at": now.isoformat(),
+                                    },
+                                )
 
                                 standby_count += 1
                                 logger.info(

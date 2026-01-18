@@ -8,6 +8,7 @@ import { EditorTabs, EditorEmptyState } from './EditorTabs';
 import { EditorToolbar } from './EditorToolbar';
 import { Breadcrumbs, type BreadcrumbSymbol, convertMonacoSymbolKind } from './Breadcrumbs';
 import { getSnippetManager, registerDefaultSnippets } from '@/lib/snippets';
+import { getCompletionProvider } from '@/lib/ai';
 import { VSCodeEditor, type VSCodeEditorRef } from '@/lib/vscode';
 import { updateFileContent, getFileContent } from '@/lib/api';
 import * as monaco from '@codingame/monaco-vscode-editor-api';
@@ -134,6 +135,13 @@ function EditorPaneContent({
       const snippetManager = getSnippetManager();
       snippetManager.registerCompletionProvider(monaco, language);
 
+      // Register AI inline completions if enabled
+      if (settings.completionsEnabled) {
+        const aiProvider = getCompletionProvider();
+        aiProvider.setEnabled(true);
+        aiProvider.register(monaco);
+      }
+
       // Add save keybinding
       editorInstance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
         if (onSave) {
@@ -209,7 +217,7 @@ function EditorPaneContent({
       // Focus the editor
       editorInstance.focus();
     },
-    [language, onSave]
+    [language, onSave, settings.completionsEnabled]
   );
 
   // Handle cursor position change
@@ -238,6 +246,31 @@ function EditorPaneContent({
       onLanguageChange?.(newLanguage);
     },
     [onLanguageChange]
+  );
+
+  // Memoize editor options to prevent unnecessary editor recreation
+  const editorOptions = useMemo(
+    () => ({
+      fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+      fontLigatures: true,
+      lineHeight: 1.6,
+      cursorBlinking: settings.cursorBlinking,
+      renderLineHighlight: 'line' as const,
+      renderWhitespace: settings.renderWhitespace,
+      bracketPairColorization: { enabled: settings.bracketPairColorization },
+      formatOnPaste: settings.formatOnPaste,
+      inlineSuggest: {
+        enabled: settings.completionsEnabled,
+        mode: 'subword' as const,
+      },
+    }),
+    [
+      settings.cursorBlinking,
+      settings.renderWhitespace,
+      settings.bracketPairColorization,
+      settings.formatOnPaste,
+      settings.completionsEnabled,
+    ]
   );
 
   // Navigate to symbol
@@ -290,20 +323,7 @@ function EditorPaneContent({
           wordWrap={settings.wordWrap !== 'off'}
           fontSize={settings.fontSize}
           tabSize={settings.tabSize}
-          options={{
-            fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-            fontLigatures: true,
-            lineHeight: 1.6,
-            cursorBlinking: settings.cursorBlinking,
-            renderLineHighlight: 'line',
-            renderWhitespace: settings.renderWhitespace,
-            bracketPairColorization: { enabled: settings.bracketPairColorization },
-            formatOnPaste: settings.formatOnPaste,
-            inlineSuggest: {
-              enabled: settings.completionsEnabled,
-              mode: 'subword',
-            },
-          }}
+          options={editorOptions}
           className="h-full"
         />
       </div>
@@ -342,16 +362,19 @@ export function EnhancedCodeEditor({ paneId, className }: EnhancedCodeEditorProp
     return tabs[pane.activeTabId] || null;
   }, [pane?.activeTabId, tabs]);
 
-  // Load file content when active tab changes
+  // Extract stable path for file loading - only reload when path actually changes
+  const activeTabPath = activeTab?.path;
+
+  // Load file content when active tab path changes (not on every cursor move)
   useEffect(() => {
     const loadFileContent = async () => {
-      if (!activeTab || !currentSessionId) {
+      if (!activeTabPath || !currentSessionId) {
         setFileContent('');
         return;
       }
 
       try {
-        const response = await getFileContent(currentSessionId, activeTab.path);
+        const response = await getFileContent(currentSessionId, activeTabPath);
         setFileContent(response.content);
       } catch (error) {
         console.error('Failed to load file content:', error);
@@ -360,7 +383,7 @@ export function EnhancedCodeEditor({ paneId, className }: EnhancedCodeEditorProp
     };
 
     loadFileContent();
-  }, [activeTab, currentSessionId]);
+  }, [activeTabPath, currentSessionId]);
 
   // Handle content change
   const handleChange = useCallback(

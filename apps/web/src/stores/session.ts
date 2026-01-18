@@ -29,6 +29,7 @@ export type {
   AgentRole,
   FilePreview,
   GridSpan,
+  PendingPermission,
   Session,
   StandbySettings,
   StreamingMessage,
@@ -79,6 +80,7 @@ interface SessionState {
   createEditorGridCard: (sessionId: string) => string;
   removeEditorGridCard: (sessionId: string) => void;
   updateEditorGridSpan: (sessionId: string, gridSpan: GridSpan) => void;
+  updateEditorFreeformPosition: (sessionId: string, position: Partial<AgentPosition>) => void;
 
   // Recent files
   addRecentFile: (path: string) => void;
@@ -94,6 +96,8 @@ interface SessionState {
     standbyAt?: string | null
   ) => void;
   setStandbySettings: (sessionId: string, settings: StandbySettings | null) => void;
+  // Update session workspace ID (for syncing from API when stale in localStorage)
+  updateSessionWorkspaceId: (sessionId: string, workspaceId: string) => void;
 
   // Agent mode auto-switch actions
   handleAutoModeSwitch: (
@@ -542,7 +546,7 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
           [sessionId]: {
             ...session,
             editorGridCardId: id,
-            editorGridSpan: { colSpan: 1, rowSpan: 1 },
+            editorGridSpan: { colSpan: 2, rowSpan: 2 },
           },
         },
       };
@@ -576,6 +580,28 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
           [sessionId]: {
             ...session,
             editorGridSpan: gridSpan,
+          },
+        },
+      };
+    }),
+
+  updateEditorFreeformPosition: (sessionId, position) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      const currentPosition = session.editorFreeformPosition ?? {
+        x: 100,
+        y: 100,
+        width: 600,
+        height: 500,
+        zIndex: 1,
+      };
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            editorFreeformPosition: { ...currentPosition, ...position },
           },
         },
       };
@@ -635,7 +661,24 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
       return {
         sessions: {
           ...state.sessions,
-          [sessionId]: { ...session, standbySettings: settings },
+          [sessionId]: {
+            ...session,
+            standbySettings: settings,
+          },
+        },
+      };
+    }),
+
+  updateSessionWorkspaceId: (sessionId, workspaceId) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      // Only update if the workspace ID has changed
+      if (session.workspaceId === workspaceId) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: { ...session, workspaceId },
         },
       };
     }),

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime  # noqa: TC003 - used in Pydantic models at runtime
 from enum import Enum
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import Annotated, Any
 from uuid import uuid4
 
 import structlog
@@ -40,15 +41,14 @@ from src.exceptions import (
 from src.mcp_config import get_effective_mcp_config
 from src.middleware.rate_limit import RATE_LIMIT_AGENT, RATE_LIMIT_STANDARD, limiter
 from src.routes.dependencies import DbSession, get_current_user_id, verify_session_access
+from src.routes.sessions import ensure_workspace_provisioned, update_workspace_activity
 from src.websocket.hub import (
     AgentAttentionInfo,
     emit_agent_attention,
     emit_agent_stream_start,
+    emit_agent_token,
     emit_to_session,
 )
-
-if TYPE_CHECKING:
-    from datetime import datetime
 
 logger = structlog.get_logger()
 
@@ -587,10 +587,6 @@ async def get_model_display_name(db: AsyncSession, model_id: str) -> str | None:
     return row[0] if row else None
 
 
-# Default model for when platform settings don't have a role default configured
-DEFAULT_FALLBACK_MODEL = "anthropic.claude-sonnet-4-5-20250929-v1:0"
-
-
 async def get_default_model_for_role(db: AsyncSession, role: str) -> str:
     """Get the default model for an agent role from platform settings.
 
@@ -599,7 +595,10 @@ async def get_default_model_for_role(db: AsyncSession, role: str) -> str:
         role: The agent role (e.g., 'chat', 'coder', 'architect')
 
     Returns:
-        The default model ID for the role, or a fallback if not configured
+        The default model ID for the role
+
+    Raises:
+        HTTPException: If no default model is configured for the role
     """
     result = await db.execute(
         select(PlatformSetting).where(PlatformSetting.key == "agent_model_defaults")
@@ -611,8 +610,13 @@ async def get_default_model_for_role(db: AsyncSession, role: str) -> str:
         if role in defaults and isinstance(defaults[role], dict) and "model_id" in defaults[role]:
             return str(defaults[role]["model_id"])
 
-    # Return fallback model if no default configured for this role
-    return DEFAULT_FALLBACK_MODEL
+    raise HTTPException(
+        status_code=500,
+        detail=(
+            f"No default model configured for role '{role}'. "
+            "Check agent_model_defaults in platform settings."
+        ),
+    )
 
 
 def _build_agent_response(
@@ -642,29 +646,6 @@ def _build_agent_response(
         created_at=agent.created_at,
     )
 
-
-# ==================== Agent Role Configuration ====================
-# Role configurations are now stored in the database (agent_role_configs table).
-# Use /api/agent-roles for public access or /api/admin/agents for admin management.
-# The database is seeded with defaults from src/database/seeds/agent_roles.py
-#
-# For backward compatibility, we keep a simple fallback prompt dict that's used
-# when database is not available (e.g., during simulated responses in tests).
-
-# Fallback prompts for backward compatibility (used only when DB not available)
-AGENT_ROLE_PROMPTS: dict[str, str] = {
-    "architect": "You are an expert software architect. Help design system architecture.",
-    "coder": "You are an expert software developer. Write clean, efficient code.",
-    "reviewer": "You are a code review agent. Review code for bugs and best practices.",
-    "tester": "You are a testing agent. Write tests and ensure code quality.",
-    "security": "You are a security agent. Identify vulnerabilities and security issues.",
-    "devops": "You are a DevOps agent. Help with CI/CD and infrastructure.",
-    "orchestrator": "You are an orchestrator. Coordinate tasks between multiple agents.",
-    "agent_builder": "You are an agent builder. Help create custom agent configurations.",
-    "documentator": "You are a documentation agent. Write clear documentation.",
-    "chat": "You are a conversational assistant. Answer questions helpfully.",
-    "custom": "You are a helpful AI assistant.",
-}
 
 # ==================== Agent Attention Detection ====================
 
@@ -821,31 +802,37 @@ def get_attention_priority(attention_type: str, _agent_role: str) -> str:
 
 
 # CLI Agent configuration by role
+# Note: Use absolute path /home/dev instead of ~ because exec runs as root
 CLI_AGENT_CONFIG = {
     "claude-code": {
         "name": "Claude Code",
-        "check_command": "which claude",
-        "credentials_check": "test -f ~/.claude/credentials.json && echo 'authenticated'",
+        # Check both system path and user npm-global
+        "check_command": "PATH=/home/dev/.npm-global/bin:$PATH which claude",
+        "credentials_check": "test -f /home/dev/.claude/.credentials.json && echo 'authenticated'",
         "install_package": "@anthropic-ai/claude-code",
-        "auth_command": "claude",
+        "run_command": "claude",
         "executor_module": "src.routes.claude_code",
         "executor_function": "execute_claude_code_message",
+        # Streaming disabled - SSE newline escaping conflicts with JSON \n escape sequences
+        # TODO: Implement proper JSON streaming parser for real-time display
     },
     "openai-codex": {
         "name": "OpenAI Codex",
-        "check_command": "which codex",
-        "credentials_check": "test -f ~/.codex/config.toml && echo 'authenticated'",
+        # Check both system path and user npm-global
+        "check_command": "PATH=/home/dev/.npm-global/bin:$PATH which codex",
+        "credentials_check": "test -f /home/dev/.codex/config.toml && echo 'authenticated'",
         "install_package": "@openai/codex",
-        "auth_command": "codex login",
+        "run_command": "codex",
         "executor_module": "src.routes.openai_codex",
         "executor_function": "execute_openai_codex_message",
     },
     "gemini-cli": {
         "name": "Gemini CLI",
-        "check_command": "which gemini",
-        "credentials_check": "test -f ~/.gemini/settings.json && echo 'authenticated'",
-        "install_package": "@anthropic-ai/gemini-cli",  # Check actual package name
-        "auth_command": "gemini",
+        # Check both system path and user npm-global
+        "check_command": "PATH=/home/dev/.npm-global/bin:$PATH which gemini",
+        "credentials_check": "test -f /home/dev/.gemini/settings.json && echo 'authenticated'",
+        "install_package": "@google/gemini-cli",
+        "run_command": "gemini",
         "executor_module": "src.routes.gemini_cli",
         "executor_function": "execute_gemini_cli_message",
     },
@@ -920,32 +907,48 @@ async def _process_cli_agent_message(
         # Notify frontend that streaming is starting
         await emit_agent_stream_start(ctx.session_id, ctx.agent_id, stream_message_id)
 
-        # Check if CLI is installed
+        # Ensure workspace is provisioned before running any commands
         try:
-            check_result = await compute_client.exec_command(
+            logger.info(
+                "Provisioning workspace for CLI agent",
+                cli_name=cli_name,
                 workspace_id=workspace_id,
-                user_id=user_id,
-                command=cli_config["check_command"],
-                exec_timeout=10,
+                agent_id=ctx.agent_id,
             )
-            cli_installed = check_result.get("exit_code", 1) == 0
-        except Exception:
-            cli_installed = False
+            await ensure_workspace_provisioned(session, user_id, db)
+            logger.info(
+                "Workspace provisioned successfully",
+                cli_name=cli_name,
+                workspace_id=workspace_id,
+            )
+        except Exception as e:
+            logger.exception(
+                "Failed to provision workspace for %s agent",
+                cli_name,
+                agent_id=ctx.agent_id,
+                workspace_id=workspace_id,
+                error=str(e),
+            )
+            # Send error message to user via the stream
+            error_message = (
+                f"❌ Failed to provision workspace for {cli_name}.\n\n"
+                "Please try again or contact support if the issue persists."
+            )
+            # Finalize the stream with the error content
+            from src.websocket.hub import emit_agent_stream_end
 
-        if not cli_installed:
-            install_message = (
-                f"{cli_name} CLI is not installed in this workspace.\n\n"
-                "To install it, run:\n"
-                "```bash\n"
-                f"npm install -g {cli_config['install_package']}\n"
-                "```\n\n"
-                "Or use the install button in the agent settings."
+            await emit_agent_stream_end(
+                session_id=ctx.session_id,
+                agent_id=ctx.agent_id,
+                message_id=stream_message_id,
+                full_content=error_message,
             )
+            # Save to database
             processing_ctx = ResponseProcessingContext(
                 db=db,
                 ctx=ctx,
                 agent=agent,
-                response_content=install_message,
+                response_content=error_message,
                 auto_play=auto_play,
                 tool_calls=None,
                 streamed=True,
@@ -954,6 +957,207 @@ async def _process_cli_agent_message(
             )
             await _process_and_emit_response(processing_ctx)
             return
+
+        # Check if CLI is installed
+        try:
+            logger.info(
+                "Checking if CLI is installed",
+                cli_name=cli_name,
+                check_command=cli_config["check_command"],
+                workspace_id=workspace_id,
+            )
+            check_result = await compute_client.exec_command(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                command=cli_config["check_command"],
+                exec_timeout=10,
+            )
+            cli_installed = check_result.get("exit_code", 1) == 0
+            logger.info(
+                "CLI check result",
+                cli_name=cli_name,
+                installed=cli_installed,
+                exit_code=check_result.get("exit_code"),
+                stdout=check_result.get("stdout", "")[:200],
+                stderr=check_result.get("stderr", "")[:200],
+            )
+        except Exception as e:
+            logger.exception(
+                "CLI check failed with exception",
+                cli_name=cli_name,
+                workspace_id=workspace_id,
+                error=str(e),
+            )
+            cli_installed = False
+
+        if not cli_installed:
+            # Auto-install the CLI tool
+            logger.info(
+                "Installing %s CLI in workspace",
+                cli_name,
+                agent_id=ctx.agent_id,
+                workspace_id=workspace_id,
+            )
+
+            try:
+                # First verify npm is available
+                npm_check = await compute_client.exec_command(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    command="which npm && npm --version",
+                    exec_timeout=10,
+                )
+                logger.info(
+                    "npm check result",
+                    exit_code=npm_check.get("exit_code"),
+                    stdout=npm_check.get("stdout", "")[:200],
+                    stderr=npm_check.get("stderr", "")[:200],
+                )
+
+                if npm_check.get("exit_code", 1) != 0:
+                    error_message = (
+                        "❌ npm is not installed in the workspace.\n\n"
+                        "Please ensure the workspace image has Node.js and npm installed."
+                    )
+                    # Finalize the stream with the error content
+                    from src.websocket.hub import emit_agent_stream_end
+
+                    await emit_agent_stream_end(
+                        session_id=ctx.session_id,
+                        agent_id=ctx.agent_id,
+                        message_id=stream_message_id,
+                        full_content=error_message,
+                    )
+                    # Save to database
+                    processing_ctx = ResponseProcessingContext(
+                        db=db,
+                        ctx=ctx,
+                        agent=agent,
+                        response_content=error_message,
+                        auto_play=auto_play,
+                        tool_calls=None,
+                        streamed=True,
+                        message_id=stream_message_id,
+                        tokens_used=0,
+                    )
+                    await _process_and_emit_response(processing_ctx)
+                    return
+
+                # Now install the CLI to user's home directory (avoids permission issues)
+                # Configure npm to use /home/dev/.npm-global for global packages,
+                # install, and update PATH. Use absolute path /home/dev instead of ~
+                # because exec runs as root
+                install_cmd = (
+                    "mkdir -p /home/dev/.npm-global && "
+                    "npm config set prefix /home/dev/.npm-global && "
+                    f"PATH=/home/dev/.npm-global/bin:$PATH "
+                    f"npm install -g {cli_config['install_package']} && "
+                    # Add to bashrc if not already there for future sessions
+                    "(grep -q 'npm-global' /home/dev/.bashrc 2>/dev/null || "
+                    "echo 'export PATH=/home/dev/.npm-global/bin:$PATH' >> /home/dev/.bashrc)"
+                )
+                logger.info(
+                    "Running npm install command",
+                    command=install_cmd[:150],
+                    workspace_id=workspace_id,
+                )
+
+                install_result = await compute_client.exec_command(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    command=install_cmd,
+                    exec_timeout=300,  # 5 min timeout for installation
+                )
+
+                logger.info(
+                    "npm install result",
+                    exit_code=install_result.get("exit_code"),
+                    stdout_len=len(install_result.get("stdout", "")),
+                    stderr_len=len(install_result.get("stderr", "")),
+                    stdout_preview=install_result.get("stdout", "")[:500],
+                    stderr_preview=install_result.get("stderr", "")[:500],
+                )
+
+                if install_result.get("exit_code", 1) != 0:
+                    install_error = install_result.get("stderr", "") or install_result.get(
+                        "stdout", "Unknown error"
+                    )
+                    error_message = (
+                        f"❌ Failed to install {cli_name}:\n```\n{install_error[:1000]}\n```\n\n"
+                        "Please try installing manually:\n"
+                        f"```bash\nnpm install -g {cli_config['install_package']}\n```"
+                    )
+                    logger.info(
+                        "CLI installation failed, sending error to chat",
+                        cli_name=cli_name,
+                        error_preview=install_error[:200],
+                    )
+                    # Finalize the stream with the error content
+                    from src.websocket.hub import emit_agent_stream_end
+
+                    await emit_agent_stream_end(
+                        session_id=ctx.session_id,
+                        agent_id=ctx.agent_id,
+                        message_id=stream_message_id,
+                        full_content=error_message,
+                    )
+                    # Save to database
+                    processing_ctx = ResponseProcessingContext(
+                        db=db,
+                        ctx=ctx,
+                        agent=agent,
+                        response_content=error_message,
+                        auto_play=auto_play,
+                        tool_calls=None,
+                        streamed=True,
+                        message_id=stream_message_id,
+                        tokens_used=0,
+                    )
+                    await _process_and_emit_response(processing_ctx)
+                    return
+
+                logger.info(
+                    "%s CLI installed successfully",
+                    cli_name,
+                    agent_id=ctx.agent_id,
+                    workspace_id=workspace_id,
+                )
+            except Exception as e:
+                logger.exception(
+                    "Failed to install %s CLI",
+                    cli_name,
+                    agent_id=ctx.agent_id,
+                    workspace_id=workspace_id,
+                    error=str(e),
+                )
+                error_message = (
+                    f"❌ Failed to install {cli_name}: {type(e).__name__}\n\n"
+                    "Please try installing manually:\n"
+                    f"```bash\nnpm install -g {cli_config['install_package']}\n```"
+                )
+                # Finalize the stream with the error content
+                from src.websocket.hub import emit_agent_stream_end
+
+                await emit_agent_stream_end(
+                    session_id=ctx.session_id,
+                    agent_id=ctx.agent_id,
+                    message_id=stream_message_id,
+                    full_content=error_message,
+                )
+                # Save to database
+                processing_ctx = ResponseProcessingContext(
+                    db=db,
+                    ctx=ctx,
+                    agent=agent,
+                    response_content=error_message,
+                    auto_play=auto_play,
+                    tool_calls=None,
+                    streamed=True,
+                    message_id=stream_message_id,
+                    tokens_used=0,
+                )
+                await _process_and_emit_response(processing_ctx)
+                return
 
         # Check authentication status
         try:
@@ -968,15 +1172,49 @@ async def _process_cli_agent_message(
             authenticated = False
 
         if not authenticated:
+            # CLI agents require interactive terminal for OAuth authentication.
+            # Provide clear instructions for users to authenticate.
+
+            # Get the required API key name for this CLI
+            api_key_name = {
+                "claude-code": "ANTHROPIC_API_KEY",
+                "openai-codex": "OPENAI_API_KEY",
+                "gemini-cli": "GOOGLE_API_KEY",
+            }.get(agent.role, "API_KEY")
+
             auth_message = (
-                f"{cli_name} needs authentication.\n\n"
-                "Please run the following command in a terminal:\n"
-                "```bash\n"
-                f"{cli_config['auth_command']}\n"
-                "```\n\n"
-                "This will start the authentication process. "
-                "Once authenticated, send your message again."
+                f"🔐 **{cli_name} needs authentication**\n\n"
+                f"Choose one of these options:\n\n"
+                f"**Option 1: API Key (Recommended)**\n"
+                f"Set your `{api_key_name}` in the agent's environment variables:\n"
+                f"1. Click the ⚙️ settings icon on this agent\n"
+                f"2. Add `{api_key_name}` with your API key value\n"
+                f"3. Save and try again\n\n"
+                f"**Option 2: OAuth via Terminal**\n"
+                f"1. Open the **Terminal** panel (click terminal icon)\n"
+                f"2. Run: `{cli_config['run_command']}`\n"
+                f"3. Type `/login` and follow the browser prompts\n"
+                f"4. After authenticating, return here and send your message\n"
             )
+
+            # Emit the auth instructions
+            await emit_agent_token(
+                session_id=ctx.session_id,
+                agent_id=ctx.agent_id,
+                token=auth_message,
+                message_id=stream_message_id,
+            )
+
+            # Finalize the stream
+            from src.websocket.hub import emit_agent_stream_end
+
+            await emit_agent_stream_end(
+                session_id=ctx.session_id,
+                agent_id=ctx.agent_id,
+                message_id=stream_message_id,
+                full_content=auth_message,
+            )
+            # Save to database
             processing_ctx = ResponseProcessingContext(
                 db=db,
                 ctx=ctx,
@@ -997,7 +1235,15 @@ async def _process_cli_agent_message(
         from src.websocket.hub import emit_agent_config_update
 
         executor_module = importlib.import_module(cli_config["executor_module"])
-        executor_func = getattr(executor_module, cli_config["executor_function"])
+
+        # Use streaming executor if available (for real-time thinking/content display)
+        streaming_func_name = cli_config.get("streaming_executor_function")
+        if streaming_func_name and hasattr(executor_module, streaming_func_name):
+            executor_func = getattr(executor_module, streaming_func_name)
+            use_streaming = True
+        else:
+            executor_func = getattr(executor_module, cli_config["executor_function"])
+            use_streaming = False
 
         # Create callback for config changes from CLI
         async def handle_config_change(updates: dict[str, Any]) -> None:
@@ -1013,21 +1259,74 @@ async def _process_cli_agent_message(
         # Pass images if present (for vision-capable CLI agents)
         images_param = ctx.images if ctx.images else None
 
-        result = await executor_func(
-            workspace_id=workspace_id,
-            user_id=user_id,
-            message=ctx.user_message,
-            mode=ctx.agent_mode or "ask",
-            model=ctx.agent_model.split(".")[-1] if "." in ctx.agent_model else None,
-            allowed_tools=ctx.command_allowlist,
-            denied_tools=None,
-            max_turns=agent.config.get("max_turns", 50) if agent.config else 50,
-            thinking_budget=ctx.thinking_config.get("budget_tokens")
+        # Get existing CLI session ID for conversation continuity (Claude Code)
+        cli_session_id = agent.config.get("cli_session_id") if agent.config else None
+
+        logger.info(
+            "CLI session ID retrieval",
+            agent_id=ctx.agent_id,
+            has_config=bool(agent.config),
+            cli_session_id=cli_session_id if cli_session_id else "(none)",
+            config_keys=list(agent.config.keys()) if agent.config else [],
+        )
+
+        # Build common params
+        common_params = {
+            "workspace_id": workspace_id,
+            "user_id": user_id,
+            "message": ctx.user_message,
+            "mode": ctx.agent_mode or "ask",
+            "model": ctx.agent_model,
+            "allowed_tools": ctx.command_allowlist,
+            "denied_tools": None,
+            "max_turns": agent.config.get("max_turns", 50) if agent.config else 50,
+            "thinking_budget": ctx.thinking_config.get("budget_tokens")
             if ctx.thinking_config
             else None,
-            images=images_param,
-            on_config_change=handle_config_change,
+            "images": images_param,
+            "on_config_change": handle_config_change,
+            "cli_session_id": cli_session_id,  # For conversation continuity
+            # Always pass session_id and agent_id for permission request events
+            "session_id": str(ctx.session_id),
+            "agent_id": str(ctx.agent_id),
+        }
+
+        # Add streaming-specific params
+        if use_streaming:
+            common_params["message_id"] = stream_message_id
+
+        result = await executor_func(**common_params)
+
+        logger.info(
+            "CLI executor returned",
+            cli_name=cli_name,
+            agent_id=ctx.agent_id,
+            result_keys=list(result.keys()) if result else [],
+            content_length=len(result.get("content", "")) if result else 0,
+            content_preview=result.get("content", "")[:200] if result else "(no result)",
+            has_tool_calls=bool(result.get("tool_calls")),
+            exit_code=result.get("exit_code"),
+            success=result.get("success"),
         )
+
+        # Save CLI session ID for conversation continuity (if returned by executor)
+        returned_session_id = result.get("cli_session_id") if result else None
+        if returned_session_id and returned_session_id != cli_session_id:
+            # Update agent config with the new session ID
+            # Create a new dict to ensure SQLAlchemy detects the change
+            agent_config = dict(agent.config) if agent.config else {}
+            agent_config["cli_session_id"] = returned_session_id
+            agent.config = agent_config
+            # Mark the JSONB field as modified so SQLAlchemy persists it
+            from sqlalchemy.orm import attributes
+
+            attributes.flag_modified(agent, "config")
+            await db.commit()
+            logger.debug(
+                "Saved CLI session ID for conversation continuity",
+                agent_id=ctx.agent_id,
+                cli_session_id=returned_session_id,
+            )
 
         response_content = result.get("content", "")
         tool_calls = result.get("tool_calls")
@@ -1046,6 +1345,28 @@ async def _process_cli_agent_message(
                 for i, tc in enumerate(tool_calls)
             ]
 
+        # Finalize the stream with the full content
+        from src.websocket.hub import emit_agent_stream_end
+
+        logger.info(
+            "CLI agent execution completed, emitting stream end",
+            cli_name=cli_name,
+            agent_id=ctx.agent_id,
+            response_length=len(response_content),
+            has_tool_calls=bool(formatted_tool_calls),
+        )
+
+        await emit_agent_stream_end(
+            session_id=ctx.session_id,
+            agent_id=ctx.agent_id,
+            message_id=stream_message_id,
+            full_content=response_content,
+            tool_calls=formatted_tool_calls,
+        )
+
+        # Get tokens used from CLI result for context tracking
+        tokens_used = result.get("tokens_used", 0) if result else 0
+
         # Process and emit the response
         processing_ctx = ResponseProcessingContext(
             db=db,
@@ -1056,7 +1377,7 @@ async def _process_cli_agent_message(
             tool_calls=formatted_tool_calls,
             streamed=True,
             message_id=stream_message_id,
-            tokens_used=0,  # CLI agents don't report tokens directly
+            tokens_used=tokens_used,
         )
         await _process_and_emit_response(processing_ctx)
 
@@ -1184,11 +1505,12 @@ async def _process_claude_code_message(
             return
 
         # Check authentication status
+        # Note: Use absolute path /home/dev instead of ~ because exec runs as root
         try:
             auth_check = await compute_client.exec_command(
                 workspace_id=workspace_id,
                 user_id=user_id,
-                command="test -f ~/.claude/credentials.json && echo 'authenticated'",
+                command="test -f /home/dev/.claude/.credentials.json && echo 'authenticated'",
                 exec_timeout=10,
             )
             authenticated = "authenticated" in auth_check.get("stdout", "")
@@ -1226,13 +1548,15 @@ async def _process_claude_code_message(
             user_id=user_id,
             message=ctx.user_message,
             mode=ctx.agent_mode or "ask",
-            model=ctx.agent_model.split(".")[-1] if "." in ctx.agent_model else "sonnet",
+            model=ctx.agent_model,  # Should be simple alias like 'sonnet', 'opus', 'haiku'
             allowed_tools=ctx.command_allowlist,
             denied_tools=None,
             max_turns=agent.config.get("max_turns", 50) if agent.config else 50,
             thinking_budget=ctx.thinking_config.get("budget_tokens")
             if ctx.thinking_config
             else None,
+            session_id=ctx.session_id,
+            agent_id=ctx.agent_id,
         )
 
         response_content = result.get("content", "")
@@ -2250,7 +2574,10 @@ async def _send_message_impl(
 ) -> MessageResponse:
     """Implementation of send_message endpoint."""
     # Verify user has access to session
-    await verify_session_access(params.session_id, deps.common.request, deps.common.db)
+    session = await verify_session_access(params.session_id, deps.common.request, deps.common.db)
+
+    # Update workspace activity to prevent idle standby
+    await update_workspace_activity(session, deps.common.db)
 
     # Validate agent exists
     agent_query = select(AgentModel).where(

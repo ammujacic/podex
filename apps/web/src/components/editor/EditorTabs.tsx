@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState, useRef, type DragEvent } from 'react';
+import { useCallback, useState, useRef, useMemo, type DragEvent } from 'react';
 import {
   X,
   Circle,
@@ -128,9 +128,16 @@ interface EditorTabsProps {
 }
 
 export function EditorTabs({ paneId, className }: EditorTabsProps) {
-  const tabs = useEditorStore((s) => s.getTabsForPane(paneId));
+  // Access raw state to avoid creating new array references in selector
+  const allTabs = useEditorStore((s) => s.tabs);
   const pane = useEditorStore((s) => s.panes[paneId]);
   const activeTabId = pane?.activeTabId;
+
+  // Memoize the computed tabs array to prevent infinite loops
+  const tabs = useMemo(() => {
+    if (!pane) return [];
+    return pane.tabs.map((id) => allTabs[id]).filter(Boolean) as EditorTab[];
+  }, [pane, allTabs]);
 
   const closeTab = useEditorStore((s) => s.closeTab);
   const closeOtherTabs = useEditorStore((s) => s.closeOtherTabs);
