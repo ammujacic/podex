@@ -1,5 +1,15 @@
+/**
+ * Agent constants and icon mapping.
+ *
+ * Agent role data (name, description, color, etc.) should be fetched from the backend
+ * via useConfigStore().agentRoles. Only icon mapping remains here since React components
+ * cannot be serialized in the database.
+ */
+
 import type { LucideIcon } from 'lucide-react';
+import type { ComponentType, SVGProps } from 'react';
 import {
+  Bot,
   Code,
   Eye,
   FileText,
@@ -12,6 +22,12 @@ import {
   User,
   Workflow,
 } from 'lucide-react';
+import { ClaudeIcon, OpenAIIcon, GeminiIcon } from '@/components/icons';
+
+// Icon type that accepts both LucideIcon and custom SVG icons
+type IconComponent =
+  | LucideIcon
+  | ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>;
 
 export type AgentRole =
   | 'architect'
@@ -24,15 +40,47 @@ export type AgentRole =
   | 'security'
   | 'devops'
   | 'documentator'
-  | 'custom';
+  | 'custom'
+  | 'claude-code'
+  | 'openai-codex'
+  | 'gemini-cli';
 
 export type AgentStatus = 'idle' | 'active' | 'error';
+
+/**
+ * Icon mapping for agent roles.
+ * Icons cannot be stored in the database, so this mapping is maintained in frontend code.
+ * Use this with agent role data from useConfigStore().agentRoles.
+ */
+export const ROLE_ICONS: Record<string, IconComponent> = {
+  architect: Wrench,
+  coder: Code,
+  reviewer: Eye,
+  tester: TestTube,
+  agent_builder: Sparkles,
+  orchestrator: Workflow,
+  chat: MessageCircle,
+  security: Shield,
+  devops: Server,
+  documentator: FileText,
+  custom: User,
+  'claude-code': ClaudeIcon,
+  'openai-codex': OpenAIIcon,
+  'gemini-cli': GeminiIcon,
+};
+
+/**
+ * Get icon component for an agent role.
+ */
+export function getRoleIcon(role: string): IconComponent {
+  return ROLE_ICONS[role] || Bot;
+}
 
 export type AgentOption = {
   id: string;
   role: AgentRole;
   name: string;
-  icon: LucideIcon;
+  icon: IconComponent;
   color: string;
   description: string;
   isCustom: boolean;
@@ -41,100 +89,30 @@ export type AgentOption = {
   model?: string;
 };
 
-export const BUILTIN_AGENTS: AgentOption[] = [
-  {
-    id: 'architect',
-    role: 'architect',
-    name: 'Architect',
-    icon: Wrench,
-    color: '#a855f7',
-    description: 'Plans system architecture and makes high-level design decisions',
+/**
+ * Create AgentOption from backend AgentRoleConfig.
+ * Maps backend data with frontend icon component.
+ */
+export function createAgentOptionFromRole(role: {
+  role: string;
+  name: string;
+  description?: string | null;
+  color: string;
+}): AgentOption {
+  return {
+    id: role.role,
+    role: role.role as AgentRole,
+    name: role.name,
+    icon: getRoleIcon(role.role),
+    color: role.color,
+    description: role.description || '',
     isCustom: false,
-  },
-  {
-    id: 'coder',
-    role: 'coder',
-    name: 'Coder',
-    icon: Code,
-    color: '#22c55e',
-    description: 'Writes and modifies code based on requirements',
-    isCustom: false,
-  },
-  {
-    id: 'reviewer',
-    role: 'reviewer',
-    name: 'Reviewer',
-    icon: Eye,
-    color: '#f59e0b',
-    description: 'Reviews code for quality, bugs, and best practices',
-    isCustom: false,
-  },
-  {
-    id: 'tester',
-    role: 'tester',
-    name: 'Tester',
-    icon: TestTube,
-    color: '#00e5ff',
-    description: 'Writes and runs tests to ensure code quality',
-    isCustom: false,
-  },
-  {
-    id: 'agent_builder',
-    role: 'agent_builder',
-    name: 'Agent Builder',
-    icon: Sparkles,
-    color: '#ec4899',
-    description: 'Create custom AI agents through conversation',
-    isCustom: false,
-  },
-  {
-    id: 'orchestrator',
-    role: 'orchestrator',
-    name: 'Orchestrator',
-    icon: Workflow,
-    color: '#06b6d4',
-    description: 'Coordinates multiple agents, delegates tasks, and synthesizes results',
-    isCustom: false,
-  },
-  {
-    id: 'chat',
-    role: 'chat',
-    name: 'Chat',
-    icon: MessageCircle,
-    color: '#8b5cf6',
-    description: 'Conversational assistant for discussions with no file or command access',
-    isCustom: false,
-  },
-  {
-    id: 'security',
-    role: 'security',
-    name: 'Security',
-    icon: Shield,
-    color: '#ef4444',
-    description: 'Identifies security vulnerabilities and recommends fixes',
-    isCustom: false,
-  },
-  {
-    id: 'devops',
-    role: 'devops',
-    name: 'DevOps',
-    icon: Server,
-    color: '#10b981',
-    description: 'Designs and implements infrastructure and deployment pipelines',
-    isCustom: false,
-  },
-  {
-    id: 'documentator',
-    role: 'documentator',
-    name: 'Documentator',
-    icon: FileText,
-    color: '#f59e0b',
-    description: 'Writes comprehensive code documentation and guides',
-    isCustom: false,
-  },
-];
+  };
+}
 
-/** Create custom agent option from template */
+/**
+ * Create custom agent option from template.
+ */
 export function createCustomAgentOption(template: {
   id: string;
   name: string;
@@ -155,12 +133,3 @@ export function createCustomAgentOption(template: {
     shareToken: template.share_token,
   };
 }
-
-/** Timeout options for standby settings */
-export const TIMEOUT_OPTIONS = [
-  { value: 15, label: '15 minutes' },
-  { value: 30, label: '30 minutes' },
-  { value: 60, label: '1 hour' },
-  { value: 120, label: '2 hours' },
-  { value: null, label: 'Never' },
-] as const;

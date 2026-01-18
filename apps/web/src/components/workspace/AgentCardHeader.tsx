@@ -9,16 +9,19 @@ import {
   Copy,
   ImageOff,
   Key,
+  KeyRound,
   Loader2,
   MoreVertical,
   Pencil,
   RefreshCw,
   Settings2,
   Shield,
+  Slash,
   Trash2,
   Undo2,
   Volume2,
 } from 'lucide-react';
+import { ClaudeIcon, GeminiIcon, OpenAIIcon, PodexIcon } from '@/components/icons';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -85,6 +88,9 @@ interface AgentCardHeaderProps {
   onRename: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  // Claude Code specific callbacks (optional - only used for claude-code agents)
+  onOpenSlashCommands?: () => void;
+  onReauthenticate?: () => void;
 }
 
 /**
@@ -118,7 +124,15 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
   onRename,
   onDuplicate,
   onDelete,
+  onOpenSlashCommands,
+  onReauthenticate,
 }) {
+  // CLI agent type checks
+  const isClaudeCodeAgent = agent.role === 'claude-code';
+  const isOpenAICodexAgent = agent.role === 'openai-codex';
+  const isGeminiCliAgent = agent.role === 'gemini-cli';
+  const isCliAgent = isClaudeCodeAgent || isOpenAICodexAgent || isGeminiCliAgent;
+
   const Icon = getRoleIcon(agent.role);
   const textColor = getAgentTextColor(agent.color);
   const currentModeConfig = getModeConfig(agent.mode);
@@ -131,6 +145,39 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
         </div>
         <div>
           <div className="flex items-center gap-2 flex-wrap">
+            {/* Claude Code badge */}
+            {isClaudeCodeAgent && (
+              <span
+                className="flex items-center justify-center w-5 h-5 rounded bg-[#FF6B35]/20"
+                title="Claude Code Agent"
+              >
+                <ClaudeIcon className="h-3 w-3 text-[#FF6B35]" />
+              </span>
+            )}
+            {/* OpenAI Codex badge */}
+            {isOpenAICodexAgent && (
+              <span
+                className="flex items-center justify-center w-5 h-5 rounded bg-[#10A37F]/20"
+                title="OpenAI Codex Agent"
+              >
+                <OpenAIIcon className="h-3 w-3 text-[#10A37F]" />
+              </span>
+            )}
+            {/* Gemini CLI badge */}
+            {isGeminiCliAgent && (
+              <span
+                className="flex items-center justify-center w-5 h-5 rounded bg-[#4285F4]/20"
+                title="Gemini CLI Agent"
+              >
+                <GeminiIcon className="h-3 w-3 text-[#4285F4]" />
+              </span>
+            )}
+            {/* Podex native agent badge */}
+            {!isCliAgent && agent.role !== 'custom' && (
+              <span className="flex items-center justify-center w-5 h-5" title="Podex Agent">
+                <PodexIcon size={20} />
+              </span>
+            )}
             <span className="font-medium text-text-primary">{agent.name}</span>
 
             {/* Status indicator */}
@@ -556,6 +603,37 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
             <Shield className="mr-2 h-4 w-4" />
             Mode Settings
           </DropdownMenuItem>
+          {/* CLI Agent specific options */}
+          {isCliAgent && onOpenSlashCommands && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel
+                className={cn(
+                  'text-xs flex items-center gap-1',
+                  isClaudeCodeAgent && 'text-[#FF6B35]',
+                  isOpenAICodexAgent && 'text-[#10A37F]',
+                  isGeminiCliAgent && 'text-[#4285F4]'
+                )}
+              >
+                {isClaudeCodeAgent && <ClaudeIcon className="h-3 w-3" />}
+                {isOpenAICodexAgent && <OpenAIIcon className="h-3 w-3" />}
+                {isGeminiCliAgent && <GeminiIcon className="h-3 w-3" />}
+                {isClaudeCodeAgent && 'Claude Code'}
+                {isOpenAICodexAgent && 'OpenAI Codex'}
+                {isGeminiCliAgent && 'Gemini CLI'}
+              </DropdownMenuLabel>
+              <DropdownMenuItem onClick={onOpenSlashCommands} className="cursor-pointer">
+                <Slash className="mr-2 h-4 w-4" />
+                Slash Commands
+              </DropdownMenuItem>
+              {onReauthenticate && (
+                <DropdownMenuItem onClick={onReauthenticate} className="cursor-pointer">
+                  <KeyRound className="mr-2 h-4 w-4" />
+                  Re-authenticate
+                </DropdownMenuItem>
+              )}
+            </>
+          )}
           <DropdownMenuItem
             onClick={onDuplicate}
             disabled={isDuplicating}

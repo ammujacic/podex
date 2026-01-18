@@ -240,7 +240,10 @@ export interface AgentCreateRequest {
     | 'security'
     | 'devops'
     | 'documentator'
-    | 'custom';
+    | 'custom'
+    | 'claude-code'
+    | 'openai-codex'
+    | 'gemini-cli';
   model?: string; // Optional - uses role default from platform settings if not provided
   config?: Record<string, unknown>;
   template_id?: string; // Reference to custom agent template
@@ -279,6 +282,50 @@ export async function createAgent(
 
 export async function listAgents(sessionId: string): Promise<AgentResponse[]> {
   return api.get<AgentResponse[]>(`/api/sessions/${sessionId}/agents`);
+}
+
+// ==================== Agent Role Configuration ====================
+
+/**
+ * Agent role configuration from database.
+ */
+export interface AgentRoleConfig {
+  id: string;
+  role: string;
+  name: string;
+  color: string;
+  icon: string | null;
+  description: string | null;
+  system_prompt: string;
+  tools: string[];
+  default_model: string | null;
+  default_temperature: number | null;
+  default_max_tokens: number | null;
+  sort_order: number;
+  is_enabled: boolean;
+  is_system: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentRoleConfigListResponse {
+  roles: AgentRoleConfig[];
+  total: number;
+}
+
+/**
+ * Get all enabled agent role configurations from the database.
+ * This is the single source of truth for agent role defaults.
+ */
+export async function getAgentRoleConfigs(): Promise<AgentRoleConfigListResponse> {
+  return api.get<AgentRoleConfigListResponse>('/api/agent-roles');
+}
+
+/**
+ * Get a specific agent role configuration by role name.
+ */
+export async function getAgentRoleConfig(role: string): Promise<AgentRoleConfig> {
+  return api.get<AgentRoleConfig>(`/api/agent-roles/${role}`);
 }
 
 export async function getAgent(sessionId: string, agentId: string): Promise<AgentResponse> {
@@ -3590,4 +3637,621 @@ export async function updateUserModelDefault(role: string, modelId: string): Pro
       },
     },
   });
+}
+
+// ============================================================================
+// Skills Management
+// ============================================================================
+
+export interface SkillStep {
+  name: string;
+  description: string;
+  tool?: string;
+  skill?: string;
+  parameters: Record<string, unknown>;
+  condition?: string;
+  on_success?: string;
+  on_failure?: string;
+  parallel_with?: string[];
+  required: boolean;
+}
+
+export interface Skill {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  version: string;
+  triggers: string[];
+  tags: string[];
+  required_tools: string[];
+  required_context: string[];
+  steps: SkillStep[];
+  system_prompt?: string;
+  skill_type: 'system' | 'user';
+  is_active: boolean;
+  metadata?: {
+    category?: string;
+    estimated_duration?: number;
+    requires_approval?: boolean;
+  };
+}
+
+export interface SkillsAvailableResponse {
+  skills: Skill[];
+  total: number;
+}
+
+/**
+ * Get all skills available to the current user (system + user skills).
+ */
+export async function getAvailableSkills(): Promise<SkillsAvailableResponse> {
+  return api.get<SkillsAvailableResponse>('/api/skills/available');
+}
+
+/**
+ * Get user's own skills.
+ */
+export async function getUserSkills(): Promise<Skill[]> {
+  const response = await api.get<{ skills: Skill[] }>('/api/skills');
+  return response.skills;
+}
+
+/**
+ * Create a new user skill.
+ */
+export async function createUserSkill(skill: Partial<Skill>): Promise<Skill> {
+  return api.post<Skill>('/api/skills', skill);
+}
+
+/**
+ * Update a user skill.
+ */
+export async function updateUserSkill(skillId: string, updates: Partial<Skill>): Promise<Skill> {
+  return api.patch<Skill>(`/api/skills/${skillId}`, updates);
+}
+
+/**
+ * Delete a user skill.
+ */
+export async function deleteUserSkill(skillId: string): Promise<void> {
+  await api.delete(`/api/skills/${skillId}`);
+}
+
+// ============================================================================
+// Skill Templates
+// ============================================================================
+
+export interface SkillTemplate {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  category: string;
+  icon?: string;
+  default_triggers?: string[];
+  default_tags?: string[];
+  required_tools?: string[];
+  step_templates?: Record<string, unknown>[];
+  variables?: { name: string; type: string; description: string; default?: unknown }[];
+  is_system: boolean;
+  usage_count: number;
+}
+
+export interface SkillTemplatesResponse {
+  templates: SkillTemplate[];
+  total: number;
+  categories: string[];
+}
+
+/**
+ * List available skill templates.
+ */
+export async function getSkillTemplates(
+  category?: string,
+  search?: string
+): Promise<SkillTemplatesResponse> {
+  const params = new URLSearchParams();
+  if (category) params.append('category', category);
+  if (search) params.append('search', search);
+  const query = params.toString();
+  return api.get<SkillTemplatesResponse>(`/api/skill-templates${query ? `?${query}` : ''}`);
+}
+
+/**
+ * Get a specific skill template.
+ */
+export async function getSkillTemplate(slug: string): Promise<SkillTemplate> {
+  return api.get<SkillTemplate>(`/api/skill-templates/${slug}`);
+}
+
+/**
+ * Create a skill from a template.
+ */
+export async function createSkillFromTemplate(
+  templateSlug: string,
+  data: {
+    name: string;
+    slug: string;
+    description?: string;
+    variables?: Record<string, unknown>;
+  }
+): Promise<Skill> {
+  return api.post<Skill>(`/api/skill-templates/${templateSlug}/create-skill`, data);
+}
+
+// ============================================================================
+// Skill Repositories (Git Sync)
+// ============================================================================
+
+export interface SkillRepository {
+  id: string;
+  name: string;
+  repo_url: string;
+  branch: string;
+  skills_path: string;
+  sync_direction: 'pull' | 'push' | 'bidirectional';
+  last_synced_at?: string;
+  last_sync_status?: 'success' | 'failed' | 'pending';
+  last_sync_error?: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface SkillSyncLog {
+  id: string;
+  repository_id: string;
+  direction: string;
+  status: string;
+  skills_added: number;
+  skills_updated: number;
+  skills_removed: number;
+  error_message?: string;
+  started_at: string;
+  completed_at?: string;
+}
+
+/**
+ * List user's connected skill repositories.
+ */
+export async function getSkillRepositories(includeInactive = false): Promise<SkillRepository[]> {
+  const response = await api.get<{ repositories: SkillRepository[] }>(
+    `/api/skill-repositories?include_inactive=${includeInactive}`
+  );
+  return response.repositories;
+}
+
+/**
+ * Connect a new skill repository.
+ */
+export async function createSkillRepository(data: {
+  name: string;
+  repo_url: string;
+  branch?: string;
+  skills_path?: string;
+  sync_direction?: 'pull' | 'push' | 'bidirectional';
+}): Promise<SkillRepository> {
+  return api.post<SkillRepository>('/api/skill-repositories', data);
+}
+
+/**
+ * Update a skill repository.
+ */
+export async function updateSkillRepository(
+  repoId: string,
+  updates: Partial<SkillRepository>
+): Promise<SkillRepository> {
+  return api.patch<SkillRepository>(`/api/skill-repositories/${repoId}`, updates);
+}
+
+/**
+ * Disconnect a skill repository.
+ */
+export async function deleteSkillRepository(repoId: string): Promise<void> {
+  await api.delete(`/api/skill-repositories/${repoId}`);
+}
+
+/**
+ * Trigger a manual sync for a repository.
+ */
+export async function syncSkillRepository(
+  repoId: string,
+  force = false
+): Promise<{ sync_id: string; status: string; message: string }> {
+  return api.post(`/api/skill-repositories/${repoId}/sync?force=${force}`, {});
+}
+
+/**
+ * Get sync history for a repository.
+ */
+export async function getSkillSyncLogs(repoId: string, limit = 20): Promise<SkillSyncLog[]> {
+  const response = await api.get<{ logs: SkillSyncLog[] }>(
+    `/api/skill-repositories/${repoId}/logs?limit=${limit}`
+  );
+  return response.logs;
+}
+
+/**
+ * Get webhook URL for a repository.
+ */
+export async function getSkillRepositoryWebhook(repoId: string): Promise<{
+  webhook_url: string;
+  secret: string;
+  events: string[];
+  content_type: string;
+}> {
+  return api.get(`/api/skill-repositories/${repoId}/webhook-url`);
+}
+
+// ============================================================================
+// Skill Marketplace
+// ============================================================================
+
+export interface MarketplaceSkill {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  category: string;
+  version: string;
+  triggers: string[];
+  tags: string[];
+  install_count: number;
+}
+
+export interface MarketplaceListResponse {
+  skills: MarketplaceSkill[];
+  total: number;
+}
+
+export interface UserAddedSkill {
+  id: string;
+  skill_slug: string;
+  skill_name: string;
+  is_enabled: boolean;
+  added_at: string;
+}
+
+/**
+ * List approved marketplace skills.
+ */
+export async function getMarketplaceSkills(
+  category?: string,
+  search?: string
+): Promise<MarketplaceListResponse> {
+  const params = new URLSearchParams();
+  if (category) params.append('category', category);
+  if (search) params.append('search', search);
+  const query = params.toString();
+  return api.get<MarketplaceListResponse>(`/api/marketplace${query ? `?${query}` : ''}`);
+}
+
+/**
+ * Install a skill from the marketplace.
+ */
+export async function installMarketplaceSkill(slug: string): Promise<UserAddedSkill> {
+  return api.post<UserAddedSkill>(`/api/marketplace/${slug}/install`, {});
+}
+
+/**
+ * Uninstall a marketplace skill.
+ */
+export async function uninstallMarketplaceSkill(slug: string): Promise<void> {
+  await api.delete(`/api/marketplace/${slug}/uninstall`);
+}
+
+/**
+ * Get user's installed marketplace skills.
+ */
+export async function getMyMarketplaceSkills(): Promise<UserAddedSkill[]> {
+  const response = await api.get<{ skills: UserAddedSkill[] }>('/api/marketplace/my/skills');
+  return response.skills;
+}
+
+/**
+ * Submit a skill to the marketplace for approval.
+ */
+export async function submitSkillToMarketplace(skillId: string): Promise<void> {
+  await api.post('/api/marketplace/submit', { skill_id: skillId });
+}
+
+/**
+ * Get user's marketplace submissions.
+ */
+export async function getMyMarketplaceSubmissions(): Promise<MarketplaceSkill[]> {
+  const response = await api.get<{ submissions: MarketplaceSkill[] }>(
+    '/api/marketplace/my/submissions'
+  );
+  return response.submissions;
+}
+
+// ============================================================================
+// Skill Analytics
+// ============================================================================
+
+export interface SkillAnalytics {
+  skill_id: string;
+  skill_slug: string;
+  skill_name: string;
+  total_executions: number;
+  successful_executions: number;
+  failed_executions: number;
+  success_rate: number;
+  avg_duration_ms: number;
+  last_executed_at?: string;
+}
+
+export interface SkillAnalyticsOverview {
+  total_executions: number;
+  total_skills_used: number;
+  success_rate: number;
+  avg_duration_ms: number;
+  skills: SkillAnalytics[];
+}
+
+export interface SkillExecutionTimeline {
+  date: string;
+  executions: number;
+  successes: number;
+  failures: number;
+}
+
+/**
+ * Get user's skill analytics overview.
+ */
+export async function getSkillAnalytics(days = 30): Promise<SkillAnalyticsOverview> {
+  return api.get<SkillAnalyticsOverview>(`/api/skills/analytics?days=${days}`);
+}
+
+/**
+ * Get analytics for a specific skill.
+ */
+export async function getSkillAnalyticsDetail(
+  skillId: string,
+  days = 30
+): Promise<SkillAnalytics & { timeline: SkillExecutionTimeline[] }> {
+  return api.get(`/api/skills/${skillId}/analytics?days=${days}`);
+}
+
+/**
+ * Get skill execution timeline.
+ */
+export async function getSkillAnalyticsTimeline(
+  days = 30,
+  granularity: 'day' | 'week' = 'day'
+): Promise<SkillExecutionTimeline[]> {
+  const response = await api.get<{ data: SkillExecutionTimeline[] }>(
+    `/api/skills/analytics/timeline?days=${days}&granularity=${granularity}`
+  );
+  return response.data;
+}
+
+/**
+ * Get skill usage trends.
+ */
+export async function getSkillAnalyticsTrends(
+  days = 30
+): Promise<{ skill_slug: string; skill_name: string; trend: number; executions: number }[]> {
+  const response = await api.get<{
+    trends: { skill_slug: string; skill_name: string; trend: number; executions: number }[];
+  }>(`/api/skills/analytics/trends?days=${days}`);
+  return response.trends;
+}
+
+// ============================================================================
+// Platform Settings (Public)
+// ============================================================================
+
+export interface PlatformSetting {
+  id: string;
+  category: string;
+  key: string;
+  value: unknown;
+  description?: string;
+  is_public: boolean;
+  sort_order: number;
+}
+
+export interface WorkspaceDefaults {
+  cpu_limit: number;
+  memory_limit: number;
+  disk_limit: number;
+  idle_timeout: number;
+  max_session_duration: number;
+}
+
+export interface ThinkingPreset {
+  label: string;
+  tokens: number;
+  description?: string;
+}
+
+export interface ThinkingPresets {
+  low: ThinkingPreset;
+  medium: ThinkingPreset;
+  high: ThinkingPreset;
+  max: ThinkingPreset;
+}
+
+export interface TimeoutOption {
+  value: number | null;
+  label: string;
+}
+
+export interface AgentModeConfigEntry {
+  label: string;
+  icon: string;
+  color: string;
+  description: string;
+}
+
+export interface AgentModeConfig {
+  plan: AgentModeConfigEntry;
+  ask: AgentModeConfigEntry;
+  auto: AgentModeConfigEntry;
+  sovereign: AgentModeConfigEntry;
+}
+
+export interface VoiceLanguage {
+  code: string;
+  name: string;
+}
+
+/**
+ * Get all public platform settings.
+ */
+export async function getPlatformSettings(category?: string): Promise<PlatformSetting[]> {
+  const params = category ? `?category=${category}` : '';
+  const response = await api.get<{ settings: PlatformSetting[] }>(
+    `/api/platform/settings${params}`
+  );
+  return response.settings;
+}
+
+/**
+ * Get a specific platform setting by key.
+ */
+export async function getPlatformSetting<T = unknown>(key: string): Promise<T> {
+  const response = await api.get<{ value: T }>(`/api/platform/settings/${key}`);
+  return response.value;
+}
+
+// ============================================================================
+// LLM Providers (Public)
+// ============================================================================
+
+export interface LLMProvider {
+  id: string;
+  slug: string;
+  name: string;
+  description?: string;
+  icon?: string;
+  color: string;
+  is_local: boolean;
+  default_url?: string;
+  docs_url?: string;
+  setup_guide_url?: string;
+  requires_api_key: boolean;
+  supports_streaming: boolean;
+  supports_tools: boolean;
+  supports_vision: boolean;
+  is_enabled: boolean;
+  sort_order: number;
+}
+
+/**
+ * Get all enabled LLM providers.
+ */
+export async function getProviders(): Promise<LLMProvider[]> {
+  const response = await api.get<{ providers: LLMProvider[] }>('/api/platform/providers');
+  return response.providers;
+}
+
+/**
+ * Get a specific provider by slug.
+ */
+export async function getProvider(slug: string): Promise<LLMProvider> {
+  return api.get<LLMProvider>(`/api/platform/providers/${slug}`);
+}
+
+// ============================================================================
+// Platform Config (Combined Bootstrap)
+// ============================================================================
+
+export interface PlatformConfig {
+  settings: Record<string, unknown>;
+  providers: LLMProvider[];
+}
+
+/**
+ * Get combined platform configuration for app bootstrap.
+ * Returns all public settings and enabled providers in one call.
+ */
+export async function getPlatformConfig(): Promise<PlatformConfig> {
+  return api.get<PlatformConfig>('/api/platform/config');
+}
+
+// ============================================================================
+// Admin: LLM Providers
+// ============================================================================
+
+export interface AdminLLMProvider extends LLMProvider {
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateProviderRequest {
+  slug: string;
+  name: string;
+  description?: string;
+  icon?: string;
+  color: string;
+  is_local?: boolean;
+  default_url?: string;
+  docs_url?: string;
+  setup_guide_url?: string;
+  requires_api_key?: boolean;
+  supports_streaming?: boolean;
+  supports_tools?: boolean;
+  supports_vision?: boolean;
+  is_enabled?: boolean;
+  sort_order?: number;
+}
+
+export interface UpdateProviderRequest {
+  name?: string;
+  description?: string;
+  icon?: string;
+  color?: string;
+  is_local?: boolean;
+  default_url?: string;
+  docs_url?: string;
+  setup_guide_url?: string;
+  requires_api_key?: boolean;
+  supports_streaming?: boolean;
+  supports_tools?: boolean;
+  supports_vision?: boolean;
+  is_enabled?: boolean;
+  sort_order?: number;
+}
+
+/**
+ * Admin: List all LLM providers (including disabled).
+ */
+export async function adminListProviders(includeDisabled = true): Promise<AdminLLMProvider[]> {
+  const response = await api.get<{ providers: AdminLLMProvider[] }>(
+    `/api/admin/settings/providers?include_disabled=${includeDisabled}`
+  );
+  return response.providers;
+}
+
+/**
+ * Admin: Get a specific provider.
+ */
+export async function adminGetProvider(slug: string): Promise<AdminLLMProvider> {
+  return api.get<AdminLLMProvider>(`/api/admin/settings/providers/${slug}`);
+}
+
+/**
+ * Admin: Create a new LLM provider.
+ */
+export async function adminCreateProvider(data: CreateProviderRequest): Promise<AdminLLMProvider> {
+  return api.post<AdminLLMProvider>('/api/admin/settings/providers', data);
+}
+
+/**
+ * Admin: Update an existing provider.
+ */
+export async function adminUpdateProvider(
+  slug: string,
+  data: UpdateProviderRequest
+): Promise<AdminLLMProvider> {
+  return api.patch<AdminLLMProvider>(`/api/admin/settings/providers/${slug}`, data);
+}
+
+/**
+ * Admin: Delete a provider.
+ */
+export async function adminDeleteProvider(slug: string): Promise<void> {
+  await api.delete(`/api/admin/settings/providers/${slug}`);
 }

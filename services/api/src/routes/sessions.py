@@ -188,6 +188,7 @@ async def build_workspace_config(
     template_id: str | None,
     git_url: str | None,
     tier: str | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     """Build workspace configuration from template and git URL.
 
@@ -196,14 +197,29 @@ async def build_workspace_config(
         template_id: Optional template ID to fetch configuration from
         git_url: Optional git URL to clone
         tier: Optional hardware tier (defaults to "starter")
+        user_id: Optional user ID to fetch git config from
 
     Returns:
         Workspace configuration dict for the compute service
     """
+    from src.database.models import UserConfig
+
     config: dict[str, Any] = {
         "repos": [git_url] if git_url else [],
         "tier": tier or "starter",  # Default to starter tier if not specified
     }
+
+    # Fetch user's git configuration if user_id provided
+    if user_id:
+        user_config_result = await db.execute(
+            select(UserConfig).where(UserConfig.user_id == user_id)
+        )
+        user_config = user_config_result.scalar_one_or_none()
+        if user_config:
+            if user_config.git_name:
+                config["git_name"] = user_config.git_name
+            if user_config.git_email:
+                config["git_email"] = user_config.git_email
 
     if template_id:
         # Fetch template configuration
@@ -281,8 +297,10 @@ async def create_session(
         logger.exception("Failed to create session", error=str(e), user_id=user_id)
         raise HTTPException(status_code=500, detail="Failed to create session") from None
 
-    # Build workspace config from template
-    workspace_config = await build_workspace_config(db, data.template_id, data.git_url, data.tier)
+    # Build workspace config from template (includes user's git config)
+    workspace_config = await build_workspace_config(
+        db, data.template_id, data.git_url, data.tier, user_id
+    )
 
     # Provision workspace in compute service
     try:
@@ -1198,8 +1216,12 @@ async def ensure_workspace_provisioned(
     if db and session.template_id:
         tier = session.settings.get("tier") if session.settings else None
         workspace_config = await build_workspace_config(
-            db, session.template_id, session.git_url, tier
+            db, session.template_id, session.git_url, tier, user_id
         )
+    elif db:
+        # No template but we have db - still fetch git config
+        tier = session.settings.get("tier", "starter") if session.settings else "starter"
+        workspace_config = await build_workspace_config(db, None, session.git_url, tier, user_id)
     else:
         tier = session.settings.get("tier", "starter") if session.settings else "starter"
         workspace_config = {

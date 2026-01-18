@@ -324,6 +324,10 @@ class DockerComputeManager(ComputeManager):
             # Ensure projects directory exists
             await self.exec_command(workspace_id, "mkdir -p /home/dev/projects", timeout=10)
 
+            # Set up git identity from user configuration
+            if config.git_name or config.git_email:
+                await self._setup_git_identity(workspace_id, config.git_name, config.git_email)
+
             # Clone repos if specified (only if no GCS files were synced)
             if config.repos:
                 await self._clone_repos(workspace_id, config.repos, config.git_credentials)
@@ -376,6 +380,55 @@ class DockerComputeManager(ComputeManager):
         network_info = networks.get(settings.docker_network, {})
         ip_address: str | None = network_info.get("IPAddress")
         return ip_address
+
+    async def _setup_git_identity(
+        self,
+        workspace_id: str,
+        git_name: str | None,
+        git_email: str | None,
+    ) -> None:
+        """Set up git identity (user.name and user.email) in the workspace.
+
+        Args:
+            workspace_id: The workspace ID
+            git_name: Git user.name for commits
+            git_email: Git user.email for commits
+        """
+        try:
+            if git_name:
+                # Escape single quotes in the name by replacing ' with '\''
+                safe_name = git_name.replace("'", "'\\''")
+                await self.exec_command(
+                    workspace_id,
+                    f"git config --global user.name '{safe_name}'",
+                    timeout=10,
+                )
+                logger.debug("Set git user.name", workspace_id=workspace_id)
+
+            if git_email:
+                # Escape single quotes in the email (unlikely but safe)
+                safe_email = git_email.replace("'", "'\\''")
+                await self.exec_command(
+                    workspace_id,
+                    f"git config --global user.email '{safe_email}'",
+                    timeout=10,
+                )
+                logger.debug("Set git user.email", workspace_id=workspace_id)
+
+            if git_name or git_email:
+                logger.info(
+                    "Git identity configured",
+                    workspace_id=workspace_id,
+                    has_name=bool(git_name),
+                    has_email=bool(git_email),
+                )
+        except Exception:
+            # Non-fatal: log warning but continue workspace creation
+            logger.warning(
+                "Failed to set git identity",
+                workspace_id=workspace_id,
+                exc_info=True,
+            )
 
     async def _clone_repos(  # noqa: PLR0912
         self,

@@ -332,7 +332,7 @@ async def delegate_to_custom_agent(
             session_id=session_id,
             template_config=template_config,
         )
-        agent = orchestrator.get_or_create_agent(agent_params)
+        agent = await orchestrator.get_or_create_agent(agent_params)
 
         # Execute the agent
         response = await agent.execute(message)

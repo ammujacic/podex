@@ -34,7 +34,7 @@ class TestSettingsDefaults:
     def test_gcp_settings_defaults(self) -> None:
         """Test default GCP settings."""
         settings = Settings()
-        assert settings.gcp_region == "us-east5"
+        assert settings.gcp_region == "us-east1"
         assert settings.gcp_project_id is None
         assert settings.gke_cluster_name == "podex-workspaces"
         assert settings.gke_namespace == "workspaces"
@@ -94,10 +94,10 @@ class TestSettingsCustom:
         """Test custom GCP settings."""
         settings = Settings(
             gcp_project_id="my-project",
-            gcp_region="us-central1",
+            gcp_region="us-east1",
         )
         assert settings.gcp_project_id == "my-project"
-        assert settings.gcp_region == "us-central1"
+        assert settings.gcp_region == "us-east1"
 
 
 class TestSettingsSentry:

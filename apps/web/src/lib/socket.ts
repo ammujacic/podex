@@ -449,6 +449,53 @@ export interface PendingChangeResolvedEvent {
   file_path: string;
 }
 
+// Skill execution events
+export interface SkillStartEvent {
+  session_id: string;
+  agent_id: string;
+  message_id: string;
+  skill_name: string;
+  skill_slug: string;
+  total_steps: number;
+}
+
+export interface SkillStepEvent {
+  session_id: string;
+  agent_id: string;
+  message_id: string;
+  step_name: string;
+  step_index: number;
+  step_status: 'running' | 'success' | 'failed' | 'skipped' | 'error';
+}
+
+export interface SkillCompleteEvent {
+  session_id: string;
+  agent_id: string;
+  message_id: string;
+  skill_name: string;
+  skill_slug: string;
+  success: boolean;
+  duration_ms: number;
+}
+
+/**
+ * Event emitted when a CLI agent's configuration changes.
+ * Enables bi-directional sync between CLI tools and Podex UI.
+ */
+export interface AgentConfigUpdateEvent {
+  session_id: string;
+  agent_id: string;
+  updates: {
+    model?: string;
+    mode?: string;
+    thinking_enabled?: boolean;
+    thinking_budget?: number;
+    context_compacted?: boolean;
+  };
+  source: 'cli' | 'user' | 'system';
+  timestamp: string;
+}
+
 export interface SocketEvents {
   agent_message: (data: AgentMessageEvent) => void;
   agent_status: (data: AgentStatusEvent) => void;
@@ -506,6 +553,12 @@ export interface SocketEvents {
   // Pending change events (agent diff review)
   pending_change_proposed: (data: PendingChangeProposedEvent) => void;
   pending_change_resolved: (data: PendingChangeResolvedEvent) => void;
+  // Skill execution events
+  skill_start: (data: SkillStartEvent) => void;
+  skill_step: (data: SkillStepEvent) => void;
+  skill_complete: (data: SkillCompleteEvent) => void;
+  // CLI agent config sync events
+  agent_config_update: (data: AgentConfigUpdateEvent) => void;
 }
 
 // Track active session for auto-rejoin on reconnect

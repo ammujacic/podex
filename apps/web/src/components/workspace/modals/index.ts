@@ -7,9 +7,10 @@ export { MCPSettingsModal } from './MCPSettingsModal';
 
 // Constants and types
 export {
-  BUILTIN_AGENTS,
-  TIMEOUT_OPTIONS,
   createCustomAgentOption,
+  createAgentOptionFromRole,
+  getRoleIcon,
+  ROLE_ICONS,
   type AgentOption,
   type AgentRole,
   type AgentStatus,

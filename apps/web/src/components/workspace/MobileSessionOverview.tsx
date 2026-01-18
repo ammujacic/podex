@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Zap,
 } from 'lucide-react';
+import { ClaudeIcon, GeminiIcon, OpenAIIcon, PodexIcon } from '@/components/icons';
 import { cn } from '@/lib/utils';
 import { useSessionStore, type Agent } from '@/stores/session';
 import { useAttentionStore } from '@/stores/attention';
@@ -189,6 +190,44 @@ export function MobileSessionOverview({
                     {/* Agent info */}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
+                        {/* Claude Code badge */}
+                        {agent.role === 'claude-code' && (
+                          <span
+                            className="flex items-center justify-center w-5 h-5 rounded bg-[#FF6B35]/20 flex-shrink-0"
+                            title="Claude Code"
+                          >
+                            <ClaudeIcon className="h-3 w-3 text-[#FF6B35]" />
+                          </span>
+                        )}
+                        {/* OpenAI Codex badge */}
+                        {agent.role === 'openai-codex' && (
+                          <span
+                            className="flex items-center justify-center w-5 h-5 rounded bg-[#10A37F]/20 flex-shrink-0"
+                            title="OpenAI Codex"
+                          >
+                            <OpenAIIcon className="h-3 w-3 text-[#10A37F]" />
+                          </span>
+                        )}
+                        {/* Gemini CLI badge */}
+                        {agent.role === 'gemini-cli' && (
+                          <span
+                            className="flex items-center justify-center w-5 h-5 rounded bg-[#4285F4]/20 flex-shrink-0"
+                            title="Gemini CLI"
+                          >
+                            <GeminiIcon className="h-3 w-3 text-[#4285F4]" />
+                          </span>
+                        )}
+                        {/* Podex native agent badge */}
+                        {!['claude-code', 'openai-codex', 'gemini-cli', 'custom'].includes(
+                          agent.role
+                        ) && (
+                          <span
+                            className="flex items-center justify-center w-5 h-5 flex-shrink-0"
+                            title="Podex Agent"
+                          >
+                            <PodexIcon size={20} />
+                          </span>
+                        )}
                         <h3 className="font-semibold text-text-primary truncate">{agent.name}</h3>
                         {isProcessing && (
                           <span

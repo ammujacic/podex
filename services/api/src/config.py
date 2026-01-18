@@ -63,7 +63,7 @@ class Settings(BaseSettings):
 
     # GCP
     GCP_PROJECT_ID: str | None = None
-    GCP_REGION: str = "us-east5"
+    GCP_REGION: str = "us-east1"
 
     # GCS Storage
     GCS_BUCKET: str = "podex-workspaces"
@@ -125,6 +125,9 @@ class Settings(BaseSettings):
 
     # Frontend URL for redirects
     FRONTEND_URL: str = "http://localhost:3000"
+
+    # API base URL (for webhook URLs, etc.)
+    API_BASE_URL: str = "http://localhost:3001"
 
     # Cognito - optional external identity provider
     COGNITO_USER_POOL_ID: str | None = None

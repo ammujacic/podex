@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -87,6 +87,7 @@ class AdminOrganizationListResponse(BaseModel):
 @require_admin
 async def list_organizations(
     request: Request,
+    response: Response,
     db: DbSession,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
@@ -204,6 +205,7 @@ async def list_organizations(
 @require_admin
 async def get_organization(
     request: Request,
+    response: Response,
     org_id: str,
     db: DbSession,
 ) -> AdminOrganizationResponse:
@@ -262,6 +264,7 @@ async def get_organization(
 @require_admin
 async def update_organization(
     request: Request,
+    response: Response,
     org_id: str,
     data: AdminUpdateOrganizationRequest,
     db: DbSession,
@@ -343,6 +346,7 @@ async def update_organization(
 @require_admin
 async def suspend_organization(
     request: Request,
+    response: Response,
     org_id: str,
     db: DbSession,
     reason: str | None = Query(None, max_length=500),
@@ -376,6 +380,7 @@ async def suspend_organization(
 @require_admin
 async def activate_organization(
     request: Request,
+    response: Response,
     org_id: str,
     db: DbSession,
 ) -> dict[str, str]:
@@ -407,6 +412,7 @@ async def activate_organization(
 @require_admin
 async def list_organization_members(
     request: Request,
+    response: Response,
     org_id: str,
     db: DbSession,
     limit: int = Query(default=50, ge=1, le=100),
@@ -463,6 +469,7 @@ async def list_organization_members(
 @require_admin
 async def get_organization_usage(
     request: Request,
+    response: Response,
     org_id: str,
     db: DbSession,
 ) -> dict[str, Any]:
@@ -524,6 +531,7 @@ async def get_organization_usage(
 @require_super_admin
 async def add_credits_to_organization(
     request: Request,
+    response: Response,
     org_id: str,
     db: DbSession,
     amount_cents: int = Query(..., ge=1),

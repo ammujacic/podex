@@ -55,7 +55,7 @@ class TestSettingsDefaults:
     def test_gcp_region_default(self) -> None:
         """Test default GCP region."""
         settings = Settings()
-        assert settings.GCP_REGION == "us-east5"
+        assert settings.GCP_REGION == "us-east1"
 
     def test_gcs_endpoint_default(self) -> None:
         """Test default GCS endpoint (for local emulator)."""
@@ -277,7 +277,11 @@ class TestJWTSecretValidation:
         """Test default JWT secret is rejected in production."""
         from pydantic import ValidationError as PydanticValidationError
 
-        with patch.dict(os.environ, {"ENVIRONMENT": "production"}, clear=False):
+        with patch.dict(
+            os.environ,
+            {"ENVIRONMENT": "production", "COMPUTE_INTERNAL_API_KEY": "test-key", "INTERNAL_SERVICE_TOKEN": "test-token"},
+            clear=False,
+        ):
             with pytest.raises(PydanticValidationError) as exc:
                 Settings(JWT_SECRET_KEY="dev-secret-key-for-local-development")
             # The underlying error message should mention the default value issue
@@ -287,7 +291,11 @@ class TestJWTSecretValidation:
         """Test short JWT secret is rejected in production."""
         from pydantic import ValidationError as PydanticValidationError
 
-        with patch.dict(os.environ, {"ENVIRONMENT": "production"}, clear=False):
+        with patch.dict(
+            os.environ,
+            {"ENVIRONMENT": "production", "COMPUTE_INTERNAL_API_KEY": "test-key", "INTERNAL_SERVICE_TOKEN": "test-token"},
+            clear=False,
+        ):
             with pytest.raises(PydanticValidationError) as exc:
                 Settings(JWT_SECRET_KEY="short-key")
             # The underlying error message should mention the length issue

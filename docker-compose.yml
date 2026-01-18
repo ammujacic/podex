@@ -94,7 +94,7 @@ services:
       REDIS_URL: redis://redis:6379
       # GCP Configuration
       GCP_PROJECT_ID: ${GCP_PROJECT_ID:-podex-dev}
-      GCP_REGION: ${GCP_REGION:-us-central1}
+      GCP_REGION: ${GCP_REGION:-us-east1}
       GOOGLE_APPLICATION_CREDENTIALS: /app/service-account.json
       # GCS Storage
       GCS_BUCKET: podex-workspaces-dev
@@ -176,7 +176,7 @@ services:
       REDIS_URL: redis://redis:6379
       # GCP Configuration
       GCP_PROJECT_ID: ${GCP_PROJECT_ID:-podex-dev}
-      GCP_REGION: ${GCP_REGION:-us-central1}
+      GCP_REGION: ${GCP_REGION:-us-east1}
       GOOGLE_APPLICATION_CREDENTIALS: /app/service-account.json
       # GCS Storage
       GCS_BUCKET: podex-workspaces-dev
@@ -233,7 +233,7 @@ services:
       COMPUTE_REDIS_URL: redis://redis:6379
       # GCP Configuration
       GCP_PROJECT_ID: ${GCP_PROJECT_ID:-podex-dev}
-      GCP_REGION: ${GCP_REGION:-us-central1}
+      GCP_REGION: ${GCP_REGION:-us-east1}
       # GCS Storage
       COMPUTE_GCS_BUCKET: podex-workspaces-dev
       STORAGE_EMULATOR_HOST: http://fake-gcs:4443

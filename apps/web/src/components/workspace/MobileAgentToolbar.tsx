@@ -15,7 +15,10 @@ import {
   Zap,
   Copy,
   MoreVertical,
+  Slash,
+  Key,
 } from 'lucide-react';
+import { ClaudeIcon, GeminiIcon, OpenAIIcon, PodexIcon } from '@/components/icons';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { type Agent, type AgentMode, useSessionStore } from '@/stores/session';
@@ -35,11 +38,19 @@ import { ContextUsageRing } from './ContextUsageRing';
 import { MobileBottomSheet } from '@/components/ui/MobileBottomSheet';
 import { ModelTierSection, UserModelsSection } from './ModelTierSection';
 import { getModelDisplayName } from '@/lib/ui-utils';
+import { SlashCommandSheet } from './SlashCommandSheet';
+import {
+  useCliAgentAuth,
+  getCliAgentType,
+  getCliSupportedModels,
+} from '@/hooks/useCliAgentCommands';
 import type { ThinkingConfig } from '@podex/shared';
 
 interface MobileAgentToolbarProps {
   sessionId: string;
   agent: Agent;
+  /** Optional callback for sending commands (used for CLI agents like /compact) */
+  onSendCommand?: (command: string) => Promise<void>;
 }
 
 // Mode configuration
@@ -81,13 +92,14 @@ const THINKING_OPTIONS = [
   { label: 'High (20K tokens)', enabled: true, budgetTokens: 20000 },
 ];
 
-export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps) {
+export function MobileAgentToolbar({ sessionId, agent, onSendCommand }: MobileAgentToolbarProps) {
   // Sheet visibility states
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showModeMenu, setShowModeMenu] = useState(false);
   const [showThinkingMenu, setShowThinkingMenu] = useState(false);
   const [showContextMenu, setShowContextMenu] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [showSlashCommands, setShowSlashCommands] = useState(false);
 
   // Loading states
   const [isTogglingPlanMode, setIsTogglingPlanMode] = useState(false);
@@ -98,6 +110,17 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
   // Models
   const [publicModels, setPublicModels] = useState<PublicModel[]>([]);
   const [userModels, setUserModels] = useState<UserProviderModel[]>([]);
+
+  // CLI agent detection
+  const isClaudeCodeAgent = agent.role === 'claude-code';
+  const isOpenAICodexAgent = agent.role === 'openai-codex';
+  const isGeminiCliAgent = agent.role === 'gemini-cli';
+  const isCliAgent = isClaudeCodeAgent || isOpenAICodexAgent || isGeminiCliAgent;
+
+  // CLI agent auth (Claude Code, OpenAI Codex, Gemini CLI)
+  const cliType = getCliAgentType(agent.role);
+  const { reauthenticate: claudeCodeReauthenticate, isLoading: isReauthenticating } =
+    useCliAgentAuth(cliType || 'claude-code', cliType ? agent.id : undefined);
 
   const { updateAgent, updateAgentThinking } = useSessionStore();
 
@@ -139,11 +162,50 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
 
   // Group models by tier
   const modelsByTier = useMemo(() => {
+    // For CLI agents, return CLI-specific models
+    const cliType = getCliAgentType(agent.role);
+    if (cliType) {
+      const cliModels = getCliSupportedModels(cliType);
+      // Convert CLI models to PublicModel format
+      const cliPublicModels: PublicModel[] = cliModels.map((m) => ({
+        model_id: m.id,
+        display_name: m.name,
+        provider:
+          cliType === 'claude-code'
+            ? 'anthropic'
+            : cliType === 'openai-codex'
+              ? 'openai'
+              : 'google',
+        family:
+          cliType === 'claude-code' ? 'claude' : cliType === 'openai-codex' ? 'gpt' : 'gemini',
+        description: null,
+        cost_tier: 'premium' as const,
+        capabilities: {
+          vision: true,
+          thinking: cliType !== 'gemini-cli',
+          tool_use: true,
+          streaming: true,
+          json_mode: true,
+        },
+        context_window: 200000,
+        max_output_tokens: 8192,
+        is_default: false,
+        input_cost_per_million: null,
+        output_cost_per_million: null,
+        good_for: ['code', 'analysis'],
+        user_input_cost_per_million: null,
+        user_output_cost_per_million: null,
+        llm_margin_percent: null,
+      }));
+      return { flagship: cliPublicModels, balanced: [], fast: [] };
+    }
+
+    // Standard Podex model tiers
     const flagship = publicModels.filter((m) => m.cost_tier === 'premium');
     const balanced = publicModels.filter((m) => m.cost_tier === 'high' || m.cost_tier === 'medium');
     const fast = publicModels.filter((m) => m.cost_tier === 'low');
     return { flagship, balanced, fast };
-  }, [publicModels]);
+  }, [agent.role, publicModels]);
 
   const currentModeConfig = MODE_CONFIG[agent.mode] || MODE_CONFIG.ask;
   const supportsThinking = currentModelInfo?.capabilities?.thinking === true;
@@ -200,8 +262,15 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
   const handleCompactContext = useCallback(async () => {
     setIsCompacting(true);
     try {
-      await compactAgentContext(agent.id);
-      toast.success('Context compacted successfully');
+      // For CLI agents, send /compact as a message instead of using Podex API
+      if (isCliAgent && onSendCommand) {
+        await onSendCommand('/compact');
+        toast.success('Compact command sent');
+      } else {
+        // For Podex native agents, use the context API
+        await compactAgentContext(agent.id);
+        toast.success('Context compacted successfully');
+      }
     } catch (err) {
       console.error('Failed to compact context:', err);
       toast.error('Failed to compact context');
@@ -209,7 +278,7 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
       setIsCompacting(false);
       setShowContextMenu(false);
     }
-  }, [agent.id]);
+  }, [agent.id, isCliAgent, onSendCommand]);
 
   const handleDelete = useCallback(async () => {
     setIsDeleting(true);
@@ -238,6 +307,26 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
       setShowMoreMenu(false);
     }
   }, [sessionId, agent.id]);
+
+  // Claude Code handlers
+  const handleReauthenticate = useCallback(async () => {
+    try {
+      await claudeCodeReauthenticate();
+      toast.success('Re-authentication initiated');
+    } catch (err) {
+      console.error('Failed to reauthenticate:', err);
+      toast.error('Failed to start re-authentication');
+    } finally {
+      setShowMoreMenu(false);
+    }
+  }, [claudeCodeReauthenticate]);
+
+  const handleSlashCommandSelect = useCallback((commandName: string) => {
+    setShowSlashCommands(false);
+    // The MobileAgentView will handle sending the command
+    // We need to dispatch an event or use a callback
+    toast.info(`Run /${commandName} in the input area`);
+  }, []);
 
   return (
     <>
@@ -375,6 +464,56 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
               </>
             )}
           </button>
+        )}
+
+        {/* Claude Code indicator and commands */}
+        {isClaudeCodeAgent && (
+          <>
+            <span
+              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#FF6B35]/20 text-[#FF6B35] text-xs flex-shrink-0 min-h-[44px]"
+              aria-label="Claude Code agent"
+            >
+              <ClaudeIcon className="h-3 w-3" />
+            </span>
+            <button
+              onClick={() => setShowSlashCommands(true)}
+              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-surface-hover text-xs text-text-secondary hover:text-text-primary transition-colors flex-shrink-0 min-h-[44px]"
+              aria-label="Slash commands"
+            >
+              <Slash className="h-3 w-3" aria-hidden="true" />
+              <span>Cmds</span>
+            </button>
+          </>
+        )}
+
+        {/* OpenAI Codex indicator */}
+        {isOpenAICodexAgent && (
+          <span
+            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#10A37F]/20 text-[#10A37F] text-xs flex-shrink-0 min-h-[44px]"
+            aria-label="OpenAI Codex agent"
+          >
+            <OpenAIIcon className="h-3 w-3" />
+          </span>
+        )}
+
+        {/* Gemini CLI indicator */}
+        {isGeminiCliAgent && (
+          <span
+            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#4285F4]/20 text-[#4285F4] text-xs flex-shrink-0 min-h-[44px]"
+            aria-label="Gemini CLI agent"
+          >
+            <GeminiIcon className="h-3 w-3" />
+          </span>
+        )}
+
+        {/* Podex native agent indicator */}
+        {!isCliAgent && agent.role !== 'custom' && (
+          <span
+            className="flex items-center justify-center px-2 py-1 rounded-lg flex-shrink-0 min-h-[44px]"
+            aria-label="Podex agent"
+          >
+            <PodexIcon size={20} />
+          </span>
         )}
 
         {/* More menu */}
@@ -535,6 +674,21 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
         height="auto"
       >
         <div className="space-y-2">
+          {/* Claude Code specific options */}
+          {isClaudeCodeAgent && (
+            <button
+              onClick={handleReauthenticate}
+              disabled={isReauthenticating}
+              className="w-full flex items-center gap-3 px-3 py-3 rounded-lg bg-surface-hover text-text-primary hover:bg-surface-active transition-colors min-h-[48px]"
+            >
+              {isReauthenticating ? (
+                <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+              ) : (
+                <Key className="h-5 w-5" aria-hidden="true" />
+              )}
+              <span>Re-authenticate</span>
+            </button>
+          )}
           <button
             onClick={handleDuplicate}
             disabled={isDuplicating}
@@ -561,6 +715,15 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
           </button>
         </div>
       </MobileBottomSheet>
+
+      {/* Claude Code slash commands sheet */}
+      {isClaudeCodeAgent && (
+        <SlashCommandSheet
+          isOpen={showSlashCommands}
+          onClose={() => setShowSlashCommands(false)}
+          onSelect={handleSlashCommandSelect}
+        />
+      )}
     </>
   );
 }

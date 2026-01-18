@@ -5,7 +5,7 @@ import { X, Clock, Loader2 } from 'lucide-react';
 import { useSessionStore } from '@/stores/session';
 import { useFocusTrap } from '@/hooks/useFocusTrap';
 import { getStandbySettings, updateStandbySettings, clearStandbySettings } from '@/lib/api';
-import { TIMEOUT_OPTIONS } from './agentConstants';
+import { useConfigStore } from '@/stores/config';
 
 interface StandbySettingsModalProps {
   sessionId: string;
@@ -25,6 +25,9 @@ export function StandbySettingsModal({ sessionId, onClose }: StandbySettingsModa
   const [_source, setSource] = useState<'session' | 'user_default'>('user_default');
   const [useSessionOverride, setUseSessionOverride] = useState(false);
   const { setStandbySettings } = useSessionStore();
+
+  // Get timeout options from config store
+  const timeoutOptions = useConfigStore((state) => state.getTimeoutOptions());
 
   // Load current settings
   useEffect(() => {
@@ -161,7 +164,7 @@ export function StandbySettingsModal({ sessionId, onClose }: StandbySettingsModa
                     disabled={!useSessionOverride}
                     className="w-full rounded-lg border border-border-default bg-elevated px-4 py-2 text-text-primary focus:border-accent-primary focus:outline-none focus:ring-1 focus:ring-accent-primary disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px]"
                   >
-                    {TIMEOUT_OPTIONS.map((opt) => (
+                    {timeoutOptions?.map((opt: { value: number | null; label: string }) => (
                       <option key={opt.value ?? 'never'} value={opt.value ?? 'never'}>
                         {opt.label}
                       </option>

@@ -192,6 +192,10 @@ class WorkspaceConfig(BaseModel):
     # Template reference (if using a template)
     template_id: str | None = None
 
+    # Git identity configuration (for commits)
+    git_name: str | None = Field(default=None, description="Git user.name for commits")
+    git_email: str | None = Field(default=None, description="Git user.email for commits")
+
     # Docker image to use (overrides default workspace image)
     # Supports Artifact Registry, Docker Hub, or custom registries
     # Example: "podex/workspace:nodejs", "us-docker.pkg.dev/my-project/workspace/ws:python"
@@ -238,7 +242,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_default=20,
         storage_gb_max=50,
         hourly_rate=Decimal("0.05"),
-        region_availability=["us-east5", "us-central1", "europe-west1"],
+        region_availability=["us-east1"],
     ),
     WorkspaceTier.PRO: HardwareSpec(
         tier=WorkspaceTier.PRO,
@@ -251,7 +255,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=100,
         hourly_rate=Decimal("0.10"),
         requires_subscription="starter",
-        region_availability=["us-east5", "us-central1", "europe-west1", "asia-northeast1"],
+        region_availability=["us-east1"],
     ),
     WorkspaceTier.POWER: HardwareSpec(
         tier=WorkspaceTier.POWER,
@@ -264,7 +268,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=200,
         hourly_rate=Decimal("0.20"),
         requires_subscription="pro",
-        region_availability=["us-east5", "us-central1", "europe-west1"],
+        region_availability=["us-east1"],
     ),
     WorkspaceTier.ENTERPRISE: HardwareSpec(
         tier=WorkspaceTier.ENTERPRISE,
@@ -277,7 +281,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=500,
         hourly_rate=Decimal("0.40"),
         requires_subscription="team",
-        region_availability=["us-east5", "us-central1", "europe-west1"],
+        region_availability=["us-east1"],
     ),
     # x86 CPU tiers - for software requiring x86 compatibility (slightly more expensive than ARM)
     WorkspaceTier.X86_STARTER: HardwareSpec(
@@ -290,7 +294,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_default=20,
         storage_gb_max=50,
         hourly_rate=Decimal("0.06"),  # ~20% more than ARM
-        region_availability=["us-east5", "us-central1", "europe-west1"],
+        region_availability=["us-east1"],
     ),
     WorkspaceTier.X86_PRO: HardwareSpec(
         tier=WorkspaceTier.X86_PRO,
@@ -303,7 +307,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=100,
         hourly_rate=Decimal("0.12"),  # ~20% more than ARM
         requires_subscription="starter",
-        region_availability=["us-east5", "us-central1", "europe-west1"],
+        region_availability=["us-east1"],
     ),
     WorkspaceTier.X86_POWER: HardwareSpec(
         tier=WorkspaceTier.X86_POWER,
@@ -316,7 +320,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=200,
         hourly_rate=Decimal("0.24"),  # ~20% more than ARM
         requires_subscription="pro",
-        region_availability=["us-east5", "us-central1", "europe-west1"],
+        region_availability=["us-east1"],
     ),
     # x86 GPU tiers (NVIDIA GPUs)
     WorkspaceTier.GPU_STARTER: HardwareSpec(
@@ -332,7 +336,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=200,
         hourly_rate=Decimal("0.50"),
         requires_subscription="pro",
-        region_availability=["us-east5", "us-central1"],
+        region_availability=["us-east1"],
         is_gpu=True,
         requires_gke=True,
     ),
@@ -349,7 +353,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=500,
         hourly_rate=Decimal("1.00"),
         requires_subscription="team",
-        region_availability=["us-east5", "us-central1"],
+        region_availability=["us-east1"],
         is_gpu=True,
         requires_gke=True,
     ),
@@ -366,7 +370,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=1000,
         hourly_rate=Decimal("3.00"),
         requires_subscription="enterprise",
-        region_availability=["us-east5"],
+        region_availability=["us-east1"],
         is_gpu=True,
         requires_gke=True,
     ),
@@ -380,7 +384,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_default=20,
         storage_gb_max=50,
         hourly_rate=Decimal("0.04"),
-        region_availability=["us-east5", "us-central1", "europe-west1"],
+        region_availability=["us-east1"],
     ),
     WorkspaceTier.ARM_PRO: HardwareSpec(
         tier=WorkspaceTier.ARM_PRO,
@@ -393,7 +397,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=100,
         hourly_rate=Decimal("0.08"),
         requires_subscription="starter",
-        region_availability=["us-east5", "us-central1", "europe-west1"],
+        region_availability=["us-east1"],
     ),
     # ARM GPU tiers - Graviton2 + NVIDIA T4G (best of both worlds!)
     # G5g instances: ARM CPU with NVIDIA T4G GPU for ML inference
@@ -410,7 +414,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=200,
         hourly_rate=Decimal("0.40"),  # Cheaper than x86 T4
         requires_subscription="pro",
-        region_availability=["us-east5", "us-central1"],
+        region_availability=["us-east1"],
         is_gpu=True,
         requires_gke=True,
     ),
@@ -427,7 +431,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=500,
         hourly_rate=Decimal("0.65"),
         requires_subscription="pro",
-        region_availability=["us-east5", "us-central1"],
+        region_availability=["us-east1"],
         is_gpu=True,
         requires_gke=True,
     ),
@@ -444,7 +448,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=1000,
         hourly_rate=Decimal("1.10"),
         requires_subscription="team",
-        region_availability=["us-east5", "us-central1"],
+        region_availability=["us-east1"],
         is_gpu=True,
         requires_gke=True,
     ),
@@ -462,7 +466,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=500,
         hourly_rate=Decimal("0.35"),
         requires_subscription="pro",
-        region_availability=["us-east5", "us-central1"],
+        region_availability=["us-east1"],
         is_gpu=True,
         requires_gke=True,
     ),
@@ -479,7 +483,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=1000,
         hourly_rate=Decimal("0.75"),
         requires_subscription="team",
-        region_availability=["us-east5", "us-central1"],
+        region_availability=["us-east1"],
         is_gpu=True,
         requires_gke=True,
     ),

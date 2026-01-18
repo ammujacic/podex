@@ -21,7 +21,7 @@ def create_cloud_sql(
     config = pulumi.Config()
 
     # Get authorized networks for dev environment (customizable)
-    dev_authorized_networks: dict[str, str] = config.get("dev_db_authorized_networks") or {}
+    dev_authorized_networks: dict[str, str] = config.get_object("dev_db_authorized_networks") or {}
 
     # Cloud SQL Instance
     instance = gcp.sql.DatabaseInstance(

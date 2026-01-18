@@ -439,6 +439,123 @@ export function buildCommands(deps: CommandDependencies): CommandItem[] {
       action: () => router.push('/session/new'),
     },
 
+    // Skill commands
+    {
+      id: 'skills-list',
+      label: 'Skills: List Available',
+      icon: <Zap className="h-4 w-4" />,
+      group: 'Skills',
+      keywords: ['skills', 'list', 'available', 'show'],
+      action: async () => {
+        // Send command to coder agent to list skills
+        if (!currentSessionId || !coderAgent) {
+          announce('No agent available to list skills');
+          return;
+        }
+        await sendMessage(
+          currentSessionId,
+          coderAgent.id,
+          '/skills - Please list all available skills I can use.'
+        );
+      },
+    },
+    {
+      id: 'skills-run-bug-fix',
+      label: 'Skills: Run Bug Fix',
+      icon: <Zap className="h-4 w-4" />,
+      group: 'Skills',
+      keywords: ['skills', 'bug', 'fix', 'debug', 'run'],
+      action: async () => {
+        if (!currentSessionId || !coderAgent) {
+          announce('No coder agent available');
+          return;
+        }
+        await sendMessage(
+          currentSessionId,
+          coderAgent.id,
+          '/run bug_fix - Please run the bug fix skill to diagnose and fix the current issue.'
+        );
+      },
+    },
+    {
+      id: 'skills-run-code-review',
+      label: 'Skills: Run Code Review',
+      icon: <Zap className="h-4 w-4" />,
+      group: 'Skills',
+      keywords: ['skills', 'review', 'code', 'run'],
+      action: async () => {
+        if (!currentSessionId || !reviewerAgent) {
+          if (!currentSessionId || !coderAgent) {
+            announce('No agent available');
+            return;
+          }
+          await sendMessage(
+            currentSessionId,
+            coderAgent.id,
+            '/run code_review - Please run the code review skill on the current changes.'
+          );
+          return;
+        }
+        await sendMessage(
+          currentSessionId,
+          reviewerAgent.id,
+          '/run code_review - Please run the code review skill on the current changes.'
+        );
+      },
+    },
+    {
+      id: 'skills-run-tests',
+      label: 'Skills: Run Test Runner',
+      icon: <Zap className="h-4 w-4" />,
+      group: 'Skills',
+      keywords: ['skills', 'test', 'tests', 'run', 'runner'],
+      action: async () => {
+        if (!currentSessionId || !testerAgent) {
+          if (!currentSessionId || !coderAgent) {
+            announce('No agent available');
+            return;
+          }
+          await sendMessage(
+            currentSessionId,
+            coderAgent.id,
+            '/run test_runner - Please run the test runner skill.'
+          );
+          return;
+        }
+        await sendMessage(
+          currentSessionId,
+          testerAgent.id,
+          '/run test_runner - Please run the test runner skill.'
+        );
+      },
+    },
+    {
+      id: 'skills-run-security',
+      label: 'Skills: Run Security Scan',
+      icon: <Zap className="h-4 w-4" />,
+      group: 'Skills',
+      keywords: ['skills', 'security', 'scan', 'vulnerability', 'audit'],
+      action: async () => {
+        if (!currentSessionId || !coderAgent) {
+          announce('No agent available');
+          return;
+        }
+        await sendMessage(
+          currentSessionId,
+          coderAgent.id,
+          '/run security_scan - Please run the security scan skill to check for vulnerabilities.'
+        );
+      },
+    },
+    {
+      id: 'skills-manage',
+      label: 'Skills: Manage My Skills',
+      icon: <Settings className="h-4 w-4" />,
+      group: 'Skills',
+      keywords: ['skills', 'manage', 'settings', 'custom'],
+      action: () => router.push('/settings/skills'),
+    },
+
     // Help commands
     {
       id: 'show-help',

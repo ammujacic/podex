@@ -21,15 +21,6 @@ import {
   Globe,
   Cpu,
   DollarSign,
-  // Role-specific icons
-  Wrench,
-  Code,
-  TestTube,
-  MessageCircle,
-  Shield,
-  FileText,
-  Workflow,
-  Bot,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { create } from 'zustand';
@@ -43,12 +34,15 @@ import {
   updateUserModelDefault,
   getAvailableModels,
   getUserProviderModels,
+  getModelDefaults,
   type AgentTypeDefaults,
   type PublicModel,
   type UserProviderModel,
+  type LLMProvider,
 } from '@/lib/api';
 import { toast } from 'sonner';
 import { useAuthStore } from '@/stores/auth';
+import { useConfigStore } from '@/stores/config';
 
 // ============================================================================
 // Types
@@ -90,100 +84,41 @@ export interface ProviderConfig {
 }
 
 // ============================================================================
-// Provider UI Metadata (static configuration for provider config panels)
-// Models are fetched from the API, not hardcoded here
+// Provider UI Metadata Helper
+// Gets provider info from config store - no fallbacks
 // ============================================================================
 
-const PROVIDER_INFO: Record<
-  string,
-  {
-    name: string;
-    description: string;
-    isLocal: boolean;
-    defaultUrl?: string;
-    docsUrl?: string;
-  }
-> = {
-  anthropic: {
-    name: 'Anthropic',
-    description: 'Claude models - Opus, Sonnet, Haiku',
-    isLocal: false,
-    docsUrl: 'https://console.anthropic.com/',
-  },
-  openai: {
-    name: 'OpenAI',
-    description: 'GPT-4o, GPT-4 Turbo, GPT-3.5',
-    isLocal: false,
-    docsUrl: 'https://platform.openai.com/',
-  },
-  google: {
-    name: 'Google AI',
-    description: 'Gemini 1.5 Pro & Flash',
-    isLocal: false,
-    docsUrl: 'https://aistudio.google.com/',
-  },
-  ollama: {
-    name: 'Ollama',
-    description: 'Run open-source models locally',
-    isLocal: true,
-    defaultUrl: 'http://localhost:11434',
-    docsUrl: 'https://ollama.ai',
-  },
-  lmstudio: {
-    name: 'LM Studio',
-    description: 'Local model inference',
-    isLocal: true,
-    defaultUrl: 'http://localhost:1234',
-    docsUrl: 'https://lmstudio.ai',
-  },
-};
+interface ProviderInfo {
+  name: string;
+  description: string;
+  isLocal: boolean;
+  defaultUrl?: string;
+  docsUrl?: string;
+}
+
+/**
+ * Get provider info from config store.
+ * Returns null if provider not found (caller should handle loading/error states).
+ */
+function getProviderInfo(providerId: string, providers: LLMProvider[]): ProviderInfo | null {
+  const provider = providers.find((p) => p.slug === providerId);
+  if (!provider) return null;
+
+  return {
+    name: provider.name,
+    description: provider.description || '',
+    isLocal: provider.is_local,
+    defaultUrl: provider.default_url || undefined,
+    docsUrl: provider.docs_url || undefined,
+  };
+}
 
 // ============================================================================
-// Role Icons and Colors
+// Role Icons - kept in frontend since React components can't be serialized
+// Colors come from agentRoles in config store
 // ============================================================================
 
-const ROLE_ICONS: Record<string, React.ElementType> = {
-  architect: Wrench,
-  coder: Code,
-  reviewer: Eye,
-  tester: TestTube,
-  chat: MessageCircle,
-  security: Shield,
-  devops: Server,
-  documentator: FileText,
-  orchestrator: Workflow,
-  agent_builder: Sparkles,
-  custom: Bot,
-};
-
-const ROLE_COLORS: Record<string, string> = {
-  architect: 'text-purple-400',
-  coder: 'text-green-400',
-  reviewer: 'text-amber-400',
-  tester: 'text-cyan-400',
-  chat: 'text-violet-400',
-  security: 'text-red-400',
-  devops: 'text-emerald-400',
-  documentator: 'text-amber-400',
-  orchestrator: 'text-cyan-400',
-  agent_builder: 'text-pink-400',
-  custom: 'text-indigo-400',
-};
-
-// All agent roles
-const ALL_AGENT_ROLES = [
-  'architect',
-  'coder',
-  'reviewer',
-  'tester',
-  'chat',
-  'security',
-  'devops',
-  'documentator',
-  'orchestrator',
-  'agent_builder',
-  'custom',
-] as const;
+import { getRoleIcon } from '@/components/workspace/modals/agentConstants';
 
 // ============================================================================
 // Default Provider Configuration (models come from API)
@@ -393,6 +328,7 @@ function SectionHeader({
 
 interface ProviderCardProps {
   providerId: string;
+  providers: LLMProvider[];
   isConfigured: boolean;
   isSelected: boolean;
   modelCount: number;
@@ -401,12 +337,13 @@ interface ProviderCardProps {
 
 function ProviderCard({
   providerId,
+  providers,
   isConfigured,
   isSelected,
   modelCount,
   onSelect,
 }: ProviderCardProps) {
-  const info = PROVIDER_INFO[providerId];
+  const info = getProviderInfo(providerId, providers);
   if (!info) return null;
 
   return (
@@ -473,6 +410,7 @@ function ProviderCard({
 
 interface ProviderConfigPanelProps {
   providerId: string;
+  providers: LLMProvider[];
   isConfigured: boolean;
   models: Array<{ id: string; name: string }>;
   onConfigured: () => void;
@@ -481,12 +419,13 @@ interface ProviderConfigPanelProps {
 
 function ProviderConfigPanel({
   providerId,
+  providers,
   isConfigured,
   models,
   onConfigured,
   onRemove,
 }: ProviderConfigPanelProps) {
-  const info = PROVIDER_INFO[providerId];
+  const info = getProviderInfo(providerId, providers);
   const [apiKey, setApiKey] = useState('');
   const [baseUrl, setBaseUrl] = useState(info?.defaultUrl || '');
   const [showKey, setShowKey] = useState(false);
@@ -791,9 +730,22 @@ export function ModelSettings({ className }: ModelSettingsProps) {
   const [isLoadingPrefs, setIsLoadingPrefs] = useState(true);
   const [isSaving, setIsSaving] = useState<string | null>(null);
 
+  // Get LLM providers and agent roles from config store
+  const configProviders = useConfigStore((state) => state.providers);
+  const agentRoles = useConfigStore((state) => state.agentRoles);
+  const configError = useConfigStore((state) => state.error);
+  const configLoading = useConfigStore((state) => state.isLoading);
+  const initializeConfig = useConfigStore((state) => state.initialize);
+
+  // Initialize config store on mount
+  useEffect(() => {
+    initializeConfig();
+  }, [initializeConfig]);
+
   // Platform models from API (Podex Native)
   const [platformModels, setPlatformModels] = useState<PublicModel[]>([]);
   const [userProviderModels, setUserProviderModels] = useState<UserProviderModel[]>([]);
+  const [platformDefaults, setPlatformDefaults] = useState<Record<string, AgentTypeDefaults>>({});
   const [_isLoadingModels, setIsLoadingModels] = useState(true);
 
   // Convert API model to ModelInfo format for display
@@ -863,19 +815,20 @@ export function ModelSettings({ className }: ModelSettingsProps) {
     [platformModels, apiModelToModelInfo]
   );
 
-  // Fetch platform models from API
+  // Fetch platform models and defaults from API
   useEffect(() => {
     async function loadModels() {
       try {
-        const [available, userModels] = await Promise.all([
+        const [available, userModels, defaults] = await Promise.all([
           getAvailableModels(),
           getUserProviderModels().catch(() => []), // Ignore errors for user models
+          getModelDefaults().catch(() => ({ defaults: {} })), // Ignore errors for defaults
         ]);
         setPlatformModels(available);
         setUserProviderModels(userModels);
+        setPlatformDefaults(defaults.defaults);
       } catch (error) {
         console.error('Failed to load platform models:', error);
-        // Fall back to constants silently
       } finally {
         setIsLoadingModels(false);
       }
@@ -1031,26 +984,58 @@ export function ModelSettings({ className }: ModelSettingsProps) {
             Add your own API keys to use additional models from external providers
           </p>
 
+          {/* Error state for config loading */}
+          {configError && (
+            <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/30 mb-4">
+              <div className="flex items-center gap-3">
+                <div className="text-red-400">
+                  <Settings className="h-5 w-5" />
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-red-400">
+                    Failed to load provider configuration
+                  </p>
+                  <p className="text-xs text-text-muted mt-0.5">{configError}</p>
+                </div>
+                <button
+                  onClick={() => initializeConfig()}
+                  className="px-3 py-1.5 rounded-lg text-sm bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors"
+                >
+                  Retry
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Provider Cards Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-            {cloudProviderIds.map((providerId) => (
-              <ProviderCard
-                key={providerId}
-                providerId={providerId}
-                isConfigured={configuredApiKeyProviders.includes(providerId)}
-                isSelected={selectedProvider === providerId}
-                modelCount={userProviderModels.filter((m) => m.provider === providerId).length}
-                onSelect={() =>
-                  setSelectedProvider(selectedProvider === providerId ? null : providerId)
-                }
-              />
-            ))}
-          </div>
+          {configLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-5 w-5 animate-spin text-text-muted" />
+              <span className="ml-2 text-sm text-text-muted">Loading providers...</span>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+              {cloudProviderIds.map((providerId) => (
+                <ProviderCard
+                  key={providerId}
+                  providerId={providerId}
+                  providers={configProviders}
+                  isConfigured={configuredApiKeyProviders.includes(providerId)}
+                  isSelected={selectedProvider === providerId}
+                  modelCount={userProviderModels.filter((m) => m.provider === providerId).length}
+                  onSelect={() =>
+                    setSelectedProvider(selectedProvider === providerId ? null : providerId)
+                  }
+                />
+              ))}
+            </div>
+          )}
 
           {/* Configuration Panel */}
           {selectedProvider && cloudProviderIds.includes(selectedProvider) && (
             <ProviderConfigPanel
               providerId={selectedProvider}
+              providers={configProviders}
               isConfigured={configuredApiKeyProviders.includes(selectedProvider)}
               models={userProviderModels
                 .filter((m) => m.provider === selectedProvider)
@@ -1080,25 +1065,34 @@ export function ModelSettings({ className }: ModelSettingsProps) {
           </p>
 
           {/* Local Provider Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-            {localProviderIds.map((providerId) => (
-              <ProviderCard
-                key={providerId}
-                providerId={providerId}
-                isConfigured={false}
-                isSelected={selectedProvider === providerId}
-                modelCount={0} // Local models are auto-discovered
-                onSelect={() =>
-                  setSelectedProvider(selectedProvider === providerId ? null : providerId)
-                }
-              />
-            ))}
-          </div>
+          {configLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-5 w-5 animate-spin text-text-muted" />
+              <span className="ml-2 text-sm text-text-muted">Loading providers...</span>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+              {localProviderIds.map((providerId) => (
+                <ProviderCard
+                  key={providerId}
+                  providerId={providerId}
+                  providers={configProviders}
+                  isConfigured={false}
+                  isSelected={selectedProvider === providerId}
+                  modelCount={0} // Local models are auto-discovered
+                  onSelect={() =>
+                    setSelectedProvider(selectedProvider === providerId ? null : providerId)
+                  }
+                />
+              ))}
+            </div>
+          )}
 
           {/* Configuration Panel */}
           {selectedProvider && localProviderIds.includes(selectedProvider) && (
             <ProviderConfigPanel
               providerId={selectedProvider}
+              providers={configProviders}
               isConfigured={false}
               models={[]} // Local models are auto-discovered
               onConfigured={() => {}}
@@ -1147,29 +1141,31 @@ export function ModelSettings({ className }: ModelSettingsProps) {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              {ALL_AGENT_ROLES.map((role) => {
-                const Icon = ROLE_ICONS[role] || Bot;
-                const colorClass = ROLE_COLORS[role] || 'text-text-muted';
-                const displayName = role === 'agent_builder' ? 'Agent Builder' : role;
+              {agentRoles.map((roleConfig) => {
+                const Icon = getRoleIcon(roleConfig.role);
                 return (
                   <div
-                    key={role}
+                    key={roleConfig.role}
                     className="flex items-center justify-between py-2.5 px-3 rounded-lg bg-elevated"
                   >
                     <div className="flex items-center gap-2">
-                      <Icon className={cn('h-4 w-4', colorClass)} />
+                      <Icon className="h-4 w-4" style={{ color: roleConfig.color }} />
                       <span className="text-sm text-text-secondary capitalize font-medium">
-                        {displayName}
+                        {roleConfig.name}
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
-                      {isSaving === role && (
+                      {isSaving === roleConfig.role && (
                         <Loader2 className="h-3 w-3 animate-spin text-accent-primary" />
                       )}
                       <select
-                        value={userModelDefaults[role] || platformModels[0]?.model_id || ''}
-                        onChange={(e) => handleRoleDefaultChange(role, e.target.value)}
-                        disabled={isSaving === role || platformModels.length === 0}
+                        value={
+                          userModelDefaults[roleConfig.role] ||
+                          platformDefaults[roleConfig.role]?.model_id ||
+                          ''
+                        }
+                        onChange={(e) => handleRoleDefaultChange(roleConfig.role, e.target.value)}
+                        disabled={isSaving === roleConfig.role || platformModels.length === 0}
                         className="px-2 py-1 rounded-lg bg-overlay border border-border-subtle text-text-primary text-xs focus:outline-none focus:ring-1 focus:ring-accent-primary disabled:opacity-50"
                       >
                         <optgroup label="Podex Native">

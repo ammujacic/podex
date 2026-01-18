@@ -11,16 +11,8 @@ from typing import Any
 import structlog
 
 from src.agents.agent_builder import AgentBuilderAgent, AgentBuilderConfig
-from src.agents.architect import ArchitectAgent
-from src.agents.base import AgentConfig, BaseAgent
-from src.agents.chat import ChatAgent
-from src.agents.coder import CoderAgent
-from src.agents.devops import DevOpsAgent
-from src.agents.documentator import DocumentatorAgent
-from src.agents.orchestrator_agent import OrchestratorAgent
-from src.agents.reviewer import ReviewerAgent
-from src.agents.security import SecurityAgent
-from src.agents.tester import TesterAgent
+from src.agents.base import BaseAgent
+from src.agents.database_agent import create_database_agent
 from src.config import settings
 from src.mcp.integration import UserMCPConfig, UserMCPServerConfig
 from src.mcp.lifecycle import (
@@ -438,12 +430,15 @@ class AgentOrchestrator:
 
         return len(agents_to_remove)
 
-    def get_or_create_agent(
+    async def get_or_create_agent(
         self,
         params: AgentCreationParams,
         mcp_lifecycle: MCPLifecycleManager | None = None,
     ) -> BaseAgent:
         """Get or create an agent instance.
+
+        Uses DatabaseAgent to load configuration from the database when available.
+        Falls back to hardcoded agent classes if database config is not found.
 
         Args:
             params: Parameters for creating the agent.
@@ -530,22 +525,10 @@ class AgentOrchestrator:
                     mcp_tools=mcp_lifecycle.get_tool_count() if mcp_lifecycle else 0,
                 )
             else:
-                # Built-in agent types
-                agent_classes: dict[str, type[BaseAgent]] = {
-                    "architect": ArchitectAgent,
-                    "coder": CoderAgent,
-                    "reviewer": ReviewerAgent,
-                    "tester": TesterAgent,
-                    "orchestrator": OrchestratorAgent,
-                    "chat": ChatAgent,
-                    "security": SecurityAgent,
-                    "devops": DevOpsAgent,
-                    "documentator": DocumentatorAgent,
-                }
-                agent_class = agent_classes.get(params.role, CoderAgent)
-
-                agent_config = AgentConfig(
+                # Try to create database-driven agent first
+                db_agent = await create_database_agent(
                     agent_id=params.agent_id,
+                    role=params.role,
                     model=params.model,
                     llm_provider=self.llm_provider,
                     workspace_path=workspace_path,
@@ -555,16 +538,29 @@ class AgentOrchestrator:
                     command_allowlist=params.command_allowlist,
                     user_id=params.user_id,
                 )
-                self.agents[params.agent_id] = agent_class(agent_config)
-                logger.info(
-                    "Agent created",
-                    agent_id=params.agent_id,
-                    role=params.role,
-                    model=params.model,
-                    mode=params.mode,
-                    workspace=str(workspace_path),
-                    mcp_tools=mcp_lifecycle.get_tool_count() if mcp_lifecycle else 0,
-                )
+
+                if db_agent:
+                    self.agents[params.agent_id] = db_agent
+                    logger.info(
+                        "Database agent created",
+                        agent_id=params.agent_id,
+                        role=params.role,
+                        model=params.model,
+                        mode=params.mode,
+                        workspace=str(workspace_path),
+                        mcp_tools=mcp_lifecycle.get_tool_count() if mcp_lifecycle else 0,
+                    )
+                else:
+                    # Database agent creation failed - role config not available
+                    logger.error(
+                        "Failed to create database agent - role config not found",
+                        role=params.role,
+                        agent_id=params.agent_id,
+                    )
+                    raise RuntimeError(
+                        f"Agent role '{params.role}' not found in database. "
+                        "Ensure the API is running and role configurations are seeded."
+                    )
 
         # Update agent activity timestamp
         self._agent_last_activity[params.agent_id] = time.time()
@@ -743,7 +739,7 @@ class AgentOrchestrator:
                 mode=mode,
                 command_allowlist=command_allowlist,
             )
-            agent = self.get_or_create_agent(agent_params, mcp_lifecycle)
+            agent = await self.get_or_create_agent(agent_params, mcp_lifecycle)
 
             # Execute agent - use streaming if message_id is provided
             stream_enabled = task.context.get("stream", False)

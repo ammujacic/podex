@@ -270,7 +270,7 @@ class MockGCP:
             def __init__(self, *args: Any, **kwargs: Any) -> None:
                 self.name = kwargs.get("name", "mock-cluster")
                 self.endpoint = "mock-endpoint"
-                self.location = kwargs.get("location", "us-central1")
+                self.location = kwargs.get("location", "us-east1")
 
         class NodePool:
             def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -354,7 +354,7 @@ class MockGCP:
     class artifactregistry:
         class Repository:
             def __init__(self, *args: Any, **kwargs: Any) -> None:
-                self.location = kwargs.get("location", "us-central1")
+                self.location = kwargs.get("location", "us-east1")
                 self.name = kwargs.get("name", "mock-repo")
 
 
@@ -378,7 +378,7 @@ def project_id() -> str:
 @pytest.fixture(scope="session")
 def region() -> str:
     """Test GCP region."""
-    return "us-central1"
+    return "us-east1"
 
 
 @pytest.fixture(scope="session")

@@ -126,6 +126,7 @@ export const AgentCardDialogs = React.memo<AgentCardDialogsProps>(function Agent
         config={agent.thinkingConfig}
         onSave={onSaveThinkingConfig}
         modelName={currentModelDisplayName}
+        agentRole={agent.role}
       />
     </>
   );

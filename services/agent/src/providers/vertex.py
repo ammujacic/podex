@@ -349,7 +349,7 @@ class MockVertexAIProvider(VertexAIProvider):
     def __init__(self, **kwargs: Any):
         """Initialize mock provider."""
         self.project_id = kwargs.get("project_id", "mock-project")
-        self.region = kwargs.get("region", "us-east5")
+        self.region = kwargs.get("region", "us-east1")
         self._client = None
 
     async def complete(
@@ -410,7 +410,7 @@ class MockVertexAIProvider(VertexAIProvider):
 
 def get_vertex_provider(
     project_id: str | None = None,
-    region: str = "us-east5",
+    region: str = "us-east1",
     use_mock: bool = False,
 ) -> VertexAIProvider:
     """Get a Vertex AI provider instance.

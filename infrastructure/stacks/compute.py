@@ -241,9 +241,7 @@ def create_cloud_run_services(
                 containers=[
                     gcp.cloudrunv2.ServiceTemplateContainerArgs(
                         name=cfg["name"],
-                        image=image_base.apply(
-                            lambda base, name=cfg["name"]: f"{base}/{name}:latest"
-                        ),
+                        image=image_base.apply(lambda base, c=cfg: f"{base}/{c['name']}:latest"),
                         ports=[
                             gcp.cloudrunv2.ServiceTemplateContainerPortsArgs(
                                 container_port=cfg["port"],

@@ -189,6 +189,27 @@ export interface PlatformSetting {
   updated_by: string | null;
 }
 
+export interface AdminLLMProvider {
+  slug: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  color: string;
+  logo_url: string | null;
+  is_local: boolean;
+  default_url: string | null;
+  docs_url: string | null;
+  setup_guide_url: string | null;
+  requires_api_key: boolean;
+  supports_streaming: boolean;
+  supports_tools: boolean;
+  supports_vision: boolean;
+  is_enabled: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
 // ============================================================================
 // State
 // ============================================================================
@@ -226,6 +247,10 @@ interface AdminState {
   // Settings
   settings: PlatformSetting[];
   settingsLoading: boolean;
+
+  // LLM Providers
+  providers: AdminLLMProvider[];
+  providersLoading: boolean;
 
   // Error
   error: string | null;
@@ -273,6 +298,12 @@ interface AdminState {
   ) => Promise<AdminTemplate>;
   deleteTemplate: (templateId: string) => Promise<void>;
   updateSetting: (key: string, value: Record<string, unknown>) => Promise<void>;
+  fetchProviders: (includeDisabled?: boolean) => Promise<void>;
+  updateProvider: (slug: string, data: Partial<AdminLLMProvider>) => Promise<void>;
+  createProvider: (
+    data: Omit<AdminLLMProvider, 'created_at' | 'updated_at' | 'logo_url'>
+  ) => Promise<AdminLLMProvider>;
+  deleteProvider: (slug: string) => Promise<void>;
   clearError: () => void;
 }
 
@@ -303,6 +334,8 @@ export const useAdminStore = create<AdminState>()(
       templatesLoading: false,
       settings: [],
       settingsLoading: false,
+      providers: [],
+      providersLoading: false,
       error: null,
 
       // Actions
@@ -551,6 +584,52 @@ export const useAdminStore = create<AdminState>()(
         }
       },
 
+      fetchProviders: async (includeDisabled = true) => {
+        set({ providersLoading: true, error: null });
+        try {
+          const data = await api.get<{ providers: AdminLLMProvider[] }>(
+            `/api/admin/settings/providers?include_disabled=${includeDisabled}`
+          );
+          set({ providers: data.providers, providersLoading: false });
+        } catch (err) {
+          set({ error: (err as Error).message, providersLoading: false });
+        }
+      },
+
+      updateProvider: async (slug: string, data: Partial<AdminLLMProvider>) => {
+        set({ error: null });
+        try {
+          await api.patch(`/api/admin/settings/providers/${slug}`, data);
+          await get().fetchProviders();
+        } catch (err) {
+          set({ error: (err as Error).message });
+          throw err;
+        }
+      },
+
+      createProvider: async (data) => {
+        set({ error: null });
+        try {
+          const result = await api.post<AdminLLMProvider>('/api/admin/settings/providers', data);
+          await get().fetchProviders();
+          return result;
+        } catch (err) {
+          set({ error: (err as Error).message });
+          throw err;
+        }
+      },
+
+      deleteProvider: async (slug: string) => {
+        set({ error: null });
+        try {
+          await api.delete(`/api/admin/settings/providers/${slug}`);
+          await get().fetchProviders();
+        } catch (err) {
+          set({ error: (err as Error).message });
+          throw err;
+        }
+      },
+
       clearError: () => set({ error: null }),
     }),
     { name: 'admin-store' }
@@ -565,4 +644,5 @@ export const useAdminPlans = () => useAdminStore((state) => state.plans);
 export const useAdminHardware = () => useAdminStore((state) => state.hardwareSpecs);
 export const useAdminTemplates = () => useAdminStore((state) => state.templates);
 export const useAdminSettings = () => useAdminStore((state) => state.settings);
+export const useAdminProviders = () => useAdminStore((state) => state.providers);
 export const useAdminError = () => useAdminStore((state) => state.error);

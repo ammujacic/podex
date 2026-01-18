@@ -1,10 +1,11 @@
 """Agent management routes."""
 
+from __future__ import annotations
+
 import re
 from dataclasses import dataclass
-from datetime import datetime
 from enum import Enum
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 from uuid import uuid4
 
 import structlog
@@ -45,6 +46,9 @@ from src.websocket.hub import (
     emit_to_session,
 )
 
+if TYPE_CHECKING:
+    from datetime import datetime
+
 logger = structlog.get_logger()
 
 router = APIRouter()
@@ -81,6 +85,18 @@ class AgentRole(str, Enum):
     DEVOPS = "devops"
     DOCUMENTATOR = "documentator"
     CUSTOM = "custom"
+    # Native CLI agent roles - these use specialized executors
+    CLAUDE_CODE = "claude-code"  # Native Claude Code agent with CLI capabilities
+    OPENAI_CODEX = "openai-codex"  # Native OpenAI Codex CLI agent
+    GEMINI_CLI = "gemini-cli"  # Native Google Gemini CLI agent
+
+
+# CLI agent roles that use specialized executors instead of the standard agent service
+CLI_AGENT_ROLES = {
+    AgentRole.CLAUDE_CODE.value,
+    AgentRole.OPENAI_CODEX.value,
+    AgentRole.GEMINI_CLI.value,
+}
 
 
 class AgentMode(str, Enum):
@@ -626,48 +642,26 @@ def _build_agent_response(
     )
 
 
-# Agent role system prompts for context
+# ==================== Agent Role Configuration ====================
+# Role configurations are now stored in the database (agent_role_configs table).
+# Use /api/agent-roles for public access or /api/admin/agents for admin management.
+# The database is seeded with defaults from src/database/seeds/agent_roles.py
+#
+# For backward compatibility, we keep a simple fallback prompt dict that's used
+# when database is not available (e.g., during simulated responses in tests).
+
+# Fallback prompts for backward compatibility (used only when DB not available)
 AGENT_ROLE_PROMPTS: dict[str, str] = {
-    "architect": (
-        "You are an architect agent. Help design system architecture, "
-        "plan implementations, and break down complex tasks into manageable steps."
-    ),
-    "coder": (
-        "You are a coding agent. Write clean, efficient code and "
-        "implement features based on specifications."
-    ),
-    "reviewer": (
-        "You are a code review agent. Review code for bugs, "
-        "security issues, best practices, and suggest improvements."
-    ),
-    "tester": (
-        "You are a testing agent. Write tests, identify edge cases, "
-        "and ensure code quality through testing."
-    ),
-    "security": (
-        "You are a security agent. Identify security vulnerabilities, "
-        "suggest secure coding practices, and help implement security measures."
-    ),
-    "devops": (
-        "You are a DevOps agent. Help with CI/CD pipelines, infrastructure, "
-        "deployment configurations, and operational best practices."
-    ),
-    "orchestrator": (
-        "You are an orchestrator agent. Coordinate tasks between multiple agents, "
-        "delegate work appropriately, and ensure efficient task completion."
-    ),
-    "agent_builder": (
-        "You are an agent builder. Help create custom agent configurations, "
-        "define system prompts, and configure agent capabilities."
-    ),
-    "documentator": (
-        "You are a documentation agent. Write clear documentation, API references, "
-        "README files, and help maintain project documentation."
-    ),
-    "chat": (
-        "You are a conversational assistant. Answer questions, provide explanations, "
-        "and help users understand the codebase and project."
-    ),
+    "architect": "You are an expert software architect. Help design system architecture.",
+    "coder": "You are an expert software developer. Write clean, efficient code.",
+    "reviewer": "You are a code review agent. Review code for bugs and best practices.",
+    "tester": "You are a testing agent. Write tests and ensure code quality.",
+    "security": "You are a security agent. Identify vulnerabilities and security issues.",
+    "devops": "You are a DevOps agent. Help with CI/CD and infrastructure.",
+    "orchestrator": "You are an orchestrator. Coordinate tasks between multiple agents.",
+    "agent_builder": "You are an agent builder. Help create custom agent configurations.",
+    "documentator": "You are a documentation agent. Write clear documentation.",
+    "chat": "You are a conversational assistant. Answer questions helpfully.",
     "custom": "You are a helpful AI assistant.",
 }
 
@@ -823,6 +817,478 @@ def get_attention_priority(attention_type: str, _agent_role: str) -> str:
     if attention_type == "waiting_input":
         return "medium"
     return "low"
+
+
+# CLI Agent configuration by role
+CLI_AGENT_CONFIG = {
+    "claude-code": {
+        "name": "Claude Code",
+        "check_command": "which claude",
+        "credentials_check": "test -f ~/.claude/credentials.json && echo 'authenticated'",
+        "install_package": "@anthropic-ai/claude-code",
+        "auth_command": "claude",
+        "executor_module": "src.routes.claude_code",
+        "executor_function": "execute_claude_code_message",
+    },
+    "openai-codex": {
+        "name": "OpenAI Codex",
+        "check_command": "which codex",
+        "credentials_check": "test -f ~/.codex/config.toml && echo 'authenticated'",
+        "install_package": "@openai/codex",
+        "auth_command": "codex login",
+        "executor_module": "src.routes.openai_codex",
+        "executor_function": "execute_openai_codex_message",
+    },
+    "gemini-cli": {
+        "name": "Gemini CLI",
+        "check_command": "which gemini",
+        "credentials_check": "test -f ~/.gemini/settings.json && echo 'authenticated'",
+        "install_package": "@anthropic-ai/gemini-cli",  # Check actual package name
+        "auth_command": "gemini",
+        "executor_module": "src.routes.gemini_cli",
+        "executor_function": "execute_gemini_cli_message",
+    },
+}
+
+
+async def _process_cli_agent_message(
+    ctx: AgentMessageContext,
+    db: AsyncSession,
+    agent: AgentModel,
+) -> None:
+    """Process a message for a CLI-based agent (Claude Code, OpenAI Codex, Gemini CLI).
+
+    Routes to the appropriate executor based on agent role.
+    Handles installation and authentication checks for each CLI type.
+
+    Args:
+        ctx: The agent message context.
+        db: Database session.
+        agent: The agent model.
+    """
+    from src.compute_client import compute_client
+
+    # Get CLI config for this agent type
+    cli_config = CLI_AGENT_CONFIG.get(agent.role)
+    if not cli_config:
+        logger.error("Unknown CLI agent role: %s", agent.role, agent_id=ctx.agent_id)
+        return
+
+    cli_name = cli_config["name"]
+
+    try:
+        # Update agent status to running
+        agent.status = "running"
+        await db.commit()
+
+        # Get voice config for auto-play
+        voice_config = agent.voice_config or {}
+        auto_play = voice_config.get("auto_play", False)
+
+        # Notify frontend that agent is processing
+        await _notify_agent_status(ctx.session_id, ctx.agent_id, "running")
+
+        # Get workspace_id from session
+        session_query = select(SessionModel).where(SessionModel.id == ctx.session_id)
+        session_result = await db.execute(session_query)
+        session = session_result.scalar_one_or_none()
+
+        if not session or not session.workspace_id:
+            logger.error(
+                "%s agent requires a workspace",
+                cli_name,
+                agent_id=ctx.agent_id,
+                session_id=ctx.session_id,
+            )
+            await _notify_agent_status(
+                ctx.session_id,
+                ctx.agent_id,
+                "error",
+                "No workspace available. Please ensure a workspace is running.",
+            )
+            agent.status = "error"
+            await db.commit()
+            return
+
+        workspace_id = session.workspace_id
+        user_id = ctx.user_id or session.owner_id
+
+        # Generate a message_id for streaming
+        stream_message_id = str(uuid4())
+
+        # Notify frontend that streaming is starting
+        await emit_agent_stream_start(ctx.session_id, ctx.agent_id, stream_message_id)
+
+        # Check if CLI is installed
+        try:
+            check_result = await compute_client.exec_command(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                command=cli_config["check_command"],
+                exec_timeout=10,
+            )
+            cli_installed = check_result.get("exit_code", 1) == 0
+        except Exception:
+            cli_installed = False
+
+        if not cli_installed:
+            install_message = (
+                f"{cli_name} CLI is not installed in this workspace.\n\n"
+                "To install it, run:\n"
+                "```bash\n"
+                f"npm install -g {cli_config['install_package']}\n"
+                "```\n\n"
+                "Or use the install button in the agent settings."
+            )
+            processing_ctx = ResponseProcessingContext(
+                db=db,
+                ctx=ctx,
+                agent=agent,
+                response_content=install_message,
+                auto_play=auto_play,
+                tool_calls=None,
+                streamed=True,
+                message_id=stream_message_id,
+                tokens_used=0,
+            )
+            await _process_and_emit_response(processing_ctx)
+            return
+
+        # Check authentication status
+        try:
+            auth_check = await compute_client.exec_command(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                command=cli_config["credentials_check"],
+                exec_timeout=10,
+            )
+            authenticated = "authenticated" in auth_check.get("stdout", "")
+        except Exception:
+            authenticated = False
+
+        if not authenticated:
+            auth_message = (
+                f"{cli_name} needs authentication.\n\n"
+                "Please run the following command in a terminal:\n"
+                "```bash\n"
+                f"{cli_config['auth_command']}\n"
+                "```\n\n"
+                "This will start the authentication process. "
+                "Once authenticated, send your message again."
+            )
+            processing_ctx = ResponseProcessingContext(
+                db=db,
+                ctx=ctx,
+                agent=agent,
+                response_content=auth_message,
+                auto_play=auto_play,
+                tool_calls=None,
+                streamed=True,
+                message_id=stream_message_id,
+                tokens_used=0,
+            )
+            await _process_and_emit_response(processing_ctx)
+            return
+
+        # Import and call the appropriate executor
+        import importlib
+
+        from src.websocket.hub import emit_agent_config_update
+
+        executor_module = importlib.import_module(cli_config["executor_module"])
+        executor_func = getattr(executor_module, cli_config["executor_function"])
+
+        # Create callback for config changes from CLI
+        async def handle_config_change(updates: dict[str, Any]) -> None:
+            """Emit config changes to frontend when CLI changes model/mode."""
+            await emit_agent_config_update(
+                session_id=str(ctx.session_id),
+                agent_id=str(ctx.agent_id),
+                updates=updates,
+                source="cli",
+            )
+
+        # Execute the message
+        # Pass images if present (for vision-capable CLI agents)
+        images_param = ctx.images if ctx.images else None
+
+        result = await executor_func(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            message=ctx.user_message,
+            mode=ctx.agent_mode or "ask",
+            model=ctx.agent_model.split(".")[-1] if "." in ctx.agent_model else None,
+            allowed_tools=ctx.command_allowlist,
+            denied_tools=None,
+            max_turns=agent.config.get("max_turns", 50) if agent.config else 50,
+            thinking_budget=ctx.thinking_config.get("budget_tokens")
+            if ctx.thinking_config
+            else None,
+            images=images_param,
+            on_config_change=handle_config_change,
+        )
+
+        response_content = result.get("content", "")
+        tool_calls = result.get("tool_calls")
+
+        # Format tool calls for frontend
+        formatted_tool_calls = None
+        if tool_calls:
+            formatted_tool_calls = [
+                {
+                    "id": tc.get("id", f"tc-{i}"),
+                    "name": tc.get("name", "unknown"),
+                    "args": tc.get("args", {}),
+                    "result": tc.get("result"),
+                    "status": tc.get("status", "completed"),
+                }
+                for i, tc in enumerate(tool_calls)
+            ]
+
+        # Process and emit the response
+        processing_ctx = ResponseProcessingContext(
+            db=db,
+            ctx=ctx,
+            agent=agent,
+            response_content=response_content,
+            auto_play=auto_play,
+            tool_calls=formatted_tool_calls,
+            streamed=True,
+            message_id=stream_message_id,
+            tokens_used=0,  # CLI agents don't report tokens directly
+        )
+        await _process_and_emit_response(processing_ctx)
+
+    except Exception as e:
+        logger.exception(
+            "%s message processing failed",
+            cli_name,
+            agent_id=ctx.agent_id,
+            session_id=ctx.session_id,
+            error=str(e),
+        )
+        try:
+            await db.rollback()
+            agent.status = "error"
+            await db.commit()
+
+            await _notify_agent_status(
+                ctx.session_id,
+                ctx.agent_id,
+                "error",
+                f"{cli_name} processing failed. Please try again.",
+            )
+        except Exception as inner_e:
+            logger.exception(
+                "Failed to update agent error status",
+                agent_id=ctx.agent_id,
+                error=str(inner_e),
+            )
+
+
+async def _process_claude_code_message(
+    ctx: AgentMessageContext,
+    db: AsyncSession,
+    agent: AgentModel,
+) -> None:
+    """Process a message for a Claude Code agent.
+
+    Uses the Claude Code CLI executor to run the message in the workspace container.
+    Handles authentication flow if credentials are not present.
+
+    Args:
+        ctx: The agent message context.
+        db: Database session.
+        agent: The agent model.
+    """
+    from src.compute_client import compute_client
+    from src.routes.claude_code import execute_claude_code_message
+
+    try:
+        # Update agent status to running
+        agent.status = "running"
+        await db.commit()
+
+        # Get voice config for auto-play
+        voice_config = agent.voice_config or {}
+        auto_play = voice_config.get("auto_play", False)
+
+        # Notify frontend that agent is processing
+        await _notify_agent_status(ctx.session_id, ctx.agent_id, "running")
+
+        # Get workspace_id from session
+        session_query = select(SessionModel).where(SessionModel.id == ctx.session_id)
+        session_result = await db.execute(session_query)
+        session = session_result.scalar_one_or_none()
+
+        if not session or not session.workspace_id:
+            logger.error(
+                "Claude Code agent requires a workspace",
+                agent_id=ctx.agent_id,
+                session_id=ctx.session_id,
+            )
+            await _notify_agent_status(
+                ctx.session_id,
+                ctx.agent_id,
+                "error",
+                "No workspace available. Please ensure a workspace is running.",
+            )
+            agent.status = "error"
+            await db.commit()
+            return
+
+        workspace_id = session.workspace_id
+        user_id = ctx.user_id or session.owner_id
+
+        # Generate a message_id for streaming
+        stream_message_id = str(uuid4())
+
+        # Notify frontend that streaming is starting
+        await emit_agent_stream_start(ctx.session_id, ctx.agent_id, stream_message_id)
+
+        # Check if Claude CLI is installed
+        try:
+            check_result = await compute_client.exec_command(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                command="which claude",
+                exec_timeout=10,
+            )
+            claude_installed = check_result.get("exit_code", 1) == 0
+        except Exception:
+            claude_installed = False
+
+        if not claude_installed:
+            # Claude not installed - emit helpful message
+            install_message = (
+                "Claude Code CLI is not installed in this workspace.\n\n"
+                "To install it, run:\n"
+                "```bash\n"
+                "npm install -g @anthropic-ai/claude-code\n"
+                "```\n\n"
+                "Or use the install button in the agent settings."
+            )
+            processing_ctx = ResponseProcessingContext(
+                db=db,
+                ctx=ctx,
+                agent=agent,
+                response_content=install_message,
+                auto_play=auto_play,
+                tool_calls=None,
+                streamed=True,
+                message_id=stream_message_id,
+                tokens_used=0,
+            )
+            await _process_and_emit_response(processing_ctx)
+            return
+
+        # Check authentication status
+        try:
+            auth_check = await compute_client.exec_command(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                command="test -f ~/.claude/credentials.json && echo 'authenticated'",
+                exec_timeout=10,
+            )
+            authenticated = "authenticated" in auth_check.get("stdout", "")
+        except Exception:
+            authenticated = False
+
+        if not authenticated:
+            # Need to authenticate - emit auth instructions
+            auth_message = (
+                "Claude Code needs authentication.\n\n"
+                "Please run the following command in a terminal:\n"
+                "```bash\n"
+                "claude\n"
+                "```\n\n"
+                "This will open a browser window to authenticate with your Anthropic account. "
+                "Once authenticated, send your message again."
+            )
+            processing_ctx = ResponseProcessingContext(
+                db=db,
+                ctx=ctx,
+                agent=agent,
+                response_content=auth_message,
+                auto_play=auto_play,
+                tool_calls=None,
+                streamed=True,
+                message_id=stream_message_id,
+                tokens_used=0,
+            )
+            await _process_and_emit_response(processing_ctx)
+            return
+
+        # Execute the message using Claude Code
+        result = await execute_claude_code_message(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            message=ctx.user_message,
+            mode=ctx.agent_mode or "ask",
+            model=ctx.agent_model.split(".")[-1] if "." in ctx.agent_model else "sonnet",
+            allowed_tools=ctx.command_allowlist,
+            denied_tools=None,
+            max_turns=agent.config.get("max_turns", 50) if agent.config else 50,
+            thinking_budget=ctx.thinking_config.get("budget_tokens")
+            if ctx.thinking_config
+            else None,
+        )
+
+        response_content = result.get("content", "")
+        tool_calls = result.get("tool_calls")
+
+        # Format tool calls for frontend
+        formatted_tool_calls = None
+        if tool_calls:
+            formatted_tool_calls = [
+                {
+                    "id": tc.get("id", f"tc-{i}"),
+                    "name": tc.get("name", "unknown"),
+                    "args": tc.get("args", {}),
+                    "result": tc.get("result"),
+                    "status": tc.get("status", "completed"),
+                }
+                for i, tc in enumerate(tool_calls)
+            ]
+
+        # Process and emit the response
+        processing_ctx = ResponseProcessingContext(
+            db=db,
+            ctx=ctx,
+            agent=agent,
+            response_content=response_content,
+            auto_play=auto_play,
+            tool_calls=formatted_tool_calls,
+            streamed=True,
+            message_id=stream_message_id,
+            tokens_used=0,  # Claude Code doesn't report tokens directly
+        )
+        await _process_and_emit_response(processing_ctx)
+
+    except Exception as e:
+        logger.exception(
+            "Claude Code message processing failed",
+            agent_id=ctx.agent_id,
+            session_id=ctx.session_id,
+            error=str(e),
+        )
+        try:
+            await db.rollback()
+            agent.status = "error"
+            await db.commit()
+
+            await _notify_agent_status(
+                ctx.session_id,
+                ctx.agent_id,
+                "error",
+                "Claude Code processing failed. Please try again.",
+            )
+        except Exception as inner_e:
+            logger.exception(
+                "Failed to update agent error status",
+                agent_id=ctx.agent_id,
+                error=str(inner_e),
+            )
 
 
 def _generate_agent_response(agent_role: str, user_message: str) -> str:
@@ -1117,6 +1583,7 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:
 
     Calls the agent service to process the message with the LLM.
     Falls back to simulated responses in development if agent service unavailable.
+    For Claude Code agents, uses the Claude Code executor via compute service.
 
     Args:
         ctx: The agent message context containing all required parameters.
@@ -1131,6 +1598,11 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:
 
             if not agent:
                 logger.warning("Agent not found for message processing", agent_id=ctx.agent_id)
+                return
+
+            # Check if this is a CLI agent - route to specialized handler
+            if agent.role in CLI_AGENT_ROLES:
+                await _process_cli_agent_message(ctx, db, agent)
                 return
 
             agent.status = "running"
@@ -1369,6 +1841,70 @@ async def create_agent(
     model_display_name = await get_model_display_name(db, agent.model)
 
     return _build_agent_response(agent, model_display_name)
+
+
+# ==================== Role Configuration Endpoint ====================
+# NOTE: The primary public endpoint for role configs is now /api/agent-roles
+# This endpoint is kept for backward compatibility but reads from the database.
+
+
+class AgentRoleConfigResponse(BaseModel):
+    """Response for a single agent role configuration."""
+
+    name: str
+    role: str
+    color: str
+    system_prompt: str
+    tools: list[str]
+
+
+class AgentRoleConfigsResponse(BaseModel):
+    """Response containing all agent role configurations."""
+
+    roles: dict[str, AgentRoleConfigResponse]
+
+
+@router.get("/role-configs", response_model=AgentRoleConfigsResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def get_role_configs(
+    request: Request,  # noqa: ARG001
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> AgentRoleConfigsResponse:
+    """Get default configurations for all agent roles.
+
+    DEPRECATED: Use /api/agent-roles instead for more complete data.
+
+    Returns the complete configuration for each role including:
+    - Display name
+    - Color for UI
+    - Default system prompt
+    - Default tools
+    """
+    from src.database.models import AgentRoleConfig
+
+    result = await db.execute(
+        select(AgentRoleConfig)
+        .where(AgentRoleConfig.is_enabled == True)
+        .order_by(AgentRoleConfig.sort_order)
+    )
+    configs = result.scalars().all()
+
+    return AgentRoleConfigsResponse(
+        roles={
+            config.role: AgentRoleConfigResponse(
+                name=config.name,
+                role=config.role,
+                color=config.color,
+                system_prompt=config.system_prompt,
+                tools=config.tools,
+            )
+            for config in configs
+        }
+    )
+
+
+# ==================== Agent CRUD Endpoints ====================
 
 
 @router.get("", response_model=list[AgentResponse])

@@ -43,6 +43,7 @@ from src.routes import (
     billing,
     changes,
     checkpoints,
+    claude_code,
     commands,
     completion,
     context,
@@ -50,6 +51,7 @@ from src.routes import (
     dashboard,
     doctor,
     extensions,
+    gemini_cli,
     git,
     github,
     hooks,
@@ -57,14 +59,17 @@ from src.routes import (
     llm_providers,
     local_pods,
     lsp,
+    marketplace,
     mcp,
     memory,
     mfa,
     notifications,
     oauth,
+    openai_codex,
     organizations,
     pending_changes,
     plans,
+    platform_settings,
     preview,
     productivity,
     project_health,
@@ -72,6 +77,8 @@ from src.routes import (
     push,
     sessions,
     sharing,
+    skill_repositories,
+    skill_templates,
     skills,
     subagents,
     templates,
@@ -83,7 +90,9 @@ from src.routes import (
     workspaces,
     worktrees,
 )
+from src.routes.admin.agents import public_router as agent_roles_public_router
 from src.routes.admin.models import public_router as models_public_router
+from src.routes.admin.tools import public_router as agent_tools_public_router
 from src.routes.billing import (
     expire_credits,
     process_subscription_period_ends,
@@ -1397,6 +1406,9 @@ api_v1.include_router(mcp.router)  # Already has prefix
 api_v1.include_router(mcp.defaults_router)  # MCP defaults catalog
 api_v1.include_router(memory.router, tags=["memory"])
 api_v1.include_router(skills.router, tags=["skills"])
+api_v1.include_router(skill_templates.router, tags=["skill-templates"])
+api_v1.include_router(skill_repositories.router, tags=["skill-repositories"])
+api_v1.include_router(marketplace.router, tags=["marketplace"])
 api_v1.include_router(llm_providers.router, tags=["llm-providers"])
 api_v1.include_router(local_pods.router)  # Already has prefix
 api_v1.include_router(voice.router, prefix="/voice", tags=["voice"])
@@ -1406,6 +1418,9 @@ api_v1.include_router(cost_insights.router, tags=["cost-insights"])
 api_v1.include_router(webhooks.router, tags=["webhooks"])
 api_v1.include_router(admin.router, tags=["admin"])
 api_v1.include_router(models_public_router, prefix="/models", tags=["models"])
+api_v1.include_router(agent_roles_public_router, prefix="/agent-roles", tags=["agent-roles"])
+api_v1.include_router(agent_tools_public_router, prefix="/agent-tools", tags=["agent-tools"])
+api_v1.include_router(platform_settings.router, tags=["platform"])
 api_v1.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 api_v1.include_router(productivity.router, tags=["productivity"])
 api_v1.include_router(project_health.router, tags=["project-health"])
@@ -1425,6 +1440,9 @@ api_v1.include_router(commands.router, tags=["commands"])
 api_v1.include_router(project_init.router, tags=["init"])
 api_v1.include_router(doctor.router, tags=["doctor"])
 api_v1.include_router(extensions.router, prefix="/extensions", tags=["extensions"])
+api_v1.include_router(claude_code.router, tags=["claude-code"])
+api_v1.include_router(openai_codex.router, tags=["openai-codex"])
+api_v1.include_router(gemini_cli.router, tags=["gemini-cli"])
 
 # Mount v1 API at /api/v1
 app.include_router(api_v1, prefix="/api/v1")

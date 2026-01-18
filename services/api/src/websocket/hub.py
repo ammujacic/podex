@@ -1880,3 +1880,45 @@ async def emit_agent_auto_mode_switch(
         new_mode=new_mode,
         auto_revert=auto_revert,
     )
+
+
+# ============== Agent Config Update Events ==============
+
+
+async def emit_agent_config_update(
+    session_id: str,
+    agent_id: str,
+    updates: dict[str, Any],
+    source: str = "cli",
+) -> None:
+    """Emit agent configuration update notification.
+
+    This event is emitted when a CLI agent's configuration changes
+    (e.g., model switch via /model command, context compaction via /compact).
+    Enables bi-directional sync between CLI and Podex UI.
+
+    Args:
+        session_id: The session ID.
+        agent_id: The agent ID.
+        updates: Dictionary of configuration updates (model, mode, thinking, etc.).
+        source: Source of the update (cli, user, system).
+    """
+    await sio.emit(
+        "agent_config_update",
+        {
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "updates": updates,
+            "source": source,
+            "timestamp": datetime.now(UTC).isoformat(),
+        },
+        room=f"session:{session_id}",
+    )
+
+    logger.info(
+        "Agent config update emitted",
+        session_id=session_id,
+        agent_id=agent_id,
+        updates=updates,
+        source=source,
+    )

@@ -62,6 +62,28 @@ class SubscriptionPlan(Base):
     # Features (JSONB for flexibility)
     features: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
 
+    # Display/UI settings (fetched by frontend instead of hardcoding)
+    color: Mapped[str | None] = mapped_column(String(20))  # Brand color for UI (e.g., "#22c55e")
+    icon: Mapped[str | None] = mapped_column(String(50))  # Icon name (e.g., "Zap", "Crown")
+    cta_text: Mapped[str | None] = mapped_column(
+        String(50)
+    )  # CTA button text (e.g., "Get Started")
+    highlight_features: Mapped[list[str] | None] = mapped_column(
+        JSONB
+    )  # Top features to highlight in UI
+
+    # Session/workspace configuration per plan
+    session_timeout_options: Mapped[list[int | None] | None] = mapped_column(
+        JSONB
+    )  # Available timeout options in minutes [15, 30, 60, 120, null]
+    max_thinking_tokens: Mapped[int | None] = mapped_column(Integer)  # Max thinking tokens allowed
+    workspace_cpu_limit: Mapped[int | None] = mapped_column(Integer)  # Default CPU millicores
+    workspace_memory_limit: Mapped[int | None] = mapped_column(Integer)  # Default memory MB
+    workspace_disk_limit: Mapped[int | None] = mapped_column(Integer)  # Default disk GB
+    max_session_duration_minutes: Mapped[int | None] = mapped_column(
+        Integer
+    )  # Max session duration (null = unlimited)
+
     # Display settings
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     is_popular: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

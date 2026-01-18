@@ -8,6 +8,7 @@ This module provides:
 """
 
 import asyncio
+import warnings
 from collections.abc import AsyncGenerator, Generator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -17,7 +18,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
-import warnings
 from src.config import settings
 from src.middleware.auth import AuthMiddleware
 

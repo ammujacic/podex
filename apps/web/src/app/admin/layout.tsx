@@ -21,6 +21,9 @@ import {
   FileSearch,
   ShieldCheck,
   Building2,
+  Zap,
+  Store,
+  Cloud,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUser, useAuthLoading } from '@/stores/auth';
@@ -46,9 +49,12 @@ const adminNavItems = [
       { href: '/admin/management/organizations', label: 'Organizations', icon: Building2 },
       { href: '/admin/management/plans', label: 'Subscription Plans', icon: CreditCard },
       { href: '/admin/management/models', label: 'LLM Models', icon: Brain },
+      { href: '/admin/management/providers', label: 'LLM Providers', icon: Cloud },
       { href: '/admin/management/hardware', label: 'Hardware Specs', icon: Server },
       { href: '/admin/management/templates', label: 'Pod Templates', icon: Box },
       { href: '/admin/management/terminal-agents', label: 'Terminal Agents', icon: Terminal },
+      { href: '/admin/management/skills', label: 'System Skills', icon: Zap },
+      { href: '/admin/management/marketplace', label: 'Skill Marketplace', icon: Store },
       { href: '/admin/management/settings', label: 'Platform Settings', icon: Settings },
     ],
   },
@@ -120,7 +126,9 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                 {section.items.map((item) => {
                   const Icon = item.icon;
                   const isActive =
-                    item.href === '/admin' ? pathname === '/admin' : pathname.startsWith(item.href);
+                    item.href === '/admin'
+                      ? pathname === '/admin'
+                      : pathname === item.href || pathname.startsWith(item.href + '/');
 
                   return (
                     <li key={item.href}>

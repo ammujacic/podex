@@ -32,6 +32,51 @@ class PlatformSetting(Base):
     )
 
 
+class LLMProvider(Base):
+    """LLM provider configuration for provider metadata.
+
+    Stores metadata about LLM providers (Anthropic, OpenAI, Google, Ollama, etc.)
+    including branding, documentation URLs, and capabilities.
+    Admins can customize these via the admin panel.
+    """
+
+    __tablename__ = "llm_providers"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
+    slug: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    # Branding
+    icon: Mapped[str | None] = mapped_column(String(50))  # Icon name (e.g., "Brain", "Sparkles")
+    color: Mapped[str | None] = mapped_column(String(20))  # Brand color (e.g., "#D97757")
+    logo_url: Mapped[str | None] = mapped_column(Text)  # URL to provider logo
+    # Configuration
+    is_local: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    default_url: Mapped[str | None] = mapped_column(String(500))  # Default API URL
+    docs_url: Mapped[str | None] = mapped_column(String(500))  # Documentation URL
+    setup_guide_url: Mapped[str | None] = mapped_column(String(500))  # Setup guide URL
+    # Capabilities
+    requires_api_key: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    supports_streaming: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    supports_tools: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    supports_vision: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Status
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class LLMModel(Base):
     """LLM model configuration for dynamic model management.
 
@@ -48,7 +93,7 @@ class LLMModel(Base):
     display_name: Mapped[str] = mapped_column(String(100), nullable=False)
     # Provider: vertex, anthropic, openai, ollama
     provider: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
-    # Model family: anthropic, llama, titan, cohere, mistral, openai
+    # Model family: anthropic, llama, titan, gemini, openai
     family: Mapped[str] = mapped_column(String(50), nullable=False)
     # Cost tier: low, medium, high, premium
     cost_tier: Mapped[str] = mapped_column(String(20), nullable=False)

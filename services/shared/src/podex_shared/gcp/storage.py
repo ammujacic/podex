@@ -103,7 +103,7 @@ class GCSClient:
             try:
                 self._client.get_bucket(self.bucket_name)
             except NotFound:
-                self._client.create_bucket(self.bucket_name, location="us-central1")
+                self._client.create_bucket(self.bucket_name, location="us-east1")
                 logger.info("Created GCS bucket", bucket=self.bucket_name)
 
         await _run_in_executor(_ensure)

@@ -20,7 +20,9 @@ All models are organized into domain-specific modules:
 # Base class and utilities
 # Agent configuration models
 from .agent_config import (
+    AgentRoleConfig,
     AgentTemplate,
+    AgentTool,
     AgentWorktree,
     ExternalAgentEnvProfile,
     Subagent,
@@ -129,9 +131,22 @@ from .platform import (
     DataExportRequest,
     DataRetentionPolicy,
     LLMModel,
+    LLMProvider,
     PlatformSetting,
     ProductivityMetric,
     ProjectHealthScore,
+)
+
+# Skill management models
+from .skill_sync import (
+    MarketplaceSkill,
+    SkillExecution,
+    SkillRepository,
+    SkillSyncLog,
+    SkillTemplate,
+    SkillVersion,
+    SystemSkill,
+    UserAddedSkill,
 )
 
 # User preferences models
@@ -146,7 +161,9 @@ __all__ = [
     "Agent",
     "AgentAttention",
     "AgentPendingApproval",
+    "AgentRoleConfig",
     "AgentTemplate",
+    "AgentTool",
     "AgentWorktree",
     "AuditLog",
     "Base",
@@ -171,8 +188,10 @@ __all__ = [
     "HardwareSpec",
     "Invoice",
     "LLMModel",
+    "LLMProvider",
     "LocalPod",
     "MCPServer",
+    "MarketplaceSkill",
     "Memory",
     "Message",
     "Notification",
@@ -195,14 +214,21 @@ __all__ = [
     "SessionBudget",
     "SessionCollaborator",
     "SessionShare",
+    "SkillExecution",
+    "SkillRepository",
+    "SkillSyncLog",
+    "SkillTemplate",
+    "SkillVersion",
     "Subagent",
     "SubscriptionPlan",
+    "SystemSkill",
     "TaskProgress",
     "TerminalAgentSession",
     "TerminalIntegratedAgentType",
     "UsageQuota",
     "UsageRecord",
     "User",
+    "UserAddedSkill",
     "UserBudget",
     "UserConfig",
     "UserCorrection",

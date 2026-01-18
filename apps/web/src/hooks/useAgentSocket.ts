@@ -17,6 +17,7 @@ import {
   type AgentThinkingTokenEvent,
   type AgentStreamEndEvent,
   type AgentAutoModeSwitchEvent,
+  type AgentConfigUpdateEvent,
 } from '@/lib/socket';
 import { sendAgentMessage } from '@/lib/api';
 import { toast } from 'sonner';
@@ -228,6 +229,52 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       callbacksRef.current.updateAgent(sessionId, data.agent_id, { status: 'idle' });
     });
 
+    // Handle CLI agent config updates (bi-directional sync)
+    const unsubConfigUpdate = onSocketEvent(
+      'agent_config_update',
+      (data: AgentConfigUpdateEvent) => {
+        if (data.session_id !== sessionId) return;
+
+        // Map backend field names to frontend agent state
+        const agentUpdates: Partial<Parameters<typeof callbacksRef.current.updateAgent>[2]> = {};
+
+        if (data.updates.model) {
+          agentUpdates.model = data.updates.model;
+        }
+        if (data.updates.mode) {
+          agentUpdates.mode = data.updates.mode as AgentMode;
+        }
+        if (
+          data.updates.thinking_enabled !== undefined ||
+          data.updates.thinking_budget !== undefined
+        ) {
+          agentUpdates.thinkingConfig = {
+            enabled: data.updates.thinking_enabled ?? false,
+            budgetTokens: data.updates.thinking_budget ?? 10000,
+          };
+        }
+
+        // Only update if there are changes
+        if (Object.keys(agentUpdates).length > 0) {
+          callbacksRef.current.updateAgent(sessionId, data.agent_id, agentUpdates);
+
+          // Show toast for CLI-initiated changes
+          if (data.source === 'cli') {
+            if (data.updates.model) {
+              toast.info(`Model switched to ${data.updates.model}`, {
+                description: 'Changed via CLI command',
+              });
+            }
+            if (data.updates.mode) {
+              toast.info(`Mode changed to ${data.updates.mode}`, {
+                description: 'Changed via CLI command',
+              });
+            }
+          }
+        }
+      }
+    );
+
     // Cleanup on unmount
     return () => {
       unsubMessage();
@@ -237,6 +284,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       unsubStreamToken();
       unsubThinkingToken();
       unsubStreamEnd();
+      unsubConfigUpdate();
       leaveSession(sessionId, userId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -431,7 +431,7 @@ def create_monitoring(
         log_dataset = gcp.bigquery.Dataset(
             f"podex-logs-{env}",
             dataset_id=f"podex_logs_{env}",
-            location="US",
+            location="us-east1",
             description="Podex application logs for analytics",
             default_table_expiration_ms=30 * 24 * 60 * 60 * 1000,  # 30 days
         )

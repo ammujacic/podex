@@ -240,6 +240,13 @@ class GCPComputeManager(ComputeManager):
             EnvVar(name="GPU_ENABLED", value="false"),
             EnvVar(name="TEMPLATE_ID", value=config.template_id or ""),
         ]
+        # Add git identity config if provided (container entrypoint can use these)
+        if config.git_name:
+            env_vars.append(EnvVar(name="GIT_AUTHOR_NAME", value=config.git_name))
+            env_vars.append(EnvVar(name="GIT_COMMITTER_NAME", value=config.git_name))
+        if config.git_email:
+            env_vars.append(EnvVar(name="GIT_AUTHOR_EMAIL", value=config.git_email))
+            env_vars.append(EnvVar(name="GIT_COMMITTER_EMAIL", value=config.git_email))
         env_vars.extend(EnvVar(name=k, value=v) for k, v in config.environment.items())
 
         # Create Cloud Run job

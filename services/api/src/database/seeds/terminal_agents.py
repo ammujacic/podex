@@ -266,4 +266,19 @@ DEFAULT_TERMINAL_AGENTS: list[TerminalAgentData] = [
         },
         "is_enabled": True,
     },
+    {
+        "name": "Gemini CLI",
+        "slug": "gemini-cli",
+        "logo_url": "/assets/agents/gemini.svg",
+        "description": "Google's Gemini AI agent for the terminal with 1M token context",
+        "check_installed_command": ["bash", "-lc", "command -v gemini"],
+        "version_command": ["gemini", "--version"],
+        "install_command": ["bash", "-lc", "npm install -g @anthropic-ai/gemini-cli"],
+        "update_command": ["bash", "-lc", "npm update -g @anthropic-ai/gemini-cli"],
+        "run_command": ["gemini"],
+        "default_env_template": {
+            "GOOGLE_API_KEY": "",
+        },
+        "is_enabled": True,
+    },
 ]

@@ -1,3 +1,5 @@
+import type { AgentRole } from './constants';
+
 // ==========================================
 // User & Authentication Types
 // ==========================================
@@ -98,19 +100,6 @@ export interface AgentInstance {
   thinkingConfig?: ThinkingConfig;
   createdAt: Date;
 }
-
-export type AgentRole =
-  | 'architect'
-  | 'coder'
-  | 'reviewer'
-  | 'tester'
-  | 'chat'
-  | 'security'
-  | 'devops'
-  | 'documentator'
-  | 'agent_builder'
-  | 'orchestrator'
-  | 'custom';
 
 export type AgentStatus = 'idle' | 'thinking' | 'executing' | 'waiting' | 'error';
 

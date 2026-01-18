@@ -14,7 +14,7 @@ class TestInfrastructureConfig:
     def test_config_validation(self, project_id: str, region: str, env: str, domain: str) -> None:
         """Test that configuration values are properly set."""
         assert project_id == "podex-test"
-        assert region == "us-central1"
+        assert region == "us-east1"
         assert env == "test"
         assert domain == "test.podex.dev"
 

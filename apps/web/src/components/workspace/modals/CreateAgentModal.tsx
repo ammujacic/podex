@@ -26,12 +26,13 @@ import {
   type AgentTemplate,
 } from '@/lib/api';
 import {
-  BUILTIN_AGENTS,
   createCustomAgentOption,
+  createAgentOptionFromRole,
   type AgentOption,
   type AgentRole,
   type AgentStatus,
 } from './agentConstants';
+import { useConfigStore } from '@/stores/config';
 
 interface TerminalAgentType {
   id: string;
@@ -61,6 +62,9 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
   const { addAgent, sessions } = useSessionStore();
   const workspaceId = sessions[sessionId]?.workspaceId ?? '';
   const [activeTab, setActiveTab] = useState<'podex' | 'external'>('podex');
+
+  // Get agent roles from config store
+  const agentRoles = useConfigStore((state) => state.agentRoles);
 
   // Focus trap for accessibility
   const modalRef = useFocusTrap<HTMLDivElement>(true);
@@ -139,6 +143,11 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
     }
   }, [activeTab]);
 
+  // Convert agent roles to AgentOption format
+  const builtinAgentOptions: AgentOption[] = useMemo(() => {
+    return agentRoles.map(createAgentOptionFromRole);
+  }, [agentRoles]);
+
   // Convert custom templates to AgentOption format
   const customAgentOptions: AgentOption[] = useMemo(() => {
     return customTemplates.map(createCustomAgentOption);
@@ -146,7 +155,7 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
 
   // Filter agents based on search
   const filteredAgents = useMemo(() => {
-    const allAgents = [...BUILTIN_AGENTS, ...customAgentOptions];
+    const allAgents = [...builtinAgentOptions, ...customAgentOptions];
     if (!searchQuery.trim()) return allAgents;
 
     const query = searchQuery.toLowerCase();
@@ -156,7 +165,7 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
         agent.description.toLowerCase().includes(query) ||
         agent.role.toLowerCase().includes(query)
     );
-  }, [searchQuery, customAgentOptions]);
+  }, [searchQuery, builtinAgentOptions, customAgentOptions]);
 
   // Group filtered agents
   const builtinFiltered = filteredAgents.filter((a) => !a.isCustom);

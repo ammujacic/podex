@@ -2,6 +2,7 @@
 
 import { useRef, useEffect } from 'react';
 import { Plus, Loader2 } from 'lucide-react';
+import { ClaudeIcon, GeminiIcon, OpenAIIcon, PodexIcon } from '@/components/icons';
 import { cn } from '@/lib/utils';
 import { useSessionStore, type Agent } from '@/stores/session';
 
@@ -121,6 +122,43 @@ export function MobileAgentTabs({
                   <span className="block w-3 h-3 rounded-full" style={{ backgroundColor: color }} />
                 )}
               </span>
+
+              {/* Claude Code badge */}
+              {agent.role === 'claude-code' && (
+                <span
+                  className="flex items-center justify-center w-4 h-4 rounded bg-[#FF6B35]/20 flex-shrink-0"
+                  title="Claude Code"
+                >
+                  <ClaudeIcon className="h-2.5 w-2.5 text-[#FF6B35]" />
+                </span>
+              )}
+              {/* OpenAI Codex badge */}
+              {agent.role === 'openai-codex' && (
+                <span
+                  className="flex items-center justify-center w-4 h-4 rounded bg-[#10A37F]/20 flex-shrink-0"
+                  title="OpenAI Codex"
+                >
+                  <OpenAIIcon className="h-2.5 w-2.5 text-[#10A37F]" />
+                </span>
+              )}
+              {/* Gemini CLI badge */}
+              {agent.role === 'gemini-cli' && (
+                <span
+                  className="flex items-center justify-center w-4 h-4 rounded bg-[#4285F4]/20 flex-shrink-0"
+                  title="Gemini CLI"
+                >
+                  <GeminiIcon className="h-2.5 w-2.5 text-[#4285F4]" />
+                </span>
+              )}
+              {/* Podex native agent badge */}
+              {!['claude-code', 'openai-codex', 'gemini-cli', 'custom'].includes(agent.role) && (
+                <span
+                  className="flex items-center justify-center w-4 h-4 flex-shrink-0"
+                  title="Podex Agent"
+                >
+                  <PodexIcon size={16} />
+                </span>
+              )}
 
               {/* Agent name */}
               <span

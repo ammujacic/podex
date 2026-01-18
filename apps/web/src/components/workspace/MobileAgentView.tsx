@@ -262,6 +262,30 @@ export function MobileAgentView({
     }
   }, [sessionId, agentId]);
 
+  // Handler for sending commands from toolbar (used for CLI agents)
+  const handleSendCommand = useCallback(
+    async (command: string) => {
+      if (!agent || isSubmitting) return;
+
+      // Add optimistic user message to store
+      const userMessage: AgentMessage = {
+        id: generateTempId(),
+        role: 'user',
+        content: command,
+        timestamp: new Date(),
+      };
+      addAgentMessage(sessionId, agentId, userMessage);
+
+      try {
+        await sendAgentMessage(sessionId, agentId, command);
+      } catch (error) {
+        console.error('Failed to send command:', error);
+        toast.error('Failed to send command');
+      }
+    },
+    [agent, isSubmitting, sessionId, agentId, addAgentMessage]
+  );
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -303,7 +327,7 @@ export function MobileAgentView({
 
       {/* Agent toolbar - always visible at top */}
       <div className="flex-none">
-        <MobileAgentToolbar sessionId={sessionId} agent={agent} />
+        <MobileAgentToolbar sessionId={sessionId} agent={agent} onSendCommand={handleSendCommand} />
       </div>
 
       {/* Messages area - scrollable middle section */}

@@ -272,6 +272,128 @@ class Subagent(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class AgentTool(Base):
+    """Registry of available tools that can be assigned to agents.
+
+    This is the single source of truth for all tool definitions including:
+    - Tool name and description
+    - JSON Schema parameters
+    - Tool category and metadata
+
+    Tools are referenced by name in AgentRoleConfig.tools.
+    Admins can customize these via the admin panel.
+    """
+
+    __tablename__ = "agent_tools"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
+    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    parameters: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False
+    )  # JSON Schema for tool parameters
+    category: Mapped[str] = mapped_column(
+        String(50), default="general", nullable=False
+    )  # file, git, delegation, etc.
+
+    # Ordering and visibility
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_system: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )  # System tools can't be deleted
+
+    # Audit
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class AgentRoleConfig(Base):
+    """Admin-configurable default configurations for agent roles.
+
+    This is the single source of truth for agent role defaults including:
+    - Display name and color
+    - System prompt
+    - Default tools (references AgentTool by name)
+    - Default model settings
+
+    Admins can customize these via the admin panel.
+    Frontend fetches these from the API instead of hardcoding.
+    """
+
+    __tablename__ = "agent_role_configs"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
+    role: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    color: Mapped[str] = mapped_column(String(50), nullable=False)  # cyan, purple, green, etc.
+    icon: Mapped[str | None] = mapped_column(String(50))  # Optional icon name or emoji
+    description: Mapped[str | None] = mapped_column(Text)
+    system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    tools: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False
+    )  # Tool names referencing AgentTool.name
+
+    # Display/UI fields (fetched by frontend instead of hardcoding)
+    category: Mapped[str] = mapped_column(
+        String(50), default="development", nullable=False
+    )  # development, terminal, system, custom
+    gradient_start: Mapped[str | None] = mapped_column(String(20))  # Start color for UI gradients
+    gradient_end: Mapped[str | None] = mapped_column(String(20))  # End color for UI gradients
+    features: Mapped[list[str] | None] = mapped_column(JSONB)  # Feature highlights for UI
+    example_prompts: Mapped[list[str] | None] = mapped_column(
+        JSONB
+    )  # Example prompts for this role
+    requires_subscription: Mapped[str | None] = mapped_column(
+        String(50)
+    )  # Minimum plan slug required (null = available to all)
+
+    # Default model settings (can be overridden per-user in preferences)
+    default_model: Mapped[str | None] = mapped_column(String(100))  # Falls back to platform default
+    default_temperature: Mapped[float | None] = mapped_column(Float)
+    default_max_tokens: Mapped[int | None] = mapped_column(Integer)
+
+    # Ordering and visibility
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_system: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )  # System roles can't be deleted
+
+    # Audit
+    created_by_admin_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="SET NULL"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    # Relationships
+    created_by_admin: Mapped["User | None"] = relationship("User")
+
+    # Usage stats (updated via API)
+    usage_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class AgentWorktree(Base):
     """Git worktree tracking for parallel agent execution."""
 

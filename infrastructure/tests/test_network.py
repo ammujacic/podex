@@ -92,7 +92,7 @@ class TestNetworkConfiguration:
         # Test the subnet configuration logic
         subnet_config = {
             "private_ip_google_access": True,
-            "region": "us-central1",
+            "region": "us-east1",
             "ip_cidr_range": "10.0.0.0/20",
         }
 
@@ -100,7 +100,7 @@ class TestNetworkConfiguration:
         assert subnet_config["private_ip_google_access"]
 
         # Verify valid region
-        assert subnet_config["region"] in ["us-central1", "us-west1", "us-east1", "europe-west1"]
+        assert subnet_config["region"] == "us-east1"
 
         # Verify valid CIDR range
         import ipaddress

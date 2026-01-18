@@ -240,6 +240,71 @@ async def create_model(
 # NOTE: These routes MUST be defined before /{model_id} to avoid path conflicts
 
 
+def _get_default_agent_model_config() -> dict[str, AgentTypeDefaults]:
+    """Get cost-effective default model settings for all agent types.
+
+    Uses Sonnet for most roles (best balance of quality/cost),
+    Haiku for chat (fast responses), and standard Sonnet for simpler tasks.
+    """
+    return {
+        "architect": AgentTypeDefaults(
+            model_id="claude-sonnet-4-5-20250929",
+            temperature=0.7,
+            max_tokens=8192,
+        ),
+        "coder": AgentTypeDefaults(
+            model_id="claude-sonnet-4-5-20250929",
+            temperature=0.3,
+            max_tokens=4096,
+        ),
+        "reviewer": AgentTypeDefaults(
+            model_id="claude-sonnet-4-20250514",
+            temperature=0.5,
+            max_tokens=4096,
+        ),
+        "tester": AgentTypeDefaults(
+            model_id="claude-sonnet-4-5-20250929",
+            temperature=0.3,
+            max_tokens=4096,
+        ),
+        "chat": AgentTypeDefaults(
+            model_id="claude-haiku-4-5-20251001",
+            temperature=0.7,
+            max_tokens=2048,
+        ),
+        "security": AgentTypeDefaults(
+            model_id="claude-sonnet-4-5-20250929",
+            temperature=0.3,
+            max_tokens=4096,
+        ),
+        "devops": AgentTypeDefaults(
+            model_id="claude-sonnet-4-5-20250929",
+            temperature=0.5,
+            max_tokens=4096,
+        ),
+        "documentator": AgentTypeDefaults(
+            model_id="claude-sonnet-4-20250514",
+            temperature=0.7,
+            max_tokens=4096,
+        ),
+        "agent_builder": AgentTypeDefaults(
+            model_id="claude-sonnet-4-5-20250929",
+            temperature=0.5,
+            max_tokens=8192,
+        ),
+        "orchestrator": AgentTypeDefaults(
+            model_id="claude-sonnet-4-5-20250929",
+            temperature=0.5,
+            max_tokens=8192,
+        ),
+        "custom": AgentTypeDefaults(
+            model_id="claude-sonnet-4-5-20250929",
+            temperature=0.5,
+            max_tokens=4096,
+        ),
+    }
+
+
 @router.get("/agent-defaults", response_model=AgentDefaultsResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
 @require_admin
@@ -255,61 +320,8 @@ async def get_agent_defaults(
     setting = result.scalar_one_or_none()
 
     if not setting:
-        # Return hardcoded defaults
-        return AgentDefaultsResponse(
-            defaults={
-                "architect": AgentTypeDefaults(
-                    model_id="claude-opus-4-5-20251101",
-                    temperature=0.7,
-                    max_tokens=8192,
-                ),
-                "coder": AgentTypeDefaults(
-                    model_id="claude-sonnet-4-5-20250929",
-                    temperature=0.3,
-                    max_tokens=4096,
-                ),
-                "reviewer": AgentTypeDefaults(
-                    model_id="claude-sonnet-4-20250514",
-                    temperature=0.5,
-                    max_tokens=4096,
-                ),
-                "tester": AgentTypeDefaults(
-                    model_id="claude-sonnet-4-5-20250929",
-                    temperature=0.3,
-                    max_tokens=4096,
-                ),
-                "chat": AgentTypeDefaults(
-                    model_id="claude-haiku-4-5-20251001",
-                    temperature=0.7,
-                    max_tokens=2048,
-                ),
-                "security": AgentTypeDefaults(
-                    model_id="claude-opus-4-5-20251101",
-                    temperature=0.3,
-                    max_tokens=4096,
-                ),
-                "devops": AgentTypeDefaults(
-                    model_id="claude-sonnet-4-5-20250929",
-                    temperature=0.5,
-                    max_tokens=4096,
-                ),
-                "documentator": AgentTypeDefaults(
-                    model_id="claude-sonnet-4-20250514",
-                    temperature=0.7,
-                    max_tokens=4096,
-                ),
-                "agent_builder": AgentTypeDefaults(
-                    model_id="claude-sonnet-4-5-20250929",
-                    temperature=0.5,
-                    max_tokens=8192,
-                ),
-                "orchestrator": AgentTypeDefaults(
-                    model_id="claude-opus-4-5-20251101",
-                    temperature=0.5,
-                    max_tokens=8192,
-                ),
-            }
-        )
+        # Return cost-effective defaults - Sonnet for most roles, Haiku for chat
+        return AgentDefaultsResponse(defaults=_get_default_agent_model_config())
 
     return AgentDefaultsResponse(
         defaults={k: AgentTypeDefaults(**v) for k, v in setting.value.items()}
@@ -365,48 +377,10 @@ async def update_agent_default(
     setting = result.scalar_one_or_none()
 
     if not setting:
-        # Create with default values
+        # Create with cost-effective default values
         defaults = {
-            "architect": {
-                "model_id": "claude-opus-4-5-20251101",
-                "temperature": 0.7,
-                "max_tokens": 8192,
-            },
-            "coder": {
-                "model_id": "claude-sonnet-4-5-20250929",
-                "temperature": 0.3,
-                "max_tokens": 4096,
-            },
-            "reviewer": {
-                "model_id": "claude-sonnet-4-20250514",
-                "temperature": 0.5,
-                "max_tokens": 4096,
-            },
-            "tester": {
-                "model_id": "claude-sonnet-4-5-20250929",
-                "temperature": 0.3,
-                "max_tokens": 4096,
-            },
-            "chat": {
-                "model_id": "claude-haiku-4-5-20251001",
-                "temperature": 0.7,
-                "max_tokens": 2048,
-            },
-            "security": {
-                "model_id": "claude-opus-4-5-20251101",
-                "temperature": 0.3,
-                "max_tokens": 4096,
-            },
-            "devops": {
-                "model_id": "claude-sonnet-4-5-20250929",
-                "temperature": 0.5,
-                "max_tokens": 4096,
-            },
-            "documentator": {
-                "model_id": "claude-sonnet-4-20250514",
-                "temperature": 0.7,
-                "max_tokens": 4096,
-            },
+            k: {"model_id": v.model_id, "temperature": v.temperature, "max_tokens": v.max_tokens}
+            for k, v in _get_default_agent_model_config().items()
         }
         setting = PlatformSetting(
             key="agent_model_defaults",
@@ -699,61 +673,8 @@ async def get_public_agent_defaults(
     setting = result.scalar_one_or_none()
 
     if not setting:
-        # Return hardcoded defaults
-        return AgentDefaultsResponse(
-            defaults={
-                "architect": AgentTypeDefaults(
-                    model_id="claude-opus-4-5-20251101",
-                    temperature=0.7,
-                    max_tokens=8192,
-                ),
-                "coder": AgentTypeDefaults(
-                    model_id="claude-sonnet-4-5-20250929",
-                    temperature=0.3,
-                    max_tokens=4096,
-                ),
-                "reviewer": AgentTypeDefaults(
-                    model_id="claude-sonnet-4-20250514",
-                    temperature=0.5,
-                    max_tokens=4096,
-                ),
-                "tester": AgentTypeDefaults(
-                    model_id="claude-sonnet-4-5-20250929",
-                    temperature=0.3,
-                    max_tokens=4096,
-                ),
-                "chat": AgentTypeDefaults(
-                    model_id="claude-haiku-4-5-20251001",
-                    temperature=0.7,
-                    max_tokens=2048,
-                ),
-                "security": AgentTypeDefaults(
-                    model_id="claude-opus-4-5-20251101",
-                    temperature=0.3,
-                    max_tokens=4096,
-                ),
-                "devops": AgentTypeDefaults(
-                    model_id="claude-sonnet-4-5-20250929",
-                    temperature=0.5,
-                    max_tokens=4096,
-                ),
-                "documentator": AgentTypeDefaults(
-                    model_id="claude-sonnet-4-20250514",
-                    temperature=0.7,
-                    max_tokens=4096,
-                ),
-                "agent_builder": AgentTypeDefaults(
-                    model_id="claude-sonnet-4-5-20250929",
-                    temperature=0.5,
-                    max_tokens=8192,
-                ),
-                "orchestrator": AgentTypeDefaults(
-                    model_id="claude-opus-4-5-20251101",
-                    temperature=0.5,
-                    max_tokens=8192,
-                ),
-            }
-        )
+        # Return cost-effective defaults - Sonnet for most roles, Haiku for chat
+        return AgentDefaultsResponse(defaults=_get_default_agent_model_config())
 
     return AgentDefaultsResponse(
         defaults={k: AgentTypeDefaults(**v) for k, v in setting.value.items()}

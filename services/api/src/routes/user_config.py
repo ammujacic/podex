@@ -78,8 +78,6 @@ LLM_API_KEY_PATTERNS = {
     "openai": re.compile(r"^sk-[a-zA-Z0-9]{20,}$"),  # sk-... format
     "anthropic": re.compile(r"^sk-ant-[a-zA-Z0-9-]{20,}$"),  # sk-ant-... format
     "google": re.compile(r"^[a-zA-Z0-9_-]{30,}$"),  # Google AI Studio keys
-    "mistral": re.compile(r"^[a-zA-Z0-9]{20,}$"),  # Mistral API keys
-    "cohere": re.compile(r"^[a-zA-Z0-9]{30,}$"),  # Cohere API keys
     "ollama": re.compile(r"^.{0,200}$"),  # Ollama typically uses no key or custom
     "lmstudio": re.compile(r"^.{0,200}$"),  # LM Studio typically uses no key or custom
 }
@@ -747,9 +745,9 @@ async def reset_all_tours(
 # ============================================================================
 
 # Valid provider names for API keys
-# Cloud providers: openai, anthropic, google, mistral, cohere
+# Cloud providers: openai, anthropic, google
 # Local providers: ollama, lmstudio
-VALID_LLM_PROVIDERS = {"openai", "anthropic", "google", "mistral", "cohere", "ollama", "lmstudio"}
+VALID_LLM_PROVIDERS = {"openai", "anthropic", "google", "ollama", "lmstudio"}
 
 
 class LLMApiKeysResponse(BaseModel):
@@ -830,7 +828,7 @@ async def set_llm_api_key(
     if (
         key_pattern
         and not key_pattern.match(data.api_key)
-        and provider_lower in {"openai", "anthropic", "google", "mistral", "cohere"}
+        and provider_lower in {"openai", "anthropic", "google"}
     ):
         raise HTTPException(
             status_code=400,

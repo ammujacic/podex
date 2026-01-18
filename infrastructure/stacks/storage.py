@@ -13,7 +13,7 @@ def create_bucket(project_id: str, env: str) -> gcp.storage.Bucket:
     bucket = gcp.storage.Bucket(
         f"podex-workspaces-{env}",
         name=f"podex-workspaces-{env}-{project_id}",
-        location="US",
+        location="us-east1",
         storage_class="STANDARD",
         uniform_bucket_level_access=True,
         # Auto-delete old files to stay under 5GB free limit

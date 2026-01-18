@@ -7,7 +7,7 @@ This module provides utilities to track and record usage events
 import asyncio
 import contextlib
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 from typing import Any
@@ -56,7 +56,7 @@ class UsageEvent(BaseModel):
 
     # Metadata
     metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     status: UsageEventStatus = UsageEventStatus.PENDING
 
 

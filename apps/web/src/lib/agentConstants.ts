@@ -6,6 +6,7 @@ import {
   Server,
   Settings2,
   Shield,
+  Terminal,
   TestTube2,
   Workflow,
   Eye,
@@ -30,6 +31,7 @@ export const roleIcons = {
   devops: Server,
   documentator: FileText,
   custom: Bot,
+  'claude-code': Terminal,
 } as const;
 
 export type AgentRole = keyof typeof roleIcons;

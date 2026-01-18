@@ -1,6 +1,7 @@
 'use client';
 
 import { Check, X } from 'lucide-react';
+import Link from 'next/link';
 
 interface PlanFeature {
   name: string;
@@ -22,6 +23,7 @@ interface PlanCardProps {
   isDowngrade?: boolean;
   onSelect?: () => void;
   disabled?: boolean;
+  enterpriseHref?: string;
 }
 
 export function PlanCard({
@@ -38,6 +40,7 @@ export function PlanCard({
   isDowngrade = false,
   onSelect,
   disabled = false,
+  enterpriseHref,
 }: PlanCardProps) {
   const displayPrice = billingCycle === 'yearly' && priceYearly ? priceYearly / 12 : price;
   const savings =
@@ -129,27 +132,34 @@ export function PlanCard({
       </ul>
 
       {/* CTA Button */}
-      <button
-        onClick={onSelect}
-        disabled={disabled || isCurrent}
-        className={`w-full py-3 rounded-lg font-medium transition-colors ${
-          isCurrent
-            ? 'bg-accent-success/20 text-accent-success cursor-default'
-            : isPopular
-              ? 'bg-accent-primary hover:bg-accent-primary/90 text-white'
-              : isDowngrade
-                ? 'bg-elevated hover:bg-overlay text-text-secondary'
-                : 'bg-elevated hover:bg-overlay text-text-primary'
-        } disabled:opacity-50 disabled:cursor-not-allowed`}
-      >
-        {isCurrent
-          ? 'Current Plan'
-          : isEnterprise
-            ? 'Contact Sales'
-            : isDowngrade
-              ? 'Downgrade'
-              : 'Upgrade'}
-      </button>
+      {isEnterprise && enterpriseHref ? (
+        <Link
+          href={enterpriseHref}
+          className={`w-full py-3 rounded-lg font-medium transition-colors text-center block ${
+            isCurrent
+              ? 'bg-accent-success/20 text-accent-success cursor-default pointer-events-none'
+              : 'bg-elevated hover:bg-overlay text-text-primary'
+          }`}
+        >
+          {isCurrent ? 'Current Plan' : 'Upgrade'}
+        </Link>
+      ) : (
+        <button
+          onClick={onSelect}
+          disabled={disabled || isCurrent}
+          className={`w-full py-3 rounded-lg font-medium transition-colors ${
+            isCurrent
+              ? 'bg-accent-success/20 text-accent-success cursor-default'
+              : isPopular
+                ? 'bg-accent-primary hover:bg-accent-primary/90 text-white'
+                : isDowngrade
+                  ? 'bg-elevated hover:bg-overlay text-text-secondary'
+                  : 'bg-elevated hover:bg-overlay text-text-primary'
+          } disabled:opacity-50 disabled:cursor-not-allowed`}
+        >
+          {isCurrent ? 'Current Plan' : isDowngrade ? 'Downgrade' : 'Upgrade'}
+        </button>
+      )}
     </div>
   );
 }

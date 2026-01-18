@@ -1,10 +1,20 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { Volume2, Mic, Play, Square, RefreshCw, RotateCcw } from 'lucide-react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import {
+  Volume2,
+  Mic,
+  Play,
+  Square,
+  RefreshCw,
+  RotateCcw,
+  AlertCircle,
+  Loader2,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useVoiceSettingsStore } from '@/stores/voiceSettings';
 import { listVoices, type VoiceInfo } from '@/lib/api';
+import { useConfigStore } from '@/stores/config';
 
 // ============================================================================
 // Types
@@ -14,25 +24,6 @@ interface AudioDevice {
   deviceId: string;
   label: string;
 }
-
-// ============================================================================
-// Language options
-// ============================================================================
-
-const LANGUAGES = [
-  { code: 'en-US', name: 'English (US)' },
-  { code: 'en-GB', name: 'English (UK)' },
-  { code: 'en-AU', name: 'English (Australia)' },
-  { code: 'es-ES', name: 'Spanish (Spain)' },
-  { code: 'es-MX', name: 'Spanish (Mexico)' },
-  { code: 'fr-FR', name: 'French' },
-  { code: 'de-DE', name: 'German' },
-  { code: 'it-IT', name: 'Italian' },
-  { code: 'ja-JP', name: 'Japanese' },
-  { code: 'ko-KR', name: 'Korean' },
-  { code: 'pt-BR', name: 'Portuguese (Brazil)' },
-  { code: 'zh-CN', name: 'Chinese (Mandarin)' },
-];
 
 // ============================================================================
 // Toggle Switch Component
@@ -86,6 +77,20 @@ export function VoiceSettings({ className }: VoiceSettingsProps) {
     updateSetting,
     resetToDefaults,
   } = useVoiceSettingsStore();
+
+  // Get languages from config store
+  const getVoiceLanguages = useConfigStore((state) => state.getVoiceLanguages);
+  const configError = useConfigStore((state) => state.error);
+  const configLoading = useConfigStore((state) => state.isLoading);
+  const initializeConfig = useConfigStore((state) => state.initialize);
+
+  // Get languages (null if not loaded)
+  const languages = useMemo(() => getVoiceLanguages(), [getVoiceLanguages]);
+
+  // Initialize config store on mount
+  useEffect(() => {
+    initializeConfig();
+  }, [initializeConfig]);
 
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
@@ -259,18 +264,36 @@ export function VoiceSettings({ className }: VoiceSettingsProps) {
             {/* Language */}
             <div className="p-4 rounded-lg bg-elevated border border-border-subtle">
               <label className="block font-medium text-text-primary mb-2">Language</label>
-              <select
-                value={language}
-                onChange={(e) => updateSetting('language', e.target.value)}
-                disabled={!tts_enabled}
-                className="w-full rounded-md bg-surface border border-border-default px-3 py-2 text-sm text-text-primary focus:border-border-focus focus:outline-none disabled:opacity-50"
-              >
-                {LANGUAGES.map((lang) => (
-                  <option key={lang.code} value={lang.code}>
-                    {lang.name}
-                  </option>
-                ))}
-              </select>
+              {configError ? (
+                <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/30">
+                  <AlertCircle className="h-4 w-4 text-red-400" />
+                  <span className="text-sm text-red-400">Failed to load languages</span>
+                  <button
+                    onClick={() => initializeConfig()}
+                    className="ml-auto text-xs text-red-400 hover:text-red-300"
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : configLoading || !languages ? (
+                <div className="flex items-center gap-2 p-3">
+                  <Loader2 className="h-4 w-4 animate-spin text-text-muted" />
+                  <span className="text-sm text-text-muted">Loading languages...</span>
+                </div>
+              ) : (
+                <select
+                  value={language}
+                  onChange={(e) => updateSetting('language', e.target.value)}
+                  disabled={!tts_enabled}
+                  className="w-full rounded-md bg-surface border border-border-default px-3 py-2 text-sm text-text-primary focus:border-border-focus focus:outline-none disabled:opacity-50"
+                >
+                  {languages.map((lang) => (
+                    <option key={lang.code} value={lang.code}>
+                      {lang.name}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
             {/* Voice Selection */}
@@ -378,18 +401,36 @@ export function VoiceSettings({ className }: VoiceSettingsProps) {
               <label className="block font-medium text-text-primary mb-2">
                 Recognition Language
               </label>
-              <select
-                value={stt_language}
-                onChange={(e) => updateSetting('stt_language', e.target.value)}
-                disabled={!stt_enabled}
-                className="w-full rounded-md bg-surface border border-border-default px-3 py-2 text-sm text-text-primary focus:border-border-focus focus:outline-none disabled:opacity-50"
-              >
-                {LANGUAGES.map((lang) => (
-                  <option key={lang.code} value={lang.code}>
-                    {lang.name}
-                  </option>
-                ))}
-              </select>
+              {configError ? (
+                <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/30">
+                  <AlertCircle className="h-4 w-4 text-red-400" />
+                  <span className="text-sm text-red-400">Failed to load languages</span>
+                  <button
+                    onClick={() => initializeConfig()}
+                    className="ml-auto text-xs text-red-400 hover:text-red-300"
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : configLoading || !languages ? (
+                <div className="flex items-center gap-2 p-3">
+                  <Loader2 className="h-4 w-4 animate-spin text-text-muted" />
+                  <span className="text-sm text-text-muted">Loading languages...</span>
+                </div>
+              ) : (
+                <select
+                  value={stt_language}
+                  onChange={(e) => updateSetting('stt_language', e.target.value)}
+                  disabled={!stt_enabled}
+                  className="w-full rounded-md bg-surface border border-border-default px-3 py-2 text-sm text-text-primary focus:border-border-focus focus:outline-none disabled:opacity-50"
+                >
+                  {languages.map((lang) => (
+                    <option key={lang.code} value={lang.code}>
+                      {lang.name}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
             {/* Input Device */}

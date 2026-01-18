@@ -121,13 +121,19 @@ export const ToolResultDisplay = React.memo<ToolResultDisplayProps>(function Too
 
     // File tools
     case 'read_file':
+    case 'Read': // Claude Code Read tool
       return <ReadFileResult result={parsedResult} />;
     case 'write_file':
+    case 'Write': // Claude Code Write tool
       return <WriteFileResult result={parsedResult} />;
     case 'list_directory':
+    case 'Glob': // Claude Code Glob tool
       return <ListDirectoryResult result={parsedResult} />;
     case 'search_code':
+    case 'Grep': // Claude Code Grep tool
       return <SearchCodeResult result={parsedResult} />;
+    case 'Edit': // Claude Code Edit tool
+      return <WriteFileResult result={parsedResult} />;
 
     // Git tools
     case 'git_status':
@@ -148,12 +154,15 @@ export const ToolResultDisplay = React.memo<ToolResultDisplayProps>(function Too
     // Command tools
     case 'run_command':
     case 'run_terminal_command':
+    case 'Bash': // Claude Code Bash tool
       return <RunCommandResult result={parsedResult} />;
 
     // Web tools
     case 'fetch_url':
+    case 'WebFetch': // Claude Code WebFetch tool
       return <FetchUrlResult result={parsedResult} />;
     case 'search_web':
+    case 'WebSearch': // Claude Code WebSearch tool
       return <SearchWebResult result={parsedResult} />;
     case 'screenshot_page':
       return <ScreenshotResult result={parsedResult} />;

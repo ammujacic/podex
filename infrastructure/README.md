@@ -133,7 +133,7 @@ pulumi stack select dev
 
 # Configure GCP project and region
 pulumi config set gcp:project your-gcp-project-id
-pulumi config set gcp:region us-central1
+pulumi config set gcp:region us-east1
 pulumi config set podex-infra:domain yourdomain.com
 pulumi config set podex-infra:env dev
 

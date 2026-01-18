@@ -1,7 +1,7 @@
 """Redis on e2-micro VM configuration.
 
 GCP Free Tier includes:
-- 1 e2-micro VM (2 vCPU, 1GB RAM) in us-east1, us-central1, or us-west1
+- 1 e2-micro VM (2 vCPU, 1GB RAM) in us-east1
 - 30GB standard persistent disk
 - 1GB egress per month
 

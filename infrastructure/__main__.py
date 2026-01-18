@@ -18,7 +18,7 @@ from stacks import compute, database, dns, gke, monitoring, network, redis, secr
 config = pulumi.Config()
 gcp_config = pulumi.Config("gcp")
 project_id = gcp_config.require("project")
-region = gcp_config.get("region") or "us-central1"
+region = gcp_config.get("region") or "us-east1"
 env = config.get("env") or pulumi.get_stack()
 domain = config.get("domain") or "podex.dev"
 

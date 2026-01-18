@@ -133,17 +133,27 @@ async def get_org_context_for_org(
     """Get organization context for a specific organization.
 
     Raises HTTPException if user is not a member or is blocked.
+
+    If org_id is "me", looks up the user's organization from their membership.
     """
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    result = await db.execute(
-        select(OrganizationMember)
-        .options(selectinload(OrganizationMember.organization))
-        .where(OrganizationMember.organization_id == org_id)
-        .where(OrganizationMember.user_id == user_id)
-    )
+    # Handle "me" as a special case - look up user's organization
+    if org_id == "me":
+        result = await db.execute(
+            select(OrganizationMember)
+            .options(selectinload(OrganizationMember.organization))
+            .where(OrganizationMember.user_id == user_id)
+        )
+    else:
+        result = await db.execute(
+            select(OrganizationMember)
+            .options(selectinload(OrganizationMember.organization))
+            .where(OrganizationMember.organization_id == org_id)
+            .where(OrganizationMember.user_id == user_id)
+        )
     member = result.scalar_one_or_none()
 
     if not member:

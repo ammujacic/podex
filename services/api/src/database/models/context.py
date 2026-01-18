@@ -152,6 +152,12 @@ class UserSkill(Base):
     system_prompt: Mapped[str | None] = mapped_column(Text)
     generated_by_agent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     source_conversation_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
+    source_repository_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("skill_repositories.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     usage_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

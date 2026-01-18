@@ -14,13 +14,17 @@ from sqlalchemy.ext.asyncio import (
 
 from src.config import settings
 from src.database.models import (
+    AgentRoleConfig,
+    AgentTool,
     Base,
     CustomCommand,
     HardwareSpec,
     LLMModel,
     PlatformSetting,
     PodTemplate,
+    SkillTemplate,
     SubscriptionPlan,
+    SystemSkill,
     TerminalIntegratedAgentType,
 )
 
@@ -113,11 +117,15 @@ async def seed_database() -> None:
     """
     # Import default data from centralized seeds location
     from src.database.seeds import (
+        DEFAULT_AGENT_ROLES,
+        DEFAULT_AGENT_TOOLS,
         DEFAULT_GLOBAL_COMMANDS,
         DEFAULT_HARDWARE_SPECS,
         DEFAULT_MODELS,
         DEFAULT_PLANS,
         DEFAULT_SETTINGS,
+        DEFAULT_SKILL_TEMPLATES,
+        DEFAULT_SYSTEM_SKILLS,
         DEFAULT_TERMINAL_AGENTS,
         OFFICIAL_TEMPLATES,
     )
@@ -132,6 +140,10 @@ async def seed_database() -> None:
                 "terminal_agents": 0,
                 "llm_models": 0,
                 "global_commands": 0,
+                "agent_roles": 0,
+                "agent_tools": 0,
+                "system_skills": 0,
+                "skill_templates": 0,
             }
 
             # Seed subscription plans
@@ -238,6 +250,69 @@ async def seed_database() -> None:
                     )
                     totals["global_commands"] += 1
 
+            # Seed agent tools (must come before agent roles since roles reference tools)
+            for tool_data in DEFAULT_AGENT_TOOLS:
+                result = await db.execute(
+                    select(AgentTool).where(AgentTool.name == tool_data["name"])
+                )
+                if not result.scalar_one_or_none():
+                    db.add(
+                        AgentTool(
+                            name=tool_data["name"],
+                            description=tool_data["description"],
+                            parameters=tool_data["parameters"],
+                            category=tool_data.get("category", "general"),
+                            sort_order=tool_data.get("sort_order", 0),
+                            is_enabled=tool_data.get("is_enabled", True),
+                            is_system=tool_data.get("is_system", True),
+                        )
+                    )
+                    totals["agent_tools"] += 1
+
+            # Seed agent role configurations
+            for role_data in DEFAULT_AGENT_ROLES:
+                result = await db.execute(
+                    select(AgentRoleConfig).where(AgentRoleConfig.role == role_data["role"])
+                )
+                if not result.scalar_one_or_none():
+                    db.add(
+                        AgentRoleConfig(
+                            role=role_data["role"],
+                            name=role_data["name"],
+                            color=role_data["color"],
+                            icon=role_data.get("icon"),
+                            description=role_data.get("description"),
+                            system_prompt=role_data["system_prompt"],
+                            tools=role_data["tools"],
+                            default_model=role_data.get("default_model"),
+                            default_temperature=role_data.get("default_temperature"),
+                            default_max_tokens=role_data.get("default_max_tokens"),
+                            sort_order=role_data.get("sort_order", 0),
+                            is_enabled=role_data.get("is_enabled", True),
+                            is_system=role_data.get("is_system", True),
+                            created_by_admin_id=None,
+                        )
+                    )
+                    totals["agent_roles"] += 1
+
+            # Seed system skills
+            for skill_data in DEFAULT_SYSTEM_SKILLS:
+                result = await db.execute(
+                    select(SystemSkill).where(SystemSkill.slug == skill_data["slug"])
+                )
+                if not result.scalar_one_or_none():
+                    db.add(SystemSkill(**skill_data))
+                    totals["system_skills"] += 1
+
+            # Seed skill templates
+            for template_data in DEFAULT_SKILL_TEMPLATES:
+                result = await db.execute(
+                    select(SkillTemplate).where(SkillTemplate.slug == template_data["slug"])
+                )
+                if not result.scalar_one_or_none():
+                    db.add(SkillTemplate(**template_data))
+                    totals["skill_templates"] += 1
+
             await db.commit()
 
             if any(totals.values()):
@@ -250,6 +325,10 @@ async def seed_database() -> None:
                     terminal_agents=totals["terminal_agents"],
                     llm_models=totals["llm_models"],
                     global_commands=totals["global_commands"],
+                    agent_tools=totals["agent_tools"],
+                    agent_roles=totals["agent_roles"],
+                    system_skills=totals["system_skills"],
+                    skill_templates=totals["skill_templates"],
                 )
 
         except Exception as e:

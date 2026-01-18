@@ -38,6 +38,14 @@ const costTierColors: Record<string, string> = {
   premium: 'bg-purple-500/20 text-purple-400',
 };
 
+// Provider display names
+const providerDisplayNames: Record<string, string> = {
+  vertex: 'Podex Native - Vertex AI',
+  anthropic: 'Anthropic Direct',
+  openai: 'OpenAI Direct',
+  google: 'Google AI Direct',
+};
+
 interface ModelCardProps {
   model: AdminModel;
   onEdit: (model: AdminModel) => void;
@@ -113,13 +121,11 @@ function ModelCard({ model, onEdit, onToggleEnabled, onDelete }: ModelCardProps)
       </div>
 
       <div className="space-y-4">
-        {/* Provider & Family */}
+        {/* Model Family & Tier */}
         <div className="flex items-center gap-2">
-          <span className="px-2 py-1 bg-elevated rounded text-xs text-text-secondary capitalize">
-            {model.provider}
-          </span>
-          <span className="px-2 py-1 bg-elevated rounded text-xs text-text-secondary capitalize">
-            {model.family}
+          <span className="px-2 py-1 bg-elevated rounded text-xs text-text-secondary">
+            <span className="text-text-muted">Model:</span>{' '}
+            <span className="capitalize">{model.family}</span>
           </span>
           <span
             className={cn(
@@ -178,13 +184,13 @@ function ModelCard({ model, onEdit, onToggleEnabled, onDelete }: ModelCardProps)
         <div className="space-y-2 text-sm border-t border-border-subtle pt-4">
           <div className="flex justify-between">
             <span className="text-text-muted">Input Cost</span>
-            <span className="text-green-400">
+            <span className="text-text-secondary">
               ${model.input_cost_per_million?.toFixed(2) || '0.00'}/M
             </span>
           </div>
           <div className="flex justify-between">
             <span className="text-text-muted">Output Cost</span>
-            <span className="text-yellow-400">
+            <span className="text-text-secondary">
               ${model.output_cost_per_million?.toFixed(2) || '0.00'}/M
             </span>
           </div>
@@ -297,7 +303,6 @@ function EditModelModal({ model, onClose, onSave }: EditModelModalProps) {
                 <option value="anthropic">Anthropic</option>
                 <option value="gemini">Gemini</option>
                 <option value="meta">Meta</option>
-                <option value="mistral">Mistral</option>
                 <option value="openai">OpenAI</option>
                 <option value="google">Google</option>
               </select>
@@ -670,12 +675,12 @@ export default function ModelsManagement() {
     }
   };
 
-  // Group models by family
-  const modelsByFamily = models.reduce(
+  // Group models by provider (API source)
+  const modelsByProvider = models.reduce(
     (acc, model) => {
-      const family = model.family || 'other';
-      if (!acc[family]) acc[family] = [];
-      acc[family].push(model);
+      const provider = model.provider || 'other';
+      if (!acc[provider]) acc[provider] = [];
+      acc[provider].push(model);
       return acc;
     },
     {} as Record<string, AdminModel[]>
@@ -744,16 +749,21 @@ export default function ModelsManagement() {
         </div>
       ) : (
         <div className="space-y-8">
-          {Object.entries(modelsByFamily)
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([family, familyModels]) => (
-              <div key={family}>
-                <h2 className="text-lg font-medium text-text-primary mb-4 capitalize">
-                  {family} Models
-                  <span className="ml-2 text-sm text-text-muted">({familyModels.length})</span>
+          {Object.entries(modelsByProvider)
+            .sort(([a], [b]) => {
+              // Sort "vertex" (Podex Native) first, then alphabetically
+              if (a === 'vertex') return -1;
+              if (b === 'vertex') return 1;
+              return a.localeCompare(b);
+            })
+            .map(([provider, providerModels]) => (
+              <div key={provider}>
+                <h2 className="text-lg font-medium text-text-primary mb-4">
+                  {providerDisplayNames[provider] || `${provider} Models`}
+                  <span className="ml-2 text-sm text-text-muted">({providerModels.length})</span>
                 </h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {familyModels
+                  {providerModels
                     .sort((a, b) => a.sort_order - b.sort_order)
                     .map((model) => (
                       <ModelCard

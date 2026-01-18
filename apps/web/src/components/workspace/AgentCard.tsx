@@ -55,6 +55,13 @@ import { CompactionDialog } from './CompactionDialog';
 import { ThinkingConfigDialog } from './ThinkingConfigDialog';
 import { SlashCommandMenu, isBuiltInCommand, type BuiltInCommand } from './SlashCommandMenu';
 import { CreditExhaustedBanner } from './CreditExhaustedBanner';
+import { SlashCommandSheet, SlashCommandDialog } from './SlashCommandSheet';
+import { useClaudeCodeAuth } from '@/hooks/useClaudeCodeCommands';
+import {
+  isCliAgentRole,
+  getCliAgentType,
+  getCliSupportedModels,
+} from '@/hooks/useCliAgentCommands';
 
 export interface AgentCardProps {
   agent: Agent;
@@ -88,6 +95,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [thinkingDialogOpen, setThinkingDialogOpen] = useState(false);
+  const [slashCommandSheetOpen, setSlashCommandSheetOpen] = useState(false);
 
   // Attachments
   const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
@@ -235,6 +243,29 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       onPlayEnd: () => {},
     });
 
+  // Claude Code auth (only used for claude-code agents)
+  const isClaudeCodeAgent = agent.role === 'claude-code';
+  const { reauthenticate: claudeCodeReauthenticate } = useClaudeCodeAuth(
+    isClaudeCodeAgent ? agent.id : undefined
+  );
+
+  // Claude Code handlers (non-message handlers)
+  const handleOpenSlashCommands = useCallback(() => {
+    setSlashCommandSheetOpen(true);
+  }, []);
+
+  const handleClaudeCodeReauthenticate = useCallback(async () => {
+    try {
+      await claudeCodeReauthenticate();
+      toast.success(
+        'Re-authentication initiated. Please check your workspace for the login prompt.'
+      );
+    } catch (error) {
+      console.error('Failed to reauthenticate:', error);
+      toast.error('Failed to start re-authentication');
+    }
+  }, [claudeCodeReauthenticate]);
+
   const borderColor = getAgentBorderColor(agent.color);
 
   // Model conversion helpers
@@ -316,6 +347,39 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     const fast: ExtendedModelInfo[] = [];
     const userApi: ExtendedModelInfo[] = [];
 
+    // For CLI agents, return CLI-specific models instead of Podex models
+    const cliType = getCliAgentType(agent.role);
+    if (cliType) {
+      const cliModels = getCliSupportedModels(cliType);
+      // Put CLI models in the "flagship" tier for display
+      for (const m of cliModels) {
+        const cliModelInfo: ExtendedModelInfo = {
+          id: m.id,
+          displayName: m.name,
+          shortName: m.name,
+          provider:
+            cliType === 'claude-code'
+              ? 'anthropic'
+              : cliType === 'openai-codex'
+                ? 'openai'
+                : ('google' as LLMProvider),
+          tier: 'flagship',
+          reasoningEffort: 'medium',
+          contextWindow: 200000,
+          maxOutputTokens: 16000,
+          supportsVision: true,
+          supportsThinking: cliType !== 'gemini-cli',
+          thinkingStatus: cliType === 'gemini-cli' ? 'not_supported' : 'available',
+          capabilities: ['code', 'chat'],
+          goodFor: ['coding', 'analysis'],
+          description: `${m.name} via ${cliType}`,
+        };
+        flagship.push(cliModelInfo);
+      }
+      return { flagship, balanced, fast, userApi };
+    }
+
+    // Standard Podex model tiers
     for (const m of backendModels) {
       const info = backendModelToInfo(m);
       if (m.cost_tier === 'premium' || m.cost_tier === 'high') flagship.push(info);
@@ -327,7 +391,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     }
 
     return { flagship, balanced, fast, userApi };
-  }, [backendModels, userProviderModels, backendModelToInfo, userModelToInfo]);
+  }, [agent.role, backendModels, userProviderModels, backendModelToInfo, userModelToInfo]);
 
   const getModelDisplayName = useCallback(
     (modelId: string) => {
@@ -401,18 +465,42 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     router,
   ]);
 
-  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = e.target.value;
-    setMessage(value);
+  // Handle slash command selection for Claude Code agents (must be after handleSendMessage)
+  const handleClaudeCodeSlashCommand = useCallback(
+    (commandName: string) => {
+      // Close the sheet
+      setSlashCommandSheetOpen(false);
 
-    if (value.startsWith('/')) {
-      setSlashQuery(value.slice(1));
-      setShowSlashMenu(true);
-    } else {
-      setShowSlashMenu(false);
-      setSlashQuery('');
-    }
-  }, []);
+      // Set the command in the input and send it
+      setMessage(`/${commandName}`);
+      setTimeout(() => {
+        handleSendMessage();
+      }, 0);
+    },
+    [handleSendMessage]
+  );
+
+  const handleInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const value = e.target.value;
+      setMessage(value);
+
+      if (value.startsWith('/')) {
+        // For Claude Code agents, show their specific command sheet
+        if (isClaudeCodeAgent) {
+          setSlashCommandSheetOpen(true);
+        } else {
+          // For regular agents, show the standard slash menu
+          setSlashQuery(value.slice(1));
+          setShowSlashMenu(true);
+        }
+      } else {
+        setShowSlashMenu(false);
+        setSlashQuery('');
+      }
+    },
+    [isClaudeCodeAgent]
+  );
 
   const handleSlashCommandSelect = useCallback(
     async (command: BuiltInCommand | CustomCommand) => {
@@ -870,6 +958,8 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         onRename={() => setRenameDialogOpen(true)}
         onDuplicate={handleDuplicate}
         onDelete={() => setDeleteDialogOpen(true)}
+        onOpenSlashCommands={isClaudeCodeAgent ? handleOpenSlashCommands : undefined}
+        onReauthenticate={isClaudeCodeAgent ? handleClaudeCodeReauthenticate : undefined}
       />
 
       {/* Messages area */}
@@ -1122,7 +1212,28 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
           sessionId={sessionId}
           onClose={() => setCompactionDialogOpen(false)}
           onCompact={async (options) => {
-            await compactAgentContext(agent.id, options);
+            // For CLI agents, send /compact as a message instead of using Podex API
+            if (isCliAgentRole(agent.role)) {
+              const compactMessage = options?.customInstructions
+                ? `/compact ${options.customInstructions}`
+                : '/compact';
+              // Add user message to UI
+              const userMessage = {
+                id: `temp-${Date.now()}`,
+                role: 'user' as const,
+                content: compactMessage,
+                timestamp: new Date(),
+              };
+              addAgentMessage(sessionId, agent.id, userMessage);
+              updateAgent(sessionId, agent.id, { status: 'active' });
+              // Send to CLI agent
+              await sendAgentMessage(sessionId, agent.id, compactMessage, {
+                thinkingConfig: agent.thinkingConfig,
+              });
+            } else {
+              // For Podex native agents, use the context API
+              await compactAgentContext(agent.id, options);
+            }
           }}
         />
       )}
@@ -1153,7 +1264,24 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         config={agent.thinkingConfig}
         onSave={handleSaveThinkingConfig}
         modelName={currentModelInfo?.displayName ?? 'Model'}
+        agentRole={agent.role}
       />
+
+      {/* Claude Code Slash Command Sheets */}
+      {isClaudeCodeAgent && (
+        <>
+          <SlashCommandSheet
+            isOpen={slashCommandSheetOpen}
+            onClose={() => setSlashCommandSheetOpen(false)}
+            onSelect={handleClaudeCodeSlashCommand}
+          />
+          <SlashCommandDialog
+            isOpen={slashCommandSheetOpen}
+            onClose={() => setSlashCommandSheetOpen(false)}
+            onSelect={handleClaudeCodeSlashCommand}
+          />
+        </>
+      )}
     </div>
   );
 }

@@ -102,7 +102,7 @@ services:
       REDIS_URL: redis://redis-test:6379
       # GCP Configuration
       GCP_PROJECT_ID: podex-test
-      GCP_REGION: us-central1
+      GCP_REGION: us-east1
       # GCS Storage
       GCS_BUCKET: podex-test-workspaces
       STORAGE_EMULATOR_HOST: http://fake-gcs-test:4443
@@ -164,7 +164,7 @@ services:
       REDIS_URL: redis://redis-test:6379
       # GCP Configuration
       GCP_PROJECT_ID: podex-test
-      GCP_REGION: us-central1
+      GCP_REGION: us-east1
       # GCS Storage
       GCS_BUCKET: podex-test-workspaces
       STORAGE_EMULATOR_HOST: http://fake-gcs-test:4443
@@ -211,7 +211,7 @@ services:
       COMPUTE_REDIS_URL: redis://redis-test:6379
       # GCP Configuration
       GCP_PROJECT_ID: podex-test
-      GCP_REGION: us-central1
+      GCP_REGION: us-east1
       COMPUTE_GCS_BUCKET: podex-test-workspaces
       STORAGE_EMULATOR_HOST: http://fake-gcs-test:4443
       COMPUTE_GCS_PREFIX: workspaces
@@ -289,7 +289,7 @@ services:
       REDIS_URL: redis://redis-test:6379
       # GCP Configuration
       GCP_PROJECT_ID: podex-test
-      GCP_REGION: us-central1
+      GCP_REGION: us-east1
       GCS_BUCKET: podex-test-workspaces
       STORAGE_EMULATOR_HOST: http://fake-gcs-test:4443
       # LLM Provider (Vertex AI)
@@ -337,7 +337,7 @@ services:
       REDIS_URL: redis://redis-test:6379
       # GCP Configuration
       GCP_PROJECT_ID: podex-test
-      GCP_REGION: us-central1
+      GCP_REGION: us-east1
       GCS_BUCKET: podex-test-workspaces
       STORAGE_EMULATOR_HOST: http://fake-gcs-test:4443
       LLM_PROVIDER: mock

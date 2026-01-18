@@ -17,6 +17,7 @@ import {
   Search,
   AlertTriangle,
   BarChart3,
+  Zap,
 } from 'lucide-react';
 import { useUIStore, type PanelId, type SidebarSide } from '@/stores/ui';
 import { cn } from '@/lib/utils';
@@ -30,6 +31,7 @@ import { SearchPanel } from './SearchPanel';
 import { DiagnosticsSidebarPanel } from './DiagnosticsSidebarPanel';
 import { UsageSidebarPanel } from './UsageSidebarPanel';
 import { SentryPanel } from './SentryPanel';
+import { SkillsPanel } from './SkillsPanel';
 
 interface SidebarContainerProps {
   side: SidebarSide;
@@ -47,13 +49,22 @@ const panelConfig: Record<PanelId, { icon: typeof Bot; label: string }> = {
   problems: { icon: AlertTriangle, label: 'Problems' },
   usage: { icon: BarChart3, label: 'Usage' },
   sentry: { icon: Bug, label: 'Sentry' },
+  skills: { icon: Zap, label: 'Skills' },
 };
 
 // Left sidebar: traditional coding tools
 const leftPanelIds: PanelId[] = ['files', 'search', 'git', 'problems'];
 
 // Right sidebar: AI-related and utility panels
-const rightPanelIds: PanelId[] = ['agents', 'mcp', 'sentry', 'extensions', 'usage', 'preview'];
+const rightPanelIds: PanelId[] = [
+  'agents',
+  'skills',
+  'mcp',
+  'sentry',
+  'extensions',
+  'usage',
+  'preview',
+];
 
 // Panels that show badge counts
 const badgePanelIds: PanelId[] = ['agents', 'mcp', 'problems', 'sentry'];
@@ -155,6 +166,8 @@ function SidebarPanel({ panelId, sessionId }: SidebarPanelProps) {
         );
       case 'sentry':
         return <SentryPanel sessionId={sessionId} />;
+      case 'skills':
+        return <SkillsPanel sessionId={sessionId} />;
       default:
         return null;
     }

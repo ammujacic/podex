@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     # GCP settings
     gcp_project_id: str | None = None
-    gcp_region: str = "us-east5"
+    gcp_region: str = "us-east1"
 
     # Container images for different architectures (GCP production)
     # These are GCR/Artifact Registry image URIs

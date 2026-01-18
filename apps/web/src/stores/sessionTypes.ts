@@ -31,7 +31,10 @@ export type AgentRole =
   | 'security'
   | 'devops'
   | 'documentator'
-  | 'custom';
+  | 'custom'
+  | 'claude-code'
+  | 'openai-codex'
+  | 'gemini-cli';
 
 export interface Agent {
   id: string;

@@ -46,17 +46,18 @@ class Settings(BaseSettings):
 
     # GCP (for Vertex AI - Podex Native)
     GCP_PROJECT_ID: str | None = None
-    GCP_REGION: str = "us-east5"  # Region where Claude models are available
+    GCP_REGION: str = "us-east1"  # Region where Claude models are available
 
     # Default models by role (fallback only - actual defaults come from database)
     # These are used ONLY if the API service is unavailable at startup.
     # Admins configure actual defaults via the admin panel (PlatformSetting: agent_model_defaults)
-    DEFAULT_ARCHITECT_MODEL: str = "claude-opus-4-5-20251101"
+    # Cost-effective defaults: Sonnet 4.5 for most tasks, Haiku for chat
+    DEFAULT_ARCHITECT_MODEL: str = "claude-sonnet-4-5-20250929"
     DEFAULT_CODER_MODEL: str = "claude-sonnet-4-5-20250929"
     DEFAULT_REVIEWER_MODEL: str = "claude-sonnet-4-20250514"
     DEFAULT_TESTER_MODEL: str = "claude-sonnet-4-5-20250929"
     DEFAULT_CHAT_MODEL: str = "claude-haiku-4-5-20251001"
-    DEFAULT_SECURITY_MODEL: str = "claude-opus-4-5-20251101"
+    DEFAULT_SECURITY_MODEL: str = "claude-sonnet-4-5-20250929"
     DEFAULT_DEVOPS_MODEL: str = "claude-sonnet-4-5-20250929"
     DEFAULT_DOCUMENTATOR_MODEL: str = "claude-sonnet-4-20250514"
 

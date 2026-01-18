@@ -18,35 +18,40 @@ function formatNumber(num: number): string {
 }
 
 function getPlanFeatures(plan: SubscriptionPlanResponse) {
+  const isOrg = plan.is_enterprise;
   const features = [
     {
       name: 'tokens per month',
-      value: formatNumber(plan.tokens_included || 0),
+      value: isOrg ? 'Unlimited' : formatNumber(plan.tokens_included || 0),
       included: true,
     },
     {
       name: 'compute credits',
-      value: `$${(plan.compute_credits_included || 0).toFixed(0)}`,
+      value: isOrg ? 'Unlimited' : `$${(plan.compute_credits_included || 0).toFixed(0)}`,
       included: true,
     },
     {
       name: 'storage',
-      value: `${plan.storage_gb_included || 0}GB`,
+      value: isOrg ? 'Unlimited' : `${plan.storage_gb_included || 0}GB`,
       included: true,
     },
     {
       name: 'concurrent sessions',
-      value: (plan.max_sessions || 0).toString(),
+      value: isOrg ? 'Unlimited' : (plan.max_sessions || 0).toString(),
       included: true,
     },
     {
       name: 'agents per session',
-      value: (plan.max_agents || 0).toString(),
+      value: isOrg ? 'Unlimited' : (plan.max_agents || 0).toString(),
       included: true,
     },
     {
       name: 'live collaborators',
-      value: (plan.max_team_members || 0) > 0 ? (plan.max_team_members || 0).toString() : 'Solo',
+      value: isOrg
+        ? 'Unlimited'
+        : (plan.max_team_members || 0) > 0
+          ? (plan.max_team_members || 0).toString()
+          : 'Solo',
       included: true,
     },
   ];
@@ -246,9 +251,13 @@ export default function PlansPage() {
               <div className="text-3xl font-bold text-text-primary">
                 {subscription.plan.is_enterprise
                   ? 'Custom'
-                  : `$${((subscription.plan.price_monthly || 0) / 100).toFixed(0)}`}
+                  : subscription.billing_cycle === 'yearly'
+                    ? `$${((subscription.plan.price_yearly || 0) / 12).toFixed(0)}`
+                    : `$${(subscription.plan.price_monthly || 0).toFixed(0)}`}
               </div>
-              <div className="text-sm text-text-muted">per month</div>
+              <div className="text-sm text-text-muted">
+                per month{subscription.billing_cycle === 'yearly' ? ' (billed yearly)' : ''}
+              </div>
             </div>
           </div>
         </div>
@@ -299,22 +308,34 @@ export default function PlansPage() {
 
       {/* Plan Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mb-12">
-        {sortedPlans.map((plan) => (
-          <PlanCard
-            key={plan.id}
-            name={plan.name}
-            description={plan.description || undefined}
-            price={plan.price_monthly}
-            priceYearly={plan.price_yearly}
-            billingCycle={billingCycle}
-            features={getPlanFeatures(plan)}
-            isPopular={plan.is_popular}
-            isEnterprise={plan.is_enterprise}
-            isCurrent={subscription?.plan.id === plan.id}
-            onSelect={() => handleSelectPlan(plan.slug)}
-            disabled={changingPlan !== null}
-          />
-        ))}
+        {(() => {
+          const currentPlanIndex = sortedPlans.findIndex((p) => p.id === subscription?.plan.id);
+          return sortedPlans.map((plan, index) => {
+            const isDowngrade = currentPlanIndex > -1 && index < currentPlanIndex;
+            return (
+              <PlanCard
+                key={plan.id}
+                name={plan.is_enterprise ? 'Organization' : plan.name}
+                description={
+                  plan.is_enterprise
+                    ? 'Unlimited resources for your organization'
+                    : plan.description || undefined
+                }
+                price={plan.price_monthly}
+                priceYearly={plan.price_yearly}
+                billingCycle={billingCycle}
+                features={getPlanFeatures(plan)}
+                isPopular={plan.is_popular}
+                isEnterprise={plan.is_enterprise}
+                isCurrent={subscription?.plan.id === plan.id}
+                isDowngrade={isDowngrade}
+                onSelect={() => handleSelectPlan(plan.slug)}
+                disabled={changingPlan !== null}
+                enterpriseHref="/settings/organization"
+              />
+            );
+          });
+        })()}
       </div>
 
       {/* Feature Comparison Table */}
@@ -330,7 +351,7 @@ export default function PlansPage() {
                     key={plan.id}
                     className="text-center py-3 px-4 text-sm font-medium text-text-primary"
                   >
-                    {plan.name}
+                    {plan.is_enterprise ? 'Organization' : plan.name}
                   </th>
                 ))}
               </tr>
@@ -355,7 +376,7 @@ export default function PlansPage() {
                 <td className="py-3 px-4 text-sm text-text-secondary">Tokens / Month</td>
                 {sortedPlans.map((plan) => (
                   <td key={plan.id} className="text-center py-3 px-4 text-sm text-text-primary">
-                    {formatNumber(plan.tokens_included || 0)}
+                    {plan.is_enterprise ? 'Unlimited' : formatNumber(plan.tokens_included || 0)}
                   </td>
                 ))}
               </tr>
@@ -363,7 +384,9 @@ export default function PlansPage() {
                 <td className="py-3 px-4 text-sm text-text-secondary">Compute Credits</td>
                 {sortedPlans.map((plan) => (
                   <td key={plan.id} className="text-center py-3 px-4 text-sm text-text-primary">
-                    ${(plan.compute_credits_included || 0).toFixed(0)}
+                    {plan.is_enterprise
+                      ? 'Unlimited'
+                      : `$${(plan.compute_credits_included || 0).toFixed(0)}`}
                   </td>
                 ))}
               </tr>
@@ -371,7 +394,7 @@ export default function PlansPage() {
                 <td className="py-3 px-4 text-sm text-text-secondary">Storage</td>
                 {sortedPlans.map((plan) => (
                   <td key={plan.id} className="text-center py-3 px-4 text-sm text-text-primary">
-                    {plan.storage_gb_included || 0}GB
+                    {plan.is_enterprise ? 'Unlimited' : `${plan.storage_gb_included || 0}GB`}
                   </td>
                 ))}
               </tr>
@@ -379,7 +402,7 @@ export default function PlansPage() {
                 <td className="py-3 px-4 text-sm text-text-secondary">Concurrent Sessions</td>
                 {sortedPlans.map((plan) => (
                   <td key={plan.id} className="text-center py-3 px-4 text-sm text-text-primary">
-                    {plan.max_sessions || 0}
+                    {plan.is_enterprise ? 'Unlimited' : plan.max_sessions || 0}
                   </td>
                 ))}
               </tr>
@@ -387,7 +410,7 @@ export default function PlansPage() {
                 <td className="py-3 px-4 text-sm text-text-secondary">Max Agents</td>
                 {sortedPlans.map((plan) => (
                   <td key={plan.id} className="text-center py-3 px-4 text-sm text-text-primary">
-                    {plan.max_agents || 0}
+                    {plan.is_enterprise ? 'Unlimited' : plan.max_agents || 0}
                   </td>
                 ))}
               </tr>
@@ -395,7 +418,11 @@ export default function PlansPage() {
                 <td className="py-3 px-4 text-sm text-text-secondary">Live Collaborators</td>
                 {sortedPlans.map((plan) => (
                   <td key={plan.id} className="text-center py-3 px-4 text-sm text-text-primary">
-                    {(plan.max_team_members || 0) > 0 ? plan.max_team_members : '-'}
+                    {plan.is_enterprise
+                      ? 'Unlimited'
+                      : (plan.max_team_members || 0) > 0
+                        ? plan.max_team_members
+                        : '-'}
                   </td>
                 ))}
               </tr>

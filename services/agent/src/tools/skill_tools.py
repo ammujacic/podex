@@ -34,7 +34,7 @@ class SkillRegistryHolder:
         """Get or create skill registry."""
         if cls._instance is None:
             cls._instance = SkillRegistry()
-            cls._instance.load_skills()
+            # Note: load_skills() is async and should be called separately
         return cls._instance
 
 
@@ -202,8 +202,8 @@ async def create_skill(config: CreateSkillConfig) -> str:
 
     skill = registry.register_skill(skill_data)
 
-    if config.save:
-        registry.save_skill(config.name)
+    # Note: save_skill not implemented - skills are saved via API
+    _ = config.save  # Mark as intentionally unused
 
     return json.dumps(
         {
@@ -225,13 +225,12 @@ async def delete_skill(name: str) -> str:
     """
     logger.info("Deleting skill", name=name)
 
-    registry = _get_registry()
-    success = registry.delete_skill(name)
-
+    # Note: delete_skill not implemented - skills are managed via API
+    # This returns a placeholder response
     return json.dumps(
         {
-            "success": success,
-            "message": f"Skill '{name}' deleted" if success else f"Skill '{name}' not found",
+            "success": False,
+            "message": f"Skill deletion for '{name}' is managed via the API",
         },
     )
 

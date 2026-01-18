@@ -197,7 +197,7 @@ from stacks import network, database, redis, storage, compute, gke, dns, secrets
 config = pulumi.Config()
 gcp_config = pulumi.Config("gcp")
 project_id = gcp_config.require("project")
-region = config.get("region") or "us-central1"
+region = config.get("region") or "us-east1"
 env = pulumi.get_stack()  # 'dev', 'staging', 'prod'
 domain = config.get("domain") or "podex.dev"
 
@@ -461,7 +461,7 @@ def create_redis_vm(project_id: str, region: str, env: str):
     """Create free e2-micro VM running Redis.
 
     GCP Free Tier includes:
-    - 1 e2-micro VM in us-east1, us-central1, or us-west1
+    - 1 e2-micro VM in us-east1
     - 30GB standard persistent disk
     - 1GB egress
     """
@@ -1277,7 +1277,7 @@ class VertexAIProvider:
 
     def __init__(self):
         self.project_id = os.environ.get("GCP_PROJECT_ID")
-        self.region = os.environ.get("GCP_REGION", "us-central1")
+        self.region = os.environ.get("GCP_REGION", "us-east1")
 
         # Initialize Vertex AI
         aiplatform.init(project=self.project_id, location=self.region)
@@ -1558,7 +1558,7 @@ volumes:
 # GCP Configuration
 # ===========================================
 GCP_PROJECT_ID=podex-dev
-GCP_REGION=us-central1
+GCP_REGION=us-east1
 
 # For local dev with GCP APIs (Vertex AI)
 GOOGLE_APPLICATION_CREDENTIALS=./service-account.json
@@ -1634,7 +1634,7 @@ pulumi stack init dev
 
 # 5. Configure
 pulumi config set gcp:project podex-dev
-pulumi config set gcp:region us-central1
+pulumi config set gcp:region us-east1
 pulumi config set domain podex.dev
 ```
 
@@ -1649,7 +1649,7 @@ pulumi up
 # - web_url: https://podex-web-dev-xxx-uc.a.run.app
 # - custom_domain: https://podex.dev
 # - redis_ip: 10.x.x.x
-# - database_connection: podex-dev:us-central1:podex-db-dev
+# - database_connection: podex-dev:us-east1:podex-db-dev
 
 # Update DNS nameservers at your registrar
 # (Pulumi outputs the nameservers)
@@ -1682,10 +1682,10 @@ pytest
 
 ```bash
 # Build containers
-gcloud builds submit --tag us-central1-docker.pkg.dev/podex-dev/podex-dev/api:latest ./services/api
-gcloud builds submit --tag us-central1-docker.pkg.dev/podex-dev/podex-dev/agent:latest ./services/agent
-gcloud builds submit --tag us-central1-docker.pkg.dev/podex-dev/podex-dev/compute:latest ./services/compute
-gcloud builds submit --tag us-central1-docker.pkg.dev/podex-dev/podex-dev/web:latest ./apps/web
+gcloud builds submit --tag us-east1-docker.pkg.dev/podex-dev/podex-dev/api:latest ./services/api
+gcloud builds submit --tag us-east1-docker.pkg.dev/podex-dev/podex-dev/agent:latest ./services/agent
+gcloud builds submit --tag us-east1-docker.pkg.dev/podex-dev/podex-dev/compute:latest ./services/compute
+gcloud builds submit --tag us-east1-docker.pkg.dev/podex-dev/podex-dev/web:latest ./apps/web
 
 # Update Cloud Run
 pulumi up
