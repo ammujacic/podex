@@ -143,17 +143,68 @@ class ComputeClient:
         config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create a new workspace for a session."""
-        result: dict[str, Any] = await self._request(
-            "POST",
-            "/workspaces",
-            user_id=user_id,
-            json={
-                "session_id": session_id,
-                "workspace_id": workspace_id,
-                "config": config or {},
-            },
+        # Workspace creation can take a long time due to:
+        # - Docker container startup
+        # - GCS file syncing
+        # - Repo cloning
+        # - Post-init commands (up to 300s each)
+        # Use a much longer timeout for workspace creation
+        workspace_creation_timeout = 600  # 10 minutes
+
+        logger.debug(
+            "Creating workspace with extended timeout",
+            workspace_id=workspace_id,
+            timeout_seconds=workspace_creation_timeout,
         )
-        return result
+
+        try:
+            # Create a custom client with appropriate timeout for workspace creation
+            async with httpx.AsyncClient(
+                base_url=settings.COMPUTE_SERVICE_URL,
+                timeout=httpx.Timeout(float(workspace_creation_timeout), connect=10.0),
+                headers={"X-Internal-API-Key": settings.COMPUTE_INTERNAL_API_KEY}
+                if settings.COMPUTE_INTERNAL_API_KEY
+                else {},
+            ) as client:
+                headers = {"X-User-ID": user_id}
+                response = await client.post(
+                    "/workspaces",
+                    headers=headers,
+                    json={
+                        "session_id": session_id,
+                        "workspace_id": workspace_id,
+                        "config": config or {},
+                    },
+                )
+                response.raise_for_status()
+                result: dict[str, Any] = response.json()
+                return result
+        except httpx.TimeoutException:
+            logger.exception(
+                "Workspace creation timed out",
+                workspace_id=workspace_id,
+                timeout_seconds=workspace_creation_timeout,
+            )
+            raise ComputeServiceConnectionError(
+                f"Workspace creation timed out after {workspace_creation_timeout} seconds"
+            ) from None
+        except httpx.HTTPStatusError as e:
+            logger.exception(
+                "Workspace creation HTTP error",
+                workspace_id=workspace_id,
+                status_code=e.response.status_code,
+                detail=e.response.text[:500] if e.response.text else None,
+            )
+            raise ComputeServiceHTTPError(
+                e.response.status_code,
+                e.response.text,
+            ) from e
+        except httpx.RequestError as e:
+            logger.exception(
+                "Workspace creation request error",
+                workspace_id=workspace_id,
+            )
+            raise ComputeServiceConnectionError(str(e)) from e
 
     async def get_workspace(
         self,

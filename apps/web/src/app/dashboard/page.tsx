@@ -397,6 +397,41 @@ export default function DashboardPage() {
     return `$${cost.toFixed(2)}`;
   };
 
+  // Helper function to parse git URL and generate GitHub links
+  const getGitHubInfo = (gitUrl: string | null, branch: string) => {
+    if (!gitUrl) return null;
+
+    try {
+      // Parse git URL (handles both https://github.com/user/repo.git and git@github.com:user/repo.git)
+      let repoPath = '';
+      if (gitUrl.startsWith('http://') || gitUrl.startsWith('https://')) {
+        const url = new URL(gitUrl);
+        repoPath = url.pathname.replace(/\.git$/, '').replace(/^\//, '');
+      } else if (gitUrl.startsWith('git@')) {
+        // git@github.com:user/repo.git format
+        const match = gitUrl.match(/git@[^:]+:(.+?)(?:\.git)?$/);
+        if (match && match[1]) {
+          repoPath = match[1];
+        }
+      }
+
+      if (!repoPath) return null;
+
+      const repoUrl = `https://github.com/${repoPath}`;
+      const branchUrl = `${repoUrl}/tree/${encodeURIComponent(branch)}`;
+      const repoName = repoPath.split('/').slice(-2).join('/'); // Get user/repo
+
+      return {
+        repoName,
+        repoUrl,
+        branchUrl,
+        branch,
+      };
+    } catch {
+      return null;
+    }
+  };
+
   // Handle pin/unpin session
   const handlePinSession = async (sessionId: string, isPinned: boolean) => {
     setPinningSession(sessionId);
@@ -919,33 +954,64 @@ export default function DashboardPage() {
                     transition={{ delay: index * 0.05 }}
                     className="relative group"
                   >
-                    <Link href={`/session/${session.id}`}>
-                      <div className="bg-surface border border-accent-primary/30 rounded-xl p-4 hover:border-accent-primary hover:bg-elevated transition-all cursor-pointer h-[140px] flex flex-col">
-                        <div className="flex items-start justify-between mb-3">
-                          <div className="w-10 h-10 rounded-lg bg-overlay flex items-center justify-center">
-                            <TemplateIcon
-                              icon={template?.icon || null}
-                              iconUrl={template?.icon_url}
-                            />
-                          </div>
-                          <div
-                            className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs ${status.color} ${status.bg}`}
-                          >
-                            {status.icon}
-                            {status.label}
-                          </div>
+                    <div
+                      onClick={() => router.push(`/session/${session.id}`)}
+                      className="bg-surface border border-accent-primary/30 rounded-xl p-4 hover:border-accent-primary hover:bg-elevated transition-all cursor-pointer min-h-[160px] flex flex-col relative"
+                    >
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="w-10 h-10 rounded-lg bg-overlay flex items-center justify-center">
+                          <TemplateIcon
+                            icon={template?.icon || null}
+                            iconUrl={template?.icon_url}
+                          />
                         </div>
-                        <h3 className="font-medium text-text-primary mb-1 truncate group-hover:text-accent-primary transition-colors">
-                          {session.name}
-                        </h3>
-                        <div className="mt-auto">
-                          <div className="flex items-center gap-2 text-xs text-text-muted">
-                            <Clock className="w-3 h-3" />
-                            {formatDate(session.updated_at)}
-                          </div>
+                        <div
+                          className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs ${status.color} ${status.bg}`}
+                        >
+                          {status.icon}
+                          {status.label}
                         </div>
                       </div>
-                    </Link>
+                      <h3 className="font-medium text-text-primary mb-2 line-clamp-2 group-hover:text-accent-primary transition-colors min-h-[2.5rem]">
+                        {session.name}
+                      </h3>
+                      <div className="mt-auto space-y-1">
+                        <div className="flex items-center gap-2 text-xs text-text-muted">
+                          <Clock className="w-3 h-3" />
+                          {formatDate(session.updated_at)}
+                        </div>
+                        {(() => {
+                          const gitInfo = getGitHubInfo(session.git_url, session.branch);
+                          return gitInfo ? (
+                            <div className="flex items-center gap-2 text-xs text-text-muted flex-wrap">
+                              <a
+                                href={gitInfo.repoUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="flex items-center gap-1 hover:text-accent-primary transition-colors"
+                              >
+                                <FolderGit2 className="w-3 h-3" />
+                                <span className="truncate max-w-[120px]">{gitInfo.repoName}</span>
+                                <ExternalLink className="w-2.5 h-2.5" />
+                              </a>
+                              <span className="text-text-muted/50">·</span>
+                              <a
+                                href={gitInfo.branchUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="flex items-center gap-1 hover:text-accent-primary transition-colors"
+                              >
+                                <GitBranch className="w-3 h-3" />
+                                <span className="truncate">{gitInfo.branch}</span>
+                                <ExternalLink className="w-2.5 h-2.5" />
+                              </a>
+                            </div>
+                          ) : null;
+                        })()}
+                      </div>
+                    </div>
                     <button
                       onClick={(e) => {
                         e.preventDefault();
@@ -1015,39 +1081,64 @@ export default function DashboardPage() {
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: index * 0.05 }}
                     >
-                      <Link href={`/session/${session.id}`}>
-                        <div className="bg-surface border border-border-default rounded-xl p-4 hover:border-accent-primary/50 hover:bg-elevated transition-all cursor-pointer group h-[140px] flex flex-col">
-                          <div className="flex items-start justify-between mb-3">
-                            <div className="w-10 h-10 rounded-lg bg-overlay flex items-center justify-center">
-                              <TemplateIcon
-                                icon={template?.icon || null}
-                                iconUrl={template?.icon_url}
-                              />
-                            </div>
-                            <div
-                              className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs ${status.color} ${status.bg}`}
-                            >
-                              {status.icon}
-                              {status.label}
-                            </div>
+                      <div
+                        onClick={() => router.push(`/session/${session.id}`)}
+                        className="bg-surface border border-border-default rounded-xl p-4 hover:border-accent-primary/50 hover:bg-elevated transition-all cursor-pointer group min-h-[160px] flex flex-col relative"
+                      >
+                        <div className="flex items-start justify-between mb-2">
+                          <div className="w-10 h-10 rounded-lg bg-overlay flex items-center justify-center">
+                            <TemplateIcon
+                              icon={template?.icon || null}
+                              iconUrl={template?.icon_url}
+                            />
                           </div>
-                          <h3 className="font-medium text-text-primary mb-1 truncate group-hover:text-accent-primary transition-colors">
-                            {session.name}
-                          </h3>
-                          <div className="mt-auto">
-                            <div className="flex items-center gap-2 text-xs text-text-muted">
-                              <Clock className="w-3 h-3" />
-                              {formatDate(session.updated_at)}
-                            </div>
-                            {session.git_url && (
-                              <div className="flex items-center gap-2 text-xs text-text-muted mt-1">
-                                <GitBranch className="w-3 h-3" />
-                                {session.branch}
-                              </div>
-                            )}
+                          <div
+                            className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs ${status.color} ${status.bg}`}
+                          >
+                            {status.icon}
+                            {status.label}
                           </div>
                         </div>
-                      </Link>
+                        <h3 className="font-medium text-text-primary mb-2 line-clamp-2 group-hover:text-accent-primary transition-colors min-h-[2.5rem]">
+                          {session.name}
+                        </h3>
+                        <div className="mt-auto space-y-1">
+                          <div className="flex items-center gap-2 text-xs text-text-muted">
+                            <Clock className="w-3 h-3" />
+                            {formatDate(session.updated_at)}
+                          </div>
+                          {(() => {
+                            const gitInfo = getGitHubInfo(session.git_url, session.branch);
+                            return gitInfo ? (
+                              <div className="flex items-center gap-2 text-xs text-text-muted flex-wrap">
+                                <a
+                                  href={gitInfo.repoUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="flex items-center gap-1 hover:text-accent-primary transition-colors"
+                                >
+                                  <FolderGit2 className="w-3 h-3" />
+                                  <span className="truncate max-w-[120px]">{gitInfo.repoName}</span>
+                                  <ExternalLink className="w-2.5 h-2.5" />
+                                </a>
+                                <span className="text-text-muted/50">·</span>
+                                <a
+                                  href={gitInfo.branchUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="flex items-center gap-1 hover:text-accent-primary transition-colors"
+                                >
+                                  <GitBranch className="w-3 h-3" />
+                                  <span className="truncate">{gitInfo.branch}</span>
+                                  <ExternalLink className="w-2.5 h-2.5" />
+                                </a>
+                              </div>
+                            ) : null;
+                          })()}
+                        </div>
+                      </div>
                     </motion.div>
                   );
                 })}
@@ -1059,7 +1150,7 @@ export default function DashboardPage() {
                   transition={{ delay: recentSessions.length * 0.05 }}
                 >
                   <Link href="/session/new">
-                    <div className="bg-surface border-2 border-dashed border-border-default rounded-xl p-4 hover:border-accent-primary hover:bg-elevated transition-all cursor-pointer h-[140px] flex flex-col items-center justify-center gap-2">
+                    <div className="bg-surface border-2 border-dashed border-border-default rounded-xl p-4 hover:border-accent-primary hover:bg-elevated transition-all cursor-pointer min-h-[165px] flex flex-col items-center justify-center gap-2">
                       <div className="w-10 h-10 rounded-lg bg-accent-primary/10 flex items-center justify-center">
                         <Plus className="w-5 h-5 text-accent-primary" />
                       </div>
@@ -1198,7 +1289,10 @@ export default function DashboardPage() {
                             )}
                           </div>
 
-                          <Link href={`/session/${session.id}`}>
+                          <div
+                            onClick={() => router.push(`/session/${session.id}`)}
+                            className="cursor-pointer"
+                          >
                             <div className="flex items-start gap-3 mb-3">
                               <div className="w-10 h-10 rounded-lg bg-overlay flex items-center justify-center flex-shrink-0">
                                 <TemplateIcon
@@ -1207,7 +1301,7 @@ export default function DashboardPage() {
                                 />
                               </div>
                               <div className="flex-1 min-w-0">
-                                <h3 className="font-medium text-text-primary truncate group-hover:text-accent-primary transition-colors">
+                                <h3 className="font-medium text-text-primary line-clamp-2 group-hover:text-accent-primary transition-colors">
                                   {session.name}
                                 </h3>
                                 <p className="text-xs text-text-muted">
@@ -1215,19 +1309,53 @@ export default function DashboardPage() {
                                 </p>
                               </div>
                             </div>
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2 text-xs text-text-muted">
-                                <Clock className="w-3 h-3" />
-                                {formatDate(session.updated_at)}
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2 text-xs text-text-muted">
+                                  <Clock className="w-3 h-3" />
+                                  {formatDate(session.updated_at)}
+                                </div>
+                                <div
+                                  className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs ${status.color} ${status.bg}`}
+                                >
+                                  {status.icon}
+                                  {status.label}
+                                </div>
                               </div>
-                              <div
-                                className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs ${status.color} ${status.bg}`}
-                              >
-                                {status.icon}
-                                {status.label}
-                              </div>
+                              {(() => {
+                                const gitInfo = getGitHubInfo(session.git_url, session.branch);
+                                return gitInfo ? (
+                                  <div className="flex items-center gap-2 text-xs text-text-muted flex-wrap">
+                                    <a
+                                      href={gitInfo.repoUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="flex items-center gap-1 hover:text-accent-primary transition-colors"
+                                    >
+                                      <FolderGit2 className="w-3 h-3" />
+                                      <span className="truncate max-w-[100px]">
+                                        {gitInfo.repoName}
+                                      </span>
+                                      <ExternalLink className="w-2.5 h-2.5" />
+                                    </a>
+                                    <span className="text-text-muted/50">·</span>
+                                    <a
+                                      href={gitInfo.branchUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="flex items-center gap-1 hover:text-accent-primary transition-colors"
+                                    >
+                                      <GitBranch className="w-3 h-3" />
+                                      <span className="truncate">{gitInfo.branch}</span>
+                                      <ExternalLink className="w-2.5 h-2.5" />
+                                    </a>
+                                  </div>
+                                ) : null;
+                              })()}
                             </div>
-                          </Link>
+                          </div>
                         </motion.div>
                       );
                     })}
@@ -1266,9 +1394,9 @@ export default function DashboardPage() {
                             className="border-b border-border-subtle last:border-0 hover:bg-elevated transition-colors"
                           >
                             <td className="px-4 py-3">
-                              <Link
-                                href={`/session/${session.id}`}
-                                className="flex items-center gap-3"
+                              <div
+                                onClick={() => router.push(`/session/${session.id}`)}
+                                className="flex items-center gap-3 cursor-pointer"
                               >
                                 <div className="w-8 h-8 rounded-lg bg-overlay flex items-center justify-center">
                                   <TemplateIcon
@@ -1281,14 +1409,38 @@ export default function DashboardPage() {
                                   <p className="font-medium text-text-primary hover:text-accent-primary transition-colors">
                                     {session.name}
                                   </p>
-                                  {session.git_url && (
-                                    <p className="text-xs text-text-muted flex items-center gap-1">
-                                      <GitBranch className="w-3 h-3" />
-                                      {session.branch}
-                                    </p>
-                                  )}
+                                  {(() => {
+                                    const gitInfo = getGitHubInfo(session.git_url, session.branch);
+                                    return gitInfo ? (
+                                      <div className="flex items-center gap-2 text-xs text-text-muted mt-0.5 flex-wrap">
+                                        <a
+                                          href={gitInfo.repoUrl}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          onClick={(e) => e.stopPropagation()}
+                                          className="flex items-center gap-1 hover:text-accent-primary transition-colors"
+                                        >
+                                          <FolderGit2 className="w-3 h-3" />
+                                          <span>{gitInfo.repoName}</span>
+                                          <ExternalLink className="w-2.5 h-2.5" />
+                                        </a>
+                                        <span className="text-text-muted/50">·</span>
+                                        <a
+                                          href={gitInfo.branchUrl}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          onClick={(e) => e.stopPropagation()}
+                                          className="flex items-center gap-1 hover:text-accent-primary transition-colors"
+                                        >
+                                          <GitBranch className="w-3 h-3" />
+                                          <span>{gitInfo.branch}</span>
+                                          <ExternalLink className="w-2.5 h-2.5" />
+                                        </a>
+                                      </div>
+                                    ) : null;
+                                  })()}
                                 </div>
-                              </Link>
+                              </div>
                             </td>
                             <td className="px-4 py-3 text-sm text-text-secondary">
                               {template?.name || 'Custom'}

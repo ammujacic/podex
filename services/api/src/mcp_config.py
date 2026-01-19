@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.database.models import MCPServer
-from src.mcp_defaults import DEFAULT_MCP_SERVERS, get_default_server_by_slug
+from src.mcp_defaults import DEFAULT_MCP_SERVERS, get_builtin_servers, get_default_server_by_slug
 
 
 @dataclass
@@ -130,6 +130,9 @@ async def get_effective_mcp_config(
     This merges all configuration sources and returns the effective
     configuration that should be passed to the agent service.
 
+    Built-in servers (filesystem, git) are always included and automatically
+    enabled for all users.
+
     Args:
         db: Database session
         user_id: The user's ID
@@ -144,14 +147,54 @@ async def get_effective_mcp_config(
             MCPServer.is_enabled == True,
         ),
     )
-    servers = result.scalars().all()
+    user_servers = list(result.scalars().all())
 
-    if not servers:
+    # Ensure built-in servers are always available
+    builtin_servers = get_builtin_servers()
+    builtin_slugs = {server["slug"] for server in builtin_servers}
+    existing_builtin_slugs = {
+        getattr(server, "source_slug", None)
+        for server in user_servers
+        if getattr(server, "source_slug", None) in builtin_slugs
+    }
+
+    # Create any missing built-in servers
+    for builtin_config in builtin_servers:
+        if builtin_config["slug"] not in existing_builtin_slugs:
+            # Create the built-in server in the database
+            server = MCPServer(
+                user_id=user_id,
+                name=builtin_config["name"],
+                description=builtin_config.get("description"),
+                transport=builtin_config["transport"],
+                command=builtin_config.get("command"),
+                args=builtin_config.get("args", []),
+                url=builtin_config.get("url"),
+                env_vars={},  # Built-ins don't need env vars by default
+                is_enabled=True,  # Always enabled for built-ins
+                source_slug=builtin_config["slug"],
+                category=(
+                    builtin_config["category"].value
+                    if hasattr(builtin_config["category"], "value")
+                    else builtin_config["category"]
+                ),
+                is_default=True,
+                config_source="builtin",
+                icon=builtin_config.get("icon"),
+            )
+            db.add(server)
+            user_servers.append(server)
+
+    # Commit any new built-in servers we created
+    await db.commit()
+
+    # If we still have no servers (shouldn't happen with built-ins), return None
+    if not user_servers:
         return None
 
     effective_servers: list[EffectiveMCPServer] = []
 
-    for server in servers:
+    for server in user_servers:
         # Resolve environment variables
         env_vars = resolve_env_vars_for_server(
             getattr(server, "source_slug", None),

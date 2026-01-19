@@ -61,7 +61,7 @@ export function GitPanel({ sessionId }: GitPanelProps) {
   const [showUntrackedSection, setShowUntrackedSection] = useState(true);
   const [showBranchSelector, setShowBranchSelector] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [workingDirectory, setWorkingDirectory] = useState<string | null>(null);
+  const [workingDirectory, setWorkingDirectory] = useState<string | null>('projects');
   const [showWorkingDirSelector, setShowWorkingDirSelector] = useState(false);
 
   const loadGitData = useCallback(async () => {
@@ -203,25 +203,39 @@ export function GitPanel({ sessionId }: GitPanelProps) {
     const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set(['.']));
     const [error, setError] = useState<string | null>(null);
 
-    const loadDirectories = useCallback(async (path: string = 'projects') => {
+    const loadDirectories = useCallback(async () => {
       setLoading(true);
       setError(null);
       try {
-        const files = await listFiles(sessionId, path);
+        // Load directories from projects/ folder
+        const files = await listFiles(sessionId, 'projects');
         const dirs = files.filter((f) => f.type === 'directory');
-        // Filter to only show projects/ directories
+        // Map child folders with correct paths
         const projectDirs = dirs.map((dir) => ({
           ...dir,
-          path: `projects/${dir.name}`,
-          name: dir.name,
+          path: `projects/${dir.name.replace(/\/$/, '')}`,
+          name: dir.name.replace(/\/$/, ''),
         }));
-        setDirectories(projectDirs);
+
+        // Create projects/ as the parent folder with its children
+        const projectsDir = {
+          name: 'projects',
+          path: 'projects',
+          type: 'directory' as const,
+          children: projectDirs,
+        };
+
+        // Only show projects/ folder (not root-level duplicates)
+        setDirectories([projectsDir]);
+        // Auto-expand projects/ so children are visible
+        setExpandedPaths(new Set(['projects']));
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load directories');
       } finally {
         setLoading(false);
       }
-    }, []);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sessionId]);
 
     useEffect(() => {
       loadDirectories();
@@ -242,8 +256,8 @@ export function GitPanel({ sessionId }: GitPanelProps) {
             .filter((f) => f.type === 'directory')
             .map((dir) => ({
               ...dir,
-              path: `${path}/${dir.name}`,
-              name: dir.name,
+              path: `${path}/${dir.name.replace(/\/$/, '')}`,
+              name: dir.name.replace(/\/$/, ''),
             }));
           setDirectories((prev) => {
             const updateNode = (nodes: FileNode[]): FileNode[] => {
@@ -281,14 +295,15 @@ export function GitPanel({ sessionId }: GitPanelProps) {
                 className={cn('w-3 h-3 transition-transform', isExpanded && 'rotate-90')}
               />
               {isExpanded ? (
-                <FolderOpen className="w-3 h-3 text-accent-secondary" />
+                <FolderOpen className="w-3 h-3 text-accent-primary" />
               ) : (
-                <Folder className="w-3 h-3 text-accent-secondary" />
+                <Folder className="w-3 h-3 text-accent-primary" />
               )}
               <span
                 className={cn('truncate flex-1', isSelected && 'text-accent-primary font-medium')}
               >
                 {dir.name}
+                {dir.type === 'directory' ? '/' : ''}
               </span>
             </button>
             <button
@@ -379,33 +394,39 @@ export function GitPanel({ sessionId }: GitPanelProps) {
 
           {/* Working Directory selector */}
           <div className="flex items-center gap-1">
-            <Settings className="h-4 w-4 text-accent-secondary" />
-            <button
-              onClick={() => setShowWorkingDirSelector(!showWorkingDirSelector)}
-              className="flex items-center gap-1 text-xs text-text-muted hover:bg-overlay px-1 py-0.5 rounded"
-            >
-              <span className="font-mono">
-                {workingDirectory ? workingDirectory.replace('projects/', '') : '(root)'}
-              </span>
-              {workingDirectory && (
+            <Settings className="h-4 w-4 text-accent-primary" />
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setShowWorkingDirSelector(!showWorkingDirSelector)}
+                className="flex items-center gap-1 text-xs text-text-muted hover:bg-overlay px-1 py-0.5 rounded"
+              >
+                <span className="font-mono">
+                  {workingDirectory === 'projects'
+                    ? 'projects/'
+                    : workingDirectory
+                      ? `${workingDirectory.replace('projects/', '')}/`
+                      : '(root)'}
+                </span>
+                <ChevronDown
+                  className={cn(
+                    'h-3 w-3 text-text-muted transition-transform ml-1',
+                    showWorkingDirSelector && 'rotate-180'
+                  )}
+                />
+              </button>
+              {workingDirectory && workingDirectory !== 'projects' && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    setWorkingDirectory(null);
+                    setWorkingDirectory('projects');
                   }}
-                  className="p-0.5 rounded hover:bg-surface-hover text-text-muted ml-1"
+                  className="p-0.5 rounded hover:bg-surface-hover text-text-muted"
                   title="Clear selection"
                 >
                   <X className="h-3 w-3" />
                 </button>
               )}
-              <ChevronDown
-                className={cn(
-                  'h-3 w-3 text-text-muted transition-transform ml-1',
-                  showWorkingDirSelector && 'rotate-180'
-                )}
-              />
-            </button>
+            </div>
           </div>
         </div>
 
@@ -435,17 +456,6 @@ export function GitPanel({ sessionId }: GitPanelProps) {
         {showWorkingDirSelector && (
           <div className="mt-2 bg-elevated rounded border border-border-default">
             <DirectoryBrowser />
-            <div className="p-2 border-t border-border-subtle">
-              <button
-                onClick={() => {
-                  setWorkingDirectory(null);
-                  setShowWorkingDirSelector(false);
-                }}
-                className="w-full px-2 py-1 text-xs rounded bg-surface-hover hover:bg-surface-hover/80 text-text-muted"
-              >
-                Use Root Directory
-              </button>
-            </div>
           </div>
         )}
       </div>

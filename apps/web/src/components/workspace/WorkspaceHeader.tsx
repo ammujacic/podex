@@ -274,7 +274,7 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
           className={`flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors ${
             viewMode === 'grid'
               ? 'bg-active text-text-primary'
-              : 'text-text-secondary hover:text-text-primary'
+              : 'bg-overlay text-text-secondary hover:text-text-primary'
           }`}
         >
           <Grid3X3 className="h-4 w-4" aria-hidden="true" />
@@ -288,7 +288,7 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
           className={`flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors ${
             viewMode === 'focus'
               ? 'bg-active text-text-primary'
-              : 'text-text-secondary hover:text-text-primary'
+              : 'bg-overlay text-text-secondary hover:text-text-primary'
           }`}
         >
           <Layout className="h-4 w-4" aria-hidden="true" />
@@ -302,7 +302,7 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
           className={`flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors ${
             viewMode === 'freeform'
               ? 'bg-active text-text-primary'
-              : 'text-text-secondary hover:text-text-primary'
+              : 'bg-overlay text-text-secondary hover:text-text-primary'
           }`}
         >
           <Move className="h-4 w-4" aria-hidden="true" />

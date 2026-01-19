@@ -6,6 +6,7 @@
 import { useEffect, useCallback, useRef } from 'react';
 import { useSkillsStore, type SkillExecution } from '@/stores/skills';
 import { onSocketEvent } from '@/lib/socket';
+import { getAvailableSkills } from '@/lib/api';
 
 // Socket event types for skills
 interface SkillStartEvent {
@@ -131,13 +132,7 @@ export function useLoadSkills() {
   const loadSkills = useCallback(async () => {
     setSkillsLoading(true);
     try {
-      const response = await fetch(
-        '/api/v1/skills/available?include_system=true&include_user=true'
-      );
-      if (!response.ok) {
-        throw new Error('Failed to load skills');
-      }
-      const data = await response.json();
+      const data = await getAvailableSkills();
 
       // Transform API response to store format
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

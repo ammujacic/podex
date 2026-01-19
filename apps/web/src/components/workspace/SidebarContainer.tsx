@@ -347,7 +347,6 @@ export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
     useUIStore();
   const config = sidebarLayout[side];
   const badgeCounts = useSidebarBadges(sessionId);
-  const [isHoverExpanded, setIsHoverExpanded] = useState(false);
 
   const handleIconClick = (panelId: PanelId) => {
     const isOnThisSide = config.panels.some((p) => p.panelId === panelId);
@@ -369,12 +368,9 @@ export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
     return (
       <aside
         className={cn(
-          'flex flex-col border-border-subtle bg-surface transition-all duration-200',
-          side === 'left' ? 'border-r' : 'border-l',
-          isHoverExpanded ? 'w-auto min-w-12' : 'w-12'
+          'flex flex-col border-border-subtle bg-surface transition-all duration-200 w-12',
+          side === 'left' ? 'border-r' : 'border-l'
         )}
-        onMouseEnter={() => setIsHoverExpanded(true)}
-        onMouseLeave={() => setIsHoverExpanded(false)}
       >
         <nav className="flex flex-1 flex-col items-center gap-1 py-2">
           {(side === 'left' ? leftPanelIds : rightPanelIds).map((panelId) => {
@@ -423,32 +419,6 @@ export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
             )}
           </button>
         </div>
-
-        {/* Panel area shown during hover */}
-        {isHoverExpanded && config.panels.length > 0 && (
-          <>
-            <div
-              className={cn(
-                'flex flex-col bg-surface overflow-hidden',
-                side === 'left' ? 'border-r border-border-subtle' : 'border-l border-border-subtle'
-              )}
-              style={{ width: config.width }}
-              data-panel-area
-            >
-              {config.panels.map((panel, index) => (
-                <div key={panel.panelId} className="contents">
-                  <div style={{ height: `${panel.height}%` }} className="overflow-hidden min-h-0">
-                    <SidebarPanel panelId={panel.panelId} sessionId={sessionId} />
-                  </div>
-                  {index < config.panels.length - 1 && (
-                    <PanelResizeHandle side={side} panelIndex={index} />
-                  )}
-                </div>
-              ))}
-            </div>
-            <HorizontalResizeHandle side={side} />
-          </>
-        )}
       </aside>
     );
   }

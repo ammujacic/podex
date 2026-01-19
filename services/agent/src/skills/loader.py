@@ -129,9 +129,9 @@ class SkillLoader:
         """Initialize skill loader.
 
         Args:
-            api_url: API base URL (defaults to settings.API_URL)
+            api_url: API base URL (defaults to settings.API_BASE_URL)
         """
-        self._api_url = api_url or getattr(settings, "API_URL", "http://localhost:8000")
+        self._api_url = api_url or settings.API_BASE_URL
         self._skills: dict[str, Skill] = {}
         self._loaded = False
 

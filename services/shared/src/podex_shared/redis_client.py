@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import json
+import random
 import uuid
 from collections.abc import AsyncIterator, Callable, Coroutine
 from datetime import datetime
@@ -14,6 +15,9 @@ import structlog
 from podex_shared.redis_crypto import decrypt_value, encrypt_value, is_encryption_enabled
 
 logger = structlog.get_logger()
+
+# Constants for lock acquisition logging
+LOCK_WARNING_THRESHOLD = 10
 
 
 class DateTimeEncoder(json.JSONEncoder):
@@ -269,35 +273,79 @@ class RedisClient:
 
     # Distributed locking
 
-    async def acquire_lock(
+    async def acquire_lock(  # noqa: PLR0913
         self,
         key: str,
         timeout: int = 10,
         retry_interval: float = 0.1,
         max_retries: int = 50,
+        use_exponential_backoff: bool = True,
+        max_retry_interval: float = 5.0,
+        jitter: bool = True,
     ) -> str | None:
-        """Acquire a distributed lock.
+        """Acquire a distributed lock with exponential backoff and jitter.
 
         Args:
             key: Lock key
             timeout: Lock expiration in seconds
-            retry_interval: Seconds between retry attempts
+            retry_interval: Base seconds between retry attempts
             max_retries: Maximum number of retry attempts
+            use_exponential_backoff: Whether to use exponential backoff
+            max_retry_interval: Maximum retry interval in seconds
+            jitter: Whether to add random jitter to prevent thundering herd
 
         Returns:
             Lock token if acquired, None if failed
         """
+
         lock_key = f"lock:{key}"
         token = str(uuid.uuid4())
 
-        for _ in range(max_retries):
+        for attempt in range(max_retries):
             # Try to acquire lock with SET NX EX
             acquired = await self.client.set(lock_key, token, nx=True, ex=timeout)
             if acquired:
+                logger.debug(
+                    "Lock acquired successfully",
+                    key=key,
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                )
                 return token
-            await asyncio.sleep(retry_interval)
 
-        logger.warning("Failed to acquire lock", key=key, max_retries=max_retries)
+            # Calculate sleep time with exponential backoff and jitter
+            if use_exponential_backoff:
+                # Exponential backoff: base_interval * 2^attempt
+                sleep_time = min(retry_interval * (2**attempt), max_retry_interval)
+            else:
+                sleep_time = retry_interval
+
+            # Add jitter to prevent thundering herd
+            if jitter:
+                # Add up to 25% random jitter
+                jitter_amount = sleep_time * 0.25 * random.random()
+                sleep_time += jitter_amount
+
+            # Log warning on higher retry counts
+            if attempt >= LOCK_WARNING_THRESHOLD and attempt % LOCK_WARNING_THRESHOLD == 0:
+                logger.warning(
+                    "Lock acquisition taking longer than expected",
+                    key=key,
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                    sleep_time=sleep_time,
+                )
+
+            await asyncio.sleep(sleep_time)
+
+        logger.error(
+            "Failed to acquire lock after all retries",
+            key=key,
+            max_retries=max_retries,
+            total_time=sum(
+                min(retry_interval * (2**i), max_retry_interval) for i in range(max_retries)
+            ),
+        )
         return None
 
     async def release_lock(self, key: str, token: str) -> bool:
@@ -323,20 +371,26 @@ class RedisClient:
         return bool(result)
 
     @contextlib.asynccontextmanager
-    async def lock(
+    async def lock(  # noqa: PLR0913
         self,
         key: str,
         timeout: int = 10,
         retry_interval: float = 0.1,
         max_retries: int = 50,
+        use_exponential_backoff: bool = True,
+        max_retry_interval: float = 5.0,
+        jitter: bool = True,
     ) -> AsyncIterator[str]:
-        """Context manager for distributed locking.
+        """Context manager for distributed locking with exponential backoff.
 
         Args:
             key: Lock key
             timeout: Lock expiration in seconds
-            retry_interval: Seconds between retry attempts
+            retry_interval: Base seconds between retry attempts
             max_retries: Maximum number of retry attempts
+            use_exponential_backoff: Whether to use exponential backoff
+            max_retry_interval: Maximum retry interval in seconds
+            jitter: Whether to add random jitter to prevent thundering herd
 
         Yields:
             Lock token
@@ -344,7 +398,15 @@ class RedisClient:
         Raises:
             RuntimeError: If lock cannot be acquired
         """
-        token = await self.acquire_lock(key, timeout, retry_interval, max_retries)
+        token = await self.acquire_lock(
+            key,
+            timeout,
+            retry_interval,
+            max_retries,
+            use_exponential_backoff,
+            max_retry_interval,
+            jitter,
+        )
         if token is None:
             raise RuntimeError(f"Failed to acquire lock: {key}")
         try:

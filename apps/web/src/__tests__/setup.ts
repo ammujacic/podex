@@ -22,11 +22,44 @@ vi.mock('next/navigation', () => ({
 vi.mock('framer-motion', async () => {
   const React = await import('react');
 
+  // Framer Motion specific props that should be filtered out
+  const framerProps = new Set([
+    'initial',
+    'animate',
+    'exit',
+    'transition',
+    'variants',
+    'whileHover',
+    'whileTap',
+    'whileFocus',
+    'whileInView',
+    'whileDrag',
+    'drag',
+    'dragConstraints',
+    'layout',
+    'layoutId',
+    'motion',
+    'style',
+    'transformTemplate',
+    'custom',
+  ]);
+
   // Create a factory for motion components
   const createMotionComponent = (element: string) => {
-    const Component = React.forwardRef((props: object, ref) =>
-      React.createElement(element, { ...props, ref })
-    );
+    const Component = React.forwardRef((props: Record<string, unknown>, ref) => {
+      // Filter out Framer Motion specific props
+      const domProps = Object.keys(props).reduce(
+        (acc, key) => {
+          if (!framerProps.has(key)) {
+            acc[key] = props[key];
+          }
+          return acc;
+        },
+        {} as Record<string, unknown>
+      );
+
+      return React.createElement(element, { ...domProps, ref });
+    });
     Component.displayName = `motion.${element}`;
     return Component;
   };
@@ -47,6 +80,7 @@ vi.mock('framer-motion', async () => {
 });
 
 // Suppress console errors in tests
+const originalWarn = console.warn;
 const originalError = console.error;
 beforeAll(() => {
   console.error = (...args: unknown[]) => {
@@ -57,6 +91,14 @@ beforeAll(() => {
       return;
     }
     originalError.call(console, ...args);
+  };
+
+  // Suppress act() warnings in tests - these are not actual test failures
+  console.warn = (...args: unknown[]) => {
+    if (typeof args[0] === 'string' && args[0].includes('was not wrapped in act(...)')) {
+      return;
+    }
+    originalWarn.call(console, ...args);
   };
 });
 

@@ -184,10 +184,13 @@ function applyTheme(theme: 'dark' | 'light') {
 
 // Debounce helper
 let uiSyncTimeout: NodeJS.Timeout | null = null;
-const debouncedSync = (get: () => UIState) => {
+const debouncedSync = (currentState: UIState) => {
   if (uiSyncTimeout) clearTimeout(uiSyncTimeout);
   uiSyncTimeout = setTimeout(() => {
-    get().syncToServer().catch(console.error);
+    // Use the state that was captured when the action occurred
+    currentState.syncToServer().catch((error) => {
+      console.warn('UI sync failed:', error);
+    });
   }, 500);
 };
 
@@ -298,7 +301,7 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
     const resolved = theme === 'system' ? getSystemTheme() : theme;
     applyTheme(resolved);
     set({ theme, resolvedTheme: resolved });
-    debouncedSync(get);
+    debouncedSync(get());
   },
 
   // Command palette
@@ -369,7 +372,7 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
     get().announce(
       `${side === 'left' ? 'Left' : 'Right'} sidebar ${newCollapsed ? 'collapsed' : 'expanded'}`
     );
-    debouncedSync(get);
+    debouncedSync(get());
   },
 
   setSidebarCollapsed: (side: SidebarSide, collapsed: boolean) => {
@@ -380,7 +383,7 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
         [side]: { ...layout[side], collapsed },
       },
     });
-    debouncedSync(get);
+    debouncedSync(get());
   },
 
   setSidebarWidth: (side: SidebarSide, width: number) => {
@@ -391,7 +394,7 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
         [side]: { ...layout[side], width: Math.max(200, Math.min(500, width)) },
       },
     });
-    debouncedSync(get);
+    debouncedSync(get());
   },
 
   setSidebarPanelHeight: (side: SidebarSide, panelIndex: number, height: number) => {
@@ -415,7 +418,7 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
         [side]: { ...layout[side], panels: normalized },
       },
     });
-    debouncedSync(get);
+    debouncedSync(get());
   },
 
   movePanel: (panelId: PanelId, toSide: SidebarSide) => {
@@ -444,6 +447,7 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
       },
     });
     get().announce(`${panelId} moved to ${toSide} sidebar`);
+    debouncedSync(get());
   },
 
   removePanel: (panelId: PanelId) => {
@@ -476,24 +480,18 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
 
     set({
       sidebarLayout: {
-        left: {
-          ...layout.left,
-          panels: normalizePanelHeights(leftPanels),
-          collapsed: side === 'left' ? false : layout.left.collapsed,
-        },
-        right: {
-          ...layout.right,
-          panels: normalizePanelHeights(rightPanels),
-          collapsed: side === 'right' ? false : layout.right.collapsed,
-        },
+        left: { ...layout.left, panels: normalizePanelHeights(leftPanels) },
+        right: { ...layout.right, panels: normalizePanelHeights(rightPanels) },
       },
     });
     get().announce(`${panelId} added to ${side} sidebar`);
+    debouncedSync(get());
   },
 
   resetSidebarLayout: () => {
     set({ sidebarLayout: DEFAULT_SIDEBAR_LAYOUT });
     get().announce('Sidebar layout reset to default');
+    debouncedSync(get());
   },
 
   // Terminal
@@ -507,7 +505,7 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
   setTerminalVisible: (visible) => set({ terminalVisible: visible }),
   setTerminalHeight: (height) => {
     set({ terminalHeight: Math.max(100, Math.min(600, height)) });
-    debouncedSync(get);
+    debouncedSync(get());
   },
 
   // Bottom panel
@@ -518,7 +516,7 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
   setPanelVisible: (visible) => set({ panelVisible: visible }),
   setPanelHeight: (height) => {
     set({ panelHeight: Math.max(100, Math.min(400, height)) });
-    debouncedSync(get);
+    debouncedSync(get());
   },
   setActivePanel: (panel) => set({ activePanel: panel, panelVisible: true }),
 
@@ -567,7 +565,7 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
     const newState = !get().focusMode;
     set({ focusMode: newState });
     get().announce(newState ? 'Focus mode enabled' : 'Focus mode disabled');
-    debouncedSync(get);
+    debouncedSync(get());
   },
 });
 

@@ -15,6 +15,7 @@ from src.providers.llm import LLMProvider
 from src.queue.task_queue import TaskQueue
 from src.queue.worker import TaskWorker, set_task_worker
 from src.routes import agents, health
+from src.tools.skill_tools import SkillRegistryHolder
 
 
 def _init_sentry() -> None:
@@ -82,6 +83,14 @@ class ServiceManager:
         )
         set_context_manager(cls._context_manager)
         logger.info("Context manager initialized")
+
+        # Initialize skill registry and load skills from API
+        skill_registry = SkillRegistryHolder.get()
+        try:
+            skills = await skill_registry.load_skills()
+            logger.info("Skill registry initialized", skill_count=len(skills))
+        except Exception as e:
+            logger.warning("Failed to load skills from API", error=str(e))
 
     @classmethod
     async def shutdown_services(cls) -> None:

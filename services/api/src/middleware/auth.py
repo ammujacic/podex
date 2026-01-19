@@ -62,9 +62,11 @@ PUBLIC_PATHS: list[tuple[str, bool]] = [
     ("/api/billing/usage/record", False),  # Internal service endpoint (has own auth)
     ("/api/admin/settings/public", True),  # Public platform settings
     ("/socket.io", True),  # Socket.IO has subpaths
-    ("/api/agent-roles", True),  # Agent role configurations (non-sensitive)
+    ("/api/v1/agent-roles", True),  # Agent role configurations (non-sensitive)
     ("/api/platform/config", False),  # Platform config for app bootstrap
     ("/api/models/capabilities", True),  # Internal API for agent service (model caps)
+    ("/api/v1/skills/available", False),  # Skills catalog for agent service (system skills public)
+    ("/api/skills/available", False),  # Skills catalog (backward compat path)
 ]
 
 

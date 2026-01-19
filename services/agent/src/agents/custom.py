@@ -410,6 +410,110 @@ AVAILABLE_TOOLS: dict[str, Tool] = {
             "required": ["pattern"],
         },
     ),
+    # Skill management tools
+    "list_skills": Tool(
+        name="list_skills",
+        description="List all available skills with optional filtering by tags or author.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Filter by tags",
+                },
+                "author": {
+                    "type": "string",
+                    "description": "Filter by author",
+                },
+            },
+        },
+    ),
+    "get_skill": Tool(
+        name="get_skill",
+        description="Get detailed information about a specific skill.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Skill name",
+                },
+            },
+            "required": ["name"],
+        },
+    ),
+    "match_skills": Tool(
+        name="match_skills",
+        description="Find skills that match a task description.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Task description to match",
+                },
+                "min_score": {
+                    "type": "number",
+                    "description": "Minimum match score (0-1)",
+                    "default": 0.3,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum results",
+                    "default": 5,
+                },
+            },
+            "required": ["task"],
+        },
+    ),
+    "execute_skill": Tool(
+        name="execute_skill",
+        description="Execute a skill step by step.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "skill_name": {
+                    "type": "string",
+                    "description": "Name of skill to execute",
+                },
+                "context": {
+                    "type": "object",
+                    "description": "Execution context with variables",
+                },
+                "stop_on_failure": {
+                    "type": "boolean",
+                    "description": "Stop on first failed step",
+                    "default": True,
+                },
+            },
+            "required": ["skill_name"],
+        },
+    ),
+    "recommend_skills": Tool(
+        name="recommend_skills",
+        description="Get skill recommendations for an agent based on role and recent tasks.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "agent_role": {
+                    "type": "string",
+                    "description": "Agent role (coder, reviewer, architect, tester)",
+                },
+                "recent_tasks": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Recent task descriptions",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum recommendations",
+                    "default": 5,
+                },
+            },
+            "required": ["agent_role"],
+        },
+    ),
 }
 
 

@@ -20,6 +20,7 @@ from src.database.connection import get_db
 from src.database.models import (
     GitHubIntegration,
     SubscriptionPlan,
+    UsageQuota,
     User,
     UserConfig,
     UserSubscription,
@@ -344,15 +345,38 @@ async def _link_or_create_user(db: AsyncSession, user_info: OAuthUserInfo) -> Us
             from datetime import UTC, datetime, timedelta
 
             now = datetime.now(UTC)
+            period_end = now + timedelta(days=30)
             subscription = UserSubscription(
                 user_id=user.id,
                 plan_id=free_plan.id,
                 status="active",
                 billing_cycle="monthly",
                 current_period_start=now,
-                current_period_end=now + timedelta(days=30),
+                current_period_end=period_end,
             )
             db.add(subscription)
+            await db.flush()  # Flush to get subscription.id if needed
+
+            # Create quotas for the subscription (required for usage tracking)
+            quota_types = [
+                ("tokens", free_plan.tokens_included),
+                ("compute_credits", free_plan.compute_credits_cents_included),
+                ("storage_gb", free_plan.storage_gb_included),
+                ("sessions", free_plan.max_sessions),
+                ("agents", free_plan.max_agents),
+            ]
+
+            for quota_type, limit in quota_types:
+                quota = UsageQuota(
+                    user_id=user.id,
+                    quota_type=quota_type,
+                    limit_value=limit,
+                    current_usage=0,
+                    reset_at=period_end if quota_type in ["tokens", "compute_credits"] else None,
+                    overage_allowed=free_plan.overage_allowed,
+                )
+                db.add(quota)
+
             await db.commit()
 
     return user
