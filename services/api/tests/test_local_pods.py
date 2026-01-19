@@ -29,7 +29,7 @@ def test_local_pod(test_user: dict[str, Any]) -> dict[str, Any]:
         "ip_address": "192.168.1.100",
         "hostname": "my-machine",
         "os": "darwin",
-        "arch": "arm64",
+        "arch": "x86_64",
         "version": "1.0.0",
         "last_heartbeat": "2024-01-01T00:00:00Z",
         "created_at": "2024-01-01T00:00:00Z",

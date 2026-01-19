@@ -13,12 +13,12 @@ back to minimal defaults only when the API is unavailable.
 import json
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 
 import structlog
 from anthropic import NOT_GIVEN, AsyncAnthropicVertex
 
-from src.config import get_model_capabilities, settings, supports_thinking, supports_vision
+from src.config import settings, supports_thinking, supports_vision
 
 logger = structlog.get_logger()
 
@@ -77,14 +77,13 @@ class VertexAIProvider:
         Handles various model ID formats:
         - Direct Vertex AI model ID (e.g., "claude-sonnet-4-20250514")
         - Friendly names (resolved via admin-configured model list)
+
+        Note: Model capabilities lookup is async and not available here.
+        The model is used as-is, with capabilities checked at runtime.
         """
 
-        # Check if model capabilities exist in cache (admin-configured)
-        caps = get_model_capabilities(model)
-        if caps and caps.get("vertex_model_id"):
-            return cast("str", caps["vertex_model_id"])
-
         # Return as-is if it looks like a Vertex model ID
+        # Model capabilities are checked asynchronously in the actual API calls
         if model.startswith("claude-") or model.startswith("gemini-"):
             return model
 

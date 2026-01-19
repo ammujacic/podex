@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   ChevronRight,
   ChevronDown,
@@ -13,6 +13,13 @@ import {
   Eye,
   EyeOff,
 } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@podex/ui';
 import { useSessionStore } from '@/stores/session';
 import { useEditorStore } from '@/stores/editor';
 import { useUIStore } from '@/stores/ui';
@@ -21,12 +28,17 @@ import { NoFilesEmptyState, ErrorEmptyState, EmptyFolderState } from '@/componen
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { getLanguageFromPath } from './CodeEditor';
 import { listFiles, getFileContent, type FileNode } from '@/lib/api';
-import { getUserConfig } from '@/lib/api/user-config';
+import { getUserConfig, updateUserConfig } from '@/lib/api/user-config';
 import { MobileFileItem } from './MobileFileItem';
 import { MobileFileActionsSheet } from './MobileFileActionsSheet';
 
 interface FilesPanelProps {
   sessionId: string;
+}
+
+interface SyncInfo {
+  isSynced: boolean;
+  syncType: 'user' | 'session' | null;
 }
 
 interface FileTreeNodeProps {
@@ -40,7 +52,8 @@ interface FileTreeNodeProps {
   loadingFolders: Set<string>;
   onLoadFolder: (path: string) => void;
   showHiddenFiles: boolean;
-  isPathSynced: (path: string) => boolean;
+  getSyncInfo: (path: string) => SyncInfo;
+  onToggleSync?: (path: string) => void;
 }
 
 // Match backend FileSync.exclude_patterns for what is *not* auto-synced.
@@ -77,25 +90,29 @@ const DEFAULT_DOTFILES = [
 ];
 
 /**
- * Create a sync checker function based on user's dotfiles_paths
+ * Create a sync info function based on user's dotfiles_paths
  */
-function createSyncChecker(dotfilesPaths: string[]): (path: string) => boolean {
+function createSyncInfoGetter(dotfilesPaths: string[]): (path: string) => SyncInfo {
   // Separate directories (ending with /) from files
   const directories = dotfilesPaths.filter((p) => p.endsWith('/'));
   const files = dotfilesPaths.filter((p) => !p.endsWith('/'));
 
-  return (path: string): boolean => {
+  return (path: string): SyncInfo => {
     const segments = path.split('/').filter(Boolean);
 
     // Check if path contains excluded segments
     if (segments.some((segment) => NON_SYNCED_SEGMENTS.includes(segment))) {
-      return false;
+      return { isSynced: false, syncType: null };
     }
 
     // Check if path is under a synced prefix (projects directory)
     const isUnderSyncedPrefix = SYNCED_PREFIXES.some(
       (prefix) => path === prefix || path.startsWith(prefix)
     );
+
+    if (isUnderSyncedPrefix) {
+      return { isSynced: true, syncType: 'session' };
+    }
 
     // Check if path is a synced directory or inside one
     const isInSyncedDirectory = directories.some((dir) => {
@@ -108,7 +125,11 @@ function createSyncChecker(dotfilesPaths: string[]): (path: string) => boolean {
     // Check if path is a synced file
     const isSyncedFile = files.some((file) => path === file);
 
-    return isUnderSyncedPrefix || isInSyncedDirectory || isSyncedFile;
+    if (isInSyncedDirectory || isSyncedFile) {
+      return { isSynced: true, syncType: 'user' };
+    }
+
+    return { isSynced: false, syncType: null };
   };
 }
 
@@ -132,14 +153,17 @@ function FileTreeNode({
   loadingFolders,
   onLoadFolder,
   showHiddenFiles,
-  isPathSynced,
+  getSyncInfo,
+  onToggleSync,
 }: FileTreeNodeProps) {
-  const isSynced = isPathSynced(item.path || item.name || '');
+  const syncInfo = getSyncInfo(item.path || item.name || '');
   const isExpanded = expandedFolders.has(item.path);
   const isLoading = loadingFolders.has(item.path);
   const rawChildren = loadedFolders.get(item.path);
   const children = rawChildren ? filterFiles(rawChildren, showHiddenFiles) : undefined;
   const paddingLeft = 8 + depth * 12; // Base padding + indentation per level
+  const [menuOpen, setMenuOpen] = useState(false);
+  const shouldOpenMenuRef = useRef(false);
 
   const handleFolderClick = useCallback(() => {
     if (!isExpanded && !loadedFolders.has(item.path)) {
@@ -149,38 +173,119 @@ function FileTreeNode({
     onToggleFolder(item.path);
   }, [isExpanded, item.path, loadedFolders, onLoadFolder, onToggleFolder]);
 
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    shouldOpenMenuRef.current = true;
+    setMenuOpen(true);
+  }, []);
+
+  const handleTriggerPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      // Only prevent menu opening on left click, allow right click to open
+      if (e.button === 0) {
+        // Left click - prevent menu from opening and expand folder instead
+        e.preventDefault();
+        shouldOpenMenuRef.current = false;
+        handleFolderClick();
+      } else {
+        // Right click or other button - allow menu to open
+        shouldOpenMenuRef.current = true;
+      }
+    },
+    [handleFolderClick]
+  );
+
+  const handleOpenChange = useCallback((open: boolean) => {
+    if (open && !shouldOpenMenuRef.current) {
+      // Prevent opening if it wasn't triggered by right click
+      return;
+    }
+    setMenuOpen(open);
+    if (!open) {
+      // Reset the flag when menu closes
+      shouldOpenMenuRef.current = false;
+    }
+  }, []);
+
+  const handleButtonClick = useCallback(
+    (e: React.MouseEvent) => {
+      // Prevent menu from opening on left click
+      if (e.button === 0 || e.detail > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleFolderClick();
+      }
+    },
+    [handleFolderClick]
+  );
+
   if (item.type === 'directory') {
     return (
       <div>
-        <button
-          onClick={handleFolderClick}
-          className="flex w-full items-center gap-1 rounded py-1 pr-2 text-left text-sm text-text-secondary hover:bg-overlay hover:text-text-primary"
-          style={{ paddingLeft }}
-        >
-          {isLoading ? (
-            <Loader2 className="h-4 w-4 animate-spin text-text-muted shrink-0" />
-          ) : (
-            <span className="shrink-0 w-4 h-4 flex items-center justify-center">
-              {isExpanded ? (
-                <ChevronDown className="h-3.5 w-3.5 text-text-muted" />
+        <DropdownMenu open={menuOpen} onOpenChange={handleOpenChange}>
+          <DropdownMenuTrigger asChild>
+            <button
+              onClick={handleButtonClick}
+              onPointerDown={handleTriggerPointerDown}
+              onContextMenu={handleContextMenu}
+              className="flex w-full items-center gap-1 rounded py-1 pr-2 text-left text-sm text-text-secondary hover:bg-overlay hover:text-text-primary"
+              style={{ paddingLeft }}
+            >
+              {isLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin text-text-muted shrink-0" />
               ) : (
-                <ChevronRight className="h-3.5 w-3.5 text-text-muted" />
+                <span className="shrink-0 w-4 h-4 flex items-center justify-center">
+                  {isExpanded ? (
+                    <ChevronDown className="h-3.5 w-3.5 text-text-muted" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5 text-text-muted" />
+                  )}
+                </span>
               )}
-            </span>
-          )}
-          {isExpanded ? (
-            <FolderOpen className="h-4 w-4 text-accent-primary shrink-0" />
-          ) : (
-            <Folder className="h-4 w-4 text-accent-primary shrink-0" />
-          )}
-          <span className="truncate flex-1 ml-1">{item.name}</span>
-          {isSynced && (
-            <CloudSync
-              className="h-3 w-3 text-accent-secondary opacity-70 shrink-0"
-              aria-label="Auto-synced by Podex"
-            />
-          )}
-        </button>
+              {isExpanded ? (
+                <FolderOpen className="h-4 w-4 text-accent-primary shrink-0" />
+              ) : (
+                <Folder className="h-4 w-4 text-accent-primary shrink-0" />
+              )}
+              <span className="truncate flex-1 ml-1">{item.name}</span>
+              {syncInfo.isSynced && (
+                <CloudSync
+                  className={cn(
+                    'h-3 w-3 shrink-0 opacity-70',
+                    syncInfo.syncType === 'user' ? 'text-blue-500' : 'text-accent-secondary'
+                  )}
+                  aria-label={
+                    syncInfo.syncType === 'user' ? 'Synced to user account' : 'Auto-synced by Podex'
+                  }
+                />
+              )}
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-56">
+            <DropdownMenuItem onClick={handleFolderClick}>
+              {isExpanded ? 'Collapse' : 'Expand'} Folder
+            </DropdownMenuItem>
+            {onToggleSync && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => onToggleSync(item.path)}>
+                  {syncInfo.isSynced ? (
+                    <>
+                      <CloudSync className="mr-2 h-4 w-4" />
+                      Remove from sync
+                    </>
+                  ) : (
+                    <>
+                      <CloudSync className="mr-2 h-4 w-4" />
+                      Add to user sync
+                    </>
+                  )}
+                </DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
         {isExpanded && children && (
           <div>
             {children
@@ -198,7 +303,8 @@ function FileTreeNode({
                   loadingFolders={loadingFolders}
                   onLoadFolder={onLoadFolder}
                   showHiddenFiles={showHiddenFiles}
-                  isPathSynced={isPathSynced}
+                  getSyncInfo={getSyncInfo}
+                  onToggleSync={onToggleSync}
                 />
               ))}
             {children.length === 0 && <EmptyFolderState size="sm" />}
@@ -209,20 +315,54 @@ function FileTreeNode({
   }
 
   return (
-    <button
-      onClick={() => onFileClick(item.path)}
-      className="flex w-full items-center gap-1 rounded py-1 pr-2 text-left text-sm text-text-secondary hover:bg-overlay hover:text-text-primary"
-      style={{ paddingLeft: paddingLeft + 20 }} // Extra indent for files (no chevron)
-    >
-      <File className="h-4 w-4 text-text-muted shrink-0" />
-      <span className="truncate flex-1 ml-1">{item.name}</span>
-      {isSynced && (
-        <CloudSync
-          className="h-3 w-3 text-accent-secondary opacity-70 shrink-0"
-          aria-label="Auto-synced by Podex"
-        />
-      )}
-    </button>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          onClick={() => onFileClick(item.path)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            // Let the dropdown menu handle the context menu
+          }}
+          className="flex w-full items-center gap-1 rounded py-1 pr-2 text-left text-sm text-text-secondary hover:bg-overlay hover:text-text-primary"
+          style={{ paddingLeft: paddingLeft + 20 }} // Extra indent for files (no chevron)
+        >
+          <File className="h-4 w-4 text-text-muted shrink-0" />
+          <span className="truncate flex-1 ml-1">{item.name}</span>
+          {syncInfo.isSynced && (
+            <CloudSync
+              className={cn(
+                'h-3 w-3 shrink-0 opacity-70',
+                syncInfo.syncType === 'user' ? 'text-blue-500' : 'text-accent-secondary'
+              )}
+              aria-label={
+                syncInfo.syncType === 'user' ? 'Synced to user account' : 'Auto-synced by Podex'
+              }
+            />
+          )}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-56">
+        <DropdownMenuItem onClick={() => onFileClick(item.path)}>Open File</DropdownMenuItem>
+        {onToggleSync && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => onToggleSync(item.path)}>
+              {syncInfo.isSynced ? (
+                <>
+                  <CloudSync className="mr-2 h-4 w-4" />
+                  Remove from sync
+                </>
+              ) : (
+                <>
+                  <CloudSync className="mr-2 h-4 w-4" />
+                  Add to user sync
+                </>
+              )}
+            </DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -239,7 +379,8 @@ interface MobileFileTreeNodeProps {
   loadingFolders: Set<string>;
   onLoadFolder: (path: string) => void;
   showHiddenFiles: boolean;
-  isPathSynced: (path: string) => boolean;
+  getSyncInfo: (path: string) => SyncInfo;
+  onToggleSync?: (path: string) => void;
 }
 
 function MobileFileTreeNode({
@@ -254,7 +395,8 @@ function MobileFileTreeNode({
   loadingFolders,
   onLoadFolder,
   showHiddenFiles,
-  isPathSynced,
+  getSyncInfo,
+  onToggleSync,
 }: MobileFileTreeNodeProps) {
   const isExpanded = expandedFolders.has(item.path);
   const isLoading = loadingFolders.has(item.path);
@@ -278,7 +420,8 @@ function MobileFileTreeNode({
       isExpanded={isExpanded}
       isLoading={isLoading}
       onToggleFolder={handleToggleFolder}
-      isPathSynced={isPathSynced}
+      getSyncInfo={getSyncInfo}
+      onToggleSync={onToggleSync}
     >
       {item.type === 'directory' && isExpanded && children && (
         <>
@@ -298,7 +441,7 @@ function MobileFileTreeNode({
                 loadingFolders={loadingFolders}
                 onLoadFolder={onLoadFolder}
                 showHiddenFiles={showHiddenFiles}
-                isPathSynced={isPathSynced}
+                getSyncInfo={getSyncInfo}
               />
             ))}
           {children.length === 0 && <EmptyFolderState size="sm" />}
@@ -343,8 +486,8 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
       });
   }, []);
 
-  // Create sync checker based on user's settings
-  const isPathSynced = useMemo(() => createSyncChecker(userDotfilesPaths), [userDotfilesPaths]);
+  // Create sync info getter based on user's settings
+  const getSyncInfo = useMemo(() => createSyncInfoGetter(userDotfilesPaths), [userDotfilesPaths]);
 
   const loadRootFiles = useCallback(async () => {
     setFilesLoading(true);
@@ -509,6 +652,38 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
     }
   }, []);
 
+  // Toggle sync status for a file/folder
+  const handleToggleSync = useCallback(
+    async (path: string) => {
+      const syncInfo = getSyncInfo(path);
+      if (syncInfo.syncType === 'session') {
+        // Can't toggle session files - they're always synced
+        return;
+      }
+
+      const isCurrentlySynced = syncInfo.isSynced;
+      const newPaths = isCurrentlySynced
+        ? userDotfilesPaths.filter((p) => {
+            // Remove exact match or directory match
+            if (p === path) return false;
+            if (p.endsWith('/')) {
+              const dirPath = p.slice(0, -1);
+              return !(path === dirPath || path.startsWith(dirPath + '/'));
+            }
+            return true;
+          })
+        : [...userDotfilesPaths, path];
+
+      try {
+        await updateUserConfig({ dotfiles_paths: newPaths });
+        setUserDotfilesPaths(newPaths);
+      } catch (err) {
+        console.error('Failed to update sync configuration:', err);
+      }
+    },
+    [getSyncInfo, userDotfilesPaths]
+  );
+
   // Handle open from actions sheet
   const handleOpenFromSheet = useCallback(
     (path: string) => {
@@ -573,7 +748,8 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
                 loadingFolders={loadingFolders}
                 onLoadFolder={loadFolder}
                 showHiddenFiles={showHiddenFiles}
-                isPathSynced={isPathSynced}
+                getSyncInfo={getSyncInfo}
+                onToggleSync={handleToggleSync}
               />
             ))
         ) : (
@@ -593,7 +769,8 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
                 loadingFolders={loadingFolders}
                 onLoadFolder={loadFolder}
                 showHiddenFiles={showHiddenFiles}
-                isPathSynced={isPathSynced}
+                getSyncInfo={getSyncInfo}
+                onToggleSync={handleToggleSync}
               />
             ))
         )}
@@ -605,6 +782,8 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
           sessionId={sessionId}
           onOpen={handleOpenFromSheet}
           onCopyPath={handleCopyPath}
+          onToggleSync={handleToggleSync}
+          getSyncInfo={getSyncInfo}
         />
       )}
     </div>

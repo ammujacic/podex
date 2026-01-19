@@ -38,7 +38,14 @@ COOKIE_ACCESS_TOKEN = "podex_access"
 COOKIE_REFRESH_TOKEN = "podex_refresh"
 
 
-def set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
+def set_auth_cookies(
+    response: Response,
+    access_token: str,
+    refresh_token: str,
+    *,
+    access_max_age_seconds: int | None = None,
+    refresh_max_age_seconds: int | None = None,
+) -> None:
     """Set httpOnly cookies for authentication tokens.
 
     These cookies are:
@@ -53,7 +60,7 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
         httponly=True,
         secure=settings.COOKIE_SECURE,
         samesite=cast("Literal['lax', 'strict', 'none']", settings.COOKIE_SAMESITE),
-        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        max_age=access_max_age_seconds or settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/api",
         domain=settings.COOKIE_DOMAIN,
     )
@@ -65,7 +72,7 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
         httponly=True,
         secure=settings.COOKIE_SECURE,
         samesite=cast("Literal['lax', 'strict', 'none']", settings.COOKIE_SAMESITE),
-        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        max_age=refresh_max_age_seconds or settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
         path="/api/auth",  # Restrict to auth endpoints only
         domain=settings.COOKIE_DOMAIN,
     )
@@ -104,10 +111,13 @@ class RegisterRequest(BaseModel):
 class TokenResponse(BaseModel):
     """Token response.
 
-    SECURITY: Tokens are set via httpOnly cookies, not returned in body.
-    The expires_in field indicates when the access token will expire.
+    SECURITY:
+    - In production, browser clients use httpOnly cookies.
+    - Non-browser clients can receive tokens in the response body.
     """
 
+    access_token: str | None = None
+    refresh_token: str | None = None
     token_type: str = _OAUTH2_TYPE_STR
     expires_in: int
 
@@ -154,10 +164,45 @@ class TokenInfo:
         self.expires_in_seconds = expires_in_seconds
 
 
-def create_access_token(user_id: str, role: str = "member") -> TokenInfo:
+def _is_browser_request(request: Request) -> bool:
+    """Heuristic check for browser requests based on headers."""
+    user_agent = request.headers.get("user-agent", "")
+    if not user_agent:
+        return False
+    browser_markers = ("Mozilla/", "AppleWebKit/", "Chrome/", "Safari/", "Firefox/")
+    return any(marker in user_agent for marker in browser_markers)
+
+
+def _should_return_tokens(request: Request) -> bool:
+    """Decide whether to include tokens in the response body."""
+    if not settings.COOKIE_SECURE:
+        return True
+    if request.headers.get("x-client-type") == "non-browser":
+        return True
+    if request.headers.get("x-auth-response") == "token":
+        return True
+    return not _is_browser_request(request)
+
+
+def _get_token_ttls(return_tokens: bool) -> tuple[int, int]:
+    """Get access/refresh token TTLs based on client type."""
+    if return_tokens:
+        access_ttl = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        refresh_ttl = settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400
+    else:
+        access_ttl = settings.BROWSER_ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        refresh_ttl = settings.BROWSER_REFRESH_TOKEN_EXPIRE_DAYS * 86400
+    return access_ttl, refresh_ttl
+
+
+def create_access_token(
+    user_id: str,
+    role: str = "member",
+    expires_in_seconds: int | None = None,
+) -> TokenInfo:
     """Create JWT access token with JTI for revocation support."""
     jti = str(uuid4())
-    expires_in = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    expires_in = expires_in_seconds or settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
     expire = datetime.now(UTC) + timedelta(seconds=expires_in)
     to_encode = {
         "sub": user_id,
@@ -170,10 +215,10 @@ def create_access_token(user_id: str, role: str = "member") -> TokenInfo:
     return TokenInfo(token, jti, expires_in)
 
 
-def create_refresh_token(user_id: str) -> TokenInfo:
+def create_refresh_token(user_id: str, expires_in_seconds: int | None = None) -> TokenInfo:
     """Create JWT refresh token with JTI for revocation support."""
     jti = str(uuid4())
-    expires_in = settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400
+    expires_in = expires_in_seconds or settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400
     expire = datetime.now(UTC) + timedelta(seconds=expires_in)
     to_encode = {
         "sub": user_id,
@@ -282,8 +327,10 @@ async def login(
     # Get user role from database
     user_role = getattr(user, "role", "member") or "member"
 
-    access_token_info = create_access_token(user.id, role=user_role)
-    refresh_token_info = create_refresh_token(user.id)
+    return_tokens = _should_return_tokens(request)
+    access_ttl, refresh_ttl = _get_token_ttls(return_tokens)
+    access_token_info = create_access_token(user.id, role=user_role, expires_in_seconds=access_ttl)
+    refresh_token_info = create_refresh_token(user.id, expires_in_seconds=refresh_ttl)
 
     # Register tokens for bulk revocation support
     await register_user_token(user.id, access_token_info.jti, access_token_info.expires_in_seconds)
@@ -292,7 +339,13 @@ async def login(
     )
 
     # Set httpOnly cookies for secure token storage (XSS protection)
-    set_auth_cookies(response, access_token_info.token, refresh_token_info.token)
+    set_auth_cookies(
+        response,
+        access_token_info.token,
+        refresh_token_info.token,
+        access_max_age_seconds=access_ttl,
+        refresh_max_age_seconds=refresh_ttl,
+    )
 
     # Log successful login
     audit = AuditLogger(db).set_context(request=request, user_id=user.id, user_email=user.email)
@@ -313,8 +366,8 @@ async def login(
             avatar_url=user.avatar_url,
             role=user_role,
         ),
-        access_token=access_token_info.token if not settings.COOKIE_SECURE else None,
-        refresh_token=refresh_token_info.token if not settings.COOKIE_SECURE else None,
+        access_token=access_token_info.token if return_tokens else None,
+        refresh_token=refresh_token_info.token if return_tokens else None,
         expires_in=access_token_info.expires_in_seconds,
     )
 
@@ -394,8 +447,10 @@ async def register(
     # Get user role (will be "member" for new users)
     user_role = getattr(user, "role", "member") or "member"
 
-    access_token_info = create_access_token(user.id, role=user_role)
-    refresh_token_info = create_refresh_token(user.id)
+    return_tokens = _should_return_tokens(request)
+    access_ttl, refresh_ttl = _get_token_ttls(return_tokens)
+    access_token_info = create_access_token(user.id, role=user_role, expires_in_seconds=access_ttl)
+    refresh_token_info = create_refresh_token(user.id, expires_in_seconds=refresh_ttl)
 
     # Register tokens for bulk revocation support
     await register_user_token(user.id, access_token_info.jti, access_token_info.expires_in_seconds)
@@ -404,7 +459,13 @@ async def register(
     )
 
     # Set httpOnly cookies for secure token storage (XSS protection)
-    set_auth_cookies(response, access_token_info.token, refresh_token_info.token)
+    set_auth_cookies(
+        response,
+        access_token_info.token,
+        refresh_token_info.token,
+        access_max_age_seconds=access_ttl,
+        refresh_max_age_seconds=refresh_ttl,
+    )
 
     # Log user registration
     audit = AuditLogger(db).set_context(request=request, user_id=user.id, user_email=user.email)
@@ -427,8 +488,8 @@ async def register(
             avatar_url=user.avatar_url,
             role=user_role,
         ),
-        access_token=access_token_info.token if not settings.COOKIE_SECURE else None,
-        refresh_token=refresh_token_info.token if not settings.COOKIE_SECURE else None,
+        access_token=access_token_info.token if return_tokens else None,
+        refresh_token=refresh_token_info.token if return_tokens else None,
         expires_in=access_token_info.expires_in_seconds,
     )
 
@@ -506,8 +567,12 @@ async def refresh_token(
         # This ensures role changes are reflected on token refresh
         user_role = getattr(user, "role", "member") or "member"
 
-        new_access_token_info = create_access_token(str(user_id), role=user_role)
-        new_refresh_token_info = create_refresh_token(str(user_id))
+        return_tokens = _should_return_tokens(request)
+        access_ttl, refresh_ttl = _get_token_ttls(return_tokens)
+        new_access_token_info = create_access_token(
+            str(user_id), role=user_role, expires_in_seconds=access_ttl
+        )
+        new_refresh_token_info = create_refresh_token(str(user_id), expires_in_seconds=refresh_ttl)
 
         # Register new tokens for bulk revocation support
         await register_user_token(
@@ -518,9 +583,17 @@ async def refresh_token(
         )
 
         # Set new httpOnly cookies
-        set_auth_cookies(response, new_access_token_info.token, new_refresh_token_info.token)
+        set_auth_cookies(
+            response,
+            new_access_token_info.token,
+            new_refresh_token_info.token,
+            access_max_age_seconds=access_ttl,
+            refresh_max_age_seconds=refresh_ttl,
+        )
 
         return TokenResponse(
+            access_token=new_access_token_info.token if return_tokens else None,
+            refresh_token=new_refresh_token_info.token if return_tokens else None,
             expires_in=new_access_token_info.expires_in_seconds,
         )
     except JWTError as e:

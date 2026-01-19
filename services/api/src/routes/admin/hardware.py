@@ -31,7 +31,7 @@ class CreateHardwareSpecRequest(BaseModel):
     description: str | None = None
 
     # Hardware specs
-    architecture: str = Field(default="x86_64", pattern=r"^(x86_64|arm64)$")
+    architecture: str = Field(default="x86_64", pattern=r"^x86_64$")
     vcpu: int = Field(ge=1, le=128)
     memory_mb: int = Field(ge=512, le=524288)  # Max 512GB
 

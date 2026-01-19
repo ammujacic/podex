@@ -26,11 +26,20 @@ export class ZustandAuthProvider implements AuthProvider {
     // Clear auth state
     store.logout();
 
-    // Redirect to login if we had auth state and in browser (not already on login page)
-    if (typeof window !== 'undefined') {
+    // Only redirect to login if we had auth state and are on a page that requires authentication
+    if (typeof window !== 'undefined' && hadAuthState) {
       const isOnAuthPage = window.location.pathname.startsWith('/auth/');
 
-      if (hadAuthState && !isOnAuthPage) {
+      // Pages that require authentication and should redirect to login on 401
+      const requiresAuth =
+        window.location.pathname.startsWith('/dashboard') ||
+        window.location.pathname.startsWith('/session/') ||
+        window.location.pathname.startsWith('/settings') ||
+        window.location.pathname.startsWith('/admin') ||
+        window.location.pathname === '/agents' ||
+        window.location.pathname.startsWith('/join/');
+
+      if (requiresAuth && !isOnAuthPage) {
         this.isRedirecting = true;
         // Use window.location for immediate redirect that stops all pending requests
         window.location.href = '/auth/login';

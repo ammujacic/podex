@@ -4,15 +4,17 @@ Provides dynamic management of LLM models available on the platform,
 including capabilities, pricing tiers, and agent type defaults.
 """
 
+import secrets
 from datetime import datetime
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.config import settings
 from src.database import get_db
 from src.database.models import (
     LLMModel,
@@ -696,6 +698,33 @@ async def list_user_provider_models(
 # These endpoints are for internal service-to-service communication
 
 
+def _verify_service_token(authorization: str | None) -> bool:
+    """Verify the internal service token for service-to-service calls.
+
+    SECURITY: Always requires a valid token, even in development.
+    """
+    if not authorization:
+        logger.warning("Missing authorization header for service token")
+        return False
+
+    if not authorization.startswith("Bearer "):
+        logger.warning("Invalid authorization format - expected Bearer token")
+        return False
+
+    token = authorization[7:]
+
+    expected_token = settings.INTERNAL_SERVICE_TOKEN
+    if not expected_token:
+        logger.error(
+            "INTERNAL_SERVICE_TOKEN not configured - rejecting service request",
+            environment=settings.ENVIRONMENT,
+        )
+        return False
+
+    # Constant-time comparison to prevent timing attacks
+    return secrets.compare_digest(token.encode(), expected_token.encode())
+
+
 class ModelCapabilitiesResponse(BaseModel):
     """Model capabilities for agent service."""
 
@@ -716,11 +745,16 @@ async def get_all_model_capabilities(
     request: Request,
     response: Response,
     db: DbSession,
+    authorization: Annotated[str | None, Header()] = None,
 ) -> dict[str, ModelCapabilitiesResponse]:
     """Get capabilities for all enabled models (internal API for agent service).
 
     Returns a dictionary mapping model_id to capabilities for quick lookup.
+    Requires internal service token authentication.
     """
+    if not _verify_service_token(authorization):
+        raise HTTPException(status_code=401, detail="Invalid service token")
+
     query = select(LLMModel).where(LLMModel.is_enabled == True)
 
     result = await db.execute(query)
@@ -749,8 +783,15 @@ async def get_model_capabilities(
     request: Request,
     response: Response,
     db: DbSession,
+    authorization: Annotated[str | None, Header()] = None,
 ) -> ModelCapabilitiesResponse | None:
-    """Get capabilities for a specific model (internal API for agent service)."""
+    """Get capabilities for a specific model (internal API for agent service).
+
+    Requires internal service token authentication.
+    """
+    if not _verify_service_token(authorization):
+        raise HTTPException(status_code=401, detail="Invalid service token")
+
     result = await db.execute(
         select(LLMModel).where(LLMModel.model_id == model_id).where(LLMModel.is_enabled == True)
     )

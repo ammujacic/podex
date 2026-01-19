@@ -7,7 +7,7 @@
 
 import type { User, AuthTokens } from '@/stores/auth';
 import { useAuthStore } from '@/stores/auth';
-import type { ThinkingConfig, AttachmentFile } from '@podex/shared';
+import type { ThinkingConfig, AttachmentFile, HardwareSpec } from '@podex/shared';
 
 // Re-export from @podex/api-client for backward compatibility
 export { ApiRequestError, isAbortError, isQuotaError } from '@podex/api-client';
@@ -78,13 +78,8 @@ export async function refreshAuth(): Promise<boolean> {
   const store = useAuthStore.getState();
   const tokens = store.tokens;
 
-  if (!tokens?.refreshToken) {
-    store.logout();
-    return false;
-  }
-
   try {
-    const newTokens = await api.refreshToken(tokens.refreshToken);
+    const newTokens = await api.refreshToken(tokens?.refreshToken);
     store.setTokens(newTokens);
     return true;
   } catch (error) {
@@ -102,31 +97,33 @@ export async function initializeAuth(): Promise<void> {
 
   if (store.isInitialized) return;
 
+  // Skip auth initialization during OAuth callback - the callback will handle auth
+  if (typeof window !== 'undefined') {
+    const isOAuthCallback = window.location.pathname.includes('/auth/callback/');
+    if (isOAuthCallback) {
+      // Don't initialize auth during callback - the callback page handles it
+      // Just mark as initialized to prevent re-runs
+      store.setInitialized(true);
+      return;
+    }
+  }
+
   const tokens = store.tokens;
-  if (!tokens) {
-    store.setInitialized(true);
-    return;
+  if (tokens?.expiresAt) {
+    const isExpiringSoon = tokens.expiresAt - Date.now() < 5 * 60 * 1000;
+    if (isExpiringSoon) {
+      await refreshAuth();
+    }
   }
 
-  // Check if token is expired or about to expire (within 5 minutes)
-  const isExpiringSoon = tokens.expiresAt - Date.now() < 5 * 60 * 1000;
-
-  if (isExpiringSoon) {
-    await refreshAuth();
-  }
-
-  // Fetch current user to validate token
-  if (store.tokens) {
-    try {
-      const user = await api.getCurrentUser();
-      store.setUser(user);
-    } catch (error) {
-      // Only logout on 401 (unauthorized) - keep session for network errors
-      const status = (error as Error & { status?: number }).status;
-      if (status === 401) {
-        store.logout();
-      }
-      // For other errors (network, 500, etc.), keep the existing auth state
+  // Fetch current user to validate cookie/token-based session
+  try {
+    const user = await api.getCurrentUser();
+    store.setUser(user);
+  } catch (error) {
+    const status = (error as Error & { status?: number }).status;
+    if (status === 401) {
+      store.logout();
     }
   }
 
@@ -151,8 +148,8 @@ interface OAuthURLResponse {
 }
 
 interface OAuthTokenResponse {
-  access_token: string;
-  refresh_token: string;
+  access_token: string | null;
+  refresh_token: string | null;
   token_type: string;
   expires_in: number;
   user: {
@@ -167,10 +164,6 @@ interface OAuthTokenResponse {
 // OAuth methods
 export async function getOAuthURL(provider: 'github' | 'google'): Promise<string> {
   const response = await api.get<OAuthURLResponse>(`/api/oauth/${provider}/authorize`, false);
-  // Store state in sessionStorage for verification
-  if (typeof window !== 'undefined') {
-    sessionStorage.setItem('oauth_state', response.state);
-  }
   return response.url;
 }
 
@@ -184,16 +177,8 @@ export async function handleOAuthCallback(
   store.clearError();
 
   try {
-    // Verify state parameter to prevent CSRF attacks
-    if (typeof window !== 'undefined') {
-      const storedState = sessionStorage.getItem('oauth_state');
-      if (!storedState || storedState !== state) {
-        throw new Error('Invalid OAuth state - possible CSRF attack');
-      }
-      // Clear the state after verification
-      sessionStorage.removeItem('oauth_state');
-    }
-
+    // Note: Server validates state in Redis (one-time use, secure)
+    // No need for client-side CSRF check which can fail due to sessionStorage issues
     const response = await api.post<OAuthTokenResponse>(
       `/api/oauth/${provider}/callback`,
       { code, state },
@@ -224,6 +209,338 @@ export async function handleOAuthCallback(
   } finally {
     store.setLoading(false);
   }
+}
+
+// GitHub integration methods
+export interface GitHubConnectionStatus {
+  connected: boolean;
+  username: string | null;
+  avatar_url: string | null;
+  scopes: string[] | null;
+  connected_at: string | null;
+  last_used_at: string | null;
+}
+
+export interface GitHubRepo {
+  id: number;
+  name: string;
+  full_name: string;
+  private: boolean;
+  html_url: string;
+  default_branch: string;
+}
+
+export async function getGitHubStatus(): Promise<GitHubConnectionStatus> {
+  return api.get<GitHubConnectionStatus>('/api/v1/github/status');
+}
+
+export async function getGitHubRepos(params?: {
+  per_page?: number;
+  page?: number;
+}): Promise<GitHubRepo[]> {
+  const query = params
+    ? `?${new URLSearchParams(params as Record<string, string>).toString()}`
+    : '';
+  return api.get<GitHubRepo[]>(`/api/v1/github/repos${query}`);
+}
+
+export interface GitHubBranch {
+  name: string;
+  commit_sha: string;
+  protected: boolean;
+}
+
+export async function getGitHubBranches(owner: string, repo: string): Promise<GitHubBranch[]> {
+  return api.get<GitHubBranch[]>(`/api/v1/github/repos/${owner}/${repo}/branches`);
+}
+
+export interface GitHubUser {
+  id: number;
+  login: string;
+  avatar_url: string | null;
+  html_url: string | null;
+}
+
+export interface GitHubLabel {
+  id: number;
+  name: string;
+  color: string;
+  description: string | null;
+}
+
+export interface GitHubPullRequest {
+  id: number;
+  number: number;
+  title: string;
+  body: string | null;
+  state: string;
+  draft: boolean;
+  merged: boolean;
+  mergeable: boolean | null;
+  mergeable_state: string | null;
+  html_url: string;
+  diff_url: string;
+  user: GitHubUser;
+  head_ref: string;
+  head_sha: string;
+  base_ref: string;
+  base_sha: string;
+  labels: GitHubLabel[];
+  requested_reviewers: GitHubUser[];
+  additions: number;
+  deletions: number;
+  changed_files: number;
+  created_at: string;
+  updated_at: string;
+  merged_at: string | null;
+  closed_at: string | null;
+}
+
+export async function getGitHubPullRequests(
+  owner: string,
+  repo: string,
+  params?: {
+    state?: string;
+    per_page?: number;
+    page?: number;
+  }
+): Promise<GitHubPullRequest[]> {
+  const query = params
+    ? `?${new URLSearchParams(params as Record<string, string>).toString()}`
+    : '';
+  return api.get<GitHubPullRequest[]>(`/api/v1/github/repos/${owner}/${repo}/pulls${query}`);
+}
+
+export interface GitHubWorkflowRun {
+  id: number;
+  name: string;
+  workflow_id: number;
+  status: string;
+  conclusion: string | null;
+  html_url: string;
+  run_number: number;
+  event: string;
+  head_branch: string | null;
+  head_sha: string;
+  created_at: string;
+  updated_at: string;
+  run_started_at: string | null;
+}
+
+export interface GitHubWorkflowJob {
+  id: number;
+  run_id: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  steps: Array<{
+    name: string;
+    status: string;
+    conclusion: string | null;
+    number: number;
+    started_at: string | null;
+    completed_at: string | null;
+  }>;
+}
+
+export async function getGitHubWorkflowRuns(
+  owner: string,
+  repo: string,
+  params?: {
+    workflow_id?: string;
+    branch?: string;
+    status?: string;
+    per_page?: number;
+    page?: number;
+  }
+): Promise<GitHubWorkflowRun[]> {
+  const query = params
+    ? `?${new URLSearchParams(params as Record<string, string>).toString()}`
+    : '';
+  return api.get<GitHubWorkflowRun[]>(`/api/v1/github/repos/${owner}/${repo}/actions/runs${query}`);
+}
+
+export async function getGitHubWorkflowJobs(
+  owner: string,
+  repo: string,
+  runId: number
+): Promise<GitHubWorkflowJob[]> {
+  return api.get<GitHubWorkflowJob[]>(
+    `/api/v1/github/repos/${owner}/${repo}/actions/runs/${runId}/jobs`
+  );
+}
+
+export async function disconnectGitHub(): Promise<{ success: boolean }> {
+  return api.delete<{ success: boolean }>('/api/v1/github/disconnect');
+}
+
+// GitHub account linking methods (for logged-in users to link GitHub to their account)
+export interface GitHubLinkResponse {
+  success: boolean;
+  github_username: string;
+  message: string;
+}
+
+export async function getGitHubLinkURL(): Promise<string> {
+  const response = await api.get<OAuthURLResponse>('/api/oauth/github/link-authorize');
+  // Store state in sessionStorage to detect link flow in callback
+  if (typeof window !== 'undefined') {
+    sessionStorage.setItem('github_link_state', response.state);
+  }
+  return response.url;
+}
+
+export async function handleGitHubLinkCallback(
+  code: string,
+  state: string
+): Promise<GitHubLinkResponse> {
+  // Clear the stored state (server validates state in Redis)
+  if (typeof window !== 'undefined') {
+    sessionStorage.removeItem('github_link_state');
+  }
+
+  return api.post<GitHubLinkResponse>('/api/oauth/github/link-callback', { code, state });
+}
+
+// Terminal Agents methods
+export interface CreateTerminalAgentRequest {
+  workspace_id: string;
+  agent_type_id: string;
+}
+
+export interface TerminalAgentSessionResponse {
+  id: string;
+  user_id: string;
+  workspace_id: string;
+  agent_type_id: string;
+  env_profile_id: string | null;
+  status: string;
+  created_at: string;
+  last_heartbeat_at: string;
+}
+
+export async function createTerminalAgent(
+  data: CreateTerminalAgentRequest
+): Promise<TerminalAgentSessionResponse> {
+  return api.post<TerminalAgentSessionResponse>('/api/v1/terminal-agents', data);
+}
+
+// Marketplace methods
+
+// Skills methods
+export interface SkillStatsResponse {
+  total_skills: number;
+  total_executions: number;
+  agent_generated: number;
+  user_created: number;
+  public_skills: number;
+  by_tag: Record<string, number>;
+  most_used: Array<Record<string, unknown>>;
+}
+
+export async function getSkillsStats(): Promise<SkillStatsResponse> {
+  return api.get<SkillStatsResponse>('/api/v1/skills/stats');
+}
+
+export async function importSkills(data: unknown): Promise<unknown> {
+  return api.post<unknown>('/api/v1/skills/import', data);
+}
+
+// Memories methods
+export interface MemoryStatsResponse {
+  total_memories: number;
+  by_type: Record<string, number>;
+  by_session: number;
+  by_project: number;
+  average_importance: number;
+  oldest_memory: string | null;
+  newest_memory: string | null;
+}
+
+export async function getMemoriesStats(): Promise<MemoryStatsResponse> {
+  return api.get<MemoryStatsResponse>('/api/v1/memories/stats');
+}
+
+export async function createMemory(data: unknown): Promise<unknown> {
+  return api.post<unknown>('/api/v1/memories', data);
+}
+
+// Cost Insights methods
+export interface CostSummary {
+  current_month_cost: number;
+  last_month_cost: number;
+  month_over_month_change: number;
+  projected_monthly_cost: number;
+  total_tokens_used: number;
+  total_compute_minutes: number;
+  potential_savings: number;
+}
+
+export interface CostSuggestion {
+  id: string;
+  type: string;
+  title: string;
+  description: string;
+  estimated_savings: number;
+  savings_percent: number;
+  priority: string;
+  actionable: boolean;
+  action_label: string | null;
+  affected_usage: string | null;
+}
+
+export interface ModelComparison {
+  current_model: string;
+  current_cost: number;
+  alternatives: Array<{
+    model: string;
+    cost: number;
+    savings: number;
+    quality_impact: string;
+  }>;
+}
+
+export async function getCostInsightsSummary(): Promise<CostSummary> {
+  return api.get<CostSummary>('/api/v1/cost-insights/summary');
+}
+
+export async function getCostInsightsSuggestions(): Promise<CostSuggestion[]> {
+  return api.get<CostSuggestion[]>('/api/v1/cost-insights/suggestions');
+}
+
+export async function getCostInsightsModelComparison(): Promise<ModelComparison> {
+  return api.get<ModelComparison>('/api/v1/cost-insights/model-comparison');
+}
+
+export async function getCostInsightsForecast(): Promise<unknown> {
+  return api.get<unknown>('/api/v1/cost-insights/forecast');
+}
+
+// LLM Providers methods
+export interface LLMProviderResponse {
+  id: string;
+  user_id: string;
+  name: string;
+  provider_type: string;
+  base_url: string;
+  auth_header: string;
+  auth_scheme: string;
+  default_model: string;
+  available_models: string[];
+  context_window: number;
+  max_output_tokens: number;
+  supports_streaming: boolean;
+  supports_tools: boolean;
+  supports_vision: boolean;
+  request_timeout_seconds: number;
+  extra_headers: Record<string, string> | null;
+  extra_body_params: unknown | null;
+}
+
+export async function getLLMProviders(): Promise<LLMProviderResponse[]> {
+  return api.get<LLMProviderResponse[]>('/api/llm-providers');
 }
 
 // Agent types
@@ -872,6 +1189,7 @@ export interface Session {
   workspace_id: string | null;
   branch: string;
   status: 'active' | 'stopped' | 'creating' | 'error';
+  workspace_status: 'running' | 'standby' | 'stopped' | 'pending' | 'error' | null;
   template_id: string | null;
   git_url: string | null;
   created_at: string;
@@ -943,6 +1261,23 @@ export async function resumeWorkspace(workspaceId: string): Promise<WorkspaceSta
 
 export async function getWorkspaceStatus(workspaceId: string): Promise<WorkspaceStatusResponse> {
   return api.get<WorkspaceStatusResponse>(`/api/workspaces/${workspaceId}/status`);
+}
+
+export interface WorkspaceScaleResponse {
+  success: boolean;
+  message: string;
+  new_tier?: string;
+  estimated_cost_per_hour?: number;
+  requires_restart: boolean;
+}
+
+export async function scaleWorkspace(
+  sessionId: string,
+  newTier: string
+): Promise<WorkspaceScaleResponse> {
+  return api.post<WorkspaceScaleResponse>(`/api/sessions/${sessionId}/scale-workspace`, {
+    new_tier: newTier,
+  });
 }
 
 export async function getStandbySettings(sessionId: string): Promise<StandbySettingsResponse> {
@@ -1865,6 +2200,11 @@ export async function cancelSubscription(reason?: string): Promise<SubscriptionR
   });
 }
 
+// Hardware Specs
+export async function getHardwareSpecs(): Promise<HardwareSpec[]> {
+  return api.get<HardwareSpec[]>('/api/billing/hardware-specs');
+}
+
 // Usage
 // Transform API response to camelCase for consistency with other stores
 export interface UsageSummary {
@@ -2036,24 +2376,19 @@ export interface AttentionItem {
   expires_at: string | null;
 }
 
-export interface AttentionListResponse {
-  items: AttentionItem[];
-  total: number;
-}
-
 export interface UnreadCountResponse {
   count: number;
 }
 
 export async function getAttentionItems(
   sessionId: string,
-  options?: { unread_only?: boolean; type?: AgentAttentionType }
-): Promise<AttentionListResponse> {
+  options?: { include_dismissed?: boolean }
+): Promise<{ items: AttentionItem[]; total: number }> {
   const params = new URLSearchParams();
-  if (options?.unread_only) params.append('unread_only', 'true');
-  if (options?.type) params.append('type', options.type);
+  if (options?.include_dismissed) params.append('include_dismissed', 'true');
   const query = params.toString() ? `?${params}` : '';
-  return api.get<AttentionListResponse>(`/api/sessions/${sessionId}/attention${query}`);
+  const items = await api.get<AttentionItem[]>(`/api/sessions/${sessionId}/attention${query}`);
+  return { items, total: items.length };
 }
 
 export async function getAttentionUnreadCount(sessionId: string): Promise<UnreadCountResponse> {
@@ -3960,7 +4295,7 @@ export async function getMarketplaceSkills(
   if (category) params.append('category', category);
   if (search) params.append('search', search);
   const query = params.toString();
-  return api.get<MarketplaceListResponse>(`/api/marketplace${query ? `?${query}` : ''}`);
+  return api.get<MarketplaceListResponse>(`/api/v1/marketplace${query ? `?${query}` : ''}`);
 }
 
 /**

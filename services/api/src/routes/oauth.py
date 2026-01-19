@@ -14,17 +14,29 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.cache import cache_delete, user_config_key
 from src.config import settings
 from src.database.connection import get_db
-from src.database.models import SubscriptionPlan, User, UserSubscription
+from src.database.models import (
+    GitHubIntegration,
+    SubscriptionPlan,
+    User,
+    UserConfig,
+    UserSubscription,
+)
+from src.dependencies import get_current_user
 from src.middleware.rate_limit import (
     RATE_LIMIT_OAUTH,
     limiter,
+    store_oauth_link_state,
     store_oauth_state,
+    validate_oauth_link_state,
     validate_oauth_state,
 )
 from src.routes.auth import (
     _OAUTH2_TYPE_STR,
+    _get_token_ttls,
+    _should_return_tokens,
     create_access_token,
     create_refresh_token,
     set_auth_cookies,
@@ -93,9 +105,11 @@ class GitHubUserData:
     """Data extracted from GitHub OAuth response."""
 
     user_id: str
+    login: str
     email: str
     name: str | None
     avatar_url: str | None
+    scopes: list[str] | None = None
 
 
 @dataclass
@@ -139,7 +153,18 @@ async def _exchange_github_code_for_token(code: str) -> str:
                 detail=token_data.get("error_description", "OAuth error"),
             )
 
-        return str(token_data["access_token"])
+        access_token = str(token_data["access_token"])
+
+        # Log token info for debugging
+        logger.info(
+            "GitHub token exchange successful",
+            token_length=len(access_token),
+            token_prefix=access_token[:4] if len(access_token) >= 4 else "SHORT",
+            token_type=token_data.get("token_type"),
+            scope=token_data.get("scope"),
+        )
+
+        return access_token
 
 
 async def _fetch_github_user_data(access_token: str) -> GitHubUserData:
@@ -155,13 +180,17 @@ async def _fetch_github_user_data(access_token: str) -> GitHubUserData:
             raise HTTPException(status_code=400, detail="Failed to get user info from GitHub")
 
         github_user = user_response.json()
+        scopes_header = user_response.headers.get("x-oauth-scopes", "")
+        scopes = [s.strip() for s in scopes_header.split(",") if s.strip()] or None
         email = await _fetch_github_primary_email(client, headers, github_user)
 
         return GitHubUserData(
             user_id=str(github_user["id"]),
+            login=str(github_user.get("login")),
             email=email,
             name=github_user.get("name") or github_user.get("login"),
             avatar_url=github_user.get("avatar_url"),
+            scopes=scopes,
         )
 
 
@@ -329,23 +358,81 @@ async def _link_or_create_user(db: AsyncSession, user_info: OAuthUserInfo) -> Us
     return user
 
 
-def _build_token_response(user: User, response: Response) -> OAuthTokenResponse:
+async def _update_git_config_from_github(
+    db: AsyncSession,
+    user_id: str,
+    github_name: str | None,
+    github_email: str,
+) -> None:
+    """Update user's git config from GitHub data.
+
+    Automatically sets git_name and git_email from GitHub profile when connecting.
+    """
+    result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+    config = result.scalar_one_or_none()
+
+    if not config:
+        # Create config if it doesn't exist
+        from src.routes.user_config import DEFAULT_DOTFILES
+
+        config = UserConfig(
+            user_id=user_id,
+            dotfiles_paths=DEFAULT_DOTFILES,
+            s3_dotfiles_path=f"users/{user_id}/dotfiles",
+            git_name=github_name,
+            git_email=github_email,
+        )
+        db.add(config)
+    else:
+        # Update git config from GitHub data
+        if github_name:
+            config.git_name = github_name
+        if github_email:
+            config.git_email = github_email
+
+    await db.commit()
+    await db.refresh(config)
+
+    # Invalidate cache
+    await cache_delete(user_config_key(user_id))
+
+    logger.info(
+        "Updated git config from GitHub",
+        user_id=user_id,
+        git_name=config.git_name,
+        git_email=config.git_email,
+    )
+
+
+def _build_token_response(
+    user: User,
+    request: Request,
+    response: Response,
+) -> OAuthTokenResponse:
     """Build OAuth token response for authenticated user."""
     # Get user role from database
     user_role = getattr(user, "role", "member") or "member"
 
-    access_token_info = create_access_token(user.id, role=user_role)
-    refresh_token_info = create_refresh_token(user.id)
+    return_tokens = _should_return_tokens(request)
+    access_ttl, refresh_ttl = _get_token_ttls(return_tokens)
+    access_token_info = create_access_token(user.id, role=user_role, expires_in_seconds=access_ttl)
+    refresh_token_info = create_refresh_token(user.id, expires_in_seconds=refresh_ttl)
 
     # Set httpOnly cookies for authentication (same as login/register)
-    set_auth_cookies(response, access_token_info.token, refresh_token_info.token)
+    set_auth_cookies(
+        response,
+        access_token_info.token,
+        refresh_token_info.token,
+        access_max_age_seconds=access_ttl,
+        refresh_max_age_seconds=refresh_ttl,
+    )
 
     # In production (COOKIE_SECURE=true), tokens are ONLY in httpOnly cookies
     # In development (COOKIE_SECURE=false), also return in body for compatibility
     return OAuthTokenResponse(
-        access_token=access_token_info.token if not settings.COOKIE_SECURE else None,
-        refresh_token=refresh_token_info.token if not settings.COOKIE_SECURE else None,
-        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        access_token=access_token_info.token if return_tokens else None,
+        refresh_token=refresh_token_info.token if return_tokens else None,
+        expires_in=access_token_info.expires_in_seconds,
         user={
             "id": user.id,
             "email": user.email,
@@ -371,7 +458,7 @@ async def github_authorize(request: Request, response: Response) -> OAuthURLResp
     params = {
         "client_id": settings.GITHUB_CLIENT_ID,
         "redirect_uri": settings.GITHUB_REDIRECT_URI,
-        "scope": "read:user user:email",
+        "scope": "read:user user:email repo read:org workflow",
         "state": state,
     }
 
@@ -407,7 +494,225 @@ async def github_callback(
     )
     user = await _find_or_create_oauth_user(db, oauth_user_info)
 
-    return _build_token_response(user, response)
+    integration_result = await db.execute(
+        select(GitHubIntegration).where(GitHubIntegration.user_id == user.id)
+    )
+    integration = integration_result.scalar_one_or_none()
+
+    if integration:
+        integration.github_user_id = int(user_data.user_id)
+        integration.github_username = user_data.login
+        integration.github_avatar_url = user_data.avatar_url
+        integration.github_email = user_data.email
+        integration.access_token = access_token
+        integration.refresh_token = None
+        integration.token_expires_at = None
+        integration.scopes = user_data.scopes
+        integration.is_active = True
+    else:
+        integration = GitHubIntegration(
+            user_id=user.id,
+            github_user_id=int(user_data.user_id),
+            github_username=user_data.login,
+            github_avatar_url=user_data.avatar_url,
+            github_email=user_data.email,
+            access_token=access_token,
+            refresh_token=None,
+            token_expires_at=None,
+            scopes=user_data.scopes,
+            is_active=True,
+        )
+        db.add(integration)
+
+    await db.commit()
+
+    # Update git config from GitHub data
+    await _update_git_config_from_github(
+        db,
+        user.id,
+        user_data.name,
+        user_data.email,
+    )
+
+    # Log token info for debugging
+    token_preview = (
+        f"{access_token[:4]}...{access_token[-4:]}" if len(access_token) > 8 else "SHORT"
+    )
+    logger.info(
+        "Saved GitHub integration after OAuth login",
+        user_id=str(user.id),
+        github_username=user_data.login,
+        token_preview=token_preview,
+        token_length=len(access_token),
+        scopes=user_data.scopes,
+    )
+
+    return _build_token_response(user, request, response)
+
+
+# ============== GitHub Account Linking ==============
+# These endpoints are for linking GitHub to an existing authenticated Podex account
+# (as opposed to the above endpoints which are for login/signup via GitHub)
+
+
+class GitHubLinkResponse(BaseModel):
+    """Response for GitHub account linking."""
+
+    success: bool
+    github_username: str
+    message: str
+
+
+@router.get("/github/link-authorize", response_model=OAuthURLResponse)
+@limiter.limit(RATE_LIMIT_OAUTH)
+async def github_link_authorize(
+    request: Request,
+    response: Response,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> OAuthURLResponse:
+    """Get GitHub OAuth authorization URL for account linking.
+
+    This endpoint is for logged-in users who want to link their GitHub
+    account to their existing Podex account (not for login/signup).
+    """
+    if not settings.GITHUB_CLIENT_ID:
+        raise HTTPException(status_code=501, detail="GitHub OAuth not configured")
+
+    state = secrets.token_urlsafe(32)
+    # Store state with user_id for linking
+    await store_oauth_link_state(state, "github", user["id"])
+
+    params = {
+        "client_id": settings.GITHUB_CLIENT_ID,
+        "redirect_uri": settings.GITHUB_REDIRECT_URI,  # Use same redirect URI as login
+        "scope": "read:user user:email repo read:org workflow",
+        "state": state,
+    }
+
+    url = f"https://github.com/login/oauth/authorize?{urlencode(params)}"
+    return OAuthURLResponse(url=url, state=state)
+
+
+@router.post("/github/link-callback", response_model=GitHubLinkResponse)
+@limiter.limit(RATE_LIMIT_OAUTH)
+async def github_link_callback(
+    body: OAuthCallbackRequest,
+    request: Request,
+    response: Response,
+    db: DbSession,
+) -> GitHubLinkResponse:
+    """Handle GitHub OAuth callback for account linking.
+
+    Links the GitHub account to the user who initiated the link flow.
+    Does NOT create a new user or log the user in with new credentials.
+    """
+    if not settings.GITHUB_CLIENT_ID or not settings.GITHUB_CLIENT_SECRET:
+        raise HTTPException(status_code=501, detail="GitHub OAuth not configured")
+
+    # Validate state and get the user_id who initiated the link
+    user_id = await validate_oauth_link_state(body.state, "github")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Invalid or expired state parameter")
+
+    # Exchange code for GitHub access token using the same redirect URI as login
+    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+        token_response = await client.post(
+            "https://github.com/login/oauth/access_token",
+            data={
+                "client_id": settings.GITHUB_CLIENT_ID,
+                "client_secret": settings.GITHUB_CLIENT_SECRET,
+                "code": body.code,
+                "redirect_uri": settings.GITHUB_REDIRECT_URI,
+            },
+            headers={"Accept": "application/json"},
+        )
+
+        if token_response.status_code != HTTPStatus.OK:
+            raise HTTPException(status_code=400, detail="Failed to exchange code for token")
+
+        token_data = token_response.json()
+        if "error" in token_data:
+            raise HTTPException(
+                status_code=400,
+                detail=token_data.get("error_description", "OAuth error"),
+            )
+
+        access_token = str(token_data["access_token"])
+
+    # Fetch GitHub user data
+    user_data = await _fetch_github_user_data(access_token)
+
+    # Verify the user exists
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Check if this GitHub account is already linked to another user
+    existing_integration = await db.execute(
+        select(GitHubIntegration).where(
+            GitHubIntegration.github_user_id == int(user_data.user_id),
+            GitHubIntegration.user_id != user_id,
+        )
+    )
+    if existing_integration.scalar_one_or_none():
+        raise HTTPException(
+            status_code=409,
+            detail="This GitHub account is already linked to another Podex account",
+        )
+
+    # Create or update the GitHub integration for this user
+    integration_result = await db.execute(
+        select(GitHubIntegration).where(GitHubIntegration.user_id == user_id)
+    )
+    integration = integration_result.scalar_one_or_none()
+
+    if integration:
+        integration.github_user_id = int(user_data.user_id)
+        integration.github_username = user_data.login
+        integration.github_avatar_url = user_data.avatar_url
+        integration.github_email = user_data.email
+        integration.access_token = access_token
+        integration.refresh_token = None
+        integration.token_expires_at = None
+        integration.scopes = user_data.scopes
+        integration.is_active = True
+    else:
+        integration = GitHubIntegration(
+            user_id=user_id,
+            github_user_id=int(user_data.user_id),
+            github_username=user_data.login,
+            github_avatar_url=user_data.avatar_url,
+            github_email=user_data.email,
+            access_token=access_token,
+            refresh_token=None,
+            token_expires_at=None,
+            scopes=user_data.scopes,
+            is_active=True,
+        )
+        db.add(integration)
+
+    await db.commit()
+
+    # Update git config from GitHub data
+    await _update_git_config_from_github(
+        db,
+        user_id,
+        user_data.name,
+        user_data.email,
+    )
+
+    logger.info(
+        "GitHub account linked successfully",
+        user_id=user_id,
+        github_username=user_data.login,
+    )
+
+    return GitHubLinkResponse(
+        success=True,
+        github_username=user_data.login,
+        message=f"Successfully linked GitHub account @{user_data.login}",
+    )
 
 
 # ============== Google OAuth ==============
@@ -464,4 +769,4 @@ async def google_callback(
     )
     user = await _find_or_create_oauth_user(db, oauth_user_info)
 
-    return _build_token_response(user, response)
+    return _build_token_response(user, request, response)

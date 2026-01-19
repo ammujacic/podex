@@ -54,6 +54,8 @@ from podex_shared.models.workspace import (
     WorkspaceExecResponse,
     WorkspaceFileRequest,
     WorkspaceInfo,
+    WorkspaceScaleRequest,
+    WorkspaceScaleResponse,
     WorkspaceStatus,
     WorkspaceTier,
 )
@@ -107,6 +109,8 @@ __all__ = [
     "WorkspaceExecResponse",
     "WorkspaceFileRequest",
     "WorkspaceInfo",
+    "WorkspaceScaleRequest",
+    "WorkspaceScaleResponse",
     "WorkspaceSessionState",
     "WorkspaceStatus",
     "WorkspaceTier",

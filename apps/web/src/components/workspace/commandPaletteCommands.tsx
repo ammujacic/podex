@@ -16,7 +16,6 @@ import {
   Minimize2,
   Moon,
   Pause,
-  Play,
   Plus,
   Settings,
   Sun,
@@ -586,14 +585,6 @@ export function buildCommands(deps: CommandDependencies): CommandItem[] {
         group: 'Session',
         keywords: ['pause', 'standby', 'stop', 'save'],
         action: () => openModal('pause-session'),
-      },
-      {
-        id: 'resume-session',
-        label: 'Resume Session',
-        icon: <Play className="h-4 w-4" />,
-        group: 'Session',
-        keywords: ['resume', 'start', 'wake', 'unpause'],
-        action: () => openModal('resume-session'),
       },
       {
         id: 'standby-settings',

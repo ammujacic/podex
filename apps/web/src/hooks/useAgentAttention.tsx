@@ -6,7 +6,7 @@ import type { LucideIcon } from 'lucide-react';
 import { CheckCircle, AlertCircle, MessageCircle, AlertTriangle } from 'lucide-react';
 import { onSocketEvent, type AgentAttentionEvent, type AgentAttentionType } from '@/lib/socket';
 import { useAttentionStore, type AgentAttention } from '@/stores/attention';
-import { synthesizeSpeech, markAttentionRead } from '@/lib/api';
+import { synthesizeSpeech, markAttentionRead, getAttentionItems } from '@/lib/api';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
 import { useOnFocusReturn, useVisibilityStore } from '@/hooks/useVisibilityTracking';
 
@@ -88,6 +88,42 @@ export function useAgentAttention({
 
   const { playAudioBase64 } = useAudioPlayback({ sessionId });
   const isFocused = useVisibilityStore((state) => state.isFocused);
+
+  // Load persisted attention items on mount
+  useEffect(() => {
+    if (!enabled) return;
+
+    let cancelled = false;
+    getAttentionItems(sessionId)
+      .then((response) => {
+        if (cancelled) return;
+
+        response.items.forEach((item) => {
+          addAttention({
+            id: item.id,
+            agentId: item.agent_id,
+            agentName: item.agent_name,
+            sessionId: item.session_id,
+            type: item.attention_type,
+            title: item.title,
+            message: item.message,
+            metadata: item.metadata ?? undefined,
+            priority: item.priority,
+            read: item.is_read,
+            dismissed: item.is_dismissed,
+            createdAt: new Date(item.created_at),
+            expiresAt: item.expires_at ? new Date(item.expires_at) : undefined,
+          });
+        });
+      })
+      .catch((error) => {
+        console.error('Failed to load attention history:', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, sessionId, addAttention]);
 
   // Track IDs of notifications that arrived while unfocused
   const unfocusedNotificationIds = useRef<Set<string>>(new Set());

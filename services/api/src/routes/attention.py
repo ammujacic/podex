@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
 
-from src.database import AgentAttention
+from src.database import Agent, AgentAttention
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 from src.routes.dependencies import DbSession, verify_session_access
 from src.websocket.hub import emit_to_session
@@ -23,6 +23,7 @@ class AttentionResponse(BaseModel):
 
     id: str
     agent_id: str
+    agent_name: str
     session_id: str
     attention_type: str
     title: str
@@ -60,7 +61,11 @@ async def list_attention_items(
     await verify_session_access(session_id, request, db)
 
     # Build query
-    query = select(AgentAttention).where(AgentAttention.session_id == session_id)
+    query = (
+        select(AgentAttention, Agent.name.label("agent_name"))
+        .join(Agent, AgentAttention.agent_id == Agent.id)
+        .where(AgentAttention.session_id == session_id)
+    )
 
     if not include_dismissed:
         query = query.where(AgentAttention.is_dismissed == False)
@@ -68,12 +73,13 @@ async def list_attention_items(
     query = query.order_by(AgentAttention.created_at.desc())
 
     result = await db.execute(query)
-    items = result.scalars().all()
+    rows = result.all()
 
     return [
         AttentionResponse(
             id=item.id,
             agent_id=item.agent_id,
+            agent_name=agent_name,
             session_id=item.session_id,
             attention_type=item.attention_type,
             title=item.title,
@@ -84,7 +90,7 @@ async def list_attention_items(
             metadata=item.attention_metadata,
             created_at=item.created_at,
         )
-        for item in items
+        for item, agent_name in rows
     ]
 
 

@@ -165,9 +165,11 @@ def create_secrets(project_id: str, env: str) -> dict[str, Any]:
         # OAuth - GitHub
         "github-client-id",
         "github-client-secret",
+        "github-redirect-uri",
         # OAuth - Google
         "google-client-id",
         "google-client-secret",
+        "google-redirect-uri",
         # Push notifications (VAPID)
         "vapid-public-key",
         "vapid-private-key",

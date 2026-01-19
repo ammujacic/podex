@@ -150,8 +150,8 @@ class EmailService:
         cc: list[str] | None,
         bcc: list[str] | None,
     ) -> EmailResult:
-        """Send email via SMTP."""
-        import smtplib  # noqa: PLC0415
+        """Send email via async SMTP (non-blocking)."""
+        import aiosmtplib  # noqa: PLC0415
 
         try:
             # Build MIME message
@@ -180,13 +180,16 @@ class EmailService:
             smtp_password = getattr(settings, "SMTP_PASSWORD", None)
             smtp_use_tls = getattr(settings, "SMTP_USE_TLS", True)
 
-            # Send via SMTP
-            with smtplib.SMTP(smtp_host, smtp_port) as server:
-                if smtp_use_tls:
-                    server.starttls()
-                if smtp_user and smtp_password:
-                    server.login(smtp_user, smtp_password)
-                server.sendmail(from_address, recipients, msg.as_string())
+            # Send via async SMTP (non-blocking - doesn't block the event loop)
+            await aiosmtplib.send(
+                msg,
+                hostname=smtp_host,
+                port=smtp_port,
+                username=smtp_user,
+                password=smtp_password,
+                start_tls=smtp_use_tls,
+                recipients=recipients,
+            )
 
             message_id = f"smtp-{uuid4().hex[:12]}"
             logger.info(

@@ -548,7 +548,7 @@ class HardwareSpec(Base):
     description: Mapped[str | None] = mapped_column(Text)
 
     # Hardware specifications
-    architecture: Mapped[str] = mapped_column(String(20), nullable=False)  # x86_64, arm64
+    architecture: Mapped[str] = mapped_column(String(20), nullable=False)  # x86_64
     vcpu: Mapped[int] = mapped_column(Integer, nullable=False)
     memory_mb: Mapped[int] = mapped_column(Integer, nullable=False)
 

@@ -53,10 +53,15 @@ update_secret "admin-password" "${ADMIN_PASSWORD:-}"
 # OAuth - GitHub
 update_secret "github-client-id" "${GITHUB_CLIENT_ID:-}"
 update_secret "github-client-secret" "${GITHUB_CLIENT_SECRET:-}"
+# GitHub redirect URI - set based on your production domain
+# Example: https://app.podex.dev/auth/callback/github
+update_secret "github-redirect-uri" "${GITHUB_REDIRECT_URI:-}"
 
 # OAuth - Google
 update_secret "google-client-id" "${GOOGLE_CLIENT_ID:-}"
 update_secret "google-client-secret" "${GOOGLE_CLIENT_SECRET:-}"
+# Example: https://app.podex.dev/auth/callback/google
+update_secret "google-redirect-uri" "${GOOGLE_REDIRECT_URI:-}"
 
 # Stripe
 update_secret "stripe-secret-key" "${STRIPE_SECRET_KEY:-}"

@@ -208,6 +208,7 @@ class TestWebSocketEvents:
         sio.emit = AsyncMock()
         sio.enter_room = AsyncMock()
         sio.leave_room = AsyncMock()
+        sio.get_session = AsyncMock(return_value={})
         sio.manager = MagicMock()
         sio.manager.rooms = {"/": {}}
         return sio
@@ -308,6 +309,7 @@ class TestTerminalEvents:
         sio.emit = AsyncMock()
         sio.enter_room = AsyncMock()
         sio.leave_room = AsyncMock()
+        sio.get_session = AsyncMock(return_value={})
         sio.manager = MagicMock()
         sio.manager.rooms = {"/": {}}
         return sio
@@ -390,6 +392,7 @@ class TestYjsEvents:
         sio.emit = AsyncMock()
         sio.enter_room = AsyncMock()
         sio.leave_room = AsyncMock()
+        sio.get_session = AsyncMock(return_value={})
         return sio
 
     @pytest.mark.asyncio
@@ -451,6 +454,7 @@ class TestVoiceEvents:
         """Create mock Socket.IO server."""
         sio = MagicMock()
         sio.emit = AsyncMock()
+        sio.get_session = AsyncMock(return_value={})
         return sio
 
     @pytest.mark.asyncio
@@ -508,6 +512,7 @@ class TestAgentAttentionEvents:
         """Create mock Socket.IO server."""
         sio = MagicMock()
         sio.emit = AsyncMock()
+        sio.get_session = AsyncMock(return_value={})
         return sio
 
     @pytest.mark.asyncio
@@ -539,6 +544,7 @@ class TestEmitFunctions:
         """Create mock Socket.IO server."""
         sio = MagicMock()
         sio.emit = AsyncMock()
+        sio.get_session = AsyncMock(return_value={})
         return sio
 
     @pytest.mark.asyncio
@@ -642,6 +648,7 @@ class TestBroadcastToRoom:
         """Create mock Socket.IO server."""
         sio = MagicMock()
         sio.emit = AsyncMock()
+        sio.get_session = AsyncMock(return_value={})
         return sio
 
     @pytest.mark.asyncio

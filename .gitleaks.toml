@@ -18,4 +18,6 @@ regexes = [
     # Test tokens used in unit tests
     '''pdx_pod_secret123''',
     '''pdx_pod_[a-z0-9]+''',
+    # Push notification P256DH key assignment in push.py (not a secret, just code)
+    '''existing\.p256dh_key = ''',
 ]

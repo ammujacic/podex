@@ -46,15 +46,18 @@ from podex_shared.models.workspace import (
 from podex_shared.models.workspace import (
     WorkspaceTier as SharedTier,
 )
+from src.api_client import sync_workspace_status_to_api
 from src.config import settings
 from src.managers.base import ComputeManager, ProxyRequest
 from src.models.workspace import (
     WorkspaceConfig,
     WorkspaceExecResponse,
     WorkspaceInfo,
+    WorkspaceScaleResponse,
     WorkspaceStatus,
     WorkspaceTier,
 )
+from src.storage.workspace_store import WorkspaceStore
 
 logger = structlog.get_logger()
 
@@ -90,7 +93,7 @@ class GCPComputeManager(ComputeManager):
     - GPU support via GKE with NVIDIA instances
     """
 
-    def __init__(self) -> None:
+    def __init__(self, workspace_store: WorkspaceStore | None = None) -> None:
         """Initialize GCP clients."""
         if not GOOGLE_CLOUD_AVAILABLE:
             raise ImportError(
@@ -100,14 +103,35 @@ class GCPComputeManager(ComputeManager):
 
         self._jobs_client = run_v2.JobsAsyncClient()
         self._executions_client = run_v2.ExecutionsAsyncClient()
-        self._workspaces: dict[str, WorkspaceInfo] = {}
-        self._file_sync: Any = None  # Optional file sync service
+        self._workspace_store = workspace_store
+        # FileSync is set via set_file_sync() during initialization
 
         logger.info(
             "GCPComputeManager initialized",
             project_id=settings.gcp_project_id,
             region=settings.gcp_region,
+            has_workspace_store=workspace_store is not None,
         )
+
+    async def _get_workspace(self, workspace_id: str) -> WorkspaceInfo | None:
+        """Get workspace from Redis store.
+
+        Always reads from Redis to ensure consistency across instances.
+        No local caching - Redis is the single source of truth.
+        """
+        if self._workspace_store:
+            return await self._workspace_store.get(workspace_id)
+        return None
+
+    async def _save_workspace(self, workspace: WorkspaceInfo) -> None:
+        """Save workspace to Redis store."""
+        if self._workspace_store:
+            await self._workspace_store.save(workspace)
+
+    async def _delete_workspace(self, workspace_id: str) -> None:
+        """Delete workspace from Redis store."""
+        if self._workspace_store:
+            await self._workspace_store.delete(workspace_id)
 
     def _is_gpu_tier(self, tier: WorkspaceTier) -> bool:
         """Check if the tier requires GPU compute.
@@ -317,10 +341,15 @@ class GCPComputeManager(ComputeManager):
                     # Store dotfiles config for sync on stop
                     "sync_dotfiles": config.sync_dotfiles,
                     "dotfiles_paths": config.dotfiles_paths,
+                    # Store git config for setup when workspace is ready
+                    "git_name": config.git_name,
+                    "git_email": config.git_email,
+                    # Flag to indicate if GitHub token auth needs setup
+                    "has_github_token": bool(config.environment.get("GITHUB_TOKEN")),
                 },
             )
 
-            self._workspaces[workspace_id] = workspace_info
+            await self._save_workspace(workspace_info)
 
             logger.info(
                 "GCP workspace created",
@@ -376,40 +405,41 @@ class GCPComputeManager(ComputeManager):
             },
         )
 
-        self._workspaces[workspace_id] = workspace_info
+        # Save to store if available
+        if self._workspace_store:
+            await self._workspace_store.save(workspace_info)
         return workspace_info
 
     async def stop_workspace(self, workspace_id: str) -> None:
         """Stop a Cloud Run job workspace."""
-        workspace = self._workspaces.get(workspace_id)
+        workspace = await self._get_workspace(workspace_id)
         if not workspace:
             return
 
-        # Save user dotfiles before stopping (if file_sync is available)
-        if self._file_sync:
-            sync_dotfiles = workspace.metadata.get("sync_dotfiles", True)
-            if sync_dotfiles:
-                try:
-                    dotfiles_paths = workspace.metadata.get("dotfiles_paths")
-                    await self._file_sync.save_user_dotfiles(
-                        workspace_id=workspace_id,
-                        user_id=workspace.user_id,
-                        dotfiles_paths=dotfiles_paths,
-                    )
-                    workspace.metadata["dotfiles_sync_status"] = "success"
-                    logger.info(
-                        "Saved user dotfiles before workspace stop",
-                        workspace_id=workspace_id,
-                        user_id=workspace.user_id,
-                    )
-                except Exception as e:
-                    logger.exception(
-                        "Failed to save user dotfiles before stop",
-                        workspace_id=workspace_id,
-                        user_id=workspace.user_id,
-                    )
-                    workspace.metadata["dotfiles_sync_status"] = "error"
-                    workspace.metadata["dotfiles_sync_error"] = str(e)
+        # Save user dotfiles before stopping
+        sync_dotfiles = workspace.metadata.get("sync_dotfiles", True)
+        if sync_dotfiles:
+            try:
+                dotfiles_paths = workspace.metadata.get("dotfiles_paths")
+                await self._file_sync.save_user_dotfiles(
+                    workspace_id=workspace_id,
+                    user_id=workspace.user_id,
+                    dotfiles_paths=dotfiles_paths,
+                )
+                workspace.metadata["dotfiles_sync_status"] = "success"
+                logger.info(
+                    "Saved user dotfiles before workspace stop",
+                    workspace_id=workspace_id,
+                    user_id=workspace.user_id,
+                )
+            except Exception as e:
+                logger.exception(
+                    "Failed to save user dotfiles before stop",
+                    workspace_id=workspace_id,
+                    user_id=workspace.user_id,
+                )
+                workspace.metadata["dotfiles_sync_status"] = "error"
+                workspace.metadata["dotfiles_sync_error"] = str(e)
 
         try:
             execution_name = workspace.metadata.get("execution_name")
@@ -420,6 +450,7 @@ class GCPComputeManager(ComputeManager):
 
             workspace.status = WorkspaceStatus.STOPPED
             workspace.last_activity = datetime.now(UTC)
+            await self._save_workspace(workspace)
             logger.info("GCP workspace stopped", workspace_id=workspace_id)
 
         except Exception as e:
@@ -431,7 +462,7 @@ class GCPComputeManager(ComputeManager):
         For Cloud Run jobs, this would require re-executing the job.
         Currently not implemented - workspaces need to be recreated.
         """
-        workspace = self._workspaces.get(workspace_id)
+        workspace = await self._get_workspace(workspace_id)
         if not workspace:
             raise ValueError(f"Workspace {workspace_id} not found")
 
@@ -489,7 +520,15 @@ class GCPComputeManager(ComputeManager):
         """Track compute usage for all running workspaces."""
         now = datetime.now(UTC)
 
-        for workspace in list(self._workspaces.values()):
+        # Get all running workspaces from store
+        workspaces: list[WorkspaceInfo] = []
+        if self._workspace_store:
+            workspaces = await self._workspace_store.list_running()
+        else:
+            # Fallback: return empty list if store not available
+            workspaces = []
+
+        for workspace in workspaces:
             if workspace.status != WorkspaceStatus.RUNNING:
                 continue
 
@@ -520,7 +559,7 @@ class GCPComputeManager(ComputeManager):
         """Delete a workspace."""
         await self.stop_workspace(workspace_id)
 
-        workspace = self._workspaces.get(workspace_id)
+        workspace = await self._get_workspace(workspace_id)
         if workspace:
             # Delete the Cloud Run job
             job_name = workspace.metadata.get("job_name")
@@ -532,14 +571,14 @@ class GCPComputeManager(ComputeManager):
                     logger.warning("Failed to delete Cloud Run job", error=str(e))
 
             # Clean up GCS files if requested
-            if not preserve_files and self._file_sync:
+            if not preserve_files:
                 try:
                     await self._file_sync.delete_workspace_files(workspace_id)
                     logger.info("Deleted GCS files for workspace", workspace_id=workspace_id)
                 except Exception as e:
                     logger.warning("Failed to delete GCS files", error=str(e))
 
-            del self._workspaces[workspace_id]
+            await self._delete_workspace(workspace_id)
 
         logger.info(
             "Workspace deleted",
@@ -549,7 +588,7 @@ class GCPComputeManager(ComputeManager):
 
     async def get_workspace(self, workspace_id: str) -> WorkspaceInfo | None:
         """Get workspace information."""
-        workspace = self._workspaces.get(workspace_id)
+        workspace = await self._get_workspace(workspace_id)
         if not workspace:
             return None
 
@@ -560,12 +599,40 @@ class GCPComputeManager(ComputeManager):
                 execution = await self._executions_client.get_execution(request=request)
 
                 # Map execution status to workspace status
+                old_status = workspace.status
                 if execution.reconciling:
                     workspace.status = WorkspaceStatus.CREATING
                 elif execution.failed_count > 0 or execution.succeeded_count > 0:
                     workspace.status = WorkspaceStatus.STOPPED
                 elif execution.running_count > 0:
                     workspace.status = WorkspaceStatus.RUNNING
+
+                await self._save_workspace(workspace)
+
+                # If status changed to RUNNING, set up git configuration
+                if (
+                    old_status != WorkspaceStatus.RUNNING
+                    and workspace.status == WorkspaceStatus.RUNNING
+                    and not workspace.metadata.get("git_setup_done")
+                ):
+                    try:
+                        await self.setup_workspace_git(workspace_id)
+                        workspace.metadata["git_setup_done"] = True
+                        await self._save_workspace(workspace)
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to setup git on workspace ready",
+                            workspace_id=workspace_id,
+                            error=str(e),
+                        )
+
+                # If status changed, sync to API
+                if old_status != workspace.status:
+                    await sync_workspace_status_to_api(
+                        workspace_id=workspace_id,
+                        status=workspace.status.value,
+                        container_id=execution_name,
+                    )
 
             except Exception as e:
                 logger.warning("Failed to get execution status", error=str(e))
@@ -578,13 +645,19 @@ class GCPComputeManager(ComputeManager):
         session_id: str | None = None,
     ) -> list[WorkspaceInfo]:
         """List workspaces filtered by user or session."""
-        workspaces = list(self._workspaces.values())
+        if self._workspace_store:
+            if user_id:
+                return await self._workspace_store.list_by_user(user_id)
+            if session_id:
+                return await self._workspace_store.list_by_session(session_id)
+            return await self._workspace_store.list_all()
 
+        # Fallback: return empty list if store not available
+        workspaces: list[WorkspaceInfo] = []
         if user_id:
             workspaces = [w for w in workspaces if w.user_id == user_id]
         if session_id:
             workspaces = [w for w in workspaces if w.session_id == session_id]
-
         return workspaces
 
     async def exec_command(
@@ -598,7 +671,7 @@ class GCPComputeManager(ComputeManager):
 
         For Cloud Run jobs, we use the workspace's HTTP API endpoint.
         """
-        workspace = self._workspaces.get(workspace_id)
+        workspace = await self._get_workspace(workspace_id)
         if not workspace:
             msg = f"Workspace {workspace_id} not found"
             raise ValueError(msg)
@@ -642,8 +715,174 @@ class GCPComputeManager(ComputeManager):
             )
 
     def set_file_sync(self, file_sync: Any) -> None:
-        """Set the file sync service for workspace file synchronization."""
+        """Set the file sync service for workspace file synchronization.
+
+        This MUST be called during initialization. FileSync is required
+        for proper workspace operation.
+
+        Args:
+            file_sync: The file sync service instance
+
+        Raises:
+            ValueError: If file_sync is None
+        """
+        if file_sync is None:
+            raise ValueError("FileSync is required and cannot be None")
         self._file_sync = file_sync
+
+    async def setup_workspace_git(self, workspace_id: str) -> None:
+        """Set up git configuration in the workspace.
+
+        This should be called after the workspace becomes ready (RUNNING status).
+        It configures git identity and GitHub token authentication based on
+        the workspace metadata stored during creation.
+        """
+        workspace = await self._get_workspace(workspace_id)
+        if not workspace:
+            logger.warning("Cannot setup git - workspace not found", workspace_id=workspace_id)
+            return
+
+        # Set up git identity
+        git_name = workspace.metadata.get("git_name")
+        git_email = workspace.metadata.get("git_email")
+
+        if git_name:
+            try:
+                safe_name = git_name.replace("'", "'\\''")
+                cmd = f"git config --global user.name '{safe_name}'"
+                await self.exec_command(workspace_id, cmd)
+                logger.debug("Set git user.name", workspace_id=workspace_id)
+            except Exception:
+                logger.warning(
+                    "Failed to set git user.name",
+                    workspace_id=workspace_id,
+                    exc_info=True,
+                )
+
+        if git_email:
+            try:
+                safe_email = git_email.replace("'", "'\\''")
+                cmd = f"git config --global user.email '{safe_email}'"
+                await self.exec_command(workspace_id, cmd)
+                logger.debug("Set git user.email", workspace_id=workspace_id)
+            except Exception:
+                logger.warning(
+                    "Failed to set git user.email",
+                    workspace_id=workspace_id,
+                    exc_info=True,
+                )
+
+        # Set up GitHub token authentication
+        if workspace.metadata.get("has_github_token"):
+            await self._setup_github_token_auth(workspace_id)
+
+    async def _setup_github_token_auth(self, workspace_id: str) -> None:
+        """Configure git to use GITHUB_TOKEN environment variable for GitHub authentication.
+
+        This sets up a credential helper that reads the token from the GITHUB_TOKEN
+        environment variable, enabling git push/pull/fetch operations to GitHub
+        without requiring manual authentication.
+        """
+        try:
+            # Create a credential helper script that reads from GITHUB_TOKEN env var
+            credential_helper_script = """#!/bin/bash
+if [ -n "$GITHUB_TOKEN" ]; then
+    echo "protocol=https"
+    echo "host=github.com"
+    echo "username=x-access-token"
+    echo "password=$GITHUB_TOKEN"
+fi
+"""
+
+            # Write the credential helper script
+            script_path = "~/.local/bin/git-credential-github-token"
+            await self.exec_command(
+                workspace_id,
+                f"mkdir -p ~/.local/bin && cat > {script_path} << 'SCRIPT'\n"
+                f"{credential_helper_script}SCRIPT",
+            )
+
+            # Make it executable
+            chmod_cmd = "chmod +x ~/.local/bin/git-credential-github-token"
+            await self.exec_command(workspace_id, chmod_cmd)
+
+            # Configure git to use this credential helper for github.com
+            helper_cmd = (
+                "git config --global credential.https://github.com.helper "
+                "'!~/.local/bin/git-credential-github-token'"
+            )
+            await self.exec_command(workspace_id, helper_cmd)
+
+            logger.info("GitHub token authentication configured", workspace_id=workspace_id)
+
+        except Exception:
+            # Non-fatal: log warning but continue
+            logger.warning(
+                "Failed to configure GitHub token authentication",
+                workspace_id=workspace_id,
+                exc_info=True,
+            )
+
+    async def discover_existing_workspaces(self) -> None:
+        """Discover and re-register existing workspaces after service restart.
+
+        For GCP, this loads workspaces from Redis and syncs their current
+        status to the API database. Unlike Docker, we rely on Redis as the
+        source of truth since Cloud Run jobs are managed externally.
+        """
+        if not self._workspace_store:
+            logger.info("No workspace store configured, skipping GCP workspace discovery")
+            return
+
+        try:
+            # Load all workspaces from Redis
+            workspaces = await self._workspace_store.list_all()
+
+            synced_count = 0
+            for workspace in workspaces:
+                # Get current status from Cloud Run
+                execution_name = workspace.metadata.get("execution_name")
+                if execution_name:
+                    try:
+                        request = run_v2.GetExecutionRequest(name=execution_name)
+                        execution = await self._executions_client.get_execution(request=request)
+
+                        # Map execution status to workspace status
+                        if execution.reconciling:
+                            workspace.status = WorkspaceStatus.CREATING
+                        elif execution.failed_count > 0 or execution.succeeded_count > 0:
+                            workspace.status = WorkspaceStatus.STOPPED
+                        elif execution.running_count > 0:
+                            workspace.status = WorkspaceStatus.RUNNING
+
+                        await self._save_workspace(workspace)
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to get GCP execution status during discovery",
+                            workspace_id=workspace.id,
+                            error=str(e),
+                        )
+                        # Mark as stopped if we can't get status
+                        workspace.status = WorkspaceStatus.STOPPED
+                        await self._save_workspace(workspace)
+
+                # Sync to API
+                success = await sync_workspace_status_to_api(
+                    workspace_id=workspace.id,
+                    status=workspace.status.value,
+                    container_id=execution_name,
+                )
+                if success:
+                    synced_count += 1
+
+            logger.info(
+                "GCP workspace discovery complete",
+                total_workspaces=len(workspaces),
+                synced_to_api=synced_count,
+            )
+
+        except Exception:
+            logger.exception("Failed to discover existing GCP workspaces")
 
     async def exec_command_stream(
         self,
@@ -665,7 +904,7 @@ class GCPComputeManager(ComputeManager):
         Yields:
             Output chunks as strings
         """
-        workspace = self._workspaces.get(workspace_id)
+        workspace = await self._get_workspace(workspace_id)
         if not workspace:
             msg = f"Workspace {workspace_id} not found"
             raise ValueError(msg)
@@ -767,25 +1006,57 @@ class GCPComputeManager(ComputeManager):
 
     async def heartbeat(self, workspace_id: str) -> None:
         """Update workspace last activity timestamp."""
-        workspace = self._workspaces.get(workspace_id)
-        if workspace:
-            workspace.last_activity = datetime.now(UTC)
+        if self._workspace_store:
+            await self._workspace_store.update_heartbeat(workspace_id)
+        # No fallback needed - heartbeat is best-effort
 
     async def cleanup_idle_workspaces(self, timeout_seconds: int) -> list[str]:
         """Clean up workspaces that have been idle too long."""
         now = datetime.now(UTC)
         cleaned_up = []
 
-        for workspace_id, workspace in list(self._workspaces.items()):
+        # Get all workspaces from store
+        workspaces: list[WorkspaceInfo] = []
+        if self._workspace_store:
+            workspaces = await self._workspace_store.list_all()
+        # No fallback - store is required for cleanup
+
+        # Filter workspaces that need cleanup
+        workspaces_to_cleanup = []
+        for workspace in workspaces:
             idle_time = (now - workspace.last_activity).total_seconds()
             if idle_time > timeout_seconds:
-                logger.info(
-                    "Cleaning up idle GCP workspace",
-                    workspace_id=workspace_id,
-                    idle_seconds=idle_time,
+                workspaces_to_cleanup.append((workspace, idle_time))
+
+        if workspaces_to_cleanup:
+            logger.info(
+                "Starting GCP workspace cleanup",
+                total_to_cleanup=len(workspaces_to_cleanup),
+                timeout_seconds=timeout_seconds,
+            )
+
+        for i, (workspace, idle_time) in enumerate(workspaces_to_cleanup, 1):
+            logger.info(
+                "Cleaning up GCP workspace",
+                progress=f"{i}/{len(workspaces_to_cleanup)}",
+                workspace_id=workspace.id[:12],
+                idle_seconds=int(idle_time),
+            )
+            try:
+                await self.delete_workspace(workspace.id)
+                cleaned_up.append(workspace.id)
+            except Exception:
+                logger.exception(
+                    "Failed to cleanup GCP workspace, continuing with others",
+                    workspace_id=workspace.id,
                 )
-                await self.delete_workspace(workspace_id)
-                cleaned_up.append(workspace_id)
+
+        if workspaces_to_cleanup:
+            logger.info(
+                "GCP workspace cleanup completed",
+                cleaned_up_count=len(cleaned_up),
+                total_attempted=len(workspaces_to_cleanup),
+            )
 
         return cleaned_up
 
@@ -925,7 +1196,7 @@ class GCPComputeManager(ComputeManager):
 
     async def get_active_ports(self, workspace_id: str) -> list[dict[str, Any]]:
         """Get list of ports with active services in the workspace."""
-        workspace = self._workspaces.get(workspace_id)
+        workspace = await self._get_workspace(workspace_id)
         if not workspace:
             return []
 
@@ -963,3 +1234,151 @@ class GCPComputeManager(ComputeManager):
                 workspace_id=workspace_id,
             )
             return []
+
+    async def scale_workspace(  # noqa: PLR0912
+        self,
+        workspace_id: str,
+        new_tier: WorkspaceTier,
+    ) -> WorkspaceScaleResponse:
+        """Scale a GCP workspace to a new compute tier.
+
+        For GCP Cloud Run:
+        - CPU tiers: Create new job with new tier, stop old job
+        - GPU tiers: Requires GKE (not yet implemented)
+        """
+        workspace = await self._get_workspace(workspace_id)
+        if not workspace:
+            raise ValueError(f"Workspace {workspace_id} not found")
+
+        old_tier = workspace.tier
+
+        # Check if scaling to the same tier
+        if old_tier == new_tier:
+            spec = HARDWARE_SPECS.get(new_tier)
+            return WorkspaceScaleResponse(
+                success=False,
+                message=f"Workspace is already on {new_tier.value} tier",
+                new_tier=new_tier,
+                estimated_cost_per_hour=spec.hourly_rate if spec else None,
+            )
+
+        # Check if scaling involves GPU tiers (not yet implemented)
+        old_spec = HARDWARE_SPECS.get(old_tier)
+        new_spec = HARDWARE_SPECS.get(new_tier)
+
+        if (old_spec and old_spec.requires_gke) or (new_spec and new_spec.requires_gke):
+            return WorkspaceScaleResponse(
+                success=False,
+                message=(
+                    "Scaling between GPU tiers is not yet supported. "
+                    "GPU workspaces require GKE which is not fully implemented."
+                ),
+                new_tier=None,
+                estimated_cost_per_hour=None,
+            )
+
+        logger.info(
+            "Scaling GCP workspace",
+            workspace_id=workspace_id,
+            old_tier=old_tier.value,
+            new_tier=new_tier.value,
+        )
+
+        try:
+            # Step 1: Save dotfiles before scaling
+            if workspace.metadata.get("sync_dotfiles", True):
+                try:
+                    dotfiles_paths = workspace.metadata.get("dotfiles_paths")
+                    await self._file_sync.save_user_dotfiles(
+                        workspace_id=workspace_id,
+                        user_id=workspace.user_id,
+                        dotfiles_paths=dotfiles_paths,
+                    )
+                    logger.info(
+                        "Saved dotfiles before scaling",
+                        workspace_id=workspace_id,
+                        user_id=workspace.user_id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to save dotfiles before scaling",
+                        workspace_id=workspace_id,
+                        error=str(e),
+                    )
+
+            # Step 2: Stop the current workspace
+            await self.stop_workspace(workspace_id)
+
+            # Step 3: Create new workspace config with the new tier
+            # We need to reconstruct the original config from the workspace metadata
+            new_config = WorkspaceConfig(tier=new_tier)
+
+            # Copy over important config from workspace metadata if available
+            if "git_name" in workspace.metadata:
+                new_config.git_name = workspace.metadata["git_name"]
+            if "git_email" in workspace.metadata:
+                new_config.git_email = workspace.metadata["git_email"]
+            if "sync_dotfiles" in workspace.metadata:
+                new_config.sync_dotfiles = workspace.metadata["sync_dotfiles"]
+            if "dotfiles_paths" in workspace.metadata:
+                new_config.dotfiles_paths = workspace.metadata["dotfiles_paths"]
+
+            # Step 4: Create new workspace with the same parameters but new tier
+            session_id = workspace.session_id
+            user_id = workspace.user_id
+
+            # Remove the old workspace from tracking
+            await self._delete_workspace(workspace_id)
+
+            # Create new workspace with the same ID but new tier
+            await self.create_workspace(
+                user_id=user_id,
+                session_id=session_id,
+                config=new_config,
+                workspace_id=workspace_id,  # Reuse the same workspace ID
+            )
+
+            return WorkspaceScaleResponse(
+                success=True,
+                message=f"Successfully scaled workspace to {new_tier.value} tier",
+                new_tier=new_tier,
+                estimated_cost_per_hour=new_spec.hourly_rate if new_spec else None,
+                requires_restart=True,
+            )
+
+        except Exception as e:
+            logger.exception(
+                "Failed to scale GCP workspace",
+                workspace_id=workspace_id,
+                old_tier=old_tier.value,
+                new_tier=new_tier.value,
+                error=str(e),
+            )
+
+            # Try to restore the original workspace if scaling failed
+            try:
+                # Recreate with original tier
+                original_config = WorkspaceConfig(tier=old_tier)
+                if "git_name" in workspace.metadata:
+                    original_config.git_name = workspace.metadata["git_name"]
+                if "git_email" in workspace.metadata:
+                    original_config.git_email = workspace.metadata["git_email"]
+
+                await self.create_workspace(
+                    user_id=workspace.user_id,
+                    session_id=workspace.session_id,
+                    config=original_config,
+                    workspace_id=workspace_id,
+                )
+                logger.info(
+                    "Restored original workspace after scaling failure",
+                    workspace_id=workspace_id,
+                )
+            except Exception as restore_error:
+                logger.error(
+                    "Failed to restore original workspace after scaling failure",
+                    workspace_id=workspace_id,
+                    error=str(restore_error),
+                )
+
+            raise ValueError(f"Failed to scale workspace: {e}") from e

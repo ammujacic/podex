@@ -342,6 +342,7 @@ export function useLayoutSync({ sessionId, enabled = true }: UseLayoutSyncOption
   }, [
     enabled,
     sessionId,
+    session?.editorGridCardId,
     setViewMode,
     setActiveAgent,
     updateAgentGridSpan,

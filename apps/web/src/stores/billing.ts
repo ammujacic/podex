@@ -144,7 +144,7 @@ export interface HardwareSpec {
   tier: string;
   displayName: string;
   description: string | null;
-  architecture: 'x86_64' | 'arm64';
+  architecture: 'x86_64';
   vcpu: number;
   memoryMb: number;
   gpuType: string | null;

@@ -4,19 +4,21 @@ import asyncio
 import base64
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from http.cookies import SimpleCookie
 from typing import Any
 from uuid import uuid4
 
 import socketio
 import structlog
 from jose import JWTError, jwt
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from src.config import settings
 from src.database.connection import async_session_factory
+from src.database.models import Agent as AgentModel
+from src.database.models import AgentAttention, SessionShare
 from src.database.models import Session as SessionModel
-from src.database.models import SessionShare
-from src.routes.sessions import ensure_workspace_provisioned
+from src.routes.auth import COOKIE_ACCESS_TOKEN
 from src.session_sync.manager import session_sync_manager
 from src.session_sync.models import SharingMode, SyncAction, SyncActionType
 from src.terminal.manager import terminal_manager
@@ -90,6 +92,39 @@ async def _verify_auth_token(token: str | None) -> str | None:
         return user_id
 
 
+def _extract_cookie_token(environ: dict[str, Any]) -> str | None:
+    """Extract access token from Cookie header in the initial socket handshake."""
+    headers = environ.get("headers") or []
+    cookie_header = None
+    for key, value in headers:
+        header_key = (
+            key.decode("utf-8", errors="ignore").lower()
+            if isinstance(key, bytes)
+            else str(key).lower()
+        )
+        if header_key == "cookie":
+            cookie_header = (
+                value.decode("utf-8", errors="ignore") if isinstance(value, bytes) else str(value)
+            )
+            break
+    if not cookie_header:
+        return None
+    cookie = SimpleCookie()
+    cookie.load(cookie_header)
+    if COOKIE_ACCESS_TOKEN in cookie:
+        return cookie[COOKIE_ACCESS_TOKEN].value
+    return None
+
+
+async def _get_auth_token(sid: str, data: dict[str, str]) -> str | None:
+    """Get auth token from payload or stored socket session."""
+    token = data.get("auth_token")
+    if token:
+        return token
+    session = await sio.get_session(sid)
+    return session.get("auth_token") if session else None
+
+
 async def _verify_session_access(session_id: str, user_id: str) -> bool:
     """Verify user has access to the session.
 
@@ -155,29 +190,53 @@ _client_info: dict[str, dict[str, Any]] = {}
 MAX_YJS_UPDATES_PER_DOC = 100
 # Maximum bytes per session's Yjs data before cleanup warning
 MAX_YJS_BYTES_PER_SESSION = 10 * 1024 * 1024  # 10MB
+# Maximum number of Yjs sessions to track in memory
+MAX_YJS_SESSIONS = 1000
+# Maximum number of documents per Yjs session
+MAX_YJS_DOCS_PER_SESSION = 100
+
+# In-memory Yjs state (used for fast access, Redis is source of truth)
+_yjs_updates: dict[str, dict[str, list[bytes]]] = {}
+_yjs_docs: dict[str, dict[str, bytes]] = {}
 
 # Yjs Redis key prefixes
 YJS_DOC_KEY = "yjs:doc:{session_id}:{doc_name}"
 YJS_UPDATES_KEY = "yjs:updates:{session_id}:{doc_name}"
 YJS_TTL = 86400 * 7  # 7 days TTL for Yjs data
 
+# Error messages for Yjs storage
+YJS_REDIS_URL_ERROR = "Redis URL not configured. Yjs collaborative editing requires Redis."
+YJS_REDIS_CONNECTION_ERROR = "Redis connection failed for Yjs storage"
+
+
+class YjsStorageError(Exception):
+    """Error raised when Yjs storage operations fail."""
+
+    def __init__(self, message: str, *args: Any, **kwargs: Any) -> None:
+        super().__init__(message, *args, **kwargs)
+
 
 class YjsStorage:
-    """Yjs document storage with Redis persistence and in-memory fallback."""
+    """Yjs document storage using Redis persistence only.
+
+    Redis is required for Yjs collaborative editing - no in-memory fallback.
+    This ensures consistency across API instances and prevents data loss.
+    """
 
     def __init__(self) -> None:
-        self._memory_docs: dict[str, dict[str, bytes]] = {}
-        self._memory_updates: dict[str, dict[str, list[bytes]]] = {}
         self._redis: Any = None
-        self._use_redis = False
 
     async def _get_redis(self) -> Any:
-        """Get Redis client, initializing if needed."""
+        """Get Redis client, initializing if needed.
+
+        Raises:
+            YjsStorageError: If Redis is not configured or unavailable.
+        """
         if self._redis is not None:
             return self._redis
 
         if not settings.REDIS_URL:
-            return None
+            raise YjsStorageError(YJS_REDIS_URL_ERROR)
 
         try:
             import redis.asyncio as aioredis
@@ -189,158 +248,64 @@ class YjsStorage:
             )
             # Test connection
             await self._redis.ping()
-            self._use_redis = True
-            logger.info("Yjs storage using Redis persistence")
-            return self._redis  # noqa: TRY300
+            logger.info("Yjs storage connected to Redis")
         except Exception as e:
-            logger.warning("Redis not available for Yjs storage, using in-memory", error=str(e))
             self._redis = None
-            self._use_redis = False
-            return None
+            raise YjsStorageError(f"{YJS_REDIS_CONNECTION_ERROR}: {e}") from e  # noqa: TRY003
+        else:
+            return self._redis
 
     async def get_doc(self, session_id: str, doc_name: str) -> bytes | None:
-        """Get document state vector."""
+        """Get document state vector from Redis."""
         redis = await self._get_redis()
-        if redis:
-            try:
-                key = YJS_DOC_KEY.format(session_id=session_id, doc_name=doc_name)
-                result = await redis.get(key)
-                return bytes(result) if result else None
-            except Exception as e:
-                logger.warning("Redis get_doc failed, falling back to memory", error=str(e))
-
-        # Fallback to memory
-        return self._memory_docs.get(session_id, {}).get(doc_name)
+        key = YJS_DOC_KEY.format(session_id=session_id, doc_name=doc_name)
+        result = await redis.get(key)
+        return bytes(result) if result else None
 
     async def set_doc(self, session_id: str, doc_name: str, state_vector: bytes) -> None:
-        """Set document state vector."""
+        """Set document state vector in Redis."""
         redis = await self._get_redis()
-        if redis:
-            try:
-                key = YJS_DOC_KEY.format(session_id=session_id, doc_name=doc_name)
-                await redis.setex(key, YJS_TTL, state_vector)
-                return  # noqa: TRY300
-            except Exception as e:
-                logger.warning("Redis set_doc failed, falling back to memory", error=str(e))
-
-        # Fallback to memory
-        if session_id not in self._memory_docs:
-            self._memory_docs[session_id] = {}
-        self._memory_docs[session_id][doc_name] = state_vector
+        key = YJS_DOC_KEY.format(session_id=session_id, doc_name=doc_name)
+        await redis.setex(key, YJS_TTL, state_vector)
 
     async def get_updates(self, session_id: str, doc_name: str) -> list[bytes]:
-        """Get pending updates for a document."""
+        """Get pending updates for a document from Redis."""
         redis = await self._get_redis()
-        if redis:
-            try:
-                key = YJS_UPDATES_KEY.format(session_id=session_id, doc_name=doc_name)
-                updates = await redis.lrange(key, 0, -1)
-                return updates or []  # noqa: TRY300
-            except Exception as e:
-                logger.warning("Redis get_updates failed, falling back to memory", error=str(e))
-
-        # Fallback to memory
-        return self._memory_updates.get(session_id, {}).get(doc_name, [])
+        key = YJS_UPDATES_KEY.format(session_id=session_id, doc_name=doc_name)
+        updates = await redis.lrange(key, 0, -1)
+        return updates or []
 
     async def add_update(self, session_id: str, doc_name: str, update: bytes) -> int:
-        """Add an update and return current update count."""
+        """Add an update to Redis and return current update count."""
         redis = await self._get_redis()
-        if redis:
-            try:
-                key = YJS_UPDATES_KEY.format(session_id=session_id, doc_name=doc_name)
-                count = await redis.rpush(key, update)
-                await redis.expire(key, YJS_TTL)
-                return int(count)
-            except Exception as e:
-                logger.warning("Redis add_update failed, falling back to memory", error=str(e))
-
-        # Fallback to memory with bounds checking
-        if session_id not in self._memory_updates:
-            self._memory_updates[session_id] = {}
-        if doc_name not in self._memory_updates[session_id]:
-            self._memory_updates[session_id][doc_name] = []
-
-        # SECURITY: Enforce memory limits to prevent DoS via memory exhaustion
-        current_updates = self._memory_updates[session_id][doc_name]
-        if len(current_updates) >= MAX_YJS_UPDATES_PER_DOC:
-            # Compact to half the limit when full
-            logger.info(
-                "Compacting in-memory Yjs updates",
-                session_id=session_id,
-                doc_name=doc_name,
-                old_count=len(current_updates),
-            )
-            self._memory_updates[session_id][doc_name] = current_updates[
-                -(MAX_YJS_UPDATES_PER_DOC // 2) :
-            ]
-
-        # Check total session bytes
-        total_bytes = sum(
-            sum(len(u) for u in updates)
-            for updates in self._memory_updates.get(session_id, {}).values()
-        )
-        if total_bytes + len(update) > MAX_YJS_BYTES_PER_SESSION:
-            logger.warning(
-                "In-memory Yjs session limit exceeded, forcing cleanup",
-                session_id=session_id,
-                bytes=total_bytes,
-                limit=MAX_YJS_BYTES_PER_SESSION,
-            )
-            # Force aggressive cleanup - keep only recent updates
-            for doc in self._memory_updates.get(session_id, {}):
-                self._memory_updates[session_id][doc] = self._memory_updates[session_id][doc][-10:]
-
-        self._memory_updates[session_id][doc_name].append(update)
-        return len(self._memory_updates[session_id][doc_name])
+        key = YJS_UPDATES_KEY.format(session_id=session_id, doc_name=doc_name)
+        count = await redis.rpush(key, update)
+        await redis.expire(key, YJS_TTL)
+        return int(count)
 
     async def clear_updates(self, session_id: str, doc_name: str) -> None:
         """Clear updates after merge."""
         redis = await self._get_redis()
-        if redis:
-            try:
-                key = YJS_UPDATES_KEY.format(session_id=session_id, doc_name=doc_name)
-                await redis.delete(key)
-                return  # noqa: TRY300
-            except Exception as e:
-                logger.warning("Redis clear_updates failed, falling back to memory", error=str(e))
-
-        # Fallback to memory
-        if session_id in self._memory_updates and doc_name in self._memory_updates[session_id]:
-            self._memory_updates[session_id][doc_name] = []
+        key = YJS_UPDATES_KEY.format(session_id=session_id, doc_name=doc_name)
+        await redis.delete(key)
 
     async def cleanup_session(self, session_id: str) -> None:
-        """Clean up all Yjs data for a session."""
+        """Clean up all Yjs data for a session from Redis."""
         redis = await self._get_redis()
-        if redis:
-            try:
-                # Find and delete all keys for this session
-                pattern = f"yjs:*:{session_id}:*"
-                cursor = 0
-                while True:
-                    cursor, keys = await redis.scan(cursor, match=pattern, count=100)
-                    if keys:
-                        await redis.delete(*keys)
-                    if cursor == 0:
-                        break
-                logger.info("Cleaned up Yjs Redis data for session", session_id=session_id)
-            except Exception as e:
-                logger.warning("Redis cleanup_session failed", error=str(e))
-
-        # Also clean memory
-        self._memory_docs.pop(session_id, None)
-        self._memory_updates.pop(session_id, None)
+        # Find and delete all keys for this session
+        pattern = f"yjs:*:{session_id}:*"
+        cursor = 0
+        while True:
+            cursor, keys = await redis.scan(cursor, match=pattern, count=100)
+            if keys:
+                await redis.delete(*keys)
+            if cursor == 0:
+                break
+        logger.info("Cleaned up Yjs Redis data for session", session_id=session_id)
 
 
 # Global Yjs storage instance
 yjs_storage = YjsStorage()
-
-# Legacy in-memory storage (kept for backwards compatibility during transition)
-_yjs_docs: dict[str, dict[str, bytes]] = {}  # session_id -> {doc_name: state_vector}
-_yjs_updates: dict[str, dict[str, list[bytes]]] = {}  # session_id -> {doc_name: [updates]}
-
-# SECURITY: Bounds on in-memory Yjs tracking to prevent memory exhaustion
-MAX_YJS_SESSIONS = 1000  # Maximum number of sessions to track
-MAX_YJS_DOCS_PER_SESSION = 50  # Maximum documents per session
 
 # Grace period for cleanup (seconds) to avoid race conditions
 CLEANUP_GRACE_PERIOD = 5.0
@@ -402,6 +367,9 @@ sio.register_namespace(local_pod_namespace)
 @sio.event
 async def connect(sid: str, _environ: dict[str, Any]) -> None:
     """Handle client connection."""
+    token = _extract_cookie_token(_environ)
+    if token:
+        await sio.save_session(sid, {"auth_token": token})
     logger.info("Client connected", sid=sid)
 
 
@@ -424,7 +392,7 @@ async def disconnect(sid: str) -> None:
 async def session_join(sid: str, data: dict[str, str]) -> None:
     """Join a session room with authentication and authorization."""
     session_id = data.get("session_id")
-    auth_token = data.get("auth_token")
+    auth_token = await _get_auth_token(sid, data)
     username = data.get("username", "Anonymous")
     device_id = data.get("device_id", sid)
 
@@ -595,7 +563,7 @@ async def agent_message(sid: str, data: dict[str, Any]) -> None:
 async def terminal_attach(sid: str, data: dict[str, str]) -> None:
     """Attach to terminal session with authentication and authorization."""
     workspace_id = data.get("workspace_id")
-    auth_token = data.get("auth_token")
+    auth_token = await _get_auth_token(sid, data)
     shell = data.get("shell", "bash")  # Default to bash if not specified
 
     if not workspace_id:
@@ -626,6 +594,9 @@ async def terminal_attach(sid: str, data: dict[str, str]) -> None:
 
     # Ensure workspace is provisioned before connecting to terminal
     try:
+        # Import here to avoid circular import with sessions.py
+        from src.routes.sessions import ensure_workspace_provisioned
+
         async with async_session_factory() as db:
             result = await db.execute(
                 select(SessionModel).where(SessionModel.workspace_id == workspace_id)
@@ -798,6 +769,34 @@ async def emit_permission_request(
         description: Optional description of what the command does
         tool_name: Tool name (e.g., "Bash", "Write", etc.)
     """
+    attention_id = f"permission-{request_id}"
+    agent_name = "Agent"
+    async with async_session_factory() as db:
+        result = await db.execute(select(AgentModel.name).where(AgentModel.id == agent_id))
+        agent_name = result.scalar_one_or_none() or agent_name
+
+    description_text = description or (
+        f"Command requested: {command}" if command else "Approval required to proceed."
+    )
+    await emit_agent_attention(
+        AgentAttentionInfo(
+            session_id=session_id,
+            agent_id=agent_id,
+            agent_name=agent_name,
+            attention_type="needs_approval",
+            title=f"{agent_name} needs your approval",
+            message=description_text,
+            priority="high",
+            metadata={
+                "permission_request": True,
+                "request_id": request_id,
+                "command": command,
+                "tool_name": tool_name or "Bash",
+            },
+            attention_id=attention_id,
+        )
+    )
+
     await sio.emit(
         "permission_request",
         {
@@ -807,6 +806,7 @@ async def emit_permission_request(
             "command": command,
             "description": description,
             "tool_name": tool_name or "Bash",
+            "attention_id": attention_id,
             "action_type": "command_execute",
             "action_details": {
                 "command": command,
@@ -1640,6 +1640,34 @@ async def emit_agent_attention(info: AgentAttentionInfo) -> str:
     """
     notification_id = info.attention_id or str(uuid4())
 
+    async with async_session_factory() as db:
+        try:
+            existing = await db.execute(
+                select(AgentAttention.id).where(AgentAttention.id == notification_id)
+            )
+            if existing.scalar_one_or_none() is None:
+                attention = AgentAttention(
+                    id=notification_id,
+                    agent_id=info.agent_id,
+                    session_id=info.session_id,
+                    attention_type=info.attention_type,
+                    title=info.title,
+                    message=info.message,
+                    attention_metadata=info.metadata or {},
+                    priority=info.priority,
+                )
+                db.add(attention)
+                await db.commit()
+        except Exception as e:
+            await db.rollback()
+            logger.warning(
+                "Failed to persist agent attention",
+                session_id=info.session_id,
+                agent_id=info.agent_id,
+                attention_id=notification_id,
+                error=str(e),
+            )
+
     await sio.emit(
         "agent_attention",
         {
@@ -1679,6 +1707,26 @@ async def agent_attention_read(_sid: str, data: dict[str, Any]) -> None:
     if not session_id or not attention_id:
         return
 
+    async with async_session_factory() as db:
+        try:
+            await db.execute(
+                update(AgentAttention)
+                .where(
+                    AgentAttention.id == attention_id,
+                    AgentAttention.session_id == session_id,
+                )
+                .values(is_read=True)
+            )
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            logger.warning(
+                "Failed to persist attention read",
+                session_id=session_id,
+                attention_id=attention_id,
+                error=str(e),
+            )
+
     # Broadcast to all session users that this attention was read
     await sio.emit(
         "agent_attention_read",
@@ -1701,6 +1749,26 @@ async def agent_attention_dismiss(_sid: str, data: dict[str, Any]) -> None:
 
     if not session_id or not attention_id:
         return
+
+    async with async_session_factory() as db:
+        try:
+            await db.execute(
+                update(AgentAttention)
+                .where(
+                    AgentAttention.id == attention_id,
+                    AgentAttention.session_id == session_id,
+                )
+                .values(is_dismissed=True)
+            )
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            logger.warning(
+                "Failed to persist attention dismissal",
+                session_id=session_id,
+                attention_id=attention_id,
+                error=str(e),
+            )
 
     # Broadcast to all session users that this attention was dismissed
     await sio.emit(

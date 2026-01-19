@@ -15,6 +15,7 @@ import {
   Check,
   FileCode,
   Download,
+  CloudSync,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUIStore } from '@/stores/ui';
@@ -29,6 +30,11 @@ interface ActionItem {
   disabled?: boolean;
 }
 
+interface SyncInfo {
+  isSynced: boolean;
+  syncType: 'user' | 'session' | null;
+}
+
 interface MobileFileActionsSheetProps {
   sessionId: string;
   onOpen?: (path: string) => void;
@@ -39,6 +45,8 @@ interface MobileFileActionsSheetProps {
   onShare?: (path: string) => void;
   onDelete?: (path: string) => void;
   onDownload?: (path: string) => void;
+  onToggleSync?: (path: string) => void;
+  getSyncInfo?: (path: string) => SyncInfo;
 }
 
 export function MobileFileActionsSheet({
@@ -51,6 +59,8 @@ export function MobileFileActionsSheet({
   onShare,
   onDelete,
   onDownload,
+  onToggleSync,
+  getSyncInfo,
 }: MobileFileActionsSheetProps) {
   const target = useUIStore((state) => state.mobileFileActionsTarget);
   const closeSheet = useUIStore((state) => state.closeMobileFileActions);
@@ -103,6 +113,7 @@ export function MobileFileActionsSheet({
   if (!target) return null;
 
   const isDirectory = target.type === 'directory';
+  const syncInfo = getSyncInfo ? getSyncInfo(target.path) : { isSynced: false, syncType: null };
 
   const actions: ActionItem[] = [
     {
@@ -156,6 +167,16 @@ export function MobileFileActionsSheet({
       onClick: () => handleAction('share', onShare),
       disabled: !onShare,
     },
+    ...(onToggleSync && syncInfo.syncType !== 'session'
+      ? [
+          {
+            id: 'toggle-sync' as const,
+            label: syncInfo.isSynced ? 'Remove from sync' : 'Add to user sync',
+            icon: <CloudSync className="w-5 h-5" />,
+            onClick: () => handleAction('toggle-sync', onToggleSync),
+          },
+        ]
+      : []),
     {
       id: 'delete',
       label: 'Delete',

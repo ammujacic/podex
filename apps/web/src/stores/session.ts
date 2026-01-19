@@ -95,9 +95,15 @@ interface SessionState {
     status: Session['workspaceStatus'],
     standbyAt?: string | null
   ) => void;
+  setWorkspaceStatusChecking: (sessionId: string, checking: boolean) => void;
   setStandbySettings: (sessionId: string, settings: StandbySettings | null) => void;
   // Update session workspace ID (for syncing from API when stale in localStorage)
   updateSessionWorkspaceId: (sessionId: string, workspaceId: string) => void;
+  updateSessionInfo: (
+    sessionId: string,
+    updates: Partial<Pick<Session, 'name' | 'branch' | 'gitUrl'>>
+  ) => void;
+  updateSessionWorkspaceTier: (sessionId: string, tier: string) => void;
 
   // Agent mode auto-switch actions
   handleAutoModeSwitch: (
@@ -648,7 +654,24 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
           [sessionId]: {
             ...session,
             workspaceStatus: status,
+            workspaceStatusChecking: false,
             standbyAt: standbyAt ?? null,
+          },
+        },
+      };
+    }),
+
+  setWorkspaceStatusChecking: (sessionId, checking) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      if (session.workspaceStatusChecking === checking) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            workspaceStatusChecking: checking,
           },
         },
       };
@@ -679,6 +702,30 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
         sessions: {
           ...state.sessions,
           [sessionId]: { ...session, workspaceId },
+        },
+      };
+    }),
+
+  updateSessionInfo: (sessionId, updates) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: { ...session, ...updates },
+        },
+      };
+    }),
+
+  updateSessionWorkspaceTier: (sessionId, tier) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: { ...session, workspaceTier: tier },
         },
       };
     }),

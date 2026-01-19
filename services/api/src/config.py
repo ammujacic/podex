@@ -75,6 +75,8 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    BROWSER_ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
+    BROWSER_REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
     # Auth Cookies (httpOnly cookies for XSS protection)
     COOKIE_SECURE: bool = True  # Set False for local dev without HTTPS

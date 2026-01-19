@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import {
   Plug,
   X,
@@ -29,6 +30,7 @@ import {
 import { cn } from '@/lib/utils';
 import { useMCPStore, selectIsServerTesting, selectTestResult } from '@/stores/mcp';
 import type { MCPDefaultServer, MCPServer, CreateMCPServerRequest } from '@/lib/api';
+import { getGitHubStatus } from '@/lib/api';
 
 // ============================================================================
 // ICONS
@@ -67,6 +69,7 @@ const SERVER_ICONS: Record<string, React.ReactNode> = {
 
 interface DefaultServerCardProps {
   server: MCPDefaultServer;
+  githubConnected?: boolean | null;
   onEnable: (slug: string, envVars?: Record<string, string>) => Promise<void>;
   onDisable: (slug: string) => Promise<void>;
   onTest: (serverId: string) => Promise<void>;
@@ -74,6 +77,7 @@ interface DefaultServerCardProps {
 
 function DefaultServerCard({
   server,
+  githubConnected,
   onEnable,
   onDisable,
   onTest: _onTest,
@@ -112,7 +116,12 @@ function DefaultServerCard({
     }
   };
 
-  const isActive = server.is_builtin || server.is_enabled;
+  const isGitHub = server.slug === 'github';
+  const isActive = isGitHub ? !!githubConnected : server.is_builtin || server.is_enabled;
+  const githubButtonLabel = githubConnected ? 'Manage GitHub' : 'Connect GitHub';
+  const githubButtonClass = githubConnected
+    ? 'bg-overlay text-text-secondary hover:text-text-primary'
+    : 'bg-accent-primary text-void hover:bg-accent-primary/90';
 
   return (
     <div
@@ -165,7 +174,17 @@ function DefaultServerCard({
         </div>
 
         {/* Toggle or Always On indicator */}
-        {server.is_builtin ? (
+        {isGitHub ? (
+          <Link
+            href="/settings/integrations/github"
+            className={cn(
+              'px-3 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap',
+              githubButtonClass
+            )}
+          >
+            {githubButtonLabel}
+          </Link>
+        ) : server.is_builtin ? (
           <span className="text-xs text-success font-medium px-2 py-1 rounded bg-success/10 whitespace-nowrap">
             Always On
           </span>
@@ -631,10 +650,31 @@ export function MCPSettings({ className }: MCPSettingsProps) {
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
     new Set(['filesystem', 'version_control'])
   );
+  const [githubConnected, setGithubConnected] = useState<boolean | null>(null);
+
+  const fetchGitHubStatus = useCallback(async () => {
+    try {
+      const data = await getGitHubStatus();
+      setGithubConnected(Boolean(data?.connected));
+    } catch {
+      setGithubConnected(null);
+    }
+  }, []);
 
   useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  useEffect(() => {
+    fetchGitHubStatus();
+  }, [fetchGitHubStatus]);
+
+  const isDefaultServerActive = (server: MCPDefaultServer) => {
+    if (server.slug === 'github') {
+      return !!githubConnected;
+    }
+    return server.is_builtin || server.is_enabled;
+  };
 
   const toggleCategory = (categoryId: string) => {
     setExpandedCategories((prev) => {
@@ -747,7 +787,7 @@ export function MCPSettings({ className }: MCPSettingsProps) {
                     {category.name}
                   </span>
                   <span className="text-xs text-text-muted">
-                    {category.servers.filter((s) => s.is_builtin || s.is_enabled).length}/
+                    {category.servers.filter((s) => isDefaultServerActive(s)).length}/
                     {category.servers.length}
                   </span>
                   {expandedCategories.has(category.id) ? (
@@ -764,6 +804,7 @@ export function MCPSettings({ className }: MCPSettingsProps) {
                       <DefaultServerCard
                         key={server.slug}
                         server={server}
+                        githubConnected={githubConnected}
                         onEnable={async (slug, envVars) => {
                           await enableDefault(slug, envVars);
                         }}

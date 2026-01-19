@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import select, update
@@ -15,14 +16,30 @@ from src.database.models import GitHubIntegration
 from src.dependencies import get_current_user
 from src.github_client import (
     GitHubClient,
+    GitHubTokenExpiredError,
 )
 
 router = APIRouter(prefix="/github", tags=["github"])
 
 
+def handle_github_token_error(e: GitHubTokenExpiredError) -> None:
+    """Convert GitHubTokenExpiredError to HTTP 424 (Failed Dependency) response.
+
+    We use 424 instead of 401 because:
+    - 401 would trigger the frontend to log the user out (thinks Podex auth failed)
+    - 424 indicates a dependency (GitHub) failed, not the user's Podex session
+    """
+    raise HTTPException(
+        status_code=status.HTTP_424_FAILED_DEPENDENCY,
+        detail=str(e),
+    ) from e
+
+
 # ============================================================================
 # Helper to get GitHub client
 # ============================================================================
+
+logger = structlog.get_logger()
 
 
 async def get_github_client(
@@ -41,6 +58,14 @@ async def get_github_client(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="GitHub integration not found. Please connect your GitHub account.",
+        )
+
+    # Log token info for debugging
+    token = integration.access_token
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            detail="GitHub token is missing. Please reconnect your GitHub account.",
         )
 
     # Update last used timestamp
@@ -182,9 +207,12 @@ async def list_repositories(
     """List repositories for the authenticated user."""
     client, _ = await get_github_client(db, user)
 
-    async with client:
-        repos = await client.list_repos(per_page=per_page, page=page)
-        return [r.model_dump() for r in repos]
+    try:
+        async with client:
+            repos = await client.list_repos(per_page=per_page, page=page)
+            return [r.model_dump() for r in repos]
+    except GitHubTokenExpiredError as e:
+        handle_github_token_error(e)
 
 
 @router.get("/repos/{owner}/{repo}", response_model=dict)
@@ -197,9 +225,12 @@ async def get_repository(
     """Get a specific repository."""
     client, _ = await get_github_client(db, user)
 
-    async with client:
-        repository = await client.get_repo(owner, repo)
-        return repository.model_dump()
+    try:
+        async with client:
+            repository = await client.get_repo(owner, repo)
+            return repository.model_dump()
+    except GitHubTokenExpiredError as e:
+        handle_github_token_error(e)
 
 
 @router.get("/repos/{owner}/{repo}/branches", response_model=list[dict])
@@ -212,9 +243,12 @@ async def list_branches(
     """List branches for a repository."""
     client, _ = await get_github_client(db, user)
 
-    async with client:
-        branches = await client.list_branches(owner, repo)
-        return [b.model_dump() for b in branches]
+    try:
+        async with client:
+            branches = await client.list_branches(owner, repo)
+            return [b.model_dump() for b in branches]
+    except GitHubTokenExpiredError as e:
+        handle_github_token_error(e)
 
 
 # ============================================================================

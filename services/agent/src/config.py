@@ -4,7 +4,7 @@ import asyncio
 import tempfile
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import structlog
@@ -151,30 +151,69 @@ MAX_THINKING_BUDGET = 32000
 
 
 # ==========================================
-# Model Capabilities Cache (Fetched from API)
+# Model Capabilities Cache (Redis-backed)
 # ==========================================
+
+# Redis cache key for model capabilities
+MODEL_CAPABILITIES_CACHE_KEY = "agent:model_capabilities"
+MODEL_CAPABILITIES_CACHE_TTL = 300  # 5 minutes
 
 
 class ModelCapabilitiesCache:
     """Cache for model capabilities fetched from the API service.
 
-    This class fetches model capabilities from the database via the API service
-    and caches them locally. Falls back to hardcoded values if API is unavailable.
+    Uses Redis for distributed caching to ensure consistency across agent instances.
+    Falls back to hardcoded values if Redis and API are unavailable.
     """
 
     def __init__(self) -> None:
-        self._cache: dict[str, dict[str, Any]] = {}
-        self._loaded = False
         self._lock = asyncio.Lock()
         self._last_refresh: float = 0
         self._refresh_interval = 300  # 5 minutes
+
+    async def _get_redis(self) -> Any:
+        """Get connected Redis client."""
+        from podex_shared.redis_client import get_redis_client
+
+        settings = get_settings()
+        redis_client = get_redis_client(settings.REDIS_URL)
+        await redis_client.connect()
+        return redis_client
+
+    async def _get_from_redis(self) -> dict[str, dict[str, Any]] | None:
+        """Get capabilities from Redis cache."""
+        try:
+            redis_client = await self._get_redis()
+            cached = await redis_client.get_json(MODEL_CAPABILITIES_CACHE_KEY)
+            if cached and isinstance(cached, dict):
+                return cast("dict[str, dict[str, Any]]", cached)
+        except Exception as e:
+            logger.warning("Failed to get model capabilities from Redis", error=str(e))
+        return None
+
+    async def _set_in_redis(self, capabilities: dict[str, dict[str, Any]]) -> None:
+        """Store capabilities in Redis cache."""
+        try:
+            redis_client = await self._get_redis()
+            await redis_client.set_json(
+                MODEL_CAPABILITIES_CACHE_KEY, capabilities, ex=MODEL_CAPABILITIES_CACHE_TTL
+            )
+        except Exception as e:
+            logger.warning("Failed to set model capabilities in Redis", error=str(e))
 
     async def _fetch_capabilities(self) -> dict[str, dict[str, Any]]:
         """Fetch model capabilities from the API service."""
         settings = get_settings()
         try:
+            headers = {}
+            if settings.INTERNAL_SERVICE_TOKEN:
+                headers["Authorization"] = f"Bearer {settings.INTERNAL_SERVICE_TOKEN}"
+
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(f"{settings.API_BASE_URL}/api/models/capabilities")
+                response = await client.get(
+                    f"{settings.API_BASE_URL}/api/models/capabilities",
+                    headers=headers,
+                )
                 response.raise_for_status()
                 result: dict[str, dict[str, Any]] = response.json()
                 return result
@@ -187,45 +226,53 @@ class ModelCapabilitiesCache:
         import time
 
         now = time.time()
-        if not force and self._loaded and (now - self._last_refresh) < self._refresh_interval:
-            return
+        if not force and (now - self._last_refresh) < self._refresh_interval:
+            # Check if Redis already has fresh data
+            cached = await self._get_from_redis()
+            if cached:
+                return
 
         async with self._lock:
             # Double-check after acquiring lock
-            if not force and self._loaded and (now - self._last_refresh) < self._refresh_interval:
-                return
+            if not force and (now - self._last_refresh) < self._refresh_interval:
+                cached = await self._get_from_redis()
+                if cached:
+                    return
 
             capabilities = await self._fetch_capabilities()
             if capabilities:
-                self._cache = capabilities
-                self._loaded = True
+                await self._set_in_redis(capabilities)
                 self._last_refresh = now
-                logger.info("Refreshed model capabilities cache", model_count=len(capabilities))
+                logger.info(
+                    "Refreshed model capabilities cache in Redis", model_count=len(capabilities)
+                )
 
-    def get_capabilities(self, model_id: str) -> dict[str, Any] | None:
-        """Get capabilities for a model from cache."""
-        return self._cache.get(model_id)
+    async def get_capabilities(self, model_id: str) -> dict[str, Any] | None:
+        """Get capabilities for a model from Redis cache."""
+        cached = await self._get_from_redis()
+        if cached:
+            return cached.get(model_id)
+        return None
 
-    def supports_vision(self, model_id: str) -> bool:
-        """Check if a model supports vision from cache or fallback."""
-        caps = self._cache.get(model_id)
-        if caps:
-            return bool(caps.get("supports_vision", False))
+    async def supports_vision(self, model_id: str) -> bool:
+        """Check if a model supports vision from Redis cache or fallback."""
+        cached = await self._get_from_redis()
+        if cached:
+            caps = cached.get(model_id)
+            if caps:
+                return bool(caps.get("supports_vision", False))
         # Fallback to hardcoded values
         return model_id in _FALLBACK_VISION_CAPABLE_MODELS
 
-    def supports_thinking(self, model_id: str) -> bool:
-        """Check if a model supports extended thinking from cache or fallback."""
-        caps = self._cache.get(model_id)
-        if caps:
-            return bool(caps.get("supports_thinking", False))
+    async def supports_thinking(self, model_id: str) -> bool:
+        """Check if a model supports extended thinking from Redis cache or fallback."""
+        cached = await self._get_from_redis()
+        if cached:
+            caps = cached.get(model_id)
+            if caps:
+                return bool(caps.get("supports_thinking", False))
         # Fallback to hardcoded values
         return model_id in _FALLBACK_THINKING_CAPABLE_MODELS
-
-    @property
-    def is_loaded(self) -> bool:
-        """Check if cache has been loaded."""
-        return self._loaded
 
 
 # Global capabilities cache instance
@@ -243,25 +290,43 @@ async def refresh_model_capabilities(force: bool = False) -> None:
 def supports_vision(model_id: str) -> bool:
     """Check if a model supports vision/image input.
 
-    Uses cached capabilities from the API if available, otherwise falls back to hardcoded values.
+    Synchronous wrapper - uses hardcoded fallback values.
+    For async code, use _model_capabilities_cache.supports_vision() directly.
     """
-    return _model_capabilities_cache.supports_vision(model_id)
+    return model_id in _FALLBACK_VISION_CAPABLE_MODELS
 
 
 def supports_thinking(model_id: str) -> bool:
     """Check if a model supports extended thinking.
 
-    Uses cached capabilities from the API if available, otherwise falls back to hardcoded values.
+    Synchronous wrapper - uses hardcoded fallback values.
+    For async code, use _model_capabilities_cache.supports_thinking() directly.
     """
-    return _model_capabilities_cache.supports_thinking(model_id)
+    return model_id in _FALLBACK_THINKING_CAPABLE_MODELS
 
 
-def get_model_capabilities(model_id: str) -> dict[str, Any] | None:
+async def supports_vision_async(model_id: str) -> bool:
+    """Check if a model supports vision/image input (async version).
+
+    Uses cached capabilities from Redis if available, otherwise falls back to hardcoded values.
+    """
+    return await _model_capabilities_cache.supports_vision(model_id)
+
+
+async def supports_thinking_async(model_id: str) -> bool:
+    """Check if a model supports extended thinking (async version).
+
+    Uses cached capabilities from Redis if available, otherwise falls back to hardcoded values.
+    """
+    return await _model_capabilities_cache.supports_thinking(model_id)
+
+
+async def get_model_capabilities(model_id: str) -> dict[str, Any] | None:
     """Get all capabilities for a model.
 
     Returns None if model is not in cache.
     """
-    return _model_capabilities_cache.get_capabilities(model_id)
+    return await _model_capabilities_cache.get_capabilities(model_id)
 
 
 def get_default_model_for_role(role: str) -> str:

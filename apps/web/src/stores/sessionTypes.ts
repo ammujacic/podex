@@ -44,6 +44,7 @@ export interface PendingPermission {
   description: string | null;
   toolName: string;
   timestamp: string;
+  attentionId?: string;
 }
 
 export interface Agent {
@@ -136,13 +137,16 @@ export interface Session {
   id: string;
   name: string;
   workspaceId: string;
+  workspaceTier?: string; // Current workspace compute tier
   branch: string;
+  gitUrl?: string | null;
   agents: Agent[];
   filePreviews: FilePreview[];
   activeAgentId: string | null;
   viewMode: ViewMode;
   // Workspace status tracking
   workspaceStatus: WorkspaceStatus;
+  workspaceStatusChecking?: boolean;
   standbyAt: string | null;
   standbySettings: StandbySettings | null;
   // Consolidated editor grid card

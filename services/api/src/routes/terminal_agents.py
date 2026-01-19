@@ -39,6 +39,7 @@ from src.database import (
 )
 from src.middleware.admin import require_admin
 from src.middleware.auth import get_current_user
+from src.routes.auth import COOKIE_ACCESS_TOKEN
 from src.services.token_blacklist import is_token_revoked
 from src.terminal.manager import terminal_manager
 
@@ -993,6 +994,8 @@ async def terminal_agent_websocket(
     is done via a token query parameter.
     """
     # Validate token before accepting the connection
+    if not token:
+        token = websocket.cookies.get(COOKIE_ACCESS_TOKEN)
     user_id = await validate_ws_token(token, db)
     if not user_id:
         await websocket.close(code=1008)  # Policy violation - unauthorized

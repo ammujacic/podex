@@ -1,5 +1,6 @@
 """Rate limiting middleware using slowapi with Redis backend."""
 
+import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -194,6 +195,7 @@ async def close_redis_client() -> None:
 
 # OAuth state storage functions
 OAUTH_STATE_PREFIX = "podex:oauth:state:"
+OAUTH_LINK_STATE_PREFIX = "podex:oauth:link:"
 OAUTH_STATE_TTL = 600  # 10 minutes
 
 
@@ -203,6 +205,70 @@ async def store_oauth_state(state: str, provider: str) -> None:
     key = f"{OAUTH_STATE_PREFIX}{state}"
     await client.setex(key, OAUTH_STATE_TTL, provider)
     logger.debug("OAuth state stored", state=state[:8], provider=provider)
+
+
+async def store_oauth_link_state(state: str, provider: str, user_id: str) -> None:
+    """Store OAuth link state in Redis with user_id for account linking.
+
+    This is used when a logged-in user wants to link their external OAuth
+    account (e.g., GitHub) to their existing Podex account.
+    """
+    client = await get_redis_client()
+    key = f"{OAUTH_LINK_STATE_PREFIX}{state}"
+    value = json.dumps({"provider": provider, "user_id": user_id})
+    await client.setex(key, OAUTH_STATE_TTL, value)
+    logger.debug("OAuth link state stored", state=state[:8], provider=provider, user_id=user_id[:8])
+
+
+async def validate_oauth_link_state(state: str, expected_provider: str) -> str | None:
+    """Validate OAuth link state from Redis and return user_id.
+
+    SECURITY: Implements fail-closed behavior - if Redis is unavailable,
+    OAuth state validation fails to prevent replay attacks.
+
+    Args:
+        state: The state token to validate
+        expected_provider: Expected OAuth provider (github, google)
+
+    Returns:
+        The user_id if state is valid and matches provider, None otherwise
+    """
+    try:
+        client = await get_redis_client()
+        key = f"{OAUTH_LINK_STATE_PREFIX}{state}"
+
+        # Get and delete atomically to prevent reuse
+        value = await client.getdel(key)
+
+        if value is None:
+            logger.warning("OAuth link state not found or expired", state=state[:8])
+            return None
+
+        data = json.loads(value)
+        provider = data.get("provider")
+        user_id = data.get("user_id")
+
+        if provider != expected_provider:
+            logger.warning(
+                "OAuth link state provider mismatch",
+                state=state[:8],
+                expected=expected_provider,
+                actual=provider,
+            )
+            return None
+
+        logger.debug(
+            "OAuth link state validated", state=state[:8], provider=provider, user_id=user_id[:8]
+        )
+        return str(user_id) if user_id else None
+
+    except Exception as e:
+        logger.exception(
+            "OAuth link state validation failed due to Redis error - rejecting (fail-closed)",
+            state=state[:8],
+            error=str(e),
+        )
+        return None
 
 
 async def validate_oauth_state(state: str, expected_provider: str) -> bool:

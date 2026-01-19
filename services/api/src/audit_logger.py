@@ -68,6 +68,9 @@ class AuditAction:
     SESSION_SHARED = "session.shared"
     SESSION_EXPORTED = "session.exported"
 
+    # Workspace operations
+    WORKSPACE_SCALED = "workspace.scaled"
+
     # User operations
     USER_CREATED = "user.created"
     USER_UPDATED = "user.updated"

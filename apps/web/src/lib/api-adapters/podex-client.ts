@@ -74,12 +74,9 @@ export class PodexApiClient extends BaseApiClient {
   /**
    * Refresh tokens.
    */
-  async refreshToken(refreshToken: string): Promise<AuthTokens> {
-    const response = await this.post<TokenResponse>(
-      '/api/auth/refresh',
-      { refresh_token: refreshToken },
-      false
-    );
+  async refreshToken(refreshToken?: string | null): Promise<AuthTokens> {
+    const body = refreshToken ? { refresh_token: refreshToken } : {};
+    const response = await this.post<TokenResponse>('/api/auth/refresh', body, false);
     return {
       accessToken: response.access_token,
       refreshToken: response.refresh_token,

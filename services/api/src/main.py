@@ -334,10 +334,26 @@ async def standby_background_task() -> None:
 
                         if idle_duration > timedelta(minutes=timeout_minutes):
                             try:
+                                from src.exceptions import ComputeServiceHTTPError
                                 from src.websocket.hub import emit_to_session
 
                                 # Stop the container
-                                await compute_client.stop_workspace(workspace.id, session.owner_id)
+                                try:
+                                    await compute_client.stop_workspace(
+                                        workspace.id, session.owner_id
+                                    )
+                                except ComputeServiceHTTPError as compute_error:
+                                    # If workspace doesn't exist in compute service (404),
+                                    # it's already stopped, so we can still mark it as standby
+                                    if compute_error.status_code == 404:
+                                        logger.warning(
+                                            "Workspace not found in compute service, "
+                                            "marking as standby anyway",
+                                            workspace_id=workspace.id,
+                                            error=str(compute_error),
+                                        )
+                                    else:
+                                        raise compute_error  # noqa: TRY201
 
                                 # Update database
                                 workspace.status = "standby"

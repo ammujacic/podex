@@ -6,15 +6,18 @@ from datetime import UTC, datetime
 from http import HTTPStatus
 from pathlib import PurePath
 from typing import Annotated, Any
+from urllib.parse import urlparse
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import flag_modified
 
-from src.audit_logger import AuditAction, AuditLogger
+from podex_shared import WorkspaceScaleRequest, WorkspaceScaleResponse
+from src.audit_logger import AuditAction, AuditCategory, AuditLogger
 from src.cache import (
     cache_delete,
     cache_get,
@@ -34,6 +37,7 @@ from src.database import (
 )
 from src.database import Session as SessionModel
 from src.database import Workspace as WorkspaceModel
+from src.database.models import GitHubIntegration
 from src.exceptions import ComputeClientError, ComputeServiceHTTPError
 from src.middleware.rate_limit import (
     RATE_LIMIT_STANDARD,
@@ -128,6 +132,7 @@ class SessionResponse(BaseModel):
     workspace_id: str | None
     branch: str
     status: str
+    workspace_status: str | None = None  # running, standby, stopped, pending, error
     template_id: str | None = None
     git_url: str | None = None
     archived_at: datetime | None = None
@@ -237,6 +242,17 @@ async def build_workspace_config(
     """
     from src.database.models import UserConfig
 
+    def is_github_repo_url(repo_url: str) -> bool:
+        if repo_url.startswith("git@github.com:"):
+            return True
+        if repo_url.startswith("ssh://git@github.com/"):
+            return True
+        try:
+            parsed = urlparse(repo_url)
+        except ValueError:
+            return False
+        return parsed.scheme in {"http", "https"} and parsed.netloc == "github.com"
+
     config: dict[str, Any] = {
         "repos": [git_url] if git_url else [],
         "tier": tier or "starter",  # Default to starter tier if not specified
@@ -258,6 +274,28 @@ async def build_workspace_config(
             config["sync_dotfiles"] = user_config.sync_dotfiles
             if user_config.dotfiles_paths:
                 config["dotfiles_paths"] = user_config.dotfiles_paths
+
+        # Fetch GitHub integration to inject token for git commands
+        result = await db.execute(
+            select(GitHubIntegration).where(
+                GitHubIntegration.user_id == user_id,
+                GitHubIntegration.is_active == True,
+            )
+        )
+        integration = result.scalar_one_or_none()
+        if integration and integration.access_token:
+            # Add GitHub token to environment for git commands (push, pull, etc.)
+            # GITHUB_TOKEN is the standard env var, GH_TOKEN is used by GitHub CLI
+            if "environment" not in config:
+                config["environment"] = {}
+            config["environment"]["GITHUB_TOKEN"] = integration.access_token
+            config["environment"]["GH_TOKEN"] = integration.access_token
+
+            # Set git credentials for cloning GitHub repos
+            if git_url and is_github_repo_url(git_url) and integration.github_username:
+                config["git_credentials"] = (
+                    f"{integration.github_username}:{integration.access_token}"
+                )
 
     if template_id:
         # Fetch template configuration
@@ -398,6 +436,11 @@ async def create_session(
         )
         # Don't fail session creation if default agent creation fails
 
+    # Get workspace status if workspace exists
+    workspace_status = None
+    if workspace:
+        workspace_status = workspace.status
+
     return SessionResponse(
         id=session.id,
         name=session.name,
@@ -405,6 +448,7 @@ async def create_session(
         workspace_id=session.workspace_id,
         branch=session.branch,
         status=session.status,
+        workspace_status=workspace_status,
         template_id=session.template_id,
         git_url=session.git_url,
         created_at=session.created_at,
@@ -445,8 +489,13 @@ async def list_sessions(
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
 
-    # Build query with pagination
-    query = select(SessionModel).where(*conditions).order_by(SessionModel.updated_at.desc())
+    # Build query with pagination - eagerly load workspace for status
+    query = (
+        select(SessionModel)
+        .options(selectinload(SessionModel.workspace))
+        .where(*conditions)
+        .order_by(SessionModel.updated_at.desc())
+    )
 
     # Apply cursor-based pagination if cursor provided
     if params.cursor:
@@ -475,6 +524,7 @@ async def list_sessions(
             workspace_id=s.workspace_id,
             branch=s.branch,
             status=s.status,
+            workspace_status=s.workspace.status if s.workspace else None,
             template_id=s.template_id,
             git_url=s.git_url,
             archived_at=s.archived_at,
@@ -528,7 +578,11 @@ async def get_session(
         logger.debug("Session cache hit", session_id=session_id)
         return SessionResponse(**cached)
 
-    query = select(SessionModel).where(SessionModel.id == session_id)
+    query = (
+        select(SessionModel)
+        .options(selectinload(SessionModel.workspace))
+        .where(SessionModel.id == session_id)
+    )
     result = await db.execute(query)
     session = result.scalar_one_or_none()
 
@@ -545,6 +599,7 @@ async def get_session(
         workspace_id=session.workspace_id,
         branch=session.branch,
         status=session.status,
+        workspace_status=session.workspace.status if session.workspace else None,
         template_id=session.template_id,
         git_url=session.git_url,
         archived_at=session.archived_at,
@@ -552,7 +607,7 @@ async def get_session(
         updated_at=session.updated_at,
     )
 
-    # Cache the result
+    # Cache the result (note: workspace_status may become stale in cache)
     await cache_set(cache_key, session_response, ttl=settings.CACHE_TTL_SESSIONS)
 
     return session_response
@@ -567,7 +622,11 @@ async def archive_session(
     db: DbSession,
 ) -> SessionResponse:
     """Archive a session."""
-    query = select(SessionModel).where(SessionModel.id == session_id)
+    query = (
+        select(SessionModel)
+        .options(selectinload(SessionModel.workspace))
+        .where(SessionModel.id == session_id)
+    )
     result = await db.execute(query)
     session = result.scalar_one_or_none()
 
@@ -597,6 +656,7 @@ async def archive_session(
         workspace_id=session.workspace_id,
         branch=session.branch,
         status=session.status,
+        workspace_status=session.workspace.status if session.workspace else None,
         template_id=session.template_id,
         git_url=session.git_url,
         archived_at=session.archived_at,
@@ -614,7 +674,11 @@ async def unarchive_session(
     db: DbSession,
 ) -> SessionResponse:
     """Unarchive a session."""
-    query = select(SessionModel).where(SessionModel.id == session_id)
+    query = (
+        select(SessionModel)
+        .options(selectinload(SessionModel.workspace))
+        .where(SessionModel.id == session_id)
+    )
     result = await db.execute(query)
     session = result.scalar_one_or_none()
 
@@ -644,12 +708,74 @@ async def unarchive_session(
         workspace_id=session.workspace_id,
         branch=session.branch,
         status=session.status,
+        workspace_status=session.workspace.status if session.workspace else None,
         template_id=session.template_id,
         git_url=session.git_url,
         archived_at=session.archived_at,
         created_at=session.created_at,
         updated_at=session.updated_at,
     )
+
+
+@router.post("/{session_id}/scale-workspace", response_model=WorkspaceScaleResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def scale_session_workspace(
+    session_id: str,
+    request: WorkspaceScaleRequest,
+    req: Request,
+    response: Response,
+    db: DbSession,
+) -> WorkspaceScaleResponse:
+    """Scale the workspace for a session to a new compute tier."""
+    query = select(SessionModel).where(SessionModel.id == session_id)
+    result = await db.execute(query)
+    session = result.scalar_one_or_none()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    user_id = get_current_user_id(req)
+    if session.owner_id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not session.workspace_id:
+        raise HTTPException(status_code=400, detail="Session does not have a workspace")
+
+    try:
+        # Call the compute service to scale the workspace
+        scale_response = await compute_client.scale_workspace(
+            workspace_id=session.workspace_id,
+            user_id=user_id,
+            new_tier=request.new_tier.value,  # Convert enum to string
+        )
+
+        # Log the scaling action
+        audit = AuditLogger(db).set_context(request=req, user_id=user_id)
+        await audit.log(
+            action=AuditAction.WORKSPACE_SCALED,
+            category=AuditCategory.SESSION,
+            session_id=session_id,
+            resource_type="workspace",
+            resource_id=session.workspace_id,
+            details={
+                "session_id": session_id,
+                "workspace_id": session.workspace_id,
+                "old_tier": scale_response.get("old_tier"),
+                "new_tier": request.new_tier.value,
+            },
+        )
+
+        return WorkspaceScaleResponse(**scale_response)
+
+    except ComputeClientError as e:
+        logger.exception(
+            "Failed to scale workspace",
+            session_id=session_id,
+            workspace_id=session.workspace_id,
+            new_tier=request.new_tier.value,
+            error=str(e),
+        )
+        raise HTTPException(status_code=500, detail=f"Failed to scale workspace: {e}") from e
 
 
 @router.delete("/{session_id}")

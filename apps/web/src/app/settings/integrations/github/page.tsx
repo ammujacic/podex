@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@podex/ui';
 import { cn } from '@/lib/utils';
+import { getGitHubLinkURL, getGitHubStatus, getGitHubRepos, disconnectGitHub } from '@/lib/api';
 
 // ============================================================================
 // Types
@@ -97,11 +98,8 @@ function ConnectedState({
   const fetchRepos = useCallback(async () => {
     setIsLoadingRepos(true);
     try {
-      const response = await fetch('/api/v1/github/repos?per_page=10');
-      if (response.ok) {
-        const data = await response.json();
-        setRepos(data);
-      }
+      const data = await getGitHubRepos({ per_page: 10 });
+      setRepos(data);
     } catch (err) {
       console.error('Failed to fetch repos:', err);
     } finally {
@@ -258,7 +256,13 @@ function ConnectedState({
 // Disconnected State
 // ============================================================================
 
-function DisconnectedState({ onConnect }: { onConnect: () => void }) {
+function DisconnectedState({
+  onConnect,
+  isConnecting,
+}: {
+  onConnect: () => void;
+  isConnecting?: boolean;
+}) {
   return (
     <div className="bg-surface border border-border-default rounded-xl p-8 text-center">
       <div className="w-16 h-16 rounded-full bg-surface-hover flex items-center justify-center mx-auto mb-4">
@@ -270,9 +274,18 @@ function DisconnectedState({ onConnect }: { onConnect: () => void }) {
         repositories directly from Podex.
       </p>
 
-      <Button onClick={onConnect} className="gap-2">
-        <Link2 className="w-4 h-4" />
-        Connect GitHub Account
+      <Button onClick={onConnect} disabled={isConnecting} className="gap-2">
+        {isConnecting ? (
+          <>
+            <Loader2 className="w-4 h-4 animate-spin" />
+            Connecting...
+          </>
+        ) : (
+          <>
+            <Link2 className="w-4 h-4" />
+            Connect GitHub Account
+          </>
+        )}
       </Button>
 
       <div className="mt-8 pt-6 border-t border-border-subtle">
@@ -318,28 +331,25 @@ function DisconnectedState({ onConnect }: { onConnect: () => void }) {
 export default function GitHubSettingsPage() {
   const [status, setStatus] = useState<GitHubConnectionStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isConnecting, setIsConnecting] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const fetchStatus = useCallback(async () => {
     setIsLoading(true);
     try {
-      const response = await fetch('/api/v1/github/status');
-      if (response.ok) {
-        const data = await response.json();
-        setStatus(data);
-      } else {
-        setStatus({
-          connected: false,
-          username: null,
-          avatar_url: null,
-          scopes: null,
-          connected_at: null,
-          last_used_at: null,
-        });
-      }
+      const data = await getGitHubStatus();
+      setStatus(data);
     } catch {
       setError('Failed to fetch connection status');
+      setStatus({
+        connected: false,
+        username: null,
+        avatar_url: null,
+        scopes: null,
+        connected_at: null,
+        last_used_at: null,
+      });
     } finally {
       setIsLoading(false);
     }
@@ -349,31 +359,32 @@ export default function GitHubSettingsPage() {
     fetchStatus();
   }, [fetchStatus]);
 
-  const handleConnect = useCallback(() => {
-    // Redirect to GitHub OAuth flow
-    // The OAuth callback will redirect back to this page
-    window.location.href =
-      '/api/v1/oauth/github/authorize?redirect_uri=' + encodeURIComponent(window.location.href);
+  const handleConnect = useCallback(async () => {
+    setIsConnecting(true);
+    setError(null);
+    try {
+      // Use the link URL instead of OAuth login URL
+      // This ensures GitHub gets linked to the current user, not creates a new account
+      const url = await getGitHubLinkURL();
+      window.location.href = url;
+    } catch {
+      setIsConnecting(false);
+      setError('Failed to start GitHub connection');
+    }
   }, []);
 
   const handleDisconnect = useCallback(async () => {
     setIsDisconnecting(true);
     try {
-      const response = await fetch('/api/v1/github/disconnect', {
-        method: 'DELETE',
+      await disconnectGitHub();
+      setStatus({
+        connected: false,
+        username: null,
+        avatar_url: null,
+        scopes: null,
+        connected_at: null,
+        last_used_at: null,
       });
-      if (response.ok) {
-        setStatus({
-          connected: false,
-          username: null,
-          avatar_url: null,
-          scopes: null,
-          connected_at: null,
-          last_used_at: null,
-        });
-      } else {
-        throw new Error('Failed to disconnect');
-      }
     } catch {
       setError('Failed to disconnect GitHub');
     } finally {
@@ -421,7 +432,7 @@ export default function GitHubSettingsPage() {
           isDisconnecting={isDisconnecting}
         />
       ) : (
-        <DisconnectedState onConnect={handleConnect} />
+        <DisconnectedState onConnect={handleConnect} isConnecting={isConnecting} />
       )}
     </div>
   );

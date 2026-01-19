@@ -6,10 +6,11 @@ import { useSessionStore } from '@/stores/session';
 import {
   CreateAgentModal,
   PauseSessionModal,
-  ResumeSessionModal,
   StandbySettingsModal,
   MCPSettingsModal,
+  WorkspaceScalingModal,
 } from './modals';
+import type { WorkspaceTier } from '@podex/shared';
 
 interface ModalLayerProps {
   sessionId: string;
@@ -40,6 +41,7 @@ export function ModalLayer({ sessionId }: ModalLayerProps) {
   if (!activeModal) return null;
 
   const workspaceId = currentSession?.workspaceId;
+  const workspaceTier = (currentSession?.workspaceTier || 'starter') as WorkspaceTier;
 
   return (
     <>
@@ -49,13 +51,18 @@ export function ModalLayer({ sessionId }: ModalLayerProps) {
       {activeModal === 'pause-session' && workspaceId && (
         <PauseSessionModal sessionId={sessionId} workspaceId={workspaceId} onClose={closeModal} />
       )}
-      {activeModal === 'resume-session' && workspaceId && (
-        <ResumeSessionModal sessionId={sessionId} workspaceId={workspaceId} onClose={closeModal} />
-      )}
       {activeModal === 'standby-settings' && (
         <StandbySettingsModal sessionId={sessionId} onClose={closeModal} />
       )}
       {activeModal === 'mcp-settings' && <MCPSettingsModal onClose={closeModal} />}
+      {activeModal === 'workspace-scaling' && workspaceId && (
+        <WorkspaceScalingModal
+          sessionId={sessionId}
+          workspaceId={workspaceId}
+          currentTier={workspaceTier}
+          onClose={closeModal}
+        />
+      )}
     </>
   );
 }

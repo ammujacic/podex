@@ -19,6 +19,7 @@ import { AgentGrid } from '@/components/workspace/AgentGrid';
 import { CommandPalette } from '@/components/workspace/CommandPalette';
 import {
   getSession,
+  getWorkspaceStatus,
   listAgents,
   getAgentMessages,
   type Session,
@@ -42,7 +43,7 @@ const agentColors = ['agent-1', 'agent-2', 'agent-3', 'agent-4', 'agent-5', 'age
 type LoadingMessage = { progress: number; message: string; detail: string };
 const loadingMessages: LoadingMessage[] = [
   { progress: 0, message: 'Connecting to pod...', detail: 'Establishing secure connection' },
-  { progress: 20, message: 'Starting container...', detail: 'Initializing your environment' },
+  { progress: 20, message: 'Starting pod...', detail: 'Initializing your environment' },
   {
     progress: 40,
     message: 'Loading workspace...',
@@ -68,6 +69,7 @@ export default function SessionPage() {
   // Use getState() for initial check to avoid dependency on sessions object
   // This prevents the effect from re-running when any session changes
   const createSession = useSessionStore((s) => s.createSession);
+  const setWorkspaceStatusChecking = useSessionStore((s) => s.setWorkspaceStatusChecking);
 
   // Onboarding tour
   const { startTour, hasCompleted } = useOnboardingTour();
@@ -214,11 +216,13 @@ export default function SessionPage() {
             name: data.name,
             workspaceId: data.workspace_id ?? '', // Store requires string, empty means no workspace yet
             branch: data.branch,
+            gitUrl: data.git_url,
             agents: agentsWithMessages,
             filePreviews: [],
             activeAgentId: null,
             viewMode: 'grid',
             workspaceStatus: data.status === 'active' ? 'running' : 'pending',
+            workspaceStatusChecking: false,
             standbyAt: null,
             standbySettings: null,
             editorGridCardId: null,
@@ -231,6 +235,7 @@ export default function SessionPage() {
             updateAgent,
             addAgent: addAgentToSession,
             updateSessionWorkspaceId,
+            updateSessionInfo,
             removeAgent,
           } = useSessionStore.getState();
 
@@ -239,6 +244,12 @@ export default function SessionPage() {
           if (data.workspace_id && data.workspace_id !== existingSession.workspaceId) {
             updateSessionWorkspaceId(sessionId, data.workspace_id);
           }
+
+          updateSessionInfo(sessionId, {
+            name: data.name,
+            branch: data.branch,
+            gitUrl: data.git_url,
+          });
 
           // Merge agents: keep local state (messages, status) but ensure all API agents exist
           const existingAgentIds = new Set(existingSession.agents.map((a: Agent) => a.id));
@@ -290,6 +301,29 @@ export default function SessionPage() {
           }
         }
 
+        if (data.workspace_id) {
+          try {
+            if (data.status === 'active') {
+              setWorkspaceStatusChecking(sessionId, true);
+              useSessionStore.getState().setWorkspaceStatus(sessionId, 'pending', null);
+            }
+            const workspaceStatus = await getWorkspaceStatus(data.workspace_id);
+            if (!isCancelled) {
+              useSessionStore
+                .getState()
+                .setWorkspaceStatus(
+                  sessionId,
+                  workspaceStatus.status,
+                  workspaceStatus.standby_at ?? null
+                );
+              setWorkspaceStatusChecking(sessionId, false);
+            }
+          } catch (statusError) {
+            console.warn('Failed to fetch workspace status:', statusError);
+            setWorkspaceStatusChecking(sessionId, false);
+          }
+        }
+
         // Check pod status
         if (data.status === 'creating') {
           setPodStatus('starting');
@@ -326,6 +360,7 @@ export default function SessionPage() {
     user,
     router,
     createSession,
+    setWorkspaceStatusChecking,
     isInitialized,
     simulateStartup,
     cleanupStartupSimulation,
@@ -583,7 +618,7 @@ export default function SessionPage() {
 
           {/* Status Steps */}
           <div className="flex justify-center gap-4 mt-6 text-xs text-text-muted">
-            {['Container', 'Workspace', 'Config'].map((step, i) => {
+            {['Pod', 'Workspace', 'Config'].map((step, i) => {
               const stepProgress = i === 0 ? 20 : i === 1 ? 60 : 95;
               const isComplete = loadingProgress >= stepProgress;
               const isActive =

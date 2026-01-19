@@ -2,8 +2,11 @@
 
 Supports both GCP Cloud Storage and local emulator for development.
 Note: File kept as s3.py for backwards compatibility with existing imports.
+
+All GCS operations are wrapped with asyncio.to_thread to avoid blocking the event loop.
 """
 
+import asyncio
 import contextlib
 import mimetypes
 from functools import lru_cache
@@ -105,8 +108,12 @@ class S3Storage:
     async def ensure_bucket_exists(self) -> None:
         """Ensure the GCS bucket exists (useful for local emulator)."""
         bucket = self._get_bucket()
-        if not bucket.exists():
-            bucket.create(location=settings.GCP_REGION)
+
+        def _ensure() -> None:
+            if not bucket.exists():
+                bucket.create(location=settings.GCP_REGION)
+
+        await asyncio.to_thread(_ensure)
 
     async def list_files(
         self,
@@ -127,46 +134,51 @@ class S3Storage:
             prefix += "/"
 
         bucket = self._get_bucket()
-        items = []
+        gcs_prefix = self.prefix
+        ws_id = workspace_id
 
-        # Use delimiter to get "directories"
-        blobs = self._client.list_blobs(
-            bucket,
-            prefix=prefix,
-            delimiter="/",
-        )
-
-        # Collect files
-        for blob in blobs:
-            # Skip the directory marker itself
-            if blob.name == prefix:
-                continue
-            file_name = PurePosixPath(blob.name).name
-            relative_path = blob.name.split(f"{self.prefix}/{workspace_id}/")[-1]
-            items.append(
-                {
-                    "name": file_name,
-                    "path": f"/workspace/{relative_path}",
-                    "type": "file",
-                    "size": blob.size or 0,
-                    "last_modified": blob.updated,
-                },
+        def _list() -> list[dict[str, Any]]:
+            items: list[dict[str, Any]] = []
+            # Use delimiter to get "directories"
+            blobs = self._client.list_blobs(
+                bucket,
+                prefix=prefix,
+                delimiter="/",
             )
 
-        # Collect directories (prefixes)
-        for prefix_item in blobs.prefixes:
-            dir_path = prefix_item.rstrip("/")
-            dir_name = PurePosixPath(dir_path).name
-            relative_path = dir_path.split(f"{self.prefix}/{workspace_id}/")[-1]
-            items.append(
-                {
-                    "name": dir_name,
-                    "path": f"/workspace/{relative_path}",
-                    "type": "directory",
-                },
-            )
+            # Collect files
+            for blob in blobs:
+                # Skip the directory marker itself
+                if blob.name == prefix:
+                    continue
+                file_name = PurePosixPath(blob.name).name
+                relative_path = blob.name.split(f"{gcs_prefix}/{ws_id}/")[-1]
+                items.append(
+                    {
+                        "name": file_name,
+                        "path": f"/workspace/{relative_path}",
+                        "type": "file",
+                        "size": blob.size or 0,
+                        "last_modified": blob.updated,
+                    },
+                )
 
-        return items
+            # Collect directories (prefixes)
+            for prefix_item in blobs.prefixes:
+                dir_path = prefix_item.rstrip("/")
+                dir_name = PurePosixPath(dir_path).name
+                relative_path = dir_path.split(f"{gcs_prefix}/{ws_id}/")[-1]
+                items.append(
+                    {
+                        "name": dir_name,
+                        "path": f"/workspace/{relative_path}",
+                        "type": "directory",
+                    },
+                )
+
+            return items
+
+        return await asyncio.to_thread(_list)
 
     async def get_file_tree(
         self,
@@ -226,13 +238,17 @@ class S3Storage:
         key = self._get_key(workspace_id, path)
         bucket = self._get_bucket()
         blob = bucket.blob(key)
+        file_path = path
 
-        try:
-            content: bytes = blob.download_as_bytes()
-        except NotFound as e:
-            raise FileNotFoundInStorageError(path) from e
+        def _download() -> bytes:
+            try:
+                content: bytes = blob.download_as_bytes()
+            except NotFound as e:
+                raise FileNotFoundInStorageError(file_path) from e
+            else:
+                return content
 
-        return content
+        return await asyncio.to_thread(_download)
 
     async def get_file_text(self, workspace_id: str, path: str) -> str:
         """Get file content as text.
@@ -275,7 +291,13 @@ class S3Storage:
 
         bucket = self._get_bucket()
         blob = bucket.blob(key)
-        blob.upload_from_string(content, content_type=content_type)
+        file_content = content
+        file_content_type = content_type
+
+        def _upload() -> None:
+            blob.upload_from_string(file_content, content_type=file_content_type)
+
+        await asyncio.to_thread(_upload)
 
         return {
             "path": path,
@@ -298,9 +320,11 @@ class S3Storage:
         bucket = self._get_bucket()
         blob = bucket.blob(key)
 
-        with contextlib.suppress(NotFound):
-            blob.delete()
+        def _delete() -> None:
+            with contextlib.suppress(NotFound):
+                blob.delete()
 
+        await asyncio.to_thread(_delete)
         return True
 
     async def delete_directory(self, workspace_id: str, path: str) -> int:
@@ -318,14 +342,17 @@ class S3Storage:
             prefix += "/"
 
         bucket = self._get_bucket()
-        blobs = list(self._client.list_blobs(bucket, prefix=prefix))
+        client = self._client
 
-        deleted_count = 0
-        for blob in blobs:
-            blob.delete()
-            deleted_count += 1
+        def _delete_all() -> int:
+            blobs = list(client.list_blobs(bucket, prefix=prefix))
+            deleted_count = 0
+            for blob in blobs:
+                blob.delete()
+                deleted_count += 1
+            return deleted_count
 
-        return deleted_count
+        return await asyncio.to_thread(_delete_all)
 
     async def copy_file(
         self,
@@ -348,7 +375,11 @@ class S3Storage:
 
         bucket = self._get_bucket()
         source_blob = bucket.blob(source_key)
-        bucket.copy_blob(source_blob, bucket, dest_key)
+
+        def _copy() -> None:
+            bucket.copy_blob(source_blob, bucket, dest_key)
+
+        await asyncio.to_thread(_copy)
 
         return {
             "source": source_path,
@@ -389,8 +420,11 @@ class S3Storage:
         key = self._get_key(workspace_id, path)
         bucket = self._get_bucket()
         blob = bucket.blob(key)
-        exists: bool = blob.exists()
-        return exists
+
+        def _exists() -> bool:
+            return bool(blob.exists())
+
+        return await asyncio.to_thread(_exists)
 
     async def initialize_workspace(
         self,

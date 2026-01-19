@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils';
 export type WidgetId =
   | 'files'
   | 'git'
+  | 'github'
   | 'search'
   | 'problems'
   | 'agents'

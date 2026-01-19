@@ -310,13 +310,8 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
             description: data.description,
             toolName: data.tool_name,
             timestamp: data.timestamp,
+            attentionId: data.attention_id ?? `permission-${data.request_id}`,
           },
-        });
-
-        // Show toast notification that approval is needed
-        toast.warning('Permission Required', {
-          description: `An agent wants to execute: ${data.command?.slice(0, 50)}${(data.command?.length ?? 0) > 50 ? '...' : ''}`,
-          duration: 10000,
         });
       }
     );

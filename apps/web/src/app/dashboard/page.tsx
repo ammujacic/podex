@@ -42,6 +42,7 @@ import {
   Rocket,
   FolderGit2,
   RefreshCw,
+  LogOut,
 } from 'lucide-react';
 import { Button } from '@podex/ui';
 import { Logo } from '@/components/ui/Logo';
@@ -59,6 +60,7 @@ import {
   getUsageHistory,
   pauseWorkspace,
   resumeWorkspace,
+  logout,
   type Session,
   type PodTemplate,
   type DashboardStats,
@@ -88,7 +90,7 @@ const statusConfig: Record<
   string,
   { color: string; bg: string; label: string; icon: React.ReactNode }
 > = {
-  active: {
+  running: {
     color: 'text-accent-success',
     bg: 'bg-accent-success/10',
     label: 'Running',
@@ -106,7 +108,7 @@ const statusConfig: Record<
     label: 'Standby',
     icon: <Circle className="w-2 h-2 fill-current" />,
   },
-  creating: {
+  pending: {
     color: 'text-accent-warning',
     bg: 'bg-accent-warning/10',
     label: 'Starting',
@@ -673,6 +675,18 @@ export default function DashboardPage() {
                   <span className="hidden sm:inline">Settings</span>
                 </Button>
               </Link>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  logout();
+                  router.push('/');
+                }}
+                className="text-text-secondary hover:text-accent-error"
+                title="Log out"
+              >
+                <LogOut className="w-4 h-4" />
+              </Button>
               <Link href="/session/new">
                 <Button>
                   <Plus className="w-4 h-4 sm:mr-2" />
@@ -896,7 +910,7 @@ export default function DashboardPage() {
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
               {pinnedSessions.map((session, index) => {
                 const template = getTemplateForSession(session);
-                const status = getStatus(session.status);
+                const status = getStatus(session.workspace_status || 'stopped');
                 return (
                   <motion.div
                     key={session.id}
@@ -992,7 +1006,7 @@ export default function DashboardPage() {
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                 {recentSessions.map((session, index) => {
                   const template = getTemplateForSession(session);
-                  const status = getStatus(session.status);
+                  const status = getStatus(session.workspace_status || 'stopped');
 
                   return (
                     <motion.div
@@ -1088,7 +1102,7 @@ export default function DashboardPage() {
                   <AnimatePresence>
                     {allSessions.map((session, index) => {
                       const template = getTemplateForSession(session);
-                      const status = getStatus(session.status);
+                      const status = getStatus(session.workspace_status || 'stopped');
 
                       return (
                         <motion.div
@@ -1244,7 +1258,7 @@ export default function DashboardPage() {
                     <tbody>
                       {allSessions.map((session) => {
                         const template = getTemplateForSession(session);
-                        const status = getStatus(session.status);
+                        const status = getStatus(session.workspace_status || 'stopped');
 
                         return (
                           <tr

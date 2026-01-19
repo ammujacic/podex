@@ -15,6 +15,15 @@ GITHUB_API_BASE = "https://api.github.com"
 
 
 # ============================================================================
+# Exceptions
+# ============================================================================
+
+
+class GitHubTokenExpiredError(Exception):
+    """Raised when the GitHub access token is invalid or expired."""
+
+
+# ============================================================================
 # Response Models
 # ============================================================================
 
@@ -220,6 +229,13 @@ class GitHubClient:
     ) -> dict[str, Any] | list[Any] | str:
         """Make a request to the GitHub API."""
         response = await self.client.request(method, path, **kwargs)
+
+        # Handle 401 specifically - token is invalid/expired
+        if response.status_code == 401:
+            raise GitHubTokenExpiredError(
+                "GitHub access token is invalid or expired. Please reconnect your GitHub account."
+            )
+
         response.raise_for_status()
 
         if response.headers.get("content-type", "").startswith("application/json"):

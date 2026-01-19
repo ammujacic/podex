@@ -20,6 +20,7 @@ import { CommandPalette } from './CommandPalette';
 import { QuickOpen } from './QuickOpen';
 import { NotificationCenter } from './NotificationCenter';
 import { MobileWorkspaceLayout } from './MobileWorkspaceLayout';
+import { WorkspaceStatusOverlay } from './WorkspaceStatusOverlay';
 
 interface WorkspaceLayoutProps {
   sessionId: string;
@@ -33,6 +34,8 @@ export function WorkspaceLayout({ sessionId, children }: WorkspaceLayoutProps) {
   const session = useSessionStore((state) => state.sessions[sessionId]);
   const agentIds = session?.agents?.map((a) => a.id) ?? [];
   const isMobile = useIsMobile();
+  const workspaceStatus = session?.workspaceStatus;
+  const workspaceStatusChecking = session?.workspaceStatusChecking ?? false;
 
   // Initialize keyboard shortcuts (desktop only)
   useKeybindings();
@@ -63,6 +66,13 @@ export function WorkspaceLayout({ sessionId, children }: WorkspaceLayoutProps) {
         <MobileWorkspaceLayout sessionId={sessionId} />
         {/* Keep modal layer for dialogs */}
         <ModalLayer sessionId={sessionId} />
+        <WorkspaceStatusOverlay
+          sessionId={sessionId}
+          status={workspaceStatus}
+          isCheckingStatus={workspaceStatusChecking}
+          sessionName={session?.name}
+          workspaceId={session?.workspaceId}
+        />
       </LayoutSyncProvider>
     );
   }
@@ -117,6 +127,14 @@ export function WorkspaceLayout({ sessionId, children }: WorkspaceLayoutProps) {
 
         {/* Notification center panel */}
         <NotificationCenter sessionId={sessionId} />
+
+        <WorkspaceStatusOverlay
+          sessionId={sessionId}
+          status={workspaceStatus}
+          isCheckingStatus={workspaceStatusChecking}
+          sessionName={session?.name}
+          workspaceId={session?.workspaceId}
+        />
       </div>
     </LayoutSyncProvider>
   );

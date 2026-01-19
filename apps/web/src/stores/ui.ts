@@ -10,6 +10,7 @@ export type PanelId =
   | 'agents'
   | 'files'
   | 'git'
+  | 'github'
   | 'preview'
   | 'mcp'
   | 'extensions'
@@ -475,8 +476,16 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
 
     set({
       sidebarLayout: {
-        left: { ...layout.left, panels: normalizePanelHeights(leftPanels) },
-        right: { ...layout.right, panels: normalizePanelHeights(rightPanels) },
+        left: {
+          ...layout.left,
+          panels: normalizePanelHeights(leftPanels),
+          collapsed: side === 'left' ? false : layout.left.collapsed,
+        },
+        right: {
+          ...layout.right,
+          panels: normalizePanelHeights(rightPanels),
+          collapsed: side === 'right' ? false : layout.right.collapsed,
+        },
       },
     });
     get().announce(`${panelId} added to ${side} sidebar`);

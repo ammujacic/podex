@@ -1,9 +1,9 @@
 // Modal components
 export { CreateAgentModal } from './CreateAgentModal';
 export { PauseSessionModal } from './PauseSessionModal';
-export { ResumeSessionModal } from './ResumeSessionModal';
 export { StandbySettingsModal } from './StandbySettingsModal';
 export { MCPSettingsModal } from './MCPSettingsModal';
+export { WorkspaceScalingModal } from './WorkspaceScalingModal';
 
 // Constants and types
 export {

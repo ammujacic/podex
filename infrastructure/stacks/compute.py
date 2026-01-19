@@ -163,6 +163,29 @@ def create_cloud_run_services(
                 value="console",
             ),
         ]
+        if cfg["name"] == "compute":
+            workspace_x86 = (
+                image_refs["workspace"]
+                if image_refs and "workspace" in image_refs
+                else image_base.apply(lambda base: f"{base}/workspace:latest-amd64")
+            )
+            workspace_gpu = (
+                image_refs["workspace-gpu"]
+                if image_refs and "workspace-gpu" in image_refs
+                else image_base.apply(lambda base: f"{base}/workspace:latest-gpu")
+            )
+            envs.append(
+                gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
+                    name="COMPUTE_WORKSPACE_IMAGE_X86",
+                    value=workspace_x86,
+                )
+            )
+            envs.append(
+                gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
+                    name="COMPUTE_WORKSPACE_IMAGE_GPU",
+                    value=workspace_gpu,
+                )
+            )
 
         # Add JWT secret
         envs.append(
@@ -274,6 +297,31 @@ def create_cloud_run_services(
 
         # API service - OAuth, Stripe, VAPID, SendGrid
         if cfg["name"] == "api":
+            # OAuth redirect URIs - derived from app-url secret
+            # These are set via set-gcp-secrets.sh based on your domain
+            envs.append(
+                gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
+                    name="GITHUB_REDIRECT_URI",
+                    value_source=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceArgs(
+                        secret_key_ref=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceSecretKeyRefArgs(
+                            secret=secrets["github_redirect_uri"].secret_id,
+                            version="latest",
+                        ),
+                    ),
+                )
+            )
+            envs.append(
+                gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
+                    name="GOOGLE_REDIRECT_URI",
+                    value_source=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceArgs(
+                        secret_key_ref=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceSecretKeyRefArgs(
+                            secret=secrets["google_redirect_uri"].secret_id,
+                            version="latest",
+                        ),
+                    ),
+                )
+            )
+
             api_secrets = [
                 ("GITHUB_CLIENT_ID", "github_client_id"),
                 ("GITHUB_CLIENT_SECRET", "github_client_secret"),

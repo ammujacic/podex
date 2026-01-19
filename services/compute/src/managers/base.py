@@ -9,6 +9,8 @@ from src.models.workspace import (
     WorkspaceConfig,
     WorkspaceExecResponse,
     WorkspaceInfo,
+    WorkspaceScaleResponse,
+    WorkspaceTier,
 )
 
 
@@ -33,7 +35,7 @@ class ComputeManager(ABC):
     - GCPComputeManager: Production using Cloud Run / GKE
     """
 
-    _file_sync: Any = None
+    _file_sync: Any  # Required - set via set_file_sync() during init
 
     @abstractmethod
     async def create_workspace(
@@ -233,6 +235,22 @@ class ComputeManager(ABC):
         the last billing event for each running workspace.
         """
 
+    @abstractmethod
+    async def scale_workspace(
+        self,
+        workspace_id: str,
+        new_tier: WorkspaceTier,
+    ) -> WorkspaceScaleResponse:
+        """Scale a workspace to a new compute tier.
+
+        Args:
+            workspace_id: The workspace ID to scale
+            new_tier: The new compute tier to scale to
+
+        Returns:
+            WorkspaceScaleResponse with scaling result
+        """
+
     async def discover_existing_workspaces(self) -> None:  # noqa: B027
         """Discover and re-register existing workspaces after service restart.
 
@@ -245,20 +263,30 @@ class ComputeManager(ABC):
     def set_file_sync(self, file_sync: Any) -> None:
         """Set the file sync service for workspace file synchronization.
 
-        This is an optional method that implementations can override to
-        enable file sync capabilities.
+        This MUST be called during initialization. FileSync is required
+        for proper workspace operation.
 
         Args:
             file_sync: The file sync service instance
+
+        Raises:
+            ValueError: If file_sync is None
         """
+        if file_sync is None:
+            raise ValueError("FileSync is required and cannot be None")
         self._file_sync = file_sync
 
     def get_file_sync(self) -> Any:
         """Get the file sync service instance.
 
         Returns:
-            The file sync service instance, or None if not configured
+            The file sync service instance
+
+        Raises:
+            RuntimeError: If file sync was not initialized
         """
+        if not hasattr(self, "_file_sync") or self._file_sync is None:
+            raise RuntimeError("FileSync not initialized - call set_file_sync() first")
         return self._file_sync
 
     async def exec_command_stream(

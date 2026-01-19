@@ -6,6 +6,7 @@ import {
   FileCode,
   FolderTree,
   GitBranch,
+  Github,
   Terminal,
   MoreVertical,
   X,
@@ -42,6 +43,7 @@ import { useSidebarBadges } from '@/hooks/useSidebarBadges';
 import { FilesPanel } from './FilesPanel';
 import { AgentsPanel } from './AgentsPanel';
 import { GitPanel } from './GitPanel';
+import { GitHubWidget } from './GitHubWidget';
 import { MCPPanel } from './MCPPanel';
 import { ExtensionsPanel } from './ExtensionsPanel';
 import { SearchPanel } from './SearchPanel';
@@ -62,6 +64,7 @@ const panelConfig: Record<
   agents: { icon: Bot, label: 'Agents' },
   files: { icon: FolderTree, label: 'Files' },
   git: { icon: GitBranch, label: 'Git' },
+  github: { icon: Github, label: 'GitHub' },
   preview: { icon: FileCode, label: 'Preview' },
   mcp: { icon: Plug, label: 'Integrations' },
   extensions: { icon: Box, label: 'Extensions' },
@@ -73,7 +76,7 @@ const panelConfig: Record<
 };
 
 // Left sidebar: traditional coding tools
-const leftPanelIds: PanelId[] = ['files', 'search', 'git', 'problems'];
+const leftPanelIds: PanelId[] = ['files', 'search', 'git', 'github', 'problems'];
 
 // Right sidebar: AI-related and utility panels
 const rightPanelIds: PanelId[] = [
@@ -164,6 +167,8 @@ function SidebarPanel({ panelId, sessionId }: SidebarPanelProps) {
         return <AgentsPanel sessionId={sessionId} />;
       case 'git':
         return <GitPanel sessionId={sessionId} />;
+      case 'github':
+        return <GitHubWidget sessionId={sessionId} />;
       case 'mcp':
         return <MCPPanel sessionId={sessionId} />;
       case 'extensions':
@@ -342,6 +347,7 @@ export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
     useUIStore();
   const config = sidebarLayout[side];
   const badgeCounts = useSidebarBadges(sessionId);
+  const [isHoverExpanded, setIsHoverExpanded] = useState(false);
 
   const handleIconClick = (panelId: PanelId) => {
     const isOnThisSide = config.panels.some((p) => p.panelId === panelId);
@@ -363,9 +369,12 @@ export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
     return (
       <aside
         className={cn(
-          'flex flex-col border-border-subtle bg-surface transition-all duration-200 w-12',
-          side === 'left' ? 'border-r' : 'border-l'
+          'flex flex-col border-border-subtle bg-surface transition-all duration-200',
+          side === 'left' ? 'border-r' : 'border-l',
+          isHoverExpanded ? 'w-auto min-w-12' : 'w-12'
         )}
+        onMouseEnter={() => setIsHoverExpanded(true)}
+        onMouseLeave={() => setIsHoverExpanded(false)}
       >
         <nav className="flex flex-1 flex-col items-center gap-1 py-2">
           {(side === 'left' ? leftPanelIds : rightPanelIds).map((panelId) => {
@@ -414,6 +423,32 @@ export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
             )}
           </button>
         </div>
+
+        {/* Panel area shown during hover */}
+        {isHoverExpanded && config.panels.length > 0 && (
+          <>
+            <div
+              className={cn(
+                'flex flex-col bg-surface overflow-hidden',
+                side === 'left' ? 'border-r border-border-subtle' : 'border-l border-border-subtle'
+              )}
+              style={{ width: config.width }}
+              data-panel-area
+            >
+              {config.panels.map((panel, index) => (
+                <div key={panel.panelId} className="contents">
+                  <div style={{ height: `${panel.height}%` }} className="overflow-hidden min-h-0">
+                    <SidebarPanel panelId={panel.panelId} sessionId={sessionId} />
+                  </div>
+                  {index < config.panels.length - 1 && (
+                    <PanelResizeHandle side={side} panelIndex={index} />
+                  )}
+                </div>
+              ))}
+            </div>
+            <HorizontalResizeHandle side={side} />
+          </>
+        )}
       </aside>
     );
   }

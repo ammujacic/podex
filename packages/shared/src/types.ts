@@ -264,6 +264,38 @@ export interface AttachmentFile {
 }
 
 // ==========================================
+// Workspace Hardware Types (from backend API)
+// ==========================================
+
+// These types are derived from the backend API response
+// and should not be hardcoded here
+export type WorkspaceTier = string; // Dynamic from backend
+export type Architecture = string; // Dynamic from backend
+export type AcceleratorType = string; // Dynamic from backend
+
+export interface HardwareSpec {
+  id: string;
+  tier: WorkspaceTier;
+  display_name: string;
+  description: string | null;
+  architecture: Architecture;
+  vcpu: number;
+  memory_mb: number;
+  gpu_type: AcceleratorType | null;
+  gpu_memory_gb: number | null;
+  gpu_count: number;
+  storage_gb_default: number;
+  storage_gb_max: number;
+  hourly_rate: number; // Base cost (provider cost)
+  is_available: boolean;
+  requires_subscription: string | null;
+  region_availability: string[];
+  // User-specific pricing (with margin applied)
+  user_hourly_rate?: number | null;
+  compute_margin_percent?: number | null;
+}
+
+// ==========================================
 // WebSocket Event Types
 // ==========================================
 

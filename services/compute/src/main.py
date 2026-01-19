@@ -11,7 +11,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from podex_shared import SentryConfig, init_sentry, init_usage_tracker, shutdown_usage_tracker
 from src.config import settings
-from src.deps import cleanup_compute_manager, get_compute_manager, init_compute_manager
+from src.deps import (
+    ComputeManagerSingleton,
+    cleanup_compute_manager,
+    get_compute_manager,
+    init_compute_manager,
+)
 from src.routes import (
     health_router,
     lsp_router,
@@ -75,6 +80,21 @@ async def cleanup_task() -> None:
             cleaned = await manager.cleanup_idle_workspaces(settings.workspace_timeout)
             if cleaned:
                 logger.info("Cleaned up idle workspaces", count=len(cleaned))
+
+            # Cleanup stale workspaces from Redis (defensive cleanup)
+            workspace_store = ComputeManagerSingleton._workspace_store
+            if workspace_store:
+                try:
+                    # Clean up workspaces older than 48 hours (2x TTL)
+                    stale_removed = await workspace_store.cleanup_stale(
+                        max_age_seconds=48 * 60 * 60
+                    )
+                    if stale_removed:
+                        logger.info(
+                            "Cleaned up stale workspaces from Redis", count=len(stale_removed)
+                        )
+                except Exception:
+                    logger.exception("Error cleaning up stale workspaces from Redis")
         except asyncio.CancelledError:
             break
         except Exception:
@@ -119,15 +139,22 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
     async def graceful_shutdown() -> None:
         """Perform graceful shutdown with timeout protection."""
+        logger.info("Starting graceful shutdown sequence")
+
         # Close active terminal sessions first to unblock WebSocket handlers
+        logger.info("Closing terminal sessions...")
         await shutdown_terminal_sessions()
         logger.info("Terminal sessions closed")
 
         # Shutdown usage tracker to flush pending events
+        logger.info("Stopping usage tracker...")
         await shutdown_usage_tracker()
         logger.info("Usage tracker stopped")
 
+        # Cleanup compute manager and workspaces
+        logger.info("Cleaning up workspaces and compute manager...")
         await cleanup_compute_manager()
+        logger.info("Compute manager cleanup completed")
 
     # Cancel cleanup task first
     cleanup.cancel()

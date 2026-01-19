@@ -21,12 +21,14 @@ from docker.errors import ContainerError, ImageNotFound, NotFound
 from podex_shared import ComputeUsageParams, get_usage_tracker
 from podex_shared.models.workspace import HARDWARE_SPECS
 from podex_shared.models.workspace import WorkspaceTier as SharedTier
+from src.api_client import sync_workspace_status_to_api
 from src.config import settings
 from src.managers.base import ComputeManager, ProxyRequest
 from src.models.workspace import (
     WorkspaceConfig,
     WorkspaceExecResponse,
     WorkspaceInfo,
+    WorkspaceScaleResponse,
     WorkspaceStatus,
     WorkspaceTier,
 )
@@ -34,6 +36,7 @@ from src.models.workspace import (
 if TYPE_CHECKING:
     from docker.models.containers import Container
 
+    from src.storage.workspace_store import WorkspaceStore
     from src.sync.file_sync import FileSync
 
 logger = structlog.get_logger()
@@ -59,26 +62,69 @@ class DockerComputeManager(ComputeManager):
     - Automatic cleanup of idle workspaces
     """
 
-    def __init__(self) -> None:
+    def __init__(self, workspace_store: WorkspaceStore | None = None) -> None:
         """Initialize Docker client and workspace tracking."""
         self.client = docker.from_env()
-        self._workspaces: dict[str, WorkspaceInfo] = {}
-        self._file_sync: FileSync | None = None
+        self._workspace_store = workspace_store
+        # FileSync is set via set_file_sync() during initialization (required)
+        self._file_sync: FileSync
         # Lock for billing operations to prevent race conditions
         self._billing_lock = asyncio.Lock()
         logger.info(
             "DockerComputeManager initialized",
             docker_host=settings.docker_host,
             workspace_image=settings.workspace_image,
+            has_workspace_store=workspace_store is not None,
         )
+
+    async def _get_workspace(self, workspace_id: str) -> WorkspaceInfo | None:
+        """Get workspace from Redis store.
+
+        Always reads from Redis to ensure consistency across instances.
+        No local caching - Redis is the single source of truth.
+        """
+        if self._workspace_store:
+            return await self._workspace_store.get(workspace_id)
+        return None
+
+    async def _save_workspace(self, workspace: WorkspaceInfo) -> None:
+        """Save workspace to Redis store."""
+        if self._workspace_store:
+            await self._workspace_store.save(workspace)
+
+    async def _delete_workspace(self, workspace_id: str) -> None:
+        """Delete workspace from Redis store."""
+        if self._workspace_store:
+            await self._workspace_store.delete(workspace_id)
 
     async def discover_existing_workspaces(self) -> None:
         """Discover and re-register existing workspace containers.
 
         Called on startup to recover from service restarts without losing
         track of running workspaces. This ensures billing continuity.
+
+        Strategy:
+        1. Load workspaces from Redis (if available)
+        2. Discover containers from Docker
+        3. Reconcile: Update Redis with actual container state
         """
         try:
+            # First, load workspaces from Redis if available
+            redis_workspaces: dict[str, WorkspaceInfo] = {}
+            if self._workspace_store:
+                try:
+                    all_workspaces = await self._workspace_store.list_all()
+                    redis_workspaces = {w.id: w for w in all_workspaces}
+                    logger.info(
+                        "Loaded workspaces from Redis",
+                        count=len(redis_workspaces),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to load workspaces from Redis, will discover from containers",
+                        error=str(e),
+                    )
+
             # Find all containers with podex workspace labels
             containers = await asyncio.to_thread(
                 self.client.containers.list,
@@ -136,7 +182,10 @@ class DockerComputeManager(ComputeManager):
                         },
                     )
 
-                    self._workspaces[workspace_id] = workspace_info
+                    await self._save_workspace(workspace_info)
+
+                    # Mark as found in container discovery
+                    redis_workspaces.pop(workspace_id, None)
 
                     # Note: Don't restore dotfiles for rediscovered workspaces - they're already
                     # running with files intact. Only restore when creating NEW workspaces.
@@ -147,6 +196,14 @@ class DockerComputeManager(ComputeManager):
                         container_id=container.id[:12] if container.id else "unknown",
                         tier=tier.value,
                     )
+
+                    # Notify API service about the rediscovered workspace
+                    # This ensures database is synced with actual container state
+                    await sync_workspace_status_to_api(
+                        workspace_id=workspace_id,
+                        status="running",
+                        container_id=container.id,
+                    )
                 except Exception as e:
                     logger.exception(
                         "Failed to rediscover workspace container",
@@ -154,18 +211,48 @@ class DockerComputeManager(ComputeManager):
                         error=str(e),
                     )
 
+            # Reconcile: Workspaces in Redis but not in containers are stale
+            # Mark them as stopped
+            for workspace_id, workspace in redis_workspaces.items():
+                if workspace.status == WorkspaceStatus.RUNNING:
+                    logger.warning(
+                        "Workspace in Redis but container not found, marking as stopped",
+                        workspace_id=workspace_id,
+                    )
+                    workspace.status = WorkspaceStatus.STOPPED
+                    workspace.metadata["stale_discovery"] = True
+                    await self._save_workspace(workspace)
+
+            # Count rediscovered workspaces
+            rediscovered_count = 0
+            if self._workspace_store:
+                all_workspaces = await self._workspace_store.list_all()
+                rediscovered_count = len(
+                    [w for w in all_workspaces if w.metadata.get("rediscovered")]
+                )
+
             logger.info(
                 "Workspace discovery complete",
-                rediscovered_count=len(
-                    [w for w in self._workspaces.values() if w.metadata.get("rediscovered")]
-                ),
-                total_workspaces=len(self._workspaces),
+                rediscovered_count=rediscovered_count,
+                stale_count=len(redis_workspaces),
             )
         except Exception:
             logger.exception("Failed to discover existing workspaces")
 
     def set_file_sync(self, file_sync: FileSync) -> None:
-        """Set the file sync service for GCS synchronization."""
+        """Set the file sync service for GCS synchronization.
+
+        This MUST be called during initialization. FileSync is required
+        for proper workspace operation.
+
+        Args:
+            file_sync: The file sync service instance
+
+        Raises:
+            ValueError: If file_sync is None
+        """
+        if file_sync is None:
+            raise ValueError("FileSync is required and cannot be None")
         self._file_sync = file_sync
 
     def _get_resource_limits(self, tier: WorkspaceTier) -> dict[str, Any]:
@@ -210,9 +297,10 @@ class DockerComputeManager(ComputeManager):
         )
 
         # Check workspace limit
-        active_count = len(
-            [w for w in self._workspaces.values() if w.status == WorkspaceStatus.RUNNING]
-        )
+        active_count = 0
+        if self._workspace_store:
+            running_workspaces = await self._workspace_store.list_running()
+            active_count = len(running_workspaces)
         if active_count >= settings.max_workspaces:
             msg = f"Maximum workspaces ({settings.max_workspaces}) reached"
             raise RuntimeError(msg)
@@ -312,48 +400,47 @@ class DockerComputeManager(ComputeManager):
                 },
             )
 
-            self._workspaces[workspace_id] = workspace_info
+            await self._save_workspace(workspace_info)
 
             # Sync files from GCS (restore workspace state)
-            if self._file_sync:
-                try:
-                    await self._file_sync.sync_from_gcs(workspace_id)
-                    # Start background sync (includes dotfiles)
-                    await self._file_sync.start_background_sync(
-                        workspace_id=workspace_id,
-                        user_id=user_id,
-                        dotfiles_paths=config.dotfiles_paths,
-                    )
-                    workspace_info.metadata["gcs_sync_status"] = "success"
-                except Exception as e:
-                    logger.exception(
-                        "Failed to sync files from GCS",
-                        workspace_id=workspace_id,
-                    )
-                    # Store sync error in metadata for visibility
-                    workspace_info.metadata["gcs_sync_status"] = "error"
-                    workspace_info.metadata["gcs_sync_error"] = str(e)
+            try:
+                await self._file_sync.sync_from_gcs(workspace_id)
+                # Start background sync (includes dotfiles)
+                await self._file_sync.start_background_sync(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    dotfiles_paths=config.dotfiles_paths,
+                )
+                workspace_info.metadata["gcs_sync_status"] = "success"
+            except Exception as e:
+                logger.exception(
+                    "Failed to sync files from GCS",
+                    workspace_id=workspace_id,
+                )
+                # Store sync error in metadata for visibility
+                workspace_info.metadata["gcs_sync_status"] = "error"
+                workspace_info.metadata["gcs_sync_error"] = str(e)
 
-                # Sync user dotfiles (restore .claude/, .codex/, .gemini/ configs)
-                try:
-                    await self._file_sync.sync_user_dotfiles(
-                        workspace_id=workspace_id,
-                        user_id=user_id,
-                    )
-                    workspace_info.metadata["dotfiles_sync_status"] = "success"
-                    logger.info(
-                        "Synced user dotfiles to workspace",
-                        workspace_id=workspace_id,
-                        user_id=user_id,
-                    )
-                except Exception as e:
-                    logger.exception(
-                        "Failed to sync user dotfiles",
-                        workspace_id=workspace_id,
-                        user_id=user_id,
-                    )
-                    workspace_info.metadata["dotfiles_sync_status"] = "error"
-                    workspace_info.metadata["dotfiles_sync_error"] = str(e)
+            # Sync user dotfiles (restore .claude/, .codex/, .gemini/ configs)
+            try:
+                await self._file_sync.sync_user_dotfiles(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                )
+                workspace_info.metadata["dotfiles_sync_status"] = "success"
+                logger.info(
+                    "Synced user dotfiles to workspace",
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                )
+            except Exception as e:
+                logger.exception(
+                    "Failed to sync user dotfiles",
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                )
+                workspace_info.metadata["dotfiles_sync_status"] = "error"
+                workspace_info.metadata["dotfiles_sync_error"] = str(e)
 
             # Ensure projects directory exists
             await self.exec_command(workspace_id, "mkdir -p /home/dev/projects", timeout=10)
@@ -361,6 +448,10 @@ class DockerComputeManager(ComputeManager):
             # Set up git identity from user configuration
             if config.git_name or config.git_email:
                 await self._setup_git_identity(workspace_id, config.git_name, config.git_email)
+
+            # Set up GitHub token authentication if GITHUB_TOKEN is in environment
+            if config.environment.get("GITHUB_TOKEN"):
+                await self._setup_github_token_auth(workspace_id)
 
             # Clone repos if specified (only if no GCS files were synced)
             if config.repos:
@@ -464,6 +555,63 @@ class DockerComputeManager(ComputeManager):
                 exc_info=True,
             )
 
+    async def _setup_github_token_auth(self, workspace_id: str) -> None:
+        """Configure git to use GITHUB_TOKEN environment variable for GitHub authentication.
+
+        This sets up a credential helper that reads the token from the GITHUB_TOKEN
+        environment variable, enabling git push/pull/fetch operations to GitHub
+        without requiring manual authentication.
+        """
+        try:
+            # Create a credential helper script that reads from GITHUB_TOKEN env var
+            # This script outputs the credentials in the format git expects
+            credential_helper_script = """#!/bin/bash
+if [ -n "$GITHUB_TOKEN" ]; then
+    echo "protocol=https"
+    echo "host=github.com"
+    echo "username=x-access-token"
+    echo "password=$GITHUB_TOKEN"
+fi
+"""
+
+            # Write the credential helper script
+            script_path = "~/.local/bin/git-credential-github-token"
+            await self.exec_command(
+                workspace_id,
+                f"mkdir -p ~/.local/bin && cat > {script_path} << 'SCRIPT'\n"
+                f"{credential_helper_script}SCRIPT",
+                timeout=10,
+            )
+
+            # Make it executable
+            await self.exec_command(
+                workspace_id,
+                "chmod +x ~/.local/bin/git-credential-github-token",
+                timeout=10,
+            )
+
+            # Configure git to use this credential helper for github.com
+            # This is added as a lower-priority helper, so explicit credentials take precedence
+            helper_cmd = (
+                "git config --global credential.https://github.com.helper "
+                "'!~/.local/bin/git-credential-github-token'"
+            )
+            await self.exec_command(
+                workspace_id,
+                helper_cmd,
+                timeout=10,
+            )
+
+            logger.info("GitHub token authentication configured", workspace_id=workspace_id)
+
+        except Exception:
+            # Non-fatal: log warning but continue workspace creation
+            logger.warning(
+                "Failed to configure GitHub token authentication",
+                workspace_id=workspace_id,
+                exc_info=True,
+            )
+
     async def _clone_repos(  # noqa: PLR0912
         self,
         workspace_id: str,
@@ -545,7 +693,7 @@ class DockerComputeManager(ComputeManager):
 
     async def stop_workspace(self, workspace_id: str) -> None:
         """Stop a running workspace container."""
-        workspace = self._workspaces.get(workspace_id)
+        workspace = await self._get_workspace(workspace_id)
         if not workspace:
             logger.warning("Workspace not found", workspace_id=workspace_id)
             return
@@ -559,46 +707,45 @@ class DockerComputeManager(ComputeManager):
 
         # Sync files to GCS before stopping (stop background sync first)
         sync_error: Exception | None = None
-        if self._file_sync:
+        try:
+            await self._file_sync.stop_background_sync(workspace_id)
+            await self._file_sync.sync_to_gcs(workspace_id)
+            workspace.metadata["gcs_sync_status"] = "success"
+        except Exception as e:
+            logger.exception(
+                "Failed to sync files to GCS before stop",
+                workspace_id=workspace_id,
+            )
+            # Store sync error - this is important as data may be lost
+            workspace.metadata["gcs_sync_status"] = "error"
+            workspace.metadata["gcs_sync_error"] = str(e)
+            sync_error = e
+
+        # Save user dotfiles (.claude/, .codex/, .gemini/ configs) before stopping
+        # Only sync if sync_dotfiles is enabled (default True for backwards compat)
+        sync_dotfiles = workspace.metadata.get("sync_dotfiles", True)
+        if sync_dotfiles:
             try:
-                await self._file_sync.stop_background_sync(workspace_id)
-                await self._file_sync.sync_to_gcs(workspace_id)
-                workspace.metadata["gcs_sync_status"] = "success"
+                dotfiles_paths = workspace.metadata.get("dotfiles_paths")
+                await self._file_sync.save_user_dotfiles(
+                    workspace_id=workspace_id,
+                    user_id=workspace.user_id,
+                    dotfiles_paths=dotfiles_paths,
+                )
+                workspace.metadata["dotfiles_sync_status"] = "success"
+                logger.info(
+                    "Saved user dotfiles before workspace stop",
+                    workspace_id=workspace_id,
+                    user_id=workspace.user_id,
+                )
             except Exception as e:
                 logger.exception(
-                    "Failed to sync files to GCS before stop",
+                    "Failed to save user dotfiles before stop",
                     workspace_id=workspace_id,
+                    user_id=workspace.user_id,
                 )
-                # Store sync error - this is important as data may be lost
-                workspace.metadata["gcs_sync_status"] = "error"
-                workspace.metadata["gcs_sync_error"] = str(e)
-                sync_error = e
-
-            # Save user dotfiles (.claude/, .codex/, .gemini/ configs) before stopping
-            # Only sync if sync_dotfiles is enabled (default True for backwards compat)
-            sync_dotfiles = workspace.metadata.get("sync_dotfiles", True)
-            if sync_dotfiles:
-                try:
-                    dotfiles_paths = workspace.metadata.get("dotfiles_paths")
-                    await self._file_sync.save_user_dotfiles(
-                        workspace_id=workspace_id,
-                        user_id=workspace.user_id,
-                        dotfiles_paths=dotfiles_paths,
-                    )
-                    workspace.metadata["dotfiles_sync_status"] = "success"
-                    logger.info(
-                        "Saved user dotfiles before workspace stop",
-                        workspace_id=workspace_id,
-                        user_id=workspace.user_id,
-                    )
-                except Exception as e:
-                    logger.exception(
-                        "Failed to save user dotfiles before stop",
-                        workspace_id=workspace_id,
-                        user_id=workspace.user_id,
-                    )
-                    workspace.metadata["dotfiles_sync_status"] = "error"
-                    workspace.metadata["dotfiles_sync_error"] = str(e)
+                workspace.metadata["dotfiles_sync_status"] = "error"
+                workspace.metadata["dotfiles_sync_error"] = str(e)
 
         try:
             container = await asyncio.to_thread(
@@ -609,6 +756,7 @@ class DockerComputeManager(ComputeManager):
 
             workspace.status = WorkspaceStatus.STOPPED
             workspace.last_activity = stop_time
+            await self._save_workspace(workspace)
 
             # Track compute usage for billing
             await self._track_compute_usage(workspace, duration_seconds)
@@ -624,10 +772,11 @@ class DockerComputeManager(ComputeManager):
         except NotFound:
             logger.warning("Container not found", workspace_id=workspace_id)
             workspace.status = WorkspaceStatus.ERROR
+            await self._save_workspace(workspace)
 
     async def restart_workspace(self, workspace_id: str) -> None:
         """Restart a stopped workspace container."""
-        workspace = self._workspaces.get(workspace_id)
+        workspace = await self._get_workspace(workspace_id)
         if not workspace:
             logger.warning("Workspace not found for restart", workspace_id=workspace_id)
             raise ValueError(f"Workspace {workspace_id} not found")
@@ -648,6 +797,7 @@ class DockerComputeManager(ComputeManager):
                 logger.info("Container already running", workspace_id=workspace_id)
                 workspace.status = WorkspaceStatus.RUNNING
                 workspace.last_activity = datetime.now(UTC)
+                await self._save_workspace(workspace)
                 return
 
             # Start the stopped container
@@ -655,26 +805,27 @@ class DockerComputeManager(ComputeManager):
 
             workspace.status = WorkspaceStatus.RUNNING
             workspace.last_activity = datetime.now(UTC)
+            await self._save_workspace(workspace)
 
-            # Resume file sync if enabled
-            if self._file_sync:
-                try:
-                    await self._file_sync.start_background_sync(
-                        workspace_id=workspace_id,
-                        user_id=workspace.user_id,
-                        dotfiles_paths=workspace.metadata.get("dotfiles_paths"),
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to resume file sync after restart",
-                        workspace_id=workspace_id,
-                        error=str(e),
-                    )
+            # Resume file sync
+            try:
+                await self._file_sync.start_background_sync(
+                    workspace_id=workspace_id,
+                    user_id=workspace.user_id,
+                    dotfiles_paths=workspace.metadata.get("dotfiles_paths"),
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to resume file sync after restart",
+                    workspace_id=workspace_id,
+                    error=str(e),
+                )
 
             logger.info("Workspace restarted", workspace_id=workspace_id)
         except NotFound:
             logger.warning("Container not found for restart", workspace_id=workspace_id)
             workspace.status = WorkspaceStatus.ERROR
+            await self._save_workspace(workspace)
             raise ValueError(f"Container for workspace {workspace_id} not found") from None
 
     async def _track_compute_usage(
@@ -729,7 +880,12 @@ class DockerComputeManager(ComputeManager):
         async with self._billing_lock:
             now = datetime.now(UTC)
 
-            for workspace in list(self._workspaces.values()):
+            # Get all running workspaces from store
+            workspaces: list[WorkspaceInfo] = []
+            if self._workspace_store:
+                workspaces = await self._workspace_store.list_running()
+
+            for workspace in workspaces:
                 if workspace.status != WorkspaceStatus.RUNNING:
                     continue
 
@@ -766,6 +922,9 @@ class DockerComputeManager(ComputeManager):
                             # Track the usage
                             await self._track_compute_usage(workspace, duration_seconds)
 
+                            # Save workspace after updating billing timestamp
+                            await self._save_workspace(workspace)
+
                             logger.debug(
                                 "Tracked periodic compute usage",
                                 workspace_id=workspace.id,
@@ -777,6 +936,7 @@ class DockerComputeManager(ComputeManager):
                                 workspace.metadata["last_billing_timestamp"] = old_timestamp
                             else:
                                 workspace.metadata.pop("last_billing_timestamp", None)
+                            await self._save_workspace(workspace)
                             raise
                 except Exception:
                     logger.exception(
@@ -791,35 +951,34 @@ class DockerComputeManager(ComputeManager):
             workspace_id: The workspace to delete
             preserve_files: If True, sync to GCS before deletion. If False, also delete GCS files.
         """
-        workspace = self._workspaces.get(workspace_id)
+        workspace = await self._get_workspace(workspace_id)
         if not workspace:
             return
 
         # Sync files to GCS before deletion (with timeout to prevent shutdown hangs)
-        if self._file_sync:
-            try:
-                await self._file_sync.stop_background_sync(workspace_id)
-                if preserve_files:
-                    await asyncio.wait_for(
-                        self._file_sync.sync_to_gcs(workspace_id),
-                        timeout=30.0,  # 30 second timeout to prevent shutdown hangs
-                    )
-                else:
-                    # Optionally delete GCS files too
-                    await asyncio.wait_for(
-                        self._file_sync.delete_workspace_files(workspace_id),
-                        timeout=30.0,
-                    )
-            except TimeoutError:
-                logger.warning(
-                    "GCS sync timed out during workspace deletion",
-                    workspace_id=workspace_id,
+        try:
+            await self._file_sync.stop_background_sync(workspace_id)
+            if preserve_files:
+                await asyncio.wait_for(
+                    self._file_sync.sync_to_gcs(workspace_id),
+                    timeout=30.0,  # 30 second timeout to prevent shutdown hangs
                 )
-            except Exception:
-                logger.exception(
-                    "Failed to handle GCS files before delete",
-                    workspace_id=workspace_id,
+            else:
+                # Optionally delete GCS files too
+                await asyncio.wait_for(
+                    self._file_sync.delete_workspace_files(workspace_id),
+                    timeout=30.0,
                 )
+        except TimeoutError:
+            logger.warning(
+                "GCS sync timed out during workspace deletion",
+                workspace_id=workspace_id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to handle GCS files before delete",
+                workspace_id=workspace_id,
+            )
 
         if workspace.container_id:
             try:
@@ -832,11 +991,11 @@ class DockerComputeManager(ComputeManager):
             except NotFound:
                 pass
 
-        del self._workspaces[workspace_id]
+        await self._delete_workspace(workspace_id)
 
     async def get_workspace(self, workspace_id: str) -> WorkspaceInfo | None:
         """Get workspace information."""
-        workspace = self._workspaces.get(workspace_id)
+        workspace = await self._get_workspace(workspace_id)
 
         # If not in registry, try to find container directly and re-register
         if not workspace:
@@ -856,8 +1015,10 @@ class DockerComputeManager(ComputeManager):
                     workspace.status = WorkspaceStatus.RUNNING
                 elif container.status == "exited":
                     workspace.status = WorkspaceStatus.STOPPED
+                await self._save_workspace(workspace)
             except NotFound:
                 workspace.status = WorkspaceStatus.ERROR
+                await self._save_workspace(workspace)
 
         return workspace
 
@@ -920,13 +1081,20 @@ class DockerComputeManager(ComputeManager):
                 },
             )
 
-            # Re-register in memory
-            self._workspaces[workspace_id] = workspace_info
+            # Re-register in store
+            await self._save_workspace(workspace_info)
 
             logger.info(
                 "Re-discovered workspace container on-demand",
                 workspace_id=workspace_id,
                 container_id=container.id[:12] if container.id else "unknown",
+            )
+
+            # Notify API service about the rediscovered workspace
+            await sync_workspace_status_to_api(
+                workspace_id=workspace_id,
+                status=workspace_info.status.value,
+                container_id=container.id,
             )
 
             return workspace_info
@@ -947,13 +1115,19 @@ class DockerComputeManager(ComputeManager):
         session_id: str | None = None,
     ) -> list[WorkspaceInfo]:
         """List workspaces filtered by user or session."""
-        workspaces = list(self._workspaces.values())
+        if self._workspace_store:
+            if user_id:
+                return await self._workspace_store.list_by_user(user_id)
+            if session_id:
+                return await self._workspace_store.list_by_session(session_id)
+            return await self._workspace_store.list_all()
 
+        # Fallback: return empty list if store not available
+        workspaces: list[WorkspaceInfo] = []
         if user_id:
             workspaces = [w for w in workspaces if w.user_id == user_id]
         if session_id:
             workspaces = [w for w in workspaces if w.session_id == session_id]
-
         return workspaces
 
     async def exec_command(
@@ -1235,31 +1409,57 @@ class DockerComputeManager(ComputeManager):
 
     async def heartbeat(self, workspace_id: str) -> None:
         """Update workspace last activity timestamp."""
-        workspace = self._workspaces.get(workspace_id)
-        if workspace:
-            workspace.last_activity = datetime.now(UTC)
+        if self._workspace_store:
+            await self._workspace_store.update_heartbeat(workspace_id)
+        # No fallback needed - heartbeat is best-effort
 
     async def cleanup_idle_workspaces(self, timeout_seconds: int) -> list[str]:
         """Clean up workspaces that have been idle too long."""
         now = datetime.now(UTC)
         cleaned_up = []
 
-        for workspace_id, workspace in list(self._workspaces.items()):
+        # Get all workspaces from store
+        workspaces: list[WorkspaceInfo] = []
+        if self._workspace_store:
+            workspaces = await self._workspace_store.list_all()
+        # No fallback - store is required for cleanup
+
+        # Filter workspaces that need cleanup
+        workspaces_to_cleanup = []
+        for workspace in workspaces:
             idle_time = (now - workspace.last_activity).total_seconds()
             if idle_time > timeout_seconds:
-                logger.info(
-                    "Cleaning up idle workspace",
-                    workspace_id=workspace_id,
-                    idle_seconds=idle_time,
+                workspaces_to_cleanup.append((workspace, idle_time))
+
+        if workspaces_to_cleanup:
+            logger.info(
+                "Starting workspace cleanup",
+                total_to_cleanup=len(workspaces_to_cleanup),
+                timeout_seconds=timeout_seconds,
+            )
+
+        for i, (workspace, idle_time) in enumerate(workspaces_to_cleanup, 1):
+            logger.info(
+                "Cleaning up workspace",
+                progress=f"{i}/{len(workspaces_to_cleanup)}",
+                workspace_id=workspace.id[:12],
+                idle_seconds=int(idle_time),
+            )
+            try:
+                await self.delete_workspace(workspace.id)
+                cleaned_up.append(workspace.id)
+            except Exception:
+                logger.exception(
+                    "Failed to cleanup workspace, continuing with others",
+                    workspace_id=workspace.id,
                 )
-                try:
-                    await self.delete_workspace(workspace_id)
-                    cleaned_up.append(workspace_id)
-                except Exception:
-                    logger.exception(
-                        "Failed to cleanup workspace, continuing with others",
-                        workspace_id=workspace_id,
-                    )
+
+        if workspaces_to_cleanup:
+            logger.info(
+                "Workspace cleanup completed",
+                cleaned_up_count=len(cleaned_up),
+                total_attempted=len(workspaces_to_cleanup),
+            )
 
         return cleaned_up
 
@@ -1268,7 +1468,7 @@ class DockerComputeManager(ComputeManager):
 
         For Docker, returns the container's internal IP on the Docker network.
         """
-        workspace = self._workspaces.get(workspace_id)
+        workspace = await self._get_workspace(workspace_id)
         if not workspace or workspace.status != WorkspaceStatus.RUNNING:
             return None
 
@@ -1284,7 +1484,7 @@ class DockerComputeManager(ComputeManager):
         request: ProxyRequest,
     ) -> tuple[int, dict[str, str], bytes]:
         """Proxy an HTTP request to a workspace container."""
-        workspace = self._workspaces.get(request.workspace_id)
+        workspace = await self._get_workspace(request.workspace_id)
         if not workspace:
             raise ValueError(f"Workspace {request.workspace_id} not found")
 
@@ -1413,7 +1613,7 @@ class DockerComputeManager(ComputeManager):
 
         Uses netstat/ss to detect listening ports inside the container.
         """
-        workspace = self._workspaces.get(workspace_id)
+        workspace = await self._get_workspace(workspace_id)
         if not workspace:
             return []
 
@@ -1462,3 +1662,141 @@ class DockerComputeManager(ComputeManager):
         except Exception:
             logger.exception("Failed to get active ports", workspace_id=workspace_id)
             return []
+
+    async def scale_workspace(
+        self,
+        workspace_id: str,
+        new_tier: WorkspaceTier,
+    ) -> WorkspaceScaleResponse:
+        """Scale a Docker workspace to a new compute tier.
+
+        For Docker, this involves:
+        1. Saving any unsaved changes to GCS (dotfiles)
+        2. Stopping the current container
+        3. Creating a new container with the new resource limits
+        4. The new container will restore from GCS on startup
+        """
+        workspace = await self._get_workspace(workspace_id)
+        if not workspace:
+            raise ValueError(f"Workspace {workspace_id} not found")
+
+        old_tier = workspace.tier
+
+        # Check if scaling to the same tier
+        if old_tier == new_tier:
+            spec = HARDWARE_SPECS.get(new_tier)
+            return WorkspaceScaleResponse(
+                success=False,
+                message=f"Workspace is already on {new_tier.value} tier",
+                new_tier=new_tier,
+                estimated_cost_per_hour=spec.hourly_rate if spec else None,
+            )
+
+        logger.info(
+            "Scaling Docker workspace",
+            workspace_id=workspace_id,
+            old_tier=old_tier.value,
+            new_tier=new_tier.value,
+        )
+
+        try:
+            # Step 1: Save dotfiles before scaling
+            if workspace.metadata.get("sync_dotfiles", True):
+                try:
+                    dotfiles_paths = workspace.metadata.get("dotfiles_paths")
+                    await self._file_sync.save_user_dotfiles(
+                        workspace_id=workspace_id,
+                        user_id=workspace.user_id,
+                        dotfiles_paths=dotfiles_paths,
+                    )
+                    logger.info(
+                        "Saved dotfiles before scaling",
+                        workspace_id=workspace_id,
+                        user_id=workspace.user_id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to save dotfiles before scaling",
+                        workspace_id=workspace_id,
+                        error=str(e),
+                    )
+
+            # Step 2: Stop the current workspace
+            await self.stop_workspace(workspace_id)
+
+            # Step 3: Create new workspace config with the new tier
+            # We need to reconstruct the original config from the workspace metadata
+            # For now, we'll use a minimal config - in production this should be stored
+            new_config = WorkspaceConfig(tier=new_tier)
+
+            # Copy over important config from workspace metadata if available
+            if "git_name" in workspace.metadata:
+                new_config.git_name = workspace.metadata["git_name"]
+            if "git_email" in workspace.metadata:
+                new_config.git_email = workspace.metadata["git_email"]
+            if "sync_dotfiles" in workspace.metadata:
+                new_config.sync_dotfiles = workspace.metadata["sync_dotfiles"]
+            if "dotfiles_paths" in workspace.metadata:
+                new_config.dotfiles_paths = workspace.metadata["dotfiles_paths"]
+
+            # Step 4: Create new workspace with the same parameters but new tier
+            # We need to get the original creation parameters
+            session_id = workspace.session_id
+            user_id = workspace.user_id
+
+            # Remove the old workspace from tracking
+            await self._delete_workspace(workspace_id)
+
+            # Create new workspace with the same ID but new tier
+            await self.create_workspace(
+                user_id=user_id,
+                session_id=session_id,
+                config=new_config,
+                workspace_id=workspace_id,  # Reuse the same workspace ID
+            )
+
+            spec = HARDWARE_SPECS.get(new_tier)
+            return WorkspaceScaleResponse(
+                success=True,
+                message=f"Successfully scaled workspace to {new_tier.value} tier",
+                new_tier=new_tier,
+                estimated_cost_per_hour=spec.hourly_rate if spec else None,
+                requires_restart=True,
+            )
+
+        except Exception as e:
+            logger.exception(
+                "Failed to scale Docker workspace",
+                workspace_id=workspace_id,
+                old_tier=old_tier.value,
+                new_tier=new_tier.value,
+                error=str(e),
+            )
+
+            # Try to restore the original workspace if scaling failed
+            try:
+                # Recreate with original tier
+                original_config = WorkspaceConfig(tier=old_tier)
+                if "git_name" in workspace.metadata:
+                    original_config.git_name = workspace.metadata["git_name"]
+                if "git_email" in workspace.metadata:
+                    original_config.git_email = workspace.metadata["git_email"]
+
+                await self.create_workspace(
+                    user_id=workspace.user_id,
+                    session_id=workspace.session_id,
+                    config=original_config,
+                    workspace_id=workspace_id,
+                )
+                logger.info(
+                    "Restored original workspace after scaling failure",
+                    workspace_id=workspace_id,
+                )
+            except Exception as restore_error:
+                logger.error(
+                    "Failed to restore original workspace after scaling failure",
+                    workspace_id=workspace_id,
+                    error=str(restore_error),
+                )
+
+            raise ValueError(f"Failed to scale workspace: {e}") from e

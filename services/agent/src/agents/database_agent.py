@@ -2,6 +2,8 @@
 
 This agent dynamically loads its system prompt and tools from the database,
 replacing the need for hardcoded agent classes like ArchitectAgent, CoderAgent, etc.
+
+Uses Redis for distributed caching to ensure consistency across agent instances.
 """
 
 from dataclasses import dataclass
@@ -11,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import structlog
 
+from podex_shared.redis_client import get_redis_client
 from src.agents.base import AgentConfig, BaseAgent, Tool
 from src.config import settings
 from src.mcp.registry import MCPToolRegistry
@@ -19,6 +22,11 @@ if TYPE_CHECKING:
     from src.providers.llm import LLMProvider
 
 logger = structlog.get_logger()
+
+# Redis cache configuration
+ROLE_CONFIG_CACHE_PREFIX = "agent:role_config:"
+TOOL_DEFINITIONS_CACHE_KEY = "agent:tool_definitions"
+CACHE_TTL = 300  # 5 minutes
 
 
 @dataclass
@@ -33,6 +41,31 @@ class RoleConfig:
     default_temperature: float | None = None
     default_max_tokens: int | None = None
 
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for Redis storage."""
+        return {
+            "role": self.role,
+            "name": self.name,
+            "system_prompt": self.system_prompt,
+            "tools": self.tools,
+            "default_model": self.default_model,
+            "default_temperature": self.default_temperature,
+            "default_max_tokens": self.default_max_tokens,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RoleConfig":
+        """Create from dictionary."""
+        return cls(
+            role=data["role"],
+            name=data["name"],
+            system_prompt=data["system_prompt"],
+            tools=data["tools"],
+            default_model=data.get("default_model"),
+            default_temperature=data.get("default_temperature"),
+            default_max_tokens=data.get("default_max_tokens"),
+        )
+
 
 @dataclass
 class ToolDefinition:
@@ -41,6 +74,23 @@ class ToolDefinition:
     name: str
     description: str
     parameters: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for Redis storage."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "parameters": self.parameters,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ToolDefinition":
+        """Create from dictionary."""
+        return cls(
+            name=data["name"],
+            description=data["description"],
+            parameters=data["parameters"],
+        )
 
 
 @dataclass
@@ -63,13 +113,17 @@ class DatabaseAgentConfig:
     tools_override: list[str] | None = None
 
 
-# Cache for role configs and tools (in-memory, per-process)
-_role_config_cache: dict[str, RoleConfig] = {}
-_tool_definitions_cache: dict[str, ToolDefinition] = {}
+async def _get_redis() -> Any:
+    """Get connected Redis client."""
+    redis_client = get_redis_client(settings.REDIS_URL)
+    await redis_client.connect()
+    return redis_client
 
 
 async def fetch_role_config(role: str) -> RoleConfig | None:
-    """Fetch role configuration from the API.
+    """Fetch role configuration from Redis cache or API.
+
+    Uses Redis for distributed caching to ensure consistency across instances.
 
     Args:
         role: The role name (e.g., 'architect', 'coder').
@@ -77,10 +131,19 @@ async def fetch_role_config(role: str) -> RoleConfig | None:
     Returns:
         RoleConfig if found, None otherwise.
     """
-    # Check cache first
-    if role in _role_config_cache:
-        return _role_config_cache[role]
+    cache_key = f"{ROLE_CONFIG_CACHE_PREFIX}{role}"
 
+    # Try Redis cache first
+    try:
+        redis_client = await _get_redis()
+        cached = await redis_client.get_json(cache_key)
+        if cached:
+            logger.debug("Role config cache hit", role=role)
+            return RoleConfig.from_dict(cached)
+    except Exception as e:
+        logger.warning("Redis cache read failed for role config", role=role, error=str(e))
+
+    # Fetch from API
     try:
         api_url = getattr(settings, "API_BASE_URL", "http://localhost:8000")
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -96,8 +159,15 @@ async def fetch_role_config(role: str) -> RoleConfig | None:
                     default_temperature=data.get("default_temperature"),
                     default_max_tokens=data.get("default_max_tokens"),
                 )
-                # Cache the result
-                _role_config_cache[role] = config
+                # Cache in Redis
+                try:
+                    redis_client = await _get_redis()
+                    await redis_client.set_json(cache_key, config.to_dict(), ex=CACHE_TTL)
+                    logger.debug("Role config cached", role=role)
+                except Exception as e:
+                    logger.warning(
+                        "Redis cache write failed for role config", role=role, error=str(e)
+                    )
                 return config
             elif response.status_code == 404:
                 logger.warning("Role config not found", role=role)
@@ -115,7 +185,9 @@ async def fetch_role_config(role: str) -> RoleConfig | None:
 
 
 async def fetch_tool_definitions(tool_names: list[str]) -> dict[str, ToolDefinition]:
-    """Fetch tool definitions from the API.
+    """Fetch tool definitions from Redis cache or API.
+
+    Uses Redis for distributed caching to ensure consistency across instances.
 
     Args:
         tool_names: List of tool names to fetch.
@@ -125,24 +197,32 @@ async def fetch_tool_definitions(tool_names: list[str]) -> dict[str, ToolDefinit
     """
     result: dict[str, ToolDefinition] = {}
 
-    # Check cache for already loaded tools
-    missing_tools: list[str] = []
-    for name in tool_names:
-        if name in _tool_definitions_cache:
-            result[name] = _tool_definitions_cache[name]
-        else:
-            missing_tools.append(name)
+    # Try Redis cache first
+    try:
+        redis_client = await _get_redis()
+        cached = await redis_client.get_json(TOOL_DEFINITIONS_CACHE_KEY)
+        if cached and isinstance(cached, dict):
+            # Check if all requested tools are in cache
+            all_found = True
+            for name in tool_names:
+                if name in cached:
+                    result[name] = ToolDefinition.from_dict(cached[name])
+                else:
+                    all_found = False
+            if all_found:
+                logger.debug("Tool definitions cache hit", count=len(result))
+                return result
+    except Exception as e:
+        logger.warning("Redis cache read failed for tool definitions", error=str(e))
 
-    if not missing_tools:
-        return result
-
+    # Fetch from API
     try:
         api_url = getattr(settings, "API_BASE_URL", "http://localhost:8000")
         async with httpx.AsyncClient(timeout=10.0) as client:
-            # Fetch all tools (we could optimize this with a batch endpoint)
             response = await client.get(f"{api_url}/api/v1/agent-tools")
             if response.status_code == 200:
                 data = response.json()
+                all_tools: dict[str, dict[str, Any]] = {}
                 for tool_data in data.get("tools", []):
                     name = tool_data["name"]
                     tool_def = ToolDefinition(
@@ -150,11 +230,17 @@ async def fetch_tool_definitions(tool_names: list[str]) -> dict[str, ToolDefinit
                         description=tool_data["description"],
                         parameters=tool_data["parameters"],
                     )
-                    # Cache all tools
-                    _tool_definitions_cache[name] = tool_def
-                    # Add to result if requested
+                    all_tools[name] = tool_def.to_dict()
                     if name in tool_names:
                         result[name] = tool_def
+
+                # Cache all tools in Redis
+                try:
+                    redis_client = await _get_redis()
+                    await redis_client.set_json(TOOL_DEFINITIONS_CACHE_KEY, all_tools, ex=CACHE_TTL)
+                    logger.debug("Tool definitions cached", count=len(all_tools))
+                except Exception as e:
+                    logger.warning("Redis cache write failed for tool definitions", error=str(e))
             else:
                 logger.error(
                     "Failed to fetch tool definitions",
@@ -166,13 +252,28 @@ async def fetch_tool_definitions(tool_names: list[str]) -> dict[str, ToolDefinit
     return result
 
 
-def clear_config_cache() -> None:
-    """Clear the configuration cache.
+async def clear_config_cache() -> None:
+    """Clear the configuration cache in Redis.
 
     Useful for testing or when configs are updated.
     """
-    _role_config_cache.clear()
-    _tool_definitions_cache.clear()
+    try:
+        redis_client = await _get_redis()
+        # Delete all role config keys
+        cursor = 0
+        while True:
+            cursor, keys = await redis_client.client.scan(
+                cursor, match=f"{ROLE_CONFIG_CACHE_PREFIX}*", count=100
+            )
+            if keys:
+                await redis_client.delete(*keys)
+            if cursor == 0:
+                break
+        # Delete tool definitions cache
+        await redis_client.delete(TOOL_DEFINITIONS_CACHE_KEY)
+        logger.info("Cleared agent config cache")
+    except Exception as e:
+        logger.warning("Failed to clear config cache", error=str(e))
 
 
 class DatabaseAgent(BaseAgent):

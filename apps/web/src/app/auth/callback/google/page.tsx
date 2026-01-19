@@ -1,43 +1,86 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useState, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Loader2 } from 'lucide-react';
+import { Loader2, CheckCircle } from 'lucide-react';
 import { handleOAuthCallback } from '@/lib/api';
 import { toast } from 'sonner';
+
+type CallbackState = 'loading' | 'processing' | 'success' | 'error';
 
 function GoogleCallbackContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const [state, setState] = useState<CallbackState>('loading');
   const [error, setError] = useState<string | null>(null);
 
+  // Use ref to prevent double execution in React strict mode
+  const hasStarted = useRef(false);
+
   useEffect(() => {
+    // Prevent double execution
+    if (hasStarted.current) return;
+    hasStarted.current = true;
+
     const code = searchParams.get('code');
-    const state = searchParams.get('state');
+    const stateParam = searchParams.get('state');
     const errorParam = searchParams.get('error');
 
+    // Check for OAuth error from Google
     if (errorParam) {
       setError(searchParams.get('error_description') || 'OAuth authentication failed');
+      setState('error');
       return;
     }
 
-    if (!code || !state) {
+    // Validate required params
+    if (!code || !stateParam) {
       setError('Missing authorization code or state');
+      setState('error');
       return;
     }
+
+    setState('processing');
 
     // Exchange code for tokens
-    handleOAuthCallback('google', code, state)
+    handleOAuthCallback('google', code, stateParam)
       .then(() => {
+        setState('success');
         toast.success('Successfully signed in with Google!');
         router.push('/dashboard');
       })
       .catch((err) => {
         setError(err.message || 'Failed to complete OAuth flow');
+        setState('error');
       });
   }, [searchParams, router]);
 
-  if (error) {
+  // Loading state
+  if (state === 'loading' || state === 'processing') {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-void">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin text-accent-primary mx-auto mb-4" />
+          <p className="text-text-secondary">Completing Google sign in...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Success state - brief display before redirect
+  if (state === 'success') {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-void">
+        <div className="text-center">
+          <CheckCircle className="w-8 h-8 text-green-400 mx-auto mb-4" />
+          <p className="text-text-secondary">Signed in! Redirecting...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Error state
+  if (state === 'error') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-void">
         <div className="bg-surface rounded-lg border border-border-default p-8 max-w-md text-center">
@@ -57,12 +100,10 @@ function GoogleCallbackContent() {
     );
   }
 
+  // Fallback loading
   return (
     <div className="min-h-screen flex items-center justify-center bg-void">
-      <div className="text-center">
-        <Loader2 className="w-8 h-8 animate-spin text-accent-primary mx-auto mb-4" />
-        <p className="text-text-secondary">Completing Google sign in...</p>
-      </div>
+      <Loader2 className="w-8 h-8 animate-spin text-accent-primary" />
     </div>
   );
 }

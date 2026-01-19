@@ -1287,10 +1287,16 @@ async def resume_workspace(
     response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> WorkspaceStatusResponse:
-    """Resume a paused workspace (restart Docker container)."""
+    """Resume a paused workspace (restart Docker container).
+
+    If the workspace doesn't exist in the compute service (common after standby),
+    it will be recreated automatically.
+    """
     from datetime import UTC, datetime
 
     from src.compute_client import compute_client
+    from src.exceptions import ComputeServiceHTTPError
+    from src.routes.sessions import build_workspace_config
 
     # Verify user has access to this workspace
     workspace = await verify_workspace_access(workspace_id, request, db)
@@ -1302,12 +1308,66 @@ async def resume_workspace(
             "Only 'standby' workspaces can be resumed.",
         )
 
-    try:
-        # Restart the container first
-        user_id: str = getattr(request.state, "user_id", "") or ""
-        await compute_client.restart_workspace(workspace_id, user_id)
+    user_id: str = getattr(request.state, "user_id", "") or ""
 
-        # Only update DB status after container restart succeeds
+    try:
+        # First, check if the workspace exists in the compute service
+        workspace_info = await compute_client.get_workspace(workspace_id, user_id)
+
+        if workspace_info is not None:
+            # Workspace exists in compute service, try to restart it
+            logger.info(
+                "Workspace found in compute service, restarting",
+                workspace_id=workspace_id,
+            )
+            await compute_client.restart_workspace(workspace_id, user_id)
+        else:
+            # Workspace doesn't exist in compute service (removed after standby)
+            # Need to recreate it
+            logger.info(
+                "Workspace not found in compute service, recreating",
+                workspace_id=workspace_id,
+            )
+
+            # Get the session associated with this workspace
+            session_result = await db.execute(
+                select(Session).where(Session.workspace_id == workspace_id)
+            )
+            session = session_result.scalar_one_or_none()
+
+            if not session:
+                raise HTTPException(  # noqa: TRY301
+                    status_code=404,
+                    detail="Session not found for this workspace",
+                )
+
+            # Determine tier from session settings
+            tier = session.settings.get("tier", "starter") if session.settings else "starter"
+
+            # Build workspace config
+            workspace_config = await build_workspace_config(
+                db,
+                session.template_id,
+                session.git_url,
+                tier,
+                user_id=user_id,
+            )
+
+            # Create the workspace in compute service
+            await compute_client.create_workspace(
+                session_id=str(session.id),
+                user_id=user_id,
+                workspace_id=workspace_id,
+                config=workspace_config,
+            )
+
+            logger.info(
+                "Workspace recreated for resume",
+                workspace_id=workspace_id,
+                session_id=str(session.id),
+            )
+
+        # Update DB status after successful restart/recreation
         now = datetime.now(UTC)
         workspace.status = "running"
         workspace.standby_at = None
@@ -1317,6 +1377,21 @@ async def resume_workspace(
 
         logger.info("Workspace resumed", workspace_id=workspace_id, user_id=user_id)
 
+    except ComputeServiceHTTPError as e:
+        await db.rollback()
+        logger.exception(
+            "Compute service error during resume",
+            workspace_id=workspace_id,
+            status_code=e.status_code,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to resume workspace: compute service error ({e.status_code})",
+        ) from None
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        await db.rollback()
+        raise
     except Exception:
         # Rollback any pending changes on failure
         await db.rollback()
@@ -1605,3 +1680,160 @@ async def clear_terminal_history_endpoint(
     clear_terminal_history(workspace_id)
 
     return {"message": "Terminal history cleared"}
+
+
+# ==================== Internal Endpoints (Compute Service) ====================
+
+
+def verify_internal_service_token(request: Request) -> None:
+    """Verify internal service-to-service token.
+
+    Used by compute service to notify API about workspace state changes.
+    """
+    import secrets as sec
+
+    token = request.headers.get("X-Internal-Service-Token")
+
+    # In development with no token configured, allow requests
+    if not settings.INTERNAL_SERVICE_TOKEN:
+        if settings.ENVIRONMENT == "production":
+            raise HTTPException(
+                status_code=500,
+                detail="Internal service token not configured",
+            )
+        return
+
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing internal service token",
+        )
+
+    if not sec.compare_digest(token, settings.INTERNAL_SERVICE_TOKEN):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid internal service token",
+        )
+
+
+class WorkspaceStatusSyncRequest(BaseModel):
+    """Request to sync workspace status from compute service."""
+
+    status: str  # running, standby, stopped, error
+    container_id: str | None = None
+
+
+class WorkspaceStatusSyncResponse(BaseModel):
+    """Response from workspace status sync."""
+
+    workspace_id: str
+    status: str
+    updated: bool
+    session_id: str | None = None
+
+
+@router.post(
+    "/{workspace_id}/internal/sync-status",
+    response_model=WorkspaceStatusSyncResponse,
+    include_in_schema=False,  # Hide from public API docs
+)
+async def sync_workspace_status_from_compute(
+    workspace_id: str,
+    request: Request,
+    body: WorkspaceStatusSyncRequest,
+    db: DbSession,
+) -> WorkspaceStatusSyncResponse:
+    """Sync workspace status from compute service.
+
+    This internal endpoint is called by the compute service when it rediscovers
+    a workspace (e.g., after a service restart) or when a workspace status changes
+    outside of a user-initiated action.
+
+    This ensures the API database stays in sync with actual compute state.
+    """
+    from datetime import UTC, datetime
+
+    from src.websocket.hub import emit_to_session
+
+    # Verify internal service token
+    verify_internal_service_token(request)
+
+    # Find the workspace in database
+    result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = result.scalar_one_or_none()
+
+    if not workspace:
+        logger.warning(
+            "Compute sync: workspace not found",
+            workspace_id=workspace_id,
+            status=body.status,
+        )
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    # Get the associated session
+    session_id = None
+    if workspace.session:
+        session_id = str(workspace.session.id)
+
+    old_status = workspace.status
+    now = datetime.now(UTC)
+    updated = False
+
+    # Update status if changed
+    if workspace.status != body.status:
+        workspace.status = body.status
+        updated = True
+
+        # Handle specific status transitions
+        if body.status == "running":
+            workspace.standby_at = None
+            workspace.last_activity = now
+        elif body.status == "standby":
+            workspace.standby_at = now
+        elif body.status == "stopped":
+            workspace.standby_at = None
+
+        # Update container_id if provided
+        if body.container_id:
+            workspace.container_id = body.container_id
+
+        await db.commit()
+        await db.refresh(workspace)
+
+        logger.info(
+            "Compute sync: updated workspace status",
+            workspace_id=workspace_id,
+            old_status=old_status,
+            new_status=body.status,
+            session_id=session_id,
+        )
+
+        # Emit WebSocket event to notify connected clients
+        if session_id:
+            await emit_to_session(
+                session_id,
+                "workspace_status",
+                {
+                    "workspace_id": workspace_id,
+                    "status": body.status,
+                    "standby_at": workspace.standby_at.isoformat()
+                    if workspace.standby_at
+                    else None,
+                    "last_activity": workspace.last_activity.isoformat()
+                    if workspace.last_activity
+                    else None,
+                },
+            )
+    else:
+        logger.debug(
+            "Compute sync: status unchanged",
+            workspace_id=workspace_id,
+            status=body.status,
+        )
+
+    return WorkspaceStatusSyncResponse(
+        workspace_id=workspace_id,
+        status=workspace.status,
+        updated=updated,
+        session_id=session_id,
+    )

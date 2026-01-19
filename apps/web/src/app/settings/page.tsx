@@ -18,12 +18,15 @@ import {
   Check,
   Box,
   RotateCcw,
+  Github,
 } from 'lucide-react';
 import { Button, Input } from '@podex/ui';
 import {
   getUserConfig,
   updateUserConfig,
   listTemplates,
+  getGitHubLinkURL,
+  getGitHubStatus,
   type UserConfig,
   type PodTemplate,
   type UpdateUserConfigRequest,
@@ -109,6 +112,12 @@ const defaultDotfilePaths = [
   '.ssh/config',
 ];
 
+interface GitHubConnectionStatus {
+  connected: boolean;
+  username: string | null;
+  avatar_url: string | null;
+}
+
 export default function SettingsPage() {
   useDocumentTitle('Settings');
   const router = useRouter();
@@ -123,6 +132,8 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [tutorialReset, setTutorialReset] = useState(false);
+  const [githubStatus, setGithubStatus] = useState<GitHubConnectionStatus | null>(null);
+  const [githubLoading, setGithubLoading] = useState(false);
 
   // Form state
   const [formData, setFormData] = useState<UpdateUserConfigRequest>({});
@@ -170,6 +181,24 @@ export default function SettingsPage() {
 
     loadData();
   }, [user, router, isInitialized]);
+
+  useEffect(() => {
+    if (!isInitialized || !user) return;
+
+    const fetchGitHubStatus = async () => {
+      setGithubLoading(true);
+      try {
+        const data = await getGitHubStatus();
+        setGithubStatus(data);
+      } catch {
+        setGithubStatus({ connected: false, username: null, avatar_url: null });
+      } finally {
+        setGithubLoading(false);
+      }
+    };
+
+    fetchGitHubStatus();
+  }, [isInitialized, user]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -219,6 +248,21 @@ export default function SettingsPage() {
       setSuccessMessage(null);
       setTutorialReset(false);
     }, 3000);
+  };
+
+  const handleConnectGitHub = async () => {
+    if (typeof window === 'undefined') return;
+    setGithubLoading(true);
+    setError(null);
+    try {
+      // Use the link URL to link GitHub to the current account
+      // (not the OAuth login URL which would create/login to a different account)
+      const url = await getGitHubLinkURL();
+      window.location.href = url;
+    } catch {
+      setGithubLoading(false);
+      setError('Failed to start GitHub connection');
+    }
   };
 
   if (loading) {
@@ -403,6 +447,59 @@ export default function SettingsPage() {
                         </option>
                       ))}
                     </select>
+                  </div>
+
+                  <div className="pt-4 border-t border-border-subtle">
+                    <div>
+                      <p className="text-sm font-medium text-text-primary">Connected Accounts</p>
+                      <p className="text-xs text-text-muted">
+                        Link external services to access repositories and integrations.
+                      </p>
+                    </div>
+                    <div className="mt-3 flex items-center justify-between gap-4 rounded-lg border border-border-default bg-surface px-4 py-3">
+                      <div className="flex items-center gap-3">
+                        <div className="h-9 w-9 rounded-lg bg-overlay flex items-center justify-center">
+                          <Github className="h-4 w-4 text-text-muted" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium text-text-primary">GitHub</p>
+                          <p className="text-xs text-text-muted">
+                            {githubLoading
+                              ? 'Checking connection...'
+                              : githubStatus?.connected
+                                ? `Connected${githubStatus.username ? ` as @${githubStatus.username}` : ''}`
+                                : 'Not connected'}
+                          </p>
+                        </div>
+                      </div>
+                      {githubLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin text-text-muted" />
+                      ) : githubStatus?.connected ? (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => router.push('/settings/integrations/github')}
+                        >
+                          Manage
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={handleConnectGitHub}
+                          disabled={githubLoading}
+                        >
+                          {githubLoading ? (
+                            <>
+                              <Loader2 className="w-3 h-3 animate-spin mr-1.5" />
+                              Connecting...
+                            </>
+                          ) : (
+                            'Connect'
+                          )}
+                        </Button>
+                      )}
+                    </div>
                   </div>
 
                   {/* Onboarding Tutorial */}

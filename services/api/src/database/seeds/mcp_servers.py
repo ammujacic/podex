@@ -63,7 +63,7 @@ DEFAULT_MCP_SERVERS: list[dict[str, Any]] = [
         "command": "npx",
         "args": ["-y", "@modelcontextprotocol/server-github"],
         "env_vars": {},
-        "required_env": ["GITHUB_PERSONAL_ACCESS_TOKEN"],
+        "required_env": [],
         "icon": "github",
         "is_builtin": False,
         "docs_url": "https://github.com/github/github-mcp-server",

@@ -38,6 +38,8 @@ dependencies = [
     "pytesseract>=0.3.10",
     # Push notifications
     "pywebpush>=2.0.0",
+    # Async email - non-blocking SMTP
+    "aiosmtplib>=3.0.0",
 ]
 
 [tool.uv.sources]
@@ -297,6 +299,8 @@ module = [
     "pytesseract.*",
     "pywebpush",
     "pywebpush.*",
+    "aiosmtplib",
+    "aiosmtplib.*",
 ]
 ignore_missing_imports = true
 

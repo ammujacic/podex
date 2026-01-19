@@ -7,6 +7,8 @@ from podex_shared import (
     WorkspaceExecResponse,
     WorkspaceFileRequest,
     WorkspaceInfo,
+    WorkspaceScaleRequest,
+    WorkspaceScaleResponse,
     WorkspaceStatus,
     WorkspaceTier,
 )
@@ -18,6 +20,8 @@ __all__ = [
     "WorkspaceExecResponse",
     "WorkspaceFileRequest",
     "WorkspaceInfo",
+    "WorkspaceScaleRequest",
+    "WorkspaceScaleResponse",
     "WorkspaceStatus",
     "WorkspaceTier",
 ]

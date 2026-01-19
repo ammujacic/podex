@@ -78,8 +78,7 @@ export function PauseSessionModal({ sessionId, workspaceId, onClose }: PauseSess
             <div className="text-sm">
               <p className="text-yellow-200 font-medium">Pausing will stop your workspace</p>
               <p className="text-yellow-200/70 mt-1">
-                The Docker container will be stopped to save resources. Resuming typically takes
-                10-30 seconds.
+                The pod will be stopped to save resources. Resuming typically takes 10-30 seconds.
               </p>
             </div>
           </div>

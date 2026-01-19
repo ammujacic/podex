@@ -12,6 +12,7 @@ import {
   ChevronRight,
   FolderTree,
   GitBranch,
+  Github,
   Search,
   AlertCircle,
   Bot,
@@ -28,6 +29,7 @@ import { useSessionStore } from '@/stores/session';
 const widgetItems = [
   { id: 'files', label: 'Files', icon: <FolderTree className="h-4 w-4" /> },
   { id: 'git', label: 'Git', icon: <GitBranch className="h-4 w-4" /> },
+  { id: 'github', label: 'GitHub', icon: <Github className="h-4 w-4" /> },
   { id: 'search', label: 'Search', icon: <Search className="h-4 w-4" /> },
   { id: 'problems', label: 'Problems', icon: <AlertCircle className="h-4 w-4" /> },
   { id: 'agents', label: 'Agents', icon: <Bot className="h-4 w-4" /> },

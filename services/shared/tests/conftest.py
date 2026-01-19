@@ -75,7 +75,7 @@ def sample_workspace_config_data() -> dict[str, Any]:
     """Sample workspace config data."""
     return {
         "tier": "starter",
-        "architecture": "arm64",
+        "architecture": "x86_64",
         "gpu_type": "none",
         "os_version": "ubuntu-22.04",
         "python_version": "3.12",

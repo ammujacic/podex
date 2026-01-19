@@ -116,7 +116,13 @@ async def revoke_all_user_tokens(user_id: str) -> int:
 
         # Revoke each token with a reasonable TTL
         # Use max token lifetime as fallback
-        default_ttl = settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400
+        default_ttl = (
+            max(
+                settings.REFRESH_TOKEN_EXPIRE_DAYS,
+                settings.BROWSER_REFRESH_TOKEN_EXPIRE_DAYS,
+            )
+            * 86400
+        )
 
         pipe = client.pipeline()
         for jti in token_jtis:

@@ -151,25 +151,36 @@ async def _execute_builtin_command(
     user_id: str,
     command_name: str,
     args: str,
+    cli_session_id: str | None = None,
 ) -> dict[str, Any]:
-    """Execute a built-in Claude CLI command without the -p flag.
+    """Execute a built-in Claude CLI slash command via the -p flag.
 
-    Built-in commands like /status, /cost need to be run directly
-    as CLI commands, not as prompts.
+    Built-in slash commands like /status, /cost need to be passed
+    via `-p "/status"` to execute as commands within a Claude session.
+    The session ID is required for proper context when running these commands.
 
     Args:
         workspace_id: The workspace ID
         user_id: User ID for authorization
         command_name: The command name (without /)
         args: Optional command arguments
+        cli_session_id: Claude Code session ID to resume (for slash command context)
 
     Returns:
         Dict with response content and metadata
     """
-    # Build the command - built-in commands run directly without -p
-    cmd_parts = ["PATH=/home/dev/.npm-global/bin:$PATH", "claude", f"/{command_name}"]
+    # Build the command - slash commands must be passed via -p flag
+    # Running `claude /status` directly treats it as a "skill" argument
+    # Instead, we need `claude -p "/status"` to execute the slash command
+    # The --resume flag is needed for slash commands to have proper session context
+    slash_cmd = f"/{command_name}"
     if args:
-        cmd_parts.append(shlex.quote(args))
+        slash_cmd = f"{slash_cmd} {args}"
+    cmd_parts = ["PATH=/home/dev/.npm-global/bin:$PATH", "claude", "-p", shlex.quote(slash_cmd)]
+
+    # Add --resume if we have a session ID - slash commands need session context
+    if cli_session_id:
+        cmd_parts.extend(["--resume", cli_session_id])
 
     cmd = " ".join(cmd_parts)
 
@@ -178,6 +189,8 @@ async def _execute_builtin_command(
         workspace_id=workspace_id,
         command=command_name,
         args=args,
+        cli_session_id=cli_session_id if cli_session_id else "(none)",
+        has_session=bool(cli_session_id),
     )
 
     try:
@@ -454,12 +467,16 @@ async def execute_slash_command(
     if not session.workspace_id:
         raise HTTPException(status_code=400, detail="No workspace associated with session")
 
+    # Get CLI session ID from agent config for slash command context
+    cli_session_id = agent.config.get("cli_session_id") if agent.config else None
+
     # Use the helper function for built-in commands
     result = await _execute_builtin_command(
         workspace_id=session.workspace_id,
         user_id=user_id,
         command_name=data.command,
         args=data.args or "",
+        cli_session_id=cli_session_id,
     )
 
     if result.get("success"):
@@ -519,7 +536,9 @@ async def execute_claude_code_message(
     # Check if this is a built-in CLI command (like /status, /cost, etc.)
     is_builtin, cmd_name, cmd_args = is_builtin_cli_command(message)
     if is_builtin:
-        return await _execute_builtin_command(workspace_id, user_id, cmd_name, cmd_args)
+        return await _execute_builtin_command(
+            workspace_id, user_id, cmd_name, cmd_args, cli_session_id
+        )
 
     # Save images to workspace temp files if present
     image_paths: list[str] = []
@@ -1090,7 +1109,9 @@ async def execute_claude_code_message_streaming(
     is_builtin, cmd_name, cmd_args = is_builtin_cli_command(message)
     if is_builtin:
         # Built-in commands don't need streaming - execute directly
-        result = await _execute_builtin_command(workspace_id, user_id, cmd_name, cmd_args)
+        result = await _execute_builtin_command(
+            workspace_id, user_id, cmd_name, cmd_args, cli_session_id
+        )
         # Emit the content as a single token for display
         if result.get("content"):
             await emit_agent_token(

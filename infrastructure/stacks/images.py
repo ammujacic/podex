@@ -40,21 +40,42 @@ def create_docker_images(
             "name": "api",
             "dockerfile": "../services/api/Dockerfile",
             "context": "..",
+            "tag": "latest",
+            "target": "production",
         },
         {
             "name": "agent",
             "dockerfile": "../services/agent/Dockerfile",
             "context": "..",
+            "tag": "latest",
+            "target": "production",
         },
         {
             "name": "compute",
             "dockerfile": "../services/compute/Dockerfile",
             "context": "..",
+            "tag": "latest",
+            "target": "production",
         },
         {
             "name": "web",
             "dockerfile": "../apps/web/Dockerfile",
             "context": "..",
+            "tag": "latest",
+            "target": "production",
+        },
+        {
+            "name": "workspace",
+            "dockerfile": "../infrastructure/docker/workspace/Dockerfile",
+            "context": "../infrastructure/docker/workspace",
+            "tag": "latest-amd64",
+        },
+        {
+            "name": "workspace-gpu",
+            "registry_name": "workspace",
+            "dockerfile": "../infrastructure/docker/workspace-gpu/Dockerfile",
+            "context": "../infrastructure/docker/workspace-gpu",
+            "tag": "latest-gpu",
         },
     ]
 
@@ -68,22 +89,27 @@ def create_docker_images(
 
     for svc in services:
         svc_name = svc["name"]
-        image_name = registry_url.apply(make_image_formatter(svc_name))
+        registry_name = svc.get("registry_name", svc_name)
+        image_name = registry_url.apply(make_image_formatter(registry_name))
+
+        tag = svc.get("tag", "latest")
+        build_args: dict[str, object] = {
+            "context": svc["context"],
+            "dockerfile": svc["dockerfile"],
+            "platform": "linux/amd64",  # Required for Cloud Run (even on ARM Macs)
+            "cache_from": docker.CacheFromArgs(
+                images=[image_name.apply(lambda n, t=tag: f"{n}:{t}")],  # type: ignore[misc]
+            ),
+        }
+        target = svc.get("target")
+        if target:
+            build_args["target"] = target
 
         # Build and push the image
         image = docker.Image(
             f"podex-{svc['name']}-image-{env}",
-            build=docker.DockerBuildArgs(
-                context=svc["context"],
-                dockerfile=svc["dockerfile"],
-                platform="linux/amd64",  # Required for Cloud Run (even on ARM Macs)
-                target="production",  # Use production stage from multi-stage Dockerfile
-                # Cache settings for faster builds
-                cache_from=docker.CacheFromArgs(
-                    images=[image_name.apply(lambda n: f"{n}:latest")],
-                ),
-            ),
-            image_name=image_name.apply(lambda n: f"{n}:latest"),
+            build=docker.DockerBuildArgs(**build_args),
+            image_name=image_name.apply(lambda n, t=tag: f"{n}:{t}"),  # type: ignore[misc]
             registry=docker.RegistryArgs(
                 server=pulumi.Output.concat(region, "-docker.pkg.dev"),
                 # Uses gcloud credentials automatically via Application Default Credentials

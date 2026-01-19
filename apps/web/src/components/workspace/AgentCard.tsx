@@ -33,6 +33,7 @@ import {
   compactAgentContext,
   getAvailableModels,
   getUserProviderModels,
+  dismissAttention as dismissAttentionApi,
   executeCommand,
   type PublicModel,
   type UserProviderModel,
@@ -216,6 +217,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     getUnreadCountForAgent,
     hasUnreadForAgent,
     openPanel,
+    dismissAttention,
   } = useAttentionStore();
   const agentAttentions = getAttentionsForAgent(sessionId, agent.id);
   const highestPriorityAttention = getHighestPriorityAttention(sessionId, agent.id);
@@ -226,7 +228,8 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   // Approvals
   const { getAgentApprovals } = useApprovalsStore();
   const agentApprovals = getAgentApprovals(sessionId, agent.id);
-  const pendingApprovalCount = agentApprovals.filter((a) => a.status === 'pending').length;
+  const pendingApprovalCount =
+    agentApprovals.filter((a) => a.status === 'pending').length + (agent.pendingPermission ? 1 : 0);
 
   // Voice capture
   const { isRecording, currentTranscript, startRecording, stopRecording } = useVoiceCapture({
@@ -789,10 +792,17 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         addedToAllowlist
       );
 
+      if (agent.pendingPermission.attentionId) {
+        dismissAttention(sessionId, agent.pendingPermission.attentionId);
+        dismissAttentionApi(sessionId, agent.pendingPermission.attentionId).catch((error) => {
+          console.error('Failed to persist attention dismissal:', error);
+        });
+      }
+
       // Clear the pending permission from the agent
       updateAgent(sessionId, agent.id, { pendingPermission: undefined });
     },
-    [sessionId, agent.id, agent.pendingPermission, updateAgent]
+    [sessionId, agent.id, agent.pendingPermission, updateAgent, dismissAttention]
   );
 
   const handleDuplicate = useCallback(async () => {

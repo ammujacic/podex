@@ -3,13 +3,18 @@
 import contextlib
 import time
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import Any
 
 import httpx
 import structlog
+from sqlalchemy import select, update
 
 from src.config import settings
+from src.database.connection import get_db_context
+from src.database.models import Session as SessionModel
+from src.database.models import Workspace
 from src.exceptions import (
     ComputeClientError,
     ComputeServiceConnectionError,
@@ -164,14 +169,95 @@ class ComputeClient:
             )
         except ComputeServiceHTTPError as e:
             if e.status_code == HTTPStatus.NOT_FOUND:
+                # Workspace not found in compute service, mark as standby
+                await self._handle_workspace_not_found(workspace_id, "get")
                 return None
             raise
         else:
             return result
 
+    async def _handle_workspace_not_found(self, workspace_id: str, operation: str) -> None:
+        """Handle case where compute service doesn't know about a workspace.
+
+        This indicates a state inconsistency where the API database thinks a workspace
+        exists but the compute service doesn't have it (likely stopped/removed).
+        Automatically mark as standby in the database.
+        """
+        logger.warning(
+            "Compute service returned 404 for workspace %s, marking as standby",
+            operation,
+            workspace_id=workspace_id,
+            operation=operation,
+        )
+
+        try:
+            async with get_db_context() as db:
+                # Update workspace status to standby
+                now = datetime.now(UTC)
+                result = await db.execute(
+                    update(Workspace)
+                    .where(Workspace.id == workspace_id)
+                    .values(status="standby", standby_at=now, updated_at=now)
+                )
+
+                if result.rowcount and result.rowcount > 0:  # type: ignore[attr-defined]
+                    logger.info(
+                        "Automatically marked inconsistent workspace as standby",
+                        workspace_id=workspace_id,
+                        operation=operation,
+                    )
+
+                    # Emit WebSocket event to notify clients
+                    try:
+                        # Import here to avoid circular import with sessions.py
+                        from src.websocket.hub import emit_to_session  # noqa: PLC0415
+
+                        session_result = await db.execute(
+                            select(SessionModel).where(SessionModel.workspace_id == workspace_id)
+                        )
+                        session = session_result.scalar_one_or_none()
+                        if session:
+                            await emit_to_session(
+                                str(session.id),
+                                "workspace_status",
+                                {
+                                    "workspace_id": workspace_id,
+                                    "status": "standby",
+                                    "standby_at": now.isoformat(),
+                                },
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to emit WebSocket event for auto-standby",
+                            workspace_id=workspace_id,
+                            error=str(e),
+                        )
+                else:
+                    logger.warning(
+                        "Workspace not found in database during auto-standby",
+                        workspace_id=workspace_id,
+                    )
+
+                await db.commit()
+
+        except Exception as e:
+            logger.exception(
+                "Failed to auto-mark workspace as standby",
+                workspace_id=workspace_id,
+                operation=operation,
+                error=str(e),
+            )
+
     async def stop_workspace(self, workspace_id: str, user_id: str) -> None:
         """Stop a running workspace."""
-        await self._request("POST", f"/workspaces/{workspace_id}/stop", user_id=user_id)
+        try:
+            await self._request("POST", f"/workspaces/{workspace_id}/stop", user_id=user_id)
+        except ComputeServiceHTTPError as e:
+            if e.status_code == 404:
+                # Workspace not found in compute service, mark as standby
+                await self._handle_workspace_not_found(workspace_id, "stop")
+            else:
+                raise
 
     async def restart_workspace(self, workspace_id: str, user_id: str) -> dict[str, Any]:
         """Restart a stopped/standby workspace."""
@@ -188,7 +274,29 @@ class ComputeClient:
 
     async def heartbeat(self, workspace_id: str, user_id: str) -> None:
         """Send heartbeat to keep workspace alive."""
-        await self._request("POST", f"/workspaces/{workspace_id}/heartbeat", user_id=user_id)
+        try:
+            await self._request("POST", f"/workspaces/{workspace_id}/heartbeat", user_id=user_id)
+        except ComputeServiceHTTPError as e:
+            if e.status_code == 404:
+                # Workspace not found in compute service, mark as standby
+                await self._handle_workspace_not_found(workspace_id, "heartbeat")
+            else:
+                raise
+
+    async def scale_workspace(
+        self,
+        workspace_id: str,
+        user_id: str,
+        new_tier: str,
+    ) -> dict[str, Any]:
+        """Scale a workspace to a new compute tier."""
+        result: dict[str, Any] = await self._request(
+            "POST",
+            f"/workspaces/{workspace_id}/scale",
+            user_id=user_id,
+            json={"new_tier": new_tier},
+        )
+        return result
 
     async def health_check_workspace(
         self,

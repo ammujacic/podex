@@ -53,8 +53,9 @@ PUBLIC_PATHS: list[tuple[str, bool]] = [
     ("/api/auth/password/check", False),  # Public password strength check
     ("/api/billing/plans", True),  # Public subscription plans
     ("/api/billing/hardware-specs", True),  # Public hardware specs
-    ("/api/oauth/github", True),  # OAuth callbacks have query params
-    ("/api/oauth/google", True),
+    # OAuth login/signup endpoints (public)
+    ("/api/oauth/github", True),  # GitHub OAuth endpoints (all subpaths)
+    ("/api/oauth/google", True),  # Google OAuth endpoints (all subpaths)
     ("/api/preview", True),  # Preview endpoints have subpaths
     ("/api/templates", True),  # Template listing
     ("/api/webhooks", True),  # Stripe webhooks (has own auth)
@@ -63,6 +64,7 @@ PUBLIC_PATHS: list[tuple[str, bool]] = [
     ("/socket.io", True),  # Socket.IO has subpaths
     ("/api/agent-roles", True),  # Agent role configurations (non-sensitive)
     ("/api/platform/config", False),  # Platform config for app bootstrap
+    ("/api/models/capabilities", True),  # Internal API for agent service (model caps)
 ]
 
 
@@ -99,6 +101,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Skip auth for public paths
         if _is_public_path(request.url.path):
             return await call_next(request)
+
+        # Check for internal service token (for service-to-service auth)
+        # Internal endpoints use X-Internal-Service-Token header instead of JWT
+        if "/internal/" in request.url.path:
+            internal_token = request.headers.get("X-Internal-Service-Token")
+            if internal_token:
+                # Let the endpoint handler validate the token
+                # This allows internal endpoints to have their own auth logic
+                return await call_next(request)
+            # If no internal token, fall through to JWT check
+            # (in case user is trying to access via browser)
 
         # Extract token: prefer httpOnly cookie, fall back to Authorization header
         # Cookie-based auth is more secure (XSS protection)

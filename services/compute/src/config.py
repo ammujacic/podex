@@ -41,7 +41,6 @@ class Settings(BaseSettings):
 
     # Container images for different architectures (GCP production)
     # These are GCR/Artifact Registry image URIs
-    workspace_image_arm64: str = "podex/workspace:latest-arm64"
     workspace_image_x86: str = "podex/workspace:latest-amd64"
     workspace_image_gpu: str = "podex/workspace:latest-gpu"  # x86 + CUDA
 

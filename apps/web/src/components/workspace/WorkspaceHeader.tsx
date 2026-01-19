@@ -10,10 +10,10 @@ import {
   Grid3X3,
   Layout,
   Loader2,
+  LogOut,
   Mic,
   Move,
   Pause,
-  Play,
   Settings,
   Users,
   X,
@@ -28,6 +28,8 @@ import { GitPanel } from './GitPanel';
 import { PresencePanel, usePresenceStore } from './PresencePanel';
 import { CreditWarningIndicator } from './CreditWarningIndicator';
 import { Logo } from '@/components/ui/Logo';
+import { getHardwareSpecs, logout } from '@/lib/api';
+import type { HardwareSpec } from '@podex/shared';
 
 interface WorkspaceHeaderProps {
   sessionId: string;
@@ -35,8 +37,37 @@ interface WorkspaceHeaderProps {
 
 type WorkspaceStatus = 'pending' | 'running' | 'standby' | 'stopped' | 'error' | undefined;
 
-function PodStatusIndicator({ status }: { status: WorkspaceStatus }) {
+// Cache for hardware specs to avoid refetching
+let hardwareSpecsCache: HardwareSpec[] | null = null;
+let hardwareSpecsFetchPromise: Promise<HardwareSpec[]> | null = null;
+
+function useHardwareSpecs() {
+  const [specs, setSpecs] = useState<HardwareSpec[]>(hardwareSpecsCache || []);
+
+  useEffect(() => {
+    if (hardwareSpecsCache) {
+      setSpecs(hardwareSpecsCache);
+      return;
+    }
+
+    if (!hardwareSpecsFetchPromise) {
+      hardwareSpecsFetchPromise = getHardwareSpecs()
+        .then((data) => {
+          hardwareSpecsCache = data;
+          return data;
+        })
+        .catch(() => []);
+    }
+
+    hardwareSpecsFetchPromise.then(setSpecs);
+  }, []);
+
+  return specs;
+}
+
+function PodStatusIndicator({ status, tier }: { status: WorkspaceStatus; tier?: string }) {
   const { openModal } = useUIStore();
+  const hardwareSpecs = useHardwareSpecs();
 
   const statusConfig: Record<
     NonNullable<WorkspaceStatus>,
@@ -78,6 +109,12 @@ function PodStatusIndicator({ status }: { status: WorkspaceStatus }) {
 
   const config = statusConfig[status];
 
+  // Get display name from hardware specs, fallback to tier name with capitalization
+  const spec = hardwareSpecs.find((s) => s.tier === tier);
+  const tierDisplayName =
+    spec?.display_name ||
+    (tier ? tier.charAt(0).toUpperCase() + tier.slice(1).replace(/_/g, ' ') : 'Starter');
+
   return (
     <div className="flex items-center gap-2">
       <div className="h-4 w-px bg-border-subtle" />
@@ -86,15 +123,13 @@ function PodStatusIndicator({ status }: { status: WorkspaceStatus }) {
         <span className="text-xs">{config.label}</span>
         {config.icon}
       </div>
-      {status === 'standby' && (
-        <button
-          onClick={() => openModal('resume-session')}
-          className="text-xs px-2 py-0.5 rounded bg-green-500/10 text-green-400 hover:bg-green-500/20 transition-colors flex items-center gap-1"
-        >
-          <Play className="h-3 w-3" />
-          Resume
-        </button>
-      )}
+      <button
+        onClick={() => openModal('workspace-scaling')}
+        className="text-xs px-2 py-0.5 rounded bg-surface-hover text-text-secondary hover:bg-overlay hover:text-text-primary transition-colors border border-border-subtle"
+        title="Click to scale workspace"
+      >
+        {tierDisplayName}
+      </button>
     </div>
   );
 }
@@ -221,7 +256,7 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
           </div>
 
           {/* Pod Status Indicator */}
-          <PodStatusIndicator status={session?.workspaceStatus} />
+          <PodStatusIndicator status={session?.workspaceStatus} tier={session?.workspaceTier} />
         </div>
       </div>
 
@@ -413,16 +448,6 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
             <Pause className="h-4 w-4" aria-hidden="true" />
           </button>
         )}
-        {session?.workspaceStatus === 'standby' && (
-          <button
-            onClick={() => openModal('resume-session')}
-            aria-label="Resume session"
-            className="rounded-md p-2 text-text-secondary hover:bg-overlay hover:text-green-400"
-            title="Resume session from standby"
-          >
-            <Play className="h-4 w-4" aria-hidden="true" />
-          </button>
-        )}
 
         {/* Auto-Standby Settings */}
         <button
@@ -441,6 +466,19 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
           className="rounded-md p-2 text-text-secondary hover:bg-overlay hover:text-text-primary"
         >
           <Settings className="h-4 w-4" aria-hidden="true" />
+        </button>
+
+        {/* Logout */}
+        <button
+          onClick={() => {
+            logout();
+            router.push('/');
+          }}
+          aria-label="Log out"
+          className="rounded-md p-2 text-text-secondary hover:bg-overlay hover:text-accent-error"
+          title="Log out"
+        >
+          <LogOut className="h-4 w-4" aria-hidden="true" />
         </button>
       </div>
     </header>

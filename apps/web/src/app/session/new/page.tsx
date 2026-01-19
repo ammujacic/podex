@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -8,6 +8,7 @@ import {
   ArrowLeft,
   ArrowRight,
   GitBranch,
+  Github,
   Loader2,
   Sparkles,
   Server,
@@ -19,6 +20,7 @@ import {
   Laptop,
   Cpu,
   Activity,
+  RefreshCw,
 } from 'lucide-react';
 import { Button, Input } from '@podex/ui';
 import Image from 'next/image';
@@ -28,6 +30,8 @@ import {
   getUserConfig,
   listHardwareSpecs,
   listLocalPods,
+  getGitHubLinkURL,
+  getGitHubBranches,
   type PodTemplate,
   type UserConfig,
   type HardwareSpecResponse,
@@ -36,6 +40,8 @@ import {
 import { useUser } from '@/stores/auth';
 import { HardwareSelector } from '@/components/billing/HardwareSelector';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
+import { cn } from '@/lib/utils';
+import { getGitHubStatus, getGitHubRepos } from '@/lib/api';
 
 // Template icon configuration with CDN URLs (Simple Icons)
 const templateIconConfig: Record<string, { url: string }> = {
@@ -114,6 +120,25 @@ const osVersions = [
 // Compute target type
 type ComputeTarget = 'cloud' | string; // 'cloud' or local_pod_id
 
+interface GitHubConnectionStatus {
+  connected: boolean;
+  username?: string | null;
+  avatar_url?: string | null;
+  scopes?: string[] | null;
+}
+
+interface GitHubRepo {
+  id: number;
+  full_name: string;
+  private: boolean;
+  html_url: string;
+  default_branch: string;
+}
+
+interface GitHubBranch {
+  name: string;
+}
+
 export default function NewSessionPage() {
   useDocumentTitle('New Pod');
   const router = useRouter();
@@ -134,6 +159,16 @@ export default function NewSessionPage() {
   const [sessionName, setSessionName] = useState('');
   const [gitUrl, setGitUrl] = useState('');
   const [branch, setBranch] = useState('main');
+  const [githubStatus, setGithubStatus] = useState<GitHubConnectionStatus | null>(null);
+  const [githubRepos, setGithubRepos] = useState<GitHubRepo[]>([]);
+  const [githubLoading, setGithubLoading] = useState(false);
+  const [githubReposLoading, setGithubReposLoading] = useState(false);
+  const [githubRepoError, setGithubRepoError] = useState<string | null>(null);
+  const [githubBranches, setGithubBranches] = useState<GitHubBranch[]>([]);
+  const [githubBranchesLoading, setGithubBranchesLoading] = useState(false);
+  const [githubBranchesError, setGithubBranchesError] = useState<string | null>(null);
+  const [githubConnecting, setGithubConnecting] = useState(false);
+  const [useCustomBranch, setUseCustomBranch] = useState(false);
 
   // Pod configuration state
   const [selectedTier, setSelectedTier] = useState<string>('small');
@@ -182,6 +217,109 @@ export default function NewSessionPage() {
 
     loadData();
   }, [user, router]);
+
+  const fetchGitHubRepos = useCallback(async () => {
+    setGithubReposLoading(true);
+    setGithubRepoError(null);
+    try {
+      const data = await getGitHubRepos({ per_page: 100 });
+      setGithubRepos(data);
+    } catch (err) {
+      setGithubRepoError(err instanceof Error ? err.message : 'Failed to load GitHub repositories');
+    } finally {
+      setGithubReposLoading(false);
+    }
+  }, []);
+
+  const parseGitHubRepoFromUrl = useCallback((url: string) => {
+    try {
+      if (url.startsWith('git@github.com:')) {
+        const match = url.match(/^git@github\.com:(.+?)\/(.+?)(\.git)?$/);
+        if (!match) return null;
+        return { owner: match[1], repo: match[2] };
+      }
+      const parsed = new URL(url);
+      if (parsed.hostname !== 'github.com') return null;
+      const [owner, repo] = parsed.pathname.replace(/^\/+/, '').split('/');
+      if (!owner || !repo) return null;
+      return { owner, repo: repo.replace(/\.git$/, '') };
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const fetchGitHubBranches = useCallback(
+    async (url: string) => {
+      const repoInfo = parseGitHubRepoFromUrl(url);
+      if (!repoInfo) {
+        setGithubBranches([]);
+        return;
+      }
+
+      setGithubBranchesLoading(true);
+      setGithubBranchesError(null);
+      try {
+        const branches = await getGitHubBranches(repoInfo.owner!, repoInfo.repo!);
+        setGithubBranches(branches);
+      } catch (err) {
+        setGithubBranches([]);
+        setGithubBranchesError(err instanceof Error ? err.message : 'Failed to load branches');
+      } finally {
+        setGithubBranchesLoading(false);
+      }
+    },
+    [parseGitHubRepoFromUrl]
+  );
+
+  const fetchGitHubStatus = useCallback(async () => {
+    setGithubLoading(true);
+    try {
+      const data: GitHubConnectionStatus = await getGitHubStatus();
+      setGithubStatus(data);
+      if (data.connected) {
+        await fetchGitHubRepos();
+      } else {
+        setGithubRepos([]);
+      }
+    } catch {
+      setGithubStatus({ connected: false });
+      setGithubRepos([]);
+    } finally {
+      setGithubLoading(false);
+    }
+  }, [fetchGitHubRepos]);
+
+  useEffect(() => {
+    if (step !== 'workspace') return;
+    fetchGitHubStatus();
+  }, [step, fetchGitHubStatus]);
+
+  useEffect(() => {
+    if (!githubStatus?.connected) {
+      setGithubBranches([]);
+      return;
+    }
+    if (gitUrl) {
+      setUseCustomBranch(false);
+      fetchGitHubBranches(gitUrl);
+    } else {
+      setGithubBranches([]);
+    }
+  }, [gitUrl, githubStatus?.connected, fetchGitHubBranches]);
+
+  const handleConnectGitHub = async () => {
+    if (typeof window === 'undefined') return;
+    setGithubConnecting(true);
+    setGithubRepoError(null);
+    try {
+      // Use the link URL to link GitHub to the current account
+      const url = await getGitHubLinkURL();
+      window.location.href = url;
+    } catch (err) {
+      setGithubConnecting(false);
+      setGithubRepoError(err instanceof Error ? err.message : 'Failed to start GitHub connection');
+    }
+  };
 
   const handleSelectTemplate = (template: PodTemplate) => {
     setSelectedTemplate(template);
@@ -925,6 +1063,97 @@ export default function NewSessionPage() {
                     <span className="font-medium text-text-primary">Git Repository (Optional)</span>
                   </div>
                   <div className="space-y-4">
+                    {githubLoading ? (
+                      <div className="flex items-center gap-2 text-sm text-text-muted">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Checking GitHub connection...
+                      </div>
+                    ) : githubStatus?.connected ? (
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 text-sm text-text-secondary">
+                            <Github className="w-4 h-4" />
+                            <span>
+                              Connected
+                              {githubStatus.username ? ` as @${githubStatus.username}` : ''}
+                            </span>
+                          </div>
+                          <button
+                            onClick={fetchGitHubRepos}
+                            disabled={githubReposLoading}
+                            className="p-1.5 rounded text-text-muted hover:text-text-primary hover:bg-overlay disabled:opacity-50"
+                            title="Refresh repositories"
+                          >
+                            <RefreshCw
+                              className={cn('w-4 h-4', githubReposLoading && 'animate-spin')}
+                            />
+                          </button>
+                        </div>
+
+                        <div>
+                          <label className="block text-sm text-text-secondary mb-2">
+                            Select Repository
+                          </label>
+                          <select
+                            value={gitUrl}
+                            onChange={(e) => {
+                              const selectedUrl = e.target.value;
+                              setGitUrl(selectedUrl);
+                              setUseCustomBranch(false);
+                              const repo = githubRepos.find((r) => r.html_url === selectedUrl);
+                              if (repo?.default_branch) {
+                                setBranch(repo.default_branch);
+                              }
+                            }}
+                            className="w-full px-3 py-2 bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:border-accent-primary"
+                          >
+                            <option value="">Select a repo (optional)</option>
+                            {githubRepos.map((repo) => (
+                              <option key={repo.id} value={repo.html_url}>
+                                {repo.full_name} {repo.private ? '(Private)' : ''}
+                              </option>
+                            ))}
+                          </select>
+                          {githubRepoError && (
+                            <p className="text-xs text-accent-error mt-2">{githubRepoError}</p>
+                          )}
+                          {!githubRepoError && githubRepos.length === 0 && !githubReposLoading && (
+                            <p className="text-xs text-text-tertiary mt-2">
+                              No repositories found for this account.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between gap-4 rounded-lg border border-border-default bg-surface p-4">
+                        <div className="flex items-center gap-3 text-sm text-text-secondary">
+                          <Github className="w-5 h-5 text-text-muted" />
+                          <div>
+                            <p className="text-sm font-medium text-text-primary">
+                              Connect GitHub to choose a repo
+                            </p>
+                            <p className="text-xs text-text-tertiary">
+                              Pull in your repositories and default branches.
+                            </p>
+                          </div>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={handleConnectGitHub}
+                          disabled={githubConnecting}
+                        >
+                          {githubConnecting ? (
+                            <>
+                              <Loader2 className="w-3 h-3 animate-spin mr-1.5" />
+                              Connecting...
+                            </>
+                          ) : (
+                            'Connect GitHub'
+                          )}
+                        </Button>
+                      </div>
+                    )}
                     <div>
                       <label className="block text-sm text-text-secondary mb-2">
                         Repository URL
@@ -936,12 +1165,65 @@ export default function NewSessionPage() {
                       />
                     </div>
                     <div>
-                      <label className="block text-sm text-text-secondary mb-2">Branch</label>
-                      <Input
-                        value={branch}
-                        onChange={(e) => setBranch(e.target.value)}
-                        placeholder="main"
-                      />
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="block text-sm text-text-secondary">Branch</label>
+                        {githubStatus?.connected && gitUrl && (
+                          <button
+                            type="button"
+                            onClick={() => fetchGitHubBranches(gitUrl)}
+                            disabled={githubBranchesLoading}
+                            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-overlay disabled:opacity-50"
+                            title="Refresh branches"
+                          >
+                            <RefreshCw
+                              className={cn('w-3.5 h-3.5', githubBranchesLoading && 'animate-spin')}
+                            />
+                          </button>
+                        )}
+                      </div>
+                      {githubBranches.length > 0 && !useCustomBranch ? (
+                        <select
+                          value={branch}
+                          onChange={(e) => {
+                            const value = e.target.value;
+                            if (value === '__custom__') {
+                              setUseCustomBranch(true);
+                              setBranch('');
+                            } else {
+                              setBranch(value);
+                            }
+                          }}
+                          className="w-full px-3 py-2 bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:border-accent-primary"
+                        >
+                          <option value="">Select a branch</option>
+                          {githubBranches.map((gitBranch) => (
+                            <option key={gitBranch.name} value={gitBranch.name}>
+                              {gitBranch.name}
+                            </option>
+                          ))}
+                          <option value="__custom__">Custom branch...</option>
+                        </select>
+                      ) : (
+                        <div className="space-y-2">
+                          <Input
+                            value={branch}
+                            onChange={(e) => setBranch(e.target.value)}
+                            placeholder="main"
+                          />
+                          {githubBranches.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setUseCustomBranch(false)}
+                              className="text-xs text-accent-primary hover:underline"
+                            >
+                              Use branch list
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      {githubBranchesError && (
+                        <p className="text-xs text-accent-error mt-2">{githubBranchesError}</p>
+                      )}
                     </div>
                   </div>
                 </motion.div>

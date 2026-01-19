@@ -12,6 +12,7 @@ import {
   Bug,
   FolderTree,
   GitBranch,
+  Github,
   Search,
   AlertCircle,
   Bot,
@@ -87,6 +88,7 @@ class AgentViewErrorBoundary extends Component<
 // Lazy imports for widget content
 import { FilesPanel } from './FilesPanel';
 import { GitPanel } from './GitPanel';
+import { GitHubWidget } from './GitHubWidget';
 import { SearchPanel } from './SearchPanel';
 import { DiagnosticsSidebarPanel } from './DiagnosticsSidebarPanel';
 import { AgentsPanel } from './AgentsPanel';
@@ -163,6 +165,12 @@ export function MobileWorkspaceLayout({ sessionId }: MobileWorkspaceLayoutProps)
       icon: <GitBranch className="h-5 w-5" />,
       height: 'full',
       component: <GitPanel sessionId={sessionId} />,
+    },
+    github: {
+      title: 'GitHub',
+      icon: <Github className="h-5 w-5" />,
+      height: 'full',
+      component: <GitHubWidget sessionId={sessionId} />,
     },
     search: {
       title: 'Search',

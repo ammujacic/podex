@@ -32,29 +32,17 @@ class TestWorkspaceTier:
     """Tests for WorkspaceTier enum."""
 
     def test_standard_tiers(self) -> None:
-        """Test standard ARM tier values."""
+        """Test standard tier values."""
         assert WorkspaceTier.STARTER == "starter"
         assert WorkspaceTier.PRO == "pro"
         assert WorkspaceTier.POWER == "power"
         assert WorkspaceTier.ENTERPRISE == "enterprise"
-
-    def test_x86_tiers(self) -> None:
-        """Test x86 tier values."""
-        assert WorkspaceTier.X86_STARTER == "x86_starter"
-        assert WorkspaceTier.X86_PRO == "x86_pro"
-        assert WorkspaceTier.X86_POWER == "x86_power"
 
     def test_gpu_tiers(self) -> None:
         """Test GPU tier values."""
         assert WorkspaceTier.GPU_STARTER == "gpu_starter"
         assert WorkspaceTier.GPU_PRO == "gpu_pro"
         assert WorkspaceTier.GPU_POWER == "gpu_power"
-
-    def test_arm_gpu_tiers(self) -> None:
-        """Test ARM GPU tier values."""
-        assert WorkspaceTier.ARM_GPU_STARTER == "arm_gpu_starter"
-        assert WorkspaceTier.ARM_GPU_PRO == "arm_gpu_pro"
-        assert WorkspaceTier.ARM_GPU_POWER == "arm_gpu_power"
 
     def test_ml_accelerator_tiers(self) -> None:
         """Test ML accelerator tier values."""
@@ -68,7 +56,6 @@ class TestArchitecture:
     def test_architectures(self) -> None:
         """Test architecture values."""
         assert Architecture.X86_64 == "x86_64"
-        assert Architecture.ARM64 == "arm64"
 
 
 class TestAcceleratorType:
@@ -86,10 +73,6 @@ class TestAcceleratorType:
         assert AcceleratorType.A100_80GB == "a100_80gb"
         assert AcceleratorType.L4 == "l4"
         assert AcceleratorType.H100 == "h100"
-
-    def test_arm_gpu(self) -> None:
-        """Test ARM GPU value."""
-        assert AcceleratorType.T4G == "t4g"
 
     def test_ml_accelerators(self) -> None:
         """Test TPU ML accelerator values."""
@@ -194,7 +177,7 @@ class TestWorkspaceConfig:
         """Test WorkspaceConfig default values."""
         config = WorkspaceConfig()
         assert config.tier == WorkspaceTier.STARTER
-        assert config.architecture == Architecture.ARM64
+        assert config.architecture == Architecture.X86_64
         assert config.gpu_type == GPUType.NONE
         assert config.os_version == OSVersion.UBUNTU_22_04
         assert config.python_version == PythonVersion.PYTHON_3_12
@@ -240,7 +223,7 @@ class TestHardwareSpec:
             tier=WorkspaceTier.PRO,
             display_name="Pro",
             description="Professional tier",
-            architecture=Architecture.ARM64,
+            architecture=Architecture.X86_64,
             vcpu=4,
             memory_mb=8192,
             hourly_rate=Decimal("0.10"),
@@ -262,7 +245,7 @@ class TestHardwareSpecsDict:
         assert spec is not None
         assert spec.vcpu == 2
         assert spec.memory_mb == 4096
-        assert spec.architecture == Architecture.ARM64
+        assert spec.architecture == Architecture.X86_64
         assert spec.hourly_rate == Decimal("0.05")
 
     def test_pro_spec(self) -> None:
@@ -286,13 +269,6 @@ class TestHardwareSpecsDict:
         assert spec.gpu_type == GPUType.T4
         assert spec.gpu_memory_gb == 16
         assert spec.architecture == Architecture.X86_64
-
-    def test_arm_gpu_spec(self) -> None:
-        """Test ARM GPU spec."""
-        spec = HARDWARE_SPECS.get(WorkspaceTier.ARM_GPU_STARTER)
-        assert spec is not None
-        assert spec.gpu_type == AcceleratorType.T4G
-        assert spec.architecture == Architecture.ARM64
 
     def test_ml_inference_spec(self) -> None:
         """Test ML Inference spec."""

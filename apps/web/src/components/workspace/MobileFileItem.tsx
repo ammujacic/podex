@@ -18,6 +18,11 @@ import { useSwipeableItem, triggerHaptic, useLongPress } from '@/hooks/useGestur
 import { useUIStore } from '@/stores/ui';
 import type { FileNode } from '@/lib/api';
 
+interface SyncInfo {
+  isSynced: boolean;
+  syncType: 'user' | 'session' | null;
+}
+
 interface MobileFileItemProps {
   item: FileNode;
   depth: number;
@@ -29,7 +34,8 @@ interface MobileFileItemProps {
   isLoading?: boolean;
   onToggleFolder?: () => void;
   children?: React.ReactNode;
-  isPathSynced?: (path: string) => boolean;
+  getSyncInfo?: (path: string) => SyncInfo;
+  onToggleSync?: (path: string) => void;
 }
 
 export function MobileFileItem({
@@ -43,10 +49,13 @@ export function MobileFileItem({
   isLoading = false,
   onToggleFolder,
   children,
-  isPathSynced,
+  getSyncInfo,
+  onToggleSync: _onToggleSync,
 }: MobileFileItemProps) {
   const openMobileFileActions = useUIStore((state) => state.openMobileFileActions);
-  const isSynced = isPathSynced ? isPathSynced(item.path || item.name || '') : false;
+  const syncInfo = getSyncInfo
+    ? getSyncInfo(item.path || item.name || '')
+    : { isSynced: false, syncType: null };
   const paddingLeft = 12 + depth * 16;
 
   // Handle swipe gestures
@@ -179,10 +188,15 @@ export function MobileFileItem({
           <span className="truncate flex-1">{item.name}</span>
 
           {/* Sync indicator */}
-          {isSynced && (
+          {syncInfo.isSynced && (
             <CloudSync
-              className="h-4 w-4 text-accent-secondary opacity-70 shrink-0"
-              aria-label="Auto-synced by Podex"
+              className={cn(
+                'h-4 w-4 shrink-0 opacity-70',
+                syncInfo.syncType === 'user' ? 'text-blue-500' : 'text-accent-secondary'
+              )}
+              aria-label={
+                syncInfo.syncType === 'user' ? 'Synced to user account' : 'Auto-synced by Podex'
+              }
             />
           )}
 

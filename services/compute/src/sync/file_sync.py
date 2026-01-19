@@ -317,15 +317,34 @@ class FileSync:
                             dotfiles_paths=dotfiles_paths,
                         )
                 except asyncio.CancelledError:
-                    # Final sync before stopping
+                    # Final sync before stopping (with timeout to prevent shutdown hangs)
                     logger.info("Background sync cancelled, performing final sync")
-                    await self.sync_to_gcs(workspace_id)
-                    if user_id:
-                        await self.save_user_dotfiles(
-                            workspace_id=workspace_id,
-                            user_id=user_id,
-                            dotfiles_paths=dotfiles_paths,
+                    try:
+                        await asyncio.wait_for(
+                            self.sync_to_gcs(workspace_id),
+                            timeout=10.0,  # Shorter timeout for shutdown
                         )
+                    except (TimeoutError, Exception):
+                        logger.warning(
+                            "Final GCS sync timed out or failed during shutdown",
+                            workspace_id=workspace_id,
+                        )
+
+                    if user_id:
+                        try:
+                            await asyncio.wait_for(
+                                self.save_user_dotfiles(
+                                    workspace_id=workspace_id,
+                                    user_id=user_id,
+                                    dotfiles_paths=dotfiles_paths,
+                                ),
+                                timeout=10.0,  # Shorter timeout for shutdown
+                            )
+                        except (TimeoutError, Exception):
+                            logger.warning(
+                                "Final dotfiles sync timed out or failed during shutdown",
+                                workspace_id=workspace_id,
+                            )
                     raise
                 except Exception:
                     logger.exception(

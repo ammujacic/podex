@@ -7,7 +7,7 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Uni
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from src.database.encrypted_types import EncryptedJSON
+from src.database.encrypted_types import EncryptedJSON, EncryptedString
 
 from .base import Base, _generate_uuid
 
@@ -93,7 +93,7 @@ class LocalPod(Base):
 
     # Capabilities reported by pod on connection
     os_info: Mapped[str | None] = mapped_column(String(100))  # e.g., "Linux 5.15.0-ubuntu22.04"
-    architecture: Mapped[str | None] = mapped_column(String(20))  # x86_64, arm64
+    architecture: Mapped[str | None] = mapped_column(String(20))  # x86_64
     docker_version: Mapped[str | None] = mapped_column(String(50))
     total_memory_mb: Mapped[int | None] = mapped_column(Integer)
     total_cpu_cores: Mapped[int | None] = mapped_column(Integer)
@@ -198,8 +198,8 @@ class GitHubIntegration(Base):
     github_email: Mapped[str | None] = mapped_column(String(255))
 
     # OAuth tokens - encrypted at rest
-    access_token: Mapped[str] = mapped_column(EncryptedJSON, nullable=False)  # Encrypted
-    refresh_token: Mapped[str | None] = mapped_column(EncryptedJSON)
+    access_token: Mapped[str] = mapped_column(EncryptedString, nullable=False)  # Encrypted
+    refresh_token: Mapped[str | None] = mapped_column(EncryptedString)
     token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Scopes granted during OAuth
@@ -219,7 +219,7 @@ class GitHubIntegration(Base):
     )  # list of repo full names
 
     # Webhook configuration
-    webhook_secret: Mapped[str | None] = mapped_column(EncryptedJSON)  # Encrypted
+    webhook_secret: Mapped[str | None] = mapped_column(EncryptedString)  # Encrypted
     webhook_events: Mapped[list[str] | None] = mapped_column(JSONB)
 
     # Status

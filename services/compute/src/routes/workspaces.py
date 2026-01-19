@@ -15,6 +15,8 @@ from src.models.workspace import (
     WorkspaceExecResponse,
     WorkspaceFileRequest,
     WorkspaceInfo,
+    WorkspaceScaleRequest,
+    WorkspaceScaleResponse,
 )
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
@@ -291,3 +293,48 @@ async def heartbeat(
     """Update workspace last activity timestamp."""
     await verify_workspace_ownership(workspace_id, user_id, compute)
     await compute.heartbeat(workspace_id)
+
+
+@router.post("/{workspace_id}/scale", response_model=WorkspaceScaleResponse)
+async def scale_workspace(
+    workspace_id: str,
+    request: WorkspaceScaleRequest,
+    user_id: AuthenticatedUser,
+    _auth: InternalAuth,
+    compute: Annotated[ComputeManager, Depends(get_compute_manager)],
+) -> WorkspaceScaleResponse:
+    """Scale a workspace to a new compute tier."""
+    logger = structlog.get_logger()
+
+    workspace = await verify_workspace_ownership(workspace_id, user_id, compute)
+
+    # Check if scaling to the same tier
+    if workspace.tier == request.new_tier:
+        return WorkspaceScaleResponse(
+            success=False,
+            message=f"Workspace is already on {request.new_tier.value} tier",
+            new_tier=workspace.tier,
+        )
+
+    try:
+        response = await compute.scale_workspace(workspace_id, request.new_tier)
+
+        logger.info(
+            "Workspace scaled successfully",
+            workspace_id=workspace_id,
+            old_tier=workspace.tier.value,
+            new_tier=request.new_tier.value,
+        )
+
+        return response
+    except Exception as e:
+        logger.exception(
+            "Failed to scale workspace",
+            workspace_id=workspace_id,
+            new_tier=request.new_tier.value,
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to scale workspace: {e}",
+        ) from e

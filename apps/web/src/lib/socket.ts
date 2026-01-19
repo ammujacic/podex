@@ -215,6 +215,7 @@ export interface PermissionRequestEvent {
   command: string | null;
   description: string | null;
   tool_name: string;
+  attention_id?: string;
   action_type: 'command_execute';
   action_details: {
     command: string | null;

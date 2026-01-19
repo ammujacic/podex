@@ -11,31 +11,16 @@ from pydantic import BaseModel, Field
 class WorkspaceTier(str, Enum):
     """Workspace compute tier."""
 
-    # Standard tiers - default to ARM64 (Graviton) for cost efficiency
-    # These are the recommended tiers for most workloads
-    STARTER = "starter"  # 2 vCPU, 4GB RAM (ARM64)
-    PRO = "pro"  # 4 vCPU, 8GB RAM (ARM64)
-    POWER = "power"  # 8 vCPU, 16GB RAM (ARM64)
-    ENTERPRISE = "enterprise"  # 16 vCPU, 32GB RAM (ARM64)
-
-    # x86 CPU tiers - for software that requires x86 compatibility
-    X86_STARTER = "x86_starter"  # 2 vCPU, 4GB RAM (x86_64)
-    X86_PRO = "x86_pro"  # 4 vCPU, 8GB RAM (x86_64)
-    X86_POWER = "x86_power"  # 8 vCPU, 16GB RAM (x86_64)
+    # Standard tiers (x86_64)
+    STARTER = "starter"  # 2 vCPU, 4GB RAM (x86_64)
+    PRO = "pro"  # 4 vCPU, 8GB RAM (x86_64)
+    POWER = "power"  # 8 vCPU, 16GB RAM (x86_64)
+    ENTERPRISE = "enterprise"  # 16 vCPU, 32GB RAM (x86_64)
 
     # x86 GPU tiers (NVIDIA GPUs)
     GPU_STARTER = "gpu_starter"  # 4 vCPU, 16GB RAM, T4 GPU (g4dn)
     GPU_PRO = "gpu_pro"  # 8 vCPU, 32GB RAM, A10G GPU (g5)
     GPU_POWER = "gpu_power"  # 16 vCPU, 64GB RAM, A100 GPU (p4d)
-
-    # ARM GPU tiers (Graviton2 + NVIDIA T4G) - Best of both worlds!
-    ARM_GPU_STARTER = "arm_gpu_starter"  # 4 vCPU, 8GB RAM, T4G GPU (g5g.xlarge)
-    ARM_GPU_PRO = "arm_gpu_pro"  # 8 vCPU, 16GB RAM, T4G GPU (g5g.2xlarge)
-    ARM_GPU_POWER = "arm_gpu_power"  # 16 vCPU, 32GB RAM, T4G GPU (g5g.4xlarge)
-
-    # Explicit ARM CPU tiers (Graviton) - same as standard but explicit naming
-    ARM_STARTER = "arm_starter"  # 2 vCPU, 4GB RAM, Graviton
-    ARM_PRO = "arm_pro"  # 4 vCPU, 8GB RAM, Graviton
 
     # ML Accelerator tiers (TPU/custom silicon - more cost-effective than NVIDIA)
     ML_INFERENCE = "ml_inference"  # TPU - optimized for inference
@@ -46,7 +31,6 @@ class Architecture(str, Enum):
     """CPU architecture."""
 
     X86_64 = "x86_64"
-    ARM64 = "arm64"
 
 
 class AcceleratorType(str, Enum):
@@ -62,9 +46,6 @@ class AcceleratorType(str, Enum):
     A100_80GB = "a100_80gb"  # 80GB VRAM, maximum capability
     L4 = "l4"  # 24GB VRAM, inference optimized (g6 instances)
     H100 = "h100"  # 80GB HBM3, latest generation (p5 instances)
-
-    # NVIDIA GPUs for ARM (Graviton2 + NVIDIA)
-    T4G = "t4g"  # 16GB VRAM, ARM-compatible (g5g instances - Graviton2 + T4G)
 
     # TPU/ML Accelerators (custom silicon, more cost-effective)
     TPU_V4 = "tpu_v4"  # TPU v4 - optimized for inference and training
@@ -157,7 +138,7 @@ class WorkspaceConfig(BaseModel):
     tier: WorkspaceTier = WorkspaceTier.STARTER
 
     # Hardware configuration
-    architecture: Architecture = Architecture.ARM64
+    architecture: Architecture = Architecture.X86_64
     gpu_type: GPUType = GPUType.NONE
 
     # Operating system
@@ -243,7 +224,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         tier=WorkspaceTier.STARTER,
         display_name="Starter",
         description="Basic development environment for learning and small projects",
-        architecture=Architecture.ARM64,
+        architecture=Architecture.X86_64,
         vcpu=2,
         memory_mb=4096,
         storage_gb_default=20,
@@ -255,7 +236,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         tier=WorkspaceTier.PRO,
         display_name="Pro",
         description="Professional development with more resources",
-        architecture=Architecture.ARM64,
+        architecture=Architecture.X86_64,
         vcpu=4,
         memory_mb=8192,
         storage_gb_default=50,
@@ -268,7 +249,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         tier=WorkspaceTier.POWER,
         display_name="Power",
         description="High-performance for large codebases and heavy compilation",
-        architecture=Architecture.ARM64,
+        architecture=Architecture.X86_64,
         vcpu=8,
         memory_mb=16384,
         storage_gb_default=100,
@@ -281,52 +262,13 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         tier=WorkspaceTier.ENTERPRISE,
         display_name="Enterprise",
         description="Maximum resources for enterprise workloads",
-        architecture=Architecture.ARM64,
+        architecture=Architecture.X86_64,
         vcpu=16,
         memory_mb=32768,
         storage_gb_default=200,
         storage_gb_max=500,
         hourly_rate=Decimal("0.40"),
         requires_subscription="team",
-        region_availability=["us-east1"],
-    ),
-    # x86 CPU tiers - for software requiring x86 compatibility (slightly more expensive than ARM)
-    WorkspaceTier.X86_STARTER: HardwareSpec(
-        tier=WorkspaceTier.X86_STARTER,
-        display_name="x86 Starter",
-        description="x86 development environment for software requiring Intel/AMD compatibility",
-        architecture=Architecture.X86_64,
-        vcpu=2,
-        memory_mb=4096,
-        storage_gb_default=20,
-        storage_gb_max=50,
-        hourly_rate=Decimal("0.06"),  # ~20% more than ARM
-        region_availability=["us-east1"],
-    ),
-    WorkspaceTier.X86_PRO: HardwareSpec(
-        tier=WorkspaceTier.X86_PRO,
-        display_name="x86 Pro",
-        description="Professional x86 development with more resources",
-        architecture=Architecture.X86_64,
-        vcpu=4,
-        memory_mb=8192,
-        storage_gb_default=50,
-        storage_gb_max=100,
-        hourly_rate=Decimal("0.12"),  # ~20% more than ARM
-        requires_subscription="starter",
-        region_availability=["us-east1"],
-    ),
-    WorkspaceTier.X86_POWER: HardwareSpec(
-        tier=WorkspaceTier.X86_POWER,
-        display_name="x86 Power",
-        description="High-performance x86 for legacy software and heavy workloads",
-        architecture=Architecture.X86_64,
-        vcpu=8,
-        memory_mb=16384,
-        storage_gb_default=100,
-        storage_gb_max=200,
-        hourly_rate=Decimal("0.24"),  # ~20% more than ARM
-        requires_subscription="pro",
         region_availability=["us-east1"],
     ),
     # x86 GPU tiers (NVIDIA GPUs)
@@ -377,84 +319,6 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=1000,
         hourly_rate=Decimal("3.00"),
         requires_subscription="enterprise",
-        region_availability=["us-east1"],
-        is_gpu=True,
-        requires_gke=True,
-    ),
-    WorkspaceTier.ARM_STARTER: HardwareSpec(
-        tier=WorkspaceTier.ARM_STARTER,
-        display_name="ARM Starter",
-        description="Cost-optimized ARM development environment",
-        architecture=Architecture.ARM64,
-        vcpu=2,
-        memory_mb=4096,
-        storage_gb_default=20,
-        storage_gb_max=50,
-        hourly_rate=Decimal("0.04"),
-        region_availability=["us-east1"],
-    ),
-    WorkspaceTier.ARM_PRO: HardwareSpec(
-        tier=WorkspaceTier.ARM_PRO,
-        display_name="ARM Pro",
-        description="Professional ARM development with excellent price/performance",
-        architecture=Architecture.ARM64,
-        vcpu=4,
-        memory_mb=8192,
-        storage_gb_default=50,
-        storage_gb_max=100,
-        hourly_rate=Decimal("0.08"),
-        requires_subscription="starter",
-        region_availability=["us-east1"],
-    ),
-    # ARM GPU tiers - Graviton2 + NVIDIA T4G (best of both worlds!)
-    # G5g instances: ARM CPU with NVIDIA T4G GPU for ML inference
-    WorkspaceTier.ARM_GPU_STARTER: HardwareSpec(
-        tier=WorkspaceTier.ARM_GPU_STARTER,
-        display_name="ARM GPU Starter",
-        description="Graviton2 ARM CPU + NVIDIA T4G GPU - cost-effective ML inference",
-        architecture=Architecture.ARM64,  # g5g instances are ARM64!
-        vcpu=4,
-        memory_mb=8192,
-        gpu_type=AcceleratorType.T4G,
-        gpu_memory_gb=16,  # T4G has 16GB VRAM
-        storage_gb_default=50,
-        storage_gb_max=200,
-        hourly_rate=Decimal("0.40"),  # Cheaper than x86 T4
-        requires_subscription="pro",
-        region_availability=["us-east1"],
-        is_gpu=True,
-        requires_gke=True,
-    ),
-    WorkspaceTier.ARM_GPU_PRO: HardwareSpec(
-        tier=WorkspaceTier.ARM_GPU_PRO,
-        display_name="ARM GPU Pro",
-        description="Graviton2 ARM CPU + NVIDIA T4G GPU - balanced ML workloads",
-        architecture=Architecture.ARM64,
-        vcpu=8,
-        memory_mb=16384,
-        gpu_type=AcceleratorType.T4G,
-        gpu_memory_gb=16,
-        storage_gb_default=100,
-        storage_gb_max=500,
-        hourly_rate=Decimal("0.65"),
-        requires_subscription="pro",
-        region_availability=["us-east1"],
-        is_gpu=True,
-        requires_gke=True,
-    ),
-    WorkspaceTier.ARM_GPU_POWER: HardwareSpec(
-        tier=WorkspaceTier.ARM_GPU_POWER,
-        display_name="ARM GPU Power",
-        description="Graviton2 ARM CPU + NVIDIA T4G GPU - high-performance ML",
-        architecture=Architecture.ARM64,
-        vcpu=16,
-        memory_mb=32768,
-        gpu_type=AcceleratorType.T4G,
-        gpu_memory_gb=16,
-        storage_gb_default=200,
-        storage_gb_max=1000,
-        hourly_rate=Decimal("1.10"),
-        requires_subscription="team",
         region_availability=["us-east1"],
         is_gpu=True,
         requires_gke=True,
@@ -652,3 +516,19 @@ class WorkspaceFileRequest(BaseModel):
 
     path: str
     content: str | None = None  # For write operations
+
+
+class WorkspaceScaleRequest(BaseModel):
+    """Request to scale a workspace's compute resources."""
+
+    new_tier: WorkspaceTier = Field(description="The new compute tier to scale to")
+
+
+class WorkspaceScaleResponse(BaseModel):
+    """Response from scaling a workspace."""
+
+    success: bool
+    message: str
+    new_tier: WorkspaceTier | None = None
+    estimated_cost_per_hour: Decimal | None = None
+    requires_restart: bool = True  # Scaling typically requires workspace restart
