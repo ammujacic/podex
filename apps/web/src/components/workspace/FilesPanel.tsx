@@ -180,21 +180,17 @@ function FileTreeNode({
     setMenuOpen(true);
   }, []);
 
-  const handleTriggerPointerDown = useCallback(
-    (e: React.PointerEvent) => {
-      // Only prevent menu opening on left click, allow right click to open
-      if (e.button === 0) {
-        // Left click - prevent menu from opening and expand folder instead
-        e.preventDefault();
-        shouldOpenMenuRef.current = false;
-        handleFolderClick();
-      } else {
-        // Right click or other button - allow menu to open
-        shouldOpenMenuRef.current = true;
-      }
-    },
-    [handleFolderClick]
-  );
+  const handleTriggerPointerDown = useCallback((e: React.PointerEvent) => {
+    // Only prevent menu opening on left click, allow right click to open
+    if (e.button === 0) {
+      // Left click - prevent menu from opening so onClick can toggle folder
+      e.preventDefault();
+      shouldOpenMenuRef.current = false;
+    } else {
+      // Right click or other button - allow menu to open
+      shouldOpenMenuRef.current = true;
+    }
+  }, []);
 
   const handleOpenChange = useCallback((open: boolean) => {
     if (open && !shouldOpenMenuRef.current) {
@@ -315,14 +311,22 @@ function FileTreeNode({
   }
 
   return (
-    <DropdownMenu>
+    <DropdownMenu open={menuOpen} onOpenChange={handleOpenChange}>
       <DropdownMenuTrigger asChild>
         <button
-          onClick={() => onFileClick(item.path)}
-          onContextMenu={(e) => {
+          onClick={(e) => {
+            if (e.button !== 0) return;
             e.preventDefault();
-            // Let the dropdown menu handle the context menu
+            e.stopPropagation();
+            onFileClick(item.path);
           }}
+          onPointerDown={(e) => {
+            if (e.button === 0) {
+              e.preventDefault();
+              shouldOpenMenuRef.current = false;
+            }
+          }}
+          onContextMenu={handleContextMenu}
           className="flex w-full items-center gap-1 rounded py-1 pr-2 text-left text-sm text-text-secondary hover:bg-overlay hover:text-text-primary"
           style={{ paddingLeft: paddingLeft + 20 }} // Extra indent for files (no chevron)
         >
@@ -468,7 +472,8 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [loadedFolders, setLoadedFolders] = useState<Map<string, FileNode[]>>(new Map());
   const [loadingFolders, setLoadingFolders] = useState<Set<string>>(new Set());
-  const [showHiddenFiles, setShowHiddenFiles] = useState(false);
+  const showHiddenFiles = useUIStore((state) => state.showHiddenFiles);
+  const setShowHiddenFiles = useUIStore((state) => state.setShowHiddenFiles);
 
   // User's dotfiles sync configuration
   const [userDotfilesPaths, setUserDotfilesPaths] = useState<string[]>(DEFAULT_DOTFILES);

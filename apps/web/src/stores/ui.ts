@@ -111,6 +111,13 @@ interface UIState {
   removePanel: (panelId: PanelId) => void;
   addPanel: (panelId: PanelId, side: SidebarSide) => void;
   resetSidebarLayout: () => void;
+  gitWidgetSettingsBySession: Record<string, { workingDirectory: string | null }>;
+  setGitWidgetWorkingDirectory: (sessionId: string, workingDirectory: string | null) => void;
+  githubWidgetFiltersBySession: Record<string, { branch: string | null; status: string | null }>;
+  setGitHubWidgetFilters: (
+    sessionId: string,
+    filters: { branch?: string | null; status?: string | null }
+  ) => void;
 
   // Legacy compatibility
   sidebarCollapsed: boolean;
@@ -168,6 +175,10 @@ interface UIState {
   // Focus mode (hides distractions)
   focusMode: boolean;
   toggleFocusMode: () => void;
+
+  // Explorer settings
+  showHiddenFiles: boolean;
+  setShowHiddenFiles: (show: boolean) => void;
 }
 
 // Helper to get system theme preference
@@ -232,6 +243,12 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
       if (serverPrefs.sidebarLayout) {
         updates.sidebarLayout = serverPrefs.sidebarLayout;
       }
+      if (serverPrefs.gitWidgetSettingsBySession) {
+        updates.gitWidgetSettingsBySession = serverPrefs.gitWidgetSettingsBySession;
+      }
+      if (serverPrefs.githubWidgetFiltersBySession) {
+        updates.githubWidgetFiltersBySession = serverPrefs.githubWidgetFiltersBySession;
+      }
 
       if (serverPrefs.terminalHeight !== undefined) {
         updates.terminalHeight = serverPrefs.terminalHeight;
@@ -247,6 +264,9 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
 
       if (serverPrefs.focusMode !== undefined) {
         updates.focusMode = serverPrefs.focusMode;
+      }
+      if (serverPrefs.showHiddenFiles !== undefined) {
+        updates.showHiddenFiles = serverPrefs.showHiddenFiles;
       }
 
       set(updates);
@@ -269,10 +289,13 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
     const prefsToSync = {
       theme: state.theme,
       sidebarLayout: state.sidebarLayout,
+      gitWidgetSettingsBySession: state.gitWidgetSettingsBySession,
+      githubWidgetFiltersBySession: state.githubWidgetFiltersBySession,
       terminalHeight: state.terminalHeight,
       panelHeight: state.panelHeight,
       prefersReducedMotion: state.prefersReducedMotion,
       focusMode: state.focusMode,
+      showHiddenFiles: state.showHiddenFiles,
     };
 
     try {
@@ -354,6 +377,35 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
 
   // Sidebar layout
   sidebarLayout: DEFAULT_SIDEBAR_LAYOUT,
+  gitWidgetSettingsBySession: {},
+  setGitWidgetWorkingDirectory: (sessionId, workingDirectory) => {
+    set((state) => ({
+      gitWidgetSettingsBySession: {
+        ...state.gitWidgetSettingsBySession,
+        [sessionId]: { workingDirectory },
+      },
+    }));
+    debouncedSync(get());
+  },
+  githubWidgetFiltersBySession: {},
+  setGitHubWidgetFilters: (sessionId, filters) => {
+    set((state) => {
+      const current = state.githubWidgetFiltersBySession[sessionId] || {
+        branch: null,
+        status: null,
+      };
+      return {
+        githubWidgetFiltersBySession: {
+          ...state.githubWidgetFiltersBySession,
+          [sessionId]: {
+            branch: filters.branch ?? current.branch,
+            status: filters.status ?? current.status,
+          },
+        },
+      };
+    });
+    debouncedSync(get());
+  },
 
   // Legacy compatibility getter - must be safe during rehydration
   get sidebarCollapsed() {
@@ -462,6 +514,7 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
       },
     });
     get().announce(`${panelId} panel closed`);
+    debouncedSync(get());
   },
 
   addPanel: (panelId: PanelId, side: SidebarSide) => {
@@ -567,6 +620,13 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
     get().announce(newState ? 'Focus mode enabled' : 'Focus mode disabled');
     debouncedSync(get());
   },
+
+  // Explorer settings
+  showHiddenFiles: false,
+  setShowHiddenFiles: (show) => {
+    set({ showHiddenFiles: show });
+    debouncedSync(get());
+  },
 });
 
 const persistedUIStore = persist(uiStoreCreator, {
@@ -574,6 +634,8 @@ const persistedUIStore = persist(uiStoreCreator, {
   partialize: (state) => ({
     theme: state.theme,
     sidebarLayout: state.sidebarLayout,
+    gitWidgetSettingsBySession: state.gitWidgetSettingsBySession,
+    githubWidgetFiltersBySession: state.githubWidgetFiltersBySession,
     terminalVisible: state.terminalVisible,
     terminalHeight: state.terminalHeight,
     panelVisible: state.panelVisible,
@@ -581,6 +643,7 @@ const persistedUIStore = persist(uiStoreCreator, {
     activePanel: state.activePanel,
     prefersReducedMotion: state.prefersReducedMotion,
     focusMode: state.focusMode,
+    showHiddenFiles: state.showHiddenFiles,
   }),
   onRehydrateStorage: () => (state) => {
     state?.setHasHydrated(true);

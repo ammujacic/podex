@@ -32,7 +32,7 @@ jobs:
     - name: Install dependencies
       run: |
         cd infrastructure
-        uv sync --dev
+        uv sync --extra dev
 
     - name: Run Pulumi tests
       run: |

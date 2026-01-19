@@ -151,6 +151,8 @@ class SkillLoader:
             headers = {}
             if auth_token:
                 headers["Authorization"] = f"Bearer {auth_token}"
+            elif settings.INTERNAL_SERVICE_TOKEN:
+                headers["Authorization"] = f"Bearer {settings.INTERNAL_SERVICE_TOKEN}"
 
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(

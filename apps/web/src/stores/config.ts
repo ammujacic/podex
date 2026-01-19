@@ -5,6 +5,7 @@
  * fetched from the backend API. No fallbacks - errors are shown to users.
  */
 
+import { useEffect } from 'react';
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import {
@@ -20,6 +21,7 @@ import {
   type AgentModeConfig,
 } from '@/lib/api';
 import { getAgentRoleConfigs, type AgentRoleConfig } from '@/lib/api';
+import { useAuthStore } from '@/stores/auth';
 
 interface ConfigState {
   // Loading state
@@ -273,10 +275,16 @@ export function useInitializeConfig() {
   const isLoading = useConfigStore((state) => state.isLoading);
   const error = useConfigStore((state) => state.error);
   const clearError = useConfigStore((state) => state.clearError);
+  const user = useAuthStore((state) => state.user);
+  const authInitialized = useAuthStore((state) => state.isInitialized);
 
-  if (!isInitialized && !isLoading && !error) {
-    initialize();
-  }
+  const shouldInitialize = authInitialized && !!user;
+
+  useEffect(() => {
+    if (shouldInitialize && !isInitialized && !isLoading && !error) {
+      initialize();
+    }
+  }, [shouldInitialize, isInitialized, isLoading, error, initialize]);
 
   return {
     isInitialized,

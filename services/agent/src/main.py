@@ -14,7 +14,7 @@ from src.context.manager import ContextWindowManager, set_context_manager
 from src.providers.llm import LLMProvider
 from src.queue.task_queue import TaskQueue
 from src.queue.worker import TaskWorker, set_task_worker
-from src.routes import agents, health
+from src.routes import agents, health, mcp_skills
 from src.tools.skill_tools import SkillRegistryHolder
 
 
@@ -140,6 +140,7 @@ app = FastAPI(
 
 app.include_router(health.router, tags=["health"])
 app.include_router(agents.router, prefix="/agents", tags=["agents"])
+app.include_router(mcp_skills.router)
 
 
 if __name__ == "__main__":

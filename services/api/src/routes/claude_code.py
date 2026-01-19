@@ -29,6 +29,7 @@ from src.database import Agent as AgentModel
 from src.database import Session as SessionModel
 from src.routes.dependencies import DbSession, get_current_user_id, verify_session_access
 from src.routes.sessions import ensure_workspace_provisioned, update_workspace_activity
+from src.services.claude_code_config import sync_claude_code_mcp_config
 from src.websocket.hub import (
     emit_agent_thinking_token,
     emit_agent_token,
@@ -324,6 +325,16 @@ async def check_auth_status(
             authenticated=False,
             needs_auth=True,
             credentials_synced=False,
+        )
+
+    try:
+        await sync_claude_code_mcp_config(db, session, user_id)
+    except Exception as e:
+        logger.warning(
+            "Failed to sync Claude Code MCP config during auth check",
+            agent_id=agent_id,
+            workspace_id=session.workspace_id,
+            error=str(e),
         )
 
     # Check if credentials file exists in workspace

@@ -146,8 +146,14 @@ async def check_compute_service() -> ServiceHealth:
     """Check compute service connectivity."""
     start = datetime.now(UTC)
     try:
+        headers = {}
+        if settings.COMPUTE_INTERNAL_API_KEY:
+            headers["X-Internal-API-Key"] = settings.COMPUTE_INTERNAL_API_KEY
         async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{settings.COMPUTE_SERVICE_URL}/health")
+            response = await client.get(
+                f"{settings.COMPUTE_SERVICE_URL}/health",
+                headers=headers,
+            )
             latency = (datetime.now(UTC) - start).total_seconds() * 1000
 
             if response.status_code == 200:
@@ -179,8 +185,14 @@ async def check_agent_service() -> ServiceHealth:
     """Check agent service connectivity."""
     start = datetime.now(UTC)
     try:
+        headers = {}
+        if settings.INTERNAL_SERVICE_TOKEN:
+            headers["Authorization"] = f"Bearer {settings.INTERNAL_SERVICE_TOKEN}"
         async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{settings.AGENT_SERVICE_URL}/health")
+            response = await client.get(
+                f"{settings.AGENT_SERVICE_URL}/health",
+                headers=headers,
+            )
             latency = (datetime.now(UTC) - start).total_seconds() * 1000
 
             if response.status_code == 200:

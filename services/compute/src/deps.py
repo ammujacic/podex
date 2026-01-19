@@ -17,14 +17,8 @@ from src.sync.file_sync import FileSync
 logger = structlog.get_logger()
 
 
-def verify_internal_api_key(
-    x_internal_api_key: Annotated[str | None, Header(alias="X-Internal-API-Key")] = None,
-) -> None:
-    """Verify internal service-to-service API key.
-
-    In production, this ensures only authorized internal services
-    (like the API service) can call compute endpoints.
-    """
+def validate_internal_api_key(x_internal_api_key: str | None) -> None:
+    """Validate internal service-to-service API key value."""
     # In development with no key configured, allow requests
     if not settings.internal_api_key:
         if settings.environment == "production":
@@ -46,6 +40,17 @@ def verify_internal_api_key(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid internal API key",
         )
+
+
+def verify_internal_api_key(
+    x_internal_api_key: Annotated[str | None, Header(alias="X-Internal-API-Key")] = None,
+) -> None:
+    """Verify internal service-to-service API key.
+
+    In production, this ensures only authorized internal services
+    (like the API service) can call compute endpoints.
+    """
+    validate_internal_api_key(x_internal_api_key)
 
 
 def get_user_id(

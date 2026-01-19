@@ -15,13 +15,17 @@ import websockets
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
 from websockets.asyncio.client import ClientConnection
 
-from src.deps import get_compute_manager
+from src.deps import get_compute_manager, verify_internal_api_key
 from src.managers.base import ComputeManager
 from src.models.workspace import WorkspaceStatus
 
 logger = structlog.get_logger()
 
-router = APIRouter(prefix="/ws", tags=["websocket"])
+router = APIRouter(
+    prefix="/ws",
+    tags=["websocket"],
+    dependencies=[Depends(verify_internal_api_key)],
+)
 
 
 async def _forward_client_to_upstream(

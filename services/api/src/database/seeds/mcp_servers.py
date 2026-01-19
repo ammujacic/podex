@@ -20,6 +20,7 @@ class MCPCategory(str, Enum):
     WEB = "web"
     MEMORY = "memory"
     MONITORING = "monitoring"
+    PRODUCTIVITY = "productivity"
 
 
 # Default MCP servers - full productivity suite
@@ -111,6 +112,20 @@ DEFAULT_MCP_SERVERS: list[dict[str, Any]] = [
         "icon": "brain",
         "is_builtin": False,
         "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
+    },
+    # ============== Skills (Podex) ==============
+    {
+        "slug": "podex-skills",
+        "name": "Podex Skills",
+        "description": "Execute Podex skills as MCP tools",
+        "category": MCPCategory.PRODUCTIVITY,
+        "transport": "http",
+        "url": "http://agent:3002/mcp/skills",
+        "env_vars": {},
+        "required_env": [],
+        "icon": "sparkles",
+        "is_builtin": True,
+        "docs_url": "https://docs.podex.ai/skills",
     },
     # ============== Monitoring ==============
     {

@@ -27,6 +27,14 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import {
+  getMarketplaceSkills,
+  getMyMarketplaceSkills,
+  installMarketplaceSkill,
+  uninstallMarketplaceSkill,
+  type MarketplaceSkill,
+  type UserAddedSkill,
+} from '@/lib/api';
 import { useSkillsStore, type Skill, type SkillExecution, type SkillStep } from '@/stores/skills';
 import { useSkillSocket, useLoadSkills } from '@/hooks/useSkillSocket';
 
@@ -270,27 +278,6 @@ function ExecutionCard({ execution }: { execution: SkillExecution }) {
   );
 }
 
-// Marketplace types
-interface MarketplaceSkill {
-  id: string;
-  slug: string;
-  name: string;
-  description: string;
-  category: string;
-  install_count: number;
-  version: string;
-  triggers: string[];
-  tags: string[];
-}
-
-interface UserAddedSkill {
-  id: string;
-  skill_slug: string;
-  skill_name: string;
-  is_enabled: boolean;
-  added_at: string;
-}
-
 // Marketplace Modal Component
 function MarketplaceModal({
   isOpen,
@@ -320,9 +307,7 @@ function MarketplaceModal({
   const fetchSkills = async () => {
     try {
       setLoading(true);
-      const response = await fetch('/api/v1/marketplace');
-      if (!response.ok) throw new Error('Failed to fetch marketplace');
-      const data = await response.json();
+      const data = await getMarketplaceSkills();
       setSkills(data.skills || []);
     } catch (err) {
       console.error('Failed to fetch marketplace skills:', err);
@@ -334,10 +319,8 @@ function MarketplaceModal({
 
   const fetchMySkills = async () => {
     try {
-      const response = await fetch('/api/v1/marketplace/my/skills');
-      if (!response.ok) throw new Error('Failed to fetch my skills');
-      const data = await response.json();
-      setMySkills(data.skills || []);
+      const data = await getMyMarketplaceSkills();
+      setMySkills(data || []);
     } catch (err) {
       console.error('Failed to fetch my skills:', err);
     }
@@ -346,13 +329,7 @@ function MarketplaceModal({
   const handleInstall = async (slug: string) => {
     setInstallingSlug(slug);
     try {
-      const response = await fetch(`/api/v1/marketplace/${slug}/install`, {
-        method: 'POST',
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.detail || 'Failed to install skill');
-      }
+      await installMarketplaceSkill(slug);
       toast.success('Skill added to your account');
       fetchMySkills();
       onSkillInstalled();
@@ -366,10 +343,7 @@ function MarketplaceModal({
   const handleUninstall = async (slug: string) => {
     setUninstallingSlug(slug);
     try {
-      const response = await fetch(`/api/v1/marketplace/${slug}/uninstall`, {
-        method: 'DELETE',
-      });
-      if (!response.ok) throw new Error('Failed to remove skill');
+      await uninstallMarketplaceSkill(slug);
       toast.success('Skill removed from your account');
       fetchMySkills();
       onSkillInstalled();

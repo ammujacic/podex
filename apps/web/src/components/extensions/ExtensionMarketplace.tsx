@@ -366,7 +366,7 @@ function ExtensionDetailPanel({
       className="flex h-full w-96 flex-col border-l border-border-default bg-elevated"
     >
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-border-subtle px-4 py-3">
+      <div className="flex items-center justify-between border-b border-border-subtle px-4 py-3 flex-shrink-0">
         <h2 className="text-sm font-medium text-text-primary">Extension Details</h2>
         <button
           onClick={onClose}
@@ -377,7 +377,7 @@ function ExtensionDetailPanel({
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto min-h-0">
         {/* Hero */}
         <div className="p-6">
           <div className="flex items-start gap-4">
@@ -787,11 +787,11 @@ export function ExtensionMarketplace({
 
   return (
     <>
-      <div className={cn('flex h-full bg-elevated', className)}>
+      <div className={cn('flex h-full bg-elevated min-h-0', className)}>
         {/* Main Panel */}
-        <div className="flex flex-1 flex-col">
+        <div className="flex flex-1 flex-col min-w-0 min-h-0">
           {/* Header */}
-          <div className="flex items-center justify-between border-b border-border-default px-4 py-3">
+          <div className="flex items-center justify-between border-b border-border-default px-4 py-3 flex-shrink-0">
             <div className="flex items-center gap-2">
               <Box className="h-5 w-5 text-accent-primary" />
               <h1 className="text-sm font-medium text-text-primary">Extensions</h1>
@@ -819,7 +819,7 @@ export function ExtensionMarketplace({
           </div>
 
           {/* Tabs */}
-          <div className="flex border-b border-border-subtle px-4">
+          <div className="flex border-b border-border-subtle px-4 flex-shrink-0">
             <button
               onClick={() => setTab('marketplace')}
               className={cn(
@@ -845,7 +845,7 @@ export function ExtensionMarketplace({
           </div>
 
           {/* Search and Filters */}
-          <div className="space-y-2 border-b border-border-subtle p-4">
+          <div className="space-y-2 border-b border-border-subtle p-4 flex-shrink-0">
             {/* Search */}
             <div className="relative">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
@@ -888,7 +888,7 @@ export function ExtensionMarketplace({
           </div>
 
           {/* Extension List */}
-          <div className="flex-1 overflow-y-auto p-4">
+          <div className="flex-1 overflow-y-auto p-4 min-h-0">
             {isLoading ? (
               <div className="flex flex-col items-center justify-center py-12">
                 <Loader2 className="h-8 w-8 animate-spin text-accent-primary" />
@@ -946,18 +946,20 @@ export function ExtensionMarketplace({
         {/* Detail Panel */}
         <AnimatePresence>
           {selectedExtension && (
-            <ExtensionDetailPanel
-              extension={selectedExtension}
-              installedInfo={installedMap.get(
-                createExtensionId(selectedExtension.namespace, selectedExtension.name)
-              )}
-              onClose={() => setSelectedExtension(null)}
-              onInstall={handleInstallClick}
-              onUninstall={handleUninstall}
-              onToggle={handleToggle}
-              isInstalling={installMutation.isPending}
-              isToggling={toggleMutation.isPending}
-            />
+            <div className="flex-shrink-0 min-h-0">
+              <ExtensionDetailPanel
+                extension={selectedExtension}
+                installedInfo={installedMap.get(
+                  createExtensionId(selectedExtension.namespace, selectedExtension.name)
+                )}
+                onClose={() => setSelectedExtension(null)}
+                onInstall={handleInstallClick}
+                onUninstall={handleUninstall}
+                onToggle={handleToggle}
+                isInstalling={installMutation.isPending}
+                isToggling={toggleMutation.isPending}
+              />
+            </div>
           )}
         </AnimatePresence>
       </div>

@@ -1,7 +1,7 @@
 """Agent execution routes."""
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 
@@ -9,10 +9,11 @@ from src.context.summarizer import ConversationSummarizer
 from src.context.tokenizer import Tokenizer
 from src.database.connection import get_db_context
 from src.database.models import Agent, Message
+from src.deps import require_internal_service_token
 from src.orchestrator import AgentOrchestrator, AgentTask
 from src.providers.llm import LLMProvider
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_internal_service_token)])
 orchestrator = AgentOrchestrator()
 logger = structlog.get_logger()
 

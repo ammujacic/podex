@@ -1,10 +1,11 @@
 """Health check routes."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from src.config import settings
+from src.deps import require_internal_service_token
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_internal_service_token)])
 
 
 @router.get("/health")

@@ -13,6 +13,7 @@ from podex_shared import SentryConfig, init_sentry, init_usage_tracker, shutdown
 from src.config import settings
 from src.deps import (
     ComputeManagerSingleton,
+    InternalAuth,
     cleanup_compute_manager,
     get_compute_manager,
     init_compute_manager,
@@ -200,7 +201,7 @@ app.include_router(lsp_router)
 
 
 @app.get("/")
-async def root() -> dict[str, str]:
+async def root(_auth: InternalAuth) -> dict[str, str]:
     """Root endpoint."""
     return {
         "service": "podex-compute",

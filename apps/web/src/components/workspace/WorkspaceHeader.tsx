@@ -2,7 +2,6 @@
 
 import { useState, useRef, useEffect } from 'react';
 import {
-  Activity,
   AlertCircle,
   Bell,
   Clock,
@@ -77,7 +76,7 @@ function PodStatusIndicator({ status, tier }: { status: WorkspaceStatus; tier?: 
       color: 'text-green-400',
       bgColor: 'bg-green-500',
       label: 'Running',
-      icon: <Activity className="h-3 w-3" />,
+      icon: null,
     },
     standby: {
       color: 'text-yellow-400',
@@ -273,7 +272,7 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
           aria-label="Grid view - show agents in a grid layout"
           className={`flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors ${
             viewMode === 'grid'
-              ? 'bg-active text-text-primary'
+              ? 'bg-accent-primary text-text-inverse shadow-sm hover:bg-accent-primary/90'
               : 'bg-overlay text-text-secondary hover:text-text-primary'
           }`}
         >
@@ -287,7 +286,7 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
           aria-label="Focus view - show one agent at a time"
           className={`flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors ${
             viewMode === 'focus'
-              ? 'bg-active text-text-primary'
+              ? 'bg-accent-primary text-text-inverse shadow-sm hover:bg-accent-primary/90'
               : 'bg-overlay text-text-secondary hover:text-text-primary'
           }`}
         >
@@ -301,7 +300,7 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
           aria-label="Freeform view - freely position agents"
           className={`flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors ${
             viewMode === 'freeform'
-              ? 'bg-active text-text-primary'
+              ? 'bg-accent-primary text-text-inverse shadow-sm hover:bg-accent-primary/90'
               : 'bg-overlay text-text-secondary hover:text-text-primary'
           }`}
         >
@@ -430,7 +429,7 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
                   <X className="h-4 w-4" />
                 </button>
               </div>
-              <div className="max-h-96 overflow-y-auto">
+              <div className="max-h-[70vh] overflow-y-auto">
                 <PresencePanel sessionId={sessionId} />
               </div>
             </div>

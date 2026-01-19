@@ -1,5 +1,6 @@
 """Authentication middleware for JWT validation."""
 
+import secrets
 from collections.abc import Awaitable, Callable
 
 import structlog
@@ -42,9 +43,6 @@ def _create_error_response(
 # Use tuples: (path, is_prefix) where is_prefix=True allows subpaths
 PUBLIC_PATHS: list[tuple[str, bool]] = [
     ("/health", False),
-    ("/api/docs", False),
-    ("/api/redoc", False),
-    ("/api/openapi.json", False),
     ("/api/auth/login", False),
     ("/api/auth/register", False),
     ("/api/auth/signup", False),
@@ -52,21 +50,26 @@ PUBLIC_PATHS: list[tuple[str, bool]] = [
     ("/api/auth/logout", False),  # Allow logout without valid token
     ("/api/auth/password/check", False),  # Public password strength check
     ("/api/billing/plans", True),  # Public subscription plans
-    ("/api/billing/hardware-specs", True),  # Public hardware specs
     # OAuth login/signup endpoints (public)
     ("/api/oauth/github", True),  # GitHub OAuth endpoints (all subpaths)
     ("/api/oauth/google", True),  # Google OAuth endpoints (all subpaths)
-    ("/api/preview", True),  # Preview endpoints have subpaths
-    ("/api/templates", True),  # Template listing
     ("/api/webhooks", True),  # Stripe webhooks (has own auth)
-    ("/api/billing/usage/record", False),  # Internal service endpoint (has own auth)
-    ("/api/admin/settings/public", True),  # Public platform settings
     ("/socket.io", True),  # Socket.IO has subpaths
-    ("/api/v1/agent-roles", True),  # Agent role configurations (non-sensitive)
-    ("/api/platform/config", False),  # Platform config for app bootstrap
-    ("/api/models/capabilities", True),  # Internal API for agent service (model caps)
-    ("/api/v1/skills/available", False),  # Skills catalog for agent service (system skills public)
-    ("/api/skills/available", False),  # Skills catalog (backward compat path)
+]
+
+INTERNAL_TOKEN_PATHS: list[tuple[str, bool]] = [
+    ("/api/billing/usage/record", False),
+    ("/api/models/capabilities", True),
+    ("/api/v1/models/capabilities", True),
+    ("/api/v1/agent-tools", True),
+    ("/api/agent-tools", True),
+]
+
+INTERNAL_OR_USER_PATHS: list[tuple[str, bool]] = [
+    ("/api/v1/skills/available", False),
+    ("/api/skills/available", False),
+    ("/api/v1/agent-roles", True),
+    ("/api/agent-roles", True),
 ]
 
 
@@ -87,6 +90,51 @@ def _is_public_path(request_path: str) -> bool:
     return False
 
 
+def _is_internal_token_path(request_path: str) -> bool:
+    """Check if the request path requires internal service token."""
+    for path, is_prefix in INTERNAL_TOKEN_PATHS:
+        if is_prefix:
+            if request_path == path or request_path.startswith((path + "/", path + "?")):
+                return True
+        elif request_path == path:
+            return True
+    return False
+
+
+def _is_internal_or_user_path(request_path: str) -> bool:
+    """Check if the request path allows internal token or user auth."""
+    for path, is_prefix in INTERNAL_OR_USER_PATHS:
+        if is_prefix:
+            if request_path == path or request_path.startswith((path + "/", path + "?")):
+                return True
+        elif request_path == path:
+            return True
+    return False
+
+
+def _verify_internal_service_token(request: Request) -> bool:
+    """Validate internal service token from headers."""
+    expected_token = settings.INTERNAL_SERVICE_TOKEN
+    if not expected_token:
+        logger.error(
+            "INTERNAL_SERVICE_TOKEN not configured - rejecting service request",
+            environment=settings.ENVIRONMENT,
+        )
+        return False
+
+    header_token = request.headers.get("X-Internal-Service-Token")
+    if header_token and secrets.compare_digest(header_token, expected_token):
+        return True
+
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        if secrets.compare_digest(token, expected_token):
+            return True
+
+    return False
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     """JWT authentication middleware."""
 
@@ -103,6 +151,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Skip auth for public paths
         if _is_public_path(request.url.path):
             return await call_next(request)
+
+        # Require internal service token for internal-only endpoints
+        if _is_internal_token_path(request.url.path):
+            if not _verify_internal_service_token(request):
+                return _create_error_response(request, '{"detail": "Invalid service token"}', 401)
+            return await call_next(request)
+
+        # Allow internal token OR user JWT for shared endpoints
+        if _is_internal_or_user_path(request.url.path) and _verify_internal_service_token(request):
+            return await call_next(request)
+        # Fall through to JWT validation if no valid service token
 
         # Check for internal service token (for service-to-service auth)
         # Internal endpoints use X-Internal-Service-Token header instead of JWT

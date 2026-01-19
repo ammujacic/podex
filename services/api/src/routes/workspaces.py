@@ -116,7 +116,13 @@ async def verify_workspace_access(
     Raises:
         HTTPException: If workspace not found or access denied.
     """
-    result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    from sqlalchemy.orm import selectinload
+
+    result = await db.execute(
+        select(Workspace)
+        .where(Workspace.id == workspace_id)
+        .options(selectinload(Workspace.session))
+    )
     workspace = result.scalar_one_or_none()
 
     if not workspace:

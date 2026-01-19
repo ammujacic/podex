@@ -347,6 +347,7 @@ export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
     useUIStore();
   const config = sidebarLayout[side];
   const badgeCounts = useSidebarBadges(sessionId);
+  const [isHovering, setIsHovering] = useState(false);
 
   const handleIconClick = (panelId: PanelId) => {
     const isOnThisSide = config.panels.some((p) => p.panelId === panelId);
@@ -363,63 +364,83 @@ export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
     toggleTerminal();
   };
 
+  const handleMouseEnter = () => {
+    if (config.collapsed) {
+      setIsHovering(true);
+    }
+  };
+
+  const handleMouseLeave = () => {
+    if (config.collapsed) {
+      setIsHovering(false);
+    }
+  };
+
   // If collapsed, show only icon bar
-  if (config.collapsed) {
+  if (config.collapsed && !isHovering) {
     return (
-      <aside
-        className={cn(
-          'flex flex-col border-border-subtle bg-surface transition-all duration-200 w-12',
-          side === 'left' ? 'border-r' : 'border-l'
-        )}
-      >
-        <nav className="flex flex-1 flex-col items-center gap-1 py-2">
-          {(side === 'left' ? leftPanelIds : rightPanelIds).map((panelId) => {
-            const panelConf = panelConfig[panelId];
-            const Icon = panelConf.icon;
-            const isActive = config.panels.some((p) => p.panelId === panelId);
-            const showBadge = badgePanelIds.includes(panelId);
-            return (
+      <div className="h-full" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
+        <aside
+          className={cn(
+            'flex h-full flex-col border-border-subtle bg-surface transition-all duration-200 w-12',
+            side === 'left' ? 'border-r' : 'border-l'
+          )}
+        >
+          <nav className="flex flex-1 flex-col items-center gap-1 py-2">
+            {(side === 'left' ? leftPanelIds : rightPanelIds).map((panelId) => {
+              const panelConf = panelConfig[panelId];
+              const Icon = panelConf.icon;
+              const isActive = config.panels.some((p) => p.panelId === panelId);
+              const showBadge = badgePanelIds.includes(panelId);
+              return (
+                <button
+                  key={panelId}
+                  onClick={() => handleIconClick(panelId)}
+                  className={cn(
+                    'group relative flex h-10 w-10 items-center justify-center rounded-lg text-text-secondary hover:bg-overlay hover:text-text-primary',
+                    isActive && 'bg-overlay text-accent-primary'
+                  )}
+                  title={panelConf.label}
+                >
+                  <Icon className="h-5 w-5" />
+                  {showBadge && <SidebarBadge count={badgeCounts[panelId]} />}
+                  <span className="absolute left-full ml-2 hidden whitespace-nowrap rounded bg-elevated px-2 py-1 text-xs text-text-primary shadow-panel group-hover:block z-50">
+                    {panelConf.label}
+                  </span>
+                </button>
+              );
+            })}
+            {side === 'left' && (
               <button
-                key={panelId}
-                onClick={() => handleIconClick(panelId)}
+                onClick={handleTerminalClick}
                 className={cn(
                   'group relative flex h-10 w-10 items-center justify-center rounded-lg text-text-secondary hover:bg-overlay hover:text-text-primary',
-                  isActive && 'bg-overlay text-accent-primary'
+                  terminalVisible && 'bg-overlay text-accent-primary'
                 )}
-                title={panelConf.label}
+                title="Terminal"
               >
-                <Icon className="h-5 w-5" />
-                {showBadge && <SidebarBadge count={badgeCounts[panelId]} />}
+                <Terminal className="h-5 w-5" />
+                <span className="absolute left-full ml-2 hidden whitespace-nowrap rounded bg-elevated px-2 py-1 text-xs text-text-primary shadow-panel group-hover:block z-50">
+                  Terminal
+                </span>
               </button>
-            );
-          })}
-          {side === 'left' && (
-            <button
-              onClick={handleTerminalClick}
-              className={cn(
-                'group relative flex h-10 w-10 items-center justify-center rounded-lg text-text-secondary hover:bg-overlay hover:text-text-primary',
-                terminalVisible && 'bg-overlay text-accent-primary'
-              )}
-              title="Terminal"
-            >
-              <Terminal className="h-5 w-5" />
-            </button>
-          )}
-        </nav>
-        <div className="border-t border-border-subtle py-2">
-          <button
-            onClick={() => toggleSidebar(side)}
-            className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg text-text-secondary hover:bg-overlay hover:text-text-primary"
-            title={`Expand ${side} sidebar`}
-          >
-            {side === 'left' ? (
-              <PanelLeftClose className="h-5 w-5 rotate-180" />
-            ) : (
-              <PanelRightClose className="h-5 w-5 rotate-180" />
             )}
-          </button>
-        </div>
-      </aside>
+          </nav>
+          <div className="border-t border-border-subtle py-2">
+            <button
+              onClick={() => toggleSidebar(side)}
+              className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg text-text-secondary hover:bg-overlay hover:text-text-primary"
+              title={`Expand ${side} sidebar`}
+            >
+              {side === 'left' ? (
+                <PanelLeftClose className="h-5 w-5 rotate-180" />
+              ) : (
+                <PanelRightClose className="h-5 w-5 rotate-180" />
+              )}
+            </button>
+          </div>
+        </aside>
+      </div>
     );
   }
 
@@ -428,6 +449,8 @@ export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
     <div
       className={cn('flex', side === 'right' && 'flex-row-reverse')}
       data-tour={side === 'left' ? 'sidebar' : undefined}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
     >
       {/* Icon bar */}
       <aside

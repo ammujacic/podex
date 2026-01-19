@@ -14,7 +14,7 @@ import docker
 import structlog
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, status
 
-from src.deps import get_compute_manager
+from src.deps import get_compute_manager, verify_internal_api_key
 from src.managers.base import (
     ComputeManager,  # noqa: TC001 - FastAPI needs this at runtime for Depends()
 )
@@ -22,7 +22,11 @@ from src.models.workspace import WorkspaceStatus
 
 logger = structlog.get_logger()
 
-router = APIRouter(prefix="/terminal", tags=["terminal"])
+router = APIRouter(
+    prefix="/terminal",
+    tags=["terminal"],
+    dependencies=[Depends(verify_internal_api_key)],
+)
 
 
 class TmuxSessionManager:

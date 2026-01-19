@@ -49,10 +49,13 @@ class AgentClient:
             AgentClientError: If the request fails
         """
         url = f"{self.base_url}{path}"
+        headers: dict[str, str] = {}
+        if settings.INTERNAL_SERVICE_TOKEN:
+            headers["Authorization"] = f"Bearer {settings.INTERNAL_SERVICE_TOKEN}"
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.request(method, url, json=json)
+                response = await client.request(method, url, json=json, headers=headers)
                 response.raise_for_status()
                 result: dict[str, Any] = response.json()
                 return result

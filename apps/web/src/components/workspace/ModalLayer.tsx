@@ -9,6 +9,7 @@ import {
   StandbySettingsModal,
   MCPSettingsModal,
   WorkspaceScalingModal,
+  ExtensionMarketplaceModal,
 } from './modals';
 import type { WorkspaceTier } from '@podex/shared';
 
@@ -55,6 +56,9 @@ export function ModalLayer({ sessionId }: ModalLayerProps) {
         <StandbySettingsModal sessionId={sessionId} onClose={closeModal} />
       )}
       {activeModal === 'mcp-settings' && <MCPSettingsModal onClose={closeModal} />}
+      {activeModal === 'extensions-marketplace' && (
+        <ExtensionMarketplaceModal onClose={closeModal} workspaceId={workspaceId} />
+      )}
       {activeModal === 'workspace-scaling' && workspaceId && (
         <WorkspaceScalingModal
           sessionId={sessionId}

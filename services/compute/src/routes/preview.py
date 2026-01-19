@@ -5,10 +5,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from podex_shared import PortInfo, PreviewInfo
-from src.deps import get_compute_manager
+from src.deps import get_compute_manager, verify_internal_api_key
 from src.managers.base import ComputeManager, ProxyRequest
 
-router = APIRouter(prefix="/preview", tags=["preview"])
+router = APIRouter(
+    prefix="/preview",
+    tags=["preview"],
+    dependencies=[Depends(verify_internal_api_key)],
+)
 
 
 @router.get("/{workspace_id}", response_model=PreviewInfo)

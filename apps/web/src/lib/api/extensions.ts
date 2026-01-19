@@ -114,7 +114,7 @@ export async function searchExtensions(
   if (cached) return cached;
 
   const result = await api.get<ExtensionSearchResult>(
-    `/extensions/marketplace/search${queryString ? `?${queryString}` : ''}`
+    `/api/extensions/marketplace/search${queryString ? `?${queryString}` : ''}`
   );
 
   // Cache for 5 minutes
@@ -139,7 +139,7 @@ export async function getExtensionDetail(
 
   const params = version ? `?version=${version}` : '';
   const result = await api.get<ExtensionDetail>(
-    `/extensions/marketplace/${namespace}/${name}${params}`
+    `/api/extensions/marketplace/${namespace}/${name}${params}`
   );
 
   // Cache for 1 hour
@@ -157,7 +157,7 @@ export async function getExtensionDownloadUrl(
   version?: string
 ): Promise<{ download_url: string; version: string }> {
   const params = version ? `?version=${version}` : '';
-  return api.get(`/extensions/marketplace/${namespace}/${name}/download${params}`);
+  return api.get(`/api/extensions/marketplace/${namespace}/${name}/download${params}`);
 }
 
 // =============================================================================
@@ -169,7 +169,7 @@ export async function getExtensionDownloadUrl(
  */
 export async function getInstalledExtensions(workspaceId?: string): Promise<InstalledExtension[]> {
   const params = workspaceId ? `?workspace_id=${workspaceId}` : '';
-  return api.get<InstalledExtension[]>(`/extensions/installed${params}`);
+  return api.get<InstalledExtension[]>(`/api/extensions/installed${params}`);
 }
 
 /**
@@ -178,7 +178,7 @@ export async function getInstalledExtensions(workspaceId?: string): Promise<Inst
 export async function installExtension(
   request: InstallExtensionRequest
 ): Promise<InstalledExtension> {
-  const result = await api.post<InstalledExtension>('/extensions/install', request);
+  const result = await api.post<InstalledExtension>('/api/extensions/install', request);
 
   // Invalidate installed extensions cache
   requestCache.invalidatePattern(/^extensions:installed/);
@@ -198,7 +198,7 @@ export async function uninstallExtension(
   if (workspaceId) params.set('workspace_id', workspaceId);
 
   const result = await api.delete<{ status: string; extension_id: string }>(
-    `/extensions/${encodeURIComponent(extensionId)}?${params}`
+    `/api/extensions/${encodeURIComponent(extensionId)}?${params}`
   );
 
   // Invalidate installed extensions cache
@@ -223,7 +223,7 @@ export async function toggleExtension(
   if (workspaceId) params.set('workspace_id', workspaceId);
 
   const result = await api.patch<InstalledExtension>(
-    `/extensions/${encodeURIComponent(extensionId)}/toggle?${params}`,
+    `/api/extensions/${encodeURIComponent(extensionId)}/toggle?${params}`,
     {}
   );
 
@@ -246,7 +246,7 @@ export async function updateExtensionSettings(
   if (workspaceId) params.set('workspace_id', workspaceId);
 
   const result = await api.patch<InstalledExtension>(
-    `/extensions/${encodeURIComponent(extensionId)}/settings?${params}`,
+    `/api/extensions/${encodeURIComponent(extensionId)}/settings?${params}`,
     { settings }
   );
 

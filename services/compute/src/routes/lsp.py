@@ -12,7 +12,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from src.deps import get_compute_manager
+from src.deps import get_compute_manager, verify_internal_api_key
 from src.managers.lsp_manager import (
     LSP_SERVER_COMMANDS,
     LSPDiagnostic,
@@ -25,7 +25,11 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
-router = APIRouter(prefix="/lsp", tags=["lsp"])
+router = APIRouter(
+    prefix="/lsp",
+    tags=["lsp"],
+    dependencies=[Depends(verify_internal_api_key)],
+)
 
 
 class DiagnosticResponse(BaseModel):

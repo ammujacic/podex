@@ -273,8 +273,9 @@ export function ExtensionsPanel({
             <Box className="h-8 w-8 text-text-muted mb-2" />
             <p className="text-xs text-text-muted">No extensions installed</p>
             <button
+              type="button"
               onClick={() => openModal('extensions-marketplace')}
-              className="mt-2 text-xs text-accent-primary hover:underline"
+              className="mt-3 inline-flex items-center rounded-md border border-accent-primary/40 bg-accent-primary/10 px-3 py-1.5 text-xs font-medium text-accent-primary transition-colors hover:bg-accent-primary/20"
             >
               Browse Marketplace
             </button>

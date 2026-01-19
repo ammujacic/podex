@@ -34,6 +34,7 @@ import {
   type GitBranch as GitBranchType,
   type FileNode,
 } from '@/lib/api';
+import { useUIStore } from '@/stores/ui';
 
 export interface GitPanelProps {
   sessionId: string;
@@ -61,7 +62,10 @@ export function GitPanel({ sessionId }: GitPanelProps) {
   const [showUntrackedSection, setShowUntrackedSection] = useState(true);
   const [showBranchSelector, setShowBranchSelector] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [workingDirectory, setWorkingDirectory] = useState<string | null>('projects');
+  const workingDirectory = useUIStore(
+    (state) => state.gitWidgetSettingsBySession[sessionId]?.workingDirectory ?? 'projects'
+  );
+  const setWorkingDirectory = useUIStore((state) => state.setGitWidgetWorkingDirectory);
   const [showWorkingDirSelector, setShowWorkingDirSelector] = useState(false);
 
   const loadGitData = useCallback(async () => {
@@ -308,7 +312,7 @@ export function GitPanel({ sessionId }: GitPanelProps) {
             </button>
             <button
               onClick={() => {
-                setWorkingDirectory(dir.path);
+                setWorkingDirectory(sessionId, dir.path);
                 setShowWorkingDirSelector(false);
               }}
               className={cn(
@@ -418,7 +422,7 @@ export function GitPanel({ sessionId }: GitPanelProps) {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    setWorkingDirectory('projects');
+                    setWorkingDirectory(sessionId, 'projects');
                   }}
                   className="p-0.5 rounded hover:bg-surface-hover text-text-muted"
                   title="Clear selection"

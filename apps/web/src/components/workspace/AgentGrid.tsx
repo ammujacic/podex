@@ -297,14 +297,24 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
 
   // Focus mode: show only the active agent (or first agent if none selected)
   // Also supports showing file previews and editor as tabs
-  if (viewMode === 'focus' && agents.length > 0) {
-    const focusedAgent = activeAgentId ? agents.find((a) => a.id === activeAgentId) : agents[0];
+  if (
+    viewMode === 'focus' &&
+    (agents.length > 0 || dockedPreviews.length > 0 || editorGridCardId)
+  ) {
+    const focusedAgent =
+      agents.length > 0
+        ? activeAgentId
+          ? agents.find((a) => a.id === activeAgentId)
+          : agents[0]
+        : null;
     // Check if activeAgentId is actually a file preview ID
     const focusedFilePreview = activeAgentId
       ? dockedPreviews.find((p) => p.id === activeAgentId)
-      : null;
+      : (dockedPreviews[0] ?? null);
     // Check if activeAgentId is the editor
-    const isEditorFocused = activeAgentId === 'editor';
+    const isEditorFocused =
+      activeAgentId === 'editor' ||
+      (!activeAgentId && !focusedAgent && !focusedFilePreview && !!editorGridCardId);
 
     if (focusedAgent || focusedFilePreview || isEditorFocused || editorGridCardId) {
       return (

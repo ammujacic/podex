@@ -42,6 +42,7 @@ from src.mcp_config import get_effective_mcp_config
 from src.middleware.rate_limit import RATE_LIMIT_AGENT, RATE_LIMIT_STANDARD, limiter
 from src.routes.dependencies import DbSession, get_current_user_id, verify_session_access
 from src.routes.sessions import ensure_workspace_provisioned, update_workspace_activity
+from src.services.claude_code_config import sync_claude_code_mcp_config
 from src.websocket.hub import (
     AgentAttentionInfo,
     emit_agent_attention,
@@ -958,6 +959,17 @@ async def _process_cli_agent_message(
             await _process_and_emit_response(processing_ctx)
             return
 
+        if agent.role == AgentRole.CLAUDE_CODE.value:
+            try:
+                await sync_claude_code_mcp_config(db, session, str(user_id))
+            except Exception as e:
+                logger.warning(
+                    "Failed to sync Claude Code MCP config before execution",
+                    agent_id=ctx.agent_id,
+                    user_id=str(user_id),
+                    error=str(e),
+                )
+
         # Check if CLI is installed
         try:
             logger.info(
@@ -1541,6 +1553,16 @@ async def _process_claude_code_message(
             )
             await _process_and_emit_response(processing_ctx)
             return
+
+        try:
+            await sync_claude_code_mcp_config(db, session, str(user_id))
+        except Exception as e:
+            logger.warning(
+                "Failed to sync Claude Code MCP config before execution",
+                agent_id=ctx.agent_id,
+                user_id=str(user_id),
+                error=str(e),
+            )
 
         # Execute the message using Claude Code
         result = await execute_claude_code_message(
@@ -2171,6 +2193,18 @@ async def create_agent(
         session_id=session_id,
         details={"name": agent.name, "role": agent.role, "model": agent.model, "mode": agent.mode},
     )
+
+    if role == AgentRole.CLAUDE_CODE.value and session.workspace_id:
+        try:
+            await ensure_workspace_provisioned(session, user_id, db)
+            await sync_claude_code_mcp_config(db, session, user_id)
+        except Exception as e:
+            logger.warning(
+                "Failed to sync Claude Code MCP config on agent creation",
+                agent_id=agent.id,
+                user_id=user_id,
+                error=str(e),
+            )
 
     # Look up model display name
     model_display_name = await get_model_display_name(db, agent.model)

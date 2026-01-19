@@ -146,8 +146,14 @@ async def fetch_role_config(role: str) -> RoleConfig | None:
     # Fetch from API
     try:
         api_url = getattr(settings, "API_BASE_URL", "http://localhost:8000")
+        headers = {}
+        if settings.INTERNAL_SERVICE_TOKEN:
+            headers["Authorization"] = f"Bearer {settings.INTERNAL_SERVICE_TOKEN}"
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{api_url}/api/v1/agent-roles/{role}")
+            response = await client.get(
+                f"{api_url}/api/v1/agent-roles/{role}",
+                headers=headers,
+            )
             if response.status_code == 200:
                 data = response.json()
                 config = RoleConfig(
@@ -218,8 +224,14 @@ async def fetch_tool_definitions(tool_names: list[str]) -> dict[str, ToolDefinit
     # Fetch from API
     try:
         api_url = getattr(settings, "API_BASE_URL", "http://localhost:8000")
+        headers = {}
+        if settings.INTERNAL_SERVICE_TOKEN:
+            headers["Authorization"] = f"Bearer {settings.INTERNAL_SERVICE_TOKEN}"
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{api_url}/api/v1/agent-tools")
+            response = await client.get(
+                f"{api_url}/api/v1/agent-tools",
+                headers=headers,
+            )
             if response.status_code == 200:
                 data = response.json()
                 all_tools: dict[str, dict[str, Any]] = {}

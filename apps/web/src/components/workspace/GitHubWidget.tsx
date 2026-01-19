@@ -41,6 +41,7 @@ import {
 } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { useSessionStore } from '@/stores/session';
+import { useUIStore } from '@/stores/ui';
 
 // ============================================================================
 // Types
@@ -422,8 +423,10 @@ export function GitHubWidget({ repoOwner, repoName, sessionId }: GitHubWidgetPro
   const [_error, _setError] = useState<string | null>(null);
   const [branches, setBranches] = useState<string[]>([]);
   const [isLoadingBranches, setIsLoadingBranches] = useState(false);
-  const [selectedBranch, setSelectedBranch] = useState<string | null>(null);
-  const [selectedStatus, setSelectedStatus] = useState<string | null>(null);
+  const widgetFilters = useUIStore((state) => state.githubWidgetFiltersBySession[sessionId]);
+  const selectedBranch = widgetFilters?.branch ?? null;
+  const selectedStatus = widgetFilters?.status ?? null;
+  const setGitHubWidgetFilters = useUIStore((state) => state.setGitHubWidgetFilters);
   const hasInitialFetch = useRef(false);
   const [workflowJobs, setWorkflowJobs] = useState<Record<number, GitHubWorkflowJob[]>>({});
   const [loadingJobs, setLoadingJobs] = useState<Set<number>>(new Set());
@@ -706,7 +709,7 @@ export function GitHubWidget({ repoOwner, repoName, sessionId }: GitHubWidgetPro
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onClick={() => {
-                    setSelectedBranch(null);
+                    setGitHubWidgetFilters(sessionId, { branch: null });
                   }}
                   className={cn(
                     'font-medium',
@@ -719,7 +722,7 @@ export function GitHubWidget({ repoOwner, repoName, sessionId }: GitHubWidgetPro
                   <DropdownMenuItem
                     key={branch}
                     onClick={() => {
-                      setSelectedBranch(branch);
+                      setGitHubWidgetFilters(sessionId, { branch });
                     }}
                     className={cn(
                       'font-medium',
@@ -760,7 +763,7 @@ export function GitHubWidget({ repoOwner, repoName, sessionId }: GitHubWidgetPro
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onClick={() => {
-                    setSelectedStatus(null);
+                    setGitHubWidgetFilters(sessionId, { status: null });
                   }}
                   className={cn(
                     'font-medium',
@@ -771,7 +774,7 @@ export function GitHubWidget({ repoOwner, repoName, sessionId }: GitHubWidgetPro
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => {
-                    setSelectedStatus('success');
+                    setGitHubWidgetFilters(sessionId, { status: 'success' });
                   }}
                   className={cn(
                     'font-medium',
@@ -783,7 +786,7 @@ export function GitHubWidget({ repoOwner, repoName, sessionId }: GitHubWidgetPro
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => {
-                    setSelectedStatus('failure');
+                    setGitHubWidgetFilters(sessionId, { status: 'failure' });
                   }}
                   className={cn(
                     'font-medium',
@@ -795,7 +798,7 @@ export function GitHubWidget({ repoOwner, repoName, sessionId }: GitHubWidgetPro
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => {
-                    setSelectedStatus('in_progress');
+                    setGitHubWidgetFilters(sessionId, { status: 'in_progress' });
                   }}
                   className={cn(
                     'font-medium',
@@ -807,7 +810,7 @@ export function GitHubWidget({ repoOwner, repoName, sessionId }: GitHubWidgetPro
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => {
-                    setSelectedStatus('queued');
+                    setGitHubWidgetFilters(sessionId, { status: 'queued' });
                   }}
                   className={cn(
                     'font-medium',
@@ -819,7 +822,7 @@ export function GitHubWidget({ repoOwner, repoName, sessionId }: GitHubWidgetPro
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => {
-                    setSelectedStatus('cancelled');
+                    setGitHubWidgetFilters(sessionId, { status: 'cancelled' });
                   }}
                   className={cn(
                     'font-medium',
@@ -835,8 +838,7 @@ export function GitHubWidget({ repoOwner, repoName, sessionId }: GitHubWidgetPro
             {(selectedBranch || selectedStatus) && (
               <button
                 onClick={() => {
-                  setSelectedBranch(null);
-                  setSelectedStatus(null);
+                  setGitHubWidgetFilters(sessionId, { branch: null, status: null });
                 }}
                 className="p-2 rounded-lg hover:bg-surface-hover text-text-muted hover:text-text-primary transition-all hover:shadow-sm border border-transparent hover:border-border-subtle"
                 title="Clear filters"

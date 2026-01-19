@@ -6,6 +6,7 @@ and can be reconnected.
 
 import asyncio
 import contextlib
+import inspect
 import ssl
 import struct
 from collections.abc import Callable
@@ -215,12 +216,26 @@ class TerminalManager:
                     if settings.ENVIRONMENT != "development":
                         ssl_context.verify_mode = ssl.CERT_REQUIRED
 
+                headers: dict[str, str] = {}
+                if settings.COMPUTE_INTERNAL_API_KEY:
+                    headers["X-Internal-API-Key"] = settings.COMPUTE_INTERNAL_API_KEY
+
+                connect_kwargs: dict[str, Any] = {
+                    "ping_interval": 20,
+                    "ping_timeout": 10,
+                    "close_timeout": 5,
+                    "ssl": ssl_context,
+                }
+                if headers:
+                    connect_params = inspect.signature(websockets.connect).parameters
+                    if "additional_headers" in connect_params:
+                        connect_kwargs["additional_headers"] = headers
+                    else:
+                        connect_kwargs["extra_headers"] = headers
+
                 websocket = await websockets.connect(
                     terminal_url,
-                    ping_interval=20,
-                    ping_timeout=10,
-                    close_timeout=5,
-                    ssl=ssl_context,
+                    **connect_kwargs,
                 )
             except Exception as e:
                 logger.exception(
