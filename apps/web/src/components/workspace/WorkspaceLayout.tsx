@@ -9,6 +9,7 @@ import { useContextSocket } from '@/hooks/useContextSocket';
 import { useCheckpointSocket } from '@/hooks/useCheckpointSocket';
 import { useWorktreeSocket } from '@/hooks/useWorktreeSocket';
 import { useSessionStore } from '@/stores/session';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { WorkspaceHeader } from './WorkspaceHeader';
 import { SidebarContainer } from './SidebarContainer';
 import { TerminalPanel } from './TerminalPanel';
@@ -18,6 +19,7 @@ import { LayoutSyncProvider } from './LayoutSyncProvider';
 import { CommandPalette } from './CommandPalette';
 import { QuickOpen } from './QuickOpen';
 import { NotificationCenter } from './NotificationCenter';
+import { MobileWorkspaceLayout } from './MobileWorkspaceLayout';
 
 interface WorkspaceLayoutProps {
   sessionId: string;
@@ -30,15 +32,16 @@ export function WorkspaceLayout({ sessionId, children }: WorkspaceLayoutProps) {
   const tokens = useAuthStore((state) => state.tokens);
   const session = useSessionStore((state) => state.sessions[sessionId]);
   const agentIds = session?.agents?.map((a) => a.id) ?? [];
+  const isMobile = useIsMobile();
 
-  // Initialize keyboard shortcuts
+  // Initialize keyboard shortcuts (desktop only)
   useKeybindings();
 
   // Connect to WebSocket for real-time agent updates
   useAgentSocket({
     sessionId,
     userId: user?.id ?? '',
-    authToken: tokens?.accessToken,
+    authToken: tokens?.accessToken ?? undefined,
   });
 
   // Connect to context window events and fetch initial usage
@@ -53,6 +56,18 @@ export function WorkspaceLayout({ sessionId, children }: WorkspaceLayoutProps) {
   // Connect to worktree events for parallel agent execution
   useWorktreeSocket({ sessionId });
 
+  // Render mobile layout on small screens
+  if (isMobile) {
+    return (
+      <LayoutSyncProvider sessionId={sessionId}>
+        <MobileWorkspaceLayout sessionId={sessionId} />
+        {/* Keep modal layer for dialogs */}
+        <ModalLayer sessionId={sessionId} />
+      </LayoutSyncProvider>
+    );
+  }
+
+  // Desktop layout
   return (
     <LayoutSyncProvider sessionId={sessionId}>
       <div className="flex h-screen flex-col bg-void">

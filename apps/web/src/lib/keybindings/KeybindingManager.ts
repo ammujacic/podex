@@ -207,8 +207,21 @@ class KeybindingManager {
   }
 
   private handleKeyDown(event: KeyboardEvent) {
-    // Skip if in an input field (unless it's a global shortcut)
     const target = event.target as HTMLElement;
+
+    // Skip ALL keyboard events when inside a terminal
+    // Check both .xterm (xterm's internal container) and [data-terminal-container] (our wrapper)
+    // This lets the terminal handle all input including shortcuts like Cmd+P, backspace, etc.
+    // IMPORTANT: Don't call preventDefault() here - xterm checks event.defaultPrevented and
+    // ignores events that are already "handled". Let xterm process the event and call
+    // preventDefault() itself, which will also block browser defaults like Print dialog.
+    // Only allow Escape through to exit terminal focus
+    const isInTerminal = target.closest('.xterm') || target.closest('[data-terminal-container]');
+    if (isInTerminal && event.key !== 'Escape') {
+      return;
+    }
+
+    // Skip if in an input field (unless it's a global shortcut)
     const isInput =
       target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
 

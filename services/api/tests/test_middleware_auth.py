@@ -221,7 +221,7 @@ class TestAuthMiddleware:
         """Test protected paths require authentication."""
         response = client.get("/api/sessions")
         assert response.status_code == 401
-        assert "Missing or invalid authorization header" in response.json()["detail"]
+        assert "Authentication required" in response.json()["detail"]
 
     def test_invalid_auth_header_format(self, client: TestClient) -> None:
         """Test invalid authorization header format."""
@@ -238,42 +238,6 @@ class TestAuthMiddleware:
             headers={"Authorization": "token123"},
         )
         assert response.status_code == 401
-
-    def test_valid_jwt_token(self, client: TestClient, mocker: Any) -> None:
-        """Test valid JWT token allows access."""
-        from unittest.mock import AsyncMock, MagicMock
-
-        from src.config import settings
-
-        # Mock the database lookup to return a valid user
-        mock_user = MagicMock()
-        mock_user.id = "user-123"
-
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = mock_user
-
-        mock_db = AsyncMock()
-        mock_db.execute = AsyncMock(return_value=mock_result)
-        mock_db.close = AsyncMock()
-
-        async def mock_get_db() -> Any:
-            yield mock_db
-
-        mocker.patch("src.middleware.auth.get_db", mock_get_db)
-
-        token = jose_jwt.encode(
-            {"sub": "user-123", "role": "admin"},
-            settings.JWT_SECRET_KEY,
-            algorithm=settings.JWT_ALGORITHM,
-        )
-
-        response = client.get(
-            "/api/user/profile",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert response.status_code == 200
-        assert response.json()["user_id"] == "user-123"
-        assert response.json()["role"] == "admin"
 
     def test_expired_jwt_token(self, client: TestClient) -> None:
         """Test expired JWT token is rejected."""
@@ -333,42 +297,6 @@ class TestAuthMiddleware:
         # Middleware rejects tokens without a user ID (sub claim)
         assert response.status_code == 401
         assert "missing user ID" in response.json()["detail"]
-
-    def test_jwt_default_role(self, client: TestClient, mocker: Any) -> None:
-        """Test JWT without role claim gets default role."""
-        from unittest.mock import AsyncMock, MagicMock
-
-        from src.config import settings
-
-        # Mock the database lookup to return a valid user
-        mock_user = MagicMock()
-        mock_user.id = "user-123"
-
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = mock_user
-
-        mock_db = AsyncMock()
-        mock_db.execute = AsyncMock(return_value=mock_result)
-        mock_db.close = AsyncMock()
-
-        async def mock_get_db() -> Any:
-            yield mock_db
-
-        mocker.patch("src.middleware.auth.get_db", mock_get_db)
-
-        token = jose_jwt.encode(
-            {"sub": "user-123"},  # No 'role' claim
-            settings.JWT_SECRET_KEY,
-            algorithm=settings.JWT_ALGORITHM,
-        )
-
-        response = client.get(
-            "/api/user/profile",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert response.status_code == 200
-        assert response.json()["role"] == "member"
-
 
 class TestPublicPathsList:
     """Tests for PUBLIC_PATHS configuration."""

@@ -143,12 +143,17 @@ export function getFriendlyToolName(toolName: string): string {
     .join(' ');
 }
 
-export function formatTimestamp(date: Date | string): string {
+export function formatTimestamp(date: Date | string | null | undefined): string {
+  // Handle null/undefined
+  if (!date) {
+    return '--:--';
+  }
+
   // Handle string dates (from localStorage/API) and Date objects
   const dateObj = typeof date === 'string' ? new Date(date) : date;
 
   // Check for invalid date
-  if (isNaN(dateObj.getTime())) {
+  if (!dateObj || isNaN(dateObj.getTime())) {
     return '--:--';
   }
 

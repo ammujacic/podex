@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { X, Send, MoreHorizontal, Trash2, Edit2, Check, MessageSquare } from 'lucide-react';
 import { motion } from 'framer-motion';
-import type { editor } from 'monaco-editor';
+import type { editor } from '@codingame/monaco-vscode-editor-api';
 import {
   DropdownMenu,
   DropdownMenuContent,

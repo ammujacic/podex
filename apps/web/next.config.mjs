@@ -1,9 +1,18 @@
 import { withSentryConfig } from '@sentry/nextjs';
+import withSerwist from '@serwist/next';
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  transpilePackages: ['@podex/shared', '@podex/ui'],
+  // Allow dev server access from local network (mobile testing)
+  allowedDevOrigins: ['192.168.*.*', '10.*.*.*', '172.16.*.*'],
+  transpilePackages: [
+    '@podex/shared',
+    '@podex/ui',
+    // Monaco VSCode packages with .wasm dependencies that can't be externalized
+    'vscode-oniguruma',
+    '@codingame/monaco-vscode-textmate-service-override',
+  ],
   experimental: {
     optimizePackageImports: ['lucide-react', '@radix-ui/react-icons'],
   },
@@ -32,6 +41,9 @@ const nextConfig = {
       path: {
         browser: './empty.ts',
       },
+      // Redirect monaco-editor imports to monaco-vscode-editor-api
+      'monaco-editor': '@codingame/monaco-vscode-editor-api',
+      'monaco-editor/esm/vs/editor/editor.api': '@codingame/monaco-vscode-editor-api',
     },
   },
 };
@@ -80,5 +92,12 @@ const sentryWebpackPluginOptions = {
   release: process.env.NEXT_PUBLIC_SENTRY_RELEASE || 'podex-web@0.1.0',
 };
 
-// Wrap the config with Sentry
-export default withSentryConfig(nextConfig, sentryWebpackPluginOptions);
+// Serwist PWA configuration
+const withSerwistConfig = withSerwist({
+  swSrc: 'src/app/sw.ts',
+  swDest: 'public/sw.js',
+  disable: process.env.NODE_ENV !== 'production',
+});
+
+// Wrap the config: Serwist -> Sentry
+export default withSentryConfig(withSerwistConfig(nextConfig), sentryWebpackPluginOptions);

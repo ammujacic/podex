@@ -3,6 +3,23 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
+
+// Mock Monaco to avoid CSS import issues
+vi.mock('@codingame/monaco-vscode-api', () => ({}));
+
+// Mock the WorkspaceLayout component since it has Monaco dependencies
+vi.mock('@/components/workspace/WorkspaceLayout', () => ({
+  WorkspaceLayout: ({ children, sessionId }: { children: React.ReactNode; sessionId: string }) => (
+    <div data-testid="workspace-layout" data-session-id={sessionId}>
+      <header data-testid="workspace-header">Header {sessionId}</header>
+      <aside data-testid="workspace-sidebar-left">Sidebar left</aside>
+      <aside data-testid="workspace-sidebar-right">Sidebar right</aside>
+      <div data-testid="terminal-panel">Terminal</div>
+      {children}
+    </div>
+  ),
+}));
+
 import { WorkspaceLayout } from '@/components/workspace/WorkspaceLayout';
 
 // Mock UI store

@@ -1,3 +1,5 @@
+import type { AgentRole } from './constants';
+
 // ==========================================
 // User & Authentication Types
 // ==========================================
@@ -90,15 +92,14 @@ export interface AgentInstance {
   sessionId: string;
   name: string;
   role: AgentRole;
-  model: LLMModel;
+  model: string;
   status: AgentStatus;
   color: AgentColor;
   systemPrompt?: string;
   tools: AgentTool[];
+  thinkingConfig?: ThinkingConfig;
   createdAt: Date;
 }
-
-export type AgentRole = 'architect' | 'coder' | 'reviewer' | 'tester' | 'custom';
 
 export type AgentStatus = 'idle' | 'thinking' | 'executing' | 'waiting' | 'error';
 
@@ -178,27 +179,88 @@ export interface FileChange {
 // LLM & Provider Types
 // ==========================================
 
-export type LLMProvider = 'anthropic' | 'openai' | 'bedrock';
+/**
+ * LLM Provider types:
+ * - 'podex': Podex Native (Google Vertex AI) - default, works out of the box
+ * - Other providers require user API keys
+ */
+export type LLMProvider = 'podex' | 'anthropic' | 'openai' | 'google' | 'ollama' | 'lmstudio';
 
-export type LLMModel =
-  // Anthropic
-  | 'claude-opus-4-5-20251101'
-  | 'claude-sonnet-4-20250514'
-  | 'claude-3-5-haiku-20241022'
-  // OpenAI
-  | 'gpt-4o'
-  | 'gpt-4-turbo'
-  | 'gpt-3.5-turbo'
-  // Bedrock (Anthropic)
-  | 'anthropic.claude-3-opus-20240229-v1:0'
-  | 'anthropic.claude-3-sonnet-20240229-v1:0';
+/**
+ * Model capability flags
+ */
+export type ModelCapability =
+  | 'chat'
+  | 'code'
+  | 'vision'
+  | 'reasoning'
+  | 'extended_thinking'
+  | 'function_calling'
+  | 'streaming';
 
-export interface LLMConfig {
+/**
+ * Model tier for UI grouping
+ */
+export type ModelTier = 'flagship' | 'balanced' | 'fast';
+
+/**
+ * Extended thinking status for a model
+ */
+export type ThinkingStatus = 'available' | 'coming_soon' | 'not_supported';
+
+/**
+ * Extended thinking configuration for agents
+ */
+export interface ThinkingConfig {
+  enabled: boolean;
+  budgetTokens: number; // min 1024, max 32000
+}
+
+/**
+ * Comprehensive model metadata
+ */
+export interface ModelInfo {
+  id: string;
   provider: LLMProvider;
-  model: LLMModel;
-  temperature?: number;
-  maxTokens?: number;
-  topP?: number;
+  displayName: string;
+  shortName: string;
+  tier: ModelTier;
+  contextWindow: number;
+  maxOutputTokens: number;
+  supportsVision: boolean;
+  supportsThinking: boolean;
+  thinkingStatus: ThinkingStatus;
+  capabilities: ModelCapability[];
+  goodFor: string[];
+  description: string;
+  reasoningEffort: 'low' | 'medium' | 'high';
+  inputPricePerMillion?: number; // Base cost (provider cost)
+  outputPricePerMillion?: number; // Base cost (provider cost)
+  // User-specific pricing (with margin applied)
+  userInputPricePerMillion?: number;
+  userOutputPricePerMillion?: number;
+  llmMarginPercent?: number;
+}
+
+/**
+ * User model preferences (per agent role)
+ */
+export interface UserModelPreferences {
+  defaultModelsByRole: Record<string, string>;
+  thinkingDefaults?: ThinkingConfig;
+}
+
+/**
+ * Attachment file for messages with images
+ */
+export interface AttachmentFile {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  preview?: string;
+  status: 'pending' | 'uploading' | 'ready' | 'error';
+  error?: string;
 }
 
 // ==========================================

@@ -1,5 +1,6 @@
 """Dashboard routes for statistics and activity feed."""
 
+from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
@@ -156,26 +157,47 @@ async def get_dashboard_stats(
 
     # Get usage records for all-time and this month
     # UsageRecord: quantity (amount), usage_type (tokens_input/output/etc), total_cost_cents
-    total_usage_result = await db.execute(
+    # Filter for token types only to get accurate token counts
+    total_tokens_result = await db.execute(
         select(
             func.coalesce(func.sum(UsageRecord.quantity), 0).label("tokens"),
             func.count(UsageRecord.id).label("calls"),
+        ).where(
+            UsageRecord.user_id == user_id,
+            UsageRecord.usage_type.in_(["tokens_input", "tokens_output"]),
+        )
+    )
+    total_tokens = total_tokens_result.one()
+
+    month_tokens_result = await db.execute(
+        select(
+            func.coalesce(func.sum(UsageRecord.quantity), 0).label("tokens"),
+            func.count(UsageRecord.id).label("calls"),
+        ).where(
+            UsageRecord.user_id == user_id,
+            UsageRecord.usage_type.in_(["tokens_input", "tokens_output"]),
+            UsageRecord.created_at >= month_start,
+        )
+    )
+    month_tokens = month_tokens_result.one()
+
+    # Get total cost from ALL usage types (tokens + compute)
+    total_cost_result = await db.execute(
+        select(
             func.coalesce(func.sum(UsageRecord.total_cost_cents), 0).label("cost_cents"),
         ).where(UsageRecord.user_id == user_id)
     )
-    total_usage = total_usage_result.one()
+    total_cost = total_cost_result.scalar() or 0
 
-    month_usage_result = await db.execute(
+    month_cost_result = await db.execute(
         select(
-            func.coalesce(func.sum(UsageRecord.quantity), 0).label("tokens"),
-            func.count(UsageRecord.id).label("calls"),
             func.coalesce(func.sum(UsageRecord.total_cost_cents), 0).label("cost_cents"),
         ).where(
             UsageRecord.user_id == user_id,
             UsageRecord.created_at >= month_start,
         )
     )
-    month_usage = month_usage_result.one()
+    month_cost = month_cost_result.scalar() or 0
 
     # Build pod stats
     pods: list[PodStats] = []
@@ -191,12 +213,15 @@ async def get_dashboard_stats(
         )
         active_agents = agents_count_result.scalar() or 0
 
-        # Get session usage
+        # Get session usage (filter for token types only)
         session_usage_result = await db.execute(
             select(
                 func.coalesce(func.sum(UsageRecord.quantity), 0).label("tokens"),
                 func.coalesce(func.sum(UsageRecord.total_cost_cents), 0).label("cost_cents"),
-            ).where(UsageRecord.session_id == session.id)
+            ).where(
+                UsageRecord.session_id == session.id,
+                UsageRecord.usage_type.in_(["tokens_input", "tokens_output"]),
+            )
         )
         session_usage = session_usage_result.one()
 
@@ -219,12 +244,12 @@ async def get_dashboard_stats(
 
     return DashboardStats(
         usage=UsageStats(
-            total_tokens_used=int(total_usage.tokens),
-            total_api_calls=int(total_usage.calls),
-            total_cost=float(total_usage.cost_cents) / 100.0,
-            tokens_this_month=int(month_usage.tokens),
-            api_calls_this_month=int(month_usage.calls),
-            cost_this_month=float(month_usage.cost_cents) / 100.0,
+            total_tokens_used=int(total_tokens.tokens),
+            total_api_calls=int(total_tokens.calls),
+            total_cost=float(total_cost) / 100.0,
+            tokens_this_month=int(month_tokens.tokens),
+            api_calls_this_month=int(month_tokens.calls),
+            cost_this_month=float(month_cost) / 100.0,
         ),
         pods=pods[:10],  # Return top 10 most recent
         total_pods=len(sessions),
@@ -257,6 +282,32 @@ async def get_activity_feed(
 
     items: list[ActivityItem] = []
 
+    # PERFORMANCE: Batch fetch agents for all sessions to avoid N+1 queries
+    # Instead of querying agents per session, fetch all at once
+    session_ids = [s.id for s in sessions]
+    if session_ids:
+        # Use a subquery to get top 5 recent agents per session
+        # This is a single query instead of N queries
+
+        # Fetch recent agents grouped by session
+        agents_result = await db.execute(
+            select(Agent)
+            .where(Agent.session_id.in_(session_ids))
+            .order_by(Agent.session_id, Agent.updated_at.desc())
+        )
+        all_agents = agents_result.scalars().all()
+
+        # Group agents by session_id, keeping only top 5 per session
+        agents_by_session: dict[str, list[Agent]] = defaultdict(list)
+        for agent in all_agents:
+            if len(agents_by_session[agent.session_id]) < 5:
+                agents_by_session[agent.session_id].append(agent)
+    else:
+        agents_by_session = {}
+
+    # Build session name lookup for agent items
+    {s.id: s.name for s in sessions}
+
     for session in sessions:
         # Add session creation/update activity
         items.append(
@@ -273,17 +324,9 @@ async def get_activity_feed(
             )
         )
 
-        # Get recent agents for this session
-        agents_result = await db.execute(
-            select(Agent)
-            .where(Agent.session_id == session.id)
-            .order_by(Agent.updated_at.desc())
-            .limit(5)
-        )
-        agents = agents_result.scalars().all()
-
-        for agent in agents:
-            items.append(  # noqa: PERF401
+        # Use pre-fetched agents for this session
+        for agent in agents_by_session.get(session.id, []):
+            items.append(
                 ActivityItem(
                     id=f"agent-{agent.id}",
                     type="agent_created"
@@ -311,7 +354,7 @@ async def get_activity_feed(
 
 @router.get("/usage-history", response_model=UsageHistoryResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def get_usage_history(  # noqa: PLR0912, PLR0915
+async def get_usage_history(
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,

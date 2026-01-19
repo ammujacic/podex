@@ -129,3 +129,36 @@ async def check_admin_access(request: Request) -> bool:
         return True
 
     return user_role in ADMIN_ROLES
+
+
+async def require_admin_dependency(request: Request) -> dict[str, str | None]:
+    """FastAPI dependency to require admin role for endpoint access.
+
+    Use this with Depends() in route function parameters:
+        admin: dict = Depends(require_admin_dependency)
+
+    Returns:
+        dict with admin user info: {"id": str, "role": str, "email": str | None}
+    """
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    user_role = getattr(request.state, "user_role", "member")
+    user_email = getattr(request.state, "user_email", None)
+
+    # Super user bypass
+    super_user_emails = getattr(settings, "ADMIN_SUPER_USER_EMAILS", [])
+    if user_email and user_email in super_user_emails:
+        logger.info("Admin access via super user bypass", user_id=user_id)
+        return {"id": str(user_id), "role": "super_admin", "email": user_email}
+
+    if user_role not in ADMIN_ROLES:
+        logger.warning(
+            "Admin access denied - insufficient role",
+            user_id=user_id,
+            role=user_role,
+        )
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    return {"id": str(user_id), "role": user_role, "email": user_email}

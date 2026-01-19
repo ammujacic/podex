@@ -83,20 +83,39 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 
     def _validate_origin(self, request: Request, request_origin: str | None) -> Response | None:
         """Validate the request origin. Returns error response if invalid, None if valid."""
-        # No origin but has Authorization header - allow (non-browser API clients)
+        # No origin header - need additional verification for non-browser clients
         if not request_origin:
-            if request.headers.get("Authorization"):
+            # For non-browser API clients without Origin header, require BOTH:
+            # 1. Authorization header (will be validated later by auth middleware)
+            # 2. X-Requested-With header set to "XMLHttpRequest" or similar
+            #    (this header cannot be set by HTML forms, providing CSRF protection)
+            has_auth = request.headers.get("Authorization")
+            has_xhr_header = request.headers.get("X-Requested-With")
+
+            if has_auth and has_xhr_header:
+                # Non-browser client with proper headers
+                return None
+
+            # Also allow if Content-Type is application/json (can't be set by forms)
+            content_type = request.headers.get("Content-Type", "")
+            if has_auth and "application/json" in content_type:
                 return None
 
             logger.warning(
-                "CSRF: No Origin header for state-changing request",
+                "CSRF: No Origin header and missing required headers",
                 method=request.method,
                 path=request.url.path,
+                has_auth=bool(has_auth),
+                has_xhr=bool(has_xhr_header),
+                content_type=content_type,
                 client_ip=request.client.host if request.client else "unknown",
             )
             return JSONResponse(
                 status_code=403,
-                content={"detail": "Missing Origin header"},
+                content={
+                    "detail": "Missing Origin header. API clients must include "
+                    "X-Requested-With header or use application/json content type."
+                },
             )
 
         # Validate origin against allowed origins
@@ -137,8 +156,45 @@ def _is_allowed_origin(origin: str) -> bool:
         if normalized_origin == normalized_allowed:
             return True
 
-        # Handle wildcard (be careful with this in production)
+        # Handle wildcard - BLOCKED in production for security
         if normalized_allowed == "*":
+            if settings.ENVIRONMENT == "production":
+                logger.error(
+                    "SECURITY: Wildcard CORS origin (*) blocked in production. "
+                    "Configure specific origins in CORS_ORIGINS.",
+                    origin=origin,
+                )
+                # SECURITY: Block wildcard in production instead of allowing
+                return False
+            # Allow wildcard only in development
             return True
 
     return False
+
+
+class CORSConfigurationError(Exception):
+    """Raised when CORS is misconfigured in production."""
+
+
+def check_cors_configuration() -> None:
+    """Check CORS configuration for security issues at startup.
+
+    Call this during application initialization to warn about insecure configs.
+
+    Raises:
+        CORSConfigurationError: If wildcard CORS is configured in production.
+    """
+    if "*" in settings.CORS_ORIGINS:
+        if settings.ENVIRONMENT == "production":
+            error_msg = (
+                "CRITICAL SECURITY ISSUE: Wildcard CORS origin (*) configured in production! "
+                "This allows any website to make authenticated requests. "
+                "Please configure specific origins in CORS_ORIGINS. "
+                "The application will not start with this configuration."
+            )
+            logger.error(error_msg)
+            raise CORSConfigurationError(error_msg)
+        logger.warning(
+            "Wildcard CORS origin (*) is configured. "
+            "This is acceptable for development but must be changed for production."
+        )

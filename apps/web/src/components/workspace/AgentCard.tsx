@@ -1,55 +1,22 @@
 'use client';
 
-import { useState, useCallback, useEffect, useRef } from 'react';
-import {
-  Bell,
-  Bot,
-  ChevronDown,
-  ChevronRight,
-  Code2,
-  Copy,
-  Eye,
-  FileText,
-  HelpCircle,
-  Lightbulb,
-  Loader2,
-  MessageCircle,
-  Mic,
-  MoreVertical,
-  Pencil,
-  RefreshCw,
-  Send,
-  Server,
-  Settings2,
-  Shield,
-  ShieldOff,
-  StopCircle,
-  TestTube2,
-  Trash2,
-  Volume2,
-  VolumeX,
-  Workflow,
-  X,
-  Zap,
-} from 'lucide-react';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-} from '@podex/ui';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
+import { Loader2, LogIn, Mic, Paperclip, RefreshCw, Send, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { type Agent, type AgentMode, useSessionStore } from '@/stores/session';
 import { useAttentionStore } from '@/stores/attention';
 import { useApprovalsStore } from '@/stores/approvals';
 import { useWorktreesStore } from '@/stores/worktrees';
-import { cn, formatTimestamp, cleanStreamingContent, getFriendlyErrorMessage } from '@/lib/utils';
+import { useCheckpointsStore } from '@/stores/checkpoints';
+import { cn } from '@/lib/utils';
+import { getAgentBorderColor } from '@/lib/agentConstants';
+import {
+  mapCostTierToTier,
+  mapCostTierToReasoningEffort,
+  createShortModelName,
+  parseModelIdToDisplayName,
+} from '@/lib/model-utils';
 import {
   sendAgentMessage,
   deleteAgent as deleteAgentApi,
@@ -59,19 +26,46 @@ import {
   abortAgent,
   approvePlan,
   rejectPlan,
+  togglePlanMode,
+  restoreCheckpoint,
+  updateAgentSettings,
+  isQuotaError,
+  compactAgentContext,
+  getAvailableModels,
+  getUserProviderModels,
+  executeCommand,
+  type PublicModel,
+  type UserProviderModel,
+  type CustomCommand,
 } from '@/lib/api';
 import { useVoiceCapture } from '@/hooks/useVoiceCapture';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
-import { onSocketEvent, type AgentMessageEvent } from '@/lib/socket';
+import { onSocketEvent, emitPermissionResponse, type AgentMessageEvent } from '@/lib/socket';
+import { SUPPORTED_IMAGE_TYPES, MAX_ATTACHMENT_SIZE_MB } from '@podex/shared';
+import type { ThinkingConfig, AttachmentFile, ModelInfo, LLMProvider } from '@podex/shared';
+
+// Extracted components
+import { ConfirmDialog, PromptDialog } from '@/components/ui/Dialogs';
+import { AgentCardHeader } from './AgentCardHeader';
+import { AgentMessageList } from './AgentMessageList';
+import { AgentStreamingMessage } from './AgentStreamingMessage';
 import { VoiceSettingsDialog } from './VoiceSettingsDialog';
 import { AgentModeSelector } from './AgentModeSelector';
 import { PlanApprovalActions } from './PlanApprovalActions';
-import { MarkdownRenderer } from './MarkdownRenderer';
-import { ContextUsageRing } from './ContextUsageRing';
 import { CompactionDialog } from './CompactionDialog';
-import { ToolResultDisplay } from './ToolResultDisplay';
-import { WorktreeStatus } from './WorktreeStatus';
-import { compactAgentContext } from '@/lib/api';
+import { ThinkingConfigDialog } from './ThinkingConfigDialog';
+import { SlashCommandMenu, isBuiltInCommand, type BuiltInCommand } from './SlashCommandMenu';
+import { CreditExhaustedBanner } from './CreditExhaustedBanner';
+import { SlashCommandDialog } from './SlashCommandSheet';
+import { ApprovalDialog } from './ApprovalDialog';
+import {
+  isCliAgentRole,
+  getCliAgentType,
+  getCliSupportedModels,
+  normalizeCliModelId,
+  useCliAgentAuth,
+} from '@/hooks/useCliAgentCommands';
+import { useUIStore } from '@/stores/ui';
 
 export interface AgentCardProps {
   agent: Agent;
@@ -79,39 +73,13 @@ export interface AgentCardProps {
   expanded?: boolean;
 }
 
-const roleIcons = {
-  architect: Workflow,
-  coder: Code2,
-  reviewer: Bot,
-  tester: TestTube2,
-  agent_builder: Settings2,
-  orchestrator: Workflow,
-  chat: MessageCircle,
-  security: Shield,
-  devops: Server,
-  documentator: FileText,
-  custom: Bot,
-};
-
-const agentColors: Record<string, string> = {
-  'agent-1': 'border-agent-1',
-  'agent-2': 'border-agent-2',
-  'agent-3': 'border-agent-3',
-  'agent-4': 'border-agent-4',
-  'agent-5': 'border-agent-5',
-  'agent-6': 'border-agent-6',
-};
-
-const agentTextColors: Record<string, string> = {
-  'agent-1': 'text-agent-1',
-  'agent-2': 'text-agent-2',
-  'agent-3': 'text-agent-3',
-  'agent-4': 'text-agent-4',
-  'agent-5': 'text-agent-5',
-  'agent-6': 'text-agent-6',
-};
+// Extended ModelInfo with user API flag
+type ExtendedModelInfo = ModelInfo & { isUserKey?: boolean };
 
 export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps) {
+  const router = useRouter();
+
+  // UI state
   const [message, setMessage] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -119,17 +87,42 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   const [isAborting, setIsAborting] = useState(false);
   const [showAbortedMessage, setShowAbortedMessage] = useState(false);
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
-  const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
   const [synthesizingMessageId, setSynthesizingMessageId] = useState<string | null>(null);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const [savedInput, setSavedInput] = useState('');
+  const [isTogglingPlanMode, setIsTogglingPlanMode] = useState(false);
+
+  // Dialog states
   const [voiceSettingsOpen, setVoiceSettingsOpen] = useState(false);
   const [modeSettingsOpen, setModeSettingsOpen] = useState(false);
   const [compactionDialogOpen, setCompactionDialogOpen] = useState(false);
-  const [historyIndex, setHistoryIndex] = useState(-1);
-  const [savedInput, setSavedInput] = useState('');
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
+  const [thinkingDialogOpen, setThinkingDialogOpen] = useState(false);
+  const [slashCommandSheetOpen, setSlashCommandSheetOpen] = useState(false);
+
+  // Attachments
+  const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
+
+  // Models
+  const [backendModels, setBackendModels] = useState<PublicModel[]>([]);
+  const [userProviderModels, setUserProviderModels] = useState<UserProviderModel[]>([]);
+
+  // Slash command menu
+  const [showSlashMenu, setShowSlashMenu] = useState(false);
+  const [slashQuery, setSlashQuery] = useState('');
+
+  // Credit error
+  const [showCreditError, setShowCreditError] = useState(false);
+
+  // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Store actions
   const {
     removeAgent,
     updateAgent,
@@ -137,31 +130,44 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     addAgentMessage,
     deleteAgentMessage,
     streamingMessages,
+    updateAgentThinking,
   } = useSessionStore();
   const { getAgentWorktree } = useWorktreesStore();
+  const { getAgentCheckpoints, restoringCheckpointId } = useCheckpointsStore();
 
-  // Get worktree for this agent (if it exists)
+  // Related data
   const agentWorktree = getAgentWorktree(sessionId, agent.id);
+  const agentCheckpoints = getAgentCheckpoints(sessionId, agent.id);
 
-  // Find active streaming message for this agent
+  // Streaming message
   const streamingMessage = Object.values(streamingMessages).find(
     (sm) => sm.sessionId === sessionId && sm.agentId === agent.id && sm.isStreaming
   );
 
-  // Get user messages for history navigation
+  // User message history
   const userMessages = agent.messages
     .filter((msg) => msg.role === 'user')
     .map((msg) => msg.content)
     .reverse();
 
-  // Auto-scroll to bottom when messages change or streaming content updates
+  // Auto-scroll
   useEffect(() => {
     if (messagesContainerRef.current) {
       messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
     }
   }, [agent.messages.length, isSending, streamingMessage?.content]);
 
-  // Handle Escape key to abort running tasks
+  // Fetch models
+  useEffect(() => {
+    getAvailableModels()
+      .then(setBackendModels)
+      .catch((err) => console.error('Failed to fetch platform models:', err));
+    getUserProviderModels()
+      .then(setUserProviderModels)
+      .catch((err) => console.error('Failed to fetch user-provider models:', err));
+  }, []);
+
+  // Abort handler
   const handleAbort = useCallback(async () => {
     if (agent.status !== 'active' && !isSending) return;
     if (isAborting) return;
@@ -179,7 +185,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     }
   }, [agent.status, agent.id, sessionId, isSending, isAborting, updateAgent]);
 
-  // Listen for Escape key when card is focused
+  // Escape key listener
   useEffect(() => {
     const card = cardRef.current;
     if (!card) return;
@@ -196,36 +202,33 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     return () => card.removeEventListener('keydown', handleKeyDown);
   }, [agent.status, isSending, handleAbort]);
 
-  // Clear aborted message after a short delay
+  // Clear aborted message
   useEffect(() => {
     if (!showAbortedMessage) return;
-    const timer = setTimeout(() => {
-      setShowAbortedMessage(false);
-    }, 3000);
+    const timer = setTimeout(() => setShowAbortedMessage(false), 3000);
     return () => clearTimeout(timer);
   }, [showAbortedMessage]);
 
-  // Attention state for this agent
-  const { getAttentionsForAgent, getHighestPriorityAttention, openPanel } = useAttentionStore();
+  // Attention state
+  const {
+    getAttentionsForAgent,
+    getHighestPriorityAttention,
+    getUnreadCountForAgent,
+    hasUnreadForAgent,
+    openPanel,
+  } = useAttentionStore();
   const agentAttentions = getAttentionsForAgent(sessionId, agent.id);
   const highestPriorityAttention = getHighestPriorityAttention(sessionId, agent.id);
   const hasAttention = agentAttentions.length > 0;
+  const unreadCount = getUnreadCountForAgent(sessionId, agent.id);
+  const hasUnread = hasUnreadForAgent(sessionId, agent.id);
 
-  // Approvals state
+  // Approvals
   const { getAgentApprovals } = useApprovalsStore();
   const agentApprovals = getAgentApprovals(sessionId, agent.id);
   const pendingApprovalCount = agentApprovals.filter((a) => a.status === 'pending').length;
 
-  // Mode display helpers
-  const modeConfig: Record<AgentMode, { icon: typeof Eye; label: string; color: string }> = {
-    plan: { icon: Eye, label: 'Plan', color: 'text-blue-400' },
-    ask: { icon: HelpCircle, label: 'Ask', color: 'text-yellow-400' },
-    auto: { icon: Zap, label: 'Auto', color: 'text-green-400' },
-    sovereign: { icon: ShieldOff, label: 'Sovereign', color: 'text-red-400' },
-  };
-  const currentModeConfig = modeConfig[agent.mode || 'ask'];
-
-  // Voice capture hook
+  // Voice capture
   const { isRecording, currentTranscript, startRecording, stopRecording } = useVoiceCapture({
     sessionId,
     agentId: agent.id,
@@ -234,76 +237,507 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         setMessage(text.trim());
       }
     },
-    onError: (error) => {
-      console.error('Voice capture error:', error);
-    },
+    onError: (error) => console.error('Voice capture error:', error),
   });
 
-  // Audio playback hook
+  // Audio playback
   const { isPlaying, playingMessageId, playAudioUrl, playAudioBase64, stopPlayback } =
     useAudioPlayback({
       sessionId,
-      onPlayEnd: () => {
-        // Could queue next message for auto-play if enabled
-      },
+      onPlayEnd: () => {},
     });
 
-  const Icon = roleIcons[agent.role];
-  const borderColor = agentColors[agent.color] ?? 'border-border-default';
-  const textColor = agentTextColors[agent.color] ?? 'text-text-primary';
+  // CLI agent auth (for claude-code, openai-codex, gemini-cli)
+  const isCliAgent = isCliAgentRole(agent.role);
+  const cliAgentType = getCliAgentType(agent.role);
+  const {
+    authStatus: cliAuthStatus,
+    reauthenticate: claudeCodeReauthenticate,
+    checkAuth: checkCliAuth,
+  } = useCliAgentAuth(cliAgentType ?? 'claude-code', isCliAgent ? agent.id : undefined);
 
-  const handleSendMessage = useCallback(async () => {
-    if (!message.trim() || isSending) return;
+  // Terminal toggle for CLI auth
+  const { toggleTerminal, terminalVisible } = useUIStore();
 
-    const messageContent = message.trim();
-    setIsSending(true);
-    setMessage('');
+  // Check if CLI agent needs authentication (blocks input until authenticated)
+  const cliNeedsAuth =
+    isCliAgent &&
+    agent.messages.length === 0 &&
+    (cliAuthStatus === null || cliAuthStatus?.needsAuth);
 
-    // Optimistically add user message to UI immediately
-    const userMessage = {
-      id: `temp-${Date.now()}`,
-      role: 'user' as const,
-      content: messageContent,
-      timestamp: new Date(),
-    };
-    addAgentMessage(sessionId, agent.id, userMessage);
+  // CLI agent handlers (non-message handlers)
+  const handleOpenSlashCommands = useCallback(() => {
+    setSlashCommandSheetOpen(true);
+  }, []);
 
-    // Update agent status to show it's processing
-    updateAgent(sessionId, agent.id, { status: 'active' });
-
-    try {
-      await sendAgentMessage(sessionId, agent.id, messageContent);
-      // Response will come via WebSocket
-    } catch (error) {
-      console.error('Failed to send message:', error);
-      // Could remove the optimistic message or show error state
-      updateAgent(sessionId, agent.id, { status: 'error' });
-    } finally {
-      setIsSending(false);
+  // Get CLI command name for the agent
+  const getCliCommand = useCallback(() => {
+    switch (agent.role) {
+      case 'claude-code':
+        return 'claude';
+      case 'openai-codex':
+        return 'codex';
+      case 'gemini-cli':
+        return 'gemini';
+      default:
+        return agent.role;
     }
-  }, [message, isSending, sessionId, agent.id, addAgentMessage, updateAgent]);
+  }, [agent.role]);
+
+  // Handle CLI agent login - opens terminal for interactive auth
+  const handleCliLogin = useCallback(() => {
+    // Open terminal if not visible
+    if (!terminalVisible) {
+      toggleTerminal();
+    }
+
+    const cliCommand = getCliCommand();
+    toast.success(`Terminal opened! Run "${cliCommand}" and type "/login" to authenticate.`, {
+      duration: 8000,
+    });
+  }, [terminalVisible, toggleTerminal, getCliCommand]);
+
+  // Handle refresh auth status
+  const handleRefreshAuth = useCallback(async () => {
+    if (checkCliAuth) {
+      toast.info('Checking authentication status...');
+      await checkCliAuth();
+    }
+  }, [checkCliAuth]);
+
+  const handleClaudeCodeReauthenticate = useCallback(async () => {
+    try {
+      await claudeCodeReauthenticate();
+      toast.success(
+        'Re-authentication initiated. Please check your workspace for the login prompt.'
+      );
+    } catch (error) {
+      console.error('Failed to reauthenticate:', error);
+      toast.error('Failed to start re-authentication');
+    }
+  }, [claudeCodeReauthenticate]);
+
+  const borderColor = getAgentBorderColor(agent.color);
+
+  // Model conversion helpers
+  const backendModelToInfo = useCallback(
+    (m: PublicModel, isUserKey = false): ExtendedModelInfo => ({
+      id: m.model_id,
+      provider: (isUserKey ? m.provider : 'podex') as LLMProvider,
+      displayName: m.display_name,
+      shortName: createShortModelName(m.display_name),
+      tier: mapCostTierToTier(m.cost_tier),
+      contextWindow: m.context_window,
+      maxOutputTokens: m.max_output_tokens,
+      supportsVision: m.capabilities.vision,
+      supportsThinking: m.capabilities.thinking,
+      thinkingStatus: m.capabilities.thinking
+        ? 'available'
+        : m.capabilities.thinking_coming_soon
+          ? 'coming_soon'
+          : 'not_supported',
+      capabilities: [
+        'chat',
+        'code',
+        ...(m.capabilities.vision ? (['vision'] as const) : []),
+        ...(m.capabilities.tool_use ? (['function_calling'] as const) : []),
+      ],
+      goodFor: m.good_for || [],
+      description: m.description || '',
+      reasoningEffort: mapCostTierToReasoningEffort(m.cost_tier),
+      isUserKey,
+      inputPricePerMillion: m.input_cost_per_million ?? undefined,
+      outputPricePerMillion: m.output_cost_per_million ?? undefined,
+    }),
+    []
+  );
+
+  const userModelToInfo = useCallback(
+    (m: UserProviderModel): ExtendedModelInfo => ({
+      id: m.model_id,
+      provider: m.provider as LLMProvider,
+      displayName: m.display_name,
+      shortName: createShortModelName(m.display_name),
+      tier: mapCostTierToTier(m.cost_tier),
+      contextWindow: m.context_window,
+      maxOutputTokens: m.max_output_tokens,
+      supportsVision: m.capabilities.vision,
+      supportsThinking: m.capabilities.thinking,
+      thinkingStatus: m.capabilities.thinking
+        ? 'available'
+        : m.capabilities.thinking_coming_soon
+          ? 'coming_soon'
+          : 'not_supported',
+      capabilities: [
+        'chat',
+        'code',
+        ...(m.capabilities.vision ? (['vision'] as const) : []),
+        ...(m.capabilities.tool_use ? (['function_calling'] as const) : []),
+      ],
+      goodFor: m.good_for || [],
+      description: m.description || '',
+      reasoningEffort: mapCostTierToReasoningEffort(m.cost_tier),
+      isUserKey: true,
+      inputPricePerMillion: m.input_cost_per_million ?? undefined,
+      outputPricePerMillion: m.output_cost_per_million ?? undefined,
+    }),
+    []
+  );
+
+  const currentModelInfo = useMemo(() => {
+    // For CLI agents, look up model in CLI_CAPABILITIES
+    const cliType = getCliAgentType(agent.role);
+    if (cliType) {
+      const cliModels = getCliSupportedModels(cliType);
+      const normalizedModelId = normalizeCliModelId(agent.model, cliType);
+      const cliModel = cliModels.find((m) => m.id === normalizedModelId);
+      if (cliModel) {
+        const supportsVision = cliModel.supportsVision ?? true;
+        const supportsThinking = cliModel.supportsThinking ?? false;
+        return {
+          id: cliModel.id,
+          provider: 'anthropic' as LLMProvider,
+          displayName: cliModel.name,
+          shortName: cliModel.name,
+          tier: 'flagship' as const,
+          contextWindow: 200000,
+          maxOutputTokens: 64000,
+          supportsVision,
+          supportsThinking,
+          thinkingStatus: supportsThinking ? ('available' as const) : ('not_supported' as const),
+          capabilities: [
+            'chat' as const,
+            'code' as const,
+            ...(supportsVision ? (['vision'] as const) : []),
+            'function_calling' as const,
+          ],
+          goodFor: [] as string[],
+          description: '',
+          reasoningEffort: 'medium' as const,
+          isUserKey: false,
+        };
+      }
+    }
+
+    // For Podex agents, look up in user/backend models
+    const userModel = userProviderModels.find((m) => m.model_id === agent.model);
+    if (userModel) return userModelToInfo(userModel);
+    const backendModel = backendModels.find((m) => m.model_id === agent.model);
+    if (backendModel) return backendModelToInfo(backendModel);
+    return undefined;
+  }, [
+    agent.model,
+    agent.role,
+    backendModels,
+    userProviderModels,
+    backendModelToInfo,
+    userModelToInfo,
+  ]);
+
+  const modelsByTier = useMemo(() => {
+    const flagship: ExtendedModelInfo[] = [];
+    const balanced: ExtendedModelInfo[] = [];
+    const fast: ExtendedModelInfo[] = [];
+    const userApi: ExtendedModelInfo[] = [];
+
+    // For CLI agents, use the hardcoded CLI models directly
+    const cliType = getCliAgentType(agent.role);
+    if (cliType) {
+      const cliModels = getCliSupportedModels(cliType);
+      for (const m of cliModels) {
+        const supportsVision = m.supportsVision ?? true;
+        const supportsThinking = m.supportsThinking ?? false;
+        // Create minimal ExtendedModelInfo for CLI models
+        flagship.push({
+          id: m.id,
+          provider: 'anthropic' as LLMProvider, // CLI-specific, not Podex
+          displayName: m.name,
+          shortName: m.name,
+          tier: 'flagship',
+          contextWindow: 200000,
+          maxOutputTokens: 64000,
+          supportsVision,
+          supportsThinking,
+          thinkingStatus: supportsThinking ? 'available' : 'not_supported',
+          capabilities: [
+            'chat',
+            'code',
+            ...(supportsVision ? (['vision'] as const) : []),
+            'function_calling',
+          ],
+          goodFor: [],
+          description: '',
+          reasoningEffort: 'medium',
+          isUserKey: false,
+        });
+      }
+      return { flagship, balanced, fast, userApi };
+    }
+
+    // Standard Podex model tiers
+    for (const m of backendModels) {
+      const info = backendModelToInfo(m);
+      if (m.cost_tier === 'premium' || m.cost_tier === 'high') flagship.push(info);
+      else if (m.cost_tier === 'medium') balanced.push(info);
+      else fast.push(info);
+    }
+    for (const m of userProviderModels) {
+      userApi.push(userModelToInfo(m));
+    }
+
+    return { flagship, balanced, fast, userApi };
+  }, [agent.role, backendModels, userProviderModels, backendModelToInfo, userModelToInfo]);
+
+  const getModelDisplayName = useCallback(
+    (modelId: string) => {
+      // Only strip "Claude " since Sonnet/Opus/Haiku are recognizable on their own
+      // Keep "Llama " since "3.1 8B" alone is not recognizable
+      if (agent.modelDisplayName) {
+        return agent.modelDisplayName.replace('Claude ', '');
+      }
+      const userModel = userProviderModels.find((m) => m.model_id === modelId);
+      if (userModel) return userModel.display_name.replace('Claude ', '').replace(' (Direct)', '');
+      const backendModel = backendModels.find((m) => m.model_id === modelId);
+      if (backendModel) return backendModel.display_name.replace('Claude ', '');
+      // Fallback: parse raw model ID into user-friendly name
+      return parseModelIdToDisplayName(modelId);
+    },
+    [agent.modelDisplayName, backendModels, userProviderModels]
+  );
+
+  // Message handlers
+  const handleSendMessage = useCallback(
+    async (overrideMessage?: string) => {
+      const effectiveMessage = overrideMessage ?? message;
+      if ((!effectiveMessage.trim() && attachments.length === 0) || isSending) return;
+
+      const messageContent = effectiveMessage.trim();
+      const currentAttachments = [...attachments];
+      setIsSending(true);
+      setMessage('');
+      setAttachments([]);
+
+      const userMessage = {
+        id: `temp-${Date.now()}`,
+        role: 'user' as const,
+        content: messageContent,
+        timestamp: new Date(),
+      };
+      addAgentMessage(sessionId, agent.id, userMessage);
+      updateAgent(sessionId, agent.id, { status: 'active' });
+
+      try {
+        await sendAgentMessage(sessionId, agent.id, messageContent, {
+          attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
+          thinkingConfig: agent.thinkingConfig,
+        });
+      } catch (error) {
+        console.error('Failed to send message:', error);
+        updateAgent(sessionId, agent.id, { status: 'error' });
+
+        if (isQuotaError(error)) {
+          setShowCreditError(true);
+          toast.error('Credit limit reached', {
+            description: 'You have run out of credits or exceeded your quota.',
+            action: {
+              label: 'Buy Credits',
+              onClick: () => router.push('/settings/billing/credits'),
+            },
+            duration: 10000,
+          });
+        } else {
+          toast.error('Failed to send message. Please try again.');
+        }
+      } finally {
+        setIsSending(false);
+      }
+    },
+    [
+      message,
+      attachments,
+      isSending,
+      sessionId,
+      agent.id,
+      agent.thinkingConfig,
+      addAgentMessage,
+      updateAgent,
+      router,
+    ]
+  );
+
+  // Handle slash command selection for CLI agents (must be after handleSendMessage)
+  const handleCliSlashCommand = useCallback(
+    (commandName: string) => {
+      // Close the sheet
+      setSlashCommandSheetOpen(false);
+
+      // Clear the input and send the command directly
+      setMessage('');
+      handleSendMessage(`/${commandName}`);
+    },
+    [handleSendMessage]
+  );
+
+  const handleInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const value = e.target.value;
+      setMessage(value);
+
+      if (value.startsWith('/')) {
+        // For CLI agents (claude-code, openai-codex, gemini-cli), show their specific command sheet
+        if (isCliAgent) {
+          setSlashCommandSheetOpen(true);
+        } else {
+          // For regular agents, show the standard slash menu
+          setSlashQuery(value.slice(1));
+          setShowSlashMenu(true);
+        }
+      } else {
+        setShowSlashMenu(false);
+        setSlashQuery('');
+      }
+    },
+    [isCliAgent]
+  );
+
+  const handleSlashCommandSelect = useCallback(
+    async (command: BuiltInCommand | CustomCommand) => {
+      setShowSlashMenu(false);
+      setSlashQuery('');
+
+      if (isBuiltInCommand(command)) {
+        const builtIn = command as BuiltInCommand;
+
+        if (builtIn.immediate && builtIn.action) {
+          switch (builtIn.action) {
+            case 'help':
+              toast.info('Available Commands', {
+                description: 'Type / to see all commands.',
+                duration: 5000,
+              });
+              setMessage('');
+              return;
+            case 'clear':
+              if (agent.messages.length > 0) {
+                updateAgent(sessionId, agent.id, { messages: [] });
+                toast.success('Conversation cleared');
+              } else {
+                toast.info('Conversation is already empty');
+              }
+              setMessage('');
+              return;
+            case 'compact':
+              setCompactionDialogOpen(true);
+              setMessage('');
+              return;
+            case 'checkpoint':
+              setMessage('');
+              handleSendMessage('/checkpoint - Create a checkpoint of the current changes');
+              return;
+            case 'undo':
+              if (agentCheckpoints.length > 0) {
+                toast.info('Use the Undo button in the header to restore a checkpoint');
+              } else {
+                toast.warning('No checkpoints available');
+              }
+              setMessage('');
+              return;
+            case 'mode':
+              setModeSettingsOpen(true);
+              setMessage('');
+              return;
+            case 'model':
+              toast.info(`Current model: ${agent.model}`, {
+                description: 'Use the model dropdown in the agent header to switch models.',
+                duration: 4000,
+              });
+              setMessage('');
+              return;
+            case 'think':
+              setThinkingDialogOpen(true);
+              setMessage('');
+              return;
+          }
+        }
+
+        if (builtIn.args && builtIn.args.length > 0) {
+          const argPlaceholders = builtIn.args
+            .map((a) => (a.required ? `<${a.name}>` : `[${a.name}]`))
+            .join(' ');
+          setMessage(`/${builtIn.name} ${argPlaceholders}`);
+          setTimeout(() => {
+            if (inputRef.current) {
+              const start = builtIn.name.length + 2;
+              inputRef.current.focus();
+              inputRef.current.setSelectionRange(start, inputRef.current.value.length);
+            }
+          }, 0);
+          return;
+        }
+
+        setMessage('');
+        handleSendMessage(`/${builtIn.name}`);
+      } else {
+        const custom = command as CustomCommand;
+
+        if (custom.arguments && custom.arguments.length > 0) {
+          const argPlaceholders = custom.arguments
+            .map((a) => (a.required ? `<${a.name}>` : `[${a.name}]`))
+            .join(' ');
+          setMessage(`/${custom.name} ${argPlaceholders}`);
+          setTimeout(() => {
+            if (inputRef.current) {
+              const start = custom.name.length + 2;
+              inputRef.current.focus();
+              inputRef.current.setSelectionRange(start, inputRef.current.value.length);
+            }
+          }, 0);
+        } else {
+          try {
+            const result = await executeCommand(custom.id, {});
+            setMessage('');
+            handleSendMessage(result.prompt);
+          } catch (error) {
+            console.error('Failed to execute command:', error);
+            toast.error(`Failed to execute /${custom.name}`);
+            setMessage('');
+          }
+        }
+      }
+    },
+    [
+      agent.messages.length,
+      agentCheckpoints.length,
+      handleSendMessage,
+      updateAgent,
+      sessionId,
+      agent.id,
+      agent.model,
+    ]
+  );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (showSlashMenu) {
+      if (['ArrowUp', 'ArrowDown', 'Enter', 'Tab'].includes(e.key)) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowSlashMenu(false);
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
-      // Reset history navigation after sending
       setHistoryIndex(-1);
       setSavedInput('');
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       if (userMessages.length === 0) return;
-
-      if (historyIndex === -1) {
-        // Save current input before navigating history
-        setSavedInput(message);
-      }
-
+      if (historyIndex === -1) setSavedInput(message);
       const newIndex = Math.min(historyIndex + 1, userMessages.length - 1);
       setHistoryIndex(newIndex);
       setMessage(userMessages[newIndex] ?? '');
-
-      // Move cursor to end of input
       setTimeout(() => {
         if (inputRef.current) {
           inputRef.current.selectionStart = inputRef.current.value.length;
@@ -313,18 +747,9 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
       if (historyIndex === -1) return;
-
       const newIndex = historyIndex - 1;
       setHistoryIndex(newIndex);
-
-      if (newIndex === -1) {
-        // Restore saved input when going back to current
-        setMessage(savedInput);
-      } else {
-        setMessage(userMessages[newIndex] ?? '');
-      }
-
-      // Move cursor to end of input
+      setMessage(newIndex === -1 ? savedInput : (userMessages[newIndex] ?? ''));
       setTimeout(() => {
         if (inputRef.current) {
           inputRef.current.selectionStart = inputRef.current.value.length;
@@ -334,33 +759,61 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     }
   };
 
-  const handleRename = useCallback(() => {
-    const newName = prompt('Enter new name for agent:', agent.name);
-    if (newName && newName.trim() && newName !== agent.name) {
-      updateAgent(sessionId, agent.id, { name: newName.trim() });
-    }
-  }, [agent.name, agent.id, sessionId, updateAgent]);
+  // Agent action handlers
+  const handleRenameConfirm = useCallback(
+    async (newName: string) => {
+      updateAgent(sessionId, agent.id, { name: newName });
+      try {
+        await updateAgentSettings(sessionId, agent.id, { name: newName });
+      } catch (error) {
+        console.error('Failed to persist name change:', error);
+      }
+      setRenameDialogOpen(false);
+    },
+    [agent.id, sessionId, updateAgent]
+  );
+
+  // Permission approval handler (for Claude Code CLI)
+  const handlePermissionApproval = useCallback(
+    (approved: boolean, addedToAllowlist: boolean) => {
+      if (!agent.pendingPermission) return;
+
+      // Emit the permission response via WebSocket
+      emitPermissionResponse(
+        sessionId,
+        agent.id,
+        agent.pendingPermission.requestId,
+        approved,
+        agent.pendingPermission.command,
+        agent.pendingPermission.toolName,
+        addedToAllowlist
+      );
+
+      // Clear the pending permission from the agent
+      updateAgent(sessionId, agent.id, { pendingPermission: undefined });
+    },
+    [sessionId, agent.id, agent.pendingPermission, updateAgent]
+  );
 
   const handleDuplicate = useCallback(async () => {
     if (isDuplicating) return;
-
     setIsDuplicating(true);
     try {
       const newAgentData = await duplicateAgentApi(sessionId, agent.id);
-      // Transform API response to store format and add to store
       addAgent(sessionId, {
         id: newAgentData.id,
         name: newAgentData.name,
         role: newAgentData.role as Agent['role'],
         model: newAgentData.model,
         status: 'idle',
-        color: agent.color, // Copy color from original
+        color: agent.color,
         messages: [],
         mode: (newAgentData.mode || 'ask') as AgentMode,
       });
+      toast.success(`Agent duplicated as "${newAgentData.name}"`);
     } catch (error) {
       console.error('Failed to duplicate agent:', error);
-      alert('Failed to duplicate agent. Please try again.');
+      toast.error('Failed to duplicate agent. Please try again.');
     } finally {
       setIsDuplicating(false);
     }
@@ -369,7 +822,6 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   const handleDeleteMessage = useCallback(
     async (messageId: string) => {
       if (deletingMessageId) return;
-
       setDeletingMessageId(messageId);
       try {
         await deleteAgentMessageApi(sessionId, agent.id, messageId);
@@ -383,51 +835,148 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     [sessionId, agent.id, deletingMessageId, deleteAgentMessage]
   );
 
-  const toggleThinking = useCallback((messageId: string) => {
-    setExpandedThinking((prev) => ({
-      ...prev,
-      [messageId]: !prev[messageId],
-    }));
-  }, []);
-
-  const handleDelete = useCallback(async () => {
-    if (!confirm(`Are you sure you want to delete "${agent.name}"?`)) return;
-
+  const handleDeleteConfirm = useCallback(async () => {
+    setDeleteDialogOpen(false);
     setIsDeleting(true);
     try {
       await deleteAgentApi(sessionId, agent.id);
       removeAgent(sessionId, agent.id);
     } catch (error) {
       console.error('Failed to delete agent:', error);
-      alert('Failed to delete agent. Please try again.');
+      toast.error('Failed to delete agent. Please try again.');
     } finally {
       setIsDeleting(false);
     }
-  }, [sessionId, agent.id, agent.name, removeAgent]);
+  }, [sessionId, agent.id, removeAgent]);
 
-  const availableModels = [
-    { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5' },
-    { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4' },
-    { id: 'gpt-4o', name: 'GPT-4o' },
-    { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
-  ];
+  const handleTogglePlanMode = useCallback(async () => {
+    if (isTogglingPlanMode) return;
+    setIsTogglingPlanMode(true);
+    try {
+      const result = await togglePlanMode(sessionId, agent.id);
+      updateAgent(sessionId, agent.id, {
+        mode: result.mode,
+        previousMode: result.previous_mode ?? undefined,
+      });
+      toast.success(
+        result.toggled_to_plan
+          ? 'Switched to Plan mode (read-only)'
+          : `Switched back to ${result.mode.charAt(0).toUpperCase() + result.mode.slice(1)} mode`
+      );
+    } catch (error) {
+      console.error('Failed to toggle plan mode:', error);
+      toast.error('Failed to toggle plan mode');
+    } finally {
+      setIsTogglingPlanMode(false);
+    }
+  }, [sessionId, agent.id, isTogglingPlanMode, updateAgent]);
+
+  const handleRestoreCheckpoint = useCallback(
+    async (checkpointId: string, description: string | null) => {
+      try {
+        const result = await restoreCheckpoint(checkpointId);
+        if (result.success) {
+          toast.success(`Restored: ${description || 'checkpoint'}`, {
+            description: `${result.files.length} file(s) restored`,
+          });
+        } else {
+          toast.error('Failed to restore checkpoint');
+        }
+      } catch (error) {
+        console.error('Failed to restore checkpoint:', error);
+        toast.error('Failed to restore checkpoint');
+      }
+    },
+    []
+  );
 
   const handleChangeModel = useCallback(
-    (newModel: string) => {
+    async (newModel: string) => {
       updateAgent(sessionId, agent.id, { model: newModel });
+      try {
+        await updateAgentSettings(sessionId, agent.id, { model: newModel });
+      } catch (error) {
+        console.error('Failed to persist model change:', error);
+      }
     },
     [agent.id, sessionId, updateAgent]
   );
 
-  const getModelDisplayName = (modelId: string) => {
-    const model = availableModels.find((m) => m.id === modelId);
-    return model?.name ?? modelId;
-  };
+  const handleSaveThinkingConfig = useCallback(
+    (config: ThinkingConfig) => {
+      updateAgentThinking(sessionId, agent.id, config);
+    },
+    [sessionId, agent.id, updateAgentThinking]
+  );
 
-  // Handle TTS playback for a message
+  // File attachments
+  const handleFileSelect = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (!files || files.length === 0) return;
+
+      if (!currentModelInfo?.supportsVision) {
+        toast.error(
+          `${currentModelInfo?.displayName ?? 'This model'} does not support image input`
+        );
+        return;
+      }
+
+      const newAttachments: AttachmentFile[] = [];
+
+      for (const file of Array.from(files)) {
+        if (!SUPPORTED_IMAGE_TYPES.includes(file.type)) {
+          toast.error(`Unsupported file type: ${file.name}. Use PNG, JPG, GIF, or WebP.`);
+          continue;
+        }
+
+        const sizeMB = file.size / (1024 * 1024);
+        if (sizeMB > MAX_ATTACHMENT_SIZE_MB) {
+          toast.error(
+            `File too large: ${file.name} (${sizeMB.toFixed(1)}MB). Max is ${MAX_ATTACHMENT_SIZE_MB}MB.`
+          );
+          continue;
+        }
+
+        const preview = URL.createObjectURL(file);
+        newAttachments.push({
+          id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          preview,
+          status: 'ready',
+        });
+      }
+
+      setAttachments((prev) => [...prev, ...newAttachments]);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    },
+    [currentModelInfo]
+  );
+
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments((prev) => {
+      const att = prev.find((a) => a.id === id);
+      if (att?.preview) URL.revokeObjectURL(att.preview);
+      return prev.filter((a) => a.id !== id);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!currentModelInfo?.supportsVision && attachments.length > 0) {
+      toast.warning('Attachments cleared: selected model does not support images');
+      attachments.forEach((att) => {
+        if (att.preview) URL.revokeObjectURL(att.preview);
+      });
+      setAttachments([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentModelInfo?.supportsVision, attachments.length]);
+
+  // TTS playback
   const handlePlayMessage = useCallback(
     async (messageId: string, regenerate: boolean = false) => {
-      // If already playing this message, stop it
       if (playingMessageId === messageId && !regenerate) {
         stopPlayback();
         return;
@@ -442,10 +991,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
           playAudioUrl(messageId, result.audio_url);
         }
       } catch (error) {
-        // Provide user-friendly error context
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        const friendlyMessage = getFriendlyErrorMessage('Play Audio', errorMessage);
-        console.error(`[Play Audio] ${friendlyMessage}:`, error);
+        console.error('Failed to play message:', error);
       } finally {
         setSynthesizingMessageId(null);
       }
@@ -453,51 +999,29 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     [sessionId, agent.id, playingMessageId, playAudioUrl, playAudioBase64, stopPlayback]
   );
 
-  // Handle voice recording release - send the transcribed message
+  // Voice recording
   const handleVoiceRelease = useCallback(async () => {
     await stopRecording();
-    // The message will be set via onTranscript callback
-    // We could auto-send here if desired
   }, [stopRecording]);
 
-  // Auto-send when final transcript is received (optional - could be enabled via settings)
-  useEffect(() => {
-    if (currentTranscript && !isRecording && message.trim()) {
-      // Optionally auto-send after voice recording stops
-      // handleSendMessage();
-    }
-  }, [currentTranscript, isRecording, message]);
-
-  // Use refs to avoid recreating socket subscriptions on every state change
+  // Auto-play refs
   const isPlayingRef = useRef(isPlaying);
   const handlePlayMessageRef = useRef(handlePlayMessage);
-
-  // Keep refs up to date
   useEffect(() => {
     isPlayingRef.current = isPlaying;
   }, [isPlaying]);
-
   useEffect(() => {
     handlePlayMessageRef.current = handlePlayMessage;
   }, [handlePlayMessage]);
 
-  // Auto-play new assistant messages when auto_play is enabled
-  // Uses refs to avoid subscription churn when isPlaying/handlePlayMessage changes
+  // Auto-play new messages
   useEffect(() => {
     const unsubscribe = onSocketEvent('agent_message', (data: AgentMessageEvent) => {
-      // Only handle messages for this agent
       if (data.agent_id !== agent.id) return;
-
-      // Only auto-play assistant messages with auto_play flag
       if (data.role !== 'assistant' || !data.auto_play) return;
-
-      // Don't auto-play if already playing something
       if (isPlayingRef.current) return;
-
-      // Trigger playback for this new message
       handlePlayMessageRef.current(data.id);
     });
-
     return unsubscribe;
   }, [agent.id]);
 
@@ -506,11 +1030,10 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       ref={cardRef}
       tabIndex={0}
       className={cn(
-        'flex flex-col rounded-lg border bg-surface overflow-hidden transition-all outline-none focus:ring-2 focus:ring-accent-primary/50',
+        'relative flex flex-col rounded-lg border bg-surface overflow-hidden transition-all outline-none focus:ring-2 focus:ring-accent-primary/50',
         agent.status === 'active' ? borderColor : 'border-border-default',
         agent.status === 'active' && 'shadow-glow',
         expanded && 'h-full',
-        // Attention indicators
         hasAttention &&
           highestPriorityAttention?.type === 'needs_approval' &&
           'ring-2 ring-yellow-500/50 animate-attention-pulse',
@@ -522,163 +1045,42 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
           highestPriorityAttention?.type === 'waiting_input' &&
           'ring-2 ring-blue-500/30'
       )}
+      role="region"
+      aria-label={`Agent: ${agent.name}`}
     >
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-border-subtle px-4 py-3">
-        <div className="flex items-center gap-3">
-          <div className={cn('rounded-md bg-elevated p-2', textColor)}>
-            <Icon className="h-4 w-4" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-medium text-text-primary">{agent.name}</span>
-              <span
-                className={cn(
-                  'h-2 w-2 rounded-full',
-                  agent.status === 'active' && 'bg-accent-success animate-pulse',
-                  agent.status === 'idle' && 'bg-text-muted',
-                  agent.status === 'error' && 'bg-accent-error'
-                )}
-              />
-              {/* Context usage ring */}
-              <ContextUsageRing
-                agentId={agent.id}
-                size="sm"
-                onClick={() => setCompactionDialogOpen(true)}
-              />
-              {/* Mode badge */}
-              <button
-                onClick={() => setModeSettingsOpen(true)}
-                className={cn(
-                  'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-elevated hover:bg-overlay transition-colors',
-                  currentModeConfig.color
-                )}
-                title={`Mode: ${currentModeConfig.label}`}
-              >
-                <currentModeConfig.icon className="h-3 w-3" />
-                {currentModeConfig.label}
-              </button>
-              {/* Auto-switched badge - shows when mode was auto-switched and will revert */}
-              {agent.previousMode && (
-                <span
-                  className="flex items-center gap-1 rounded-full bg-purple-500/20 px-2 py-0.5 text-xs font-medium text-purple-400"
-                  title={`Auto-switched from ${agent.previousMode} mode - will revert after task`}
-                >
-                  <RefreshCw className="h-3 w-3" />
-                  Auto
-                </span>
-              )}
-              {/* Pending approval badge */}
-              {pendingApprovalCount > 0 && (
-                <span className="flex items-center gap-1 rounded-full bg-yellow-500/20 px-2 py-0.5 text-xs font-medium text-yellow-400 animate-pulse">
-                  <Shield className="h-3 w-3" />
-                  {pendingApprovalCount}
-                </span>
-              )}
-              {/* Attention badge */}
-              {hasAttention && (
-                <button
-                  onClick={openPanel}
-                  className={cn(
-                    'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium animate-pulse',
-                    highestPriorityAttention?.type === 'error' && 'bg-red-500/20 text-red-400',
-                    highestPriorityAttention?.type === 'needs_approval' &&
-                      'bg-yellow-500/20 text-yellow-400',
-                    highestPriorityAttention?.type === 'completed' &&
-                      'bg-green-500/20 text-green-400',
-                    highestPriorityAttention?.type === 'waiting_input' &&
-                      'bg-blue-500/20 text-blue-400'
-                  )}
-                  title={highestPriorityAttention?.title}
-                >
-                  <Bell className="h-3 w-3" />
-                  {agentAttentions.length}
-                </button>
-              )}
-              {/* Worktree status badge */}
-              <WorktreeStatus worktree={agentWorktree} />
-            </div>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary">
-                  {getModelDisplayName(agent.model)}
-                  <ChevronDown className="h-3 w-3" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-48">
-                <DropdownMenuLabel>Select Model</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuRadioGroup value={agent.model} onValueChange={handleChangeModel}>
-                  {availableModels.map((model) => (
-                    <DropdownMenuRadioItem key={model.id} value={model.id}>
-                      {model.name}
-                    </DropdownMenuRadioItem>
-                  ))}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </div>
-
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              className="rounded p-1 text-text-muted hover:bg-overlay hover:text-text-secondary"
-              disabled={isDeleting}
-            >
-              {isDeleting ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <MoreVertical className="h-4 w-4" />
-              )}
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-48">
-            <DropdownMenuLabel>Agent Settings</DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={handleRename}>
-              <Pencil className="mr-2 h-4 w-4" />
-              Rename
-            </DropdownMenuItem>
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <Settings2 className="mr-2 h-4 w-4" />
-                Change Model
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="w-48">
-                <DropdownMenuRadioGroup value={agent.model} onValueChange={handleChangeModel}>
-                  {availableModels.map((model) => (
-                    <DropdownMenuRadioItem key={model.id} value={model.id}>
-                      {model.name}
-                    </DropdownMenuRadioItem>
-                  ))}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            <DropdownMenuItem onClick={() => setVoiceSettingsOpen(true)}>
-              <Volume2 className="mr-2 h-4 w-4" />
-              Voice Settings
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setModeSettingsOpen(true)}>
-              <Shield className="mr-2 h-4 w-4" />
-              Mode Settings
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={handleDuplicate} disabled={isDuplicating}>
-              {isDuplicating ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Copy className="mr-2 h-4 w-4" />
-              )}
-              {isDuplicating ? 'Duplicating...' : 'Duplicate'}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={handleDelete} className="text-red-400 focus:text-red-400">
-              <Trash2 className="mr-2 h-4 w-4" />
-              Delete
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
+      <AgentCardHeader
+        agent={agent}
+        sessionId={sessionId}
+        currentModelInfo={currentModelInfo}
+        getModelDisplayName={getModelDisplayName}
+        modelsByTier={modelsByTier}
+        isDeleting={isDeleting}
+        isDuplicating={isDuplicating}
+        isTogglingPlanMode={isTogglingPlanMode}
+        restoringCheckpointId={restoringCheckpointId}
+        agentWorktree={agentWorktree ?? undefined}
+        agentCheckpoints={agentCheckpoints}
+        hasAttention={hasAttention}
+        hasUnread={hasUnread}
+        unreadCount={unreadCount}
+        agentAttentionsCount={agentAttentions.length}
+        highestPriorityAttention={highestPriorityAttention}
+        pendingApprovalCount={pendingApprovalCount}
+        onChangeModel={handleChangeModel}
+        onTogglePlanMode={handleTogglePlanMode}
+        onRestoreCheckpoint={handleRestoreCheckpoint}
+        onOpenCompaction={() => setCompactionDialogOpen(true)}
+        onOpenModeSettings={() => setModeSettingsOpen(true)}
+        onOpenThinkingDialog={() => setThinkingDialogOpen(true)}
+        onOpenVoiceSettings={() => setVoiceSettingsOpen(true)}
+        onOpenAttentionPanel={openPanel}
+        onRename={() => setRenameDialogOpen(true)}
+        onDuplicate={handleDuplicate}
+        onDelete={() => setDeleteDialogOpen(true)}
+        onOpenSlashCommands={isCliAgent ? handleOpenSlashCommands : undefined}
+        onReauthenticate={isCliAgent ? handleClaudeCodeReauthenticate : undefined}
+      />
 
       {/* Messages area */}
       <div
@@ -687,215 +1089,85 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
           'flex-1 overflow-y-auto p-4 space-y-4 min-h-0 selection:bg-accent-primary/30 selection:text-text-primary',
           !expanded && 'max-h-[300px]'
         )}
+        role="log"
+        aria-label="Messages"
       >
-        {agent.messages.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-sm text-text-muted">
-            <p>No messages yet. Start a conversation.</p>
-          </div>
-        ) : (
-          agent.messages.map((msg) => (
-            <div key={msg.id} className="space-y-2 group/message">
-              {/* Thinking block - collapsible for assistant messages */}
-              {msg.role === 'assistant' && msg.thinking && (
-                <div className="ml-0 max-w-[85%]">
+        {/* CLI Agent Login Prompt - shown when auth is needed or unknown and no messages yet */}
+        {isCliAgent &&
+          agent.messages.length === 0 &&
+          (cliAuthStatus === null || cliAuthStatus?.needsAuth) && (
+            <div className="flex h-full items-center justify-center">
+              <div className="text-center space-y-4 max-w-sm">
+                <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-accent-primary/10">
+                  <LogIn className="h-6 w-6 text-accent-primary" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-medium text-text-primary mb-1">
+                    Authentication Required
+                  </h3>
+                  <p className="text-xs text-text-muted">
+                    {agent.role === 'claude-code'
+                      ? 'Sign in with your Anthropic account to use Claude Code.'
+                      : agent.role === 'openai-codex'
+                        ? 'Sign in with your OpenAI account to use Codex.'
+                        : 'Sign in to use this CLI agent.'}
+                  </p>
+                </div>
+                <div className="flex items-center justify-center gap-3">
                   <button
-                    onClick={() => toggleThinking(msg.id)}
-                    className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text-secondary transition-colors"
+                    onClick={handleCliLogin}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-primary text-text-inverse text-sm font-medium hover:bg-accent-primary/90 transition-colors"
                   >
-                    {expandedThinking[msg.id] ? (
-                      <ChevronDown className="h-3 w-3" />
-                    ) : (
-                      <ChevronRight className="h-3 w-3" />
-                    )}
-                    <Lightbulb className="h-3 w-3" />
-                    <span>Thinking</span>
+                    <LogIn className="h-4 w-4" />
+                    Sign In
                   </button>
-                  {expandedThinking[msg.id] && (
-                    <div className="mt-1.5 p-2 rounded-md bg-surface border border-border-subtle text-xs text-text-secondary whitespace-pre-wrap max-h-[200px] overflow-y-auto">
-                      {msg.thinking}
-                    </div>
-                  )}
+                  <button
+                    onClick={handleRefreshAuth}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-bg-tertiary text-text-primary text-sm font-medium hover:bg-bg-secondary transition-colors border border-border-default"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    Refresh
+                  </button>
                 </div>
-              )}
-              <div className={cn('flex gap-3', msg.role === 'user' && 'flex-row-reverse')}>
-                <div
-                  className={cn(
-                    'rounded-lg px-3 py-2 text-sm max-w-[85%] relative',
-                    msg.role === 'user'
-                      ? 'bg-accent-primary text-text-inverse'
-                      : 'bg-elevated text-text-primary'
-                  )}
-                >
-                  {msg.role === 'assistant' ? (
-                    <MarkdownRenderer content={msg.content} />
-                  ) : (
-                    <p className="whitespace-pre-wrap">{msg.content}</p>
-                  )}
-                  <div className="mt-1 flex items-center justify-between gap-2">
-                    <span className="text-xs opacity-60">{formatTimestamp(msg.timestamp)}</span>
-                    <div className="flex items-center gap-1">
-                      {/* Delete message button - visible on hover */}
-                      <button
-                        onClick={() => handleDeleteMessage(msg.id)}
-                        disabled={deletingMessageId === msg.id}
-                        className={cn(
-                          'rounded p-1 transition-colors opacity-0 group-hover/message:opacity-100',
-                          msg.role === 'user'
-                            ? 'hover:bg-white/20 text-text-inverse/60 hover:text-text-inverse'
-                            : 'hover:bg-overlay text-text-muted hover:text-red-400',
-                          deletingMessageId === msg.id && 'opacity-50'
-                        )}
-                        title="Delete message"
-                      >
-                        {deletingMessageId === msg.id ? (
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                        ) : (
-                          <X className="h-3 w-3" />
-                        )}
-                      </button>
-                      {/* TTS playback buttons for assistant messages */}
-                      {msg.role === 'assistant' && (
-                        <>
-                          <button
-                            onClick={() => handlePlayMessage(msg.id)}
-                            disabled={synthesizingMessageId === msg.id}
-                            className={cn(
-                              'rounded p-1 transition-colors hover:bg-overlay',
-                              playingMessageId === msg.id && 'text-accent-primary',
-                              synthesizingMessageId === msg.id && 'opacity-50'
-                            )}
-                            title={playingMessageId === msg.id ? 'Stop playback' : 'Play message'}
-                          >
-                            {synthesizingMessageId === msg.id ? (
-                              <Loader2 className="h-3 w-3 animate-spin" />
-                            ) : playingMessageId === msg.id ? (
-                              <VolumeX className="h-3 w-3" />
-                            ) : (
-                              <Volume2 className="h-3 w-3" />
-                            )}
-                          </button>
-                          <button
-                            onClick={() => handlePlayMessage(msg.id, true)}
-                            disabled={synthesizingMessageId === msg.id}
-                            className={cn(
-                              'rounded p-1 transition-colors hover:bg-overlay text-text-muted hover:text-text-secondary',
-                              synthesizingMessageId === msg.id && 'opacity-50'
-                            )}
-                            title="Regenerate audio summary"
-                          >
-                            <RefreshCw className="h-3 w-3" />
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-              {/* Inline tool calls for this message */}
-              {msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0 && (
-                <div className="space-y-2">
-                  {msg.toolCalls.map((tool) => (
-                    <div key={tool.id}>
-                      {/* Show tool result with proper formatting */}
-                      {tool.status === 'completed' && tool.result && (
-                        <ToolResultDisplay
-                          toolName={tool.name}
-                          result={tool.result}
-                          onPlanApprove={async (planId) => {
-                            if (planId) {
-                              try {
-                                await approvePlan(sessionId, planId);
-                              } catch (error) {
-                                console.error('Failed to approve plan:', error);
-                              }
-                            }
-                          }}
-                          onPlanReject={async (planId) => {
-                            if (planId) {
-                              try {
-                                await rejectPlan(sessionId, planId, 'User rejected');
-                              } catch (error) {
-                                console.error('Failed to reject plan:', error);
-                              }
-                            }
-                          }}
-                        />
-                      )}
-                      {/* Show running/pending indicator */}
-                      {(tool.status === 'running' || tool.status === 'pending') && (
-                        <div className="mt-2 p-2 rounded-md bg-elevated border border-border-subtle flex items-center gap-2">
-                          <span
-                            className={cn(
-                              'h-2 w-2 rounded-full shrink-0',
-                              tool.status === 'running' && 'bg-accent-warning animate-pulse',
-                              tool.status === 'pending' && 'bg-text-muted'
-                            )}
-                          />
-                          <span className="text-xs text-text-secondary">
-                            {tool.status === 'running' ? 'Running' : 'Pending'}...
-                          </span>
-                        </div>
-                      )}
-                      {/* Show error message */}
-                      {tool.status === 'error' && tool.result && (
-                        <div className="mt-2 p-2 rounded-md bg-accent-error/10 border border-accent-error/20 text-accent-error text-xs">
-                          {String(tool.result)}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))
-        )}
-
-        {/* Streaming message or Thinking indicator when agent is processing */}
-        {(agent.status === 'active' || isSending) && (
-          <div className="flex gap-3">
-            <div className="rounded-lg px-3 py-2 text-sm bg-elevated text-text-primary max-w-[85%]">
-              {streamingMessage && streamingMessage.content ? (
-                (() => {
-                  const { displayContent, isToolCallJson } = cleanStreamingContent(
-                    streamingMessage.content
-                  );
-                  return (
-                    <>
-                      {isToolCallJson ? (
-                        <div className="flex items-center gap-2 text-text-secondary">
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          <span>{displayContent}</span>
-                        </div>
-                      ) : (
-                        <MarkdownRenderer content={displayContent} />
-                      )}
-                      <span className="inline-block w-2 h-4 bg-accent-primary animate-pulse ml-0.5 align-middle" />
-                    </>
-                  );
-                })()
-              ) : (
-                <div className="flex items-center gap-2 text-text-secondary">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <span>Thinking...</span>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Stopped message when task was aborted */}
-        {showAbortedMessage && agent.status === 'idle' && (
-          <div className="flex gap-3">
-            <div className="rounded-lg px-3 py-2 text-sm bg-elevated text-text-secondary max-w-[85%]">
-              <div className="flex items-center gap-2">
-                <StopCircle className="h-4 w-4" />
-                <span>Stopped</span>
+                <p className="text-xs text-text-muted mt-3">
+                  After signing in via Terminal, click Refresh to continue.
+                </p>
               </div>
             </div>
-          </div>
+          )}
+
+        {/* Regular message list - hidden when showing login prompt */}
+        {!(
+          isCliAgent &&
+          agent.messages.length === 0 &&
+          (cliAuthStatus === null || cliAuthStatus?.needsAuth)
+        ) && (
+          <AgentMessageList
+            messages={agent.messages}
+            sessionId={sessionId}
+            agentId={agent.id}
+            playingMessageId={playingMessageId}
+            synthesizingMessageId={synthesizingMessageId}
+            deletingMessageId={deletingMessageId}
+            onDeleteMessage={handleDeleteMessage}
+            onPlayMessage={handlePlayMessage}
+            onPlanApprove={async (planId) => {
+              await approvePlan(sessionId, planId);
+            }}
+            onPlanReject={async (planId) => {
+              await rejectPlan(sessionId, planId, 'User rejected');
+            }}
+          />
         )}
 
-        {/* Plan approval actions - show when in Plan mode and last message is from assistant */}
+        {/* Streaming message */}
+        <AgentStreamingMessage
+          streamingMessage={streamingMessage}
+          isActive={agent.status === 'active' || isSending}
+          showAbortedMessage={showAbortedMessage}
+        />
+
+        {/* Plan approval actions */}
         {agent.mode === 'plan' &&
           agent.status === 'idle' &&
           agent.messages.length > 0 &&
@@ -904,13 +1176,9 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
               sessionId={sessionId}
               agentId={agent.id}
               agentName={agent.name}
-              onApprove={(newMode) => {
-                updateAgent(sessionId, agent.id, { mode: newMode });
-              }}
+              onApprove={(newMode) => updateAgent(sessionId, agent.id, { mode: newMode })}
               onRefine={(feedback) => {
-                // Send refinement as a new user message
                 setMessage(feedback);
-                // Trigger send after state update
                 setTimeout(() => {
                   const userMessage = {
                     id: `temp-${Date.now()}`,
@@ -920,36 +1188,100 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                   };
                   addAgentMessage(sessionId, agent.id, userMessage);
                   updateAgent(sessionId, agent.id, { status: 'active' });
-                  sendAgentMessage(sessionId, agent.id, feedback).catch((error) => {
+                  sendAgentMessage(sessionId, agent.id, feedback, {
+                    thinkingConfig: agent.thinkingConfig,
+                  }).catch((error) => {
                     console.error('Failed to send refinement:', error);
                     updateAgent(sessionId, agent.id, { status: 'error' });
+                    toast.error('Failed to send refinement. Please try again.');
                   });
                   setMessage('');
                 }, 0);
               }}
-              onReject={() => {
-                // Dismiss the plan - optionally could add a message or reset
-                updateAgent(sessionId, agent.id, { mode: 'ask' });
-              }}
+              onReject={() => updateAgent(sessionId, agent.id, { mode: 'ask' })}
             />
           )}
 
-        {/* Scroll anchor */}
         <div ref={messagesEndRef} />
       </div>
 
+      {/* Credit error banner */}
+      {showCreditError && (
+        <div className="px-3 pb-2">
+          <CreditExhaustedBanner
+            type="credits"
+            size="sm"
+            onDismiss={() => setShowCreditError(false)}
+          />
+        </div>
+      )}
+
       {/* Input area */}
       <div className="border-t border-border-subtle p-3" data-tour="agent-input">
+        {/* Attachment previews */}
+        {attachments.length > 0 && (
+          <div className="flex gap-2 mb-2 flex-wrap">
+            {attachments.map((att) => (
+              <div key={att.id} className="relative group">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={att.preview}
+                  alt={att.name}
+                  className="h-16 w-16 object-cover rounded border border-border-subtle"
+                />
+                <button
+                  onClick={() => removeAttachment(att.id)}
+                  className="absolute -top-1 -right-1 bg-red-500 rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                  title="Remove attachment"
+                >
+                  <X className="h-3 w-3 text-white" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Real-time transcription preview */}
         {isRecording && currentTranscript && (
           <div className="mb-2 rounded-md bg-elevated px-3 py-2 text-sm text-text-secondary">
-            <span className="mr-2 inline-block h-2 w-2 animate-pulse rounded-full bg-accent-error" />
+            <span
+              className="mr-2 inline-block h-2 w-2 animate-pulse rounded-full bg-accent-error"
+              aria-hidden="true"
+            />
             {currentTranscript}
           </div>
         )}
 
         <div className="flex items-center gap-2">
-          {/* Mic button - push to talk */}
+          {/* Attachment button */}
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={!currentModelInfo?.supportsVision}
+            className={cn(
+              'rounded-md p-2 transition-colors',
+              currentModelInfo?.supportsVision
+                ? 'bg-elevated text-text-muted hover:bg-overlay hover:text-text-secondary'
+                : 'bg-elevated text-text-muted/50 cursor-not-allowed'
+            )}
+            title={
+              currentModelInfo?.supportsVision
+                ? 'Attach image (PNG, JPG, GIF, WebP)'
+                : `${currentModelInfo?.displayName ?? 'This model'} does not support images`
+            }
+          >
+            <Paperclip className="h-4 w-4" />
+          </button>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            multiple
+            onChange={handleFileSelect}
+            className="hidden"
+          />
+
+          {/* Mic button */}
           <button
             onMouseDown={startRecording}
             onMouseUp={handleVoiceRelease}
@@ -973,23 +1305,67 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
             <Mic className="h-4 w-4" />
           </button>
 
-          <input
-            ref={inputRef}
-            type="text"
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={isRecording ? 'Listening...' : `Ask ${agent.name.toLowerCase()}...`}
-            className="flex-1 bg-elevated border border-border-default rounded-md px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-border-focus focus:outline-none selection:bg-accent-primary selection:text-white"
-            disabled={isRecording}
-          />
+          <div className="relative flex-1">
+            <input
+              ref={inputRef}
+              type="text"
+              value={message}
+              onChange={handleInputChange}
+              onKeyDown={handleKeyDown}
+              placeholder={
+                isRecording
+                  ? 'Listening...'
+                  : `Type / for commands or ask ${agent.name.toLowerCase()}...`
+              }
+              className="w-full bg-elevated border border-border-default rounded-md px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-border-focus focus:outline-none selection:bg-accent-primary selection:text-white"
+              disabled={isRecording || cliNeedsAuth}
+              autoComplete="off"
+              data-1p-ignore
+            />
+            {showSlashMenu && (
+              <SlashCommandMenu
+                query={slashQuery}
+                sessionId={sessionId}
+                onSelect={handleSlashCommandSelect}
+                onClose={() => setShowSlashMenu(false)}
+              />
+            )}
+            {/* Claude Code CLI Permission Approval - inline above input */}
+            {agent.pendingPermission && (
+              <ApprovalDialog
+                approval={{
+                  id: agent.pendingPermission.requestId,
+                  agent_id: agent.id,
+                  session_id: sessionId,
+                  action_type: 'command_execute',
+                  action_details: {
+                    command: agent.pendingPermission.command ?? undefined,
+                    tool_name: agent.pendingPermission.toolName,
+                  },
+                  status: 'pending',
+                  expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+                  created_at: agent.pendingPermission.timestamp,
+                }}
+                agentMode={agent.mode}
+                onClose={() => handlePermissionApproval(false, false)}
+                onApprovalComplete={handlePermissionApproval}
+              />
+            )}
+          </div>
+
           <button
-            onClick={handleSendMessage}
-            disabled={!message.trim() || isSending || isRecording}
+            onClick={() => handleSendMessage()}
+            disabled={
+              (!message.trim() && attachments.length === 0) ||
+              isSending ||
+              isRecording ||
+              cliNeedsAuth ||
+              (attachments.length > 0 && !currentModelInfo?.supportsVision)
+            }
             className={cn(
               'rounded-md p-2 transition-colors',
-              message.trim() && !isSending && !isRecording
-                ? 'bg-accent-primary text-text-inverse hover:bg-opacity-90'
+              (message.trim() || attachments.length > 0) && !isSending && !isRecording
+                ? 'bg-accent-primary text-text-inverse hover:bg-opacity-90 cursor-pointer'
                 : 'bg-elevated text-text-muted cursor-not-allowed'
             )}
           >
@@ -1002,7 +1378,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         </div>
       </div>
 
-      {/* Voice Settings Dialog */}
+      {/* Dialogs */}
       {voiceSettingsOpen && (
         <VoiceSettingsDialog
           onOpenChange={setVoiceSettingsOpen}
@@ -1011,8 +1387,6 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
           agentName={agent.name}
         />
       )}
-
-      {/* Mode Settings Dialog */}
       {modeSettingsOpen && (
         <AgentModeSelector
           onOpenChange={setModeSettingsOpen}
@@ -1021,22 +1395,80 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
           agentName={agent.name}
           currentMode={agent.mode || 'ask'}
           currentAllowlist={agent.commandAllowlist}
-          onModeUpdate={(mode, allowlist) => {
-            updateAgent(sessionId, agent.id, { mode, commandAllowlist: allowlist });
-          }}
+          onModeUpdate={(mode, allowlist) =>
+            updateAgent(sessionId, agent.id, { mode, commandAllowlist: allowlist })
+          }
         />
       )}
-
-      {/* Context Compaction Dialog */}
       {compactionDialogOpen && (
         <CompactionDialog
           agentId={agent.id}
           agentName={agent.name}
           sessionId={sessionId}
           onClose={() => setCompactionDialogOpen(false)}
-          onCompact={async (instructions) => {
-            await compactAgentContext(agent.id, instructions);
+          onCompact={async (options) => {
+            // For CLI agents, send /compact as a message instead of using Podex API
+            if (isCliAgentRole(agent.role)) {
+              const compactMessage = options?.customInstructions
+                ? `/compact ${options.customInstructions}`
+                : '/compact';
+              // Add user message to UI
+              const userMessage = {
+                id: `temp-${Date.now()}`,
+                role: 'user' as const,
+                content: compactMessage,
+                timestamp: new Date(),
+              };
+              addAgentMessage(sessionId, agent.id, userMessage);
+              updateAgent(sessionId, agent.id, { status: 'active' });
+              // Send to CLI agent
+              await sendAgentMessage(sessionId, agent.id, compactMessage, {
+                thinkingConfig: agent.thinkingConfig,
+              });
+            } else {
+              // For Podex native agents, use the context API
+              await compactAgentContext(agent.id, options);
+            }
           }}
+        />
+      )}
+
+      <ConfirmDialog
+        isOpen={deleteDialogOpen}
+        title="Delete Agent"
+        message={`Are you sure you want to delete "${agent.name}"? This action cannot be undone.`}
+        confirmLabel="Delete"
+        confirmVariant="danger"
+        onConfirm={handleDeleteConfirm}
+        onCancel={() => setDeleteDialogOpen(false)}
+      />
+
+      <PromptDialog
+        isOpen={renameDialogOpen}
+        title="Rename Agent"
+        message="Enter a new name for this agent:"
+        defaultValue={agent.name}
+        placeholder="Agent name"
+        onConfirm={handleRenameConfirm}
+        onCancel={() => setRenameDialogOpen(false)}
+      />
+
+      <ThinkingConfigDialog
+        open={thinkingDialogOpen}
+        onOpenChange={setThinkingDialogOpen}
+        config={agent.thinkingConfig}
+        onSave={handleSaveThinkingConfig}
+        modelName={currentModelInfo?.displayName ?? 'Model'}
+        agentRole={agent.role}
+      />
+
+      {/* CLI Agent Slash Commands - single responsive component */}
+      {isCliAgent && cliAgentType && (
+        <SlashCommandDialog
+          isOpen={slashCommandSheetOpen}
+          onClose={() => setSlashCommandSheetOpen(false)}
+          onSelect={handleCliSlashCommand}
+          agentType={cliAgentType}
         />
       )}
     </div>

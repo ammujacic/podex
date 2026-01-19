@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.audit_logger import AuditAction, AuditLogger, AuditStatus
 from src.database import get_db
 from src.database.models import User
 from src.middleware.auth import get_current_user_id
@@ -164,6 +165,14 @@ async def verify_mfa_setup(
     user.mfa_enabled = True
     await db.commit()
 
+    # Audit log: MFA enabled
+    audit = AuditLogger(db).set_context(request=request, user_id=user_id, user_email=user.email)
+    await audit.log_auth(
+        AuditAction.AUTH_MFA_ENABLED,
+        status=AuditStatus.SUCCESS,
+        resource_id=user_id,
+    )
+
     logger.info("MFA enabled", user_id=user_id)
 
     return {"message": "MFA has been enabled successfully"}
@@ -217,6 +226,14 @@ async def disable_mfa(
     user.mfa_secret = None
     user.mfa_backup_codes = None
     await db.commit()
+
+    # Audit log: MFA disabled
+    audit = AuditLogger(db).set_context(request=request, user_id=user_id, user_email=user.email)
+    await audit.log_auth(
+        AuditAction.AUTH_MFA_DISABLED,
+        status=AuditStatus.SUCCESS,
+        resource_id=user_id,
+    )
 
     logger.info("MFA disabled", user_id=user_id)
 

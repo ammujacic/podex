@@ -1,7 +1,6 @@
 """Comprehensive tests for local-pod configuration."""
 
 import tempfile
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest

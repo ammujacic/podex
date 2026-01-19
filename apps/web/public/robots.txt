@@ -1,0 +1,28 @@
+# Podex Robots.txt
+# https://podex.dev
+
+User-agent: *
+Allow: /
+
+# Disallow admin and API routes
+Disallow: /admin/
+Disallow: /api/
+Disallow: /auth/callback
+Disallow: /_next/
+
+# Disallow user-specific pages that shouldn't be indexed
+Disallow: /settings/
+Disallow: /dashboard/
+Disallow: /workspace/
+
+# Allow important static assets
+Allow: /icons/
+Allow: /assets/
+Allow: /*.js$
+Allow: /*.css$
+
+# Sitemap location
+Sitemap: https://podex.dev/sitemap.xml
+
+# Crawl delay (optional, for rate limiting)
+Crawl-delay: 1

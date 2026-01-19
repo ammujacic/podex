@@ -13,6 +13,59 @@ import structlog
 
 logger = structlog.get_logger()
 
+# Dangerous environment variable names that could enable code injection
+_DANGEROUS_ENV_VAR_PREFIXES = frozenset(
+    {
+        "LD_",  # LD_PRELOAD, LD_LIBRARY_PATH, etc.
+        "DYLD_",  # macOS dynamic linker
+        "PYTHON",  # PYTHONPATH, PYTHONSTARTUP, PYTHONHOME
+        "RUBY",  # RUBYLIB, RUBYOPT
+        "PERL",  # PERL5LIB, PERL5OPT
+        "NODE_",  # NODE_OPTIONS, NODE_PATH
+        "JAVA_",  # JAVA_TOOL_OPTIONS, JAVA_OPTIONS
+        "_JAVA_",  # _JAVA_OPTIONS
+        "BASH_",  # BASH_ENV
+    }
+)
+
+_DANGEROUS_ENV_VARS = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "SHELL",
+        "ENV",
+        "ZDOTDIR",
+        "CLASSPATH",
+    }
+)
+
+
+def _is_safe_env_var(key: str) -> bool:
+    """Check if an environment variable name is safe to pass to subprocess.
+
+    Args:
+        key: Environment variable name
+
+    Returns:
+        True if safe, False if potentially dangerous
+    """
+    key_upper = key.upper()
+
+    # Check exact matches
+    if key_upper in _DANGEROUS_ENV_VARS:
+        return False
+
+    # Check prefixes
+    for prefix in _DANGEROUS_ENV_VAR_PREFIXES:
+        if key_upper.startswith(prefix):
+            return False
+
+    # Validate key format (alphanumeric and underscore only)
+    if not key.replace("_", "").replace("-", "").isalnum():
+        return False
+
+    return True
+
 
 class MCPTransport(str, Enum):
     """MCP transport types."""
@@ -161,8 +214,21 @@ class MCPClient:
             return False
 
         try:
-            # Prepare environment
-            env = {**os.environ, **self._config.env_vars}
+            # Prepare environment with sanitization to prevent code injection
+            env = {**os.environ}
+            # Sanitize user-provided env vars
+            for key, value in self._config.env_vars.items():
+                if not _is_safe_env_var(key):
+                    logger.warning(
+                        "Blocked dangerous environment variable for MCP server",
+                        key=key,
+                        server=self._config.name,
+                    )
+                    continue
+                # Sanitize value - remove null bytes and limit length
+                if value:
+                    value = value.replace("\x00", "")[:4096]
+                env[key] = value
 
             # Start subprocess
             self._process = await asyncio.create_subprocess_exec(

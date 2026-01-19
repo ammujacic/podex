@@ -63,3 +63,9 @@ beforeAll(() => {
 afterAll(() => {
   console.error = originalError;
 });
+
+// Mock CSS imports
+vi.mock('*.css', () => ({}));
+vi.mock('*.scss', () => ({}));
+vi.mock('*.sass', () => ({}));
+vi.mock('*.less', () => ({}));

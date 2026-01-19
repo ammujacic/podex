@@ -8,23 +8,19 @@ via the compute service. This allows:
 """
 
 from http import HTTPStatus
-from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
-from src.database.connection import get_db
 from src.database.models import Session, Workspace
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
+from src.routes.dependencies import DbSession
 
 router = APIRouter()
-
-# Type alias for database session dependency
-DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
 class PreviewPortConfig(BaseModel):
@@ -231,7 +227,7 @@ async def get_active_ports(
     methods=["GET", "HEAD", "OPTIONS"],
 )
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def proxy_get_request(  # noqa: PLR0913
+async def proxy_get_request(
     workspace_id: str,
     port: int,
     path: str,
@@ -258,7 +254,7 @@ async def proxy_get_request(  # noqa: PLR0913
     methods=["POST", "PUT", "PATCH", "DELETE"],
 )
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def proxy_mutation_request(  # noqa: PLR0913
+async def proxy_mutation_request(
     workspace_id: str,
     port: int,
     path: str,

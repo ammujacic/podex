@@ -2,24 +2,22 @@
 
 import secrets
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.database import get_db
+from src.audit_logger import AuditAction, AuditLogger
 from src.database.models import Session as SessionModel
 from src.database.models import SessionShare
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
+from src.routes.dependencies import DbSession, get_current_user_id
 from src.session_sync.manager import session_sync_manager
 from src.session_sync.models import SharingMode
 
 router = APIRouter()
-
-# Type alias for database session dependency
-DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
 # ============== Request/Response Models ==============
@@ -78,18 +76,6 @@ class SessionSharesResponse(BaseModel):
 
 
 # ============== Helper Functions ==============
-
-
-def get_current_user_id(request: Request) -> str:
-    """Get current user ID from request state.
-
-    Raises:
-        HTTPException: If user is not authenticated.
-    """
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return str(user_id)
 
 
 async def check_session_owner(
@@ -177,43 +163,59 @@ async def share_session(
             detail="Either user_id or email is required",
         )
 
-    # Check if share already exists
-    existing_query = select(SessionShare).where(
-        SessionShare.session_id == session_id,
-        (SessionShare.shared_with_id == data.user_id)
-        if data.user_id
-        else (SessionShare.shared_with_email == data.email),
-    )
-    existing_result = await db.execute(existing_query)
-    existing = existing_result.scalar_one_or_none()
+    # Use upsert to handle race conditions atomically
+    # Build the values for insert
+    from uuid import uuid4
 
-    if existing:
-        # Update existing share
-        existing.sharing_mode = data.sharing_mode.value
-        await db.commit()
-        return ShareResponse(
-            id=existing.id,
-            session_id=existing.session_id,
-            shared_with_id=existing.shared_with_id,
-            shared_with_email=existing.shared_with_email,
-            sharing_mode=existing.sharing_mode,
-            created_at=existing.created_at,
-        )
+    share_id = str(uuid4())
+    now = datetime.now(UTC)
 
-    # Create new share
-    share = SessionShare(
+    insert_stmt = pg_insert(SessionShare).values(
+        id=share_id,
         session_id=session_id,
         shared_with_id=data.user_id,
         shared_with_email=data.email,
         sharing_mode=data.sharing_mode.value,
+        created_at=now,
     )
-    db.add(share)
+
+    # Define the conflict resolution - update sharing_mode if exists
+    # Conflict on (session_id, shared_with_id) or (session_id, shared_with_email)
+    if data.user_id:
+        # PostgreSQL needs a unique constraint - we'll use DO UPDATE with exclusion
+        upsert_stmt = insert_stmt.on_conflict_do_update(
+            index_elements=["session_id", "shared_with_id"],
+            set_={"sharing_mode": data.sharing_mode.value},
+        )
+    else:
+        upsert_stmt = insert_stmt.on_conflict_do_update(
+            index_elements=["session_id", "shared_with_email"],
+            set_={"sharing_mode": data.sharing_mode.value},
+        )
+
+    # Execute upsert and return the result
+    returning_stmt = upsert_stmt.returning(SessionShare)
+    result = await db.execute(returning_stmt)
+    share = result.scalar_one()
     await db.commit()
 
     # Update session sync state
     session_state = await session_sync_manager.get_session_state(session_id)
     if session_state and data.user_id:
-        session_state.shared_with.append(data.user_id)
+        if data.user_id not in session_state.shared_with:
+            session_state.shared_with.append(data.user_id)
+
+    # Audit log: session shared
+    audit = AuditLogger(db).set_context(request=request, user_id=user_id)
+    await audit.log_session_event(
+        AuditAction.SESSION_SHARED,
+        session_id=session_id,
+        details={
+            "shared_with_id": data.user_id,
+            "shared_with_email": data.email,
+            "sharing_mode": data.sharing_mode.value,
+        },
+    )
 
     return ShareResponse(
         id=share.id,
@@ -238,8 +240,8 @@ async def create_share_link(
     user_id = get_current_user_id(request)
     session = await check_session_owner(session_id, user_id, db)
 
-    # Generate unique share code
-    share_code = secrets.token_urlsafe(16)
+    # Generate unique share code - use 32 bytes for stronger security
+    share_code = secrets.token_urlsafe(32)
 
     # Calculate expiration
     expires_at = None
@@ -257,6 +259,18 @@ async def create_share_link(
     if session_state:
         session_state.share_link = share_code
         session_state.default_sharing_mode = data.sharing_mode
+
+    # Audit log: share link created
+    audit = AuditLogger(db).set_context(request=request, user_id=user_id)
+    await audit.log_session_event(
+        AuditAction.SESSION_SHARED,
+        session_id=session_id,
+        details={
+            "action": "share_link_created",
+            "sharing_mode": data.sharing_mode.value,
+            "expires_at": expires_at.isoformat() if expires_at else None,
+        },
+    )
 
     return ShareLinkResponse(
         share_link=f"/s/{share_code}",
@@ -287,6 +301,14 @@ async def revoke_share_link(
     session_state = await session_sync_manager.get_session_state(session_id)
     if session_state:
         session_state.share_link = None
+
+    # Audit log: share link revoked
+    audit = AuditLogger(db).set_context(request=request, user_id=user_id)
+    await audit.log_session_event(
+        AuditAction.SESSION_SHARED,
+        session_id=session_id,
+        details={"action": "share_link_revoked"},
+    )
 
     return {"message": "Share link revoked"}
 
@@ -327,7 +349,7 @@ async def list_shares(
 
 @router.put("/{session_id}/shares/{share_id}", response_model=ShareResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def update_share(  # noqa: PLR0913
+async def update_share(
     session_id: str,
     share_id: str,
     data: UpdateShareRequest,
@@ -422,25 +444,28 @@ async def join_via_link(
             "sharing_mode": SharingMode.FULL_CONTROL.value,
         }
 
-    # Check if user already has access
-    existing_query = select(SessionShare).where(
-        SessionShare.session_id == session.id,
-        SessionShare.shared_with_id == user_id,
-    )
-    existing_result = await db.execute(existing_query)
-    existing = existing_result.scalar_one_or_none()
-
     sharing_mode = session.share_link_mode or SharingMode.CAN_EDIT.value
 
-    if not existing:
-        # Create share for this user
-        share = SessionShare(
-            session_id=session.id,
-            shared_with_id=user_id,
-            sharing_mode=sharing_mode,
-        )
-        db.add(share)
-        await db.commit()
+    # Use upsert to handle race condition when joining
+    from uuid import uuid4
+
+    share_id = str(uuid4())
+    now = datetime.now(UTC)
+
+    insert_stmt = pg_insert(SessionShare).values(
+        id=share_id,
+        session_id=session.id,
+        shared_with_id=user_id,
+        sharing_mode=sharing_mode,
+        created_at=now,
+    )
+
+    # On conflict (user already has access), do nothing (keep existing permissions)
+    upsert_stmt = insert_stmt.on_conflict_do_nothing(
+        index_elements=["session_id", "shared_with_id"],
+    )
+    await db.execute(upsert_stmt)
+    await db.commit()
 
     return {
         "session_id": session.id,

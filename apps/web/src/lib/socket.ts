@@ -105,6 +105,7 @@ export interface LayoutChangeEvent {
     | 'active_agent'
     | 'agent_layout'
     | 'file_preview_layout'
+    | 'editor_layout'
     | 'sidebar'
     | 'full_sync';
   payload: Record<string, unknown>;
@@ -206,6 +207,30 @@ export interface ApprovalResponseEvent {
   added_to_allowlist: boolean;
 }
 
+// Permission request from Claude Code CLI
+export interface PermissionRequestEvent {
+  session_id: string;
+  agent_id: string;
+  request_id: string;
+  command: string | null;
+  description: string | null;
+  tool_name: string;
+  action_type: 'command_execute';
+  action_details: {
+    command: string | null;
+    tool_name: string;
+  };
+  timestamp: string;
+}
+
+export interface PermissionDecisionEvent {
+  session_id: string;
+  agent_id: string;
+  request_id: string;
+  approved: boolean;
+  timestamp: string;
+}
+
 export interface AgentModeUpdateEvent {
   session_id: string;
   agent_id: string;
@@ -236,6 +261,7 @@ export interface ContextUsageUpdateEvent {
 export interface CompactionStartedEvent {
   agent_id: string;
   session_id: string;
+  trigger_type?: 'manual' | 'auto';
 }
 
 export interface CompactionCompletedEvent {
@@ -245,6 +271,7 @@ export interface CompactionCompletedEvent {
   tokens_after: number;
   messages_removed: number;
   summary: string | null;
+  trigger_type?: 'manual' | 'auto';
 }
 
 // Checkpoint events
@@ -387,6 +414,123 @@ export interface ToolCallEndEvent {
   timestamp: string;
 }
 
+// Extension sync events
+export interface ExtensionInstalledEvent {
+  extension_id: string;
+  namespace: string;
+  name: string;
+  display_name: string;
+  version: string;
+  scope: 'user' | 'workspace';
+  workspace_id?: string;
+  icon_url?: string;
+  timestamp: string;
+}
+
+export interface ExtensionUninstalledEvent {
+  extension_id: string;
+  scope: 'user' | 'workspace';
+  workspace_id?: string;
+  timestamp: string;
+}
+
+export interface ExtensionToggledEvent {
+  extension_id: string;
+  enabled: boolean;
+  scope: 'user' | 'workspace';
+  workspace_id?: string;
+  timestamp: string;
+}
+
+export interface ExtensionSettingsChangedEvent {
+  extension_id: string;
+  settings: Record<string, unknown>;
+  scope: 'user' | 'workspace';
+  workspace_id?: string;
+  timestamp: string;
+}
+
+export interface ExtensionSubscribedEvent {
+  user_id: string;
+}
+
+// Pending change events (agent diff review)
+export interface PendingChangeProposedEvent {
+  id: string;
+  session_id: string;
+  agent_id: string;
+  agent_name: string;
+  file_path: string;
+  original_content: string | null;
+  proposed_content: string;
+  description: string | null;
+  created_at: string;
+}
+
+export interface PendingChangeResolvedEvent {
+  id: string;
+  session_id: string;
+  status: 'accepted' | 'rejected';
+  file_path: string;
+}
+
+// Skill execution events
+export interface SkillStartEvent {
+  session_id: string;
+  agent_id: string;
+  message_id: string;
+  skill_name: string;
+  skill_slug: string;
+  total_steps: number;
+}
+
+export interface SkillStepEvent {
+  session_id: string;
+  agent_id: string;
+  message_id: string;
+  step_name: string;
+  step_index: number;
+  step_status: 'running' | 'success' | 'failed' | 'skipped' | 'error';
+}
+
+export interface SkillCompleteEvent {
+  session_id: string;
+  agent_id: string;
+  message_id: string;
+  skill_name: string;
+  skill_slug: string;
+  success: boolean;
+  duration_ms: number;
+}
+
+/**
+ * Event emitted when a CLI agent's configuration changes.
+ * Enables bi-directional sync between CLI tools and Podex UI.
+ */
+export interface AgentConfigUpdateEvent {
+  session_id: string;
+  agent_id: string;
+  updates: {
+    model?: string;
+    mode?: string;
+    thinking_enabled?: boolean;
+    thinking_budget?: number;
+    context_compacted?: boolean;
+  };
+  source: 'cli' | 'user' | 'system';
+  timestamp: string;
+}
+
+/**
+ * Event emitted when workspace status changes (running, standby, error, etc.)
+ */
+export interface WorkspaceStatusEvent {
+  workspace_id: string;
+  status: 'pending' | 'running' | 'standby' | 'stopped' | 'error';
+  standby_at?: string;
+  error?: string;
+}
+
 export interface SocketEvents {
   agent_message: (data: AgentMessageEvent) => void;
   agent_status: (data: AgentStatusEvent) => void;
@@ -412,6 +556,9 @@ export interface SocketEvents {
   // Agent approval events
   approval_request: (data: ApprovalRequestEvent) => void;
   approval_response: (data: ApprovalResponseEvent) => void;
+  // Claude Code CLI permission events
+  permission_request: (data: PermissionRequestEvent) => void;
+  permission_decision: (data: PermissionDecisionEvent) => void;
   agent_mode_update: (data: AgentModeUpdateEvent) => void;
   agent_auto_mode_switch: (data: AgentAutoModeSwitchEvent) => void;
   // Context window events
@@ -435,10 +582,37 @@ export interface SocketEvents {
   agent_stream_end: (data: AgentStreamEndEvent) => void;
   tool_call_start: (data: ToolCallStartEvent) => void;
   tool_call_end: (data: ToolCallEndEvent) => void;
+  // Extension sync events
+  extension_installed: (data: ExtensionInstalledEvent) => void;
+  extension_uninstalled: (data: ExtensionUninstalledEvent) => void;
+  extension_toggled: (data: ExtensionToggledEvent) => void;
+  extension_settings_changed: (data: ExtensionSettingsChangedEvent) => void;
+  extension_subscribed: (data: ExtensionSubscribedEvent) => void;
+  // Pending change events (agent diff review)
+  pending_change_proposed: (data: PendingChangeProposedEvent) => void;
+  pending_change_resolved: (data: PendingChangeResolvedEvent) => void;
+  // Skill execution events
+  skill_start: (data: SkillStartEvent) => void;
+  skill_step: (data: SkillStepEvent) => void;
+  skill_complete: (data: SkillCompleteEvent) => void;
+  // CLI agent config sync events
+  agent_config_update: (data: AgentConfigUpdateEvent) => void;
+  // Workspace status events
+  workspace_status: (data: WorkspaceStatusEvent) => void;
 }
+
+// Track active session for auto-rejoin on reconnect
+interface ActiveSession {
+  sessionId: string;
+  userId: string;
+  authToken?: string;
+}
+
+let activeSession: ActiveSession | null = null;
 
 /**
  * Get or create the Socket.IO client instance.
+ * Uses exponential backoff with more reconnection attempts for better reliability.
  */
 export function getSocket(): Socket {
   if (!socket) {
@@ -446,49 +620,87 @@ export function getSocket(): Socket {
       autoConnect: false,
       transports: ['websocket', 'polling'],
       reconnection: true,
+      // Exponential backoff: starts at 1s, doubles each attempt, max 30s
       reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      reconnectionAttempts: 5,
+      reconnectionDelayMax: 30000,
+      // Increased attempts (10 attempts = ~5 min total with exponential backoff)
+      reconnectionAttempts: 10,
+      // Random jitter to prevent thundering herd
+      randomizationFactor: 0.5,
+      // Timeout for connection attempts
+      timeout: 20000,
     });
 
     socket.on('connect', () => {
       connectionState.connected = true;
       connectionState.error = null;
-      notifyConnectionListeners();
-    });
-
-    socket.on('disconnect', (reason) => {
-      connectionState.connected = false;
-      connectionState.disconnectReason = reason;
-      notifyConnectionListeners();
-    });
-
-    socket.on('connect_error', (error) => {
-      connectionState.connected = false;
-      connectionState.error = error.message;
-      notifyConnectionListeners();
-    });
-
-    socket.on('reconnect_attempt', (attempt) => {
-      connectionState.reconnecting = true;
-      connectionState.reconnectAttempt = attempt;
-      notifyConnectionListeners();
-    });
-
-    socket.on('reconnect', () => {
       connectionState.reconnecting = false;
       connectionState.reconnectAttempt = 0;
       notifyConnectionListeners();
     });
 
-    socket.on('reconnect_failed', () => {
+    socket.on('disconnect', (reason: string) => {
+      connectionState.connected = false;
+      connectionState.disconnectReason = reason;
+      notifyConnectionListeners();
+    });
+
+    socket.on('connect_error', (error: Error) => {
+      connectionState.connected = false;
+      connectionState.error = error.message;
+      notifyConnectionListeners();
+    });
+
+    socket.io.on('reconnect_attempt', (attempt: number) => {
+      connectionState.reconnecting = true;
+      connectionState.reconnectAttempt = attempt;
+      notifyConnectionListeners();
+    });
+
+    socket.io.on('reconnect', () => {
       connectionState.reconnecting = false;
-      connectionState.error = 'Reconnection failed after maximum attempts';
+      connectionState.reconnectAttempt = 0;
+      connectionState.error = null;
+      notifyConnectionListeners();
+
+      // Auto-rejoin session after reconnection
+      if (activeSession) {
+        const { sessionId, userId, authToken } = activeSession;
+        socket?.emit('session_join', {
+          session_id: sessionId,
+          user_id: userId,
+          ...(authToken && { auth_token: authToken }),
+        });
+      }
+    });
+
+    socket.io.on('reconnect_failed', () => {
+      connectionState.reconnecting = false;
+      connectionState.error =
+        'Reconnection failed after maximum attempts. Please refresh the page.';
       notifyConnectionListeners();
     });
   }
 
   return socket;
+}
+
+/**
+ * Manually trigger a reconnection attempt.
+ * Useful for UI "Reconnect" buttons when auto-reconnect has failed.
+ */
+export function reconnectSocket(): void {
+  if (socket) {
+    // Reset state
+    connectionState.error = null;
+    connectionState.reconnecting = true;
+    connectionState.reconnectAttempt = 1;
+    notifyConnectionListeners();
+
+    // Force disconnect and reconnect
+    socket.disconnect();
+    socket.connect();
+  }
 }
 
 /**
@@ -513,15 +725,36 @@ export function disconnectSocket(): void {
 /**
  * Join a session room to receive updates.
  * Waits for socket connection before emitting join event.
+ * Stores session info for automatic rejoin after reconnection.
+ *
+ * Security Note: Auth token is transmitted via WebSocket. The connection
+ * should always use WSS (WebSocket Secure) in production. The token is
+ * validated server-side and not stored in the socket state.
  */
 export function joinSession(sessionId: string, userId: string, authToken?: string): void {
   const sock = getSocket();
 
+  // Store session info for auto-rejoin on reconnect
+  activeSession = { sessionId, userId, authToken };
+
+  // Warn in development if not using secure connection
+  if (
+    typeof window !== 'undefined' &&
+    window.location.protocol === 'http:' &&
+    process.env.NODE_ENV === 'production'
+  ) {
+    console.warn(
+      '[Socket] Warning: Using insecure WebSocket connection in production. Auth tokens may be exposed.'
+    );
+  }
+
   const emitJoin = () => {
+    // Only send token if present; server should validate via secure session cookie as fallback
     sock.emit('session_join', {
       session_id: sessionId,
       user_id: userId,
-      auth_token: authToken,
+      // Token sent for backwards compatibility; prefer cookie-based auth when available
+      ...(authToken && { auth_token: authToken }),
     });
   };
 
@@ -536,10 +769,16 @@ export function joinSession(sessionId: string, userId: string, authToken?: strin
 
 /**
  * Leave a session room.
+ * Clears the active session to prevent auto-rejoin on reconnect.
  */
 export function leaveSession(sessionId: string, userId: string): void {
   const sock = getSocket();
   sock.emit('session_leave', { session_id: sessionId, user_id: userId });
+
+  // Clear active session to prevent auto-rejoin
+  if (activeSession?.sessionId === sessionId) {
+    activeSession = null;
+  }
 }
 
 /**
@@ -687,4 +926,45 @@ export function emitApprovalResponse(
     approved,
     added_to_allowlist: addToAllowlist,
   });
+}
+
+// Claude Code CLI permission response
+export function emitPermissionResponse(
+  sessionId: string,
+  agentId: string,
+  requestId: string,
+  approved: boolean,
+  command: string | null = null,
+  toolName: string | null = null,
+  addToAllowlist: boolean = false
+): void {
+  const sock = getSocket();
+  sock.emit('permission_response', {
+    session_id: sessionId,
+    agent_id: agentId,
+    request_id: requestId,
+    approved,
+    command,
+    tool_name: toolName,
+    add_to_allowlist: addToAllowlist,
+  });
+}
+
+// Extension sync functions
+/**
+ * Subscribe to extension sync events for the authenticated user.
+ * This allows real-time updates when extensions are installed/uninstalled/toggled
+ * on other devices.
+ */
+export function subscribeToExtensions(authToken: string): void {
+  const sock = getSocket();
+  sock.emit('extension_subscribe', { auth_token: authToken });
+}
+
+/**
+ * Unsubscribe from extension sync events.
+ */
+export function unsubscribeFromExtensions(): void {
+  const sock = getSocket();
+  sock.emit('extension_unsubscribe', {});
 }

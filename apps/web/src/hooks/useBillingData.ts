@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from 'react';
-import { api } from '@/lib/api';
 import {
   getSubscription,
   listSubscriptionPlans,
@@ -10,6 +9,11 @@ import {
   type CreditBalanceResponse,
   type InvoiceResponse,
 } from '@/lib/api';
+import {
+  initiateSubscriptionCheckout,
+  openStripePortal,
+  initiateCreditsCheckout,
+} from '@/lib/billing-utils';
 
 interface UseBillingDataReturn {
   subscription: SubscriptionResponse | null;
@@ -74,66 +78,17 @@ export function useBillingData(): UseBillingDataReturn {
   }, [fetchData]);
 
   const handlePlanChange = useCallback(
-    async (planSlug: string, billingCycle: 'monthly' | 'yearly') => {
-      try {
-        const response = await api.post<{ url: string }>('/api/billing/checkout/subscription', {
-          plan_slug: planSlug,
-          billing_cycle: billingCycle,
-          success_url: `${window.location.origin}/settings/billing?success=true`,
-          cancel_url: `${window.location.origin}/settings/plans`,
-        });
-
-        if (response.url) {
-          window.location.href = response.url;
-        } else {
-          throw new Error('No checkout URL returned');
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Failed to initiate checkout';
-        console.error('Error initiating plan change:', err);
-        throw new Error(message);
-      }
-    },
+    (planSlug: string, billingCycle: 'monthly' | 'yearly') =>
+      initiateSubscriptionCheckout(planSlug, billingCycle),
     []
   );
 
-  const handleOpenStripePortal = useCallback(async () => {
-    try {
-      const response = await api.post<{ url: string }>('/api/billing/portal', {
-        return_url: `${window.location.origin}/settings/billing`,
-      });
+  const handleOpenStripePortal = useCallback(() => openStripePortal(), []);
 
-      if (response.url) {
-        window.location.href = response.url;
-      } else {
-        throw new Error('No portal URL returned');
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to open billing portal';
-      console.error('Error opening Stripe portal:', err);
-      throw new Error(message);
-    }
-  }, []);
-
-  const handlePurchaseCredits = useCallback(async (amount: number) => {
-    try {
-      const response = await api.post<{ url: string }>('/api/billing/checkout/credits', {
-        amount_cents: amount * 100, // Convert dollars to cents
-        success_url: `${window.location.origin}/settings/billing?credits_success=true`,
-        cancel_url: `${window.location.origin}/settings/billing`,
-      });
-
-      if (response.url) {
-        window.location.href = response.url;
-      } else {
-        throw new Error('No checkout URL returned');
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to initiate credit purchase';
-      console.error('Error purchasing credits:', err);
-      throw new Error(message);
-    }
-  }, []);
+  const handlePurchaseCredits = useCallback(
+    (amount: number) => initiateCreditsCheckout(amount),
+    []
+  );
 
   return {
     subscription,

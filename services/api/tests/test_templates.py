@@ -39,24 +39,20 @@ class TestTemplateEndpoints:
 class TestAgentTemplateEndpoints:
     """Tests for /api/agent-templates endpoints."""
 
-    def test_list_agent_templates(self, client: TestClient) -> None:
-        """List agent templates should return templates."""
+    def test_list_agent_templates_requires_auth(self, client: TestClient) -> None:
+        """List agent templates should require authentication."""
         response = client.get("/api/agent-templates")
-        assert response.status_code == 200
-        data = response.json()
-        assert isinstance(data, list)
+        assert response.status_code == 401
 
-    def test_get_agent_template(self, client: TestClient) -> None:
-        """Get agent template by id."""
+    def test_get_agent_template_requires_auth(self, client: TestClient) -> None:
+        """Get agent template should require authentication."""
         response = client.get("/api/agent-templates/architect")
-        assert response.status_code == 200
-        data = response.json()
-        assert "name" in data
+        assert response.status_code == 401
 
-    def test_get_agent_template_not_found(self, client: TestClient) -> None:
-        """Get agent template should return 404 for non-existent template."""
+    def test_get_agent_template_not_found_requires_auth(self, client: TestClient) -> None:
+        """Get agent template should require authentication even for non-existent template."""
         response = client.get("/api/agent-templates/nonexistent")
-        assert response.status_code == 404
+        assert response.status_code == 401
 
     def test_create_custom_agent_template_requires_auth(self, client: TestClient) -> None:
         """Create custom agent template should require authentication."""

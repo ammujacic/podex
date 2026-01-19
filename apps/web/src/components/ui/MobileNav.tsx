@@ -1,45 +1,71 @@
 'use client';
 
-import { usePathname, useRouter } from 'next/navigation';
-import { Home, Plus, Settings, LayoutGrid, Bot } from 'lucide-react';
+import { useRouter, usePathname } from 'next/navigation';
+import {
+  X,
+  Home,
+  Settings,
+  Plus,
+  LogOut,
+  User,
+  Monitor,
+  ChevronRight,
+  FolderTree,
+  GitBranch,
+  Search,
+  AlertCircle,
+  Bot,
+  Puzzle,
+  BarChart3,
+  Terminal,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUIStore } from '@/stores/ui';
+import { useAuthStore } from '@/stores/auth';
+import { useSessionStore } from '@/stores/session';
 
-interface NavItem {
-  href: string;
-  label: string;
-  icon: React.ReactNode;
-  onClick?: () => void;
+// Widget items for quick access
+const widgetItems = [
+  { id: 'files', label: 'Files', icon: <FolderTree className="h-4 w-4" /> },
+  { id: 'git', label: 'Git', icon: <GitBranch className="h-4 w-4" /> },
+  { id: 'search', label: 'Search', icon: <Search className="h-4 w-4" /> },
+  { id: 'problems', label: 'Problems', icon: <AlertCircle className="h-4 w-4" /> },
+  { id: 'agents', label: 'Agents', icon: <Bot className="h-4 w-4" /> },
+  { id: 'mcp', label: 'MCP', icon: <Puzzle className="h-4 w-4" /> },
+  { id: 'usage', label: 'Usage', icon: <BarChart3 className="h-4 w-4" /> },
+  { id: 'terminal', label: 'Terminal', icon: <Terminal className="h-4 w-4" /> },
+];
+
+// Mobile menu component (hamburger slide-out menu)
+interface MobileMenuProps {
+  isOpen: boolean;
+  onClose: () => void;
 }
 
-export function MobileNav() {
-  const pathname = usePathname();
+export function MobileMenu({ isOpen, onClose }: MobileMenuProps) {
   const router = useRouter();
-  useUIStore();
+  const pathname = usePathname();
+  const { user, logout } = useAuthStore();
+  const sessions = useSessionStore((state) => state.sessions);
+  const openMobileWidget = useUIStore((state) => state.openMobileWidget);
 
-  const navItems: NavItem[] = [
+  // Get sessions as array, sorted by name
+  const sessionsList = Object.values(sessions).sort((a, b) => a.name.localeCompare(b.name));
+
+  // Check if currently viewing a session
+  const currentSessionId = pathname?.startsWith('/session/') ? pathname.split('/')[2] : null;
+  const isInSession = !!currentSessionId;
+
+  const menuItems = [
     {
       href: '/dashboard',
-      label: 'Home',
+      label: 'Dashboard',
       icon: <Home className="h-5 w-5" />,
     },
     {
-      href: '/dashboard',
-      label: 'Sessions',
-      icon: <LayoutGrid className="h-5 w-5" />,
-    },
-    {
-      href: '#',
-      label: 'New',
-      icon: <Plus className="h-6 w-6" />,
-      onClick: () => {
-        router.push('/session/new');
-      },
-    },
-    {
-      href: '/agents',
-      label: 'Agents',
-      icon: <Bot className="h-5 w-5" />,
+      href: '/session/new',
+      label: 'New Session',
+      icon: <Plus className="h-5 w-5" />,
     },
     {
       href: '/settings',
@@ -48,56 +74,195 @@ export function MobileNav() {
     },
   ];
 
-  const isActive = (href: string) => {
-    if (href === '#') return false;
-    if (href === '/dashboard' && pathname === '/dashboard') return true;
-    if (href !== '/dashboard' && pathname.startsWith(href)) return true;
-    return false;
+  const handleNavigate = (href: string) => {
+    router.push(href);
+    onClose();
   };
 
+  const handleLogout = async () => {
+    await logout();
+    onClose();
+    router.push('/');
+  };
+
+  const handleOpenWidget = (widgetId: string) => {
+    openMobileWidget(widgetId);
+    onClose();
+  };
+
+  if (!isOpen) return null;
+
   return (
-    <nav className="mobile-nav md:hidden" role="navigation" aria-label="Mobile navigation">
-      <div className="flex items-center justify-around">
-        {navItems.map((item) => {
-          const active = isActive(item.href);
-          const isNewButton = item.label === 'New';
+    <>
+      {/* Backdrop */}
+      <div
+        className="fixed inset-0 bg-void/80 backdrop-blur-sm z-50 md:hidden"
+        onClick={onClose}
+        aria-hidden="true"
+      />
 
-          return (
+      {/* Menu panel - slides in from right */}
+      <div
+        className={cn(
+          'fixed inset-y-0 right-0 z-50 md:hidden',
+          'w-72 bg-surface border-l border-border-default',
+          'animate-slide-in-right',
+          'flex flex-col'
+        )}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Mobile menu"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 h-14 border-b border-border-subtle">
+          <span className="text-lg font-semibold text-text-primary">Menu</span>
+          <button
+            onClick={onClose}
+            className="p-2 rounded-lg hover:bg-surface-hover transition-colors"
+            aria-label="Close menu"
+          >
+            <X className="h-5 w-5 text-text-secondary" />
+          </button>
+        </div>
+
+        {/* User info */}
+        {user && (
+          <div className="px-4 py-3 border-b border-border-subtle">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-accent-primary/20 flex items-center justify-center">
+                <User className="h-5 w-5 text-accent-primary" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-text-primary truncate">
+                  {user.name || 'User'}
+                </p>
+                <p className="text-xs text-text-tertiary truncate">{user.email}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Navigation items */}
+        <nav className="py-2 border-b border-border-subtle">
+          {menuItems.map((item) => (
             <button
-              key={item.label}
-              onClick={() => {
-                if (item.onClick) {
-                  item.onClick();
-                } else {
-                  router.push(item.href);
-                }
-              }}
+              key={item.href}
+              onClick={() => handleNavigate(item.href)}
               className={cn(
-                'mobile-nav-item touch-manipulation',
-                active && 'active',
-                isNewButton && 'relative'
+                'w-full flex items-center gap-3 px-4 py-3',
+                'text-left text-text-primary',
+                'hover:bg-surface-hover active:bg-surface-active',
+                'transition-colors touch-manipulation'
               )}
-              aria-label={item.label}
-              aria-current={active ? 'page' : undefined}
             >
-              {isNewButton ? (
-                <div className="flex items-center justify-center w-12 h-12 -mt-6 rounded-full bg-accent-primary text-text-inverse shadow-glow">
-                  {item.icon}
-                </div>
-              ) : (
-                <>
-                  {item.icon}
-                  <span className="text-2xs font-medium">{item.label}</span>
-                </>
-              )}
+              <span className="text-text-secondary">{item.icon}</span>
+              <span className="font-medium">{item.label}</span>
             </button>
-          );
-        })}
-      </div>
+          ))}
+        </nav>
 
-      {/* Safe area spacer for iOS */}
-      <div className="h-safe-bottom" />
-    </nav>
+        {/* Quick access widgets - only show when in a session */}
+        {isInSession && (
+          <div className="py-2 border-b border-border-subtle">
+            <p className="px-4 py-2 text-xs font-medium text-text-tertiary uppercase tracking-wide">
+              Tools
+            </p>
+            <div className="grid grid-cols-4 gap-1 px-3">
+              {widgetItems.map((widget) => (
+                <button
+                  key={widget.id}
+                  onClick={() => handleOpenWidget(widget.id)}
+                  className={cn(
+                    'flex flex-col items-center gap-1 p-2 rounded-lg',
+                    'hover:bg-surface-hover active:bg-surface-active',
+                    'transition-colors touch-manipulation'
+                  )}
+                >
+                  <span className="text-text-secondary">{widget.icon}</span>
+                  <span className="text-2xs text-text-tertiary">{widget.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Sessions list */}
+        <div className="flex-1 overflow-y-auto">
+          {sessionsList.length > 0 && (
+            <div className="py-2">
+              <p className="px-4 py-2 text-xs font-medium text-text-tertiary uppercase tracking-wide">
+                Open Sessions
+              </p>
+              {sessionsList.map((session) => {
+                const isActive = session.id === currentSessionId;
+                const statusColor =
+                  session.workspaceStatus === 'running'
+                    ? 'bg-status-success'
+                    : session.workspaceStatus === 'pending'
+                      ? 'bg-status-warning animate-pulse'
+                      : session.workspaceStatus === 'standby'
+                        ? 'bg-status-warning'
+                        : 'bg-status-error';
+
+                return (
+                  <button
+                    key={session.id}
+                    onClick={() => handleNavigate(`/session/${session.id}`)}
+                    className={cn(
+                      'w-full flex items-center gap-3 px-4 py-3',
+                      'text-left',
+                      'hover:bg-surface-hover active:bg-surface-active',
+                      'transition-colors touch-manipulation',
+                      isActive && 'bg-accent-primary/10'
+                    )}
+                  >
+                    <Monitor
+                      className={cn(
+                        'h-5 w-5',
+                        isActive ? 'text-accent-primary' : 'text-text-secondary'
+                      )}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p
+                        className={cn(
+                          'font-medium truncate',
+                          isActive ? 'text-accent-primary' : 'text-text-primary'
+                        )}
+                      >
+                        {session.name}
+                      </p>
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        <span className={cn('w-1.5 h-1.5 rounded-full', statusColor)} />
+                        <span className="text-xs text-text-tertiary">{session.branch}</span>
+                      </div>
+                    </div>
+                    <ChevronRight className="h-4 w-4 text-text-tertiary flex-shrink-0" />
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="border-t border-border-subtle p-4">
+          <button
+            onClick={handleLogout}
+            className={cn(
+              'w-full flex items-center gap-3 px-4 py-3 rounded-lg',
+              'text-status-error hover:bg-status-error/10',
+              'transition-colors touch-manipulation'
+            )}
+          >
+            <LogOut className="h-5 w-5" />
+            <span className="font-medium">Log out</span>
+          </button>
+        </div>
+
+        {/* Safe area */}
+        <div className="h-safe-bottom" />
+      </div>
+    </>
   );
 }
 
@@ -107,10 +272,19 @@ interface BottomSheetProps {
   onClose: () => void;
   title?: string;
   children: React.ReactNode;
+  height?: 'half' | 'full';
 }
 
-export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetProps) {
+export function BottomSheet({
+  isOpen,
+  onClose,
+  title,
+  children,
+  height = 'full',
+}: BottomSheetProps) {
   if (!isOpen) return null;
+
+  const heightClass = height === 'half' ? 'max-h-[50vh]' : 'max-h-[85vh]';
 
   return (
     <>
@@ -127,29 +301,39 @@ export function BottomSheet({ isOpen, onClose, title, children }: BottomSheetPro
           'fixed inset-x-0 bottom-0 z-50 md:hidden',
           'bg-surface border-t border-border-default rounded-t-2xl',
           'animate-slide-in-bottom',
-          'max-h-[85vh] overflow-hidden'
+          heightClass,
+          'overflow-hidden flex flex-col'
         )}
         role="dialog"
         aria-modal="true"
         aria-label={title}
       >
         {/* Handle */}
-        <div className="flex justify-center pt-3 pb-2">
+        <div className="flex justify-center pt-3 pb-2 flex-shrink-0">
           <div className="w-10 h-1 bg-border-strong rounded-full" />
         </div>
 
         {/* Header */}
         {title && (
-          <div className="px-4 pb-3 border-b border-border-subtle">
-            <h2 className="text-lg font-semibold text-text-primary">{title}</h2>
+          <div className="px-4 pb-3 border-b border-border-subtle flex-shrink-0">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-text-primary">{title}</h2>
+              <button
+                onClick={onClose}
+                className="p-2 -mr-2 rounded-lg hover:bg-surface-hover transition-colors"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5 text-text-secondary" />
+              </button>
+            </div>
           </div>
         )}
 
         {/* Content */}
-        <div className="overflow-y-auto max-h-[calc(85vh-80px)] overscroll-contain">{children}</div>
+        <div className="flex-1 overflow-y-auto overscroll-contain">{children}</div>
 
         {/* Safe area */}
-        <div className="h-safe-bottom" />
+        <div className="h-safe-bottom flex-shrink-0" />
       </div>
     </>
   );
@@ -161,6 +345,7 @@ interface FloatingActionButtonProps {
   icon: React.ReactNode;
   label: string;
   className?: string;
+  expanded?: boolean;
 }
 
 export function FloatingActionButton({
@@ -168,14 +353,15 @@ export function FloatingActionButton({
   icon,
   label,
   className,
+  expanded = false,
 }: FloatingActionButtonProps) {
   return (
     <button
       onClick={onClick}
       className={cn(
-        'fixed right-4 bottom-20 md:bottom-6 z-40',
-        'flex items-center justify-center',
-        'w-14 h-14 rounded-full',
+        'fixed z-40 md:hidden',
+        'flex items-center justify-center gap-2',
+        expanded ? 'px-4 h-12 rounded-full' : 'w-14 h-14 rounded-full',
         'bg-accent-primary text-text-inverse',
         'shadow-glow hover:shadow-glow-intense',
         'transition-all duration-200',
@@ -186,6 +372,7 @@ export function FloatingActionButton({
       aria-label={label}
     >
       {icon}
+      {expanded && <span className="font-medium">{label}</span>}
     </button>
   );
 }
@@ -228,8 +415,6 @@ export function PullToRefreshIndicator({ isRefreshing, progress }: PullToRefresh
 // Swipeable list item
 interface SwipeableItemProps {
   children: React.ReactNode;
-  _onSwipeLeft?: () => void;
-  _onSwipeRight?: () => void;
   leftAction?: React.ReactNode;
   rightAction?: React.ReactNode;
   className?: string;
@@ -241,7 +426,6 @@ export function SwipeableItem({
   rightAction,
   className,
 }: SwipeableItemProps) {
-  // This is a simplified version - in production you'd use a library like react-swipeable
   return (
     <div className={cn('relative overflow-hidden', className)}>
       {/* Left action (swipe right to reveal) */}
@@ -254,4 +438,18 @@ export function SwipeableItem({
       <div className="relative bg-surface touch-manipulation">{children}</div>
     </div>
   );
+}
+
+// Hook for mobile menu state
+export function useMobileMenu() {
+  const isOpen = useUIStore((state) => state.isMobileMenuOpen);
+  const setOpen = useUIStore((state) => state.setMobileMenuOpen);
+  const toggle = useUIStore((state) => state.toggleMobileMenu);
+
+  return {
+    isOpen,
+    open: () => setOpen(true),
+    close: () => setOpen(false),
+    toggle,
+  };
 }

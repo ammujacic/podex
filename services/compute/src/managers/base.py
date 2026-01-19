@@ -1,6 +1,7 @@
 """Abstract base class for compute managers."""
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Any
 
@@ -29,8 +30,10 @@ class ComputeManager(ABC):
 
     Implemented by:
     - DockerComputeManager: Local development using Docker containers
-    - AWSComputeManager: Production using ECS Fargate / Firecracker
+    - GCPComputeManager: Production using Cloud Run / GKE
     """
+
+    _file_sync: Any = None
 
     @abstractmethod
     async def create_workspace(
@@ -61,13 +64,21 @@ class ComputeManager(ABC):
         """
 
     @abstractmethod
+    async def restart_workspace(self, workspace_id: str) -> None:
+        """Restart a stopped workspace.
+
+        Args:
+            workspace_id: The workspace ID to restart
+        """
+
+    @abstractmethod
     async def delete_workspace(self, workspace_id: str, preserve_files: bool = True) -> None:
         """Delete a workspace and clean up resources.
 
         Args:
             workspace_id: The workspace ID to delete
-            preserve_files: If True, sync files to S3 before deletion.
-                          If False, also delete the S3 files.
+            preserve_files: If True, sync files to GCS before deletion.
+                          If False, also delete the GCS files.
         """
 
     @abstractmethod
@@ -230,3 +241,53 @@ class ComputeManager(ABC):
         implementation does nothing.
         """
         pass
+
+    def set_file_sync(self, file_sync: Any) -> None:
+        """Set the file sync service for workspace file synchronization.
+
+        This is an optional method that implementations can override to
+        enable file sync capabilities.
+
+        Args:
+            file_sync: The file sync service instance
+        """
+        self._file_sync = file_sync
+
+    def get_file_sync(self) -> Any:
+        """Get the file sync service instance.
+
+        Returns:
+            The file sync service instance, or None if not configured
+        """
+        return self._file_sync
+
+    async def exec_command_stream(
+        self,
+        workspace_id: str,
+        command: str,
+        working_dir: str | None = None,
+        timeout: int = 60,
+    ) -> AsyncGenerator[str, None]:
+        """Execute a command and stream output chunks as an async generator.
+
+        This is used for interactive commands like authentication flows
+        where we want to stream output in real-time to the user.
+
+        Default implementation falls back to regular exec and yields once.
+        Subclasses can override for true streaming behavior.
+
+        Args:
+            workspace_id: The workspace ID
+            command: Shell command to execute
+            working_dir: Working directory (default: /home/dev)
+            timeout: Command timeout in seconds
+
+        Yields:
+            Output chunks as strings (stdout and stderr combined)
+        """
+        # Default implementation: run command and yield full output
+        result = await self.exec_command(workspace_id, command, working_dir, timeout)
+        if result.stdout:
+            yield result.stdout
+        if result.stderr:
+            yield result.stderr

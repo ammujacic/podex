@@ -9,20 +9,29 @@ from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
+from src.audit_logger import AuditAction, AuditLogger
 from src.cache import (
     cache_delete,
     cache_get,
     cache_set,
-    invalidate_pattern,
+    invalidate_user_sessions,
     session_key,
 )
 from src.compute_client import compute_client
 from src.config import settings
-from src.database import FileChange, PodTemplate, SubscriptionPlan, UserSubscription, get_db
+from src.database import Agent as AgentModel
+from src.database import (
+    FileChange,
+    PlatformSetting,
+    PodTemplate,
+    SubscriptionPlan,
+    UserSubscription,
+)
 from src.database import Session as SessionModel
 from src.database import Workspace as WorkspaceModel
 from src.exceptions import ComputeClientError, ComputeServiceHTTPError
@@ -31,13 +40,35 @@ from src.middleware.rate_limit import (
     RATE_LIMIT_UPLOAD,
     limiter,
 )
+from src.routes.dependencies import DbSession, get_current_user_id
 
 logger = structlog.get_logger()
 
 router = APIRouter()
 
-# Type alias for database session dependency
-DbSession = Annotated[AsyncSession, Depends(get_db)]
+# First agent always gets cyan color
+DEFAULT_AGENT_COLOR = "#00e5ff"
+
+
+async def _get_default_model_for_role(db: AsyncSession, role: str) -> str:
+    """Get the default model for an agent role from platform settings."""
+    result = await db.execute(
+        select(PlatformSetting).where(PlatformSetting.key == "agent_model_defaults")
+    )
+    setting = result.scalar_one_or_none()
+
+    if setting and setting.value and isinstance(setting.value, dict):
+        defaults = setting.value
+        if role in defaults and isinstance(defaults[role], dict) and "model_id" in defaults[role]:
+            return str(defaults[role]["model_id"])
+
+    raise HTTPException(
+        status_code=500,
+        detail=(
+            f"No default model configured for role '{role}'. "
+            "Check agent_model_defaults in platform settings."
+        ),
+    )
 
 
 @dataclass
@@ -103,8 +134,7 @@ class SessionResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SessionListResponse(BaseModel):
@@ -119,38 +149,41 @@ class SessionListResponse(BaseModel):
     next_cursor: str | None = None
 
 
-def get_current_user_id(request: Request) -> str:
-    """Get current user ID from request state.
-
-    Raises:
-        HTTPException: If user is not authenticated.
-    """
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return str(user_id)
-
-
 async def check_session_quota(db: AsyncSession, user_id: str) -> None:
     """Check if user has reached their session quota.
+
+    Uses SELECT FOR UPDATE with NOWAIT on the user's subscription row to prevent
+    race conditions where concurrent requests could exceed the quota. The lock
+    serializes all concurrent session creation requests for the same user.
 
     Args:
         db: Database session
         user_id: User ID to check
 
     Raises:
-        HTTPException: If user has exceeded their session quota
+        HTTPException: If user has exceeded their session quota or lock acquisition fails
     """
-    # Get user's active subscription and plan
-    sub_query = (
-        select(UserSubscription)
-        .where(UserSubscription.user_id == user_id)
-        .where(UserSubscription.status.in_(["active", "trialing"]))
-        .order_by(UserSubscription.created_at.desc())
-        .limit(1)
-    )
-    sub_result = await db.execute(sub_query)
-    subscription = sub_result.scalar_one_or_none()
+    from sqlalchemy.exc import OperationalError
+
+    try:
+        # Lock the user's subscription row with NOWAIT to fail fast on contention
+        # This prevents race conditions where multiple requests could exceed the quota
+        sub_query = (
+            select(UserSubscription)
+            .where(UserSubscription.user_id == user_id)
+            .where(UserSubscription.status.in_(["active", "trialing"]))
+            .order_by(UserSubscription.created_at.desc())
+            .limit(1)
+            .with_for_update(nowait=True)
+        )
+        sub_result = await db.execute(sub_query)
+        subscription = sub_result.scalar_one_or_none()
+    except OperationalError:
+        # Lock acquisition failed - another request is creating a session
+        raise HTTPException(
+            status_code=409,
+            detail="Another session creation is in progress. Please try again.",
+        ) from None
 
     if not subscription:
         # No active subscription - use free tier limits (3 sessions)
@@ -163,7 +196,8 @@ async def check_session_quota(db: AsyncSession, user_id: str) -> None:
         plan = plan_result.scalar_one_or_none()
         max_sessions = plan.max_sessions if plan else 3
 
-    # Count current active (non-archived) sessions
+    # Count current active (non-archived) sessions (within the lock)
+    # The lock ensures this count is accurate and won't change until we commit
     count_query = (
         select(func.count())
         .select_from(SessionModel)
@@ -187,6 +221,7 @@ async def build_workspace_config(
     template_id: str | None,
     git_url: str | None,
     tier: str | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     """Build workspace configuration from template and git URL.
 
@@ -195,14 +230,34 @@ async def build_workspace_config(
         template_id: Optional template ID to fetch configuration from
         git_url: Optional git URL to clone
         tier: Optional hardware tier (defaults to "starter")
+        user_id: Optional user ID to fetch git config from
 
     Returns:
         Workspace configuration dict for the compute service
     """
+    from src.database.models import UserConfig
+
     config: dict[str, Any] = {
         "repos": [git_url] if git_url else [],
         "tier": tier or "starter",  # Default to starter tier if not specified
     }
+
+    # Fetch user's configuration if user_id provided
+    if user_id:
+        user_config_result = await db.execute(
+            select(UserConfig).where(UserConfig.user_id == user_id)
+        )
+        user_config = user_config_result.scalar_one_or_none()
+        if user_config:
+            # Git configuration
+            if user_config.git_name:
+                config["git_name"] = user_config.git_name
+            if user_config.git_email:
+                config["git_email"] = user_config.git_email
+            # Dotfiles sync configuration
+            config["sync_dotfiles"] = user_config.sync_dotfiles
+            if user_config.dotfiles_paths:
+                config["dotfiles_paths"] = user_config.dotfiles_paths
 
     if template_id:
         # Fetch template configuration
@@ -280,8 +335,10 @@ async def create_session(
         logger.exception("Failed to create session", error=str(e), user_id=user_id)
         raise HTTPException(status_code=500, detail="Failed to create session") from None
 
-    # Build workspace config from template
-    workspace_config = await build_workspace_config(db, data.template_id, data.git_url, data.tier)
+    # Build workspace config from template (includes user's git config)
+    workspace_config = await build_workspace_config(
+        db, data.template_id, data.git_url, data.tier, user_id
+    )
 
     # Provision workspace in compute service
     try:
@@ -303,8 +360,43 @@ async def create_session(
         )
         # Session still usable, compute will be provisioned on first access
 
-    # Invalidate user's sessions list cache
-    await invalidate_pattern(f"sessions:user:{user_id}:*")
+    # Invalidate user's sessions list cache (O(1) version increment)
+    await invalidate_user_sessions(user_id)
+
+    # Audit log: session created
+    audit = AuditLogger(db).set_context(request=request, user_id=user_id)
+    await audit.log_session_event(
+        AuditAction.SESSION_CREATED,
+        session_id=session.id,
+        details={"name": session.name, "git_url": session.git_url, "branch": session.branch},
+    )
+
+    # Create default Chat agent for the session
+    try:
+        default_model = await _get_default_model_for_role(db, "chat")
+        default_agent = AgentModel(
+            session_id=session.id,
+            name="Chat",
+            role="chat",
+            model=default_model,
+            status="idle",
+            mode="auto",
+            config={"color": DEFAULT_AGENT_COLOR},
+        )
+        db.add(default_agent)
+        await db.commit()
+        logger.info(
+            "Created default Chat agent for session",
+            session_id=str(session.id),
+            agent_id=str(default_agent.id),
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to create default Chat agent",
+            session_id=str(session.id),
+            error=str(e),
+        )
+        # Don't fail session creation if default agent creation fails
 
     return SessionResponse(
         id=session.id,
@@ -496,7 +588,7 @@ async def archive_session(
 
     # Invalidate caches
     await cache_delete(session_key(session_id))
-    await invalidate_pattern(f"sessions:user:{user_id}:*")
+    await invalidate_user_sessions(user_id)
 
     return SessionResponse(
         id=session.id,
@@ -543,7 +635,7 @@ async def unarchive_session(
 
     # Invalidate caches
     await cache_delete(session_key(session_id))
-    await invalidate_pattern(f"sessions:user:{user_id}:*")
+    await invalidate_user_sessions(user_id)
 
     return SessionResponse(
         id=session.id,
@@ -580,12 +672,23 @@ async def delete_session(
     if session.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
 
+    # Capture session info before deletion for audit log
+    session_name = session.name
+
     await db.delete(session)
     await db.commit()
 
+    # Audit log: session deleted
+    audit = AuditLogger(db).set_context(request=request, user_id=user_id)
+    await audit.log_session_event(
+        AuditAction.SESSION_DELETED,
+        session_id=session_id,
+        details={"name": session_name},
+    )
+
     # Invalidate caches
     await cache_delete(session_key(session_id))
-    await invalidate_pattern(f"sessions:user:{user_id}:*")
+    await invalidate_user_sessions(user_id)
 
     return {"message": "Session deleted"}
 
@@ -602,6 +705,9 @@ class LayoutResponse(BaseModel):
     file_preview_layouts: dict[str, dict[str, Any]] = {}
     sidebar_open: bool = True
     sidebar_width: int = 280
+    editor_grid_card_id: str | None = None
+    editor_grid_span: dict[str, Any] | None = None
+    editor_freeform_position: dict[str, Any] | None = None
 
 
 class LayoutUpdateRequest(BaseModel):
@@ -613,6 +719,9 @@ class LayoutUpdateRequest(BaseModel):
     file_preview_layouts: dict[str, dict[str, Any]] | None = None
     sidebar_open: bool | None = None
     sidebar_width: int | None = None
+    editor_grid_card_id: str | None = None
+    editor_grid_span: dict[str, Any] | None = None
+    editor_freeform_position: dict[str, Any] | None = None
 
 
 @router.get("/{session_id}/layout", response_model=LayoutResponse)
@@ -637,6 +746,9 @@ async def get_session_layout(
         file_preview_layouts=layout.get("file_preview_layouts", {}),
         sidebar_open=layout.get("sidebar_open", True),
         sidebar_width=layout.get("sidebar_width", 280),
+        editor_grid_card_id=layout.get("editor_grid_card_id"),
+        editor_grid_span=layout.get("editor_grid_span"),
+        editor_freeform_position=layout.get("editor_freeform_position"),
     )
 
 
@@ -669,10 +781,18 @@ async def update_session_layout(
         layout["sidebar_open"] = data.sidebar_open
     if data.sidebar_width is not None:
         layout["sidebar_width"] = data.sidebar_width
+    if data.editor_grid_card_id is not None:
+        layout["editor_grid_card_id"] = data.editor_grid_card_id
+    if data.editor_grid_span is not None:
+        layout["editor_grid_span"] = data.editor_grid_span
+    if data.editor_freeform_position is not None:
+        layout["editor_freeform_position"] = data.editor_freeform_position
 
     # Save back to session
     settings["layout"] = layout
     session.settings = settings
+    # Mark settings as modified for SQLAlchemy to detect JSONB changes
+    flag_modified(session, "settings")
     await db.commit()
 
     return LayoutResponse(
@@ -682,12 +802,15 @@ async def update_session_layout(
         file_preview_layouts=layout.get("file_preview_layouts", {}),
         sidebar_open=layout.get("sidebar_open", True),
         sidebar_width=layout.get("sidebar_width", 280),
+        editor_grid_card_id=layout.get("editor_grid_card_id"),
+        editor_grid_span=layout.get("editor_grid_span"),
+        editor_freeform_position=layout.get("editor_freeform_position"),
     )
 
 
 @router.patch("/{session_id}/layout/agent/{agent_id}")
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def update_agent_layout(  # noqa: PLR0913
+async def update_agent_layout(
     session_id: str,
     agent_id: str,
     request: Request,
@@ -710,6 +833,8 @@ async def update_agent_layout(  # noqa: PLR0913
     layout["agent_layouts"] = agent_layouts
     settings["layout"] = layout
     session.settings = settings
+    # Mark settings as modified for SQLAlchemy to detect JSONB changes
+    flag_modified(session, "settings")
     await db.commit()
 
     return current
@@ -717,7 +842,7 @@ async def update_agent_layout(  # noqa: PLR0913
 
 @router.patch("/{session_id}/layout/file-preview/{preview_id}")
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def update_file_preview_layout(  # noqa: PLR0913
+async def update_file_preview_layout(
     session_id: str,
     preview_id: str,
     request: Request,
@@ -740,9 +865,47 @@ async def update_file_preview_layout(  # noqa: PLR0913
     layout["file_preview_layouts"] = file_preview_layouts
     settings["layout"] = layout
     session.settings = settings
+    # Mark settings as modified for SQLAlchemy to detect JSONB changes
+    flag_modified(session, "settings")
     await db.commit()
 
     return current
+
+
+@router.patch("/{session_id}/layout/editor")
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def update_editor_layout(
+    session_id: str,
+    request: Request,
+    response: Response,
+    data: dict[str, Any],
+    db: DbSession,
+) -> dict[str, Any]:
+    """Update the editor grid card's layout."""
+    session = await get_session_or_404(session_id, request, db)
+
+    settings: dict[str, Any] = session.settings or {}
+    layout: dict[str, Any] = settings.get("layout", {})
+
+    # Update editor layout fields
+    if "editor_grid_card_id" in data:
+        layout["editor_grid_card_id"] = data["editor_grid_card_id"]
+    if "editor_grid_span" in data:
+        layout["editor_grid_span"] = data["editor_grid_span"]
+    if "editor_freeform_position" in data:
+        layout["editor_freeform_position"] = data["editor_freeform_position"]
+
+    settings["layout"] = layout
+    session.settings = settings
+    # Mark settings as modified for SQLAlchemy to detect JSONB changes
+    flag_modified(session, "settings")
+    await db.commit()
+
+    return {
+        "editor_grid_card_id": layout.get("editor_grid_card_id"),
+        "editor_grid_span": layout.get("editor_grid_span"),
+        "editor_freeform_position": layout.get("editor_freeform_position"),
+    }
 
 
 # ==================== Standby Settings Routes ====================
@@ -770,7 +933,7 @@ async def get_standby_settings(
     db: DbSession,
 ) -> StandbySettingsResponse:
     """Get effective standby settings for session."""
-    from src.database.models import UserConfig  # noqa: PLC0415
+    from src.database.models import UserConfig
 
     session = await get_session_or_404(session_id, request, db)
 
@@ -842,7 +1005,7 @@ async def clear_standby_settings(
     db: DbSession,
 ) -> StandbySettingsResponse:
     """Clear per-session standby override (revert to user default)."""
-    from src.database.models import UserConfig  # noqa: PLC0415
+    from src.database.models import UserConfig
 
     session = await get_session_or_404(session_id, request, db)
 
@@ -912,11 +1075,12 @@ class MoveFileRequest(BaseModel):
     dest_path: str
 
 
-def validate_file_path(path: str) -> str:
+def validate_file_path(path: str, max_length: int = 4096) -> str:
     """Validate and normalize a file path to prevent path traversal attacks.
 
     Args:
         path: The file path to validate.
+        max_length: Maximum allowed path length (default 4096).
 
     Returns:
         The normalized, safe path.
@@ -924,8 +1088,34 @@ def validate_file_path(path: str) -> str:
     Raises:
         HTTPException: If the path is invalid or attempts path traversal.
     """
+    # Security: Check for null bytes FIRST (can bypass other checks)
+    if "\x00" in path:
+        raise HTTPException(status_code=400, detail="Invalid path: null bytes not allowed")
+
+    # Check path length to prevent DoS
+    if len(path) > max_length:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid path: path too long (max {max_length} characters)",
+        )
+
+    # Reject empty paths
+    if not path or not path.strip():
+        raise HTTPException(status_code=400, detail="Invalid path: path cannot be empty")
+
+    # Check for backslashes (normalize to forward slashes for consistency)
+    # This prevents mixed-separator bypass attempts
+    clean_path = path.replace("\\", "/")
+
+    # Reject URL-encoded traversal attempts (before normalization)
+    if "%2e" in path.lower() or "%2f" in path.lower():
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid path: URL-encoded characters not allowed",
+        )
+
     # Normalize the path to resolve any .. or . components
-    normalized = os.path.normpath(path)
+    normalized = os.path.normpath(clean_path)
 
     # Check for path traversal attempts
     if normalized.startswith(("..", "/")):
@@ -941,10 +1131,7 @@ def validate_file_path(path: str) -> str:
             detail="Invalid path: path traversal is not allowed",
         )
 
-    # Reject paths with null bytes (can bypass some checks)
-    if "\x00" in path:
-        raise HTTPException(status_code=400, detail="Invalid path: null bytes not allowed")
-
+    # "." is allowed - it represents the current/root directory for listing
     return normalized
 
 
@@ -1137,7 +1324,7 @@ async def get_session_or_404(
     return session
 
 
-async def ensure_workspace_provisioned(  # noqa: PLR0912
+async def ensure_workspace_provisioned(
     session: SessionModel,
     user_id: str,
     db: AsyncSession | None = None,
@@ -1166,15 +1353,19 @@ async def ensure_workspace_provisioned(  # noqa: PLR0912
         if existing:
             return  # Workspace exists, nothing to do
     except ComputeServiceHTTPError as e:
-        if e.status_code != 404:  # noqa: PLR2004
+        if e.status_code != 404:
             raise  # Re-raise non-404 errors
 
     # Build workspace config from template if db session is available
     if db and session.template_id:
         tier = session.settings.get("tier") if session.settings else None
         workspace_config = await build_workspace_config(
-            db, session.template_id, session.git_url, tier
+            db, session.template_id, session.git_url, tier, user_id
         )
+    elif db:
+        # No template but we have db - still fetch git config
+        tier = session.settings.get("tier", "starter") if session.settings else "starter"
+        workspace_config = await build_workspace_config(db, None, session.git_url, tier, user_id)
     else:
         tier = session.settings.get("tier", "starter") if session.settings else "starter"
         workspace_config = {
@@ -1185,7 +1376,7 @@ async def ensure_workspace_provisioned(  # noqa: PLR0912
     # Workspace doesn't exist, acquire lock before provisioning
     # This prevents multiple concurrent requests from trying to create
     # the same workspace simultaneously
-    from src.cache import get_cache_client  # noqa: PLC0415
+    from src.cache import get_cache_client
 
     lock_key = f"workspace_provision:{workspace_id}"
 
@@ -1203,7 +1394,7 @@ async def ensure_workspace_provisioned(  # noqa: PLR0912
                     )
                     return  # Workspace was created while we waited for lock
             except ComputeServiceHTTPError as e:
-                if e.status_code != 404:  # noqa: PLR2004
+                if e.status_code != 404:
                     raise
 
             # Workspace still doesn't exist, provision it
@@ -1222,27 +1413,78 @@ async def ensure_workspace_provisioned(  # noqa: PLR0912
                 config=workspace_config,
             )
     except RuntimeError as e:
-        # Lock acquisition failed - this is a fallback, still try to provision
-        logger.warning(
-            "Failed to acquire provisioning lock, attempting without lock",
+        # Lock acquisition failed - do NOT proceed without lock
+        # This prevents race conditions where multiple requests could
+        # try to create the same workspace simultaneously
+        logger.error(
+            "Failed to acquire provisioning lock",
             workspace_id=workspace_id,
             error=str(e),
         )
-        # Check one more time before attempting
-        try:
-            existing = await compute_client.get_workspace(workspace_id, user_id)
-            if existing:
-                return
-        except ComputeServiceHTTPError as e2:
-            if e2.status_code != 404:  # noqa: PLR2004
-                raise
+        raise ComputeClientError(
+            f"Workspace provisioning temporarily unavailable. Please retry. Error: {e}",
+            status_code=503,
+        ) from e
 
-        await compute_client.create_workspace(
+
+async def update_workspace_activity(
+    session: SessionModel,
+    db: AsyncSession,
+) -> None:
+    """Update workspace activity timestamp and handle standby->running transition.
+
+    This function:
+    1. Updates workspace.last_activity to prevent idle detection from triggering
+    2. If workspace was in "standby" state (but container auto-restarted),
+       transitions it back to "running" and notifies connected clients
+
+    Should be called after any successful workspace operation (file access,
+    terminal usage, agent activity, etc.) to keep the workspace alive.
+    """
+    if not session.workspace_id:
+        return
+
+    from sqlalchemy import select
+
+    from src.websocket.hub import emit_to_session
+
+    # Fetch workspace
+    result = await db.execute(
+        select(WorkspaceModel).where(WorkspaceModel.id == session.workspace_id)
+    )
+    workspace = result.scalar_one_or_none()
+
+    if not workspace:
+        return
+
+    now = datetime.now(UTC)
+    workspace.last_activity = now
+
+    # Handle standby -> running transition
+    # This happens when the compute service auto-restarts a stopped container
+    if workspace.status == "standby":
+        workspace.status = "running"
+        workspace.standby_at = None
+
+        logger.info(
+            "Workspace auto-resumed from standby",
+            workspace_id=str(workspace.id),
             session_id=str(session.id),
-            user_id=user_id,
-            workspace_id=workspace_id,
-            config=workspace_config,
         )
+
+        # Notify connected clients about the status change
+        await emit_to_session(
+            str(session.id),
+            "workspace_status",
+            {
+                "workspace_id": str(workspace.id),
+                "status": "running",
+                "standby_at": None,
+                "last_activity": now.isoformat(),
+            },
+        )
+
+    await db.commit()
 
 
 @router.get("/{session_id}/files", response_model=list[FileNode])
@@ -1267,6 +1509,8 @@ async def list_files(
             # Ensure workspace is provisioned before accessing
             await ensure_workspace_provisioned(session, user_id, db)
             files = await compute_client.list_files(session.workspace_id, user_id, path)
+            # Update activity timestamp and handle standby->running sync
+            await update_workspace_activity(session, db)
             # Transform compute service response to FileNode format
             # Pass base_path so file paths are correctly constructed for nested directories
             base_path = "" if path == "." else path
@@ -1335,6 +1579,8 @@ async def get_file_content(
             # Ensure workspace is provisioned before accessing
             await ensure_workspace_provisioned(session, user_id, db)
             result = await compute_client.read_file(session.workspace_id, user_id, safe_path)
+            # Update activity timestamp and handle standby->running sync
+            await update_workspace_activity(session, db)
             return FileContent(
                 path=safe_path,
                 content=result.get("content", ""),
@@ -1386,6 +1632,8 @@ async def create_file(
             # Ensure workspace is provisioned before accessing
             await ensure_workspace_provisioned(session, user_id, db)
             await compute_client.write_file(session.workspace_id, user_id, safe_path, data.content)
+            # Update activity timestamp and handle standby->running sync
+            await update_workspace_activity(session, db)
             return FileContent(
                 path=safe_path,
                 content=data.content,
@@ -1411,7 +1659,7 @@ async def create_file(
 
 @router.put("/{session_id}/files/content", response_model=FileContent)
 @limiter.limit(RATE_LIMIT_UPLOAD)
-async def update_file_content(  # noqa: PLR0913
+async def update_file_content(
     session_id: str,
     request: Request,
     response: Response,
@@ -1432,6 +1680,8 @@ async def update_file_content(  # noqa: PLR0913
             # Ensure workspace is provisioned before accessing
             await ensure_workspace_provisioned(session, user_id, db)
             await compute_client.write_file(session.workspace_id, user_id, safe_path, data.content)
+            # Update activity timestamp and handle standby->running sync
+            await update_workspace_activity(session, db)
             return FileContent(
                 path=safe_path,
                 content=data.content,
@@ -1477,6 +1727,8 @@ async def delete_file(
             # Ensure workspace is provisioned before accessing
             await ensure_workspace_provisioned(session, user_id, db)
             await compute_client.delete_file(session.workspace_id, user_id, safe_path)
+            # Update activity timestamp and handle standby->running sync
+            await update_workspace_activity(session, db)
         except ComputeClientError as e:
             if e.status_code == HTTPStatus.NOT_FOUND:
                 raise HTTPException(status_code=404, detail="File not found") from e
@@ -1527,6 +1779,8 @@ async def move_file(
             )
             # Delete the source
             await compute_client.delete_file(session.workspace_id, user_id, safe_source)
+            # Update activity timestamp and handle standby->running sync
+            await update_workspace_activity(session, db)
         except ComputeClientError as e:
             if e.status_code == HTTPStatus.NOT_FOUND:
                 raise HTTPException(status_code=404, detail="Source file not found") from e
@@ -1638,6 +1892,8 @@ async def bulk_delete_files(
             except Exception as e:
                 failed.append({"path": path, "error": str(e)})
 
+        # Update activity timestamp and handle standby->running sync
+        await update_workspace_activity(session, db)
         await db.commit()
 
     logger.info(
@@ -1742,6 +1998,8 @@ async def bulk_move_files(
             except Exception as e:
                 failed.append({"source": source, "dest": dest, "error": str(e)})
 
+        # Update activity timestamp and handle standby->running sync
+        await update_workspace_activity(session, db)
         await db.commit()
 
     logger.info(
@@ -1767,8 +2025,7 @@ class FileChangeResponse(BaseModel):
     diff: str | None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class FileHistoryResponse(BaseModel):
@@ -1781,7 +2038,7 @@ class FileHistoryResponse(BaseModel):
 
 @router.get("/{session_id}/files/history")
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def get_file_history(  # noqa: PLR0913
+async def get_file_history(
     session_id: str,
     request: Request,
     response: Response,
@@ -1842,7 +2099,7 @@ async def get_file_history(  # noqa: PLR0913
 
 @router.get("/{session_id}/files/diff")
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def get_file_diff(  # noqa: PLR0913
+async def get_file_diff(
     session_id: str,
     request: Request,
     response: Response,

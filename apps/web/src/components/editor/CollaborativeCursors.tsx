@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useCallback, useState } from 'react';
-import type { editor } from 'monaco-editor';
+import type { editor } from '@codingame/monaco-vscode-editor-api';
 
 // ============================================================================
 // Types

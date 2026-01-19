@@ -40,19 +40,37 @@ export default function PrivacyPage() {
 
   const handleSave = async () => {
     setSaving(true);
-    // TODO: Implement save functionality
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    setSaving(false);
+    try {
+      // TODO: Implement privacy preferences save API
+      // await api.patch('/api/user/privacy-settings', {
+      //   dataCollection,
+      //   analyticsEnabled,
+      //   marketingEmails,
+      // });
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    } catch (error) {
+      console.error('Failed to save privacy settings:', error);
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleExportData = () => {
-    // TODO: Implement data export
+  const handleExportData = async () => {
+    // TODO: Implement data export API
+    // const response = await api.post('/api/user/export-data');
+    // const blob = new Blob([response], { type: 'application/json' });
+    // const url = URL.createObjectURL(blob);
+    // const a = document.createElement('a');
+    // a.href = url;
+    // a.download = 'user-data.json';
+    // a.click();
     alert('Data export feature coming soon');
   };
 
-  const handleDeleteData = () => {
-    // TODO: Implement data deletion
+  const handleDeleteData = async () => {
+    // TODO: Implement data deletion API
     if (confirm('Are you sure you want to delete all your data? This action cannot be undone.')) {
+      // await api.delete('/api/user/delete-account');
       alert('Data deletion feature coming soon');
     }
   };

@@ -30,6 +30,7 @@ DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 # Icon identifier to CDN URL mapping
 ICON_URL_MAP: dict[str, str] = {
+    # Existing icons
     "nodejs": "https://cdn.simpleicons.org/nodedotjs/339933",
     "python": "https://cdn.simpleicons.org/python/3776AB",
     "go": "https://cdn.simpleicons.org/go/00ADD8",
@@ -39,6 +40,22 @@ ICON_URL_MAP: dict[str, str] = {
     "react": "https://cdn.simpleicons.org/react/61DAFB",
     "docker": "https://cdn.simpleicons.org/docker/2496ED",
     "layers": "https://cdn.simpleicons.org/stackblitz/1389FD",
+    # Web/Backend frameworks
+    "nextdotjs": "https://cdn.simpleicons.org/nextdotjs/FFFFFF",
+    "django": "https://cdn.simpleicons.org/django/092E20",
+    "fastapi": "https://cdn.simpleicons.org/fastapi/009688",
+    "rubyonrails": "https://cdn.simpleicons.org/rubyonrails/D30001",
+    "springboot": "https://cdn.simpleicons.org/springboot/6DB33F",
+    "vuedotjs": "https://cdn.simpleicons.org/vuedotjs/4FC08D",
+    "laravel": "https://cdn.simpleicons.org/laravel/FF2D20",
+    "deno": "https://cdn.simpleicons.org/deno/FFFFFF",
+    # Native/Systems
+    "cplusplus": "https://cdn.simpleicons.org/cplusplus/00599C",
+    "dotnet": "https://cdn.simpleicons.org/dotnet/512BD4",
+    "nvidia": "https://cdn.simpleicons.org/nvidia/76B900",
+    "zig": "https://cdn.simpleicons.org/zig/F7A41D",
+    "arm": "https://cdn.simpleicons.org/arm/0091BD",
+    "webassembly": "https://cdn.simpleicons.org/webassembly/654FF0",
 }
 
 
@@ -47,123 +64,6 @@ def get_icon_url(icon: str | None) -> str | None:
     if not icon:
         return None
     return ICON_URL_MAP.get(icon)
-
-
-# Predefined official templates
-OFFICIAL_TEMPLATES = [
-    {
-        "name": "Node.js",
-        "slug": "nodejs",
-        "description": "Node.js development environment with npm, yarn, and pnpm",
-        "icon": "nodejs",
-        "base_image": "podex/workspace:latest",
-        "pre_install_commands": [
-            # Install fnm (Fast Node Manager)
-            "curl -fsSL https://fnm.vercel.app/install | bash",
-            # Install Node.js 20 (call fnm directly by full path)
-            "$HOME/.local/share/fnm/fnm install 20 && $HOME/.local/share/fnm/fnm default 20",
-            # Install global npm packages (use fnm exec to run npm in the right context)
-            "$HOME/.local/share/fnm/fnm exec npm install -g yarn pnpm",
-        ],
-        "environment_variables": {
-            "NODE_ENV": "development",
-            "PATH": "$HOME/.local/share/fnm/aliases/default/bin:$HOME/.local/share/fnm:$PATH",
-        },
-        "default_ports": [
-            {"port": 3000, "label": "Dev Server", "protocol": "http"},
-            {"port": 5173, "label": "Vite", "protocol": "http"},
-        ],
-        "language_versions": {"node": "20"},
-        "is_official": True,
-        "is_public": True,
-    },
-    {
-        "name": "Python",
-        "slug": "python",
-        "description": "Python development with poetry, pip, and common tools",
-        "icon": "python",
-        "base_image": "podex/workspace:latest",
-        "pre_install_commands": [],  # Workspace image has Python 3.12, poetry, etc. pre-installed
-        "environment_variables": {
-            "PYTHONDONTWRITEBYTECODE": "1",
-        },
-        "default_ports": [
-            {"port": 8000, "label": "FastAPI", "protocol": "http"},
-            {"port": 5000, "label": "Flask", "protocol": "http"},
-        ],
-        "language_versions": {"python": "3.12"},
-        "is_official": True,
-        "is_public": True,
-    },
-    {
-        "name": "Full Stack",
-        "slug": "fullstack",
-        "description": "Node.js + Python for full-stack development",
-        "icon": "layers",
-        "base_image": "podex/workspace:latest",
-        # Workspace image has Node.js 20, Python 3.12, poetry, etc. pre-installed
-        "pre_install_commands": [],
-        "environment_variables": {
-            "NODE_ENV": "development",
-            "PYTHONDONTWRITEBYTECODE": "1",
-        },
-        "default_ports": [
-            {"port": 3000, "label": "Frontend", "protocol": "http"},
-            {"port": 8000, "label": "Backend API", "protocol": "http"},
-        ],
-        "language_versions": {"node": "20", "python": "3.12"},
-        "is_official": True,
-        "is_public": True,
-    },
-    {
-        "name": "Go",
-        "slug": "golang",
-        "description": "Go development environment",
-        "icon": "go",
-        "base_image": "podex/workspace:latest",
-        "pre_install_commands": [
-            "wget https://go.dev/dl/go1.22.0.linux-amd64.tar.gz",
-            "sudo tar -C /usr/local -xzf go1.22.0.linux-amd64.tar.gz",
-            "rm go1.22.0.linux-amd64.tar.gz",
-        ],
-        "environment_variables": {
-            "GOPATH": "/home/dev/go",
-            "PATH": "/usr/local/go/bin:/home/dev/go/bin:$PATH",
-        },
-        "default_ports": [{"port": 8080, "label": "Go Server", "protocol": "http"}],
-        "language_versions": {"go": "1.22"},
-        "is_official": True,
-        "is_public": True,
-    },
-    {
-        "name": "Rust",
-        "slug": "rust",
-        "description": "Rust development with cargo",
-        "icon": "rust",
-        "base_image": "podex/workspace:latest",
-        "pre_install_commands": [
-            "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
-        ],
-        "environment_variables": {"PATH": "/home/dev/.cargo/bin:$PATH"},
-        "default_ports": [{"port": 8080, "label": "Server", "protocol": "http"}],
-        "language_versions": {"rust": "stable"},
-        "is_official": True,
-        "is_public": True,
-    },
-    {
-        "name": "Blank",
-        "slug": "blank",
-        "description": "Minimal environment - start from scratch",
-        "icon": "box",
-        "base_image": "podex/workspace:latest",
-        "pre_install_commands": [],
-        "environment_variables": {},
-        "default_ports": [{"port": 3000, "label": "Dev Server", "protocol": "http"}],
-        "language_versions": {},
-        "is_official": True,
-        "is_public": True,
-    },
-]
 
 
 class PodTemplateResponse(BaseModel):
@@ -237,12 +137,12 @@ async def list_templates(
     if include_private and user_id:
         query = select(PodTemplate).where(
             or_(
-                PodTemplate.is_public == True,  # noqa: E712
+                PodTemplate.is_public == True,
                 PodTemplate.owner_id == user_id,
             ),
         )
     else:
-        query = select(PodTemplate).where(PodTemplate.is_public == True)  # noqa: E712
+        query = select(PodTemplate).where(PodTemplate.is_public == True)
 
     query = query.order_by(PodTemplate.is_official.desc(), PodTemplate.usage_count.desc())
 
@@ -501,48 +401,3 @@ async def delete_template(
     await invalidate_pattern("templates:list:*")
 
     return {"deleted": template_id}
-
-
-@router.post("/seed-official")
-@limiter.limit(RATE_LIMIT_STANDARD)
-async def seed_official_templates(
-    request: Request,
-    response: Response,
-    db: DbSession,
-    *,
-    update_existing: bool = False,
-) -> dict[str, Any]:
-    """Seed official templates (admin only, called during setup).
-
-    Args:
-        update_existing: If True, update existing templates with new configuration.
-    """
-    created = 0
-    updated = 0
-    for template_data in OFFICIAL_TEMPLATES:
-        # Check if exists
-        result = await db.execute(
-            select(PodTemplate).where(PodTemplate.slug == template_data["slug"]),
-        )
-        existing = result.scalar_one_or_none()
-
-        if existing:
-            if update_existing:
-                # Update existing template
-                for key, value in template_data.items():
-                    if key != "slug":  # Don't update slug
-                        setattr(existing, key, value)
-                updated += 1
-            continue
-
-        template = PodTemplate(**template_data)
-        db.add(template)
-        created += 1
-
-    await db.commit()
-
-    # Invalidate templates cache if any were created or updated
-    if created > 0 or updated > 0:
-        await invalidate_pattern("templates:*")
-
-    return {"created": created, "updated": updated, "total": len(OFFICIAL_TEMPLATES)}

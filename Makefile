@@ -23,7 +23,7 @@ build:
 	cd services/api && uv sync --active --dev --quiet
 	cd services/agent && uv sync --active --dev --quiet
 	cd services/compute && uv sync --active --dev --quiet
-	cd infra && pnpm install
+	cd infrastructure && uv sync --active --dev --quiet
 	@echo "$(CYAN)Building frontend packages...$(NC)"
 	pnpm build
 	@echo "$(CYAN)Building Docker images...$(NC)"
@@ -53,6 +53,9 @@ test:
 	@echo "$(CYAN)=== Compute Service Tests ===$(NC)"
 	cd services/compute && uv run pytest --cov=src --cov-report=term-missing
 	@echo ""
+	@echo "$(CYAN)=== Infrastructure Tests ===$(NC)"
+	cd infrastructure && uv run pytest tests/ -v --tb=short
+	@echo ""
 	@echo "$(GREEN)All tests complete!$(NC)"
 
 ## Run comprehensive agent integration tests (local only, requires running services)
@@ -81,6 +84,12 @@ test-agent:
 	@./scripts/test-agent-runner.sh
 	@echo ""
 	@echo "$(GREEN)Agent integration tests complete!$(NC)"
+
+## Run infrastructure tests only
+test-infra:
+	@echo "$(CYAN)Running infrastructure tests...$(NC)"
+	cd infrastructure && uv run pytest tests/ -v --tb=short
+	@echo "$(GREEN)Infrastructure tests complete!$(NC)"
 
 # ============================================
 # CHECK
@@ -165,12 +174,19 @@ run:
 	@echo "$(GREEN)Ollama is running with models available$(NC)"
 	@echo ""
 	@echo "$(CYAN)Starting development environment...$(NC)"
+	@# Detect host IP for mobile access
+	@HOST_IP=$$(ipconfig getifaddr en0 2>/dev/null || hostname -I 2>/dev/null | awk '{print $$1}' || echo "localhost"); \
+	echo "$(CYAN)Detected host IP: $$HOST_IP$(NC)"; \
+	NEXT_PUBLIC_API_URL=http://$$HOST_IP:3001 \
+	NEXT_PUBLIC_WS_URL=ws://$$HOST_IP:3001 \
+	CORS_ORIGINS='["http://localhost:3000","http://'$$HOST_IP':3000"]' \
 	LLM_PROVIDER=ollama docker-compose up -d
 	@echo ""
-	@echo "$(GREEN)Services started!$(NC)"
-	@echo "  Web:    http://localhost:3000"
-	@echo "  API:    http://localhost:3001"
-	@echo "  Ollama: http://localhost:11434"
+	@HOST_IP=$$(ipconfig getifaddr en0 2>/dev/null || echo "localhost"); \
+	echo "$(GREEN)Services started!$(NC)"; \
+	echo "  Web:    http://localhost:3000 (or http://$$HOST_IP:3000 from mobile)"; \
+	echo "  API:    http://localhost:3001 (or http://$$HOST_IP:3001 from mobile)"; \
+	echo "  Ollama: http://localhost:11434"
 	@echo ""
 	@echo "$(CYAN)To view logs: make logs$(NC)"
 	@echo "$(CYAN)To stop: make stop$(NC)"
@@ -229,7 +245,8 @@ help:
 	@echo "$(CYAN)Podex Development Commands$(NC)"
 	@echo ""
 	@echo "$(GREEN)make build$(NC)        Install all dependencies and build Docker images"
-	@echo "$(GREEN)make test$(NC)         Run all tests with coverage (frontend + all Python services)"
+	@echo "$(GREEN)make test$(NC)         Run all tests with coverage (frontend + all Python services + infrastructure)"
+	@echo "$(GREEN)make test-infra$(NC)   Run infrastructure tests only"
 	@echo "$(GREEN)make test-agent$(NC)   Run comprehensive agent integration tests (local only, requires Ollama)"
 	@echo "$(GREEN)make check$(NC)        Run pre-commit hooks (installs hooks if needed)"
 	@echo "$(GREEN)make run$(NC)          Start local development (requires Ollama with a model)"

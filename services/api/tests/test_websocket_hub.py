@@ -23,7 +23,8 @@ from src.websocket.hub import (
 class TestVerifyAuthToken:
     """Tests for JWT token verification."""
 
-    def test_verify_auth_token_valid(self) -> None:
+    @pytest.mark.asyncio
+    async def test_verify_auth_token_valid(self) -> None:
         """Test valid JWT token verification."""
         from src.config import settings
 
@@ -33,10 +34,11 @@ class TestVerifyAuthToken:
             algorithm="HS256",
         )
 
-        result = _verify_auth_token(token)
+        result = await _verify_auth_token(token)
         assert result == "user-123"
 
-    def test_verify_auth_token_with_user_id_claim(self) -> None:
+    @pytest.mark.asyncio
+    async def test_verify_auth_token_with_user_id_claim(self) -> None:
         """Test JWT token with user_id claim instead of sub."""
         from src.config import settings
 
@@ -46,25 +48,29 @@ class TestVerifyAuthToken:
             algorithm="HS256",
         )
 
-        result = _verify_auth_token(token)
+        result = await _verify_auth_token(token)
         assert result == "user-456"
 
-    def test_verify_auth_token_none(self) -> None:
+    @pytest.mark.asyncio
+    async def test_verify_auth_token_none(self) -> None:
         """Test None token returns None."""
-        result = _verify_auth_token(None)
+        result = await _verify_auth_token(None)
         assert result is None
 
-    def test_verify_auth_token_empty(self) -> None:
+    @pytest.mark.asyncio
+    async def test_verify_auth_token_empty(self) -> None:
         """Test empty token returns None."""
-        result = _verify_auth_token("")
+        result = await _verify_auth_token("")
         assert result is None
 
-    def test_verify_auth_token_invalid(self) -> None:
+    @pytest.mark.asyncio
+    async def test_verify_auth_token_invalid(self) -> None:
         """Test invalid JWT token returns None."""
-        result = _verify_auth_token("invalid.token.here")
+        result = await _verify_auth_token("invalid.token.here")
         assert result is None
 
-    def test_verify_auth_token_wrong_secret(self) -> None:
+    @pytest.mark.asyncio
+    async def test_verify_auth_token_wrong_secret(self) -> None:
         """Test JWT with wrong secret returns None."""
         token = jose_jwt.encode(
             {"sub": "user-123"},
@@ -72,7 +78,7 @@ class TestVerifyAuthToken:
             algorithm="HS256",
         )
 
-        result = _verify_auth_token(token)
+        result = await _verify_auth_token(token)
         assert result is None
 
 

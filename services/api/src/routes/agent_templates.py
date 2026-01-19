@@ -1,6 +1,7 @@
 """Agent template management routes."""
 
 import secrets
+import uuid
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -467,11 +468,13 @@ async def clone_shared_template(
         raise HTTPException(status_code=400, detail="Cannot clone your own template")
 
     # Generate unique slug for the cloned template
+    # SECURITY: Limit iterations to prevent unbounded loop/DoS
+    max_slug_attempts = 100
     base_slug = f"{source_template.slug}-copy"
     slug = base_slug
     counter = 1
 
-    while True:
+    while counter <= max_slug_attempts:
         existing = await db.execute(
             select(AgentTemplate).where(
                 AgentTemplate.user_id == user_id,
@@ -482,6 +485,9 @@ async def clone_shared_template(
             break
         slug = f"{base_slug}-{counter}"
         counter += 1
+    else:
+        # Exhausted all attempts - use UUID suffix as fallback
+        slug = f"{base_slug}-{uuid.uuid4().hex[:8]}"
 
     # Atomically increment clone count on source template to prevent race conditions
     await db.execute(

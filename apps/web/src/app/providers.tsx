@@ -8,9 +8,11 @@ import { useAuthStore } from '@/stores/auth';
 import { useUIStore } from '@/stores/ui';
 import { initializeAuth } from '@/lib/api';
 import { OnboardingTourProvider } from '@/components/ui/OnboardingTour';
-import { MobileNav } from '@/components/ui/MobileNav';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { useSettingsSync } from '@/hooks/useSettingsSync';
+import { usePWAInit } from '@/hooks/usePWAInit';
+import { IOSInstallModal, OfflineIndicator } from '@/components/pwa';
+import { useInitializeConfig } from '@/stores/config';
 
 interface ProvidersProps {
   children: ReactNode;
@@ -38,6 +40,12 @@ function KeyboardShortcuts({ children }: { children: ReactNode }) {
       const target = e.target as HTMLElement;
       const isInput =
         target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+
+      // Skip ALL shortcuts when terminal is focused - let the terminal handle keyboard input
+      // Check both .xterm and [data-terminal-container] to catch all terminal focus states
+      const isTerminalFocused =
+        target.closest('.xterm') !== null || target.closest('[data-terminal-container]') !== null;
+      if (isTerminalFocused) return;
 
       // Require modifier key
       const isModifierKey = e.metaKey || e.ctrlKey;
@@ -132,37 +140,16 @@ function ThemeInitializer({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-// Mobile navigation wrapper - only shows on dashboard/non-workspace pages
-function MobileNavWrapper() {
-  const [mounted, setMounted] = useState(false);
-  const [pathname, setPathname] = useState('');
+// PWA initializer - sets up install prompts, offline detection, etc.
+function PWAInitializer({ children }: { children: ReactNode }) {
+  usePWAInit();
+  return <>{children}</>;
+}
 
-  useEffect(() => {
-    setMounted(true);
-    setPathname(window.location.pathname);
-
-    // Listen for route changes
-    const handleRouteChange = () => {
-      setPathname(window.location.pathname);
-    };
-
-    window.addEventListener('popstate', handleRouteChange);
-    return () => window.removeEventListener('popstate', handleRouteChange);
-  }, []);
-
-  if (!mounted) return null;
-
-  // Pages that should show mobile nav
-  const showMobileNav =
-    pathname === '/dashboard' ||
-    pathname === '/settings' ||
-    pathname.startsWith('/settings/') ||
-    pathname === '/agents' ||
-    pathname.startsWith('/agents/');
-
-  if (!showMobileNav) return null;
-
-  return <MobileNav />;
+// Config initializer - loads platform config, providers, and agent roles
+function ConfigInitializer({ children }: { children: ReactNode }) {
+  useInitializeConfig();
+  return <>{children}</>;
 }
 
 export function Providers({ children }: ProvidersProps) {
@@ -174,9 +161,24 @@ export function Providers({ children }: ProvidersProps) {
             staleTime: 60 * 1000, // 1 minute
             refetchOnWindowFocus: false,
             retry: (failureCount, error) => {
-              // Don't retry on 4xx errors
-              if (error instanceof Error && error.message.includes('4')) {
-                return false;
+              // Don't retry on 4xx client errors (400-499)
+              if (error instanceof Error) {
+                const errorWithStatus = error as Error & { status?: number };
+                // Check for status code on error object
+                if (
+                  errorWithStatus.status &&
+                  errorWithStatus.status >= 400 &&
+                  errorWithStatus.status < 500
+                ) {
+                  return false;
+                }
+                // Fallback: check for HTTP 4xx status codes in message (e.g., "HTTP 404")
+                if (
+                  /\bHTTP\s*4\d{2}\b/i.test(error.message) ||
+                  /\b4\d{2}\s*:/i.test(error.message)
+                ) {
+                  return false;
+                }
               }
               return failureCount < 3;
             },
@@ -204,38 +206,62 @@ export function Providers({ children }: ProvidersProps) {
     >
       <QueryClientProvider client={queryClient}>
         <AuthInitializer>
-          <ThemeInitializer>
-            <OnboardingTourProvider>
-              <KeyboardShortcuts>
-                {children}
+          <ConfigInitializer>
+            <ThemeInitializer>
+              <PWAInitializer>
+                <OnboardingTourProvider>
+                  <KeyboardShortcuts>
+                    {children}
 
-                {/* Global components */}
-                <MobileNavWrapper />
-                <AriaLiveRegion />
-              </KeyboardShortcuts>
-            </OnboardingTourProvider>
-          </ThemeInitializer>
+                    {/* Global components */}
+                    <AriaLiveRegion />
+
+                    {/* PWA components */}
+                    <IOSInstallModal />
+                    <OfflineIndicator />
+                  </KeyboardShortcuts>
+                </OnboardingTourProvider>
+              </PWAInitializer>
+            </ThemeInitializer>
+          </ConfigInitializer>
         </AuthInitializer>
 
-        {/* Toast notifications */}
-        <Toaster
-          theme="dark"
-          position="bottom-right"
-          offset={80} // Above mobile nav
-          toastOptions={{
-            duration: 4000,
-            style: {
-              background: 'var(--bg-elevated)',
-              border: '1px solid var(--border-default)',
-              color: 'var(--text-primary)',
-              borderRadius: 'var(--radius-lg)',
-            },
-            className: 'animate-slide-up',
-          }}
-          closeButton
-          richColors
-        />
+        {/* Toast notifications with theme awareness */}
+        <ThemedToaster />
       </QueryClientProvider>
     </ErrorBoundary>
+  );
+}
+
+// Toaster component that respects user's theme preference
+function ThemedToaster() {
+  const theme = useUIStore((state) => state.theme);
+
+  // Determine the effective theme (handle 'system' preference)
+  const effectiveTheme =
+    theme === 'system'
+      ? typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
+        ? 'dark'
+        : 'light'
+      : theme;
+
+  return (
+    <Toaster
+      theme={effectiveTheme as 'light' | 'dark'}
+      position="bottom-right"
+      offset={16}
+      toastOptions={{
+        duration: 4000,
+        style: {
+          background: 'var(--bg-elevated)',
+          border: '1px solid var(--border-default)',
+          color: 'var(--text-primary)',
+          borderRadius: 'var(--radius-lg)',
+        },
+        className: 'animate-slide-up',
+      }}
+      closeButton
+      richColors
+    />
   );
 }

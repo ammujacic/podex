@@ -2,8 +2,6 @@
 
 from dataclasses import asdict
 
-import pytest
-
 from src.managers.base import ProxyRequest
 
 

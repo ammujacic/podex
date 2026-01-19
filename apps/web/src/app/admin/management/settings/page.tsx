@@ -1,9 +1,163 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Save, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react';
+import {
+  Save,
+  RefreshCw,
+  ChevronDown,
+  ChevronRight,
+  Mic,
+  Eye,
+  UserPlus,
+  Users,
+  Bot,
+  Map,
+  GitBranch,
+  Settings,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAdminStore, type PlatformSetting } from '@/stores/admin';
+
+// Feature flag metadata for friendly display
+const FEATURE_FLAG_META: Record<
+  string,
+  { label: string; description: string; icon: React.ElementType }
+> = {
+  registration_enabled: {
+    label: 'User Registration',
+    description: 'Allow new users to register accounts',
+    icon: UserPlus,
+  },
+  voice_enabled: {
+    label: 'Voice Features',
+    description: 'Enable text-to-speech and voice input',
+    icon: Mic,
+  },
+  collaboration_enabled: {
+    label: 'Collaboration',
+    description: 'Enable real-time collaboration features',
+    icon: Users,
+  },
+  custom_agents_enabled: {
+    label: 'Custom Agents',
+    description: 'Allow users to create custom AI agents',
+    icon: Bot,
+  },
+  git_integration_enabled: {
+    label: 'Git Integration',
+    description: 'Enable Git repository connections',
+    icon: GitBranch,
+  },
+  planning_mode_enabled: {
+    label: 'Planning Mode',
+    description: 'Enable AI planning mode for agents',
+    icon: Map,
+  },
+  vision_enabled: {
+    label: 'Vision',
+    description: 'Enable image analysis capabilities',
+    icon: Eye,
+  },
+};
+
+interface QuickSettingsProps {
+  featureFlags: Record<string, boolean> | null;
+  onToggle: (flag: string, value: boolean) => void;
+  saving: boolean;
+}
+
+function ToggleSwitch({ enabled, disabled }: { enabled: boolean; disabled?: boolean }) {
+  return (
+    <div
+      className={cn(
+        'relative w-11 h-6 rounded-full transition-colors duration-200',
+        enabled ? 'bg-accent-primary' : 'bg-border-subtle',
+        disabled && 'opacity-50'
+      )}
+    >
+      <div
+        className={cn(
+          'absolute top-1 w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-200',
+          enabled ? 'translate-x-6' : 'translate-x-1'
+        )}
+      />
+    </div>
+  );
+}
+
+function QuickSettings({ featureFlags, onToggle, saving }: QuickSettingsProps) {
+  if (!featureFlags) return null;
+
+  return (
+    <div className="mb-8">
+      <div className="flex items-center gap-3 mb-2">
+        <div className="p-2 rounded-lg bg-accent-primary/10">
+          <Settings className="h-5 w-5 text-accent-primary" />
+        </div>
+        <div>
+          <h2 className="text-lg font-semibold text-text-primary">Quick Settings</h2>
+          <p className="text-sm text-text-muted">
+            Toggle platform features on or off. Changes take effect immediately.
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mt-6">
+        {Object.entries(featureFlags).map(([flag, enabled]) => {
+          const meta = FEATURE_FLAG_META[flag] || {
+            label: flag.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+            description: '',
+            icon: Settings,
+          };
+          const Icon = meta.icon;
+
+          return (
+            <button
+              key={flag}
+              onClick={() => onToggle(flag, !enabled)}
+              disabled={saving}
+              className={cn(
+                'group relative flex items-start gap-4 p-4 rounded-xl border text-left transition-all duration-200',
+                'hover:shadow-lg hover:-translate-y-0.5',
+                enabled
+                  ? 'bg-gradient-to-br from-accent-primary/5 to-accent-primary/10 border-accent-primary/20 hover:border-accent-primary/40'
+                  : 'bg-surface border-border-subtle hover:border-border-default hover:bg-elevated'
+              )}
+            >
+              <div
+                className={cn(
+                  'flex-shrink-0 p-2.5 rounded-lg transition-colors',
+                  enabled
+                    ? 'bg-accent-primary/15 text-accent-primary'
+                    : 'bg-elevated text-text-muted group-hover:text-text-secondary'
+                )}
+              >
+                <Icon className="h-5 w-5" />
+              </div>
+
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-3">
+                  <p
+                    className={cn(
+                      'font-medium transition-colors',
+                      enabled ? 'text-text-primary' : 'text-text-secondary'
+                    )}
+                  >
+                    {meta.label}
+                  </p>
+                  <ToggleSwitch enabled={enabled} disabled={saving} />
+                </div>
+                {meta.description && (
+                  <p className="text-sm text-text-muted mt-1 leading-relaxed">{meta.description}</p>
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 interface SettingEditorProps {
   setting: PlatformSetting;
@@ -96,10 +250,15 @@ function SettingEditor({ setting, onSave }: SettingEditorProps) {
 export default function SettingsManagement() {
   const { settings, settingsLoading, fetchSettings, updateSetting, error } = useAdminStore();
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [savingFlags, setSavingFlags] = useState(false);
 
   useEffect(() => {
     fetchSettings();
   }, [fetchSettings]);
+
+  // Get feature flags setting
+  const featureFlagsSetting = settings.find((s) => s.key === 'feature_flags');
+  const featureFlags = featureFlagsSetting?.value as Record<string, boolean> | null;
 
   // Group settings by category
   const categories = settings.reduce<Record<string, PlatformSetting[]>>((acc, setting) => {
@@ -115,6 +274,16 @@ export default function SettingsManagement() {
 
   const handleSave = async (key: string, value: Record<string, unknown>) => {
     await updateSetting(key, value);
+  };
+
+  const handleFeatureFlagToggle = async (flag: string, value: boolean) => {
+    if (!featureFlags) return;
+    setSavingFlags(true);
+    try {
+      await updateSetting('feature_flags', { ...featureFlags, [flag]: value });
+    } finally {
+      setSavingFlags(false);
+    }
   };
 
   return (
@@ -135,6 +304,15 @@ export default function SettingsManagement() {
 
       {error && (
         <div className="bg-red-500/10 text-red-500 p-4 rounded-lg mb-6">Error: {error}</div>
+      )}
+
+      {/* Quick Settings for feature flags */}
+      {!settingsLoading && featureFlags && (
+        <QuickSettings
+          featureFlags={featureFlags}
+          onToggle={handleFeatureFlagToggle}
+          saving={savingFlags}
+        />
       )}
 
       <div className="flex gap-8">

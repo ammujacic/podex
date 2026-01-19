@@ -11,16 +11,9 @@ interface SwipeGestureOptions {
   preventDefaultOnSwipe?: boolean;
 }
 
-interface SwipeState {
-  startX: number;
-  startY: number;
-  currentX: number;
-  currentY: number;
-  isSwiping: boolean;
-}
-
 /**
  * Hook for detecting swipe gestures on touch devices
+ * Uses refs for touch coordinates to avoid stale closure issues
  */
 export function useSwipeGesture<T extends HTMLElement = HTMLElement>(options: SwipeGestureOptions) {
   const {
@@ -33,7 +26,9 @@ export function useSwipeGesture<T extends HTMLElement = HTMLElement>(options: Sw
   } = options;
 
   const ref = useRef<T>(null);
-  const [swipeState, setSwipeState] = useState<SwipeState>({
+
+  // Use refs for touch tracking to avoid stale closures
+  const touchRef = useRef({
     startX: 0,
     startY: 0,
     currentX: 0,
@@ -41,46 +36,72 @@ export function useSwipeGesture<T extends HTMLElement = HTMLElement>(options: Sw
     isSwiping: false,
   });
 
+  // State for visual feedback only (triggers re-renders)
+  const [visualState, setVisualState] = useState({
+    isSwiping: false,
+    deltaX: 0,
+    deltaY: 0,
+  });
+
+  // Store callbacks in refs to avoid recreating handlers
+  const callbacksRef = useRef({ onSwipeLeft, onSwipeRight, onSwipeUp, onSwipeDown });
+  callbacksRef.current = { onSwipeLeft, onSwipeRight, onSwipeUp, onSwipeDown };
+
   const handleTouchStart = useCallback((e: TouchEvent) => {
     const touch = e.touches[0];
     if (!touch) return;
-    setSwipeState({
+
+    touchRef.current = {
       startX: touch.clientX,
       startY: touch.clientY,
       currentX: touch.clientX,
       currentY: touch.clientY,
       isSwiping: true,
+    };
+
+    setVisualState({
+      isSwiping: true,
+      deltaX: 0,
+      deltaY: 0,
     });
   }, []);
 
   const handleTouchMove = useCallback(
     (e: TouchEvent) => {
-      if (!swipeState.isSwiping) return;
+      if (!touchRef.current.isSwiping) return;
 
       const touch = e.touches[0];
       if (!touch) return;
-      setSwipeState((prev) => ({
-        ...prev,
-        currentX: touch.clientX,
-        currentY: touch.clientY,
-      }));
+
+      touchRef.current.currentX = touch.clientX;
+      touchRef.current.currentY = touch.clientY;
+
+      const deltaX = touch.clientX - touchRef.current.startX;
+      const deltaY = touch.clientY - touchRef.current.startY;
 
       if (preventDefaultOnSwipe) {
-        const deltaX = Math.abs(touch.clientX - swipeState.startX);
-        const deltaY = Math.abs(touch.clientY - swipeState.startY);
-        if (deltaX > deltaY && deltaX > 10) {
+        const absDeltaX = Math.abs(deltaX);
+        const absDeltaY = Math.abs(deltaY);
+        if (absDeltaX > absDeltaY && absDeltaX > 10) {
           e.preventDefault();
         }
       }
+
+      setVisualState({
+        isSwiping: true,
+        deltaX,
+        deltaY,
+      });
     },
-    [swipeState.isSwiping, swipeState.startX, swipeState.startY, preventDefaultOnSwipe]
+    [preventDefaultOnSwipe]
   );
 
   const handleTouchEnd = useCallback(() => {
-    if (!swipeState.isSwiping) return;
+    if (!touchRef.current.isSwiping) return;
 
-    const deltaX = swipeState.currentX - swipeState.startX;
-    const deltaY = swipeState.currentY - swipeState.startY;
+    const { startX, startY, currentX, currentY } = touchRef.current;
+    const deltaX = currentX - startX;
+    const deltaY = currentY - startY;
     const absDeltaX = Math.abs(deltaX);
     const absDeltaY = Math.abs(deltaY);
 
@@ -89,24 +110,29 @@ export function useSwipeGesture<T extends HTMLElement = HTMLElement>(options: Sw
       // Horizontal swipe
       if (absDeltaX >= threshold) {
         if (deltaX > 0) {
-          onSwipeRight?.();
+          callbacksRef.current.onSwipeRight?.();
         } else {
-          onSwipeLeft?.();
+          callbacksRef.current.onSwipeLeft?.();
         }
       }
     } else {
       // Vertical swipe
       if (absDeltaY >= threshold) {
         if (deltaY > 0) {
-          onSwipeDown?.();
+          callbacksRef.current.onSwipeDown?.();
         } else {
-          onSwipeUp?.();
+          callbacksRef.current.onSwipeUp?.();
         }
       }
     }
 
-    setSwipeState((prev) => ({ ...prev, isSwiping: false }));
-  }, [swipeState, threshold, onSwipeLeft, onSwipeRight, onSwipeUp, onSwipeDown]);
+    touchRef.current.isSwiping = false;
+    setVisualState({
+      isSwiping: false,
+      deltaX: 0,
+      deltaY: 0,
+    });
+  }, [threshold]);
 
   useEffect(() => {
     const element = ref.current;
@@ -124,19 +150,19 @@ export function useSwipeGesture<T extends HTMLElement = HTMLElement>(options: Sw
   }, [handleTouchStart, handleTouchMove, handleTouchEnd, preventDefaultOnSwipe]);
 
   // Calculate swipe progress (0-1)
-  const swipeProgress = swipeState.isSwiping
-    ? Math.min(Math.abs(swipeState.currentX - swipeState.startX) / threshold, 1)
+  const swipeProgress = visualState.isSwiping
+    ? Math.min(Math.abs(visualState.deltaX) / threshold, 1)
     : 0;
 
-  const swipeDirection = swipeState.currentX > swipeState.startX ? 'right' : 'left';
+  const swipeDirection = visualState.deltaX > 0 ? 'right' : 'left';
 
   return {
     ref,
-    isSwiping: swipeState.isSwiping,
+    isSwiping: visualState.isSwiping,
     swipeProgress,
     swipeDirection,
-    deltaX: swipeState.currentX - swipeState.startX,
-    deltaY: swipeState.currentY - swipeState.startY,
+    deltaX: visualState.deltaX,
+    deltaY: visualState.deltaY,
   };
 }
 
@@ -276,21 +302,39 @@ interface DoubleTapOptions {
 
 /**
  * Hook for detecting double tap gestures
+ * Uses pointer events to avoid double-firing on touch devices
  */
 export function useDoubleTap<T extends HTMLElement = HTMLElement>(options: DoubleTapOptions) {
   const { onDoubleTap, delay = 300 } = options;
   const ref = useRef<T>(null);
   const lastTapRef = useRef<number>(0);
+  const lastTapTypeRef = useRef<string>('');
 
-  const handleTap = useCallback(() => {
-    const now = Date.now();
-    if (now - lastTapRef.current < delay) {
-      onDoubleTap();
-      lastTapRef.current = 0;
-    } else {
-      lastTapRef.current = now;
-    }
-  }, [delay, onDoubleTap]);
+  const handleTap = useCallback(
+    (e: Event) => {
+      const now = Date.now();
+      const eventType = e.type;
+
+      // Prevent double-firing: if we just handled a touchend, ignore the subsequent click
+      if (
+        eventType === 'click' &&
+        lastTapTypeRef.current === 'touchend' &&
+        now - lastTapRef.current < 50
+      ) {
+        return;
+      }
+
+      lastTapTypeRef.current = eventType;
+
+      if (now - lastTapRef.current < delay) {
+        onDoubleTap();
+        lastTapRef.current = 0;
+      } else {
+        lastTapRef.current = now;
+      }
+    },
+    [delay, onDoubleTap]
+  );
 
   useEffect(() => {
     const element = ref.current;
@@ -311,13 +355,34 @@ export function useDoubleTap<T extends HTMLElement = HTMLElement>(options: Doubl
 /**
  * Combined hook for swipeable list items with actions
  */
+/**
+ * Trigger haptic feedback on supported devices
+ */
+export function triggerHaptic(style: 'light' | 'medium' | 'heavy' | 'selection' = 'light') {
+  if (typeof navigator === 'undefined') return;
+
+  // Use Vibration API with different durations based on style
+  if ('vibrate' in navigator) {
+    const duration =
+      style === 'selection' ? 10 : style === 'light' ? 20 : style === 'medium' ? 40 : 60;
+    navigator.vibrate(duration);
+  }
+}
+
 export function useSwipeableItem<T extends HTMLElement = HTMLElement>(options: {
   onSwipeLeft?: () => void;
   onSwipeRight?: () => void;
   swipeThreshold?: number;
   maxSwipeDistance?: number;
+  hapticFeedback?: boolean;
 }) {
-  const { onSwipeLeft, onSwipeRight, swipeThreshold = 80, maxSwipeDistance = 120 } = options;
+  const {
+    onSwipeLeft,
+    onSwipeRight,
+    swipeThreshold = 80,
+    maxSwipeDistance = 120,
+    hapticFeedback = true,
+  } = options;
 
   const ref = useRef<T>(null);
   const [offset, setOffset] = useState(0);
@@ -351,6 +416,9 @@ export function useSwipeableItem<T extends HTMLElement = HTMLElement>(options: {
     if (!isSwiping) return;
 
     if (Math.abs(offset) >= swipeThreshold) {
+      if (hapticFeedback) {
+        triggerHaptic('medium');
+      }
       if (offset < 0) {
         onSwipeLeft?.();
       } else {
@@ -360,7 +428,7 @@ export function useSwipeableItem<T extends HTMLElement = HTMLElement>(options: {
 
     setOffset(0);
     setIsSwiping(false);
-  }, [isSwiping, offset, swipeThreshold, onSwipeLeft, onSwipeRight]);
+  }, [isSwiping, offset, swipeThreshold, onSwipeLeft, onSwipeRight, hapticFeedback]);
 
   useEffect(() => {
     const element = ref.current;

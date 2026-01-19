@@ -11,6 +11,7 @@ import {
   FileCode,
   Save,
   Loader2,
+  ChevronLeft,
   ChevronRight,
   Plus,
   Trash2,
@@ -29,8 +30,11 @@ import {
 } from '@/lib/api';
 import { useUser, useAuthStore } from '@/stores/auth';
 import { useOnboardingTour } from '@/components/ui/OnboardingTour';
+import { ExternalAgentSettings } from '@/components/settings/ExternalAgentSettings';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
+import { cn } from '@/lib/utils';
 
-type TabId = 'general' | 'dotfiles' | 'git' | 'appearance' | 'templates';
+type TabId = 'general' | 'dotfiles' | 'git' | 'appearance' | 'templates' | 'external-agents';
 
 interface Tab {
   id: TabId;
@@ -44,6 +48,7 @@ const tabs: Tab[] = [
   { id: 'git', label: 'Git Config', icon: <GitBranch className="w-4 h-4" /> },
   { id: 'appearance', label: 'Appearance', icon: <Palette className="w-4 h-4" /> },
   { id: 'templates', label: 'Pod Templates', icon: <FileCode className="w-4 h-4" /> },
+  { id: 'external-agents', label: 'External Agents', icon: <Box className="w-4 h-4" /> },
 ];
 
 const shellOptions = [
@@ -105,11 +110,12 @@ const defaultDotfilePaths = [
 ];
 
 export default function SettingsPage() {
+  useDocumentTitle('Settings');
   const router = useRouter();
   const user = useUser();
   const isInitialized = useAuthStore((s) => s.isInitialized);
   const { resetAllTours } = useOnboardingTour();
-  const [activeTab, setActiveTab] = useState<TabId>('general');
+  const [activeTab, setActiveTab] = useState<TabId | null>(null); // null = show tab list on mobile
   const [_config, setConfig] = useState<UserConfig | null>(null);
   const [templates, setTemplates] = useState<PodTemplate[]>([]);
   const [loading, setLoading] = useState(true);
@@ -120,6 +126,9 @@ export default function SettingsPage() {
 
   // Form state
   const [formData, setFormData] = useState<UpdateUserConfigRequest>({});
+
+  // Get current tab for display
+  const currentTab = tabs.find((t) => t.id === activeTab);
 
   useEffect(() => {
     // Wait for auth to initialize before checking user
@@ -220,10 +229,13 @@ export default function SettingsPage() {
     );
   }
 
+  // For desktop, default to 'general' tab; for mobile, show tab list when null
+  const effectiveTab = activeTab || 'general';
+
   return (
     <div className="min-h-screen bg-void">
-      {/* Header */}
-      <header className="bg-elevated border-b border-border-default">
+      {/* Desktop Header - hidden on mobile (layout handles mobile header) */}
+      <header className="hidden md:block bg-elevated border-b border-border-default">
         <div className="max-w-6xl mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
@@ -247,16 +259,40 @@ export default function SettingsPage() {
         </div>
       </header>
 
+      {/* Mobile Sub-Navigation Header - shown when viewing content on mobile */}
+      <div
+        className={cn(
+          'md:hidden sticky top-0 z-30 bg-surface border-b border-border-subtle',
+          activeTab === null && 'hidden'
+        )}
+      >
+        <div className="flex items-center justify-between p-3">
+          <button
+            onClick={() => setActiveTab(null)}
+            className="flex items-center gap-2 text-text-muted hover:text-text-primary"
+          >
+            <ChevronLeft className="h-5 w-5" />
+            <span className="text-sm">Back</span>
+          </button>
+          <span className="text-sm font-medium text-text-primary">
+            {currentTab?.label || 'General'}
+          </span>
+          <Button size="sm" onClick={handleSave} disabled={saving}>
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+          </Button>
+        </div>
+      </div>
+
       {/* Messages */}
       {error && (
-        <div className="max-w-6xl mx-auto px-6 py-2">
+        <div className="max-w-6xl mx-auto px-4 md:px-6 py-2">
           <div className="bg-accent-error/10 border border-accent-error/20 rounded-md px-4 py-2 text-accent-error text-sm">
             {error}
           </div>
         </div>
       )}
       {successMessage && (
-        <div className="max-w-6xl mx-auto px-6 py-2">
+        <div className="max-w-6xl mx-auto px-4 md:px-6 py-2">
           <div className="bg-accent-success/10 border border-accent-success/20 rounded-md px-4 py-2 text-accent-success text-sm flex items-center gap-2">
             <Check className="w-4 h-4" />
             {successMessage}
@@ -264,18 +300,46 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {/* Mobile Tab List - shown when no tab is selected on mobile */}
+      <div className={cn('md:hidden', activeTab !== null && 'hidden')}>
+        <nav className="p-2">
+          <ul className="space-y-1">
+            {tabs.map((tab) => (
+              <li key={tab.id}>
+                <button
+                  onClick={() => setActiveTab(tab.id)}
+                  className="w-full flex items-center justify-between px-4 py-3 rounded-lg text-sm transition-colors text-text-secondary hover:text-text-primary hover:bg-overlay"
+                >
+                  <div className="flex items-center gap-3">
+                    {tab.icon}
+                    <span className="text-base">{tab.label}</span>
+                  </div>
+                  <ChevronRight className="h-5 w-5 text-text-muted" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      </div>
+
       {/* Content */}
-      <div className="max-w-6xl mx-auto px-6 py-8">
+      <div
+        className={cn(
+          'max-w-6xl mx-auto px-4 md:px-6 py-4 md:py-8',
+          // On mobile, hide content area when showing tab list
+          activeTab === null && 'hidden md:block'
+        )}
+      >
         <div className="flex gap-8">
-          {/* Sidebar */}
-          <nav className="w-56 flex-shrink-0">
+          {/* Desktop Sidebar - hidden on mobile */}
+          <nav className="hidden md:block w-56 flex-shrink-0">
             <ul className="space-y-1">
               {tabs.map((tab) => (
                 <li key={tab.id}>
                   <button
                     onClick={() => setActiveTab(tab.id)}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
-                      activeTab === tab.id
+                      effectiveTab === tab.id
                         ? 'bg-accent-primary/10 text-accent-primary'
                         : 'text-text-secondary hover:text-text-primary hover:bg-overlay'
                     }`}
@@ -291,7 +355,7 @@ export default function SettingsPage() {
           {/* Main Content */}
           <div className="flex-1 max-w-2xl">
             {/* General Tab */}
-            {activeTab === 'general' && (
+            {effectiveTab === 'general' && (
               <div className="space-y-6">
                 <div>
                   <h2 className="text-lg font-medium text-text-primary mb-1">General Settings</h2>
@@ -375,7 +439,7 @@ export default function SettingsPage() {
             )}
 
             {/* Dotfiles Tab */}
-            {activeTab === 'dotfiles' && (
+            {effectiveTab === 'dotfiles' && (
               <div className="space-y-6">
                 <div>
                   <h2 className="text-lg font-medium text-text-primary mb-1">Shell & Dotfiles</h2>
@@ -476,7 +540,7 @@ export default function SettingsPage() {
             )}
 
             {/* Git Tab */}
-            {activeTab === 'git' && (
+            {effectiveTab === 'git' && (
               <div className="space-y-6">
                 <div>
                   <h2 className="text-lg font-medium text-text-primary mb-1">Git Configuration</h2>
@@ -512,7 +576,7 @@ export default function SettingsPage() {
             )}
 
             {/* Appearance Tab */}
-            {activeTab === 'appearance' && (
+            {effectiveTab === 'appearance' && (
               <div className="space-y-6">
                 <div>
                   <h2 className="text-lg font-medium text-text-primary mb-1">Appearance</h2>
@@ -558,7 +622,7 @@ export default function SettingsPage() {
             )}
 
             {/* Templates Tab */}
-            {activeTab === 'templates' && (
+            {effectiveTab === 'templates' && (
               <div className="space-y-6">
                 <div>
                   <h2 className="text-lg font-medium text-text-primary mb-1">Pod Templates</h2>
@@ -617,6 +681,9 @@ export default function SettingsPage() {
                 </Button>
               </div>
             )}
+
+            {/* External Agents Tab */}
+            {effectiveTab === 'external-agents' && <ExternalAgentSettings />}
           </div>
         </div>
       </div>

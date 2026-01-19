@@ -142,9 +142,11 @@ export function useVoiceCapture({
       stream.getTracks().forEach((track) => track.stop());
     }
 
+    // Update store to reflect recording stopped
+    setRecordingStop();
     clearTranscript();
     chunksRef.current = [];
-  }, [clearTranscript]);
+  }, [clearTranscript, setRecordingStop]);
 
   // Listen for transcription events
   useEffect(() => {

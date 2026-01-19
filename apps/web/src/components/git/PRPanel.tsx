@@ -526,8 +526,14 @@ export function PRPanel({
     });
   }, []);
 
-  const handleCreatePR = (_title: string, _body: string, _draft: boolean) => {
-    // TODO: Implement API call to create PR
+  const handleCreatePR = async (_title: string, _body: string, _draft: boolean) => {
+    // TODO: Implement API call to create PR - would require GitHub API integration
+    // await api.post(`/api/sessions/${sessionId}/git/pr`, {
+    //   title: _title,
+    //   body: _body,
+    //   draft: _draft,
+    // });
+    console.warn('Creating PR:', { title: _title, body: _body, draft: _draft });
     setCreateModalOpen(false);
     loadPRs();
   };

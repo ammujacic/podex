@@ -250,8 +250,12 @@ export function PresenceSidebarPanel({ sessionId }: PresenceSidebarPanelProps) {
             <Eye className="h-3 w-3" />
             <span>Following {users.find((u) => u.id === followingUserId)?.name}</span>
           </div>
-          <button onClick={handleUnfollow} className="p-0.5 rounded hover:bg-accent-primary/20">
-            <X className="h-3 w-3 text-accent-primary" />
+          <button
+            onClick={handleUnfollow}
+            className="p-1.5 rounded hover:bg-accent-primary/20 min-h-[44px] min-w-[44px] flex items-center justify-center"
+            aria-label="Stop following user"
+          >
+            <X className="h-4 w-4 text-accent-primary" />
           </button>
         </div>
       )}

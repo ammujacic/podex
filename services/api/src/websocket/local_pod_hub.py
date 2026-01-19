@@ -263,11 +263,11 @@ class LocalPodNamespace(socketio.AsyncNamespace):
         # Forward events to session/workspace subscribers
         if workspace_id and event_type:
             # Import here to avoid circular imports
-            from src.websocket.hub import emit_to_session  # noqa: PLC0415
+            from src.websocket.hub import emit_to_session
 
             # Get session ID for this workspace from the database
             async with async_session_factory() as db:
-                from src.database.models import Session as SessionModel  # noqa: PLC0415
+                from src.database.models import Session as SessionModel
 
                 result = await db.execute(
                     select(SessionModel.id).where(SessionModel.workspace_id == workspace_id)

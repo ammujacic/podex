@@ -222,7 +222,11 @@ function ConflictItem({
           <div className="flex items-center gap-2 text-sm">
             <FileCode className="w-4 h-4 text-text-muted" />
             <span className="text-text-muted">File:</span>
-            <button onClick={onViewFile} className="text-accent-primary hover:underline">
+            <button
+              onClick={onViewFile}
+              className="text-accent-primary hover:underline"
+              aria-label={`View file ${conflict.filePath}`}
+            >
               {conflict.filePath}
             </button>
           </div>

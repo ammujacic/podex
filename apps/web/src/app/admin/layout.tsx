@@ -16,6 +16,15 @@ import {
   TrendingUp,
   DollarSign,
   Activity,
+  Terminal,
+  Brain,
+  Bot,
+  FileSearch,
+  ShieldCheck,
+  Building2,
+  Zap,
+  Store,
+  Cloud,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUser, useAuthLoading } from '@/stores/auth';
@@ -38,10 +47,24 @@ const adminNavItems = [
     section: 'Management',
     items: [
       { href: '/admin/management/users', label: 'Users', icon: Users },
+      { href: '/admin/management/organizations', label: 'Organizations', icon: Building2 },
       { href: '/admin/management/plans', label: 'Subscription Plans', icon: CreditCard },
+      { href: '/admin/management/models', label: 'LLM Models', icon: Brain },
+      { href: '/admin/management/providers', label: 'LLM Providers', icon: Cloud },
       { href: '/admin/management/hardware', label: 'Hardware Specs', icon: Server },
       { href: '/admin/management/templates', label: 'Pod Templates', icon: Box },
+      { href: '/admin/management/terminal-agents', label: 'Terminal Agents', icon: Terminal },
+      { href: '/admin/management/agent-roles', label: 'Agent Roles', icon: Bot },
+      { href: '/admin/management/skills', label: 'System Skills', icon: Zap },
+      { href: '/admin/management/marketplace', label: 'Skill Marketplace', icon: Store },
       { href: '/admin/management/settings', label: 'Platform Settings', icon: Settings },
+    ],
+  },
+  {
+    section: 'Security',
+    items: [
+      { href: '/admin/audit', label: 'Audit Logs', icon: FileSearch },
+      { href: '/admin/compliance', label: 'Compliance', icon: ShieldCheck },
     ],
   },
 ];
@@ -104,8 +127,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
               <ul className="space-y-1">
                 {section.items.map((item) => {
                   const Icon = item.icon;
-                  const isActive =
-                    item.href === '/admin' ? pathname === '/admin' : pathname.startsWith(item.href);
+                  // Use exact matching - all nav items are explicit routes
+                  const isActive = pathname === item.href;
 
                   return (
                     <li key={item.href}>

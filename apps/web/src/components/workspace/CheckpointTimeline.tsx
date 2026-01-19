@@ -59,7 +59,7 @@ export function CheckpointTimeline({
       setLoading(sessionId, true);
       setError(null);
       try {
-        const data = await getSessionCheckpoints(sessionId, { agentId, limit: 50 });
+        const data = await getSessionCheckpoints(sessionId, agentId, 50);
         // Transform API response to store format
         const transformed = data.map((cp) => ({
           id: cp.id,

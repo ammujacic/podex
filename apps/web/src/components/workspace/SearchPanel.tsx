@@ -20,6 +20,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { EmptyState, SearchEmptyState } from '@/components/ui/EmptyState';
 import { create } from 'zustand';
 
 // ============================================================================
@@ -577,19 +578,14 @@ export function SearchPanel({ sessionId: _sessionId, onNavigate }: SearchPanelPr
       {/* Results list */}
       <div className="flex-1 overflow-y-auto">
         {!query ? (
-          <div className="flex flex-col items-center justify-center h-full text-center px-4">
-            <Search className="h-8 w-8 text-text-muted mb-2" />
-            <p className="text-xs text-text-muted">Enter a search term</p>
-            <p className="text-[10px] text-text-muted mt-1">Use Cmd+Shift+F to open search</p>
-          </div>
+          <EmptyState
+            icon={Search}
+            title="Enter a search term"
+            description="Use Cmd+Shift+F to open search"
+            size="sm"
+          />
         ) : results.length === 0 && !isSearching ? (
-          <div className="flex flex-col items-center justify-center h-full text-center px-4">
-            <Search className="h-8 w-8 text-text-muted mb-2" />
-            <p className="text-xs text-text-muted">No results found</p>
-            <p className="text-[10px] text-text-muted mt-1">
-              Try different search terms or file filters
-            </p>
-          </div>
+          <SearchEmptyState query={query} size="sm" />
         ) : (
           results.map((result) => (
             <FileResult

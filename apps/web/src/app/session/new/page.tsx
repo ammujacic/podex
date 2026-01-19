@@ -35,6 +35,7 @@ import {
 } from '@/lib/api';
 import { useUser } from '@/stores/auth';
 import { HardwareSelector } from '@/components/billing/HardwareSelector';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 // Template icon configuration with CDN URLs (Simple Icons)
 const templateIconConfig: Record<string, { url: string }> = {
@@ -107,13 +108,14 @@ const osVersions = [
   { value: 'ubuntu-22.04', label: 'Ubuntu 22.04 LTS' },
   { value: 'ubuntu-24.04', label: 'Ubuntu 24.04 LTS' },
   { value: 'debian-12', label: 'Debian 12' },
-  { value: 'amazon-linux-2023', label: 'Amazon Linux 2023' },
+  { value: 'rocky-linux-9', label: 'Rocky Linux 9' },
 ];
 
 // Compute target type
 type ComputeTarget = 'cloud' | string; // 'cloud' or local_pod_id
 
 export default function NewSessionPage() {
+  useDocumentTitle('New Pod');
   const router = useRouter();
   const user = useUser();
   const [step, setStep] = useState<Step>('template');

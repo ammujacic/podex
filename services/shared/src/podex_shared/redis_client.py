@@ -11,6 +11,8 @@ from typing import Any, cast
 import redis.asyncio as redis
 import structlog
 
+from podex_shared.redis_crypto import decrypt_value, encrypt_value, is_encryption_enabled
+
 logger = structlog.get_logger()
 
 
@@ -28,17 +30,20 @@ class RedisClient:
     """Async Redis client wrapper with pub/sub support.
 
     Provides a consistent interface for Redis operations across services.
+    Supports optional transparent encryption when REDIS_ENCRYPTION_KEY is set.
     """
 
-    def __init__(self, url: str, decode_responses: bool = True) -> None:
+    def __init__(self, url: str, decode_responses: bool = True, encrypt: bool = True) -> None:
         """Initialize Redis client.
 
         Args:
             url: Redis connection URL (e.g., redis://localhost:6379)
             decode_responses: Whether to decode responses as strings
+            encrypt: Whether to encrypt values (only if REDIS_ENCRYPTION_KEY is set)
         """
         self._url = url
         self._decode_responses = decode_responses
+        self._encrypt = encrypt and is_encryption_enabled()
         self._client: Any = None
         self._pubsub: Any = None
         self._running = False
@@ -83,9 +88,18 @@ class RedisClient:
     # Key-value operations
 
     async def get(self, key: str) -> str | None:
-        """Get a value by key."""
+        """Get a value by key.
+
+        If encryption is enabled, automatically decrypts the value.
+        Handles both encrypted and plaintext values for backward compatibility.
+        """
         result = await self.client.get(key)
-        return cast("str | None", result)
+        if result is None:
+            return None
+        # Decrypt if encryption is enabled (handles plaintext gracefully)
+        if self._encrypt:
+            return decrypt_value(cast("str", result))
+        return cast("str", result)
 
     async def set(
         self,
@@ -96,12 +110,17 @@ class RedisClient:
     ) -> bool:
         """Set a value with optional expiration.
 
+        If encryption is enabled, automatically encrypts the value before storage.
+
         Args:
             key: The key to set
             value: The value to set
             ex: Expiration in seconds
             px: Expiration in milliseconds
         """
+        # Encrypt if enabled
+        if self._encrypt:
+            value = encrypt_value(value)
         result = await self.client.set(key, value, ex=ex, px=px)
         return bool(result)
 
@@ -142,18 +161,37 @@ class RedisClient:
     # Hash operations
 
     async def hget(self, name: str, key: str) -> str | None:
-        """Get a hash field."""
+        """Get a hash field.
+
+        If encryption is enabled, automatically decrypts the value.
+        """
         result = await self.client.hget(name, key)
-        return cast("str | None", result)
+        if result is None:
+            return None
+        if self._encrypt:
+            return decrypt_value(cast("str", result))
+        return cast("str", result)
 
     async def hset(self, name: str, key: str, value: str) -> int:
-        """Set a hash field."""
+        """Set a hash field.
+
+        If encryption is enabled, automatically encrypts the value.
+        """
+        if self._encrypt:
+            value = encrypt_value(value)
         result = await self.client.hset(name, key, value)
         return cast("int", result)
 
     async def hgetall(self, name: str) -> dict[str, str]:
-        """Get all fields in a hash."""
+        """Get all fields in a hash.
+
+        If encryption is enabled, automatically decrypts all values.
+        """
         result = await self.client.hgetall(name)
+        if not result:
+            return cast("dict[str, str]", result)
+        if self._encrypt:
+            return {k: decrypt_value(v) for k, v in result.items()}
         return cast("dict[str, str]", result)
 
     async def hdel(self, name: str, *keys: str) -> int:

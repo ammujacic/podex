@@ -362,7 +362,7 @@ async def get_revenue_analytics(
     overage_revenue_result = await db.execute(
         select(func.coalesce(func.sum(UsageRecord.total_cost_cents), 0))
         .select_from(UsageRecord)
-        .where(UsageRecord.is_overage == True)  # noqa: E712
+        .where(UsageRecord.is_overage == True)
         .where(UsageRecord.created_at >= start_date)
     )
     overage_revenue_cents = overage_revenue_result.scalar() or 0

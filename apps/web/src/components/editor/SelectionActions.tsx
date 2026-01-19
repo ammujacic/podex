@@ -13,7 +13,8 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { editor } from 'monaco-editor';
+import { calculateBoundedPosition } from '@/lib/ui-utils';
+import type { editor } from '@codingame/monaco-vscode-editor-api';
 
 interface SelectionAction {
   id: string;
@@ -150,10 +151,8 @@ export function SelectionActions({ editor, onOpenInlineChat, onAIAction }: Selec
     const x = editorRect.left + 60; // Fixed offset from left edge
     const y = editorRect.top + top + lineHeight + 5;
 
-    setPosition({
-      x: Math.min(x, window.innerWidth - 200),
-      y: Math.min(y, window.innerHeight - 300),
-    });
+    const boundedPos = calculateBoundedPosition(x, y, 200, 350);
+    setPosition(boundedPos);
 
     // Delay showing to avoid flicker during selection
     if (hideTimeoutRef.current) {
@@ -258,11 +257,13 @@ export function SelectionActions({ editor, onOpenInlineChat, onAIAction }: Selec
       ref={containerRef}
       className="fixed z-50 min-w-[160px] rounded-lg border border-border-default bg-surface shadow-xl overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-150"
       style={{ left: position.x, top: position.y }}
+      role="menu"
+      aria-label="Selection actions"
     >
-      <div className="py-1">
+      <div className="py-1" role="group">
         {actions.map((action, index) => {
           if (action.id === 'divider') {
-            return <div key={index} className="h-px bg-border-subtle my-1 mx-2" />;
+            return <div key={index} className="h-px bg-border-subtle my-1 mx-2" role="separator" />;
           }
 
           return (
@@ -270,15 +271,21 @@ export function SelectionActions({ editor, onOpenInlineChat, onAIAction }: Selec
               key={action.id}
               onClick={() => handleAction(action)}
               className={cn(
-                'w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm',
+                'w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm min-h-[36px]',
                 'text-text-secondary hover:bg-overlay hover:text-text-primary',
-                'transition-colors'
+                'transition-colors focus:outline-none focus:bg-overlay focus:text-text-primary'
               )}
+              role="menuitem"
+              aria-keyshortcuts={action.shortcut?.replace('⌘', 'Meta+').replace('⇧', 'Shift+')}
             >
-              <span className="text-text-muted">{action.icon}</span>
+              <span className="text-text-muted" aria-hidden="true">
+                {action.icon}
+              </span>
               <span className="flex-1">{action.label}</span>
               {action.shortcut && (
-                <span className="text-xs text-text-muted">{action.shortcut}</span>
+                <span className="text-xs text-text-muted" aria-hidden="true">
+                  {action.shortcut}
+                </span>
               )}
             </button>
           );
@@ -286,9 +293,14 @@ export function SelectionActions({ editor, onOpenInlineChat, onAIAction }: Selec
       </div>
 
       {/* Selection info */}
-      <div className="border-t border-border-subtle px-3 py-1.5 text-xs text-text-muted flex items-center gap-1">
+      <div
+        className="border-t border-border-subtle px-3 py-1.5 text-xs text-text-muted flex items-center gap-1"
+        role="status"
+      >
         <span>{selectedText.split('\n').length} lines</span>
-        <span className="text-border-subtle">•</span>
+        <span className="text-border-subtle" aria-hidden="true">
+          •
+        </span>
         <span>{selectedText.length} chars</span>
       </div>
     </div>

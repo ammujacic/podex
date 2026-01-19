@@ -55,8 +55,8 @@ export function QuotaProgressBar({
       compute_hours: 'Compute Hours',
       storage_gb: 'Storage',
       storage: 'Storage',
-      sessions: 'Sessions',
-      agents: 'Agents',
+      sessions: 'Concurrent Pods',
+      agents: 'Concurrent Agents',
       api_calls: 'API Calls',
     };
     return labels[type] || type;
@@ -71,6 +71,11 @@ export function QuotaProgressBar({
   };
 
   const formatValueWithUnit = (value: number): string => {
+    // Compute credits are stored in cents, display as dollars
+    if (quota.quotaType === 'compute_credits') {
+      const dollars = value / 100;
+      return `$${dollars.toFixed(2)}`;
+    }
     const formattedValue = formatValue(value);
     const unit = getUnit(quota.quotaType);
     return unit ? `${formattedValue}${unit}` : formattedValue;

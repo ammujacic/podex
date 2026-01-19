@@ -8,7 +8,10 @@ import re
 import shlex
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Iterator
 
 import docker
 import httpx
@@ -61,6 +64,8 @@ class DockerComputeManager(ComputeManager):
         self.client = docker.from_env()
         self._workspaces: dict[str, WorkspaceInfo] = {}
         self._file_sync: FileSync | None = None
+        # Lock for billing operations to prevent race conditions
+        self._billing_lock = asyncio.Lock()
         logger.info(
             "DockerComputeManager initialized",
             docker_host=settings.docker_host,
@@ -133,6 +138,9 @@ class DockerComputeManager(ComputeManager):
 
                     self._workspaces[workspace_id] = workspace_info
 
+                    # Note: Don't restore dotfiles for rediscovered workspaces - they're already
+                    # running with files intact. Only restore when creating NEW workspaces.
+
                     logger.info(
                         "Rediscovered existing workspace",
                         workspace_id=workspace_id,
@@ -157,7 +165,7 @@ class DockerComputeManager(ComputeManager):
             logger.exception("Failed to discover existing workspaces")
 
     def set_file_sync(self, file_sync: FileSync) -> None:
-        """Set the file sync service for S3 synchronization."""
+        """Set the file sync service for GCS synchronization."""
         self._file_sync = file_sync
 
     def _get_resource_limits(self, tier: WorkspaceTier) -> dict[str, Any]:
@@ -298,31 +306,63 @@ class DockerComputeManager(ComputeManager):
                 metadata={
                     "container_name": container.name or "",
                     "last_billing_timestamp": now.isoformat(),
+                    # Store dotfiles config for sync on stop
+                    "sync_dotfiles": config.sync_dotfiles,
+                    "dotfiles_paths": config.dotfiles_paths,
                 },
             )
 
             self._workspaces[workspace_id] = workspace_info
 
-            # Sync files from S3 (restore workspace state)
+            # Sync files from GCS (restore workspace state)
             if self._file_sync:
                 try:
-                    await self._file_sync.sync_from_s3(workspace_id)
-                    # Start background sync
-                    await self._file_sync.start_background_sync(workspace_id)
-                    workspace_info.metadata["s3_sync_status"] = "success"
+                    await self._file_sync.sync_from_gcs(workspace_id)
+                    # Start background sync (includes dotfiles)
+                    await self._file_sync.start_background_sync(
+                        workspace_id=workspace_id,
+                        user_id=user_id,
+                        dotfiles_paths=config.dotfiles_paths,
+                    )
+                    workspace_info.metadata["gcs_sync_status"] = "success"
                 except Exception as e:
                     logger.exception(
-                        "Failed to sync files from S3",
+                        "Failed to sync files from GCS",
                         workspace_id=workspace_id,
                     )
                     # Store sync error in metadata for visibility
-                    workspace_info.metadata["s3_sync_status"] = "error"
-                    workspace_info.metadata["s3_sync_error"] = str(e)
+                    workspace_info.metadata["gcs_sync_status"] = "error"
+                    workspace_info.metadata["gcs_sync_error"] = str(e)
+
+                # Sync user dotfiles (restore .claude/, .codex/, .gemini/ configs)
+                try:
+                    await self._file_sync.sync_user_dotfiles(
+                        workspace_id=workspace_id,
+                        user_id=user_id,
+                    )
+                    workspace_info.metadata["dotfiles_sync_status"] = "success"
+                    logger.info(
+                        "Synced user dotfiles to workspace",
+                        workspace_id=workspace_id,
+                        user_id=user_id,
+                    )
+                except Exception as e:
+                    logger.exception(
+                        "Failed to sync user dotfiles",
+                        workspace_id=workspace_id,
+                        user_id=user_id,
+                    )
+                    workspace_info.metadata["dotfiles_sync_status"] = "error"
+                    workspace_info.metadata["dotfiles_sync_error"] = str(e)
 
             # Ensure projects directory exists
             await self.exec_command(workspace_id, "mkdir -p /home/dev/projects", timeout=10)
 
-            # Clone repos if specified (only if no S3 files were synced)
+            # Set up git identity from user configuration
+            if config.git_name or config.git_email:
+                await self._setup_git_identity(workspace_id, config.git_name, config.git_email)
+
+            # Clone repos if specified (only if no GCS files were synced)
             if config.repos:
                 await self._clone_repos(workspace_id, config.repos, config.git_credentials)
 
@@ -374,6 +414,55 @@ class DockerComputeManager(ComputeManager):
         network_info = networks.get(settings.docker_network, {})
         ip_address: str | None = network_info.get("IPAddress")
         return ip_address
+
+    async def _setup_git_identity(
+        self,
+        workspace_id: str,
+        git_name: str | None,
+        git_email: str | None,
+    ) -> None:
+        """Set up git identity (user.name and user.email) in the workspace.
+
+        Args:
+            workspace_id: The workspace ID
+            git_name: Git user.name for commits
+            git_email: Git user.email for commits
+        """
+        try:
+            if git_name:
+                # Escape single quotes in the name by replacing ' with '\''
+                safe_name = git_name.replace("'", "'\\''")
+                await self.exec_command(
+                    workspace_id,
+                    f"git config --global user.name '{safe_name}'",
+                    timeout=10,
+                )
+                logger.debug("Set git user.name", workspace_id=workspace_id)
+
+            if git_email:
+                # Escape single quotes in the email (unlikely but safe)
+                safe_email = git_email.replace("'", "'\\''")
+                await self.exec_command(
+                    workspace_id,
+                    f"git config --global user.email '{safe_email}'",
+                    timeout=10,
+                )
+                logger.debug("Set git user.email", workspace_id=workspace_id)
+
+            if git_name or git_email:
+                logger.info(
+                    "Git identity configured",
+                    workspace_id=workspace_id,
+                    has_name=bool(git_name),
+                    has_email=bool(git_email),
+                )
+        except Exception:
+            # Non-fatal: log warning but continue workspace creation
+            logger.warning(
+                "Failed to set git identity",
+                workspace_id=workspace_id,
+                exc_info=True,
+            )
 
     async def _clone_repos(  # noqa: PLR0912
         self,
@@ -468,22 +557,48 @@ class DockerComputeManager(ComputeManager):
         stop_time = datetime.now(UTC)
         duration_seconds = int((stop_time - workspace.created_at).total_seconds())
 
-        # Sync files to S3 before stopping (stop background sync first)
+        # Sync files to GCS before stopping (stop background sync first)
         sync_error: Exception | None = None
         if self._file_sync:
             try:
                 await self._file_sync.stop_background_sync(workspace_id)
-                await self._file_sync.sync_to_s3(workspace_id)
-                workspace.metadata["s3_sync_status"] = "success"
+                await self._file_sync.sync_to_gcs(workspace_id)
+                workspace.metadata["gcs_sync_status"] = "success"
             except Exception as e:
                 logger.exception(
-                    "Failed to sync files to S3 before stop",
+                    "Failed to sync files to GCS before stop",
                     workspace_id=workspace_id,
                 )
                 # Store sync error - this is important as data may be lost
-                workspace.metadata["s3_sync_status"] = "error"
-                workspace.metadata["s3_sync_error"] = str(e)
+                workspace.metadata["gcs_sync_status"] = "error"
+                workspace.metadata["gcs_sync_error"] = str(e)
                 sync_error = e
+
+            # Save user dotfiles (.claude/, .codex/, .gemini/ configs) before stopping
+            # Only sync if sync_dotfiles is enabled (default True for backwards compat)
+            sync_dotfiles = workspace.metadata.get("sync_dotfiles", True)
+            if sync_dotfiles:
+                try:
+                    dotfiles_paths = workspace.metadata.get("dotfiles_paths")
+                    await self._file_sync.save_user_dotfiles(
+                        workspace_id=workspace_id,
+                        user_id=workspace.user_id,
+                        dotfiles_paths=dotfiles_paths,
+                    )
+                    workspace.metadata["dotfiles_sync_status"] = "success"
+                    logger.info(
+                        "Saved user dotfiles before workspace stop",
+                        workspace_id=workspace_id,
+                        user_id=workspace.user_id,
+                    )
+                except Exception as e:
+                    logger.exception(
+                        "Failed to save user dotfiles before stop",
+                        workspace_id=workspace_id,
+                        user_id=workspace.user_id,
+                    )
+                    workspace.metadata["dotfiles_sync_status"] = "error"
+                    workspace.metadata["dotfiles_sync_error"] = str(e)
 
         try:
             container = await asyncio.to_thread(
@@ -501,7 +616,7 @@ class DockerComputeManager(ComputeManager):
             # Warn if sync failed but stop succeeded
             if sync_error:
                 logger.warning(
-                    "Workspace stopped but S3 sync failed - data may be lost",
+                    "Workspace stopped but GCS sync failed - data may be lost",
                     workspace_id=workspace_id,
                 )
             else:
@@ -509,6 +624,58 @@ class DockerComputeManager(ComputeManager):
         except NotFound:
             logger.warning("Container not found", workspace_id=workspace_id)
             workspace.status = WorkspaceStatus.ERROR
+
+    async def restart_workspace(self, workspace_id: str) -> None:
+        """Restart a stopped workspace container."""
+        workspace = self._workspaces.get(workspace_id)
+        if not workspace:
+            logger.warning("Workspace not found for restart", workspace_id=workspace_id)
+            raise ValueError(f"Workspace {workspace_id} not found")
+
+        if not workspace.container_id:
+            logger.warning("No container ID for restart", workspace_id=workspace_id)
+            raise ValueError(f"Workspace {workspace_id} has no container")
+
+        try:
+            container = await asyncio.to_thread(
+                self.client.containers.get,
+                workspace.container_id,
+            )
+
+            # Check if container is already running
+            container_status = container.status
+            if container_status == "running":
+                logger.info("Container already running", workspace_id=workspace_id)
+                workspace.status = WorkspaceStatus.RUNNING
+                workspace.last_activity = datetime.now(UTC)
+                return
+
+            # Start the stopped container
+            await asyncio.to_thread(container.start)
+
+            workspace.status = WorkspaceStatus.RUNNING
+            workspace.last_activity = datetime.now(UTC)
+
+            # Resume file sync if enabled
+            if self._file_sync:
+                try:
+                    await self._file_sync.start_background_sync(
+                        workspace_id=workspace_id,
+                        user_id=workspace.user_id,
+                        dotfiles_paths=workspace.metadata.get("dotfiles_paths"),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to resume file sync after restart",
+                        workspace_id=workspace_id,
+                        error=str(e),
+                    )
+
+            logger.info("Workspace restarted", workspace_id=workspace_id)
+        except NotFound:
+            logger.warning("Container not found for restart", workspace_id=workspace_id)
+            workspace.status = WorkspaceStatus.ERROR
+            raise ValueError(f"Container for workspace {workspace_id} not found") from None
 
     async def _track_compute_usage(
         self,
@@ -554,75 +721,103 @@ class DockerComputeManager(ComputeManager):
             logger.exception("Failed to track compute usage")
 
     async def track_running_workspaces_usage(self) -> None:
-        """Track compute usage for all running workspaces (called periodically)."""
-        now = datetime.now(UTC)
+        """Track compute usage for all running workspaces (called periodically).
 
-        for workspace in list(self._workspaces.values()):
-            if workspace.status != WorkspaceStatus.RUNNING:
-                continue
+        Uses a lock to prevent race conditions where concurrent calls could
+        read the same timestamp and double-bill.
+        """
+        async with self._billing_lock:
+            now = datetime.now(UTC)
 
-            try:
-                # Get last billing timestamp from metadata
-                last_billing_str = workspace.metadata.get("last_billing_timestamp")
-                if not last_billing_str:
-                    # Use workspace creation time as starting point for first billing cycle
-                    # This ensures we track usage from when the workspace started running
-                    last_billing = workspace.created_at
-                else:
-                    # Parse last billing timestamp
-                    last_billing = datetime.fromisoformat(last_billing_str)
+            for workspace in list(self._workspaces.values()):
+                if workspace.status != WorkspaceStatus.RUNNING:
+                    continue
 
-                # Ensure last_billing is timezone-aware
-                if last_billing.tzinfo is None:
-                    last_billing = last_billing.replace(tzinfo=UTC)
+                try:
+                    # Get last billing timestamp from metadata
+                    last_billing_str = workspace.metadata.get("last_billing_timestamp")
+                    if not last_billing_str:
+                        # Use workspace creation time as starting point for first billing cycle
+                        # This ensures we track usage from when the workspace started running
+                        last_billing = workspace.created_at
+                    else:
+                        # Parse last billing timestamp
+                        last_billing = datetime.fromisoformat(last_billing_str)
 
-                # Calculate duration since last billing
-                duration = (now - last_billing).total_seconds()
+                    # Ensure last_billing is timezone-aware
+                    if last_billing.tzinfo is None:
+                        last_billing = last_billing.replace(tzinfo=UTC)
 
-                # Only track if at least 30 seconds have passed (avoid too frequent tracking)
-                if duration >= 30:  # noqa: PLR2004
-                    duration_seconds = int(duration)
+                    # Calculate duration since last billing
+                    duration = (now - last_billing).total_seconds()
 
-                    # Track the usage
-                    await self._track_compute_usage(workspace, duration_seconds)
+                    # Only track if at least 10 minutes have passed to avoid too many small entries
+                    # This also helps with cost precision since per-minute billing at low rates
+                    # results in sub-cent costs that round to $0
+                    if duration >= 600:  # noqa: PLR2004
+                        duration_seconds = int(duration)
 
-                    # Update last billing timestamp
-                    workspace.metadata["last_billing_timestamp"] = now.isoformat()
+                        # Update timestamp BEFORE tracking to prevent double-billing
+                        # even if _track_compute_usage fails and retries
+                        old_timestamp = workspace.metadata.get("last_billing_timestamp")
+                        workspace.metadata["last_billing_timestamp"] = now.isoformat()
 
-                    logger.debug(
-                        "Tracked periodic compute usage",
+                        try:
+                            # Track the usage
+                            await self._track_compute_usage(workspace, duration_seconds)
+
+                            logger.debug(
+                                "Tracked periodic compute usage",
+                                workspace_id=workspace.id,
+                                duration_seconds=duration_seconds,
+                            )
+                        except Exception:
+                            # Restore old timestamp on failure so we retry next time
+                            if old_timestamp:
+                                workspace.metadata["last_billing_timestamp"] = old_timestamp
+                            else:
+                                workspace.metadata.pop("last_billing_timestamp", None)
+                            raise
+                except Exception:
+                    logger.exception(
+                        "Failed to track periodic usage for workspace",
                         workspace_id=workspace.id,
-                        duration_seconds=duration_seconds,
                     )
-            except Exception:
-                logger.exception(
-                    "Failed to track periodic usage for workspace",
-                    workspace_id=workspace.id,
-                )
 
     async def delete_workspace(self, workspace_id: str, preserve_files: bool = True) -> None:
         """Delete a workspace and its container.
 
         Args:
             workspace_id: The workspace to delete
-            preserve_files: If True, sync to S3 before deletion. If False, also delete S3 files.
+            preserve_files: If True, sync to GCS before deletion. If False, also delete GCS files.
         """
         workspace = self._workspaces.get(workspace_id)
         if not workspace:
             return
 
-        # Sync files to S3 before deletion
+        # Sync files to GCS before deletion (with timeout to prevent shutdown hangs)
         if self._file_sync:
             try:
                 await self._file_sync.stop_background_sync(workspace_id)
                 if preserve_files:
-                    await self._file_sync.sync_to_s3(workspace_id)
+                    await asyncio.wait_for(
+                        self._file_sync.sync_to_gcs(workspace_id),
+                        timeout=30.0,  # 30 second timeout to prevent shutdown hangs
+                    )
                 else:
-                    # Optionally delete S3 files too
-                    await self._file_sync.delete_workspace_files(workspace_id)
+                    # Optionally delete GCS files too
+                    await asyncio.wait_for(
+                        self._file_sync.delete_workspace_files(workspace_id),
+                        timeout=30.0,
+                    )
+            except TimeoutError:
+                logger.warning(
+                    "GCS sync timed out during workspace deletion",
+                    workspace_id=workspace_id,
+                )
             except Exception:
                 logger.exception(
-                    "Failed to handle S3 files before delete",
+                    "Failed to handle GCS files before delete",
                     workspace_id=workspace_id,
                 )
 
@@ -642,6 +837,11 @@ class DockerComputeManager(ComputeManager):
     async def get_workspace(self, workspace_id: str) -> WorkspaceInfo | None:
         """Get workspace information."""
         workspace = self._workspaces.get(workspace_id)
+
+        # If not in registry, try to find container directly and re-register
+        if not workspace:
+            workspace = await self._discover_workspace_by_id(workspace_id)
+
         if not workspace:
             return None
 
@@ -660,6 +860,86 @@ class DockerComputeManager(ComputeManager):
                 workspace.status = WorkspaceStatus.ERROR
 
         return workspace
+
+    async def _discover_workspace_by_id(self, workspace_id: str) -> WorkspaceInfo | None:
+        """Try to find and re-register a workspace container by ID.
+
+        This handles cases where the compute service was restarted but the
+        container is still running.
+        """
+        try:
+            container_name = f"podex-workspace-{workspace_id}"
+            container = await asyncio.to_thread(
+                self.client.containers.get,
+                container_name,
+            )
+
+            # Get labels
+            labels = container.labels
+            user_id = labels.get("podex.user_id")
+            session_id = labels.get("podex.session_id")
+            tier_str = labels.get("podex.tier", "starter")
+
+            if not user_id or not session_id:
+                logger.warning(
+                    "Container missing required labels, cannot re-register",
+                    workspace_id=workspace_id,
+                )
+                return None
+
+            # Parse tier
+            try:
+                tier = WorkspaceTier(tier_str)
+            except ValueError:
+                tier = WorkspaceTier.STARTER
+
+            # Get container IP
+            container.reload()
+            container_ip = self._get_container_ip(container)
+
+            # Create workspace info
+            now = datetime.now(UTC)
+            workspace_info = WorkspaceInfo(
+                id=workspace_id,
+                user_id=user_id,
+                session_id=session_id,
+                status=WorkspaceStatus.RUNNING
+                if container.status == "running"
+                else WorkspaceStatus.STOPPED,
+                tier=tier,
+                host=container_ip or container.name or "localhost",
+                port=3000,
+                container_id=container.id or "",
+                repos=[],
+                created_at=now,
+                last_activity=now,
+                metadata={
+                    "container_name": container.name or "",
+                    "last_billing_timestamp": now.isoformat(),
+                    "rediscovered": True,
+                },
+            )
+
+            # Re-register in memory
+            self._workspaces[workspace_id] = workspace_info
+
+            logger.info(
+                "Re-discovered workspace container on-demand",
+                workspace_id=workspace_id,
+                container_id=container.id[:12] if container.id else "unknown",
+            )
+
+            return workspace_info
+
+        except NotFound:
+            return None
+        except Exception as e:
+            logger.warning(
+                "Failed to discover workspace container",
+                workspace_id=workspace_id,
+                error=str(e),
+            )
+            return None
 
     async def list_workspaces(
         self,
@@ -681,10 +961,25 @@ class DockerComputeManager(ComputeManager):
         workspace_id: str,
         command: str,
         working_dir: str | None = None,
-        timeout: int = 30,  # noqa: ARG002
+        timeout: int = 30,
     ) -> WorkspaceExecResponse:
-        """Execute a command in the workspace container."""
-        workspace = self._workspaces.get(workspace_id)
+        """Execute a command in the workspace container.
+
+        Args:
+            workspace_id: The workspace to execute in
+            command: The command to run
+            working_dir: Working directory for the command
+            timeout: Command timeout in seconds (default 30)
+
+        Returns:
+            WorkspaceExecResponse with exit_code, stdout, stderr
+
+        Raises:
+            ValueError: If workspace not found
+            TimeoutError: If command exceeds timeout
+        """
+        # Use get_workspace which handles on-demand discovery of containers
+        workspace = await self.get_workspace(workspace_id)
         if not workspace or not workspace.container_id:
             msg = f"Workspace {workspace_id} not found"
             raise ValueError(msg)
@@ -695,13 +990,44 @@ class DockerComputeManager(ComputeManager):
                 workspace.container_id,
             )
 
-            # Execute command
-            exec_result = await asyncio.to_thread(
-                container.exec_run,
-                cmd=["bash", "-c", command],
-                workdir=working_dir or "/home/dev",
-                demux=True,  # Separate stdout/stderr
-            )
+            # Auto-restart if container is not running
+            if container.status != "running":
+                logger.info(
+                    "Container not running, auto-restarting",
+                    workspace_id=workspace_id,
+                    container_status=container.status,
+                )
+                await self.restart_workspace(workspace_id)
+                # Re-fetch the container after restart
+                container = await asyncio.to_thread(
+                    self.client.containers.get,
+                    workspace.container_id,
+                )
+
+            # Execute command with timeout
+            # Docker exec_run is synchronous, so wrap with asyncio timeout
+            try:
+                exec_result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        container.exec_run,
+                        cmd=["bash", "-c", command],
+                        workdir=working_dir or "/home/dev",
+                        demux=True,  # Separate stdout/stderr
+                    ),
+                    timeout=float(timeout),
+                )
+            except TimeoutError:
+                logger.warning(
+                    "Command timed out",
+                    workspace_id=workspace_id,
+                    command=command[:100],
+                    timeout=timeout,
+                )
+                return WorkspaceExecResponse(
+                    exit_code=-1,
+                    stdout="",
+                    stderr=f"Command timed out after {timeout} seconds",
+                )
 
             exit_code = exec_result.exit_code
             stdout_bytes, stderr_bytes = exec_result.output
@@ -714,6 +1040,141 @@ class DockerComputeManager(ComputeManager):
         except NotFound as e:
             msg = f"Container not found for workspace {workspace_id}"
             raise ValueError(msg) from e
+
+    async def exec_command_stream(  # noqa: PLR0915, PLR0912
+        self,
+        workspace_id: str,
+        command: str,
+        working_dir: str | None = None,
+        timeout: int = 60,
+    ) -> AsyncGenerator[str, None]:
+        """Execute a command using PTY and stream output chunks.
+
+        Uses a pseudo-terminal (PTY) to execute the command, which is
+        necessary for interactive commands like authentication flows
+        that display URLs and wait for user input.
+
+        Args:
+            workspace_id: The workspace ID
+            command: Shell command to execute
+            working_dir: Working directory (default: /home/dev)
+            timeout: Command timeout in seconds
+
+        Yields:
+            Output chunks as strings
+        """
+        workspace = await self.get_workspace(workspace_id)
+        if not workspace or not workspace.container_id:
+            msg = f"Workspace {workspace_id} not found"
+            raise ValueError(msg)
+
+        try:
+            container = await asyncio.to_thread(
+                self.client.containers.get,
+                workspace.container_id,
+            )
+
+            # Auto-restart if container is not running
+            if container.status != "running":
+                logger.info(
+                    "Container not running, auto-restarting for stream exec",
+                    workspace_id=workspace_id,
+                    container_status=container.status,
+                )
+                await self.restart_workspace(workspace_id)
+                container = await asyncio.to_thread(
+                    self.client.containers.get,
+                    workspace.container_id,
+                )
+
+            # Create exec WITHOUT PTY - CLI tools will output plain text
+            # instead of fancy ncurses-style terminal UI
+            exec_instance = await asyncio.to_thread(
+                self.client.api.exec_create,
+                workspace.container_id,
+                cmd=["bash", "-c", command],
+                stdin=False,
+                stdout=True,
+                stderr=True,
+                tty=False,  # No PTY - get plain text output
+                workdir=working_dir or "/home/dev",
+            )
+            exec_id = exec_instance["Id"]
+
+            # Start exec with stream=True for automatic demuxing
+            # (socket=True gives raw multiplexed bytes that need manual header parsing)
+            output_generator = cast(
+                "Iterator[tuple[bytes | None, bytes | None]]",
+                await asyncio.to_thread(
+                    self.client.api.exec_start,
+                    exec_id,
+                    stream=True,
+                    demux=True,  # Separate stdout/stderr
+                ),
+            )
+
+            start_time = asyncio.get_event_loop().time()
+            buffer = ""
+
+            # Iterate over the output generator
+            for stdout_chunk, stderr_chunk in output_generator:
+                # Check overall timeout
+                elapsed = asyncio.get_event_loop().time() - start_time
+                if elapsed > timeout:
+                    logger.warning(
+                        "Streaming exec timed out",
+                        workspace_id=workspace_id,
+                        timeout=timeout,
+                    )
+                    yield "\n⏱️ Command timed out\n"
+                    break
+
+                # Process stdout
+                if stdout_chunk:
+                    chunk = stdout_chunk.decode("utf-8", errors="replace")
+
+                    # Strip ANSI escape codes (terminal control sequences)
+                    chunk = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", chunk)
+                    chunk = re.sub(r"\x1b\][^\x07]*\x07", "", chunk)  # OSC sequences
+                    chunk = re.sub(r"\x1b[PX^_][^\x1b]*\x1b\\", "", chunk)  # DCS/SOS/PM/APC
+                    chunk = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", chunk)  # Control chars
+
+                    if chunk:
+                        buffer += chunk
+                        # Yield on newlines (end of JSON lines) for real-time streaming
+                        # SSE layer uses null bytes for line separation, so this is safe
+                        if "\n" in buffer:
+                            yield buffer
+                            buffer = ""
+
+                # Process stderr (also yield it for visibility)
+                if stderr_chunk:
+                    chunk = stderr_chunk.decode("utf-8", errors="replace")
+                    chunk = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", chunk)
+                    chunk = re.sub(r"\x1b\][^\x07]*\x07", "", chunk)
+                    chunk = re.sub(r"\x1b[PX^_][^\x1b]*\x1b\\", "", chunk)
+                    chunk = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", chunk)
+
+                    if chunk:
+                        buffer += chunk
+                        if "\n" in buffer:
+                            yield buffer
+                            buffer = ""
+
+            # Yield any remaining buffer
+            if buffer:
+                yield buffer
+
+        except NotFound as e:
+            msg = f"Container not found for workspace {workspace_id}"
+            raise ValueError(msg) from e
+        except Exception as e:
+            logger.exception(
+                "Streaming exec failed",
+                workspace_id=workspace_id,
+                error=str(e),
+            )
+            yield f"\n❌ Error: {e}\n"
 
     async def read_file(self, workspace_id: str, path: str) -> str:
         """Read a file from the workspace."""
@@ -791,8 +1252,14 @@ class DockerComputeManager(ComputeManager):
                     workspace_id=workspace_id,
                     idle_seconds=idle_time,
                 )
-                await self.delete_workspace(workspace_id)
-                cleaned_up.append(workspace_id)
+                try:
+                    await self.delete_workspace(workspace_id)
+                    cleaned_up.append(workspace_id)
+                except Exception:
+                    logger.exception(
+                        "Failed to cleanup workspace, continuing with others",
+                        workspace_id=workspace_id,
+                    )
 
         return cleaned_up
 

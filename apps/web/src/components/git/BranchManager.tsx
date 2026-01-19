@@ -480,8 +480,9 @@ export function BranchManager({
   // Handlers
   const handleCreateBranch = async (_name: string, _checkout: boolean) => {
     try {
-      // TODO: Implement API call
-      // await api.post(`/api/sessions/${sessionId}/git/branches`, { name, checkout });
+      // TODO: Implement API call for branch creation
+      // await api.post(`/api/sessions/${sessionId}/git/branches`, { name: _name, checkout: _checkout });
+      console.warn('Creating branch:', { name: _name, checkout: _checkout });
       setCreateModalOpen(false);
       await loadBranches();
     } catch (error) {
@@ -492,8 +493,9 @@ export function BranchManager({
   const handleDeleteBranch = async (_force: boolean) => {
     if (!deleteModalBranch) return;
     try {
-      // TODO: Implement API call
-      // await api.delete(`/api/sessions/${sessionId}/git/branches/${deleteModalBranch}`, { force });
+      // TODO: Implement API call for branch deletion
+      // await api.delete(`/api/sessions/${sessionId}/git/branches/${deleteModalBranch}`);
+      console.warn('Deleting branch:', { branch: deleteModalBranch, force: _force });
       setDeleteModalBranch(null);
       await loadBranches();
     } catch (error) {
@@ -504,8 +506,13 @@ export function BranchManager({
   const handleMergeBranch = async (_noFastForward: boolean) => {
     if (!mergeModalBranch || !currentBranch) return;
     try {
-      // TODO: Implement API call
-      // await api.post(`/api/sessions/${sessionId}/git/merge`, { source: mergeModalBranch, noFastForward });
+      // TODO: Implement API call for branch merge
+      // await api.post(`/api/sessions/${sessionId}/git/merge`, { source: mergeModalBranch, noFastForward: _noFastForward });
+      console.warn('Merging branch:', {
+        source: mergeModalBranch,
+        target: currentBranch.name,
+        noFastForward: _noFastForward,
+      });
       onMerge?.(mergeModalBranch, currentBranch.name);
       setMergeModalBranch(null);
       await loadBranches();
@@ -516,8 +523,9 @@ export function BranchManager({
 
   const handleSwitchBranch = async (branch: string) => {
     try {
-      // TODO: Implement API call
+      // TODO: Implement API call for branch switch
       // await api.post(`/api/sessions/${sessionId}/git/checkout`, { branch });
+      console.warn('Switching to branch:', branch);
       onBranchSwitch?.(branch);
       await loadBranches();
     } catch (error) {
@@ -527,6 +535,7 @@ export function BranchManager({
 
   const handleCompare = (_branch: string) => {
     // TODO: Open diff view between branches
+    console.warn('Comparing with branch:', _branch);
   };
 
   return (

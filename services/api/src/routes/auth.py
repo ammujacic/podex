@@ -1,7 +1,8 @@
 """Authentication routes."""
 
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Literal, cast
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from jose import JWTError, jwt
@@ -10,11 +11,18 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.audit_logger import AuditAction, AuditLogger, AuditStatus
 from src.config import settings
 from src.database.connection import get_db
-from src.database.models import SubscriptionPlan, User, UserSubscription
+from src.database.models import PlatformSetting, SubscriptionPlan, User, UserSubscription
 from src.middleware.rate_limit import RATE_LIMIT_AUTH, RATE_LIMIT_SENSITIVE, limiter
 from src.services.mfa import get_mfa_service
+from src.services.token_blacklist import (
+    is_token_revoked,
+    register_user_token,
+    revoke_all_user_tokens,
+    revoke_token,
+)
 from src.utils.password_validator import get_password_strength, validate_password
 
 router = APIRouter()
@@ -24,6 +32,57 @@ DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 # OAuth2 token type constant - standard OAuth2 token type identifier
 _OAUTH2_TYPE_STR = "bearer"  # not a password, standard OAuth2 type identifier
+
+# Cookie names for httpOnly auth tokens (not passwords, just cookie names)
+COOKIE_ACCESS_TOKEN = "podex_access"
+COOKIE_REFRESH_TOKEN = "podex_refresh"
+
+
+def set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
+    """Set httpOnly cookies for authentication tokens.
+
+    These cookies are:
+    - httpOnly: Not accessible via JavaScript (XSS protection)
+    - secure: Only sent over HTTPS (in production)
+    - sameSite: Lax for CSRF protection while allowing normal navigation
+    """
+    # Access token cookie - used for API requests
+    response.set_cookie(
+        key=COOKIE_ACCESS_TOKEN,
+        value=access_token,
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite=cast("Literal['lax', 'strict', 'none']", settings.COOKIE_SAMESITE),
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/api",
+        domain=settings.COOKIE_DOMAIN,
+    )
+
+    # Refresh token cookie - restricted to auth refresh endpoint
+    response.set_cookie(
+        key=COOKIE_REFRESH_TOKEN,
+        value=refresh_token,
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite=cast("Literal['lax', 'strict', 'none']", settings.COOKIE_SAMESITE),
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        path="/api/auth",  # Restrict to auth endpoints only
+        domain=settings.COOKIE_DOMAIN,
+    )
+
+
+def clear_auth_cookies(response: Response) -> None:
+    """Clear authentication cookies on logout."""
+    response.delete_cookie(
+        key=COOKIE_ACCESS_TOKEN,
+        path="/api",
+        domain=settings.COOKIE_DOMAIN,
+    )
+    response.delete_cookie(
+        key=COOKIE_REFRESH_TOKEN,
+        path="/api/auth",
+        domain=settings.COOKIE_DOMAIN,
+    )
 
 
 class LoginRequest(BaseModel):
@@ -43,10 +102,12 @@ class RegisterRequest(BaseModel):
 
 
 class TokenResponse(BaseModel):
-    """Token response."""
+    """Token response.
 
-    access_token: str
-    refresh_token: str
+    SECURITY: Tokens are set via httpOnly cookies, not returned in body.
+    The expires_in field indicates when the access token will expire.
+    """
+
     token_type: str = _OAUTH2_TYPE_STR
     expires_in: int
 
@@ -62,11 +123,16 @@ class UserResponse(BaseModel):
 
 
 class AuthResponse(BaseModel):
-    """Auth response with user and tokens."""
+    """Auth response with user info.
+
+    SECURITY:
+    - In production (COOKIE_SECURE=true): Tokens are ONLY in httpOnly cookies (XSS protection)
+    - In development (COOKIE_SECURE=false): Tokens also returned in body for compatibility
+    """
 
     user: UserResponse
-    access_token: str
-    refresh_token: str
+    access_token: str | None = None  # Only set when COOKIE_SECURE=false
+    refresh_token: str | None = None  # Only set when COOKIE_SECURE=false
     token_type: str = _OAUTH2_TYPE_STR
     expires_in: int
     mfa_required: bool = False
@@ -79,27 +145,44 @@ class MFARequiredResponse(BaseModel):
     message: str = "MFA verification required"
 
 
-def create_access_token(user_id: str, role: str = "member") -> str:
-    """Create JWT access token."""
-    expire = datetime.now(UTC) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+class TokenInfo:
+    """Token creation result with metadata for registration."""
+
+    def __init__(self, token: str, jti: str, expires_in_seconds: int) -> None:
+        self.token = token
+        self.jti = jti
+        self.expires_in_seconds = expires_in_seconds
+
+
+def create_access_token(user_id: str, role: str = "member") -> TokenInfo:
+    """Create JWT access token with JTI for revocation support."""
+    jti = str(uuid4())
+    expires_in = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    expire = datetime.now(UTC) + timedelta(seconds=expires_in)
     to_encode = {
         "sub": user_id,
         "role": role,
         "exp": expire,
         "type": "access",
+        "jti": jti,
     }
-    return str(jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM))
+    token = str(jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM))
+    return TokenInfo(token, jti, expires_in)
 
 
-def create_refresh_token(user_id: str) -> str:
-    """Create JWT refresh token."""
-    expire = datetime.now(UTC) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+def create_refresh_token(user_id: str) -> TokenInfo:
+    """Create JWT refresh token with JTI for revocation support."""
+    jti = str(uuid4())
+    expires_in = settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400
+    expire = datetime.now(UTC) + timedelta(seconds=expires_in)
     to_encode = {
         "sub": user_id,
         "exp": expire,
         "type": "refresh",
+        "jti": jti,
     }
-    return str(jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM))
+    token = str(jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM))
+    return TokenInfo(token, jti, expires_in)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -132,6 +215,13 @@ async def login(
     user = result.scalar_one_or_none()
 
     if not user:
+        # Log failed login attempt (user not found)
+        audit = AuditLogger(db).set_context(request=request)
+        await audit.log_auth(
+            AuditAction.AUTH_LOGIN_FAILED,
+            status=AuditStatus.FAILURE,
+            details={"email": body.email, "reason": "user_not_found"},
+        )
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     # Check if user has a password (not OAuth-only user)
@@ -143,6 +233,14 @@ async def login(
 
     # Verify password
     if not verify_password(body.password, user.password_hash):
+        # Log failed login attempt (bad password)
+        audit = AuditLogger(db).set_context(request=request, user_id=user.id, user_email=user.email)
+        await audit.log_auth(
+            AuditAction.AUTH_LOGIN_FAILED,
+            status=AuditStatus.FAILURE,
+            details={"reason": "invalid_password"},
+            resource_id=user.id,
+        )
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     # Check if user is active
@@ -164,6 +262,16 @@ async def login(
         )
 
         if not verification.success:
+            # Log failed MFA verification
+            audit = AuditLogger(db).set_context(
+                request=request, user_id=user.id, user_email=user.email
+            )
+            await audit.log_auth(
+                AuditAction.AUTH_LOGIN_FAILED,
+                status=AuditStatus.FAILURE,
+                details={"reason": "invalid_mfa_code"},
+                resource_id=user.id,
+            )
             raise HTTPException(status_code=401, detail="Invalid MFA code")
 
         # Update backup codes if one was used
@@ -174,9 +282,29 @@ async def login(
     # Get user role from database
     user_role = getattr(user, "role", "member") or "member"
 
-    access_token = create_access_token(user.id, role=user_role)
-    refresh_token = create_refresh_token(user.id)
+    access_token_info = create_access_token(user.id, role=user_role)
+    refresh_token_info = create_refresh_token(user.id)
 
+    # Register tokens for bulk revocation support
+    await register_user_token(user.id, access_token_info.jti, access_token_info.expires_in_seconds)
+    await register_user_token(
+        user.id, refresh_token_info.jti, refresh_token_info.expires_in_seconds
+    )
+
+    # Set httpOnly cookies for secure token storage (XSS protection)
+    set_auth_cookies(response, access_token_info.token, refresh_token_info.token)
+
+    # Log successful login
+    audit = AuditLogger(db).set_context(request=request, user_id=user.id, user_email=user.email)
+    await audit.log_auth(
+        AuditAction.AUTH_LOGIN,
+        status=AuditStatus.SUCCESS,
+        details={"mfa_used": user.mfa_enabled},
+        resource_id=user.id,
+    )
+
+    # In production (COOKIE_SECURE=true), tokens are ONLY in httpOnly cookies
+    # In development (COOKIE_SECURE=false), also return in body for compatibility
     return AuthResponse(
         user=UserResponse(
             id=user.id,
@@ -185,9 +313,9 @@ async def login(
             avatar_url=user.avatar_url,
             role=user_role,
         ),
-        access_token=access_token,
-        refresh_token=refresh_token,
-        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        access_token=access_token_info.token if not settings.COOKIE_SECURE else None,
+        refresh_token=refresh_token_info.token if not settings.COOKIE_SECURE else None,
+        expires_in=access_token_info.expires_in_seconds,
     )
 
 
@@ -200,6 +328,21 @@ async def register(
     db: DbSession,
 ) -> AuthResponse:
     """Register new user."""
+    # Check if registration is enabled
+    feature_flags_result = await db.execute(
+        select(PlatformSetting).where(PlatformSetting.key == "feature_flags")
+    )
+    feature_flags = feature_flags_result.scalar_one_or_none()
+    if (
+        feature_flags
+        and isinstance(feature_flags.value, dict)
+        and not feature_flags.value.get("registration_enabled", True)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Registration is currently disabled. Please contact an administrator.",
+        )
+
     # Validate password complexity
     password_validation = validate_password(body.password)
     if not password_validation.is_valid:
@@ -251,9 +394,31 @@ async def register(
     # Get user role (will be "member" for new users)
     user_role = getattr(user, "role", "member") or "member"
 
-    access_token = create_access_token(user.id, role=user_role)
-    refresh_token = create_refresh_token(user.id)
+    access_token_info = create_access_token(user.id, role=user_role)
+    refresh_token_info = create_refresh_token(user.id)
 
+    # Register tokens for bulk revocation support
+    await register_user_token(user.id, access_token_info.jti, access_token_info.expires_in_seconds)
+    await register_user_token(
+        user.id, refresh_token_info.jti, refresh_token_info.expires_in_seconds
+    )
+
+    # Set httpOnly cookies for secure token storage (XSS protection)
+    set_auth_cookies(response, access_token_info.token, refresh_token_info.token)
+
+    # Log user registration
+    audit = AuditLogger(db).set_context(request=request, user_id=user.id, user_email=user.email)
+    await audit.log(
+        AuditAction.USER_CREATED,
+        category="user",
+        status=AuditStatus.SUCCESS,
+        resource_type="user",
+        resource_id=user.id,
+        details={"email": user.email, "name": user.name},
+    )
+
+    # In production (COOKIE_SECURE=true), tokens are ONLY in httpOnly cookies
+    # In development (COOKIE_SECURE=false), also return in body for compatibility
     return AuthResponse(
         user=UserResponse(
             id=user.id,
@@ -262,30 +427,47 @@ async def register(
             avatar_url=user.avatar_url,
             role=user_role,
         ),
-        access_token=access_token,
-        refresh_token=refresh_token,
-        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        access_token=access_token_info.token if not settings.COOKIE_SECURE else None,
+        refresh_token=refresh_token_info.token if not settings.COOKIE_SECURE else None,
+        expires_in=access_token_info.expires_in_seconds,
     )
 
 
 class RefreshRequest(BaseModel):
-    """Refresh token request."""
+    """Refresh token request.
 
-    refresh_token: str
+    The refresh_token can be provided in the request body OR via httpOnly cookie.
+    Cookie-based refresh is preferred for security.
+    """
+
+    refresh_token: str | None = None  # Optional - can use cookie instead
 
 
 @router.post("/refresh", response_model=TokenResponse)
 @limiter.limit(RATE_LIMIT_SENSITIVE)
 async def refresh_token(
-    body: RefreshRequest,
     request: Request,
     response: Response,
     db: DbSession,
+    body: RefreshRequest | None = None,
 ) -> TokenResponse:
-    """Refresh access token using refresh token."""
+    """Refresh access token using refresh token.
+
+    The refresh token can be provided via:
+    1. httpOnly cookie (preferred, more secure)
+    2. Request body (for backward compatibility)
+    """
+    # Get refresh token from cookie first, then body
+    token = request.cookies.get(COOKIE_REFRESH_TOKEN)
+    if not token and body and body.refresh_token:
+        token = body.refresh_token
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Refresh token required")
+
     try:
         payload = jwt.decode(
-            body.refresh_token,
+            token,
             settings.JWT_SECRET_KEY,
             algorithms=[settings.JWT_ALGORITHM],
         )
@@ -297,6 +479,16 @@ async def refresh_token(
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid token")
 
+        # SECURITY: Require jti claim for token revocation support
+        old_jti = payload.get("jti")
+        if not old_jti:
+            raise HTTPException(status_code=401, detail="Invalid token format")
+
+        # SECURITY: Check if this refresh token has been revoked BEFORE issuing new tokens
+        # This prevents reuse of compromised refresh tokens
+        if await is_token_revoked(old_jti):
+            raise HTTPException(status_code=401, detail="Token has been revoked")
+
         # Verify user still exists and is active
         result = await db.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
@@ -304,17 +496,84 @@ async def refresh_token(
         if not user or not user.is_active:
             raise HTTPException(status_code=401, detail="User not found or inactive")
 
+        # Revoke the old refresh token to prevent reuse
+        if old_jti:
+            old_exp = payload.get("exp", 0)
+            remaining_ttl = max(int(old_exp - datetime.now(UTC).timestamp()), 0)
+            await revoke_token(old_jti, remaining_ttl)
+
         # Get user's current role from database (not from old token)
         # This ensures role changes are reflected on token refresh
         user_role = getattr(user, "role", "member") or "member"
 
+        new_access_token_info = create_access_token(str(user_id), role=user_role)
+        new_refresh_token_info = create_refresh_token(str(user_id))
+
+        # Register new tokens for bulk revocation support
+        await register_user_token(
+            str(user_id), new_access_token_info.jti, new_access_token_info.expires_in_seconds
+        )
+        await register_user_token(
+            str(user_id), new_refresh_token_info.jti, new_refresh_token_info.expires_in_seconds
+        )
+
+        # Set new httpOnly cookies
+        set_auth_cookies(response, new_access_token_info.token, new_refresh_token_info.token)
+
         return TokenResponse(
-            access_token=create_access_token(str(user_id), role=user_role),
-            refresh_token=create_refresh_token(str(user_id)),
-            expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            expires_in=new_access_token_info.expires_in_seconds,
         )
     except JWTError as e:
         raise HTTPException(status_code=401, detail="Invalid or expired token") from e
+
+
+class LogoutResponse(BaseModel):
+    """Logout response."""
+
+    message: str = "Logged out successfully"
+
+
+class LogoutRequest(BaseModel):
+    """Logout request."""
+
+    revoke_all_sessions: bool = False  # If True, revoke all tokens for this user
+
+
+@router.post("/logout", response_model=LogoutResponse)
+async def logout(
+    request: Request,
+    response: Response,
+    db: DbSession,
+    body: LogoutRequest | None = None,
+) -> LogoutResponse:
+    """Log out user by clearing authentication cookies.
+
+    This endpoint clears the httpOnly cookies that store auth tokens.
+    Optionally revokes all sessions for the user if requested.
+    """
+    user_id = getattr(request.state, "user_id", None)
+    user_email = getattr(request.state, "user_email", None)
+
+    clear_auth_cookies(response)
+
+    # Log logout
+    if user_id:
+        audit = AuditLogger(db).set_context(request=request, user_id=user_id, user_email=user_email)
+        await audit.log_auth(
+            AuditAction.AUTH_LOGOUT,
+            status=AuditStatus.SUCCESS,
+            resource_id=user_id,
+            details={"revoke_all_sessions": body.revoke_all_sessions if body else False},
+        )
+
+    # Optionally revoke all user tokens (e.g., "log out everywhere")
+    if body and body.revoke_all_sessions and user_id:
+        revoked_count = await revoke_all_user_tokens(user_id)
+        return LogoutResponse(
+            message=f"Logged out successfully. Revoked {revoked_count} active sessions."
+        )
+
+    return LogoutResponse()
 
 
 @router.get("/me", response_model=UserResponse)
@@ -384,7 +643,7 @@ async def change_password(
     request: Request,
     response: Response,
     db: DbSession,
-) -> dict[str, str]:
+) -> dict[str, str | int]:
     """Change current user's password."""
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
@@ -429,4 +688,22 @@ async def change_password(
     user.password_hash = hash_password(body.new_password)
     await db.commit()
 
-    return {"message": "Password changed successfully"}
+    # Log password change
+    audit = AuditLogger(db).set_context(request=request, user_id=user.id, user_email=user.email)
+    await audit.log_auth(
+        AuditAction.AUTH_PASSWORD_CHANGED,
+        status=AuditStatus.SUCCESS,
+        resource_id=user.id,
+    )
+
+    # SECURITY: Revoke all existing tokens on password change
+    # This ensures any compromised sessions are terminated
+    revoked_count = await revoke_all_user_tokens(user_id)
+
+    # Clear current session cookies
+    clear_auth_cookies(response)
+
+    return {
+        "message": "Password changed successfully. Please log in again.",
+        "sessions_revoked": revoked_count,
+    }

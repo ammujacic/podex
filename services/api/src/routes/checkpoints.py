@@ -1,37 +1,27 @@
 """Checkpoint management routes for undo/restore functionality."""
 
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from src.database import get_db
+from src.compute_client import compute_client
 from src.database.models import (
-    CheckpointFile,
     FileCheckpoint,
 )
 from src.database.models import (
     Session as SessionModel,
 )
+from src.routes.dependencies import DbSession, get_current_user_id
 from src.websocket.hub import emit_to_session
 
 logger = structlog.get_logger()
 
 router = APIRouter()
-
-DbSession = Annotated[AsyncSession, Depends(get_db)]
-
-
-def get_current_user_id(request: Request) -> str:
-    """Get current user ID from request state."""
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return str(user_id)
 
 
 class FileChangeResponse(BaseModel):
@@ -95,8 +85,12 @@ async def get_session_checkpoints(
     if session.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Build query
-    query = select(FileCheckpoint).where(FileCheckpoint.session_id == session_id)
+    # Build query with eager loading to avoid N+1 queries
+    query = (
+        select(FileCheckpoint)
+        .where(FileCheckpoint.session_id == session_id)
+        .options(selectinload(FileCheckpoint.files))  # Eager load related files
+    )
 
     if agent_id:
         query = query.where(FileCheckpoint.agent_id == agent_id)
@@ -108,11 +102,8 @@ async def get_session_checkpoints(
 
     responses = []
     for cp in checkpoints:
-        # Get files for this checkpoint
-        files_result = await db.execute(
-            select(CheckpointFile).where(CheckpointFile.checkpoint_id == cp.id)
-        )
-        files = files_result.scalars().all()
+        # Files are already loaded via selectinload - no additional queries
+        files = cp.files
 
         responses.append(
             CheckpointResponse(
@@ -168,11 +159,14 @@ async def get_checkpoint(
     if not session or session.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Get files
-    files_result = await db.execute(
-        select(CheckpointFile).where(CheckpointFile.checkpoint_id == checkpoint_id)
+    # Get files - re-fetch checkpoint with eager loading
+    cp_with_files_result = await db.execute(
+        select(FileCheckpoint)
+        .where(FileCheckpoint.id == checkpoint_id)
+        .options(selectinload(FileCheckpoint.files))
     )
-    files = files_result.scalars().all()
+    cp_with_files = cp_with_files_result.scalar_one()
+    files = cp_with_files.files
 
     return CheckpointResponse(
         id=str(checkpoint.id),
@@ -224,11 +218,14 @@ async def get_checkpoint_diff(
     if not session or session.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Get files with content
-    files_result = await db.execute(
-        select(CheckpointFile).where(CheckpointFile.checkpoint_id == checkpoint_id)
+    # Get files with content - re-fetch with eager loading
+    cp_with_files_result = await db.execute(
+        select(FileCheckpoint)
+        .where(FileCheckpoint.id == checkpoint_id)
+        .options(selectinload(FileCheckpoint.files))
     )
-    files = files_result.scalars().all()
+    cp_with_files = cp_with_files_result.scalar_one()
+    files = cp_with_files.files
 
     return CheckpointDiffResponse(
         id=str(checkpoint.id),
@@ -272,26 +269,36 @@ async def restore_checkpoint(
     if not session or session.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Get workspace path
-    _workspace_id = session.workspace_id
-    # TODO: Get actual workspace path from compute service
-    # For now, we'll emit an event and let the agent service handle the restore
+    if not session.workspace_id:
+        raise HTTPException(status_code=400, detail="Session has no workspace")
 
-    # Emit restore started event
+    # Get workspace information from compute service
+    workspace_info = await compute_client.get_workspace(session.workspace_id, user_id)
+
+    if not workspace_info:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    # Emit restore started event with workspace info
     await emit_to_session(
         str(checkpoint.session_id),
         "checkpoint_restore_started",
         {
             "checkpoint_id": checkpoint_id,
             "session_id": str(checkpoint.session_id),
+            "workspace_id": session.workspace_id,
+            "workspace_host": workspace_info.get("host"),
+            "workspace_port": workspace_info.get("port"),
         },
     )
 
-    # Get files
-    files_result = await db.execute(
-        select(CheckpointFile).where(CheckpointFile.checkpoint_id == checkpoint_id)
+    # Get files - re-fetch checkpoint with eager loading
+    cp_with_files_result = await db.execute(
+        select(FileCheckpoint)
+        .where(FileCheckpoint.id == checkpoint_id)
+        .options(selectinload(FileCheckpoint.files))
     )
-    files = files_result.scalars().all()
+    cp_with_files = cp_with_files_result.scalar_one()
+    files = cp_with_files.files
 
     # Mark checkpoint as restored
     checkpoint.status = "restored"

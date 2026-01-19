@@ -5,7 +5,7 @@
  * completion provider system.
  */
 
-import type { languages, editor, Position } from 'monaco-editor';
+import * as monaco from '@codingame/monaco-vscode-editor-api';
 
 // ============================================================================
 // Types
@@ -112,15 +112,15 @@ export class SnippetManager {
       endLineNumber: number;
       endColumn: number;
     }
-  ): languages.CompletionItem[] {
+  ): monaco.languages.CompletionItem[] {
     return snippets.map((snippet) => ({
       label: snippet.prefix,
-      kind: 27 as languages.CompletionItemKind, // Snippet
+      kind: monaco.languages.CompletionItemKind.Snippet,
       documentation: {
         value: `**${snippet.name}**\n\n${snippet.description}\n\n\`\`\`\n${this.expandSnippetBody(snippet.body)}\n\`\`\``,
       },
       insertText: this.expandSnippetBody(snippet.body),
-      insertTextRules: 4 as languages.CompletionItemInsertTextRule, // InsertAsSnippet
+      insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
       range,
       detail: snippet.isUserDefined ? 'User Snippet' : 'Built-in',
       sortText: snippet.isUserDefined ? '0' : '1', // User snippets first
@@ -130,19 +130,16 @@ export class SnippetManager {
   /**
    * Register as a Monaco completion provider
    */
-  registerCompletionProvider(
-    monaco: typeof import('monaco-editor'),
-    language: string | string[]
-  ): void {
-    const languages = Array.isArray(language) ? language : [language];
+  registerCompletionProvider(monacoInstance: typeof monaco, language: string | string[]): void {
+    const languageIds = Array.isArray(language) ? language : [language];
 
-    for (const lang of languages) {
-      const disposable = monaco.languages.registerCompletionItemProvider(lang, {
+    for (const lang of languageIds) {
+      const disposable = monacoInstance.languages.registerCompletionItemProvider(lang, {
         triggerCharacters: ['!', '.', '@'],
         provideCompletionItems: (
-          model: editor.ITextModel,
-          position: Position
-        ): languages.ProviderResult<languages.CompletionList> => {
+          model: monaco.editor.ITextModel,
+          position: monaco.Position
+        ): monaco.languages.ProviderResult<monaco.languages.CompletionList> => {
           const word = model.getWordUntilPosition(position);
           const range = {
             startLineNumber: position.lineNumber,

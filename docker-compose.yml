@@ -1,21 +1,39 @@
 services:
-  # === LOCAL AWS SERVICES ===
-  localstack:
-    image: localstack/localstack:latest
+  # === LOCAL GCP SERVICES ===
+  fake-gcs:
+    image: fsouza/fake-gcs-server:latest
+    command:
+      - -scheme
+      - http
+      - -port
+      - "4443"
+      - -external-url
+      - http://fake-gcs:4443
+      - -log-level
+      - error
+      - -backend
+      - filesystem
+      - -filesystem-root
+      - /data
     ports:
-      - "4566:4566"
-    environment:
-      SERVICES: s3,dynamodb,sqs,sns,secretsmanager,cognito-idp
-      DEBUG: 0
-      DATA_DIR: /var/lib/localstack
+      - "4443:4443"
     volumes:
-      - localstack_data:/var/lib/localstack
-      - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/init.sh
+      - gcs_data:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:4443/storage/v1/b"]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  gcs-init:
+    image: alpine:latest
+    command: sh -c "apk add --no-cache curl && sh /scripts/init-gcs.sh"
+    volumes:
+      - ./scripts/init-gcs.sh:/scripts/init-gcs.sh:ro
+    depends_on:
+      fake-gcs:
+        condition: service_healthy
+    restart: "no"
 
   # === DATABASE ===
   postgres:
@@ -23,9 +41,10 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_DB: podex
-      POSTGRES_USER: dev
-      POSTGRES_PASSWORD: devpass
+      POSTGRES_DB: ${POSTGRES_DB:-podex}
+      POSTGRES_USER: ${POSTGRES_USER:-dev}
+      # NOTE: For local development only. In production, use AWS Secrets Manager.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdev_change_in_prod}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/db-init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -88,16 +107,17 @@ services:
       PORT: 3001
       DATABASE_URL: postgresql+asyncpg://dev:devpass@postgres:5432/podex
       REDIS_URL: redis://redis:6379
-      # AWS / LocalStack
-      AWS_ENDPOINT: http://localstack:4566
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
-      # S3 Storage
-      S3_BUCKET: podex-workspaces
-      S3_WORKSPACE_PREFIX: workspaces
+      # GCP Configuration
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-podex-dev}
+      GCP_REGION: ${GCP_REGION:-us-east1}
+      GOOGLE_APPLICATION_CREDENTIALS: /app/service-account.json
+      # GCS Storage
+      GCS_BUCKET: podex-workspaces-dev
+      STORAGE_EMULATOR_HOST: http://fake-gcs:4443
+      # LLM Provider (Vertex AI)
+      LLM_PROVIDER: vertex
       # CORS
-      CORS_ORIGINS: '["http://localhost:3000"]'
+      CORS_ORIGINS: ${CORS_ORIGINS:-'["http://localhost:3000"]'}
       # Auth
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-secret-key-for-local-development}
       FRONTEND_URL: http://localhost:3000
@@ -106,11 +126,11 @@ services:
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      # Cognito (for admin auth - LocalStack)
-      COGNITO_ENDPOINT: http://localstack:4566
-      # Admin user credentials (for seeding)
+      # Email (console logging for dev)
+      EMAIL_BACKEND: console
+      # Admin user credentials (for seeding) - NOTE: Change in production!ot
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@podex.dev}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-AdminPassword123!}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-LocalDev_Change_In_Prod_123!}
       # Internal service URLs
       COMPUTE_SERVICE_URL: http://compute:3003
       COMPUTE_INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
@@ -125,16 +145,28 @@ services:
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-1.0}
       SENTRY_PROFILES_SAMPLE_RATE: ${SENTRY_PROFILES_SAMPLE_RATE:-1.0}
+      # Auth Cookies (httpOnly cookies for XSS protection)
+      COOKIE_SECURE: "false"  # Set to "true" if using HTTPS locally
+      COOKIE_SAMESITE: "lax"
+      # Redis Encryption (optional - leave empty to disable)
+      REDIS_ENCRYPTION_KEY: ${REDIS_ENCRYPTION_KEY:-}
+      # Push Notifications (VAPID keys for Web Push)
+      # SECURITY: Generate unique keys with: npx web-push generate-vapid-keys
+      # Never use default/example keys in production
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_EMAIL: ${VAPID_EMAIL:-}
     volumes:
       - ./services/api/src:/app/services/api/src
       - ./services/api/migrations:/app/services/api/migrations
       - ./services/shared/src:/app/services/shared/src
+      - ./service-account.json:/app/service-account.json:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      localstack:
+      fake-gcs:
         condition: service_healthy
 
   # === AGENT SERVICE ===
@@ -157,16 +189,15 @@ services:
       DATABASE_URL: postgresql+asyncpg://dev:devpass@postgres:5432/podex
       # Redis
       REDIS_URL: redis://redis:6379
-      # AWS / LocalStack
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
-      # S3 Storage
-      S3_BUCKET: podex-workspaces
-      S3_ENDPOINT_URL: http://localstack:4566
-      AWS_S3_REGION: us-east-1
-      # LLM Provider: set to "ollama" for free local models, "anthropic" for Claude API
-      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      # GCP Configuration
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-podex-dev}
+      GCP_REGION: ${GCP_REGION:-us-east1}
+      GOOGLE_APPLICATION_CREDENTIALS: /app/service-account.json
+      # GCS Storage
+      GCS_BUCKET: podex-workspaces-dev
+      STORAGE_EMULATOR_HOST: http://fake-gcs:4443
+      # LLM Provider: set to "vertex" for GCP Vertex AI, "ollama" for local models
+      LLM_PROVIDER: ${LLM_PROVIDER:-vertex}
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:14b}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -181,13 +212,16 @@ services:
     volumes:
       - ./services/agent/src:/app/services/agent/src
       - ./services/shared/src:/app/services/shared/src
+      - ./service-account.json:/app/service-account.json:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-      localstack:
+      fake-gcs:
         condition: service_healthy
+      api:
+        condition: service_started
 
   # === COMPUTE SERVICE ===
   compute:
@@ -214,17 +248,18 @@ services:
       COMPUTE_DOCKER_NETWORK: podex-dev
       # Redis
       COMPUTE_REDIS_URL: redis://redis:6379
-      # AWS / LocalStack (for S3 file sync)
-      COMPUTE_AWS_REGION: us-east-1
-      COMPUTE_AWS_ENDPOINT: http://localstack:4566
-      # S3 Storage
-      COMPUTE_S3_BUCKET: podex-workspaces
-      COMPUTE_S3_PREFIX: workspaces
-      COMPUTE_S3_SYNC_INTERVAL: 30
+      # GCP Configuration
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-podex-dev}
+      GCP_REGION: ${GCP_REGION:-us-east1}
+      # GCS Storage
+      COMPUTE_GCS_BUCKET: podex-workspaces-dev
+      STORAGE_EMULATOR_HOST: http://fake-gcs:4443
+      COMPUTE_GCS_PREFIX: workspaces
+      COMPUTE_GCS_SYNC_INTERVAL: 30
       # Internal API key (for secure inter-service communication)
       COMPUTE_INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
       # CORS
-      COMPUTE_CORS_ORIGINS: '["http://localhost:3000"]'
+      COMPUTE_CORS_ORIGINS: ${CORS_ORIGINS:-'["http://localhost:3000"]'}
       # API Service (for usage tracking)
       COMPUTE_API_BASE_URL: http://api:3001
       COMPUTE_INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-service-token}
@@ -239,7 +274,7 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      localstack:
+      fake-gcs:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
@@ -250,7 +285,7 @@ services:
   # === USER WORKSPACE IMAGE (build only) ===
   workspace-base:
     build:
-      context: ./infra/docker/workspace
+      context: ./infrastructure/docker/workspace
       dockerfile: Dockerfile
     image: podex/workspace:latest
     profiles:
@@ -267,18 +302,20 @@ services:
     deploy:
       resources:
         limits:
-          memory: 4G
-          cpus: '2.0'
+          memory: 16G
+          cpus: '8.0'
     environment:
       NODE_ENV: development
-      NEXT_PUBLIC_API_URL: http://localhost:3001
-      NEXT_PUBLIC_WS_URL: ws://localhost:3001
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:3001}
       # Sentry
       NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
       NEXT_PUBLIC_ENVIRONMENT: development
       SENTRY_ORG: ${SENTRY_ORG:-}
       SENTRY_PROJECT: ${SENTRY_PROJECT:-}
       SENTRY_AUTH_TOKEN: ${SENTRY_AUTH_TOKEN:-}
+      # Push Notifications (requires VAPID_PUBLIC_KEY to be set)
+      NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
     volumes:
       - ./apps/web/src:/app/apps/web/src
       - ./packages:/app/packages
@@ -286,7 +323,7 @@ services:
       - api
 
 volumes:
-  localstack_data:
+  gcs_data:
   postgres_data:
   redis_data:
   ollama_data:

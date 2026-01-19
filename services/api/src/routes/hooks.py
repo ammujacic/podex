@@ -1,8 +1,5 @@
 """API routes for user-defined hooks management."""
 
-import asyncio
-import os
-import time
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any
@@ -308,73 +305,52 @@ async def run_hook_test(
     current_user: CurrentUser,
     _db: DbSession,
 ) -> HookExecutionResponse:
-    """Test a hook by executing it with sample context."""
+    """Validate a hook configuration.
+
+    Note: Hooks are executed within your workspace environment for security.
+    This endpoint validates the hook configuration only.
+    """
     user_id = str(current_user["id"])
     hook = _get_hook_by_id(hook_id)
 
     if not hook or hook.get("user_id") != user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Hook not found")
 
-    start_time = time.time()
+    # Security: Do NOT execute arbitrary commands on the API server.
+    # Hooks run within user workspaces where sandboxing is enforced.
+    # This endpoint validates the hook configuration only.
 
-    try:
-        # Build test environment
-        env = os.environ.copy()
-        env["PODEX_HOOK_TYPE"] = hook["hook_type"]
-        env["PODEX_SESSION_ID"] = "test-session"
-        env["PODEX_AGENT_ID"] = "test-agent"
-        env["PODEX_TOOL_NAME"] = "test_tool"
-        env["PODEX_TEST_MODE"] = "true"
-
-        # Execute command
-        process = await asyncio.create_subprocess_shell(
-            hook["command"],
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-            close_fds=True,
-        )
-
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout=hook["timeout_ms"] / 1000,
-            )
-
-            duration_ms = int((time.time() - start_time) * 1000)
-
-            if process.returncode != 0:
-                return HookExecutionResponse(
-                    hook_id=hook_id,
-                    success=False,
-                    error=stderr.decode() if stderr else f"Exit code: {process.returncode}",
-                    duration_ms=duration_ms,
-                )
-
-            return HookExecutionResponse(
-                hook_id=hook_id,
-                success=True,
-                output=stdout.decode() if stdout else "",
-                duration_ms=duration_ms,
-            )
-
-        except TimeoutError:
-            process.kill()
-            return HookExecutionResponse(
-                hook_id=hook_id,
-                success=False,
-                error=f"Hook timed out after {hook['timeout_ms']}ms",
-                duration_ms=hook["timeout_ms"],
-            )
-
-    except Exception as e:
-        duration_ms = int((time.time() - start_time) * 1000)
+    # Validate command is not empty
+    command = hook.get("command", "")
+    if not command or not command.strip():
         return HookExecutionResponse(
             hook_id=hook_id,
             success=False,
-            error=str(e),
-            duration_ms=duration_ms,
+            error="Hook command cannot be empty",
+            duration_ms=0,
         )
+
+    # Check for obviously problematic patterns (informational only)
+    warnings = []
+    dangerous_patterns = ["rm -rf /", "mkfs", "dd if=", "> /dev/", ":(){ :|:& };:"]
+    for pattern in dangerous_patterns:
+        if pattern in command:
+            warnings.append(f"Command contains potentially dangerous pattern: {pattern}")
+
+    if warnings:
+        return HookExecutionResponse(
+            hook_id=hook_id,
+            success=False,
+            error="Validation warnings: " + "; ".join(warnings),
+            duration_ms=0,
+        )
+
+    return HookExecutionResponse(
+        hook_id=hook_id,
+        success=True,
+        output="Hook configuration validated. Hooks execute within your workspace environment.",
+        duration_ms=0,
+    )
 
 
 @router.get("/{hook_id}/history", response_model=list[HookExecutionResponse])

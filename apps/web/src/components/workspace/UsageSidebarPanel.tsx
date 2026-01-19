@@ -28,6 +28,7 @@ import type { UsageSummary, Quota } from '@/lib/api';
 
 interface UsageSidebarPanelProps {
   sessionId: string;
+  isVisible?: boolean;
 }
 
 interface AgentUsageCompact {
@@ -47,20 +48,20 @@ function formatCost(cost: number): string {
   return formatCostUtil(cost);
 }
 
-export function UsageSidebarPanel({ sessionId }: UsageSidebarPanelProps) {
+export function UsageSidebarPanel({ sessionId, isVisible = true }: UsageSidebarPanelProps) {
   const [expandedAgents, setExpandedAgents] = useState(false);
   const [monthlyUsage, setMonthlyUsage] = useState<UsageSummary | null>(null);
   const [tokenQuota, setTokenQuota] = useState<Quota | null>(null);
   const { openModal } = useUIStore();
 
-  // Fetch and track usage data
+  // Fetch and track usage data - only poll when panel is visible
   useUsageTracking({
     sessionId,
-    enabled: true,
+    enabled: isVisible,
     pollingInterval: 30000, // Poll every 30 seconds
   });
 
-  // Fetch monthly usage summary
+  // Fetch monthly usage summary - only poll when panel is visible
   useEffect(() => {
     async function fetchMonthlyUsage() {
       try {
@@ -77,13 +78,16 @@ export function UsageSidebarPanel({ sessionId }: UsageSidebarPanelProps) {
       }
     }
 
-    // Fetch immediately on mount
+    // Only fetch and poll if visible
+    if (!isVisible) return;
+
+    // Fetch immediately when becoming visible
     fetchMonthlyUsage();
 
     // Then refresh every 30 seconds to stay in sync with current session
     const interval = setInterval(fetchMonthlyUsage, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [isVisible]);
 
   // Get cost data from the store
   const sessionCosts = useCostStore((state) => state.sessionCosts);
@@ -287,6 +291,27 @@ export function UsageSidebarPanel({ sessionId }: UsageSidebarPanelProps) {
                     style={{ width: `${Math.min(tokenQuota.usagePercentage, 100)}%` }}
                   />
                 </div>
+                {/* CTA buttons when quota exceeded or at warning */}
+                {(tokenQuota.isExceeded || tokenQuota.isWarning) && (
+                  <div className="mt-2 flex gap-1.5">
+                    <Link
+                      href="/settings/billing/credits"
+                      className={`flex-1 text-center text-[10px] font-medium px-2 py-1 rounded transition-colors ${
+                        tokenQuota.isExceeded
+                          ? 'bg-accent-error/20 text-accent-error hover:bg-accent-error/30'
+                          : 'bg-accent-warning/20 text-accent-warning hover:bg-accent-warning/30'
+                      }`}
+                    >
+                      Buy Credits
+                    </Link>
+                    <Link
+                      href="/settings/billing/plans"
+                      className="flex-1 text-center text-[10px] font-medium px-2 py-1 rounded bg-elevated hover:bg-overlay text-text-secondary transition-colors"
+                    >
+                      Upgrade
+                    </Link>
+                  </div>
+                )}
               </div>
             )}
           </div>

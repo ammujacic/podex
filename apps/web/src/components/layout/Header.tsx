@@ -31,6 +31,12 @@ export function Header() {
         {/* Desktop navigation */}
         <div className="hidden md:flex md:items-center md:gap-8">
           <Link
+            href="/#mobile"
+            className="text-text-secondary hover:text-text-primary transition-colors"
+          >
+            Mobile
+          </Link>
+          <Link
             href="/#agents"
             className="text-text-secondary hover:text-text-primary transition-colors"
           >
@@ -148,6 +154,13 @@ export function Header() {
       {mobileMenuOpen && (
         <div className="md:hidden border-t border-border-subtle bg-surface">
           <div className="space-y-1 px-4 py-4">
+            <Link
+              href="/#mobile"
+              className="block px-3 py-2 text-text-secondary hover:text-text-primary hover:bg-overlay rounded-md"
+              onClick={() => setMobileMenuOpen(false)}
+            >
+              Mobile
+            </Link>
             <Link
               href="/#agents"
               className="block px-3 py-2 text-text-secondary hover:text-text-primary hover:bg-overlay rounded-md"

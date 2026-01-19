@@ -2,17 +2,64 @@
 """Podex Local Pod - CLI entry point."""
 
 import asyncio
+import logging
+import os
 import signal
 import socket
 import sys
 from pathlib import Path
 
 import click
+import sentry_sdk
 import structlog
+from sentry_sdk.integrations.asyncio import AsyncioIntegration
+from sentry_sdk.integrations.httpx import HttpxIntegration
+from sentry_sdk.integrations.logging import LoggingIntegration
 
 from . import __version__
 from .client import LocalPodClient
 from .config import LocalPodConfig, load_config
+
+
+def _init_sentry() -> bool:
+    """Initialize Sentry for error tracking in local pod."""
+    dsn = os.environ.get("SENTRY_DSN")
+    if not dsn:
+        return False
+
+    environment = os.environ.get("ENVIRONMENT", "development")
+
+    sentry_sdk.init(
+        dsn=dsn,
+        environment=environment,
+        release=f"podex-local-pod@{__version__}",
+        traces_sample_rate=1.0 if environment == "development" else 0.2,
+        profiles_sample_rate=1.0 if environment == "development" else 0.1,
+        integrations=[
+            AsyncioIntegration(),
+            HttpxIntegration(),
+            LoggingIntegration(level=logging.INFO, event_level=logging.ERROR),
+        ],
+        send_default_pii=False,
+        attach_stacktrace=True,
+        max_breadcrumbs=50,
+        server_name="podex-local-pod",
+        ignore_errors=[
+            "ConnectionRefusedError",
+            "ConnectionResetError",
+            "TimeoutError",
+            "asyncio.CancelledError",
+            "KeyboardInterrupt",
+            "SystemExit",
+        ],
+    )
+
+    sentry_sdk.set_tag("service", "podex-local-pod")
+    return True
+
+
+# Initialize Sentry at module load time
+_sentry_enabled = _init_sentry()
 
 # Configure structlog
 structlog.configure(
@@ -143,6 +190,9 @@ def start(
         pass
     finally:
         loop.run_until_complete(client.shutdown())
+        # Flush Sentry events before shutdown
+        if _sentry_enabled:
+            sentry_sdk.flush(timeout=2.0)
         loop.close()
 
     click.echo("Pod stopped.")

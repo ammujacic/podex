@@ -5,12 +5,12 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.database.connection import get_db
+from src.database.connection import get_db, get_db_context
 from src.database.models import MCPServer
 from src.mcp_config import (
     get_default_catalog_for_user,
@@ -21,7 +21,7 @@ from src.mcp_defaults import (
     get_all_categories,
     get_default_server_by_slug,
 )
-from src.mcp_discovery import MCPDiscoveryConfig, discover_mcp_tools
+from src.mcp_discovery import MCPDiscoveryConfig, discover_mcp_tools, execute_mcp_tool
 from src.middleware.auth import get_current_user
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
@@ -110,6 +110,89 @@ def _validate_no_shell_injection(value: str, field_name: str) -> str:
     if any(char in DANGEROUS_SHELL_CHARS for char in value):
         raise DangerousCharactersError(field_name)
     return value
+
+
+async def _background_mcp_discovery(server_id: UUID | str) -> None:
+    """Run MCP tool discovery in the background.
+
+    This function is designed to run as a background task, so it doesn't block
+    API responses. It fetches the server config, runs discovery, and updates
+    the server record with discovered tools/resources.
+    """
+    import structlog
+
+    logger = structlog.get_logger()
+
+    try:
+        async with get_db_context() as db:
+            server = await db.get(MCPServer, server_id)
+            if not server:
+                logger.warning(
+                    "Background MCP discovery: server not found", server_id=str(server_id)
+                )
+                return
+
+            if not server.is_enabled:
+                logger.debug(
+                    "Background MCP discovery: server disabled, skipping", server_id=str(server_id)
+                )
+                return
+
+            logger.info(
+                "Background MCP discovery started",
+                server_id=str(server_id),
+                server_name=server.name,
+            )
+
+            discovery_config = MCPDiscoveryConfig(
+                transport=server.transport,
+                command=server.command,
+                args=server.args or [],
+                url=server.url,
+                env_vars=server.env_vars or {},
+            )
+
+            result = await discover_mcp_tools(discovery_config)
+
+            if result.success:
+                server.discovered_tools = [
+                    {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "input_schema": tool.input_schema,
+                    }
+                    for tool in result.tools
+                ]
+                server.discovered_resources = [
+                    {
+                        "uri": resource.uri,
+                        "name": resource.name,
+                        "description": resource.description,
+                        "mime_type": resource.mime_type,
+                    }
+                    for resource in result.resources
+                ]
+                server.last_connected_at = datetime.now(UTC)
+                server.last_error = None
+                logger.info(
+                    "Background MCP discovery completed",
+                    server_id=str(server_id),
+                    tools_count=len(result.tools),
+                    resources_count=len(result.resources),
+                )
+            else:
+                server.last_error = result.error
+                server.last_connected_at = datetime.now(UTC)
+                logger.warning(
+                    "Background MCP discovery failed",
+                    server_id=str(server_id),
+                    error=result.error,
+                )
+
+            await db.commit()
+
+    except Exception as e:
+        logger.exception("Background MCP discovery error", server_id=str(server_id), error=str(e))
 
 
 class MCPServerCreate(BaseModel):
@@ -335,6 +418,27 @@ class MCPServerListResponse(BaseModel):
     total: int
 
 
+class MCPToolExecuteRequest(BaseModel):
+    """Request to execute an MCP tool."""
+
+    server_id: str | None = Field(None, description="Server ID (UUID)")
+    server_name: str | None = Field(None, description="Server name (alternative to ID)")
+    tool_name: str = Field(..., min_length=1, max_length=256)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    session_id: str | None = Field(None, description="Optional session ID for tracking")
+
+
+class MCPToolExecuteResponse(BaseModel):
+    """Response from executing an MCP tool."""
+
+    success: bool
+    result: Any = None
+    error: str | None = None
+    is_error: bool = False
+    server_name: str | None = None
+    tool_name: str | None = None
+
+
 @router.get("", response_model=MCPServerListResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def list_servers(
@@ -359,6 +463,132 @@ async def list_servers(
     return MCPServerListResponse(
         servers=[_server_to_response(s) for s in servers],
         total=len(servers),
+    )
+
+
+@router.post("/execute", response_model=MCPToolExecuteResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def execute_tool(
+    request: Request,
+    response: Response,
+    data: MCPToolExecuteRequest,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> MCPToolExecuteResponse:
+    """Execute an MCP tool on behalf of a terminal agent.
+
+    This endpoint allows terminal agents running in containers to call MCP tools
+    without needing direct MCP server access. The API handles server connection,
+    authentication, and tool execution.
+
+    Either server_id or server_name must be provided to identify the MCP server.
+    """
+    import structlog
+
+    logger = structlog.get_logger()
+
+    # Find the server by ID or name
+    if data.server_id:
+        server = await db.get(MCPServer, data.server_id)
+        if not server or server.user_id != current_user["id"]:
+            raise HTTPException(status_code=404, detail="Server not found")
+    elif data.server_name:
+        result = await db.execute(
+            select(MCPServer).where(
+                MCPServer.user_id == current_user["id"],
+                MCPServer.name == data.server_name,
+            )
+        )
+        server = result.scalar_one_or_none()
+        if not server:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Server with name '{data.server_name}' not found",
+            )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Either server_id or server_name must be provided",
+        )
+
+    # Check if server is enabled
+    if not server.is_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Server '{server.name}' is disabled",
+        )
+
+    # Verify the tool exists in discovered tools
+    discovered_tools = server.discovered_tools or []
+    tool_names = [name for t in discovered_tools if (name := t.get("name"))]
+    if data.tool_name not in tool_names:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Tool '{data.tool_name}' not found on server '{server.name}'. "
+            f"Available tools: {', '.join(tool_names)}",
+        )
+
+    # Build configuration for the MCP server
+    env_vars = server.env_vars or {}
+    config = MCPDiscoveryConfig(
+        transport=server.transport,
+        command=server.command,
+        args=server.args or [],
+        url=server.url,
+        env_vars=env_vars,
+        timeout=60,  # Longer timeout for tool execution
+    )
+
+    # Debug: log what env vars we're passing (redact sensitive values)
+    redacted_env = {
+        k: "***REDACTED***" if "TOKEN" in k or "KEY" in k or "SECRET" in k else v
+        for k, v in env_vars.items()
+    }
+    logger.info(
+        "Executing MCP tool",
+        user_id=current_user["id"],
+        server_name=server.name,
+        tool_name=data.tool_name,
+        session_id=data.session_id,
+        env_vars_keys=list(env_vars.keys()),
+        env_vars_redacted=redacted_env,
+        has_sentry_token="SENTRY_ACCESS_TOKEN" in env_vars,
+    )
+
+    # Execute the tool
+    execution_result = await execute_mcp_tool(
+        config=config,
+        tool_name=data.tool_name,
+        arguments=data.arguments,
+    )
+
+    if not execution_result.success:
+        logger.warning(
+            "MCP tool execution failed",
+            server_name=server.name,
+            tool_name=data.tool_name,
+            error=execution_result.error,
+        )
+        return MCPToolExecuteResponse(
+            success=False,
+            error=execution_result.error,
+            server_name=server.name,
+            tool_name=data.tool_name,
+        )
+
+    logger.info(
+        "MCP tool executed successfully",
+        server_name=server.name,
+        tool_name=data.tool_name,
+        is_error=execution_result.is_error,
+    )
+
+    return MCPToolExecuteResponse(
+        success=True,
+        result=execution_result.result,
+        is_error=execution_result.is_error,
+        server_name=server.name,
+        tool_name=data.tool_name,
     )
 
 
@@ -435,7 +665,7 @@ async def get_server(
 
 @router.patch("/{server_id}", response_model=MCPServerResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def update_server(  # noqa: PLR0913
+async def update_server(
     request: Request,
     response: Response,
     server_id: UUID,
@@ -582,16 +812,22 @@ async def test_server_connection(
     )
 
 
-@router.post("/{server_id}/refresh", response_model=MCPServerResponse)
+@router.post("/{server_id}/refresh", response_model=MCPServerResponse, status_code=202)
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def refresh_server(
     request: Request,
     response: Response,
     server_id: UUID,
+    background_tasks: BackgroundTasks,
     db: DbSession,
     current_user: CurrentUser,
 ) -> MCPServerResponse:
-    """Refresh discovered tools and resources from an MCP server."""
+    """Refresh discovered tools and resources from an MCP server.
+
+    Discovery runs in the background and does not block the response.
+    The server record will be updated asynchronously when discovery completes.
+    Returns 202 Accepted with current server state.
+    """
     server = await db.get(MCPServer, server_id)
 
     if not server or server.user_id != current_user["id"]:
@@ -603,50 +839,8 @@ async def refresh_server(
             detail="Server is disabled. Enable it first.",
         )
 
-    # Discover tools from the MCP server
-    discovery_config = MCPDiscoveryConfig(
-        transport=server.transport,
-        command=server.command,
-        args=server.args or [],
-        url=server.url,
-        env_vars=server.env_vars or {},
-    )
-    result = await discover_mcp_tools(discovery_config)
-
-    if result.success:
-        # Update discovered tools and resources
-        server.discovered_tools = [
-            {
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": tool.input_schema,
-            }
-            for tool in result.tools
-        ]
-        server.discovered_resources = [
-            {
-                "uri": resource.uri,
-                "name": resource.name,
-                "description": resource.description,
-                "mime_type": resource.mime_type,
-            }
-            for resource in result.resources
-        ]
-        server.last_connected_at = datetime.now(UTC)
-        server.last_error = None
-    else:
-        # Update with error
-        server.last_error = result.error
-        server.last_connected_at = datetime.now(UTC)
-
-    await db.commit()
-    await db.refresh(server)
-
-    if not result.success:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Failed to connect to MCP server: {result.error}",
-        )
+    # Queue discovery in background (non-blocking)
+    background_tasks.add_task(_background_mcp_discovery, server.id)
 
     return _server_to_response(server)
 
@@ -868,7 +1062,7 @@ async def get_default_server(
 
 def _check_required_secrets(required_env: list[str]) -> bool:
     """Check if all required environment variables are set."""
-    import os  # noqa: PLC0415
+    import os
 
     if not required_env:
         return True
@@ -877,7 +1071,7 @@ def _check_required_secrets(required_env: list[str]) -> bool:
 
 def _get_missing_secrets(required_env: list[str]) -> list[str]:
     """Get list of missing required environment variables."""
-    import os  # noqa: PLC0415
+    import os
 
     if not required_env:
         return []
@@ -886,11 +1080,12 @@ def _get_missing_secrets(required_env: list[str]) -> list[str]:
 
 @defaults_router.post("/{slug}/enable", response_model=MCPServerResponse, status_code=201)
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def enable_default_server(  # noqa: PLR0913
+async def enable_default_server(
     request: Request,
     response: Response,
     slug: str,
     data: EnableDefaultRequest,
+    background_tasks: BackgroundTasks,
     db: DbSession,
     current_user: CurrentUser,
 ) -> MCPServerResponse:
@@ -898,6 +1093,20 @@ async def enable_default_server(  # noqa: PLR0913
 
     Creates an MCPServer record with is_default=True using the default config.
     """
+    import structlog
+
+    logger = structlog.get_logger()
+
+    # Debug: log what env vars we're receiving
+    logger.info(
+        "Enabling default MCP server",
+        slug=slug,
+        user_id=current_user["id"],
+        env_vars_keys=list(data.env_vars.keys()),
+        has_sentry_token="SENTRY_ACCESS_TOKEN" in data.env_vars,
+        auto_refresh=data.auto_refresh,
+    )
+
     default_config = get_default_server_by_slug(slug)
     if not default_config:
         raise HTTPException(status_code=404, detail=f"Default server '{slug}' not found")
@@ -912,14 +1121,22 @@ async def enable_default_server(  # noqa: PLR0913
     existing = result.scalar_one_or_none()
 
     if existing:
+        # Always update env vars - replace completely, don't merge
+        # This ensures old values like SENTRY_HOST are properly cleared when not provided
+        if data.env_vars:
+            existing.env_vars = data.env_vars
+
         # Re-enable if disabled
         if not existing.is_enabled:
             existing.is_enabled = True
-            # Merge env vars
-            if data.env_vars:
-                existing.env_vars = {**(existing.env_vars or {}), **data.env_vars}
-            await db.commit()
-            await db.refresh(existing)
+
+        await db.commit()
+        await db.refresh(existing)
+
+        # Auto-refresh to discover tools in background (non-blocking)
+        if data.auto_refresh:
+            background_tasks.add_task(_background_mcp_discovery, existing.id)
+
         return _server_to_response(existing)
 
     # Create new server from default config
@@ -948,7 +1165,70 @@ async def enable_default_server(  # noqa: PLR0913
     await db.commit()
     await db.refresh(server)
 
+    # Auto-refresh to discover tools in background (non-blocking)
+    if data.auto_refresh:
+        background_tasks.add_task(_background_mcp_discovery, server.id)
+
     return _server_to_response(server)
+
+
+class TestDefaultRequest(BaseModel):
+    """Request to test a default server connection."""
+
+    env_vars: dict[str, str] = Field(default_factory=dict)
+
+
+class TestDefaultResponse(BaseModel):
+    """Response from testing a default server connection."""
+
+    success: bool
+    message: str
+    tools_count: int | None = None
+    error: str | None = None
+
+
+@defaults_router.post("/{slug}/test", response_model=TestDefaultResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def test_default_server(
+    request: Request,
+    response: Response,
+    slug: str,
+    data: TestDefaultRequest,
+    current_user: CurrentUser,
+) -> TestDefaultResponse:
+    """Test connection to a default MCP server before enabling it.
+
+    Allows testing with provided env_vars (like auth tokens) without
+    permanently enabling the server.
+    """
+    default_config = get_default_server_by_slug(slug)
+    if not default_config:
+        raise HTTPException(status_code=404, detail=f"Default server '{slug}' not found")
+
+    # Build a test configuration using the default config + provided env vars
+    discovery_config = MCPDiscoveryConfig(
+        transport=default_config["transport"],
+        command=default_config.get("command"),
+        args=default_config.get("args", []),
+        url=default_config.get("url"),
+        env_vars=data.env_vars,
+    )
+
+    # Attempt to connect and discover tools
+    result = await discover_mcp_tools(discovery_config)
+
+    if result.success:
+        return TestDefaultResponse(
+            success=True,
+            message=f"Successfully connected to {default_config['name']}",
+            tools_count=len(result.tools),
+        )
+
+    return TestDefaultResponse(
+        success=False,
+        message=f"Failed to connect to {default_config['name']}",
+        error=result.error,
+    )
 
 
 @defaults_router.post("/{slug}/disable", status_code=204)

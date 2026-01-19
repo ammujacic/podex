@@ -5,7 +5,13 @@
  * then offers to generate code based on the comment description.
  */
 
-import type { editor, languages, CancellationToken, IRange } from 'monaco-editor';
+import type * as monaco from '@codingame/monaco-vscode-editor-api';
+import type {
+  editor,
+  languages,
+  CancellationToken,
+  IRange,
+} from '@codingame/monaco-vscode-editor-api';
 
 // ============================================================================
 // Types
@@ -225,7 +231,7 @@ export class CodeGenerator {
   /**
    * Register generator with Monaco
    */
-  register(monaco: typeof import('monaco-editor'), languages?: string[]): { dispose: () => void } {
+  register(monacoInstance: typeof monaco, languages?: string[]): { dispose: () => void } {
     const targetLanguages = languages || [
       'typescript',
       'javascript',
@@ -239,7 +245,7 @@ export class CodeGenerator {
 
     // Register code action provider for each language
     for (const lang of targetLanguages) {
-      const disposable = monaco.languages.registerCodeActionProvider(
+      const disposable = monacoInstance.languages.registerCodeActionProvider(
         lang,
         this.createCodeActionProvider()
       );
@@ -247,7 +253,7 @@ export class CodeGenerator {
     }
 
     // Register the command
-    const commandDisposable = monaco.editor.registerCommand(
+    const commandDisposable = monacoInstance.editor.registerCommand(
       'ai.generateFromComment',
       async (_accessor, args) => {
         const { line, description, editorId } = args as {
@@ -256,7 +262,7 @@ export class CodeGenerator {
           editorId?: string;
         };
         // Get editor by ID if provided, or find first available editor
-        const editors = monaco.editor.getEditors();
+        const editors = monacoInstance.editor.getEditors();
         const activeEditor = editorId ? editors.find((e) => e.getId() === editorId) : editors[0];
         if (!activeEditor) return;
 
@@ -368,13 +374,13 @@ export const generatorStyles = `
 import { useEffect, useRef } from 'react';
 
 export function useCodeGenerator(
-  monaco: typeof import('monaco-editor') | null,
+  monacoInstance: typeof monaco | null,
   enabled: boolean = true
 ): void {
   const disposableRef = useRef<{ dispose: () => void } | null>(null);
 
   useEffect(() => {
-    if (!monaco || !enabled) {
+    if (!monacoInstance || !enabled) {
       disposableRef.current?.dispose();
       disposableRef.current = null;
       return;
@@ -382,11 +388,11 @@ export function useCodeGenerator(
 
     const generator = getCodeGenerator();
     generator.updateConfig({ enabled });
-    disposableRef.current = generator.register(monaco);
+    disposableRef.current = generator.register(monacoInstance);
 
     return () => {
       disposableRef.current?.dispose();
       disposableRef.current = null;
     };
-  }, [monaco, enabled]);
+  }, [monacoInstance, enabled]);
 }

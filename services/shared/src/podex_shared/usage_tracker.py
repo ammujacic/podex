@@ -7,8 +7,8 @@ This module provides utilities to track and record usage events
 import asyncio
 import contextlib
 from dataclasses import dataclass, field
-from datetime import datetime
-from decimal import Decimal
+from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 from typing import Any
 from uuid import uuid4
@@ -56,7 +56,7 @@ class UsageEvent(BaseModel):
 
     # Metadata
     metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     status: UsageEventStatus = UsageEventStatus.PENDING
 
 
@@ -313,8 +313,10 @@ class UsageTracker:
             The created usage event
         """
         # Calculate cost based on duration and hourly rate
+        # Use proper decimal rounding to avoid truncating small values to 0
         hours = Decimal(params.duration_seconds) / Decimal(3600)
-        total_cost_cents = int(hours * Decimal(params.hourly_rate_cents))
+        total_cost_decimal = hours * Decimal(params.hourly_rate_cents)
+        total_cost_cents = int(total_cost_decimal.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
         # Price per second
         unit_price_cents = params.hourly_rate_cents // 3600 if params.hourly_rate_cents > 0 else 0

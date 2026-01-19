@@ -8,11 +8,14 @@ import {
   ChevronRight,
   UserCheck,
   UserX,
-  Shield,
+  Eye,
   MoreVertical,
+  Crown,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useAdminStore, type AdminUser } from '@/stores/admin';
+import { useAdminStore, type AdminUser, type AdminPlan } from '@/stores/admin';
+import { useUser } from '@/stores/auth';
+import { UserDetailsModal } from '@/components/admin/UserDetailsModal';
 
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString('en-US', {
@@ -31,12 +34,25 @@ function formatCurrency(cents: number): string {
 
 interface UserRowProps {
   user: AdminUser;
+  plans: AdminPlan[];
+  currentUserRole: string;
   onRoleChange: (userId: string, role: string) => void;
   onToggleActive: (userId: string, isActive: boolean) => void;
+  onViewDetails: (user: AdminUser) => void;
 }
 
-function UserRow({ user, onRoleChange, onToggleActive }: UserRowProps) {
+function UserRow({
+  user,
+  plans,
+  currentUserRole,
+  onRoleChange,
+  onToggleActive,
+  onViewDetails,
+}: UserRowProps) {
   const [showMenu, setShowMenu] = useState(false);
+  const planName = user.subscription_plan
+    ? plans.find((p) => p.id === user.subscription_plan)?.name
+    : null;
 
   return (
     <tr className="border-b border-border-subtle hover:bg-overlay/30 transition-colors">
@@ -69,7 +85,7 @@ function UserRow({ user, onRoleChange, onToggleActive }: UserRowProps) {
         >
           <option value="member">Member</option>
           <option value="admin">Admin</option>
-          <option value="super_admin">Super Admin</option>
+          {currentUserRole === 'super_admin' && <option value="super_admin">Super Admin</option>}
         </select>
       </td>
       <td className="px-4 py-3">
@@ -84,16 +100,27 @@ function UserRow({ user, onRoleChange, onToggleActive }: UserRowProps) {
       </td>
       <td className="px-4 py-3 text-text-secondary text-sm">
         {user.subscription_status ? (
-          <span
-            className={cn(
-              'px-2 py-1 rounded text-xs',
-              user.subscription_status === 'active'
-                ? 'bg-green-500/20 text-green-500'
-                : 'bg-yellow-500/20 text-yellow-500'
-            )}
-          >
-            {user.subscription_status}
-          </span>
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-2">
+              {planName && <span className="text-text-primary font-medium">{planName}</span>}
+              {user.is_sponsored && (
+                <span className="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 text-xs font-medium rounded flex items-center gap-1">
+                  <Crown className="w-3 h-3" />
+                  Sponsored
+                </span>
+              )}
+            </div>
+            <span
+              className={cn(
+                'px-2 py-1 rounded text-xs w-fit',
+                user.subscription_status === 'active'
+                  ? 'bg-green-500/20 text-green-500'
+                  : 'bg-yellow-500/20 text-yellow-500'
+              )}
+            >
+              {user.subscription_status}
+            </span>
+          </div>
         ) : (
           <span className="text-text-muted">No subscription</span>
         )}
@@ -110,6 +137,16 @@ function UserRow({ user, onRoleChange, onToggleActive }: UserRowProps) {
           </button>
           {showMenu && (
             <div className="absolute right-0 top-8 bg-surface border border-border-subtle rounded-lg shadow-lg py-1 z-10 min-w-[160px]">
+              <button
+                onClick={() => {
+                  onViewDetails(user);
+                  setShowMenu(false);
+                }}
+                className="w-full px-4 py-2 text-left text-sm hover:bg-overlay flex items-center gap-2"
+              >
+                <Eye className="h-4 w-4 text-accent-primary" />
+                <span>View Details</span>
+              </button>
               <button
                 onClick={() => {
                   onToggleActive(user.id, !user.is_active);
@@ -129,13 +166,6 @@ function UserRow({ user, onRoleChange, onToggleActive }: UserRowProps) {
                   </>
                 )}
               </button>
-              <button
-                onClick={() => setShowMenu(false)}
-                className="w-full px-4 py-2 text-left text-sm hover:bg-overlay flex items-center gap-2"
-              >
-                <Shield className="h-4 w-4" />
-                <span>View Details</span>
-              </button>
             </div>
           )}
         </div>
@@ -149,9 +179,16 @@ export default function UsersManagement() {
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<boolean | ''>('');
+  const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
   const pageSize = 20;
 
-  const { users, usersTotal, usersLoading, fetchUsers, updateUser, error } = useAdminStore();
+  const currentUser = useUser();
+  const { users, usersTotal, usersLoading, fetchUsers, updateUser, plans, fetchPlans, error } =
+    useAdminStore();
+
+  useEffect(() => {
+    fetchPlans();
+  }, [fetchPlans]);
 
   useEffect(() => {
     const filters: Record<string, string> = {};
@@ -228,8 +265,8 @@ export default function UsersManagement() {
       )}
 
       {/* Table */}
-      <div className="bg-surface rounded-xl border border-border-subtle overflow-hidden">
-        <div className="overflow-x-auto">
+      <div className="bg-surface rounded-xl border border-border-subtle">
+        <div className="overflow-x-auto overflow-y-visible">
           <table className="w-full">
             <thead className="bg-elevated">
               <tr>
@@ -279,8 +316,11 @@ export default function UsersManagement() {
                   <UserRow
                     key={user.id}
                     user={user}
+                    plans={plans}
+                    currentUserRole={currentUser?.role || 'member'}
                     onRoleChange={handleRoleChange}
                     onToggleActive={handleToggleActive}
+                    onViewDetails={setSelectedUser}
                   />
                 ))
               )}
@@ -315,6 +355,14 @@ export default function UsersManagement() {
           </div>
         </div>
       </div>
+
+      {/* User Details Modal */}
+      <UserDetailsModal
+        isOpen={selectedUser !== null}
+        onClose={() => setSelectedUser(null)}
+        user={selectedUser}
+        plans={plans}
+      />
     </div>
   );
 }

@@ -4,33 +4,22 @@ import difflib
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.database import get_db
 from src.database.models import Session as SessionModel
+from src.routes.dependencies import DbSession, get_current_user_id
 
 logger = structlog.get_logger()
 
 router = APIRouter()
 
-DbSession = Annotated[AsyncSession, Depends(get_db)]
-
 # Minimum diff length for valid diff output
 MIN_DIFF_LINES = 3
-
-
-def get_current_user_id(request: Request) -> str:
-    """Get current user ID from request state."""
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return str(user_id)
 
 
 # ============================================================================

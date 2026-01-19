@@ -1,10 +1,7 @@
 """Comprehensive tests for Sentry SDK utilities."""
 
 import os
-from typing import Any
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from podex_shared.sentry import (
     DEFAULT_PROFILES_SAMPLE_RATE,

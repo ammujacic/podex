@@ -59,7 +59,6 @@ class CreatePlanRequest(BaseModel):
 
     # Included allowances
     tokens_included: int = Field(ge=0)
-    compute_hours_included: int = Field(ge=0, default=0)
     compute_credits_cents_included: int = Field(ge=0, default=0)
     storage_gb_included: int = Field(ge=0)
 
@@ -101,7 +100,6 @@ class UpdatePlanRequest(BaseModel):
     price_monthly_cents: int | None = Field(ge=0, default=None)
     price_yearly_cents: int | None = Field(ge=0, default=None)
     tokens_included: int | None = Field(ge=0, default=None)
-    compute_hours_included: int | None = Field(ge=0, default=None)
     compute_credits_cents_included: int | None = Field(ge=0, default=None)
     storage_gb_included: int | None = Field(ge=0, default=None)
     max_agents: int | None = Field(ge=1, default=None)
@@ -134,7 +132,6 @@ class AdminPlanResponse(BaseModel):
     price_yearly_cents: int
     currency: str
     tokens_included: int
-    compute_hours_included: int
     compute_credits_cents_included: int
     storage_gb_included: int
     max_agents: int
@@ -180,7 +177,7 @@ async def list_plans(
     query = select(SubscriptionPlan).order_by(SubscriptionPlan.sort_order)
 
     if not include_inactive:
-        query = query.where(SubscriptionPlan.is_active == True)  # noqa: E712
+        query = query.where(SubscriptionPlan.is_active == True)
 
     result = await db.execute(query)
     plans = result.scalars().all()
@@ -206,7 +203,6 @@ async def list_plans(
                 price_yearly_cents=plan.price_yearly_cents,
                 currency=plan.currency,
                 tokens_included=plan.tokens_included,
-                compute_hours_included=plan.compute_hours_included,
                 compute_credits_cents_included=plan.compute_credits_cents_included,
                 storage_gb_included=plan.storage_gb_included,
                 max_agents=plan.max_agents,
@@ -260,7 +256,6 @@ async def create_plan(
         price_yearly_cents=data.price_yearly_cents,
         currency=data.currency,
         tokens_included=data.tokens_included,
-        compute_hours_included=data.compute_hours_included,
         compute_credits_cents_included=data.compute_credits_cents_included,
         storage_gb_included=data.storage_gb_included,
         max_agents=data.max_agents,
@@ -297,7 +292,6 @@ async def create_plan(
         price_yearly_cents=plan.price_yearly_cents,
         currency=plan.currency,
         tokens_included=plan.tokens_included,
-        compute_hours_included=plan.compute_hours_included,
         compute_credits_cents_included=plan.compute_credits_cents_included,
         storage_gb_included=plan.storage_gb_included,
         max_agents=plan.max_agents,
@@ -360,7 +354,6 @@ async def get_plan(
         price_yearly_cents=plan.price_yearly_cents,
         currency=plan.currency,
         tokens_included=plan.tokens_included,
-        compute_hours_included=plan.compute_hours_included,
         compute_credits_cents_included=plan.compute_credits_cents_included,
         storage_gb_included=plan.storage_gb_included,
         max_agents=plan.max_agents,
@@ -465,178 +458,3 @@ async def delete_plan(
     logger.info("Admin deleted plan", admin_id=admin_id, plan_slug=plan.slug)
 
     return {"message": "Plan deactivated"}
-
-
-# ==================== Seed Default Plans ====================
-
-DEFAULT_PLANS = [
-    {
-        "name": "Free",
-        "slug": "free",
-        "description": "Get started with Podex for free",
-        "price_monthly_cents": 0,
-        "price_yearly_cents": 0,
-        "currency": "USD",
-        "tokens_included": 100000,
-        "compute_hours_included": 10,
-        "compute_credits_cents_included": 0,
-        "storage_gb_included": 5,
-        "max_agents": 1,
-        "max_sessions": 3,
-        "max_team_members": 1,
-        "overage_allowed": False,
-        "llm_margin_percent": 0,
-        "compute_margin_percent": 0,
-        "features": {
-            "private_projects": False,
-            "git_integration": True,
-            "agent_memory": False,
-            "planning_mode": False,
-            "vision_analysis": False,
-            "team_collaboration": False,
-            "gpu_access": False,
-            "community_support": True,
-        },
-        "is_active": True,
-        "is_popular": False,
-        "is_enterprise": False,
-        "sort_order": 0,
-    },
-    {
-        "name": "Pro",
-        "slug": "pro",
-        "description": "For professional developers and small teams",
-        "price_monthly_cents": 2900,
-        "price_yearly_cents": 29000,
-        "currency": "USD",
-        "tokens_included": 5000000,
-        "compute_hours_included": 100,
-        "compute_credits_cents_included": 5000,
-        "storage_gb_included": 50,
-        "max_agents": 5,
-        "max_sessions": 10,
-        "max_team_members": 5,
-        "overage_allowed": True,
-        "llm_margin_percent": 20,
-        "compute_margin_percent": 15,
-        "features": {
-            "private_projects": True,
-            "git_integration": True,
-            "agent_memory": True,
-            "planning_mode": True,
-            "vision_analysis": True,
-            "team_collaboration": True,
-            "gpu_access": False,
-            "advanced_analytics": True,
-            "custom_agents": True,
-            "email_support": True,
-        },
-        "is_active": True,
-        "is_popular": True,
-        "is_enterprise": False,
-        "sort_order": 1,
-    },
-    {
-        "name": "Max",
-        "slug": "max",
-        "description": "For growing teams with advanced needs",
-        "price_monthly_cents": 7900,
-        "price_yearly_cents": 79000,
-        "currency": "USD",
-        "tokens_included": 20000000,
-        "compute_hours_included": 500,
-        "compute_credits_cents_included": 20000,
-        "storage_gb_included": 200,
-        "max_agents": 20,
-        "max_sessions": 50,
-        "max_team_members": 20,
-        "overage_allowed": True,
-        "llm_margin_percent": 25,
-        "compute_margin_percent": 20,
-        "features": {
-            "private_projects": True,
-            "git_integration": True,
-            "agent_memory": True,
-            "planning_mode": True,
-            "vision_analysis": True,
-            "team_collaboration": True,
-            "gpu_access": True,
-            "advanced_analytics": True,
-            "audit_logs": True,
-            "custom_agents": True,
-            "priority_support": False,
-        },
-        "is_active": True,
-        "is_popular": False,
-        "is_enterprise": False,
-        "sort_order": 2,
-    },
-    {
-        "name": "Enterprise",
-        "slug": "enterprise",
-        "description": "Custom solutions for large organizations",
-        "price_monthly_cents": 0,
-        "price_yearly_cents": 0,
-        "currency": "USD",
-        "tokens_included": 100000000,
-        "compute_hours_included": 2000,
-        "compute_credits_cents_included": 100000,
-        "storage_gb_included": 1000,
-        "max_agents": 100,
-        "max_sessions": 200,
-        "max_team_members": 100,
-        "overage_allowed": True,
-        "llm_margin_percent": 30,
-        "compute_margin_percent": 25,
-        "features": {
-            "private_projects": True,
-            "git_integration": True,
-            "agent_memory": True,
-            "planning_mode": True,
-            "vision_analysis": True,
-            "team_collaboration": True,
-            "gpu_access": True,
-            "advanced_analytics": True,
-            "audit_logs": True,
-            "custom_agents": True,
-            "priority_support": True,
-            "sso_saml": True,
-            "self_hosted_option": True,
-            "sla": True,
-            "dedicated_support": True,
-        },
-        "is_active": True,
-        "is_popular": False,
-        "is_enterprise": True,
-        "sort_order": 3,
-    },
-]
-
-
-@router.post("/seed")
-@limiter.limit(RATE_LIMIT_STANDARD)
-@require_admin
-async def seed_default_plans(
-    request: Request,
-    response: Response,
-    db: DbSession,
-) -> dict[str, int]:
-    """Seed default subscription plans (admin only)."""
-    admin_id = get_admin_user_id(request)
-    created = 0
-
-    for plan_data in DEFAULT_PLANS:
-        result = await db.execute(
-            select(SubscriptionPlan).where(SubscriptionPlan.slug == plan_data["slug"])
-        )
-        if result.scalar_one_or_none():
-            continue
-
-        plan = SubscriptionPlan(**plan_data)
-        db.add(plan)
-        created += 1
-
-    await db.commit()
-    logger.info("Admin seeded plans", admin_id=admin_id, created=created)
-
-    return {"created": created, "total": len(DEFAULT_PLANS)}

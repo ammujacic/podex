@@ -7,9 +7,12 @@ requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.5.0",
     "redis>=5.0.1",
-    "aioboto3>=12.3.0",
+    "google-cloud-storage>=2.14.0",
+    "google-cloud-texttospeech>=2.16.0",
+    "google-cloud-speech>=2.26.0",
     "structlog>=24.1.0",
-    "sentry-sdk[fastapi,sqlalchemy,httpx,pure_eval]>=2.19.2",
+    "sentry-sdk[fastapi,sqlalchemy,httpx,pure_eval,loguru]>=2.23.0",
+    "cryptography>=46.0.3",
 ]
 
 [project.optional-dependencies]
@@ -55,13 +58,16 @@ show_error_codes = true
 [[tool.mypy.overrides]]
 module = [
     "redis.*",
-    "aioboto3.*",
-    "boto3.*",
-    "botocore.*",
+    "google.api_core.*",
     "sentry_sdk.*",
     "structlog.*",
+    "cryptography.*",
 ]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["google.cloud.*"]
+ignore_errors = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

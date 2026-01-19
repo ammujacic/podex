@@ -7,7 +7,8 @@ import { devtools, persist } from 'zustand/middleware';
 
 export type SplitDirection = 'horizontal' | 'vertical';
 export type SplitLayout = 'single' | 'horizontal' | 'vertical' | 'quad';
-export type KeyMode = 'default' | 'vim' | 'emacs';
+// Key modes - vim/emacs can be added via VS Code extensions from Open VSX
+export type KeyMode = 'default';
 
 export interface EditorTab {
   id: string;
@@ -42,6 +43,9 @@ export interface EditorSettings {
   formatOnPaste: boolean;
   autoSave: 'off' | 'afterDelay' | 'onFocusChange';
   autoSaveDelay: number; // ms
+  // AI Completions
+  completionsEnabled: boolean;
+  completionsDebounceMs: number; // Delay before triggering completion
 }
 
 export interface EditorState {
@@ -75,6 +79,7 @@ export interface EditorState {
   updateTabScrollPosition: (tabId: string, line: number, column: number) => void;
   updateTabCursorPosition: (tabId: string, line: number, column: number) => void;
   reopenClosedTab: () => EditorTab | null;
+  extractTab: (tabId: string) => EditorTab | null; // Remove tab and return it for external use
 
   // Actions - Split View
   splitPane: (paneId: string, direction: SplitDirection) => string;
@@ -112,6 +117,9 @@ const DEFAULT_SETTINGS: EditorSettings = {
   formatOnPaste: true,
   autoSave: 'off',
   autoSaveDelay: 1000,
+  // AI Completions - enabled by default
+  completionsEnabled: true,
+  completionsDebounceMs: 300,
 };
 
 const DEFAULT_PANE_ID = 'main';
@@ -515,6 +523,18 @@ export const useEditorStore = create<EditorState>()(
           return tabToReopen;
         },
 
+        extractTab: (tabId) => {
+          const state = get();
+          const tab = state.tabs[tabId];
+          if (!tab) return null;
+
+          // Close the tab (removes from pane)
+          get().closeTab(tabId);
+
+          // Return the tab info for external use (e.g., opening as floating preview)
+          return tab;
+        },
+
         // ========================================================================
         // Split View
         // ========================================================================
@@ -694,6 +714,11 @@ export const useEditorStore = create<EditorState>()(
         partialize: (state) => ({
           settings: state.settings,
           recentlyClosed: state.recentlyClosed.slice(0, 5),
+          // Persist tabs and panes so editor state survives refresh
+          tabs: state.tabs,
+          panes: state.panes,
+          paneOrder: state.paneOrder,
+          activePaneId: state.activePaneId,
         }),
       }
     )

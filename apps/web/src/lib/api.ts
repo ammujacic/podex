@@ -1,403 +1,39 @@
 /**
  * API client for Podex backend services.
+ *
+ * This module uses @podex/api-client for platform-agnostic API functionality
+ * with web-specific adapters for HTTP, auth, and error reporting.
  */
 
-import * as Sentry from '@sentry/nextjs';
 import type { User, AuthTokens } from '@/stores/auth';
 import { useAuthStore } from '@/stores/auth';
+import type { ThinkingConfig, AttachmentFile } from '@podex/shared';
+
+// Re-export from @podex/api-client for backward compatibility
+export { ApiRequestError, isAbortError, isQuotaError } from '@podex/api-client';
+import { calculateExpiry } from '@podex/api-client';
+export type { LoginRequest, RegisterRequest } from '@/lib/api-adapters';
+
+// Import adapters and client
+import {
+  FetchHttpAdapter,
+  PodexApiClient,
+  SentryErrorReporter,
+  ZustandAuthProvider,
+} from '@/lib/api-adapters';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
-// ============================================================================
-// Request Cache for deduplication and caching
-// ============================================================================
+// Create and export the API client singleton
+export const api = new PodexApiClient({
+  baseUrl: API_BASE_URL,
+  httpAdapter: new FetchHttpAdapter(),
+  authProvider: new ZustandAuthProvider(),
+  errorReporter: new SentryErrorReporter(),
+});
 
-interface CacheEntry<T> {
-  data: T;
-  timestamp: number;
-  expiresAt: number;
-}
-
-class RequestCache {
-  private cache = new Map<string, CacheEntry<unknown>>();
-  private pendingRequests = new Map<string, Promise<unknown>>();
-  private defaultTTL = 30 * 1000; // 30 seconds default
-
-  /**
-   * Get cached data if valid, otherwise return null.
-   */
-  get<T>(key: string): T | null {
-    const entry = this.cache.get(key);
-    if (!entry) return null;
-
-    if (Date.now() > entry.expiresAt) {
-      this.cache.delete(key);
-      return null;
-    }
-
-    return entry.data as T;
-  }
-
-  /**
-   * Set cached data with optional TTL.
-   */
-  set<T>(key: string, data: T, ttl?: number): void {
-    const now = Date.now();
-    this.cache.set(key, {
-      data,
-      timestamp: now,
-      expiresAt: now + (ttl ?? this.defaultTTL),
-    });
-  }
-
-  /**
-   * Delete cached data.
-   */
-  delete(key: string): void {
-    this.cache.delete(key);
-  }
-
-  /**
-   * Invalidate all cache entries matching a pattern.
-   */
-  invalidatePattern(pattern: string | RegExp): void {
-    const regex = typeof pattern === 'string' ? new RegExp(pattern) : pattern;
-    for (const key of this.cache.keys()) {
-      if (regex.test(key)) {
-        this.cache.delete(key);
-      }
-    }
-  }
-
-  /**
-   * Clear all cache.
-   */
-  clear(): void {
-    this.cache.clear();
-  }
-
-  /**
-   * Deduplicate concurrent requests to the same endpoint.
-   */
-  async deduplicateRequest<T>(key: string, request: () => Promise<T>): Promise<T> {
-    // Check if there's already a pending request for this key
-    const pending = this.pendingRequests.get(key);
-    if (pending) {
-      return pending as Promise<T>;
-    }
-
-    // Create the request and store it
-    const promise = request().finally(() => {
-      this.pendingRequests.delete(key);
-    });
-
-    this.pendingRequests.set(key, promise);
-    return promise;
-  }
-}
-
-export const requestCache = new RequestCache();
-
-// Types
-export interface LoginRequest {
-  email: string;
-  password: string;
-}
-
-export interface RegisterRequest {
-  email: string;
-  password: string;
-  name: string;
-}
-
-export interface AuthResponse {
-  user: {
-    id: string;
-    email: string;
-    name: string | null;
-    avatar_url: string | null;
-    role: string;
-  };
-  access_token: string;
-  refresh_token: string;
-  expires_in: number;
-}
-
-export interface TokenResponse {
-  access_token: string;
-  refresh_token: string;
-  token_type: string;
-  expires_in: number;
-}
-
-export interface ApiError {
-  detail: string;
-}
-
-// Helper to transform snake_case to camelCase for user
-function transformUser(data: AuthResponse['user']): User {
-  return {
-    id: data.id,
-    email: data.email,
-    name: data.name,
-    avatarUrl: data.avatar_url,
-    role: data.role,
-  };
-}
-
-// Helper to calculate token expiry
-function calculateExpiry(expiresIn: number): number {
-  return Date.now() + expiresIn * 1000;
-}
-
-class ApiClient {
-  private baseUrl: string;
-
-  constructor(baseUrl: string) {
-    this.baseUrl = baseUrl;
-  }
-
-  private getHeaders(includeAuth = true): HeadersInit {
-    const headers: HeadersInit = {
-      'Content-Type': 'application/json',
-    };
-
-    if (includeAuth) {
-      const tokens = useAuthStore.getState().tokens;
-      if (tokens?.accessToken) {
-        headers['Authorization'] = `Bearer ${tokens.accessToken}`;
-      }
-    }
-
-    return headers;
-  }
-
-  private async handleResponse<T>(response: Response): Promise<T> {
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({
-        detail: `HTTP ${response.status}: ${response.statusText}`,
-      }));
-
-      // Handle Pydantic validation errors (422) which return detail as an array
-      let message: string;
-      if (Array.isArray(error.detail)) {
-        // Format: [{ loc: ["body", "field"], msg: "error message" }]
-        message = error.detail.map((e: { msg: string }) => e.msg).join(', ');
-      } else if (typeof error.detail === 'string') {
-        message = error.detail;
-      } else {
-        message = `HTTP ${response.status}: ${response.statusText}`;
-      }
-
-      const err = new Error(message) as Error & { status: number };
-      err.status = response.status;
-
-      // Auto-logout on 401 (invalid/expired token)
-      if (response.status === 401) {
-        useAuthStore.getState().logout();
-      }
-
-      // Report API errors to Sentry (skip 401/403 as they're expected auth errors)
-      if (
-        response.status >= 500 ||
-        (response.status >= 400 && response.status !== 401 && response.status !== 403)
-      ) {
-        Sentry.captureException(err, {
-          tags: {
-            apiError: true,
-            statusCode: response.status,
-          },
-          extra: {
-            url: response.url,
-            status: response.status,
-            statusText: response.statusText,
-          },
-        });
-      }
-
-      throw err;
-    }
-    return response.json();
-  }
-
-  async get<T>(path: string, includeAuth = true): Promise<T> {
-    try {
-      const response = await fetch(`${this.baseUrl}${path}`, {
-        method: 'GET',
-        headers: this.getHeaders(includeAuth),
-      });
-      return this.handleResponse<T>(response);
-    } catch (error) {
-      // Handle network errors (e.g., server not running, CORS issues)
-      if (error instanceof TypeError && error.message === 'Failed to fetch') {
-        const err = new Error(
-          'Unable to connect to the API server. Please ensure the backend is running.'
-        ) as Error & { status: number };
-        err.status = 503; // Service Unavailable
-        throw err;
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * GET request with caching and deduplication.
-   * @param path - API path
-   * @param options - Cache options
-   * @returns Cached or fresh data
-   */
-  async getCached<T>(
-    path: string,
-    options: {
-      ttl?: number;
-      includeAuth?: boolean;
-      forceRefresh?: boolean;
-    } = {}
-  ): Promise<T> {
-    const { ttl, includeAuth = true, forceRefresh = false } = options;
-    const cacheKey = `GET:${path}`;
-
-    // Check cache first (unless force refresh)
-    if (!forceRefresh) {
-      const cached = requestCache.get<T>(cacheKey);
-      if (cached !== null) {
-        return cached;
-      }
-    }
-
-    // Deduplicate concurrent requests
-    return requestCache.deduplicateRequest(cacheKey, async () => {
-      const data = await this.get<T>(path, includeAuth);
-      requestCache.set(cacheKey, data, ttl);
-      return data;
-    });
-  }
-
-  async post<T>(path: string, data: unknown, includeAuth = true): Promise<T> {
-    try {
-      const response = await fetch(`${this.baseUrl}${path}`, {
-        method: 'POST',
-        headers: this.getHeaders(includeAuth),
-        body: JSON.stringify(data),
-      });
-      return this.handleResponse<T>(response);
-    } catch (error) {
-      if (error instanceof TypeError && error.message === 'Failed to fetch') {
-        const err = new Error(
-          'Unable to connect to the API server. Please ensure the backend is running.'
-        ) as Error & { status: number };
-        err.status = 503;
-        throw err;
-      }
-      throw error;
-    }
-  }
-
-  async put<T>(path: string, data: unknown): Promise<T> {
-    try {
-      const response = await fetch(`${this.baseUrl}${path}`, {
-        method: 'PUT',
-        headers: this.getHeaders(),
-        body: JSON.stringify(data),
-      });
-      return this.handleResponse<T>(response);
-    } catch (error) {
-      if (error instanceof TypeError && error.message === 'Failed to fetch') {
-        const err = new Error(
-          'Unable to connect to the API server. Please ensure the backend is running.'
-        ) as Error & { status: number };
-        err.status = 503;
-        throw err;
-      }
-      throw error;
-    }
-  }
-
-  async delete<T>(path: string): Promise<T> {
-    try {
-      const response = await fetch(`${this.baseUrl}${path}`, {
-        method: 'DELETE',
-        headers: this.getHeaders(),
-      });
-      return this.handleResponse<T>(response);
-    } catch (error) {
-      if (error instanceof TypeError && error.message === 'Failed to fetch') {
-        const err = new Error(
-          'Unable to connect to the API server. Please ensure the backend is running.'
-        ) as Error & { status: number };
-        err.status = 503;
-        throw err;
-      }
-      throw error;
-    }
-  }
-
-  async patch<T>(path: string, data: unknown): Promise<T> {
-    try {
-      const response = await fetch(`${this.baseUrl}${path}`, {
-        method: 'PATCH',
-        headers: this.getHeaders(),
-        body: JSON.stringify(data),
-      });
-      return this.handleResponse<T>(response);
-    } catch (error) {
-      if (error instanceof TypeError && error.message === 'Failed to fetch') {
-        const err = new Error(
-          'Unable to connect to the API server. Please ensure the backend is running.'
-        ) as Error & { status: number };
-        err.status = 503;
-        throw err;
-      }
-      throw error;
-    }
-  }
-
-  // Auth methods
-  async login(data: LoginRequest): Promise<{ user: User; tokens: AuthTokens }> {
-    const response = await this.post<AuthResponse>('/api/auth/login', data, false);
-    return {
-      user: transformUser(response.user),
-      tokens: {
-        accessToken: response.access_token,
-        refreshToken: response.refresh_token,
-        expiresAt: calculateExpiry(response.expires_in),
-      },
-    };
-  }
-
-  async register(data: RegisterRequest): Promise<{ user: User; tokens: AuthTokens }> {
-    const response = await this.post<AuthResponse>('/api/auth/register', data, false);
-    return {
-      user: transformUser(response.user),
-      tokens: {
-        accessToken: response.access_token,
-        refreshToken: response.refresh_token,
-        expiresAt: calculateExpiry(response.expires_in),
-      },
-    };
-  }
-
-  async refreshToken(refreshToken: string): Promise<AuthTokens> {
-    const response = await this.post<TokenResponse>(
-      '/api/auth/refresh',
-      { refresh_token: refreshToken },
-      false
-    );
-    return {
-      accessToken: response.access_token,
-      refreshToken: response.refresh_token,
-      expiresAt: calculateExpiry(response.expires_in),
-    };
-  }
-
-  async getCurrentUser(): Promise<User> {
-    const response = await this.get<AuthResponse['user']>('/api/auth/me');
-    return transformUser(response);
-  }
-}
-
-// Export singleton instance
-export const api = new ApiClient(API_BASE_URL);
+// Export the request cache for direct access
+export const requestCache = api.getCache();
 
 // Auth actions that update the store
 export async function login(email: string, password: string): Promise<User> {
@@ -497,7 +133,14 @@ export async function initializeAuth(): Promise<void> {
   store.setInitialized(true);
 }
 
-export function logout(): void {
+export async function logout(): Promise<void> {
+  // Clear server-side httpOnly cookies
+  try {
+    await api.post('/api/auth/logout', {}, { includeAuth: false });
+  } catch {
+    // Ignore errors - cookies might already be cleared or invalid
+  }
+  // Clear local auth state
   useAuthStore.getState().logout();
 }
 
@@ -597,8 +240,11 @@ export interface AgentCreateRequest {
     | 'security'
     | 'devops'
     | 'documentator'
-    | 'custom';
-  model: string;
+    | 'custom'
+    | 'claude-code'
+    | 'openai-codex'
+    | 'gemini-cli';
+  model?: string; // Optional - uses role default from platform settings if not provided
   config?: Record<string, unknown>;
   template_id?: string; // Reference to custom agent template
 }
@@ -609,6 +255,7 @@ export interface AgentResponse {
   name: string;
   role: string;
   model: string;
+  model_display_name?: string | null; // User-friendly model name from backend
   status: string;
   mode?: 'plan' | 'ask' | 'auto' | 'sovereign';
   config?: Record<string, unknown>;
@@ -637,12 +284,73 @@ export async function listAgents(sessionId: string): Promise<AgentResponse[]> {
   return api.get<AgentResponse[]>(`/api/sessions/${sessionId}/agents`);
 }
 
+// ==================== Agent Role Configuration ====================
+
+/**
+ * Agent role configuration from database.
+ */
+export interface AgentRoleConfig {
+  id: string;
+  role: string;
+  name: string;
+  color: string;
+  icon: string | null;
+  description: string | null;
+  system_prompt: string;
+  tools: string[];
+  category: string; // development, terminal, system, custom
+  gradient_start: string | null;
+  gradient_end: string | null;
+  features: string[] | null;
+  example_prompts: string[] | null;
+  requires_subscription: string | null;
+  default_model: string | null;
+  default_temperature: number | null;
+  default_max_tokens: number | null;
+  sort_order: number;
+  is_enabled: boolean;
+  is_system: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentRoleConfigListResponse {
+  roles: AgentRoleConfig[];
+  total: number;
+}
+
+/**
+ * Get all enabled agent role configurations from the database.
+ * This is the single source of truth for agent role defaults.
+ */
+export async function getAgentRoleConfigs(): Promise<AgentRoleConfigListResponse> {
+  return api.get<AgentRoleConfigListResponse>('/api/agent-roles');
+}
+
+/**
+ * Get a specific agent role configuration by role name.
+ */
+export async function getAgentRoleConfig(role: string): Promise<AgentRoleConfig> {
+  return api.get<AgentRoleConfig>(`/api/agent-roles/${role}`);
+}
+
 export async function getAgent(sessionId: string, agentId: string): Promise<AgentResponse> {
   return api.get<AgentResponse>(`/api/sessions/${sessionId}/agents/${agentId}`);
 }
 
 export async function deleteAgent(sessionId: string, agentId: string): Promise<void> {
   await api.delete(`/api/sessions/${sessionId}/agents/${agentId}`);
+}
+
+/**
+ * Update agent settings (name, model).
+ */
+export async function updateAgentSettings(
+  sessionId: string,
+  agentId: string,
+  updates: { name?: string; model?: string }
+): Promise<AgentResponse> {
+  return api.patch<AgentResponse>(`/api/sessions/${sessionId}/agents/${agentId}`, updates);
 }
 
 export async function duplicateAgent(
@@ -663,13 +371,69 @@ export async function deleteAgentMessage(
   await api.delete(`/api/sessions/${sessionId}/agents/${agentId}/messages/${messageId}`);
 }
 
+export interface SendMessageOptions {
+  attachments?: AttachmentFile[];
+  thinkingConfig?: ThinkingConfig;
+}
+
 export async function sendAgentMessage(
   sessionId: string,
   agentId: string,
-  content: string
+  content: string,
+  options?: SendMessageOptions
 ): Promise<MessageResponse> {
+  const { attachments, thinkingConfig } = options ?? {};
+
+  // Use multipart form data when attachments are present
+  if (attachments && attachments.length > 0) {
+    const formData = new FormData();
+    formData.append('content', content);
+
+    // Add thinking config if enabled
+    if (thinkingConfig) {
+      formData.append('thinking_enabled', String(thinkingConfig.enabled));
+      formData.append('thinking_budget', String(thinkingConfig.budgetTokens));
+    }
+
+    // Add all attachments
+    for (const att of attachments) {
+      // AttachmentFile should have the actual File object when sending
+      // If it has a preview (data URL), we need to convert it back to a blob
+      if (att.preview && att.type.startsWith('image/')) {
+        const response = await fetch(att.preview);
+        const blob = await response.blob();
+        formData.append('attachments', blob, att.name);
+      }
+    }
+
+    // Use direct fetch for multipart form data
+    const headers: Record<string, string> = {};
+    const tokens = useAuthStore.getState().tokens;
+    if (tokens?.accessToken) {
+      headers['Authorization'] = `Bearer ${tokens.accessToken}`;
+    }
+
+    const response = await fetch(
+      `${API_BASE_URL}/api/sessions/${sessionId}/agents/${agentId}/messages`,
+      {
+        method: 'POST',
+        headers,
+        body: formData,
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to send message');
+    }
+
+    return response.json();
+  }
+
+  // Standard JSON request (no attachments)
   return api.post<MessageResponse>(`/api/sessions/${sessionId}/agents/${agentId}/messages`, {
     content,
+    thinking_config: thinkingConfig,
   });
 }
 
@@ -739,6 +503,22 @@ export async function getAgentMode(sessionId: string, agentId: string): Promise<
   return api.get<AgentModeResponse>(`/api/sessions/${sessionId}/agents/${agentId}/mode`);
 }
 
+export interface PlanModeToggleResponse {
+  mode: AgentMode;
+  previous_mode: AgentMode | null;
+  toggled_to_plan: boolean;
+}
+
+export async function togglePlanMode(
+  sessionId: string,
+  agentId: string
+): Promise<PlanModeToggleResponse> {
+  return api.post<PlanModeToggleResponse>(
+    `/api/sessions/${sessionId}/agents/${agentId}/toggle-plan-mode`,
+    {}
+  );
+}
+
 export async function getPendingApprovals(
   sessionId: string,
   agentId: string
@@ -757,6 +537,57 @@ export async function respondToApproval(
   return api.post<{ success: boolean; message: string }>(
     `/api/sessions/${sessionId}/agents/${agentId}/approvals/${approvalId}`,
     response
+  );
+}
+
+// ==================== Pending Changes (Agent Diff Review) ====================
+
+export interface PendingChangeResponse {
+  id: string;
+  session_id: string;
+  agent_id: string;
+  agent_name: string;
+  file_path: string;
+  original_content: string | null;
+  proposed_content: string;
+  description: string | null;
+  status: 'pending' | 'accepted' | 'rejected';
+  created_at: string;
+}
+
+export async function getPendingChanges(
+  sessionId: string,
+  status?: 'pending' | 'accepted' | 'rejected'
+): Promise<PendingChangeResponse[]> {
+  const params = status ? `?status=${status}` : '';
+  return api.get<PendingChangeResponse[]>(`/api/sessions/${sessionId}/pending-changes${params}`);
+}
+
+export async function getPendingChange(
+  sessionId: string,
+  changeId: string
+): Promise<PendingChangeResponse> {
+  return api.get<PendingChangeResponse>(`/api/sessions/${sessionId}/pending-changes/${changeId}`);
+}
+
+export async function acceptPendingChange(
+  sessionId: string,
+  changeId: string
+): Promise<{ status: string; change_id: string; file_path: string }> {
+  return api.post<{ status: string; change_id: string; file_path: string }>(
+    `/api/sessions/${sessionId}/pending-changes/${changeId}/accept`,
+    {}
+  );
+}
+
+export async function rejectPendingChange(
+  sessionId: string,
+  changeId: string,
+  feedback?: string
+): Promise<{ status: string; change_id: string; file_path: string }> {
+  return api.post<{ status: string; change_id: string; file_path: string }>(
+    `/api/sessions/${sessionId}/pending-changes/${changeId}/reject`,
+    { feedback }
   );
 }
 
@@ -783,11 +614,114 @@ export async function getAgentContextUsage(agentId: string): Promise<ContextUsag
 
 export async function compactAgentContext(
   agentId: string,
-  customInstructions?: string
+  options?: {
+    customInstructions?: string;
+    preserveRecentMessages?: number;
+  }
 ): Promise<CompactResponse> {
   return api.post<CompactResponse>(`/api/context/agents/${agentId}/compact`, {
-    custom_instructions: customInstructions,
+    custom_instructions: options?.customInstructions,
+    preserve_recent_messages: options?.preserveRecentMessages,
   });
+}
+
+export interface CompactionSettingsResponse {
+  auto_compact_enabled: boolean;
+  auto_compact_threshold_percent: number;
+  custom_compaction_instructions: string | null;
+  preserve_recent_messages: number;
+}
+
+export interface CompactionSettingsUpdate {
+  auto_compact_enabled?: boolean;
+  auto_compact_threshold_percent?: number;
+  custom_compaction_instructions?: string | null;
+  preserve_recent_messages?: number;
+}
+
+export async function getCompactionSettings(
+  sessionId: string
+): Promise<CompactionSettingsResponse> {
+  return api.get<CompactionSettingsResponse>(`/api/context/sessions/${sessionId}/context/settings`);
+}
+
+export async function updateCompactionSettings(
+  sessionId: string,
+  settings: CompactionSettingsUpdate
+): Promise<CompactionSettingsResponse> {
+  return api.put<CompactionSettingsResponse>(
+    `/api/context/sessions/${sessionId}/context/settings`,
+    settings
+  );
+}
+
+// ==================== Checkpoints (Undo/Redo) ====================
+
+export interface FileChange {
+  path: string;
+  change_type: 'create' | 'modify' | 'delete';
+  lines_added: number;
+  lines_removed: number;
+}
+
+export interface Checkpoint {
+  id: string;
+  checkpoint_number: number;
+  description: string | null;
+  action_type: string;
+  agent_id: string;
+  status: 'active' | 'restored' | 'superseded';
+  created_at: string;
+  files: FileChange[];
+  file_count: number;
+  total_lines_added: number;
+  total_lines_removed: number;
+}
+
+export interface CheckpointDiff {
+  id: string;
+  description: string | null;
+  files: Array<{
+    path: string;
+    change_type: string;
+    content_before: string | null;
+    content_after: string | null;
+    lines_added: number;
+    lines_removed: number;
+  }>;
+}
+
+export interface RestoreResponse {
+  success: boolean;
+  checkpoint_id: string;
+  files: Array<{
+    path: string;
+    action: string;
+    success: boolean;
+  }>;
+}
+
+export async function getSessionCheckpoints(
+  sessionId: string,
+  agentId?: string,
+  limit: number = 50
+): Promise<Checkpoint[]> {
+  const params = new URLSearchParams();
+  if (agentId) params.append('agent_id', agentId);
+  params.append('limit', limit.toString());
+  return api.get<Checkpoint[]>(`/api/checkpoints/sessions/${sessionId}/checkpoints?${params}`);
+}
+
+export async function getCheckpoint(checkpointId: string): Promise<Checkpoint> {
+  return api.get<Checkpoint>(`/api/checkpoints/checkpoints/${checkpointId}`);
+}
+
+export async function getCheckpointDiff(checkpointId: string): Promise<CheckpointDiff> {
+  return api.get<CheckpointDiff>(`/api/checkpoints/checkpoints/${checkpointId}/diff`);
+}
+
+export async function restoreCheckpoint(checkpointId: string): Promise<RestoreResponse> {
+  return api.post<RestoreResponse>(`/api/checkpoints/checkpoints/${checkpointId}/restore`, {});
 }
 
 // ==================== Pod Templates ====================
@@ -1119,6 +1053,57 @@ export async function checkoutBranch(
   return api.post(`/api/sessions/${sessionId}/git/checkout`, { branch, create });
 }
 
+// Branch Comparison
+export interface BranchCompareCommit {
+  sha: string;
+  message: string;
+  author: string;
+  date: string;
+}
+
+export interface BranchCompareFile {
+  path: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed';
+}
+
+export interface BranchCompareResponse {
+  base: string;
+  compare: string;
+  commits: BranchCompareCommit[];
+  files: BranchCompareFile[];
+  ahead: number;
+  stat: string;
+}
+
+export interface MergePreviewResponse {
+  can_merge: boolean;
+  has_conflicts: boolean;
+  conflicts: string[];
+  files_changed: { path: string; status: string }[];
+  error?: string;
+}
+
+export async function compareBranches(
+  sessionId: string,
+  base: string,
+  compare: string
+): Promise<BranchCompareResponse> {
+  return api.get<BranchCompareResponse>(
+    `/api/sessions/${sessionId}/git/compare/${encodeURIComponent(base)}...${encodeURIComponent(compare)}`
+  );
+}
+
+export async function previewMerge(
+  sessionId: string,
+  sourceBranch: string,
+  targetBranch: string
+): Promise<MergePreviewResponse> {
+  return api.post<MergePreviewResponse>(`/api/sessions/${sessionId}/git/merge-preview`, {
+    source_branch: sourceBranch,
+    target_branch: targetBranch,
+  });
+}
+
 // ==================== File System ====================
 
 export interface FileNode {
@@ -1220,6 +1205,9 @@ export interface SessionLayoutState {
   file_preview_layouts: Record<string, FilePreviewLayoutState>;
   sidebar_open: boolean;
   sidebar_width: number;
+  editor_grid_card_id: string | null;
+  editor_grid_span: GridSpanLayout | null;
+  editor_freeform_position: PositionLayout | null;
 }
 
 export interface LayoutUpdateRequest {
@@ -1229,6 +1217,9 @@ export interface LayoutUpdateRequest {
   file_preview_layouts?: Record<string, FilePreviewLayoutState>;
   sidebar_open?: boolean;
   sidebar_width?: number;
+  editor_grid_card_id?: string | null;
+  editor_grid_span?: GridSpanLayout | null;
+  editor_freeform_position?: PositionLayout | null;
 }
 
 export async function getSessionLayout(sessionId: string): Promise<SessionLayoutState> {
@@ -1259,6 +1250,19 @@ export async function updateFilePreviewLayout(
     `/api/sessions/${sessionId}/layout/file-preview/${previewId}`,
     data
   );
+}
+
+export interface EditorLayoutState {
+  editor_grid_card_id: string | null;
+  editor_grid_span: GridSpanLayout | null;
+  editor_freeform_position: PositionLayout | null;
+}
+
+export async function updateEditorLayout(
+  sessionId: string,
+  data: Partial<EditorLayoutState>
+): Promise<EditorLayoutState> {
+  return api.patch<EditorLayoutState>(`/api/sessions/${sessionId}/layout/editor`, data);
 }
 
 // ==================== Agent Templates ====================
@@ -1678,7 +1682,6 @@ export interface SubscriptionPlanResponse {
   price_yearly: number;
   currency: string;
   tokens_included: number;
-  compute_hours_included: number; // Legacy - for backward compatibility
   compute_credits_included: number; // Compute credits in dollars
   storage_gb_included: number;
   max_agents: number;
@@ -1705,6 +1708,9 @@ export interface SubscriptionResponse {
   canceled_at: string | null;
   trial_end: string | null;
   created_at: string;
+  // Sponsorship fields
+  is_sponsored?: boolean;
+  sponsor_reason?: string | null;
 }
 
 export interface UsageSummaryResponse {
@@ -1811,10 +1817,13 @@ export interface HardwareSpecResponse {
   gpu_count: number;
   storage_gb_default: number;
   storage_gb_max: number;
-  hourly_rate: number;
+  hourly_rate: number; // Base cost (provider cost)
   is_available: boolean;
   requires_subscription: string | null;
   region_availability: string[];
+  // User-specific pricing (with margin applied)
+  user_hourly_rate: number | null;
+  compute_margin_percent: number | null;
 }
 
 // Subscription Plans
@@ -2209,6 +2218,15 @@ export async function disableMCPDefault(slug: string): Promise<{ message: string
   return api.post<{ message: string }>(`/api/mcp/defaults/${slug}/disable`, {});
 }
 
+export async function testMCPDefault(
+  slug: string,
+  envVars?: Record<string, string>
+): Promise<MCPTestConnectionResponse> {
+  return api.post<MCPTestConnectionResponse>(`/api/mcp/defaults/${slug}/test`, {
+    env_vars: envVars,
+  });
+}
+
 // User MCP Servers
 export async function listMCPServers(): Promise<MCPServer[]> {
   const response = await api.get<{ servers: MCPServer[]; total: number }>('/api/mcp/servers');
@@ -2482,42 +2500,6 @@ export interface CheckpointDiff {
     lines_added: number;
     lines_removed: number;
   }>;
-}
-
-export interface RestoreCheckpointResponse {
-  success: boolean;
-  checkpoint_id: string;
-  files: Array<{
-    path: string;
-    action: string;
-    success: boolean;
-  }>;
-}
-
-export async function getSessionCheckpoints(
-  sessionId: string,
-  options?: { agentId?: string; limit?: number }
-): Promise<Checkpoint[]> {
-  const params = new URLSearchParams();
-  if (options?.agentId) params.set('agent_id', options.agentId);
-  if (options?.limit) params.set('limit', String(options.limit));
-  const query = params.toString() ? `?${params.toString()}` : '';
-  return api.get<Checkpoint[]>(`/api/checkpoints/sessions/${sessionId}/checkpoints${query}`);
-}
-
-export async function getCheckpoint(checkpointId: string): Promise<Checkpoint> {
-  return api.get<Checkpoint>(`/api/checkpoints/checkpoints/${checkpointId}`);
-}
-
-export async function getCheckpointDiff(checkpointId: string): Promise<CheckpointDiff> {
-  return api.get<CheckpointDiff>(`/api/checkpoints/checkpoints/${checkpointId}/diff`);
-}
-
-export async function restoreCheckpoint(checkpointId: string): Promise<RestoreCheckpointResponse> {
-  return api.post<RestoreCheckpointResponse>(
-    `/api/checkpoints/checkpoints/${checkpointId}/restore`,
-    {}
-  );
 }
 
 // ==================== Worktrees ====================
@@ -3053,4 +3035,1260 @@ export async function getCostAlerts(
 
 export async function acknowledgeCostAlert(alertId: string): Promise<{ success: boolean }> {
   return api.post<{ success: boolean }>(`/api/billing/alerts/${alertId}/acknowledge`, {});
+}
+
+// ============================================================================
+// LSP (Language Server Protocol) APIs
+// ============================================================================
+
+export interface LSPDiagnostic {
+  file_path: string;
+  line: number;
+  column: number;
+  end_line: number;
+  end_column: number;
+  message: string;
+  severity: 'error' | 'warning' | 'information' | 'hint';
+  source: string | null;
+  code: string | null;
+}
+
+export interface DiagnosticsResponse {
+  file_path: string;
+  diagnostics: LSPDiagnostic[];
+  language: string | null;
+}
+
+export interface BatchDiagnosticsResponse {
+  results: DiagnosticsResponse[];
+  total_diagnostics: number;
+}
+
+export interface SupportedLanguage {
+  command: string;
+  installed: boolean;
+  extensions: string[];
+}
+
+export interface SupportedLanguagesResponse {
+  workspace_id: string;
+  languages: Record<string, SupportedLanguage>;
+}
+
+/**
+ * Get diagnostics for a single file in a workspace.
+ */
+export async function getFileDiagnostics(
+  workspaceId: string,
+  filePath: string
+): Promise<DiagnosticsResponse> {
+  return api.get<DiagnosticsResponse>(
+    `/api/lsp/workspaces/${workspaceId}/diagnostics?file_path=${encodeURIComponent(filePath)}`
+  );
+}
+
+/**
+ * Get diagnostics for multiple files in a workspace.
+ */
+export async function getBatchDiagnostics(
+  workspaceId: string,
+  filePaths: string[]
+): Promise<BatchDiagnosticsResponse> {
+  return api.post<BatchDiagnosticsResponse>(
+    `/api/lsp/workspaces/${workspaceId}/diagnostics/batch`,
+    { file_paths: filePaths }
+  );
+}
+
+/**
+ * Get supported languages and their installation status for a workspace.
+ */
+export async function getSupportedLanguages(
+  workspaceId: string
+): Promise<SupportedLanguagesResponse> {
+  return api.get<SupportedLanguagesResponse>(
+    `/api/lsp/workspaces/${workspaceId}/supported-languages`
+  );
+}
+
+// ============================================================================
+// File Watching APIs
+// ============================================================================
+
+export interface WatchStatusResponse {
+  workspace_id: string;
+  watching: boolean;
+  patterns: string[] | null;
+}
+
+export interface StartWatchingRequest {
+  patterns?: string[];
+  debounce_ms?: number;
+}
+
+/**
+ * Start watching files for changes in a workspace.
+ * When files change, diagnostics will be automatically refreshed.
+ */
+export async function startFileWatching(
+  workspaceId: string,
+  options?: StartWatchingRequest
+): Promise<WatchStatusResponse> {
+  return api.post<WatchStatusResponse>(`/api/lsp/workspaces/${workspaceId}/watch`, options || {});
+}
+
+/**
+ * Stop watching files for changes in a workspace.
+ */
+export async function stopFileWatching(workspaceId: string): Promise<WatchStatusResponse> {
+  return api.delete<WatchStatusResponse>(`/api/lsp/workspaces/${workspaceId}/watch`);
+}
+
+/**
+ * Get file watcher status for a workspace.
+ */
+export async function getFileWatchStatus(workspaceId: string): Promise<WatchStatusResponse> {
+  return api.get<WatchStatusResponse>(`/api/lsp/workspaces/${workspaceId}/watch/status`);
+}
+
+// ============================================================================
+// Doctor/Diagnostics APIs
+// ============================================================================
+
+export interface ServiceHealth {
+  name: string;
+  status: 'healthy' | 'degraded' | 'unhealthy' | 'unknown';
+  latency_ms: number | null;
+  message: string | null;
+  details: Record<string, unknown> | null;
+}
+
+export interface LLMProviderStatus {
+  provider: string;
+  configured: boolean;
+  active: boolean;
+  model: string | null;
+  details: Record<string, unknown> | null;
+}
+
+export interface SystemInfo {
+  platform: string;
+  python_version: string;
+  app_version: string;
+  environment: string;
+  server_time: string;
+}
+
+export interface DoctorReport {
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  timestamp: string;
+  system: SystemInfo;
+  services: ServiceHealth[];
+  llm_providers: LLMProviderStatus[];
+  recommendations: string[];
+}
+
+/**
+ * Run comprehensive environment diagnostics.
+ * Checks database, Redis, services, Docker, and LLM provider configurations.
+ */
+export async function runDoctor(): Promise<DoctorReport> {
+  return api.get<DoctorReport>('/api/doctor');
+}
+
+/**
+ * Quick health check without authentication.
+ * Useful for monitoring and health probes.
+ */
+export async function quickHealthCheck(): Promise<{
+  status: string;
+  version: string;
+  environment: string;
+  llm_provider: string;
+}> {
+  return api.get('/api/doctor/quick');
+}
+
+// ============================================================================
+// Custom Commands APIs
+// ============================================================================
+
+export interface CommandArgument {
+  name: string;
+  type: string;
+  required: boolean;
+  default: string | null;
+  description: string | null;
+}
+
+export interface CustomCommand {
+  id: string;
+  name: string;
+  description: string | null;
+  prompt_template: string;
+  arguments: CommandArgument[] | null;
+  category: string;
+  enabled: boolean;
+  sort_order: number;
+  is_global: boolean;
+  usage_count: number;
+  user_id: string | null;
+  session_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CommandListResponse {
+  commands: CustomCommand[];
+  total: number;
+}
+
+export interface CreateCommandRequest {
+  name: string;
+  description?: string;
+  prompt_template: string;
+  arguments?: CommandArgument[];
+  category?: string;
+  session_id?: string;
+}
+
+export interface UpdateCommandRequest {
+  name?: string;
+  description?: string;
+  prompt_template?: string;
+  arguments?: CommandArgument[];
+  category?: string;
+  enabled?: boolean;
+  sort_order?: number;
+}
+
+export interface ExecuteCommandResponse {
+  prompt: string;
+  command_id: string;
+  command_name: string;
+}
+
+/**
+ * List custom commands for the current user.
+ */
+export async function listCommands(options?: {
+  category?: string;
+  sessionId?: string;
+  includeGlobal?: boolean;
+  enabledOnly?: boolean;
+}): Promise<CommandListResponse> {
+  const params = new URLSearchParams();
+  if (options?.category) params.set('category', options.category);
+  if (options?.sessionId) params.set('session_id', options.sessionId);
+  if (options?.includeGlobal !== undefined)
+    params.set('include_global', String(options.includeGlobal));
+  if (options?.enabledOnly !== undefined) params.set('enabled_only', String(options.enabledOnly));
+  const query = params.toString();
+  return api.get<CommandListResponse>(`/api/commands${query ? `?${query}` : ''}`);
+}
+
+/**
+ * Create a new custom command.
+ */
+export async function createCommand(data: CreateCommandRequest): Promise<CustomCommand> {
+  return api.post<CustomCommand>('/api/commands', data);
+}
+
+/**
+ * Get a custom command by ID.
+ */
+export async function getCommand(commandId: string): Promise<CustomCommand> {
+  return api.get<CustomCommand>(`/api/commands/${commandId}`);
+}
+
+/**
+ * Get a custom command by name.
+ */
+export async function getCommandByName(name: string, sessionId?: string): Promise<CustomCommand> {
+  const params = sessionId ? `?session_id=${sessionId}` : '';
+  return api.get<CustomCommand>(`/api/commands/by-name/${name}${params}`);
+}
+
+/**
+ * Update a custom command.
+ */
+export async function updateCommand(
+  commandId: string,
+  data: UpdateCommandRequest
+): Promise<CustomCommand> {
+  return api.patch<CustomCommand>(`/api/commands/${commandId}`, data);
+}
+
+/**
+ * Delete a custom command.
+ */
+export async function deleteCommand(commandId: string): Promise<void> {
+  return api.delete(`/api/commands/${commandId}`);
+}
+
+/**
+ * Execute a command and get the rendered prompt.
+ */
+export async function executeCommand(
+  commandId: string,
+  args: Record<string, string> = {}
+): Promise<ExecuteCommandResponse> {
+  return api.post<ExecuteCommandResponse>(`/api/commands/${commandId}/execute`, {
+    arguments: args,
+  });
+}
+
+// ============================================================================
+// Project Init APIs
+// ============================================================================
+
+export interface ProjectInfo {
+  name: string;
+  type: string;
+  language: string;
+  framework: string | null;
+  package_manager: string | null;
+  has_tests: boolean;
+  has_ci: boolean;
+  git_initialized: boolean;
+}
+
+export interface ProjectInitRequest {
+  session_id: string;
+  include_dependencies?: boolean;
+  include_structure?: boolean;
+  custom_context?: string;
+}
+
+export interface ProjectInitResponse {
+  success: boolean;
+  project_info: ProjectInfo | null;
+  agents_md_content: string;
+  file_path: string;
+  created: boolean;
+  message: string;
+}
+
+/**
+ * Initialize project with AGENTS.md file.
+ */
+export async function initProject(data: ProjectInitRequest): Promise<ProjectInitResponse> {
+  return api.post<ProjectInitResponse>('/api/init/project', data);
+}
+
+/**
+ * Get project info without creating AGENTS.md.
+ */
+export async function getProjectInfo(sessionId: string): Promise<ProjectInfo> {
+  return api.get<ProjectInfo>(`/api/init/project/${sessionId}/info`);
+}
+
+// ============================================================================
+// LLM Models APIs
+// ============================================================================
+
+export interface ModelCapabilities {
+  vision: boolean;
+  thinking: boolean;
+  thinking_coming_soon?: boolean;
+  tool_use: boolean;
+  streaming: boolean;
+  json_mode: boolean;
+}
+
+export interface PublicModel {
+  model_id: string;
+  display_name: string;
+  provider: string;
+  family: string;
+  description: string | null;
+  cost_tier: 'low' | 'medium' | 'high' | 'premium';
+  capabilities: ModelCapabilities;
+  context_window: number;
+  max_output_tokens: number;
+  is_default: boolean;
+  input_cost_per_million: number | null; // Base cost (provider cost)
+  output_cost_per_million: number | null; // Base cost (provider cost)
+  good_for: string[];
+  // User-specific pricing (with margin applied)
+  user_input_cost_per_million: number | null;
+  user_output_cost_per_million: number | null;
+  llm_margin_percent: number | null;
+}
+
+export interface AgentTypeDefaults {
+  model_id: string;
+  temperature: number;
+  max_tokens: number;
+}
+
+export interface AgentDefaultsResponse {
+  defaults: Record<string, AgentTypeDefaults>;
+}
+
+/**
+ * Get list of available LLM models.
+ */
+export async function getAvailableModels(options?: {
+  provider?: string;
+  family?: string;
+}): Promise<PublicModel[]> {
+  const params = new URLSearchParams();
+  if (options?.provider) params.set('provider', options.provider);
+  if (options?.family) params.set('family', options.family);
+  const query = params.toString();
+  return api.get<PublicModel[]>(`/api/models/available${query ? `?${query}` : ''}`);
+}
+
+/**
+ * Get default model settings for all agent types.
+ */
+export async function getModelDefaults(): Promise<AgentDefaultsResponse> {
+  return api.get<AgentDefaultsResponse>('/api/models/defaults');
+}
+
+/**
+ * User-provided API key model.
+ */
+export interface UserProviderModel {
+  model_id: string;
+  display_name: string;
+  provider: string;
+  family: string;
+  description: string | null;
+  cost_tier: 'low' | 'medium' | 'high' | 'premium';
+  capabilities: ModelCapabilities;
+  context_window: number;
+  max_output_tokens: number;
+  is_user_key: boolean; // Always true for user-provider models
+  input_cost_per_million: number | null;
+  output_cost_per_million: number | null;
+  good_for: string[];
+}
+
+/**
+ * Get models available via user's configured API keys.
+ */
+export async function getUserProviderModels(): Promise<UserProviderModel[]> {
+  return api.get<UserProviderModel[]>('/api/models/user-providers');
+}
+
+// ============================================================================
+// Admin Models APIs (for admin users)
+// ============================================================================
+
+export interface AdminModel extends PublicModel {
+  id: string;
+  input_cost_per_million: number;
+  output_cost_per_million: number;
+  is_enabled: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateModelRequest {
+  model_id: string;
+  display_name: string;
+  provider: string;
+  family?: string;
+  description?: string;
+  cost_tier?: string;
+  capabilities?: Partial<ModelCapabilities>;
+  context_window?: number;
+  max_output_tokens?: number;
+  input_cost_per_million?: number;
+  output_cost_per_million?: number;
+  is_enabled?: boolean;
+  is_default?: boolean;
+}
+
+export interface UpdateModelRequest {
+  display_name?: string;
+  description?: string;
+  cost_tier?: string;
+  capabilities?: Partial<ModelCapabilities>;
+  context_window?: number;
+  max_output_tokens?: number;
+  input_cost_per_million?: number;
+  output_cost_per_million?: number;
+  is_enabled?: boolean;
+  is_default?: boolean;
+  sort_order?: number;
+}
+
+export interface UpdateAgentDefaultsRequest {
+  model_id: string;
+  temperature?: number;
+  max_tokens?: number;
+}
+
+/**
+ * Admin: List all LLM models.
+ */
+export async function adminListModels(options?: {
+  provider?: string;
+  family?: string;
+  enabled_only?: boolean;
+}): Promise<AdminModel[]> {
+  const params = new URLSearchParams();
+  if (options?.provider) params.set('provider', options.provider);
+  if (options?.family) params.set('family', options.family);
+  if (options?.enabled_only !== undefined) params.set('enabled_only', String(options.enabled_only));
+  const query = params.toString();
+  return api.get<AdminModel[]>(`/api/admin/models${query ? `?${query}` : ''}`);
+}
+
+/**
+ * Admin: Create a new LLM model.
+ */
+export async function adminCreateModel(data: CreateModelRequest): Promise<AdminModel> {
+  return api.post<AdminModel>('/api/admin/models', data);
+}
+
+/**
+ * Admin: Get a specific LLM model.
+ */
+export async function adminGetModel(modelId: string): Promise<AdminModel> {
+  return api.get<AdminModel>(`/api/admin/models/${modelId}`);
+}
+
+/**
+ * Admin: Update an LLM model.
+ */
+export async function adminUpdateModel(
+  modelId: string,
+  data: UpdateModelRequest
+): Promise<AdminModel> {
+  return api.patch<AdminModel>(`/api/admin/models/${modelId}`, data);
+}
+
+/**
+ * Admin: Delete an LLM model.
+ */
+export async function adminDeleteModel(modelId: string): Promise<void> {
+  return api.delete(`/api/admin/models/${modelId}`);
+}
+
+/**
+ * Admin: Get agent type defaults.
+ */
+export async function adminGetAgentDefaults(): Promise<AgentDefaultsResponse> {
+  return api.get<AgentDefaultsResponse>('/api/admin/models/agent-defaults');
+}
+
+/**
+ * Admin: Update agent type defaults.
+ */
+export async function adminUpdateAgentDefaults(
+  agentType: string,
+  data: UpdateAgentDefaultsRequest
+): Promise<AgentDefaultsResponse> {
+  return api.put<AgentDefaultsResponse>(`/api/admin/models/agent-defaults/${agentType}`, data);
+}
+
+/**
+ * Admin: Seed default LLM models.
+ */
+export async function adminSeedModels(): Promise<{
+  created: number;
+  updated: number;
+  total: number;
+}> {
+  return api.post('/api/admin/models/seed', {});
+}
+
+// ============================================================================
+// User LLM API Keys Management
+// ============================================================================
+
+export interface LLMApiKeysResponse {
+  providers: string[];
+}
+
+export interface SetLLMApiKeyRequest {
+  provider: string;
+  api_key: string;
+}
+
+/**
+ * Get list of LLM providers with configured API keys.
+ * Returns provider names only, not the actual keys.
+ */
+export async function getLLMApiKeys(): Promise<LLMApiKeysResponse> {
+  return api.get<LLMApiKeysResponse>('/api/user/config/llm-api-keys');
+}
+
+/**
+ * Set an LLM API key for a provider.
+ */
+export async function setLLMApiKey(provider: string, apiKey: string): Promise<LLMApiKeysResponse> {
+  return api.post<LLMApiKeysResponse>('/api/user/config/llm-api-keys', {
+    provider,
+    api_key: apiKey,
+  });
+}
+
+/**
+ * Remove an LLM API key for a provider.
+ */
+export async function removeLLMApiKey(provider: string): Promise<LLMApiKeysResponse> {
+  return api.delete<LLMApiKeysResponse>(`/api/user/config/llm-api-keys/${provider}`);
+}
+
+// ============================================================================
+// User Model Preferences
+// ============================================================================
+
+export interface UserAgentPreferences {
+  model_defaults?: Record<string, string>; // role -> model_id
+  [key: string]: unknown;
+}
+
+/**
+ * Get user agent preferences including model defaults.
+ */
+export async function getUserAgentPreferences(): Promise<UserAgentPreferences> {
+  const config = await api.get<{ agent_preferences: UserAgentPreferences | null }>(
+    '/api/user/config'
+  );
+  return config.agent_preferences || { model_defaults: {} };
+}
+
+/**
+ * Update user model default for a specific agent role.
+ */
+export async function updateUserModelDefault(role: string, modelId: string): Promise<void> {
+  const config = await api.get<{ agent_preferences: UserAgentPreferences | null }>(
+    '/api/user/config'
+  );
+  const currentPrefs = config.agent_preferences || {};
+  const modelDefaults = currentPrefs.model_defaults || {};
+
+  await api.patch('/api/user/config', {
+    agent_preferences: {
+      ...currentPrefs,
+      model_defaults: {
+        ...modelDefaults,
+        [role]: modelId,
+      },
+    },
+  });
+}
+
+// ============================================================================
+// Skills Management
+// ============================================================================
+
+export interface SkillStep {
+  name: string;
+  description: string;
+  tool?: string;
+  skill?: string;
+  parameters: Record<string, unknown>;
+  condition?: string;
+  on_success?: string;
+  on_failure?: string;
+  parallel_with?: string[];
+  required: boolean;
+}
+
+export interface Skill {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  version: string;
+  triggers: string[];
+  tags: string[];
+  required_tools: string[];
+  required_context: string[];
+  steps: SkillStep[];
+  system_prompt?: string;
+  skill_type: 'system' | 'user';
+  is_active: boolean;
+  metadata?: {
+    category?: string;
+    estimated_duration?: number;
+    requires_approval?: boolean;
+  };
+}
+
+export interface SkillsAvailableResponse {
+  skills: Skill[];
+  total: number;
+}
+
+/**
+ * Get all skills available to the current user (system + user skills).
+ */
+export async function getAvailableSkills(): Promise<SkillsAvailableResponse> {
+  return api.get<SkillsAvailableResponse>('/api/skills/available');
+}
+
+/**
+ * Get user's own skills.
+ */
+export async function getUserSkills(): Promise<Skill[]> {
+  const response = await api.get<{ skills: Skill[] }>('/api/skills');
+  return response.skills;
+}
+
+/**
+ * Create a new user skill.
+ */
+export async function createUserSkill(skill: Partial<Skill>): Promise<Skill> {
+  return api.post<Skill>('/api/skills', skill);
+}
+
+/**
+ * Update a user skill.
+ */
+export async function updateUserSkill(skillId: string, updates: Partial<Skill>): Promise<Skill> {
+  return api.patch<Skill>(`/api/skills/${skillId}`, updates);
+}
+
+/**
+ * Delete a user skill.
+ */
+export async function deleteUserSkill(skillId: string): Promise<void> {
+  await api.delete(`/api/skills/${skillId}`);
+}
+
+// ============================================================================
+// Skill Templates
+// ============================================================================
+
+export interface SkillTemplate {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  category: string;
+  icon?: string;
+  default_triggers?: string[];
+  default_tags?: string[];
+  required_tools?: string[];
+  step_templates?: Record<string, unknown>[];
+  variables?: { name: string; type: string; description: string; default?: unknown }[];
+  is_system: boolean;
+  usage_count: number;
+}
+
+export interface SkillTemplatesResponse {
+  templates: SkillTemplate[];
+  total: number;
+  categories: string[];
+}
+
+/**
+ * List available skill templates.
+ */
+export async function getSkillTemplates(
+  category?: string,
+  search?: string
+): Promise<SkillTemplatesResponse> {
+  const params = new URLSearchParams();
+  if (category) params.append('category', category);
+  if (search) params.append('search', search);
+  const query = params.toString();
+  return api.get<SkillTemplatesResponse>(`/api/skill-templates${query ? `?${query}` : ''}`);
+}
+
+/**
+ * Get a specific skill template.
+ */
+export async function getSkillTemplate(slug: string): Promise<SkillTemplate> {
+  return api.get<SkillTemplate>(`/api/skill-templates/${slug}`);
+}
+
+/**
+ * Create a skill from a template.
+ */
+export async function createSkillFromTemplate(
+  templateSlug: string,
+  data: {
+    name: string;
+    slug: string;
+    description?: string;
+    variables?: Record<string, unknown>;
+  }
+): Promise<Skill> {
+  return api.post<Skill>(`/api/skill-templates/${templateSlug}/create-skill`, data);
+}
+
+// ============================================================================
+// Skill Repositories (Git Sync)
+// ============================================================================
+
+export interface SkillRepository {
+  id: string;
+  name: string;
+  repo_url: string;
+  branch: string;
+  skills_path: string;
+  sync_direction: 'pull' | 'push' | 'bidirectional';
+  last_synced_at?: string;
+  last_sync_status?: 'success' | 'failed' | 'pending';
+  last_sync_error?: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface SkillSyncLog {
+  id: string;
+  repository_id: string;
+  direction: string;
+  status: string;
+  skills_added: number;
+  skills_updated: number;
+  skills_removed: number;
+  error_message?: string;
+  started_at: string;
+  completed_at?: string;
+}
+
+/**
+ * List user's connected skill repositories.
+ */
+export async function getSkillRepositories(includeInactive = false): Promise<SkillRepository[]> {
+  const response = await api.get<{ repositories: SkillRepository[] }>(
+    `/api/skill-repositories?include_inactive=${includeInactive}`
+  );
+  return response.repositories;
+}
+
+/**
+ * Connect a new skill repository.
+ */
+export async function createSkillRepository(data: {
+  name: string;
+  repo_url: string;
+  branch?: string;
+  skills_path?: string;
+  sync_direction?: 'pull' | 'push' | 'bidirectional';
+}): Promise<SkillRepository> {
+  return api.post<SkillRepository>('/api/skill-repositories', data);
+}
+
+/**
+ * Update a skill repository.
+ */
+export async function updateSkillRepository(
+  repoId: string,
+  updates: Partial<SkillRepository>
+): Promise<SkillRepository> {
+  return api.patch<SkillRepository>(`/api/skill-repositories/${repoId}`, updates);
+}
+
+/**
+ * Disconnect a skill repository.
+ */
+export async function deleteSkillRepository(repoId: string): Promise<void> {
+  await api.delete(`/api/skill-repositories/${repoId}`);
+}
+
+/**
+ * Trigger a manual sync for a repository.
+ */
+export async function syncSkillRepository(
+  repoId: string,
+  force = false
+): Promise<{ sync_id: string; status: string; message: string }> {
+  return api.post(`/api/skill-repositories/${repoId}/sync?force=${force}`, {});
+}
+
+/**
+ * Get sync history for a repository.
+ */
+export async function getSkillSyncLogs(repoId: string, limit = 20): Promise<SkillSyncLog[]> {
+  const response = await api.get<{ logs: SkillSyncLog[] }>(
+    `/api/skill-repositories/${repoId}/logs?limit=${limit}`
+  );
+  return response.logs;
+}
+
+/**
+ * Get webhook URL for a repository.
+ */
+export async function getSkillRepositoryWebhook(repoId: string): Promise<{
+  webhook_url: string;
+  secret: string;
+  events: string[];
+  content_type: string;
+}> {
+  return api.get(`/api/skill-repositories/${repoId}/webhook-url`);
+}
+
+// ============================================================================
+// Skill Marketplace
+// ============================================================================
+
+export interface MarketplaceSkill {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  category: string;
+  version: string;
+  triggers: string[];
+  tags: string[];
+  install_count: number;
+}
+
+export interface MarketplaceListResponse {
+  skills: MarketplaceSkill[];
+  total: number;
+}
+
+export interface UserAddedSkill {
+  id: string;
+  skill_slug: string;
+  skill_name: string;
+  is_enabled: boolean;
+  added_at: string;
+}
+
+/**
+ * List approved marketplace skills.
+ */
+export async function getMarketplaceSkills(
+  category?: string,
+  search?: string
+): Promise<MarketplaceListResponse> {
+  const params = new URLSearchParams();
+  if (category) params.append('category', category);
+  if (search) params.append('search', search);
+  const query = params.toString();
+  return api.get<MarketplaceListResponse>(`/api/marketplace${query ? `?${query}` : ''}`);
+}
+
+/**
+ * Install a skill from the marketplace.
+ */
+export async function installMarketplaceSkill(slug: string): Promise<UserAddedSkill> {
+  return api.post<UserAddedSkill>(`/api/marketplace/${slug}/install`, {});
+}
+
+/**
+ * Uninstall a marketplace skill.
+ */
+export async function uninstallMarketplaceSkill(slug: string): Promise<void> {
+  await api.delete(`/api/marketplace/${slug}/uninstall`);
+}
+
+/**
+ * Get user's installed marketplace skills.
+ */
+export async function getMyMarketplaceSkills(): Promise<UserAddedSkill[]> {
+  const response = await api.get<{ skills: UserAddedSkill[] }>('/api/marketplace/my/skills');
+  return response.skills;
+}
+
+/**
+ * Submit a skill to the marketplace for approval.
+ */
+export async function submitSkillToMarketplace(skillId: string): Promise<void> {
+  await api.post('/api/marketplace/submit', { skill_id: skillId });
+}
+
+/**
+ * Get user's marketplace submissions.
+ */
+export async function getMyMarketplaceSubmissions(): Promise<MarketplaceSkill[]> {
+  const response = await api.get<{ submissions: MarketplaceSkill[] }>(
+    '/api/marketplace/my/submissions'
+  );
+  return response.submissions;
+}
+
+// ============================================================================
+// Skill Analytics
+// ============================================================================
+
+export interface SkillAnalytics {
+  skill_id: string;
+  skill_slug: string;
+  skill_name: string;
+  total_executions: number;
+  successful_executions: number;
+  failed_executions: number;
+  success_rate: number;
+  avg_duration_ms: number;
+  last_executed_at?: string;
+}
+
+export interface SkillAnalyticsOverview {
+  total_executions: number;
+  total_skills_used: number;
+  success_rate: number;
+  avg_duration_ms: number;
+  skills: SkillAnalytics[];
+}
+
+export interface SkillExecutionTimeline {
+  date: string;
+  executions: number;
+  successes: number;
+  failures: number;
+}
+
+/**
+ * Get user's skill analytics overview.
+ */
+export async function getSkillAnalytics(days = 30): Promise<SkillAnalyticsOverview> {
+  return api.get<SkillAnalyticsOverview>(`/api/skills/analytics?days=${days}`);
+}
+
+/**
+ * Get analytics for a specific skill.
+ */
+export async function getSkillAnalyticsDetail(
+  skillId: string,
+  days = 30
+): Promise<SkillAnalytics & { timeline: SkillExecutionTimeline[] }> {
+  return api.get(`/api/skills/${skillId}/analytics?days=${days}`);
+}
+
+/**
+ * Get skill execution timeline.
+ */
+export async function getSkillAnalyticsTimeline(
+  days = 30,
+  granularity: 'day' | 'week' = 'day'
+): Promise<SkillExecutionTimeline[]> {
+  const response = await api.get<{ data: SkillExecutionTimeline[] }>(
+    `/api/skills/analytics/timeline?days=${days}&granularity=${granularity}`
+  );
+  return response.data;
+}
+
+/**
+ * Get skill usage trends.
+ */
+export async function getSkillAnalyticsTrends(
+  days = 30
+): Promise<{ skill_slug: string; skill_name: string; trend: number; executions: number }[]> {
+  const response = await api.get<{
+    trends: { skill_slug: string; skill_name: string; trend: number; executions: number }[];
+  }>(`/api/skills/analytics/trends?days=${days}`);
+  return response.trends;
+}
+
+// ============================================================================
+// Platform Settings (Public)
+// ============================================================================
+
+export interface PlatformSetting {
+  id: string;
+  category: string;
+  key: string;
+  value: unknown;
+  description?: string;
+  is_public: boolean;
+  sort_order: number;
+}
+
+export interface WorkspaceDefaults {
+  cpu_limit: number;
+  memory_limit: number;
+  disk_limit: number;
+  idle_timeout: number;
+  max_session_duration: number;
+}
+
+export interface ThinkingPreset {
+  label: string;
+  tokens: number;
+  description?: string;
+}
+
+export interface ThinkingPresets {
+  low: ThinkingPreset;
+  medium: ThinkingPreset;
+  high: ThinkingPreset;
+  max: ThinkingPreset;
+}
+
+export interface TimeoutOption {
+  value: number | null;
+  label: string;
+}
+
+export interface AgentModeConfigEntry {
+  label: string;
+  icon: string;
+  color: string;
+  description: string;
+}
+
+export interface AgentModeConfig {
+  plan: AgentModeConfigEntry;
+  ask: AgentModeConfigEntry;
+  auto: AgentModeConfigEntry;
+  sovereign: AgentModeConfigEntry;
+}
+
+export interface VoiceLanguage {
+  code: string;
+  name: string;
+}
+
+/**
+ * Get all public platform settings.
+ */
+export async function getPlatformSettings(category?: string): Promise<PlatformSetting[]> {
+  const params = category ? `?category=${category}` : '';
+  const response = await api.get<{ settings: PlatformSetting[] }>(
+    `/api/platform/settings${params}`
+  );
+  return response.settings;
+}
+
+/**
+ * Get a specific platform setting by key.
+ */
+export async function getPlatformSetting<T = unknown>(key: string): Promise<T> {
+  const response = await api.get<{ value: T }>(`/api/platform/settings/${key}`);
+  return response.value;
+}
+
+// ============================================================================
+// LLM Providers (Public)
+// ============================================================================
+
+export interface LLMProvider {
+  id: string;
+  slug: string;
+  name: string;
+  description?: string;
+  icon?: string;
+  color: string;
+  is_local: boolean;
+  default_url?: string;
+  docs_url?: string;
+  setup_guide_url?: string;
+  requires_api_key: boolean;
+  supports_streaming: boolean;
+  supports_tools: boolean;
+  supports_vision: boolean;
+  is_enabled: boolean;
+  sort_order: number;
+}
+
+/**
+ * Get all enabled LLM providers.
+ */
+export async function getProviders(): Promise<LLMProvider[]> {
+  const response = await api.get<{ providers: LLMProvider[] }>('/api/platform/providers');
+  return response.providers;
+}
+
+/**
+ * Get a specific provider by slug.
+ */
+export async function getProvider(slug: string): Promise<LLMProvider> {
+  return api.get<LLMProvider>(`/api/platform/providers/${slug}`);
+}
+
+// ============================================================================
+// Platform Config (Combined Bootstrap)
+// ============================================================================
+
+export interface PlatformConfig {
+  settings: Record<string, unknown>;
+  providers: LLMProvider[];
+}
+
+/**
+ * Get combined platform configuration for app bootstrap.
+ * Returns all public settings and enabled providers in one call.
+ */
+export async function getPlatformConfig(): Promise<PlatformConfig> {
+  return api.get<PlatformConfig>('/api/platform/config');
+}
+
+// ============================================================================
+// Admin: LLM Providers
+// ============================================================================
+
+export interface AdminLLMProvider extends LLMProvider {
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateProviderRequest {
+  slug: string;
+  name: string;
+  description?: string;
+  icon?: string;
+  color: string;
+  is_local?: boolean;
+  default_url?: string;
+  docs_url?: string;
+  setup_guide_url?: string;
+  requires_api_key?: boolean;
+  supports_streaming?: boolean;
+  supports_tools?: boolean;
+  supports_vision?: boolean;
+  is_enabled?: boolean;
+  sort_order?: number;
+}
+
+export interface UpdateProviderRequest {
+  name?: string;
+  description?: string;
+  icon?: string;
+  color?: string;
+  is_local?: boolean;
+  default_url?: string;
+  docs_url?: string;
+  setup_guide_url?: string;
+  requires_api_key?: boolean;
+  supports_streaming?: boolean;
+  supports_tools?: boolean;
+  supports_vision?: boolean;
+  is_enabled?: boolean;
+  sort_order?: number;
+}
+
+/**
+ * Admin: List all LLM providers (including disabled).
+ */
+export async function adminListProviders(includeDisabled = true): Promise<AdminLLMProvider[]> {
+  const response = await api.get<{ providers: AdminLLMProvider[] }>(
+    `/api/admin/settings/providers?include_disabled=${includeDisabled}`
+  );
+  return response.providers;
+}
+
+/**
+ * Admin: Get a specific provider.
+ */
+export async function adminGetProvider(slug: string): Promise<AdminLLMProvider> {
+  return api.get<AdminLLMProvider>(`/api/admin/settings/providers/${slug}`);
+}
+
+/**
+ * Admin: Create a new LLM provider.
+ */
+export async function adminCreateProvider(data: CreateProviderRequest): Promise<AdminLLMProvider> {
+  return api.post<AdminLLMProvider>('/api/admin/settings/providers', data);
+}
+
+/**
+ * Admin: Update an existing provider.
+ */
+export async function adminUpdateProvider(
+  slug: string,
+  data: UpdateProviderRequest
+): Promise<AdminLLMProvider> {
+  return api.patch<AdminLLMProvider>(`/api/admin/settings/providers/${slug}`, data);
+}
+
+/**
+ * Admin: Delete a provider.
+ */
+export async function adminDeleteProvider(slug: string): Promise<void> {
+  await api.delete(`/api/admin/settings/providers/${slug}`);
 }

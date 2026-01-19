@@ -17,6 +17,114 @@ logger = structlog.get_logger()
 # Secure temp directory path
 _TEMP_DIR = str(Path(tempfile.gettempdir()))
 
+# Dangerous environment variable names that could enable code injection
+_DANGEROUS_ENV_VARS = frozenset(
+    {
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "PYTHONHOME",
+        "RUBYLIB",
+        "RUBYOPT",
+        "PERL5LIB",
+        "PERL5OPT",
+        "NODE_OPTIONS",
+        "NODE_PATH",
+        "JAVA_TOOL_OPTIONS",
+        "_JAVA_OPTIONS",
+        "JAVA_OPTIONS",
+        "CLASSPATH",
+        "BASH_ENV",
+        "ENV",
+        "ZDOTDIR",
+        "PATH",  # Don't allow overriding PATH
+        "HOME",  # Don't allow overriding HOME
+        "SHELL",  # Don't allow overriding SHELL
+    }
+)
+
+# Dangerous shell metacharacters and patterns
+_DANGEROUS_PATTERNS = frozenset(
+    {
+        "&&",
+        "||",
+        ";",
+        "|",
+        "`",
+        "$(",
+        "${",
+        "<(",
+        ">(",
+        "\n",
+        "\r",
+        "\\n",
+        "\\r",
+    }
+)
+
+
+def _sanitize_env_vars(env_vars: dict[str, str]) -> dict[str, str]:
+    """Sanitize environment variables to prevent injection attacks.
+
+    Removes dangerous environment variables that could be used for code injection.
+
+    Args:
+        env_vars: User-provided environment variables
+
+    Returns:
+        Sanitized environment variables
+    """
+    sanitized = {}
+    for key, value in env_vars.items():
+        # Normalize key to uppercase for comparison
+        key_upper = key.upper()
+
+        # Skip dangerous env vars
+        if key_upper in _DANGEROUS_ENV_VARS:
+            logger.warning(
+                "Blocked dangerous environment variable",
+                key=key,
+                reason="potential code injection",
+            )
+            continue
+
+        # Validate key format (alphanumeric and underscore only)
+        if not key.replace("_", "").replace("-", "").isalnum():
+            logger.warning(
+                "Blocked invalid environment variable name",
+                key=key,
+                reason="invalid characters",
+            )
+            continue
+
+        # Sanitize value - remove null bytes and limit length
+        if value:
+            value = value.replace("\x00", "")[:4096]
+
+        sanitized[key] = value
+
+    return sanitized
+
+
+def _validate_command(command: str) -> None:
+    """Validate command doesn't contain dangerous patterns.
+
+    Args:
+        command: The command string to validate
+
+    Raises:
+        RuntimeError: If command contains dangerous patterns
+    """
+    for pattern in _DANGEROUS_PATTERNS:
+        if pattern in command:
+            raise RuntimeError(
+                f"Command contains forbidden pattern: {pattern!r}. "
+                "Shell metacharacters are not allowed for security."
+            )
+
 
 class PreviewStatus(str, Enum):
     """Status of a preview environment."""
@@ -191,8 +299,22 @@ class PreviewManager:
             # Run build if specified
             build_cmd = preview.metadata.get("build_command")
             if build_cmd:
+                # Validate build command for dangerous patterns
+                _validate_command(build_cmd)
+
+                # Use shlex for proper command parsing
+                import shlex
+
+                try:
+                    build_parts = shlex.split(build_cmd)
+                except ValueError as e:
+                    raise RuntimeError(f"Invalid build command format: {e}") from e
+
+                if not build_parts:
+                    raise RuntimeError("Empty build command")
+
                 result = await self._run_command(
-                    build_cmd.split(),
+                    build_parts,
                     cwd=preview.workspace_path,
                 )
                 preview.build_output = result
@@ -202,14 +324,32 @@ class PreviewManager:
             start_cmd = preview.metadata.get("start_command")
 
             if start_cmd:
-                # Prepare environment
+                # Prepare environment with sanitization
                 env = os.environ.copy()
-                env.update(preview.metadata.get("env_vars", {}))
+                # Sanitize user-provided env vars to prevent injection attacks
+                user_env_vars = preview.metadata.get("env_vars", {})
+                env.update(_sanitize_env_vars(user_env_vars))
                 env["PORT"] = str(preview.port)
 
-                # Start process
-                process = await asyncio.create_subprocess_shell(
-                    start_cmd,
+                # Parse and validate the start command
+                # Use shlex to properly split the command, then use subprocess_exec
+                # This prevents shell injection attacks
+                import shlex
+
+                try:
+                    cmd_parts = shlex.split(start_cmd)
+                except ValueError as e:
+                    raise RuntimeError(f"Invalid start command format: {e}") from e
+
+                if not cmd_parts:
+                    raise RuntimeError("Empty start command")
+
+                # Validate command doesn't contain dangerous patterns
+                _validate_command(start_cmd)
+
+                # Start process using exec (not shell) for security
+                process = await asyncio.create_subprocess_exec(
+                    *cmd_parts,
                     cwd=preview.workspace_path,
                     env=env,
                     stdout=asyncio.subprocess.PIPE,

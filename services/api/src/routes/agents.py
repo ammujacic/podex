@@ -1,8 +1,10 @@
 """Agent management routes."""
 
+from __future__ import annotations
+
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime  # noqa: TC003 - used in Pydantic models at runtime
 from enum import Enum
 from typing import Annotated, Any
 from uuid import uuid4
@@ -15,9 +17,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from podex_shared import generate_tts_summary
 from src.agent_client import agent_client
+from src.audit_logger import AuditAction, AuditLogger
 from src.config import settings
 from src.database import Agent as AgentModel
-from src.database import AgentTemplate, SubscriptionPlan, UserSubscription, get_db
+from src.database import (
+    AgentTemplate,
+    LLMModel,
+    PlatformSetting,
+    SessionCollaborator,
+    SubscriptionPlan,
+    UserConfig,
+    UserSubscription,
+)
 from src.database import Message as MessageModel
 from src.database import Session as SessionModel
 from src.database.connection import async_session_factory
@@ -29,19 +40,19 @@ from src.exceptions import (
 )
 from src.mcp_config import get_effective_mcp_config
 from src.middleware.rate_limit import RATE_LIMIT_AGENT, RATE_LIMIT_STANDARD, limiter
+from src.routes.dependencies import DbSession, get_current_user_id, verify_session_access
+from src.routes.sessions import ensure_workspace_provisioned, update_workspace_activity
 from src.websocket.hub import (
     AgentAttentionInfo,
     emit_agent_attention,
     emit_agent_stream_start,
+    emit_agent_token,
     emit_to_session,
 )
 
 logger = structlog.get_logger()
 
 router = APIRouter()
-
-# Type alias for database session dependency
-DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
 @dataclass
@@ -75,6 +86,18 @@ class AgentRole(str, Enum):
     DEVOPS = "devops"
     DOCUMENTATOR = "documentator"
     CUSTOM = "custom"
+    # Native CLI agent roles - these use specialized executors
+    CLAUDE_CODE = "claude-code"  # Native Claude Code agent with CLI capabilities
+    OPENAI_CODEX = "openai-codex"  # Native OpenAI Codex CLI agent
+    GEMINI_CLI = "gemini-cli"  # Native Google Gemini CLI agent
+
+
+# CLI agent roles that use specialized executors instead of the standard agent service
+CLI_AGENT_ROLES = {
+    AgentRole.CLAUDE_CODE.value,
+    AgentRole.OPENAI_CODEX.value,
+    AgentRole.GEMINI_CLI.value,
+}
 
 
 class AgentMode(str, Enum):
@@ -94,25 +117,142 @@ VALID_AGENT_MODES = {mode.value for mode in AgentMode}
 MIN_SENTENCE_LENGTH = 20  # Minimum characters for a meaningful sentence
 MAX_SNIPPET_LENGTH = 150  # Maximum characters for attention message snippet
 
+# Dangerous command patterns that should never be allowed in command_allowlist
+FORBIDDEN_COMMAND_PATTERNS = {
+    "*",  # Allow everything
+    "/*",  # Allow all absolute paths
+    "sudo *",  # Allow all sudo commands
+    "rm -rf *",  # Allow destructive deletions
+    "rm -rf /",  # Extremely dangerous
+    "rm -rf /*",  # Extremely dangerous
+    "> /dev/*",  # Writing to device files
+    "curl * | *",  # Arbitrary command execution
+    "wget * | *",  # Arbitrary command execution
+    "eval *",  # Arbitrary code execution
+    "exec *",  # Arbitrary code execution
+    "$(*))",  # Command substitution
+    "`*`",  # Command substitution
+}
 
-def get_current_user_id(request: Request) -> str:
-    """Get current user ID from request state.
+
+def sanitize_error_for_client(error: Exception | str, max_length: int = 200) -> str:
+    """Sanitize an error message for client consumption.
+
+    Removes potentially sensitive information like:
+    - File paths
+    - Database connection strings
+    - Stack traces
+    - Environment variables
+    - Secrets/tokens
+
+    Args:
+        error: The error to sanitize
+        max_length: Maximum length of returned message
+
+    Returns:
+        A sanitized error message safe for client display
+    """
+    error_str = str(error)
+
+    # Patterns that might contain sensitive info
+    sensitive_patterns = [
+        r"postgresql://[^\s]+",  # Database URLs
+        r"redis://[^\s]+",  # Redis URLs
+        r"https?://[^\s]*:[^\s@]*@",  # URLs with credentials
+        r"/Users/[^\s]+",  # Local file paths
+        r"/home/[^\s]+",  # Linux home paths
+        r"C:\\[^\s]+",  # Windows paths
+        r"(api[_-]?key|secret|password|token)[=:][^\s]+",  # Secrets
+        r"Bearer [A-Za-z0-9._-]+",  # JWT tokens
+        r"Traceback \(most recent call last\):",  # Stack traces
+        r"File \"[^\"]+\", line \d+",  # Stack trace lines
+    ]
+
+    sanitized = error_str
+    for pattern in sensitive_patterns:
+        sanitized = re.sub(pattern, "[REDACTED]", sanitized, flags=re.IGNORECASE)
+
+    # Truncate to max length
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length] + "..."
+
+    # If entirely redacted or empty, return generic message
+    if not sanitized.strip() or sanitized == "[REDACTED]":
+        return "An error occurred while processing your request"
+
+    return sanitized
+
+
+def _normalize_command_pattern(pattern: str) -> str:
+    """Normalize a command pattern for consistent comparison.
+
+    Normalizes whitespace and case for security validation.
+
+    Args:
+        pattern: The command pattern to normalize.
+
+    Returns:
+        Normalized pattern string.
+    """
+    # Strip leading/trailing whitespace
+    normalized = pattern.strip()
+    # Collapse multiple spaces into single space
+    normalized = " ".join(normalized.split())
+    # Lowercase for case-insensitive comparison
+    return normalized.lower()
+
+
+def validate_command_allowlist(allowlist: list[str] | None) -> list[str] | None:
+    """Validate command allowlist patterns for safety.
+
+    Args:
+        allowlist: List of command patterns to validate
+
+    Returns:
+        The validated allowlist
 
     Raises:
-        HTTPException: If user is not authenticated.
+        ValueError: If any pattern is forbidden or too broad
     """
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return str(user_id)
+    if not allowlist:
+        return allowlist
+
+    # Pre-normalize forbidden patterns for comparison
+    forbidden_normalized = {_normalize_command_pattern(p) for p in FORBIDDEN_COMMAND_PATTERNS}
+
+    validated = []
+    for pattern in allowlist:
+        # Normalize the pattern for validation
+        normalized = _normalize_command_pattern(pattern)
+        original_stripped = pattern.strip()
+
+        # Check for forbidden patterns (normalized comparison)
+        if normalized in forbidden_normalized:
+            raise ValueError(f"Forbidden pattern: {original_stripped}")  # noqa: TRY003
+
+        # Check for overly broad wildcards
+        if normalized == "*" or normalized.startswith("* "):
+            raise ValueError("Wildcard-only patterns not allowed")  # noqa: TRY003
+
+        # Check for shell injection patterns
+        if any(c in original_stripped for c in ["|", ";", "&&", "||", "`", "$("]):
+            raise ValueError(f"Shell operators not allowed: {original_stripped}")  # noqa: TRY003
+
+        validated.append(original_stripped)
+
+    return validated
 
 
-async def verify_session_access(
+async def check_session_collaborator_access(
     session_id: str,
     request: Request,
     db: AsyncSession,
 ) -> SessionModel:
     """Verify the current user has access to the session.
+
+    Access is granted if:
+    - User is the session owner, OR
+    - User is a collaborator on the session
 
     Raises:
         HTTPException: If session not found or user lacks access.
@@ -126,14 +266,30 @@ async def verify_session_access(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    if session.owner_id != user_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    # Check if user is owner
+    if session.owner_id == user_id:
+        return session
 
-    return session
+    # Check if user is a collaborator
+    collaborator_query = select(SessionCollaborator).where(
+        SessionCollaborator.session_id == session_id,
+        SessionCollaborator.user_id == user_id,
+    )
+    collaborator_result = await db.execute(collaborator_query)
+    collaborator = collaborator_result.scalar_one_or_none()
+
+    if collaborator:
+        return session
+
+    raise HTTPException(status_code=403, detail="Access denied")
 
 
 async def check_agent_quota(db: AsyncSession, user_id: str, session_id: str) -> None:
     """Check if user has reached their agent quota for a session.
+
+    Uses SELECT FOR UPDATE with NOWAIT on the session row to prevent race conditions
+    where concurrent requests could exceed the quota. The lock serializes all
+    concurrent agent creation requests for the same session.
 
     Args:
         db: Database session
@@ -143,6 +299,27 @@ async def check_agent_quota(db: AsyncSession, user_id: str, session_id: str) -> 
     Raises:
         HTTPException: If user has exceeded their agent quota or lacks a valid subscription
     """
+    from sqlalchemy.exc import OperationalError
+
+    try:
+        # Lock the session row with NOWAIT to fail fast on contention
+        # This prevents race conditions where multiple requests could exceed the quota
+        # Using NOWAIT ensures we don't wait indefinitely on a locked row
+        session_lock_query = (
+            select(SessionModel).where(SessionModel.id == session_id).with_for_update(nowait=True)
+        )
+        lock_result = await db.execute(session_lock_query)
+        session = lock_result.scalar_one_or_none()
+    except OperationalError:
+        # Lock acquisition failed - another request is creating an agent
+        raise HTTPException(
+            status_code=409,
+            detail="Another agent creation is in progress. Please try again.",
+        ) from None
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
     # Get user's active subscription and plan
     sub_query = (
         select(UserSubscription)
@@ -174,7 +351,8 @@ async def check_agent_quota(db: AsyncSession, user_id: str, session_id: str) -> 
 
     max_agents = plan.max_agents
 
-    # Count current agents in this session
+    # Count current agents in this session (within the lock)
+    # The lock ensures this count is accurate and won't change until we commit
     count_query = (
         select(func.count()).select_from(AgentModel).where(AgentModel.session_id == session_id)
     )
@@ -195,7 +373,7 @@ class AgentCreate(BaseModel):
 
     name: str
     role: str  # Validated: architect, coder, reviewer, tester, agent_builder, custom
-    model: str
+    model: str | None = None  # Optional - uses role default from platform settings if not provided
     mode: str = "ask"  # plan, ask, auto, sovereign
     command_allowlist: list[str] | None = None  # Allowed commands for Auto mode
     config: dict[str, Any] | None = None
@@ -216,7 +394,7 @@ class AgentCreate(BaseModel):
         """Validate mode is a valid AgentMode enum value."""
         mode_lower = v.lower()
         if mode_lower not in VALID_AGENT_MODES:
-            raise ValueError(f"Invalid mode. Must be one of: {list(VALID_AGENT_MODES)}")  # noqa: TRY003
+            raise ValueError("Invalid agent mode")  # noqa: TRY003
         return mode_lower
 
 
@@ -228,6 +406,7 @@ class AgentResponse(BaseModel):
     name: str
     role: str
     model: str
+    model_display_name: str | None = None  # User-friendly model name from database
     status: str
     mode: str = "ask"  # plan, ask, auto, sovereign
     command_allowlist: list[str] | None = None
@@ -251,8 +430,15 @@ class AgentModeUpdate(BaseModel):
         """Validate mode is a valid AgentMode enum value."""
         mode_lower = v.lower()
         if mode_lower not in VALID_AGENT_MODES:
-            raise ValueError(f"Invalid mode. Must be one of: {list(VALID_AGENT_MODES)}")  # noqa: TRY003
+            raise ValueError("Invalid agent mode")  # noqa: TRY003
         return mode_lower
+
+
+class AgentUpdate(BaseModel):
+    """Update agent settings request."""
+
+    name: str | None = None
+    model: str | None = None
 
 
 class ImageAttachment(BaseModel):
@@ -265,11 +451,31 @@ class ImageAttachment(BaseModel):
     filename: str | None = None  # Original filename
 
 
+class ThinkingConfigRequest(BaseModel):
+    """Extended thinking configuration for agent messages."""
+
+    enabled: bool = False
+    budget_tokens: int = 8000  # Default budget (min 1024, max 32000)
+
+    @field_validator("budget_tokens")
+    @classmethod
+    def validate_budget(cls, v: int) -> int:
+        """Validate thinking budget is within allowed range."""
+        min_budget = 1024
+        max_budget = 32000
+        if v < min_budget:
+            return min_budget
+        if v > max_budget:
+            return max_budget
+        return v
+
+
 class MessageCreate(BaseModel):
     """Create message request."""
 
     content: str
     images: list[ImageAttachment] | None = None  # Optional image attachments
+    thinking_config: ThinkingConfigRequest | None = None  # Extended thinking config
 
     @field_validator("content")
     @classmethod
@@ -291,7 +497,7 @@ class MessageCreate(BaseModel):
         max_images = 5
         max_size = 10 * 1024 * 1024  # 10MB per image
         if len(v) > max_images:
-            raise ValueError(f"Maximum {max_images} images allowed per message")  # noqa: TRY003
+            raise ValueError("Too many images")  # noqa: TRY003
         for img in v:
             if img.base64_data:
                 # Remove data URL prefix for size calculation
@@ -301,9 +507,7 @@ class MessageCreate(BaseModel):
                 # Base64 is ~4/3 the size of binary
                 estimated_size = len(data) * 3 // 4
                 if estimated_size > max_size:
-                    raise ValueError(  # noqa: TRY003
-                        f"Image too large. Maximum size is {max_size // (1024 * 1024)}MB"
-                    )
+                    raise ValueError("Image too large")  # noqa: TRY003
         return v
 
 
@@ -328,6 +532,9 @@ class PaginationParams:
 
     limit: int = 100
     offset: int = 0
+    # Cursor for cursor-based pagination (message ID)
+    # When provided, offset is ignored and results start after this message
+    cursor: str | None = None
 
     def __post_init__(self) -> None:
         """Clamp values to valid ranges."""
@@ -364,68 +571,135 @@ class GetMessagesParams:
 # Agent colors for UI
 AGENT_COLORS = ["#00e5ff", "#a855f7", "#22c55e", "#f59e0b", "#ec4899", "#eab308"]
 
-# Agent role system prompts for context
-AGENT_ROLE_PROMPTS: dict[str, str] = {
-    "architect": (
-        "You are an architect agent. Help design system architecture, "
-        "plan implementations, and break down complex tasks into manageable steps."
-    ),
-    "coder": (
-        "You are a coding agent. Write clean, efficient code and "
-        "implement features based on specifications."
-    ),
-    "reviewer": (
-        "You are a code review agent. Review code for bugs, "
-        "security issues, best practices, and suggest improvements."
-    ),
-    "tester": (
-        "You are a testing agent. Write tests, identify edge cases, "
-        "and ensure code quality through testing."
-    ),
-    "custom": "You are a helpful AI assistant.",
-}
+
+async def get_model_display_name(db: AsyncSession, model_id: str) -> str | None:
+    """Look up model display name from the database.
+
+    Args:
+        db: Database session
+        model_id: The model ID to look up
+
+    Returns:
+        The display name if found, None otherwise
+    """
+    result = await db.execute(select(LLMModel.display_name).where(LLMModel.model_id == model_id))
+    row = result.first()
+    return row[0] if row else None
+
+
+async def get_default_model_for_role(db: AsyncSession, role: str) -> str:
+    """Get the default model for an agent role from platform settings.
+
+    Args:
+        db: Database session
+        role: The agent role (e.g., 'chat', 'coder', 'architect')
+
+    Returns:
+        The default model ID for the role
+
+    Raises:
+        HTTPException: If no default model is configured for the role
+    """
+    result = await db.execute(
+        select(PlatformSetting).where(PlatformSetting.key == "agent_model_defaults")
+    )
+    setting = result.scalar_one_or_none()
+
+    if setting and setting.value and isinstance(setting.value, dict):
+        defaults = setting.value
+        if role in defaults and isinstance(defaults[role], dict) and "model_id" in defaults[role]:
+            return str(defaults[role]["model_id"])
+
+    raise HTTPException(
+        status_code=500,
+        detail=(
+            f"No default model configured for role '{role}'. "
+            "Check agent_model_defaults in platform settings."
+        ),
+    )
+
+
+def _build_agent_response(
+    agent: AgentModel, model_display_name: str | None = None
+) -> AgentResponse:
+    """Build AgentResponse from an Agent model.
+
+    Args:
+        agent: The agent model
+        model_display_name: Optional pre-fetched display name
+
+    Returns:
+        AgentResponse with all fields populated
+    """
+    return AgentResponse(
+        id=agent.id,
+        session_id=agent.session_id,
+        name=agent.name,
+        role=agent.role,
+        model=agent.model,
+        model_display_name=model_display_name,
+        status=agent.status,
+        mode=agent.mode,
+        command_allowlist=agent.command_allowlist,
+        config=agent.config,
+        template_id=agent.template_id,
+        created_at=agent.created_at,
+    )
+
 
 # ==================== Agent Attention Detection ====================
 
 # Patterns that indicate the agent needs user approval
+# Patterns are anchored to reduce false positives (match at sentence boundaries)
 APPROVAL_PATTERNS = [
-    r"(?:awaiting|waiting for) (?:your )?approval",
-    r"please (?:review|approve|confirm)",
-    r"shall I proceed\??",
-    r"do you want me to (?:proceed|continue|go ahead)",
-    r"would you like me to (?:proceed|continue|go ahead|implement|execute)",
-    r"ready to (?:proceed|implement|execute).*\?",
-    r"before I (?:proceed|continue|start)",
-    r"let me know (?:if|when) (?:you'?re ready|I should)",
-    r"approve (?:this|the) plan",
+    # Direct approval requests - sentence start or after punctuation
+    r"(?:^|[.!?]\s*)(?:awaiting|waiting for) (?:your )?approval",
+    r"(?:^|[.!?]\s*)please (?:review|approve|confirm)\b",
+    # Questions at end of response or sentence
+    r"shall I proceed\?(?:\s*$|\s*[.!])",
+    r"do you want me to (?:proceed|continue|go ahead)\?(?:\s*$|\s*[.!])",
+    r"would you like me to (?:proceed|continue|go ahead|implement|execute)\?(?:\s*$|\s*[.!])",
+    r"ready to (?:proceed|implement|execute)[^.]*\?(?:\s*$|\s*[.!])",
+    # Before-action statements
+    r"(?:^|[.!?]\s*)before I (?:proceed|continue|start)",
+    r"(?:^|[.!?]\s*)let me know (?:if|when) (?:you'?re ready|I should)",
+    r"(?:^|[.!?]\s*)approve (?:this|the) plan",
 ]
 
 # Patterns that indicate task completion
+# More specific patterns to avoid false positives
 COMPLETION_PATTERNS = [
-    r"I'?ve (?:completed|finished|done|implemented)",
-    r"implementation is (?:done|complete|finished)",
-    r"all (?:tests|files|changes) (?:are )?(?:done|complete|passing)",
-    r"task (?:is )?(?:complete|done|finished)",
-    r"successfully (?:completed|implemented|created|fixed)",
-    r"changes have been (?:made|applied|committed)",
-    r"everything (?:is )?(?:set up|configured|ready)",
+    # Direct completion statements at sentence start
+    r"(?:^|[.!?]\s*)I'?ve (?:completed|finished|done|implemented)\b",
+    r"(?:^|[.!?]\s*)implementation is (?:done|complete|finished)\b",
+    r"(?:^|[.!?]\s*)all (?:tests|files|changes) (?:are )?(?:done|complete|passing)\b",
+    r"(?:^|[.!?]\s*)(?:the )?task (?:is )?(?:complete|done|finished)\b",
+    r"(?:^|[.!?]\s*)successfully (?:completed|implemented|created|fixed)\b",
+    r"(?:^|[.!?]\s*)(?:the )?changes have been (?:made|applied|committed)\b",
+    r"(?:^|[.!?]\s*)everything (?:is )?(?:set up|configured|ready)\b",
 ]
 
 # Patterns that indicate waiting for user input
+# More specific to reduce false positives in explanatory text
 INPUT_PATTERNS = [
-    r"what would you like",
-    r"please (?:provide|specify|tell me|share|clarify)",
-    r"I need (?:more information|clarification|details|input)",
-    r"which (?:option|approach|method) would you prefer",
-    r"can you (?:provide|specify|clarify|share)",
-    r"could you (?:provide|specify|clarify|share|tell me)",
-    r"what (?:should|would) you like me to",
-    r"how would you like me to",
+    # Direct questions to user
+    r"(?:^|[.!?]\s*)what would you like\b",
+    r"(?:^|[.!?]\s*)please (?:provide|specify|tell me|share|clarify)\b",
+    r"(?:^|[.!?]\s*)I need (?:more information|clarification|details|your input)\b",
+    r"(?:^|[.!?]\s*)which (?:option|approach|method) would you prefer\?",
+    # Direct questions that end with question mark
+    r"can you (?:provide|specify|clarify|share)[^?]*\?(?:\s*$|\s*[.!])",
+    r"could you (?:provide|specify|clarify|share|tell me)[^?]*\?(?:\s*$|\s*[.!])",
+    r"what (?:should|would) you like me to[^?]*\?(?:\s*$|\s*[.!])",
+    r"how would you like me to[^?]*\?(?:\s*$|\s*[.!])",
 ]
 
 
 def detect_attention_type(response: str, _agent_role: str) -> str | None:
     """Detect if an agent response requires user attention.
+
+    Uses anchored patterns to reduce false positives. Patterns match at
+    sentence boundaries to avoid matching explanatory text.
 
     Args:
         response: The agent's response content.
@@ -433,23 +707,24 @@ def detect_attention_type(response: str, _agent_role: str) -> str | None:
 
     Returns:
         The attention type if attention is needed, None otherwise.
+        Priority: needs_approval > waiting_input > completed
     """
     response_lower = response.lower()
 
     # Check for approval patterns (highest priority)
     for pattern in APPROVAL_PATTERNS:
-        if re.search(pattern, response_lower, re.IGNORECASE):
+        if re.search(pattern, response_lower, re.IGNORECASE | re.MULTILINE):
             return "needs_approval"
 
-    # Check for completion patterns
-    for pattern in COMPLETION_PATTERNS:
-        if re.search(pattern, response_lower, re.IGNORECASE):
-            return "completed"
-
-    # Check for input patterns
+    # Check for input patterns (second priority - user action needed)
     for pattern in INPUT_PATTERNS:
-        if re.search(pattern, response_lower, re.IGNORECASE):
+        if re.search(pattern, response_lower, re.IGNORECASE | re.MULTILINE):
             return "waiting_input"
+
+    # Check for completion patterns (lowest priority - informational)
+    for pattern in COMPLETION_PATTERNS:
+        if re.search(pattern, response_lower, re.IGNORECASE | re.MULTILINE):
+            return "completed"
 
     return None
 
@@ -526,6 +801,821 @@ def get_attention_priority(attention_type: str, _agent_role: str) -> str:
     return "low"
 
 
+# CLI Agent configuration by role
+# Note: Use absolute path /home/dev instead of ~ because exec runs as root
+CLI_AGENT_CONFIG = {
+    "claude-code": {
+        "name": "Claude Code",
+        # Check both system path and user npm-global
+        "check_command": "PATH=/home/dev/.npm-global/bin:$PATH which claude",
+        "credentials_check": "test -f /home/dev/.claude/.credentials.json && echo 'authenticated'",
+        "install_package": "@anthropic-ai/claude-code",
+        "run_command": "claude",
+        "executor_module": "src.routes.claude_code",
+        "executor_function": "execute_claude_code_message",
+        # Streaming disabled - SSE newline escaping conflicts with JSON \n escape sequences
+        # TODO: Implement proper JSON streaming parser for real-time display
+    },
+    "openai-codex": {
+        "name": "OpenAI Codex",
+        # Check both system path and user npm-global
+        "check_command": "PATH=/home/dev/.npm-global/bin:$PATH which codex",
+        "credentials_check": "test -f /home/dev/.codex/config.toml && echo 'authenticated'",
+        "install_package": "@openai/codex",
+        "run_command": "codex",
+        "executor_module": "src.routes.openai_codex",
+        "executor_function": "execute_openai_codex_message",
+    },
+    "gemini-cli": {
+        "name": "Gemini CLI",
+        # Check both system path and user npm-global
+        "check_command": "PATH=/home/dev/.npm-global/bin:$PATH which gemini",
+        "credentials_check": "test -f /home/dev/.gemini/settings.json && echo 'authenticated'",
+        "install_package": "@google/gemini-cli",
+        "run_command": "gemini",
+        "executor_module": "src.routes.gemini_cli",
+        "executor_function": "execute_gemini_cli_message",
+    },
+}
+
+
+async def _process_cli_agent_message(
+    ctx: AgentMessageContext,
+    db: AsyncSession,
+    agent: AgentModel,
+) -> None:
+    """Process a message for a CLI-based agent (Claude Code, OpenAI Codex, Gemini CLI).
+
+    Routes to the appropriate executor based on agent role.
+    Handles installation and authentication checks for each CLI type.
+
+    Args:
+        ctx: The agent message context.
+        db: Database session.
+        agent: The agent model.
+    """
+    from src.compute_client import compute_client
+
+    # Get CLI config for this agent type
+    cli_config = CLI_AGENT_CONFIG.get(agent.role)
+    if not cli_config:
+        logger.error("Unknown CLI agent role: %s", agent.role, agent_id=ctx.agent_id)
+        return
+
+    cli_name = cli_config["name"]
+
+    try:
+        # Update agent status to running
+        agent.status = "running"
+        await db.commit()
+
+        # Get voice config for auto-play
+        voice_config = agent.voice_config or {}
+        auto_play = voice_config.get("auto_play", False)
+
+        # Notify frontend that agent is processing
+        await _notify_agent_status(ctx.session_id, ctx.agent_id, "running")
+
+        # Get workspace_id from session
+        session_query = select(SessionModel).where(SessionModel.id == ctx.session_id)
+        session_result = await db.execute(session_query)
+        session = session_result.scalar_one_or_none()
+
+        if not session or not session.workspace_id:
+            logger.error(
+                "%s agent requires a workspace",
+                cli_name,
+                agent_id=ctx.agent_id,
+                session_id=ctx.session_id,
+            )
+            await _notify_agent_status(
+                ctx.session_id,
+                ctx.agent_id,
+                "error",
+                "No workspace available. Please ensure a workspace is running.",
+            )
+            agent.status = "error"
+            await db.commit()
+            return
+
+        workspace_id = session.workspace_id
+        user_id = ctx.user_id or session.owner_id
+
+        # Generate a message_id for streaming
+        stream_message_id = str(uuid4())
+
+        # Notify frontend that streaming is starting
+        await emit_agent_stream_start(ctx.session_id, ctx.agent_id, stream_message_id)
+
+        # Ensure workspace is provisioned before running any commands
+        try:
+            logger.info(
+                "Provisioning workspace for CLI agent",
+                cli_name=cli_name,
+                workspace_id=workspace_id,
+                agent_id=ctx.agent_id,
+            )
+            await ensure_workspace_provisioned(session, user_id, db)
+            logger.info(
+                "Workspace provisioned successfully",
+                cli_name=cli_name,
+                workspace_id=workspace_id,
+            )
+        except Exception as e:
+            logger.exception(
+                "Failed to provision workspace for %s agent",
+                cli_name,
+                agent_id=ctx.agent_id,
+                workspace_id=workspace_id,
+                error=str(e),
+            )
+            # Send error message to user via the stream
+            error_message = (
+                f"❌ Failed to provision workspace for {cli_name}.\n\n"
+                "Please try again or contact support if the issue persists."
+            )
+            # Finalize the stream with the error content
+            from src.websocket.hub import emit_agent_stream_end
+
+            await emit_agent_stream_end(
+                session_id=ctx.session_id,
+                agent_id=ctx.agent_id,
+                message_id=stream_message_id,
+                full_content=error_message,
+            )
+            # Save to database
+            processing_ctx = ResponseProcessingContext(
+                db=db,
+                ctx=ctx,
+                agent=agent,
+                response_content=error_message,
+                auto_play=auto_play,
+                tool_calls=None,
+                streamed=True,
+                message_id=stream_message_id,
+                tokens_used=0,
+            )
+            await _process_and_emit_response(processing_ctx)
+            return
+
+        # Check if CLI is installed
+        try:
+            logger.info(
+                "Checking if CLI is installed",
+                cli_name=cli_name,
+                check_command=cli_config["check_command"],
+                workspace_id=workspace_id,
+            )
+            check_result = await compute_client.exec_command(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                command=cli_config["check_command"],
+                exec_timeout=10,
+            )
+            cli_installed = check_result.get("exit_code", 1) == 0
+            logger.info(
+                "CLI check result",
+                cli_name=cli_name,
+                installed=cli_installed,
+                exit_code=check_result.get("exit_code"),
+                stdout=check_result.get("stdout", "")[:200],
+                stderr=check_result.get("stderr", "")[:200],
+            )
+        except Exception as e:
+            logger.exception(
+                "CLI check failed with exception",
+                cli_name=cli_name,
+                workspace_id=workspace_id,
+                error=str(e),
+            )
+            cli_installed = False
+
+        if not cli_installed:
+            # Auto-install the CLI tool
+            logger.info(
+                "Installing %s CLI in workspace",
+                cli_name,
+                agent_id=ctx.agent_id,
+                workspace_id=workspace_id,
+            )
+
+            try:
+                # First verify npm is available
+                npm_check = await compute_client.exec_command(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    command="which npm && npm --version",
+                    exec_timeout=10,
+                )
+                logger.info(
+                    "npm check result",
+                    exit_code=npm_check.get("exit_code"),
+                    stdout=npm_check.get("stdout", "")[:200],
+                    stderr=npm_check.get("stderr", "")[:200],
+                )
+
+                if npm_check.get("exit_code", 1) != 0:
+                    error_message = (
+                        "❌ npm is not installed in the workspace.\n\n"
+                        "Please ensure the workspace image has Node.js and npm installed."
+                    )
+                    # Finalize the stream with the error content
+                    from src.websocket.hub import emit_agent_stream_end
+
+                    await emit_agent_stream_end(
+                        session_id=ctx.session_id,
+                        agent_id=ctx.agent_id,
+                        message_id=stream_message_id,
+                        full_content=error_message,
+                    )
+                    # Save to database
+                    processing_ctx = ResponseProcessingContext(
+                        db=db,
+                        ctx=ctx,
+                        agent=agent,
+                        response_content=error_message,
+                        auto_play=auto_play,
+                        tool_calls=None,
+                        streamed=True,
+                        message_id=stream_message_id,
+                        tokens_used=0,
+                    )
+                    await _process_and_emit_response(processing_ctx)
+                    return
+
+                # Now install the CLI to user's home directory (avoids permission issues)
+                # Configure npm to use /home/dev/.npm-global for global packages,
+                # install, and update PATH. Use absolute path /home/dev instead of ~
+                # because exec runs as root
+                install_cmd = (
+                    "mkdir -p /home/dev/.npm-global && "
+                    "npm config set prefix /home/dev/.npm-global && "
+                    f"PATH=/home/dev/.npm-global/bin:$PATH "
+                    f"npm install -g {cli_config['install_package']} && "
+                    # Add to bashrc if not already there for future sessions
+                    "(grep -q 'npm-global' /home/dev/.bashrc 2>/dev/null || "
+                    "echo 'export PATH=/home/dev/.npm-global/bin:$PATH' >> /home/dev/.bashrc)"
+                )
+                logger.info(
+                    "Running npm install command",
+                    command=install_cmd[:150],
+                    workspace_id=workspace_id,
+                )
+
+                install_result = await compute_client.exec_command(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    command=install_cmd,
+                    exec_timeout=300,  # 5 min timeout for installation
+                )
+
+                logger.info(
+                    "npm install result",
+                    exit_code=install_result.get("exit_code"),
+                    stdout_len=len(install_result.get("stdout", "")),
+                    stderr_len=len(install_result.get("stderr", "")),
+                    stdout_preview=install_result.get("stdout", "")[:500],
+                    stderr_preview=install_result.get("stderr", "")[:500],
+                )
+
+                if install_result.get("exit_code", 1) != 0:
+                    install_error = install_result.get("stderr", "") or install_result.get(
+                        "stdout", "Unknown error"
+                    )
+                    error_message = (
+                        f"❌ Failed to install {cli_name}:\n```\n{install_error[:1000]}\n```\n\n"
+                        "Please try installing manually:\n"
+                        f"```bash\nnpm install -g {cli_config['install_package']}\n```"
+                    )
+                    logger.info(
+                        "CLI installation failed, sending error to chat",
+                        cli_name=cli_name,
+                        error_preview=install_error[:200],
+                    )
+                    # Finalize the stream with the error content
+                    from src.websocket.hub import emit_agent_stream_end
+
+                    await emit_agent_stream_end(
+                        session_id=ctx.session_id,
+                        agent_id=ctx.agent_id,
+                        message_id=stream_message_id,
+                        full_content=error_message,
+                    )
+                    # Save to database
+                    processing_ctx = ResponseProcessingContext(
+                        db=db,
+                        ctx=ctx,
+                        agent=agent,
+                        response_content=error_message,
+                        auto_play=auto_play,
+                        tool_calls=None,
+                        streamed=True,
+                        message_id=stream_message_id,
+                        tokens_used=0,
+                    )
+                    await _process_and_emit_response(processing_ctx)
+                    return
+
+                logger.info(
+                    "%s CLI installed successfully",
+                    cli_name,
+                    agent_id=ctx.agent_id,
+                    workspace_id=workspace_id,
+                )
+            except Exception as e:
+                logger.exception(
+                    "Failed to install %s CLI",
+                    cli_name,
+                    agent_id=ctx.agent_id,
+                    workspace_id=workspace_id,
+                    error=str(e),
+                )
+                error_message = (
+                    f"❌ Failed to install {cli_name}: {type(e).__name__}\n\n"
+                    "Please try installing manually:\n"
+                    f"```bash\nnpm install -g {cli_config['install_package']}\n```"
+                )
+                # Finalize the stream with the error content
+                from src.websocket.hub import emit_agent_stream_end
+
+                await emit_agent_stream_end(
+                    session_id=ctx.session_id,
+                    agent_id=ctx.agent_id,
+                    message_id=stream_message_id,
+                    full_content=error_message,
+                )
+                # Save to database
+                processing_ctx = ResponseProcessingContext(
+                    db=db,
+                    ctx=ctx,
+                    agent=agent,
+                    response_content=error_message,
+                    auto_play=auto_play,
+                    tool_calls=None,
+                    streamed=True,
+                    message_id=stream_message_id,
+                    tokens_used=0,
+                )
+                await _process_and_emit_response(processing_ctx)
+                return
+
+        # Check authentication status
+        try:
+            auth_check = await compute_client.exec_command(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                command=cli_config["credentials_check"],
+                exec_timeout=10,
+            )
+            authenticated = "authenticated" in auth_check.get("stdout", "")
+        except Exception:
+            authenticated = False
+
+        if not authenticated:
+            # CLI agents require interactive terminal for OAuth authentication.
+            # Provide clear instructions for users to authenticate.
+
+            # Get the required API key name for this CLI
+            api_key_name = {
+                "claude-code": "ANTHROPIC_API_KEY",
+                "openai-codex": "OPENAI_API_KEY",
+                "gemini-cli": "GOOGLE_API_KEY",
+            }.get(agent.role, "API_KEY")
+
+            auth_message = (
+                f"🔐 **{cli_name} needs authentication**\n\n"
+                f"Choose one of these options:\n\n"
+                f"**Option 1: API Key (Recommended)**\n"
+                f"Set your `{api_key_name}` in the agent's environment variables:\n"
+                f"1. Click the ⚙️ settings icon on this agent\n"
+                f"2. Add `{api_key_name}` with your API key value\n"
+                f"3. Save and try again\n\n"
+                f"**Option 2: OAuth via Terminal**\n"
+                f"1. Open the **Terminal** panel (click terminal icon)\n"
+                f"2. Run: `{cli_config['run_command']}`\n"
+                f"3. Type `/login` and follow the browser prompts\n"
+                f"4. After authenticating, return here and send your message\n"
+            )
+
+            # Emit the auth instructions
+            await emit_agent_token(
+                session_id=ctx.session_id,
+                agent_id=ctx.agent_id,
+                token=auth_message,
+                message_id=stream_message_id,
+            )
+
+            # Finalize the stream
+            from src.websocket.hub import emit_agent_stream_end
+
+            await emit_agent_stream_end(
+                session_id=ctx.session_id,
+                agent_id=ctx.agent_id,
+                message_id=stream_message_id,
+                full_content=auth_message,
+            )
+            # Save to database
+            processing_ctx = ResponseProcessingContext(
+                db=db,
+                ctx=ctx,
+                agent=agent,
+                response_content=auth_message,
+                auto_play=auto_play,
+                tool_calls=None,
+                streamed=True,
+                message_id=stream_message_id,
+                tokens_used=0,
+            )
+            await _process_and_emit_response(processing_ctx)
+            return
+
+        # Import and call the appropriate executor
+        import importlib
+
+        from src.websocket.hub import emit_agent_config_update
+
+        executor_module = importlib.import_module(cli_config["executor_module"])
+
+        # Use streaming executor if available (for real-time thinking/content display)
+        streaming_func_name = cli_config.get("streaming_executor_function")
+        if streaming_func_name and hasattr(executor_module, streaming_func_name):
+            executor_func = getattr(executor_module, streaming_func_name)
+            use_streaming = True
+        else:
+            executor_func = getattr(executor_module, cli_config["executor_function"])
+            use_streaming = False
+
+        # Create callback for config changes from CLI
+        async def handle_config_change(updates: dict[str, Any]) -> None:
+            """Emit config changes to frontend when CLI changes model/mode."""
+            await emit_agent_config_update(
+                session_id=str(ctx.session_id),
+                agent_id=str(ctx.agent_id),
+                updates=updates,
+                source="cli",
+            )
+
+        # Execute the message
+        # Pass images if present (for vision-capable CLI agents)
+        images_param = ctx.images if ctx.images else None
+
+        # Get existing CLI session ID for conversation continuity (Claude Code)
+        cli_session_id = agent.config.get("cli_session_id") if agent.config else None
+
+        logger.info(
+            "CLI session ID retrieval",
+            agent_id=ctx.agent_id,
+            has_config=bool(agent.config),
+            cli_session_id=cli_session_id if cli_session_id else "(none)",
+            config_keys=list(agent.config.keys()) if agent.config else [],
+        )
+
+        # Build common params
+        common_params = {
+            "workspace_id": workspace_id,
+            "user_id": user_id,
+            "message": ctx.user_message,
+            "mode": ctx.agent_mode or "ask",
+            "model": ctx.agent_model,
+            "allowed_tools": ctx.command_allowlist,
+            "denied_tools": None,
+            "max_turns": agent.config.get("max_turns", 50) if agent.config else 50,
+            "thinking_budget": ctx.thinking_config.get("budget_tokens")
+            if ctx.thinking_config
+            else None,
+            "images": images_param,
+            "on_config_change": handle_config_change,
+            "cli_session_id": cli_session_id,  # For conversation continuity
+            # Always pass session_id and agent_id for permission request events
+            "session_id": str(ctx.session_id),
+            "agent_id": str(ctx.agent_id),
+        }
+
+        # Add streaming-specific params
+        if use_streaming:
+            common_params["message_id"] = stream_message_id
+
+        result = await executor_func(**common_params)
+
+        logger.info(
+            "CLI executor returned",
+            cli_name=cli_name,
+            agent_id=ctx.agent_id,
+            result_keys=list(result.keys()) if result else [],
+            content_length=len(result.get("content", "")) if result else 0,
+            content_preview=result.get("content", "")[:200] if result else "(no result)",
+            has_tool_calls=bool(result.get("tool_calls")),
+            exit_code=result.get("exit_code"),
+            success=result.get("success"),
+        )
+
+        # Save CLI session ID for conversation continuity (if returned by executor)
+        returned_session_id = result.get("cli_session_id") if result else None
+        if returned_session_id and returned_session_id != cli_session_id:
+            # Update agent config with the new session ID
+            # Create a new dict to ensure SQLAlchemy detects the change
+            agent_config = dict(agent.config) if agent.config else {}
+            agent_config["cli_session_id"] = returned_session_id
+            agent.config = agent_config
+            # Mark the JSONB field as modified so SQLAlchemy persists it
+            from sqlalchemy.orm import attributes
+
+            attributes.flag_modified(agent, "config")
+            await db.commit()
+            logger.debug(
+                "Saved CLI session ID for conversation continuity",
+                agent_id=ctx.agent_id,
+                cli_session_id=returned_session_id,
+            )
+
+        response_content = result.get("content", "")
+        tool_calls = result.get("tool_calls")
+
+        # Format tool calls for frontend
+        formatted_tool_calls = None
+        if tool_calls:
+            formatted_tool_calls = [
+                {
+                    "id": tc.get("id", f"tc-{i}"),
+                    "name": tc.get("name", "unknown"),
+                    "args": tc.get("args", {}),
+                    "result": tc.get("result"),
+                    "status": tc.get("status", "completed"),
+                }
+                for i, tc in enumerate(tool_calls)
+            ]
+
+        # Finalize the stream with the full content
+        from src.websocket.hub import emit_agent_stream_end
+
+        logger.info(
+            "CLI agent execution completed, emitting stream end",
+            cli_name=cli_name,
+            agent_id=ctx.agent_id,
+            response_length=len(response_content),
+            has_tool_calls=bool(formatted_tool_calls),
+        )
+
+        await emit_agent_stream_end(
+            session_id=ctx.session_id,
+            agent_id=ctx.agent_id,
+            message_id=stream_message_id,
+            full_content=response_content,
+            tool_calls=formatted_tool_calls,
+        )
+
+        # Get tokens used from CLI result for context tracking
+        tokens_used = result.get("tokens_used", 0) if result else 0
+
+        # Process and emit the response
+        processing_ctx = ResponseProcessingContext(
+            db=db,
+            ctx=ctx,
+            agent=agent,
+            response_content=response_content,
+            auto_play=auto_play,
+            tool_calls=formatted_tool_calls,
+            streamed=True,
+            message_id=stream_message_id,
+            tokens_used=tokens_used,
+        )
+        await _process_and_emit_response(processing_ctx)
+
+    except Exception as e:
+        logger.exception(
+            "%s message processing failed",
+            cli_name,
+            agent_id=ctx.agent_id,
+            session_id=ctx.session_id,
+            error=str(e),
+        )
+        try:
+            await db.rollback()
+            agent.status = "error"
+            await db.commit()
+
+            await _notify_agent_status(
+                ctx.session_id,
+                ctx.agent_id,
+                "error",
+                f"{cli_name} processing failed. Please try again.",
+            )
+        except Exception as inner_e:
+            logger.exception(
+                "Failed to update agent error status",
+                agent_id=ctx.agent_id,
+                error=str(inner_e),
+            )
+
+
+async def _process_claude_code_message(
+    ctx: AgentMessageContext,
+    db: AsyncSession,
+    agent: AgentModel,
+) -> None:
+    """Process a message for a Claude Code agent.
+
+    Uses the Claude Code CLI executor to run the message in the workspace container.
+    Handles authentication flow if credentials are not present.
+
+    Args:
+        ctx: The agent message context.
+        db: Database session.
+        agent: The agent model.
+    """
+    from src.compute_client import compute_client
+    from src.routes.claude_code import execute_claude_code_message
+
+    try:
+        # Update agent status to running
+        agent.status = "running"
+        await db.commit()
+
+        # Get voice config for auto-play
+        voice_config = agent.voice_config or {}
+        auto_play = voice_config.get("auto_play", False)
+
+        # Notify frontend that agent is processing
+        await _notify_agent_status(ctx.session_id, ctx.agent_id, "running")
+
+        # Get workspace_id from session
+        session_query = select(SessionModel).where(SessionModel.id == ctx.session_id)
+        session_result = await db.execute(session_query)
+        session = session_result.scalar_one_or_none()
+
+        if not session or not session.workspace_id:
+            logger.error(
+                "Claude Code agent requires a workspace",
+                agent_id=ctx.agent_id,
+                session_id=ctx.session_id,
+            )
+            await _notify_agent_status(
+                ctx.session_id,
+                ctx.agent_id,
+                "error",
+                "No workspace available. Please ensure a workspace is running.",
+            )
+            agent.status = "error"
+            await db.commit()
+            return
+
+        workspace_id = session.workspace_id
+        user_id = ctx.user_id or session.owner_id
+
+        # Generate a message_id for streaming
+        stream_message_id = str(uuid4())
+
+        # Notify frontend that streaming is starting
+        await emit_agent_stream_start(ctx.session_id, ctx.agent_id, stream_message_id)
+
+        # Check if Claude CLI is installed
+        try:
+            check_result = await compute_client.exec_command(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                command="which claude",
+                exec_timeout=10,
+            )
+            claude_installed = check_result.get("exit_code", 1) == 0
+        except Exception:
+            claude_installed = False
+
+        if not claude_installed:
+            # Claude not installed - emit helpful message
+            install_message = (
+                "Claude Code CLI is not installed in this workspace.\n\n"
+                "To install it, run:\n"
+                "```bash\n"
+                "npm install -g @anthropic-ai/claude-code\n"
+                "```\n\n"
+                "Or use the install button in the agent settings."
+            )
+            processing_ctx = ResponseProcessingContext(
+                db=db,
+                ctx=ctx,
+                agent=agent,
+                response_content=install_message,
+                auto_play=auto_play,
+                tool_calls=None,
+                streamed=True,
+                message_id=stream_message_id,
+                tokens_used=0,
+            )
+            await _process_and_emit_response(processing_ctx)
+            return
+
+        # Check authentication status
+        # Note: Use absolute path /home/dev instead of ~ because exec runs as root
+        try:
+            auth_check = await compute_client.exec_command(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                command="test -f /home/dev/.claude/.credentials.json && echo 'authenticated'",
+                exec_timeout=10,
+            )
+            authenticated = "authenticated" in auth_check.get("stdout", "")
+        except Exception:
+            authenticated = False
+
+        if not authenticated:
+            # Need to authenticate - emit auth instructions
+            auth_message = (
+                "Claude Code needs authentication.\n\n"
+                "Please run the following command in a terminal:\n"
+                "```bash\n"
+                "claude\n"
+                "```\n\n"
+                "This will open a browser window to authenticate with your Anthropic account. "
+                "Once authenticated, send your message again."
+            )
+            processing_ctx = ResponseProcessingContext(
+                db=db,
+                ctx=ctx,
+                agent=agent,
+                response_content=auth_message,
+                auto_play=auto_play,
+                tool_calls=None,
+                streamed=True,
+                message_id=stream_message_id,
+                tokens_used=0,
+            )
+            await _process_and_emit_response(processing_ctx)
+            return
+
+        # Execute the message using Claude Code
+        result = await execute_claude_code_message(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            message=ctx.user_message,
+            mode=ctx.agent_mode or "ask",
+            model=ctx.agent_model,  # Should be simple alias like 'sonnet', 'opus', 'haiku'
+            allowed_tools=ctx.command_allowlist,
+            denied_tools=None,
+            max_turns=agent.config.get("max_turns", 50) if agent.config else 50,
+            thinking_budget=ctx.thinking_config.get("budget_tokens")
+            if ctx.thinking_config
+            else None,
+            session_id=ctx.session_id,
+            agent_id=ctx.agent_id,
+        )
+
+        response_content = result.get("content", "")
+        tool_calls = result.get("tool_calls")
+
+        # Format tool calls for frontend
+        formatted_tool_calls = None
+        if tool_calls:
+            formatted_tool_calls = [
+                {
+                    "id": tc.get("id", f"tc-{i}"),
+                    "name": tc.get("name", "unknown"),
+                    "args": tc.get("args", {}),
+                    "result": tc.get("result"),
+                    "status": tc.get("status", "completed"),
+                }
+                for i, tc in enumerate(tool_calls)
+            ]
+
+        # Process and emit the response
+        processing_ctx = ResponseProcessingContext(
+            db=db,
+            ctx=ctx,
+            agent=agent,
+            response_content=response_content,
+            auto_play=auto_play,
+            tool_calls=formatted_tool_calls,
+            streamed=True,
+            message_id=stream_message_id,
+            tokens_used=0,  # Claude Code doesn't report tokens directly
+        )
+        await _process_and_emit_response(processing_ctx)
+
+    except Exception as e:
+        logger.exception(
+            "Claude Code message processing failed",
+            agent_id=ctx.agent_id,
+            session_id=ctx.session_id,
+            error=str(e),
+        )
+        try:
+            await db.rollback()
+            agent.status = "error"
+            await db.commit()
+
+            await _notify_agent_status(
+                ctx.session_id,
+                ctx.agent_id,
+                "error",
+                "Claude Code processing failed. Please try again.",
+            )
+        except Exception as inner_e:
+            logger.exception(
+                "Failed to update agent error status",
+                agent_id=ctx.agent_id,
+                error=str(inner_e),
+            )
+
+
 def _generate_agent_response(agent_role: str, user_message: str) -> str:
     """Generate a simulated agent response based on role.
 
@@ -593,6 +1683,10 @@ class AgentMessageContext:
     command_allowlist: list[str] | None = None
     # Image attachments for vision models
     images: list[dict[str, Any]] | None = None
+    # Extended thinking configuration
+    thinking_config: dict[str, Any] | None = None
+    # User-provided LLM API keys for external providers
+    llm_api_keys: dict[str, str] | None = None
 
 
 def _build_agent_service_context(
@@ -619,6 +1713,12 @@ def _build_agent_service_context(
     # Include image attachments for vision models
     if ctx.images:
         agent_context["images"] = ctx.images
+    # Include extended thinking config if provided
+    if ctx.thinking_config:
+        agent_context["thinking_config"] = ctx.thinking_config
+    # Include user-provided LLM API keys (for external providers)
+    if ctx.llm_api_keys:
+        agent_context["llm_api_keys"] = ctx.llm_api_keys
     # Include message_id to enable streaming via Redis Pub/Sub
     if message_id:
         agent_context["message_id"] = message_id
@@ -697,12 +1797,17 @@ class ResponseProcessingContext:
     tool_calls: list[dict[str, Any]] | None = None
     streamed: bool = False  # If True, skip agent_message emit (frontend got it via streaming)
     message_id: str | None = None  # Optional message ID for streaming (to match frontend ID)
+    tokens_used: int = 0  # Token count to update on agent
 
 
 async def _process_and_emit_response(
     processing_ctx: ResponseProcessingContext,
 ) -> None:
-    """Process agent response: create message, emit events, check attention."""
+    """Process agent response: create message, emit events, check attention.
+
+    This function stages all database changes and commits them in a single transaction
+    to ensure consistency. If any part fails, the entire transaction is rolled back.
+    """
     db = processing_ctx.db
     ctx = processing_ctx.ctx
     agent = processing_ctx.agent
@@ -722,12 +1827,22 @@ async def _process_and_emit_response(
         tts_summary=tts_summary,
     )
     db.add(assistant_message)
+
+    # Update agent status to idle
+    agent.status = "idle"
+
+    # Update token tracking if tokens were used
+    if processing_ctx.tokens_used > 0:
+        agent.context_tokens_used += processing_ctx.tokens_used
+
+    # Flush to get message ID without committing
     await db.flush()
     await db.refresh(assistant_message)
 
-    agent.status = "idle"
+    # Single commit for all database changes (message + agent status + tokens)
     await db.commit()
 
+    # After successful commit, emit all events
     # Only emit agent_message if NOT streamed (streaming sends message via Redis pub/sub)
     if not processing_ctx.streamed:
         await _emit_agent_response(
@@ -739,6 +1854,32 @@ async def _process_and_emit_response(
             tool_calls=tool_calls,
         )
     await _notify_agent_status(ctx.session_id, ctx.agent_id, "idle")
+
+    # Emit token usage update if tokens were used
+    if processing_ctx.tokens_used > 0:
+        percentage = int((agent.context_tokens_used / agent.context_max_tokens) * 100)
+        await emit_to_session(
+            ctx.session_id,
+            "context_usage_update",
+            {
+                "agent_id": ctx.agent_id,
+                "tokens_used": agent.context_tokens_used,
+                "tokens_max": agent.context_max_tokens,
+                "percentage": percentage,
+            },
+        )
+
+        # Check for auto-compaction if threshold exceeded
+        # Import locally to avoid circular dependency
+        from src.routes.context import maybe_trigger_auto_compaction
+
+        if ctx.user_id:
+            await maybe_trigger_auto_compaction(
+                db=db,
+                agent=agent,
+                session_id=ctx.session_id,
+                _user_id=ctx.user_id,
+            )
 
     attention_type = detect_attention_type(response_content, ctx.agent_role)
     if attention_type:
@@ -762,11 +1903,12 @@ async def _process_and_emit_response(
         await emit_agent_attention(attention_info)
 
 
-async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0915
+async def process_agent_message(ctx: AgentMessageContext) -> None:
     """Background task to process agent message and generate response.
 
     Calls the agent service to process the message with the LLM.
     Falls back to simulated responses in development if agent service unavailable.
+    For Claude Code agents, uses the Claude Code executor via compute service.
 
     Args:
         ctx: The agent message context containing all required parameters.
@@ -774,7 +1916,7 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0
     # Create a new database session for the background task
     async with async_session_factory() as db:
         try:
-            # Update agent status to active with row-level locking to prevent race conditions
+            # Update agent status to running with row-level locking to prevent race conditions
             agent_query = select(AgentModel).where(AgentModel.id == ctx.agent_id).with_for_update()
             result = await db.execute(agent_query)
             agent = result.scalar_one_or_none()
@@ -783,7 +1925,12 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0
                 logger.warning("Agent not found for message processing", agent_id=ctx.agent_id)
                 return
 
-            agent.status = "active"
+            # Check if this is a CLI agent - route to specialized handler
+            if agent.role in CLI_AGENT_ROLES:
+                await _process_cli_agent_message(ctx, db, agent)
+                return
+
+            agent.status = "running"
             await db.commit()
 
             # Get voice config for auto-play
@@ -791,7 +1938,7 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0
             auto_play = voice_config.get("auto_play", False)
 
             # Notify frontend that agent is processing
-            await _notify_agent_status(ctx.session_id, ctx.agent_id, "active")
+            await _notify_agent_status(ctx.session_id, ctx.agent_id, "running")
 
             # Fetch effective MCP config for the user
             if ctx.user_id:
@@ -860,6 +2007,7 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0
             # Process and emit the response with tool calls
             # Set streamed=True since we use streaming - frontend already has message via Redis
             # Pass stream_message_id so DB message has same ID sent to frontend
+            # Include tokens_used for consolidated commit (message + status + tokens)
             processing_ctx = ResponseProcessingContext(
                 db=db,
                 ctx=ctx,
@@ -869,25 +2017,9 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0
                 tool_calls=tool_calls,
                 streamed=True,  # Streaming is always enabled now
                 message_id=stream_message_id,  # Use the same ID that was sent to frontend
+                tokens_used=tokens_used,  # Token count for consolidated DB update
             )
             await _process_and_emit_response(processing_ctx)
-
-            # Update context token tracking and emit update
-            if tokens_used > 0:
-                agent.context_tokens_used += tokens_used
-                await db.commit()
-
-                percentage = int((agent.context_tokens_used / agent.context_max_tokens) * 100)
-                await emit_to_session(
-                    ctx.session_id,
-                    "context_usage_update",
-                    {
-                        "agent_id": ctx.agent_id,
-                        "tokens_used": agent.context_tokens_used,
-                        "tokens_max": agent.context_max_tokens,
-                        "percentage": percentage,
-                    },
-                )
 
         except Exception as e:
             # Log the error with full context
@@ -924,7 +2056,7 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:  # noqa: PLR0
                     message="Agent processing failed. Please try again.",
                     priority="high",
                     metadata={
-                        "error": str(e)[:500],  # Truncate error message
+                        "error": sanitize_error_for_client(e),  # Sanitized error message
                     },
                 )
                 await emit_agent_attention(error_attention)
@@ -949,10 +2081,16 @@ async def create_agent(
     # Verify session exists and user has access
     session = await verify_session_access(session_id, request, db)
 
+    # Validate command_allowlist for security
+    try:
+        validated_allowlist = validate_command_allowlist(data.command_allowlist)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
     # Check agent quota before creating
     await check_agent_quota(db, session.owner_id, session_id)
 
-    # If template_id provided, verify it exists and increment usage count atomically
+    # If template_id provided, verify it exists (usage count incremented AFTER successful creation)
     template = None
     if data.template_id:
         template_query = select(AgentTemplate).where(AgentTemplate.id == data.template_id)
@@ -961,13 +2099,6 @@ async def create_agent(
 
         if not template:
             raise HTTPException(status_code=404, detail="Agent template not found")
-
-        # Increment usage count atomically to avoid race conditions
-        await db.execute(
-            update(AgentTemplate)
-            .where(AgentTemplate.id == data.template_id)
-            .values(usage_count=AgentTemplate.usage_count + 1),
-        )
 
     # Count existing agents for color assignment - use COUNT() for efficiency
     count_query = (
@@ -996,35 +2127,119 @@ async def create_agent(
     # Determine role (custom if using template, otherwise as specified)
     role = "custom" if data.template_id else data.role
 
+    # Determine model: template model > provided model > role default from platform settings
+    if template:
+        model = template.model
+    elif data.model:
+        model = data.model
+    else:
+        model = await get_default_model_for_role(db, role)
+
     # Create agent
     agent = AgentModel(
         session_id=session_id,
         name=data.name,
         role=role,
-        model=template.model if template else data.model,
+        model=model,
         status="idle",
         mode=data.mode,
-        command_allowlist=data.command_allowlist,
+        command_allowlist=validated_allowlist,
         config=config,
         template_id=data.template_id,
     )
     db.add(agent)
+
+    # Increment template usage count atomically with agent creation
+    # Both operations are in the same transaction - either both succeed or both fail
+    if data.template_id:
+        await db.execute(
+            update(AgentTemplate)
+            .where(AgentTemplate.id == data.template_id)
+            .values(usage_count=AgentTemplate.usage_count + 1),
+        )
+
+    # Single commit for both agent creation and template usage increment
     await db.commit()
     await db.refresh(agent)
 
-    return AgentResponse(
-        id=agent.id,
-        session_id=agent.session_id,
-        name=agent.name,
-        role=agent.role,
-        model=agent.model,
-        status=agent.status,
-        mode=agent.mode,
-        command_allowlist=agent.command_allowlist,
-        config=agent.config,
-        template_id=agent.template_id,
-        created_at=agent.created_at,
+    # Audit log: agent created
+    user_id = get_current_user_id(request)
+    audit = AuditLogger(db).set_context(request=request, user_id=user_id)
+    await audit.log_agent_event(
+        AuditAction.AGENT_CREATED,
+        agent_id=agent.id,
+        session_id=session_id,
+        details={"name": agent.name, "role": agent.role, "model": agent.model, "mode": agent.mode},
     )
+
+    # Look up model display name
+    model_display_name = await get_model_display_name(db, agent.model)
+
+    return _build_agent_response(agent, model_display_name)
+
+
+# ==================== Role Configuration Endpoint ====================
+# NOTE: The primary public endpoint for role configs is now /api/agent-roles
+# This endpoint is kept for backward compatibility but reads from the database.
+
+
+class AgentRoleConfigResponse(BaseModel):
+    """Response for a single agent role configuration."""
+
+    name: str
+    role: str
+    color: str
+    system_prompt: str
+    tools: list[str]
+
+
+class AgentRoleConfigsResponse(BaseModel):
+    """Response containing all agent role configurations."""
+
+    roles: dict[str, AgentRoleConfigResponse]
+
+
+@router.get("/role-configs", response_model=AgentRoleConfigsResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def get_role_configs(
+    request: Request,  # noqa: ARG001
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> AgentRoleConfigsResponse:
+    """Get default configurations for all agent roles.
+
+    DEPRECATED: Use /api/agent-roles instead for more complete data.
+
+    Returns the complete configuration for each role including:
+    - Display name
+    - Color for UI
+    - Default system prompt
+    - Default tools
+    """
+    from src.database.models import AgentRoleConfig
+
+    result = await db.execute(
+        select(AgentRoleConfig)
+        .where(AgentRoleConfig.is_enabled == True)
+        .order_by(AgentRoleConfig.sort_order)
+    )
+    configs = result.scalars().all()
+
+    return AgentRoleConfigsResponse(
+        roles={
+            config.role: AgentRoleConfigResponse(
+                name=config.name,
+                role=config.role,
+                color=config.color,
+                system_prompt=config.system_prompt,
+                tools=config.tools,
+            )
+            for config in configs
+        }
+    )
+
+
+# ==================== Agent CRUD Endpoints ====================
 
 
 @router.get("", response_model=list[AgentResponse])
@@ -1047,22 +2262,14 @@ async def list_agents(
     result = await db.execute(query)
     agents = result.scalars().all()
 
-    return [
-        AgentResponse(
-            id=a.id,
-            session_id=a.session_id,
-            name=a.name,
-            role=a.role,
-            model=a.model,
-            status=a.status,
-            mode=a.mode,
-            command_allowlist=a.command_allowlist,
-            config=a.config,
-            template_id=a.template_id,
-            created_at=a.created_at,
-        )
-        for a in agents
-    ]
+    # Batch fetch all model display names
+    model_ids = list({a.model for a in agents})
+    model_result = await db.execute(
+        select(LLMModel.model_id, LLMModel.display_name).where(LLMModel.model_id.in_(model_ids))
+    )
+    display_names = {row[0]: row[1] for row in model_result.all()}
+
+    return [_build_agent_response(a, display_names.get(a.model)) for a in agents]
 
 
 @router.get("/{agent_id}", response_model=AgentResponse)
@@ -1088,19 +2295,8 @@ async def get_agent(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    return AgentResponse(
-        id=agent.id,
-        session_id=agent.session_id,
-        name=agent.name,
-        role=agent.role,
-        model=agent.model,
-        status=agent.status,
-        mode=agent.mode,
-        command_allowlist=agent.command_allowlist,
-        config=agent.config,
-        template_id=agent.template_id,
-        created_at=agent.created_at,
-    )
+    model_display_name = await get_model_display_name(db, agent.model)
+    return _build_agent_response(agent, model_display_name)
 
 
 @router.patch("/{agent_id}/mode", response_model=AgentResponse)
@@ -1154,6 +2350,16 @@ async def update_agent_mode(
         },
     )
 
+    # Audit log: agent mode changed
+    user_id = get_current_user_id(request)
+    audit = AuditLogger(db).set_context(request=request, user_id=user_id)
+    await audit.log_agent_event(
+        AuditAction.AGENT_MODE_CHANGED,
+        agent_id=agent_id,
+        session_id=session_id,
+        details={"mode": agent.mode, "name": agent.name},
+    )
+
     logger.info(
         "Agent mode updated",
         agent_id=agent_id,
@@ -1161,18 +2367,161 @@ async def update_agent_mode(
         mode=agent.mode,
     )
 
-    return AgentResponse(
-        id=agent.id,
-        session_id=agent.session_id,
+    model_display_name = await get_model_display_name(db, agent.model)
+    return _build_agent_response(agent, model_display_name)
+
+
+@router.patch("/{agent_id}", response_model=AgentResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def update_agent(
+    session_id: str,
+    agent_id: str,
+    data: AgentUpdate,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> AgentResponse:
+    """Update agent settings (name, model).
+
+    Args:
+        session_id: The session ID.
+        agent_id: The agent ID.
+        data: The update data.
+    """
+    # Verify user has access to session
+    await verify_session_access(session_id, request, db)
+
+    # Get the agent
+    query = select(AgentModel).where(
+        AgentModel.id == agent_id,
+        AgentModel.session_id == session_id,
+    )
+    result = await db.execute(query)
+    agent = result.scalar_one_or_none()
+
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Update fields if provided
+    if data.name is not None:
+        agent.name = data.name
+    if data.model is not None:
+        agent.model = data.model
+
+    await db.commit()
+    await db.refresh(agent)
+
+    # Emit update via WebSocket
+    await emit_to_session(
+        session_id,
+        "agent_update",
+        {
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "name": agent.name,
+            "model": agent.model,
+        },
+    )
+
+    logger.info(
+        "Agent updated",
+        agent_id=agent_id,
+        session_id=session_id,
         name=agent.name,
-        role=agent.role,
         model=agent.model,
-        status=agent.status,
+    )
+
+    model_display_name = await get_model_display_name(db, agent.model)
+    return _build_agent_response(agent, model_display_name)
+
+
+class PlanModeToggleResponse(BaseModel):
+    """Response from toggling plan mode."""
+
+    mode: str
+    previous_mode: str | None
+    toggled_to_plan: bool
+
+
+@router.post("/{agent_id}/toggle-plan-mode", response_model=PlanModeToggleResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def toggle_plan_mode(
+    session_id: str,
+    agent_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> PlanModeToggleResponse:
+    """Toggle between plan mode and the previous mode.
+
+    If the agent is currently in plan mode, it restores the previous mode.
+    If the agent is in any other mode, it switches to plan mode and stores
+    the current mode as the previous mode.
+
+    Args:
+        session_id: The session ID.
+        agent_id: The agent ID.
+
+    Returns:
+        The new mode and previous mode information.
+    """
+    # Verify user has access to session
+    await verify_session_access(session_id, request, db)
+
+    # Get the agent
+    query = select(AgentModel).where(
+        AgentModel.id == agent_id,
+        AgentModel.session_id == session_id,
+    )
+    result = await db.execute(query)
+    agent = result.scalar_one_or_none()
+
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    toggled_to_plan = False
+
+    if agent.mode == "plan":
+        # Currently in plan mode, restore previous mode
+        new_mode = agent.previous_mode or "ask"  # Default to ask if no previous
+        agent.mode = new_mode
+        agent.previous_mode = "plan"  # Store plan as previous for potential toggle back
+    else:
+        # Not in plan mode, switch to plan
+        agent.previous_mode = agent.mode
+        agent.mode = "plan"
+        new_mode = "plan"
+        toggled_to_plan = True
+
+    await db.commit()
+    await db.refresh(agent)
+
+    # Emit mode update via WebSocket
+    await emit_to_session(
+        session_id,
+        "agent_mode_update",
+        {
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "mode": agent.mode,
+            "previous_mode": agent.previous_mode,
+            "toggled_to_plan": toggled_to_plan,
+        },
+    )
+
+    logger.info(
+        "Agent plan mode toggled",
+        agent_id=agent_id,
+        session_id=session_id,
         mode=agent.mode,
-        command_allowlist=agent.command_allowlist,
-        config=agent.config,
-        template_id=agent.template_id,
-        created_at=agent.created_at,
+        previous_mode=agent.previous_mode,
+        toggled_to_plan=toggled_to_plan,
+    )
+
+    return PlanModeToggleResponse(
+        mode=agent.mode,
+        previous_mode=agent.previous_mode,
+        toggled_to_plan=toggled_to_plan,
     )
 
 
@@ -1199,8 +2548,23 @@ async def delete_agent(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
+    # Capture agent info before deletion for audit log
+    agent_name = agent.name
+    agent_role = agent.role
+
     await db.delete(agent)
     await db.commit()
+
+    # Audit log: agent deleted
+    user_id = get_current_user_id(request)
+    audit = AuditLogger(db).set_context(request=request, user_id=user_id)
+    await audit.log_agent_event(
+        AuditAction.AGENT_DELETED,
+        agent_id=agent_id,
+        session_id=session_id,
+        details={"name": agent_name, "role": agent_role},
+    )
+
     return {"message": "Agent deleted"}
 
 
@@ -1210,7 +2574,10 @@ async def _send_message_impl(
 ) -> MessageResponse:
     """Implementation of send_message endpoint."""
     # Verify user has access to session
-    await verify_session_access(params.session_id, deps.common.request, deps.common.db)
+    session = await verify_session_access(params.session_id, deps.common.request, deps.common.db)
+
+    # Update workspace activity to prevent idle standby
+    await update_workspace_activity(session, deps.common.db)
 
     # Validate agent exists
     agent_query = select(AgentModel).where(
@@ -1265,6 +2632,24 @@ async def _send_message_impl(
             for img in params.data.images
         ]
 
+    # Process thinking config if provided
+    thinking_config_data: dict[str, Any] | None = None
+    if params.data.thinking_config and params.data.thinking_config.enabled:
+        thinking_config_data = {
+            "enabled": params.data.thinking_config.enabled,
+            "budget_tokens": params.data.thinking_config.budget_tokens,
+        }
+
+    # Load user's LLM API keys if they exist
+    llm_api_keys: dict[str, str] | None = None
+    if user_id:
+        user_config_result = await deps.common.db.execute(
+            select(UserConfig).where(UserConfig.user_id == user_id)
+        )
+        user_config = user_config_result.scalar_one_or_none()
+        if user_config and user_config.llm_api_keys:
+            llm_api_keys = user_config.llm_api_keys
+
     # Schedule background task to process the message and generate agent response
     msg_context = AgentMessageContext(
         session_id=params.session_id,
@@ -1278,6 +2663,8 @@ async def _send_message_impl(
         agent_mode=agent.mode,
         command_allowlist=agent.command_allowlist,
         images=images_data,
+        thinking_config=thinking_config_data,
+        llm_api_keys=llm_api_keys,
     )
     deps.background_tasks.add_task(process_agent_message, msg_context)
 
@@ -1314,7 +2701,13 @@ async def _get_messages_impl(
     params: GetMessagesParams,
     common: CommonDeps,
 ) -> list[MessageResponse]:
-    """Implementation of get_messages endpoint."""
+    """Implementation of get_messages endpoint.
+
+    Supports both cursor-based and offset-based pagination:
+    - Cursor-based (preferred): Provide `cursor` (message ID) to get messages after that message.
+      This is O(log n) using index on created_at and efficient for large datasets.
+    - Offset-based (legacy): Uses OFFSET which is O(n) for large offsets. Avoid for deep pagination.
+    """
     # Verify user has access to session
     await verify_session_access(params.session_id, common.request, common.db)
 
@@ -1327,14 +2720,36 @@ async def _get_messages_impl(
     if not agent_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    # Get messages with pagination
-    query = (
-        select(MessageModel)
-        .where(MessageModel.agent_id == params.agent_id)
-        .order_by(MessageModel.created_at)
-        .offset(params.pagination.offset)
-        .limit(params.pagination.limit)
-    )
+    # Build base query
+    query = select(MessageModel).where(MessageModel.agent_id == params.agent_id)
+
+    # Use cursor-based pagination if cursor provided (more efficient)
+    if params.pagination.cursor:
+        # First, get the cursor message to find its created_at timestamp
+        cursor_query = select(MessageModel.created_at, MessageModel.id).where(
+            MessageModel.id == params.pagination.cursor,
+            MessageModel.agent_id == params.agent_id,
+        )
+        cursor_result = await common.db.execute(cursor_query)
+        cursor_row = cursor_result.first()
+
+        if cursor_row:
+            cursor_created_at, cursor_id = cursor_row
+            # Get messages after the cursor (using composite key for deterministic ordering)
+            # This is efficient as it uses the index on created_at
+            query = query.where(
+                (MessageModel.created_at > cursor_created_at)
+                | ((MessageModel.created_at == cursor_created_at) & (MessageModel.id > cursor_id))
+            )
+        # If cursor message not found, ignore and return from start
+
+    # Apply ordering and limit
+    query = query.order_by(MessageModel.created_at, MessageModel.id).limit(params.pagination.limit)
+
+    # Only apply offset if not using cursor (for backwards compatibility)
+    if not params.pagination.cursor:
+        query = query.offset(params.pagination.offset)
+
     result = await common.db.execute(query)
     messages = result.scalars().all()
 
@@ -1361,18 +2776,27 @@ async def get_messages(
     db: DbSession,
     limit: int = 100,
     offset: int = 0,
+    cursor: str | None = None,
 ) -> list[MessageResponse]:
     """Get agent conversation history with pagination.
 
+    Supports two pagination methods:
+    - Cursor-based (recommended): Pass `cursor` (message ID) to get messages after that message.
+      This is efficient for large datasets as it uses indexed lookups.
+    - Offset-based (legacy): Pass `offset` to skip N messages. Avoid for deep pagination
+      as it becomes slower with larger offsets.
+
     Args:
         limit: Maximum number of messages to return (default 100, max 500).
-        offset: Number of messages to skip (for pagination).
+        offset: Number of messages to skip (for offset-based pagination).
+        cursor: Message ID to start after (for cursor-based pagination).
+            When provided, offset is ignored.
     """
     common = CommonDeps(request=request, db=db)
     params = GetMessagesParams(
         session_id=session_id,
         agent_id=agent_id,
-        pagination=PaginationParams(limit=limit, offset=offset),
+        pagination=PaginationParams(limit=limit, offset=offset, cursor=cursor),
     )
     return await _get_messages_impl(params, common)
 
@@ -1455,6 +2879,106 @@ async def abort_agent(
         "agent_id": agent_id,
         "cancelled_count": cancelled_count,
         "message": "Agent tasks aborted" if cancelled_count > 0 else "No running tasks to abort",
+    }
+
+
+@router.post("/{agent_id}/force-stop")
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def force_stop_agent(
+    session_id: str,
+    agent_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> dict[str, str | int | bool]:
+    """Force-stop a stuck agent, resetting its state completely.
+
+    Unlike abort, this performs a complete reset:
+    - Cancels all pending tasks via agent service (best effort)
+    - Resets agent status to idle
+    - Clears any pending approvals for this agent
+    - Updates status_changed_at timestamp
+    - Notifies all connected clients
+
+    Use when an agent is completely unresponsive or stuck in an error state.
+    This is more aggressive than abort and should be used as a last resort.
+    """
+    from datetime import UTC, datetime
+
+    from sqlalchemy import delete
+
+    from src.database.models import AgentPendingApproval
+
+    # Verify user has access to session
+    await verify_session_access(session_id, request, db)
+
+    # Verify agent exists in session
+    agent_query = select(AgentModel).where(
+        AgentModel.id == agent_id,
+        AgentModel.session_id == session_id,
+    )
+    agent_result = await db.execute(agent_query)
+    agent = agent_result.scalar_one_or_none()
+
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    previous_status = agent.status
+    cancelled_count = 0
+
+    # Try to cancel via agent service (best effort - don't fail if this doesn't work)
+    try:
+        result = await agent_client.abort_agent(agent_id)
+        cancelled_count = result.get("cancelled_count", 0)
+    except Exception as e:
+        logger.warning(
+            "Agent service abort failed during force-stop",
+            agent_id=agent_id,
+            error=str(e),
+        )
+
+    # Force reset status to idle (regardless of current state)
+    agent.status = "idle"
+    agent.status_changed_at = datetime.now(UTC)
+
+    # Clear any pending approvals for this agent
+    await db.execute(
+        delete(AgentPendingApproval).where(
+            AgentPendingApproval.agent_id == agent_id,
+            AgentPendingApproval.status == "pending",
+        )
+    )
+
+    await db.commit()
+
+    # Notify clients of status change
+    await _notify_agent_status(session_id, agent_id, "idle")
+
+    # Emit force-stop event with details
+    await emit_to_session(
+        session_id,
+        "agent_force_stopped",
+        {
+            "agent_id": agent_id,
+            "previous_status": previous_status,
+            "tasks_cancelled": cancelled_count,
+        },
+    )
+
+    logger.info(
+        "Agent force-stopped",
+        agent_id=agent_id,
+        session_id=session_id,
+        previous_status=previous_status,
+        tasks_cancelled=cancelled_count,
+    )
+
+    return {
+        "success": True,
+        "agent_id": agent_id,
+        "previous_status": previous_status,
+        "cancelled_count": cancelled_count,
+        "message": "Agent force-stopped and reset to idle",
     }
 
 
@@ -1708,19 +3232,8 @@ async def duplicate_agent(
         session_id=session_id,
     )
 
-    return AgentResponse(
-        id=new_agent.id,
-        session_id=new_agent.session_id,
-        name=new_agent.name,
-        role=new_agent.role,
-        model=new_agent.model,
-        status=new_agent.status,
-        mode=new_agent.mode,
-        command_allowlist=new_agent.command_allowlist,
-        config=new_agent.config,
-        template_id=new_agent.template_id,
-        created_at=new_agent.created_at,
-    )
+    model_display_name = await get_model_display_name(db, new_agent.model)
+    return _build_agent_response(new_agent, model_display_name)
 
 
 # ==================== Message Delete ====================

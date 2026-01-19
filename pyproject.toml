@@ -61,9 +61,6 @@ exclude = [
 module = [
     # Third-party libraries without stubs
     "redis.*",
-    "aioboto3.*",
-    "boto3.*",
-    "botocore.*",
     "structlog.*",
     "anthropic.*",
     "openai.*",
@@ -84,8 +81,6 @@ module = [
     "jwt.*",
     "docker.*",
     "websockets.*",
-    "types_aiobotocore_s3",
-    "types_aiobotocore_s3.*",
     "slowapi",
     "slowapi.*",
     "psutil",

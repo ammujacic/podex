@@ -29,6 +29,7 @@ dependencies = [
     "pydantic-settings>=2.1.0",
     "httpx>=0.26.0",
     "aiofiles>=23.2.0",
+    "sentry-sdk>=2.23.0",
 ]
 
 [project.optional-dependencies]
@@ -78,6 +79,8 @@ module = [
     "socketio.*",
     "aiofiles",
     "aiofiles.*",
+    "sentry_sdk",
+    "sentry_sdk.*",
 ]
 ignore_missing_imports = true
 

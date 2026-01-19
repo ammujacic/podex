@@ -219,6 +219,8 @@ export function useVoiceCommands({
             if (command.message) {
               setTerminalVisible(true);
               // TODO: Implement terminal integration for command execution
+              // Could integrate with terminal to execute the command
+              console.warn('Voice command to run:', command.message);
             }
             break;
 
@@ -235,10 +237,10 @@ export function useVoiceCommands({
               const agentRole = validRoles.includes(role) ? role : 'custom';
 
               try {
+                // Don't specify model - backend will use the role's default model
                 const agentResponse = await createAgent(sessionId, {
                   name: `${role.charAt(0).toUpperCase() + role.slice(1)} Agent`,
                   role: agentRole,
-                  model: 'claude-sonnet-4-20250514',
                 });
 
                 // Add to local store

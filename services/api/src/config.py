@@ -1,6 +1,8 @@
 """Application configuration using Pydantic Settings."""
 
 import os
+import secrets
+import warnings
 from functools import lru_cache
 
 from pydantic import field_validator
@@ -11,8 +13,21 @@ from src.exceptions import DefaultSecretKeyError, ShortSecretKeyError
 # Minimum length for JWT secret key in production
 MIN_JWT_SECRET_LENGTH = 32
 
-# Default JWT secret for development - loaded from env var to avoid hardcoded secrets in code
-_DEV_JWT_SECRET = os.environ.get("JWT_SECRET_KEY", "dev-secret-key-for-local-development")
+# SECURITY: Generate a random secret for development if not explicitly set
+# This prevents hardcoded secrets from being accidentally used
+_ENV_JWT_SECRET = os.environ.get("JWT_SECRET_KEY")
+if _ENV_JWT_SECRET:
+    _DEV_JWT_SECRET = _ENV_JWT_SECRET
+else:
+    # Generate a random secret for this process (sessions won't persist across restarts)
+    _DEV_JWT_SECRET = secrets.token_urlsafe(48)  # 64 chars, cryptographically secure
+    if os.environ.get("ENVIRONMENT", "development") != "test":
+        warnings.warn(
+            "JWT_SECRET_KEY not set - using auto-generated secret. "
+            "Sessions will not persist across server restarts. "
+            "Set JWT_SECRET_KEY in environment for persistent sessions.",
+            stacklevel=2,
+        )
 
 
 class Settings(BaseSettings):
@@ -34,24 +49,37 @@ class Settings(BaseSettings):
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
     # Database
-    DATABASE_URL: str = "postgresql+asyncpg://dev:devpass@localhost:5432/podex"
+    # NOTE: In production, DATABASE_URL must be set via environment variable
+    DATABASE_URL: str = "postgresql+asyncpg://localhost:5432/podex"
+
+    # Database connection pool settings
+    DB_POOL_SIZE: int = 10  # Minimum connections in pool
+    DB_POOL_MAX_OVERFLOW: int = 20  # Max additional connections above pool_size
+    DB_POOL_TIMEOUT: int = 30  # Seconds to wait for connection from pool
+    DB_POOL_RECYCLE: int = 1800  # Recycle connections after 30 minutes
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
 
-    # AWS
-    AWS_REGION: str = "us-east-1"
-    AWS_ENDPOINT: str | None = None  # For LocalStack
+    # GCP
+    GCP_PROJECT_ID: str | None = None
+    GCP_REGION: str = "us-east1"
 
-    # S3 Storage
-    S3_BUCKET: str = "podex-workspaces"
-    S3_WORKSPACE_PREFIX: str = "workspaces"
+    # GCS Storage
+    GCS_BUCKET: str = "podex-workspaces"
+    GCS_WORKSPACE_PREFIX: str = "workspaces"
+    GCS_ENDPOINT_URL: str | None = None  # For local emulator
 
     # Auth
     JWT_SECRET_KEY: str = _DEV_JWT_SECRET
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # Auth Cookies (httpOnly cookies for XSS protection)
+    COOKIE_SECURE: bool = True  # Set False for local dev without HTTPS
+    COOKIE_DOMAIN: str | None = None  # Set for cross-subdomain cookies (e.g., ".podex.dev")
+    COOKIE_SAMESITE: str = "lax"  # "lax", "strict", or "none"
 
     # Password requirements
     PASSWORD_MIN_LENGTH: int = 8
@@ -62,15 +90,20 @@ class Settings(BaseSettings):
     @field_validator("JWT_SECRET_KEY")
     @classmethod
     def validate_jwt_secret(cls, v: str, _info: object) -> str:
-        """Validate JWT secret is not the default placeholder in production."""
+        """Validate JWT secret meets security requirements in production."""
         env = os.environ.get("ENVIRONMENT", "development")
 
         # Check if we're in a production-like environment
         # Note: _info.data may not have ENVIRONMENT yet during validation
-        if v == "dev-secret-key-for-local-development" and env == "production":
-            raise DefaultSecretKeyError
-        if len(v) < MIN_JWT_SECRET_LENGTH and env == "production":
-            raise ShortSecretKeyError
+        if env == "production":
+            # In production, reject the dev default secret
+            if v == "dev-secret-key-for-local-development":
+                raise DefaultSecretKeyError
+            # In production, require explicit JWT_SECRET_KEY from environment
+            if not os.environ.get("JWT_SECRET_KEY"):
+                raise DefaultSecretKeyError
+            if len(v) < MIN_JWT_SECRET_LENGTH:
+                raise ShortSecretKeyError
         return v
 
     @field_validator("COMPUTE_INTERNAL_API_KEY")
@@ -80,10 +113,7 @@ class Settings(BaseSettings):
         env = os.environ.get("ENVIRONMENT", "development")
 
         if env == "production" and not v:
-            raise ValueError(  # noqa: TRY003
-                "COMPUTE_INTERNAL_API_KEY must be set in production. "
-                "This key is required for secure communication between API and compute services."
-            )
+            raise ValueError("COMPUTE_INTERNAL_API_KEY required in production")  # noqa: TRY003
         return v
 
     # OAuth - GitHub
@@ -99,6 +129,9 @@ class Settings(BaseSettings):
     # Frontend URL for redirects
     FRONTEND_URL: str = "http://localhost:3000"
 
+    # API base URL (for webhook URLs, etc.)
+    API_BASE_URL: str = "http://localhost:3001"
+
     # Cognito - optional external identity provider
     COGNITO_USER_POOL_ID: str | None = None
     COGNITO_CLIENT_ID: str | None = None
@@ -108,7 +141,7 @@ class Settings(BaseSettings):
 
     # Security headers
     CSP_ENABLED: bool = True  # Enable Content-Security-Policy header
-    CSRF_ENABLED_IN_DEV: bool = False  # Enable CSRF checks in development
+    CSRF_ENABLED_IN_DEV: bool = True  # Enable CSRF checks in development (recommended)
 
     # Compute service
     COMPUTE_SERVICE_URL: str = "http://compute:3003"
@@ -119,11 +152,18 @@ class Settings(BaseSettings):
     AGENT_TASK_POLL_INTERVAL: float = 0.5  # seconds
     AGENT_TASK_TIMEOUT: float = 120.0  # seconds
 
-    # Voice/Audio settings (AWS Transcribe and Polly)
+    # Voice/Audio settings (Google Cloud TTS and Speech)
+    DEFAULT_TTS_VOICE_ID: str = "en-US-Neural2-F"  # GCP TTS voice
+    DEFAULT_TTS_LANGUAGE: str = "en-US"
+    DEFAULT_SPEECH_LANGUAGE: str = "en-US"
+    VOICE_AUDIO_GCS_PREFIX: str = "audio/voice"
+
+    # AWS Polly settings (for voice synthesis)
     DEFAULT_POLLY_VOICE_ID: str = "Joanna"
     DEFAULT_POLLY_ENGINE: str = "neural"
+
+    # AWS Transcribe settings (for speech-to-text)
     DEFAULT_TRANSCRIBE_LANGUAGE: str = "en-US"
-    VOICE_AUDIO_S3_PREFIX: str = "audio/voice"
 
     # Cache settings
     CACHE_TTL_TEMPLATES: int = 3600  # 1 hour for templates
@@ -141,16 +181,68 @@ class Settings(BaseSettings):
     STRIPE_WEBHOOK_SECRET: str | None = None
     STRIPE_PUBLISHABLE_KEY: str | None = None
 
-    # Email (Amazon SES)
+    # Email configuration
+    EMAIL_BACKEND: str = "console"  # console, smtp
     EMAIL_FROM_ADDRESS: str = "noreply@podex.dev"
     EMAIL_FROM_NAME: str = "Podex"
     EMAIL_REPLY_TO: str = "support@podex.dev"
 
+    # SMTP settings (when EMAIL_BACKEND=smtp)
+    SMTP_HOST: str = "localhost"
+    SMTP_PORT: int = 587
+    SMTP_USER: str | None = None
+    SMTP_PASSWORD: str | None = None
+    SMTP_USE_TLS: bool = True
+
+    # Push Notifications (Web Push / VAPID)
+    VAPID_PUBLIC_KEY: str | None = None
+    VAPID_PRIVATE_KEY: str | None = None
+    VAPID_EMAIL: str = "mailto:admin@podex.io"
+
     # AI/LLM providers
+    LLM_PROVIDER: str = "vertex"  # vertex (default), anthropic, openai, ollama
     ANTHROPIC_API_KEY: str | None = None
+    OPENAI_API_KEY: str | None = None
+    OLLAMA_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "qwen2.5-coder:14b"
 
     # Internal Service Authentication
-    INTERNAL_SERVICE_TOKEN: str | None = None  # Token for service-to-service auth
+    # REQUIRED in all environments - set a dev token for local development
+    INTERNAL_SERVICE_TOKEN: str = ""
+
+    @field_validator("INTERNAL_SERVICE_TOKEN")
+    @classmethod
+    def validate_internal_service_token(cls, v: str, _info: object) -> str:
+        """Validate internal service token is set."""
+        env = os.environ.get("ENVIRONMENT", "development")
+        if env == "production" and not v:
+            raise ValueError("INTERNAL_SERVICE_TOKEN required in production")  # noqa: TRY003
+        return v
+
+    # ============== Agent Watchdog Settings ==============
+    AGENT_TIMEOUT_MINUTES: int = 15  # Max time agent can be in "running" state
+    AGENT_WATCHDOG_INTERVAL: int = 60  # Check every 60 seconds
+    AGENT_WATCHDOG_ENABLED: bool = True
+
+    # ============== Container Health Check Settings ==============
+    CONTAINER_HEALTH_CHECK_INTERVAL: int = 120  # Check every 2 minutes
+    CONTAINER_HEALTH_CHECK_TIMEOUT: int = 10  # 10 second timeout
+    CONTAINER_HEALTH_CHECK_ENABLED: bool = True
+    CONTAINER_UNRESPONSIVE_THRESHOLD: int = 3  # Mark unhealthy after 3 failures
+
+    # ============== Standby Cleanup Settings ==============
+    STANDBY_CLEANUP_ENABLED: bool = True
+    STANDBY_CLEANUP_INTERVAL: int = 3600  # Check every hour
+    STANDBY_MAX_HOURS_DEFAULT: int = 168  # 7 days default
+    STANDBY_MAX_HOURS_MIN: int = 24  # Minimum 24 hours
+    STANDBY_MAX_HOURS_MAX: int = 720  # Maximum 30 days
+
+    # ============== Usage Calculation Security ==============
+    # Maximum quantities per usage event (prevents integer overflow)
+    MAX_QUANTITY_TOKENS: int = 100_000_000  # 100M tokens max per event
+    MAX_QUANTITY_COMPUTE_SECONDS: int = 2_592_000  # 30 days max
+    MAX_COST_CENTS: int = 100_000_000  # $1M max per event
+    POSTGRES_INT_MAX: int = 2_147_483_647
 
     # Admin Configuration
     ADMIN_SUPER_USER_EMAILS: list[str] = []  # Emails that bypass role checks (for bootstrap)

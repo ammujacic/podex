@@ -14,7 +14,10 @@ from src.config import settings
 from src.deps import cleanup_compute_manager, get_compute_manager, init_compute_manager
 from src.routes import (
     health_router,
+    lsp_router,
     preview_router,
+    reset_terminal_manager,
+    shutdown_terminal_sessions,
     terminal_router,
     websocket_router,
     workspaces_router,
@@ -87,6 +90,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         compute_mode=settings.compute_mode,
     )
 
+    # Reset terminal manager state (clears any stale shutdown flags from hot reload)
+    reset_terminal_manager()
+
     # Initialize compute manager
     await init_compute_manager()
 
@@ -108,17 +114,35 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
     yield
 
-    # Shutdown
+    # Shutdown with overall timeout to prevent hanging
     logger.info("Shutting down Podex Compute Service")
+
+    async def graceful_shutdown() -> None:
+        """Perform graceful shutdown with timeout protection."""
+        # Close active terminal sessions first to unblock WebSocket handlers
+        await shutdown_terminal_sessions()
+        logger.info("Terminal sessions closed")
+
+        # Shutdown usage tracker to flush pending events
+        await shutdown_usage_tracker()
+        logger.info("Usage tracker stopped")
+
+        await cleanup_compute_manager()
+
+    # Cancel cleanup task first
     cleanup.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await cleanup
 
-    # Shutdown usage tracker first to flush pending events
-    await shutdown_usage_tracker()
-    logger.info("Usage tracker stopped")
-
-    await cleanup_compute_manager()
+    # Run shutdown with timeout - if it takes too long, force exit
+    try:
+        await asyncio.wait_for(graceful_shutdown(), timeout=settings.shutdown_timeout)
+        logger.info("Graceful shutdown completed")
+    except TimeoutError:
+        logger.warning(
+            "Shutdown timed out after %d seconds, forcing exit",
+            settings.shutdown_timeout,
+        )
 
 
 # Create FastAPI app
@@ -145,6 +169,7 @@ app.include_router(workspaces_router)
 app.include_router(preview_router)
 app.include_router(terminal_router)
 app.include_router(websocket_router)
+app.include_router(lsp_router)
 
 
 @app.get("/")

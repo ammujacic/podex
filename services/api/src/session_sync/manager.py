@@ -86,6 +86,11 @@ class SessionSyncManager:
     DynamoDB is used for durable storage (accessed via API routes).
     """
 
+    # PERFORMANCE: Maximum sessions to keep in local cache
+    # Prevents unbounded memory growth
+    MAX_LOCAL_SESSIONS = 1000
+    MAX_SEQUENCES = 5000
+
     def __init__(self) -> None:
         """Initialize the session sync manager."""
         self._redis: Any = None
@@ -94,10 +99,42 @@ class SessionSyncManager:
         self._running = False
         self._listen_task: asyncio.Task[None] | None = None
 
-        # Local cache of session states
+        # Local cache of session states (bounded)
         self._sessions: dict[str, SessionState] = {}
-        # Sequence numbers per session
+        # Sequence numbers per session (bounded)
         self._sequences: dict[str, int] = {}
+
+    def _maybe_evict_cache(self) -> None:
+        """Evict oldest entries from cache if at capacity.
+
+        PERFORMANCE: Prevents unbounded memory growth by removing
+        least recently accessed sessions when cache is full.
+        """
+        # Evict sessions if over limit
+        if len(self._sessions) > self.MAX_LOCAL_SESSIONS:
+            # Sort by last_activity and keep most recent
+            sorted_sessions = sorted(
+                self._sessions.items(),
+                key=lambda x: x[1].last_activity,
+                reverse=True,
+            )
+            # Keep only MAX_LOCAL_SESSIONS entries
+            self._sessions = dict(sorted_sessions[: self.MAX_LOCAL_SESSIONS])
+            logger.info(
+                "Evicted old sessions from local cache",
+                remaining=len(self._sessions),
+                max=self.MAX_LOCAL_SESSIONS,
+            )
+
+        # Evict sequences if over limit
+        if len(self._sequences) > self.MAX_SEQUENCES:
+            # Keep sequences only for sessions still in cache
+            self._sequences = {k: v for k, v in self._sequences.items() if k in self._sessions}
+            # If still over limit, just clear old ones
+            if len(self._sequences) > self.MAX_SEQUENCES:
+                # Keep first MAX_SEQUENCES items (arbitrary but consistent)
+                items = list(self._sequences.items())[: self.MAX_SEQUENCES]
+                self._sequences = dict(items)
 
     async def start(self, broadcast_callback: BroadcastCallback) -> None:
         """Start the session sync manager.
@@ -261,6 +298,7 @@ class SessionSyncManager:
         # Check Redis cache
         session = await self._load_session_from_cache(session_id)
         if session:
+            self._maybe_evict_cache()  # Evict before adding to prevent unbounded growth
             self._sessions[session_id] = session
             return session
 
@@ -283,6 +321,7 @@ class SessionSyncManager:
             last_activity=now,
         )
 
+        self._maybe_evict_cache()  # Evict before adding to prevent unbounded growth
         self._sessions[session_id] = session
         await self._save_session_to_cache(session)
 

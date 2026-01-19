@@ -39,13 +39,22 @@ interface AttentionState {
   // Panel visibility
   panelOpen: boolean;
 
+  // Focus tracking for auto-read
+  focusedAgentId: string | null;
+  focusedSessionId: string | null;
+
   // Actions
   addAttention: (attention: AgentAttention) => void;
   markAsRead: (sessionId: string, attentionId: string) => void;
+  markAllAsReadForSession: (sessionId: string) => void;
+  markAllAsReadForAgent: (sessionId: string, agentId: string) => void;
   dismissAttention: (sessionId: string, attentionId: string) => void;
   dismissAllForAgent: (sessionId: string, agentId: string) => void;
   dismissAllForSession: (sessionId: string) => void;
   clearSession: (sessionId: string) => void;
+
+  // Focus tracking actions
+  setFocusedAgent: (sessionId: string | null, agentId: string | null) => void;
 
   // Panel actions
   openPanel: () => void;
@@ -60,7 +69,9 @@ interface AttentionState {
   getAttentionsForSession: (sessionId: string) => AgentAttention[];
   getAttentionsForAgent: (sessionId: string, agentId: string) => AgentAttention[];
   getUnreadCount: (sessionId: string) => number;
+  getUnreadCountForAgent: (sessionId: string, agentId: string) => number;
   hasAttentionForAgent: (sessionId: string, agentId: string) => boolean;
+  hasUnreadForAgent: (sessionId: string, agentId: string) => boolean;
   getHighestPriorityAttention: (sessionId: string, agentId: string) => AgentAttention | null;
 }
 
@@ -86,6 +97,8 @@ export const useAttentionStore = create<AttentionState>()(
         ttsEnabled: true,
         announcePriorities: ['high', 'critical'],
         panelOpen: false,
+        focusedAgentId: null,
+        focusedSessionId: null,
 
         addAttention: (attention) =>
           set((state) => {
@@ -116,6 +129,43 @@ export const useAttentionStore = create<AttentionState>()(
             const sessionAttentions = state.attentionsBySession[sessionId] || [];
             const updated = sessionAttentions.map((a) =>
               a.id === attentionId ? { ...a, read: true } : a
+            );
+            const unreadCount = calculateUnreadCount(updated);
+
+            return {
+              attentionsBySession: {
+                ...state.attentionsBySession,
+                [sessionId]: updated,
+              },
+              unreadCountBySession: {
+                ...state.unreadCountBySession,
+                [sessionId]: unreadCount,
+              },
+            };
+          }),
+
+        markAllAsReadForSession: (sessionId) =>
+          set((state) => {
+            const sessionAttentions = state.attentionsBySession[sessionId] || [];
+            const updated = sessionAttentions.map((a) => (!a.dismissed ? { ...a, read: true } : a));
+
+            return {
+              attentionsBySession: {
+                ...state.attentionsBySession,
+                [sessionId]: updated,
+              },
+              unreadCountBySession: {
+                ...state.unreadCountBySession,
+                [sessionId]: 0,
+              },
+            };
+          }),
+
+        markAllAsReadForAgent: (sessionId, agentId) =>
+          set((state) => {
+            const sessionAttentions = state.attentionsBySession[sessionId] || [];
+            const updated = sessionAttentions.map((a) =>
+              a.agentId === agentId && !a.dismissed ? { ...a, read: true } : a
             );
             const unreadCount = calculateUnreadCount(updated);
 
@@ -199,6 +249,9 @@ export const useAttentionStore = create<AttentionState>()(
             };
           }),
 
+        setFocusedAgent: (sessionId, agentId) =>
+          set({ focusedSessionId: sessionId, focusedAgentId: agentId }),
+
         openPanel: () => set({ panelOpen: true }),
         closePanel: () => set({ panelOpen: false }),
         togglePanel: () => set((state) => ({ panelOpen: !state.panelOpen })),
@@ -224,9 +277,21 @@ export const useAttentionStore = create<AttentionState>()(
           return state.unreadCountBySession[sessionId] || 0;
         },
 
+        getUnreadCountForAgent: (sessionId, agentId) => {
+          const state = get();
+          const attentions = (state.attentionsBySession[sessionId] || []).filter(
+            (a) => a.agentId === agentId && !a.read && !a.dismissed
+          );
+          return attentions.length;
+        },
+
         hasAttentionForAgent: (sessionId, agentId) => {
           const attentions = get().getAttentionsForAgent(sessionId, agentId);
           return attentions.length > 0;
+        },
+
+        hasUnreadForAgent: (sessionId, agentId) => {
+          return get().getUnreadCountForAgent(sessionId, agentId) > 0;
         },
 
         getHighestPriorityAttention: (sessionId, agentId) => {

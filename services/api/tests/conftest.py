@@ -8,6 +8,7 @@ This module provides:
 """
 
 import asyncio
+import warnings
 from collections.abc import AsyncGenerator, Generator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -18,6 +19,10 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
 from src.config import settings
+from src.middleware.auth import AuthMiddleware
+
+# Suppress JWT secret warning in tests
+warnings.filterwarnings("ignore", message="JWT_SECRET_KEY not set - using auto-generated secret", category=UserWarning)
 
 
 def _add_health_endpoints(app: FastAPI) -> None:
@@ -202,6 +207,9 @@ def create_test_app() -> FastAPI:
     # because /api/sessions/{session_id}/agents is more specific
     _add_agent_endpoints(test_app)
     _add_session_endpoints(test_app)
+
+    # Add auth middleware to test app (same as main app)
+    test_app.add_middleware(AuthMiddleware)
 
     return test_app
 

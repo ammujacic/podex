@@ -5,7 +5,13 @@
  * Integrates with Monaco Editor's InlineCompletionsProvider.
  */
 
-import type { languages, editor, Position, CancellationToken } from 'monaco-editor';
+import type * as monaco from '@codingame/monaco-vscode-editor-api';
+import type {
+  languages,
+  editor,
+  Position,
+  CancellationToken,
+} from '@codingame/monaco-vscode-editor-api';
 
 // ============================================================================
 // Types
@@ -114,6 +120,8 @@ export class AICompletionProvider {
   private cache: CompletionCache;
   private pendingRequest: AbortController | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private isRegistered = false;
+  private disposable: { dispose: () => void } | null = null;
 
   constructor(config: Partial<CompletionProviderConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -205,6 +213,7 @@ export class AICompletionProvider {
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'include', // Include cookies for authentication
         body: JSON.stringify({
           prefix: request.prefix,
           suffix: request.suffix,
@@ -328,23 +337,33 @@ export class AICompletionProvider {
   }
 
   /**
-   * Register the provider with Monaco
+   * Register the provider with Monaco (only registers once)
    */
-  register(monaco: typeof import('monaco-editor'), languages?: string[]): { dispose: () => void } {
+  register(monacoInstance: typeof monaco, languages?: string[]): { dispose: () => void } {
+    // Prevent duplicate registrations
+    if (this.isRegistered && this.disposable) {
+      return this.disposable;
+    }
+
     const provider = this.createMonacoProvider();
     const targetLanguages = languages || ['*'];
 
     const disposables = targetLanguages.map((lang) =>
-      monaco.languages.registerInlineCompletionsProvider(lang, provider)
+      monacoInstance.languages.registerInlineCompletionsProvider(lang, provider)
     );
 
-    return {
+    this.isRegistered = true;
+    this.disposable = {
       dispose: () => {
         disposables.forEach((d) => d.dispose());
         this.cancelPendingRequest();
         this.cache.clear();
+        this.isRegistered = false;
+        this.disposable = null;
       },
     };
+
+    return this.disposable;
   }
 }
 
@@ -368,13 +387,13 @@ export function getCompletionProvider(): AICompletionProvider {
 import { useEffect, useRef } from 'react';
 
 export function useAICompletions(
-  monaco: typeof import('monaco-editor') | null,
+  monacoInstance: typeof monaco | null,
   enabled: boolean = true
 ): void {
   const disposableRef = useRef<{ dispose: () => void } | null>(null);
 
   useEffect(() => {
-    if (!monaco || !enabled) {
+    if (!monacoInstance || !enabled) {
       disposableRef.current?.dispose();
       disposableRef.current = null;
       return;
@@ -382,11 +401,11 @@ export function useAICompletions(
 
     const provider = getCompletionProvider();
     provider.setEnabled(enabled);
-    disposableRef.current = provider.register(monaco);
+    disposableRef.current = provider.register(monacoInstance);
 
     return () => {
       disposableRef.current?.dispose();
       disposableRef.current = null;
     };
-  }, [monaco, enabled]);
+  }, [monacoInstance, enabled]);
 }

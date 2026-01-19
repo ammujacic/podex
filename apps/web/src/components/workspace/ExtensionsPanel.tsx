@@ -10,31 +10,42 @@ import {
   Settings,
   ExternalLink,
   Check,
-  AlertCircle,
   Puzzle,
+  Loader2,
+  RefreshCw,
+  User,
+  Briefcase,
 } from 'lucide-react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
-import { useExtensionHost } from '@/lib/extensions/ExtensionHost';
-import type { ExtensionInfo } from '@/lib/extensions/types';
+import {
+  getInstalledExtensions,
+  uninstallExtension,
+  toggleExtension,
+  type InstalledExtension,
+} from '@/lib/api/extensions';
 import { useUIStore } from '@/stores/ui';
+import { useExtensionSync } from '@/hooks/useExtensionSync';
+import { useSessionStore } from '@/stores/session';
 
 interface ExtensionsPanelProps {
   sessionId: string;
+  workspaceId?: string;
+  authToken?: string;
 }
 
 function CompactExtensionCard({
   extension,
-  onEnable,
-  onDisable,
+  onToggle,
   onUninstall,
+  isToggling,
 }: {
-  extension: ExtensionInfo;
-  onEnable: () => void;
-  onDisable: () => void;
+  extension: InstalledExtension;
+  onToggle: () => void;
   onUninstall: () => void;
+  isToggling?: boolean;
 }) {
-  const isEnabled = extension.state === 'enabled' || extension.state === 'active';
-  const hasError = extension.state === 'error';
+  const isEnabled = extension.enabled;
 
   return (
     <div
@@ -44,53 +55,70 @@ function CompactExtensionCard({
       )}
     >
       {/* Icon */}
-      <div className="w-5 h-5 flex items-center justify-center text-sm flex-shrink-0">
-        {extension.manifest.icon || <Puzzle className="h-3.5 w-3.5 text-text-muted" />}
+      <div className="w-5 h-5 flex items-center justify-center text-sm flex-shrink-0 rounded overflow-hidden bg-overlay">
+        {extension.icon_url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={extension.icon_url}
+            alt=""
+            className="w-full h-full object-cover"
+            onError={(e) => {
+              (e.target as HTMLImageElement).style.display = 'none';
+            }}
+          />
+        ) : (
+          <Puzzle className="h-3 w-3 text-text-muted" />
+        )}
       </div>
 
       {/* Name */}
-      <span className="flex-1 text-xs text-text-primary truncate">
-        {extension.manifest.displayName}
-      </span>
+      <span className="flex-1 text-xs text-text-primary truncate">{extension.display_name}</span>
 
-      {/* Status indicators */}
-      {hasError && (
-        <span title={extension.error}>
-          <AlertCircle className="h-3 w-3 text-error flex-shrink-0" />
-        </span>
-      )}
+      {/* Scope indicator */}
+      <span
+        className={cn(
+          'flex-shrink-0 px-1 py-0.5 rounded text-[9px] font-medium',
+          extension.scope === 'workspace'
+            ? 'bg-accent-warning/10 text-accent-warning'
+            : 'bg-accent-primary/10 text-accent-primary'
+        )}
+        title={extension.scope === 'workspace' ? 'Workspace extension' : 'User extension'}
+      >
+        {extension.scope === 'workspace' ? (
+          <Briefcase className="h-2.5 w-2.5" />
+        ) : (
+          <User className="h-2.5 w-2.5" />
+        )}
+      </span>
 
       {/* Actions (visible on hover) */}
       <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-        {isEnabled ? (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onDisable();
-            }}
-            className="p-0.5 rounded text-text-muted hover:text-warning"
-            title="Disable"
-          >
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggle();
+          }}
+          disabled={isToggling}
+          className={cn(
+            'p-0.5 rounded text-text-muted',
+            isEnabled ? 'hover:text-accent-warning' : 'hover:text-accent-success'
+          )}
+          title={isEnabled ? 'Disable' : 'Enable'}
+        >
+          {isToggling ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : isEnabled ? (
             <PowerOff className="h-3 w-3" />
-          </button>
-        ) : (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onEnable();
-            }}
-            className="p-0.5 rounded text-text-muted hover:text-success"
-            title="Enable"
-          >
+          ) : (
             <Power className="h-3 w-3" />
-          </button>
-        )}
+          )}
+        </button>
         <button
           onClick={(e) => {
             e.stopPropagation();
             onUninstall();
           }}
-          className="p-0.5 rounded text-text-muted hover:text-error"
+          className="p-0.5 rounded text-text-muted hover:text-accent-error"
           title="Uninstall"
         >
           <Trash2 className="h-3 w-3" />
@@ -101,18 +129,75 @@ function CompactExtensionCard({
       <div
         className={cn(
           'w-1.5 h-1.5 rounded-full flex-shrink-0',
-          isEnabled ? 'bg-success' : 'bg-text-muted'
+          isEnabled ? 'bg-accent-success' : 'bg-text-muted'
         )}
       />
     </div>
   );
 }
 
-export function ExtensionsPanel({ sessionId: _sessionId }: ExtensionsPanelProps) {
-  const { extensions, enableExtension, disableExtension, uninstallExtension } = useExtensionHost();
+export function ExtensionsPanel({
+  sessionId: _sessionId,
+  workspaceId: propWorkspaceId,
+  authToken,
+}: ExtensionsPanelProps) {
+  const queryClient = useQueryClient();
+  const sessionWorkspaceId = useSessionStore((s) => {
+    const session = s.currentSessionId ? s.sessions[s.currentSessionId] : null;
+    return session?.workspaceId;
+  });
+  const workspaceId = propWorkspaceId || sessionWorkspaceId;
 
   const { openModal } = useUIStore();
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Enable extension sync via WebSocket
+  useExtensionSync({
+    authToken,
+    enabled: !!authToken,
+    workspaceId,
+    showNotifications: false, // Don't show toasts in the panel
+  });
+
+  // Fetch installed extensions
+  const {
+    data: extensions = [],
+    isLoading,
+    refetch,
+  } = useQuery({
+    queryKey: ['extensions-installed', workspaceId],
+    queryFn: () => getInstalledExtensions(workspaceId),
+    staleTime: 30 * 1000,
+  });
+
+  // Toggle mutation
+  const toggleMutation = useMutation({
+    mutationFn: async ({ ext }: { ext: InstalledExtension }) => {
+      return toggleExtension(
+        ext.extension_id,
+        !ext.enabled,
+        ext.scope,
+        ext.scope === 'workspace' ? workspaceId : undefined
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['extensions-installed'] });
+    },
+  });
+
+  // Uninstall mutation
+  const uninstallMutation = useMutation({
+    mutationFn: async ({ ext }: { ext: InstalledExtension }) => {
+      return uninstallExtension(
+        ext.extension_id,
+        ext.scope,
+        ext.scope === 'workspace' ? workspaceId : undefined
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['extensions-installed'] });
+    },
+  });
 
   // Filter extensions by search
   const filteredExtensions = useMemo(() => {
@@ -120,23 +205,19 @@ export function ExtensionsPanel({ sessionId: _sessionId }: ExtensionsPanelProps)
     const query = searchQuery.toLowerCase();
     return extensions.filter(
       (ext) =>
-        ext.manifest.displayName.toLowerCase().includes(query) ||
-        ext.manifest.description.toLowerCase().includes(query)
+        ext.display_name.toLowerCase().includes(query) ||
+        ext.namespace.toLowerCase().includes(query) ||
+        ext.name.toLowerCase().includes(query)
     );
   }, [extensions, searchQuery]);
 
   // Group by state
-  const activeExtensions = filteredExtensions.filter(
-    (e) => e.state === 'enabled' || e.state === 'active'
-  );
-  const disabledExtensions = filteredExtensions.filter(
-    (e) => e.state === 'disabled' || e.state === 'installed'
-  );
-  const errorExtensions = filteredExtensions.filter((e) => e.state === 'error');
+  const activeExtensions = filteredExtensions.filter((e) => e.enabled);
+  const disabledExtensions = filteredExtensions.filter((e) => !e.enabled);
 
-  const handleUninstall = async (extensionId: string) => {
-    if (confirm('Uninstall this extension?')) {
-      await uninstallExtension(extensionId);
+  const handleUninstall = async (ext: InstalledExtension) => {
+    if (confirm(`Uninstall "${ext.display_name}"?`)) {
+      uninstallMutation.mutate({ ext });
     }
   };
 
@@ -162,18 +243,32 @@ export function ExtensionsPanel({ sessionId: _sessionId }: ExtensionsPanelProps)
           <Box className="h-4 w-4 text-accent-primary" />
           <span className="text-xs text-text-secondary">{activeExtensions.length} active</span>
         </div>
-        <button
-          onClick={() => openModal('extensions-marketplace')}
-          className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-overlay"
-          title="Extension Marketplace"
-        >
-          <Settings className="h-3.5 w-3.5" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => refetch()}
+            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-overlay"
+            title="Refresh"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={() => openModal('extensions-marketplace')}
+            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-overlay"
+            title="Extension Marketplace"
+          >
+            <Settings className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
-        {extensions.length === 0 ? (
+        {isLoading ? (
+          <div className="flex flex-col items-center justify-center py-8 px-4">
+            <Loader2 className="h-6 w-6 text-accent-primary animate-spin" />
+            <p className="mt-2 text-xs text-text-muted">Loading extensions...</p>
+          </div>
+        ) : extensions.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-8 px-4 text-center">
             <Box className="h-8 w-8 text-text-muted mb-2" />
             <p className="text-xs text-text-muted">No extensions installed</p>
@@ -190,17 +285,17 @@ export function ExtensionsPanel({ sessionId: _sessionId }: ExtensionsPanelProps)
             {activeExtensions.length > 0 && (
               <div className="px-2 mb-2">
                 <div className="px-1 py-1 text-xs font-medium text-text-secondary flex items-center gap-1">
-                  <Check className="h-3 w-3 text-success" />
+                  <Check className="h-3 w-3 text-accent-success" />
                   Active ({activeExtensions.length})
                 </div>
                 <div className="space-y-0.5">
                   {activeExtensions.map((ext) => (
                     <CompactExtensionCard
-                      key={ext.manifest.id}
+                      key={ext.id}
                       extension={ext}
-                      onEnable={() => enableExtension(ext.manifest.id)}
-                      onDisable={() => disableExtension(ext.manifest.id)}
-                      onUninstall={() => handleUninstall(ext.manifest.id)}
+                      onToggle={() => toggleMutation.mutate({ ext })}
+                      onUninstall={() => handleUninstall(ext)}
+                      isToggling={toggleMutation.isPending}
                     />
                   ))}
                 </div>
@@ -217,32 +312,11 @@ export function ExtensionsPanel({ sessionId: _sessionId }: ExtensionsPanelProps)
                 <div className="space-y-0.5">
                   {disabledExtensions.map((ext) => (
                     <CompactExtensionCard
-                      key={ext.manifest.id}
+                      key={ext.id}
                       extension={ext}
-                      onEnable={() => enableExtension(ext.manifest.id)}
-                      onDisable={() => disableExtension(ext.manifest.id)}
-                      onUninstall={() => handleUninstall(ext.manifest.id)}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Error extensions */}
-            {errorExtensions.length > 0 && (
-              <div className="px-2">
-                <div className="px-1 py-1 text-xs font-medium text-error flex items-center gap-1">
-                  <AlertCircle className="h-3 w-3" />
-                  Errors ({errorExtensions.length})
-                </div>
-                <div className="space-y-0.5">
-                  {errorExtensions.map((ext) => (
-                    <CompactExtensionCard
-                      key={ext.manifest.id}
-                      extension={ext}
-                      onEnable={() => enableExtension(ext.manifest.id)}
-                      onDisable={() => disableExtension(ext.manifest.id)}
-                      onUninstall={() => handleUninstall(ext.manifest.id)}
+                      onToggle={() => toggleMutation.mutate({ ext })}
+                      onUninstall={() => handleUninstall(ext)}
+                      isToggling={toggleMutation.isPending}
                     />
                   ))}
                 </div>
@@ -252,7 +326,7 @@ export function ExtensionsPanel({ sessionId: _sessionId }: ExtensionsPanelProps)
             {/* No results */}
             {filteredExtensions.length === 0 && searchQuery && (
               <div className="px-4 py-4 text-center text-xs text-text-muted">
-                No extensions match "{searchQuery}"
+                No extensions match &quot;{searchQuery}&quot;
               </div>
             )}
           </div>
@@ -268,10 +342,12 @@ export function ExtensionsPanel({ sessionId: _sessionId }: ExtensionsPanelProps)
           Browse Marketplace
         </button>
         <a
-          href="#"
+          href="https://open-vsx.org"
+          target="_blank"
+          rel="noopener noreferrer"
           className="flex items-center gap-1 text-[10px] text-text-muted hover:text-accent-primary"
         >
-          Docs
+          Open VSX
           <ExternalLink className="h-2.5 w-2.5" />
         </a>
       </div>

@@ -5,13 +5,14 @@
  * enabling IntelliSense features powered by real language servers.
  */
 
+import type * as monaco from '@codingame/monaco-vscode-editor-api';
 import type {
   editor,
   languages,
   Position as MonacoPosition,
   CancellationToken,
   IRange,
-} from 'monaco-editor';
+} from '@codingame/monaco-vscode-editor-api';
 import type { LspClient } from './LspClient';
 import {
   createLspClient,
@@ -124,7 +125,7 @@ export class LspBridge {
   private config: LspBridgeConfig;
   private clients = new Map<string, LspClient>();
   private disposables: Array<{ dispose: () => void }> = [];
-  private monaco: typeof import('monaco-editor') | null = null;
+  private monacoInstance: typeof monaco | null = null;
 
   constructor(config: LspBridgeConfig) {
     this.config = config;
@@ -133,8 +134,8 @@ export class LspBridge {
   /**
    * Initialize the bridge with Monaco
    */
-  initialize(monaco: typeof import('monaco-editor')): void {
-    this.monaco = monaco;
+  initialize(monacoRef: typeof monaco): void {
+    this.monacoInstance = monacoRef;
   }
 
   /**
@@ -193,9 +194,11 @@ export class LspBridge {
    * Handle diagnostics from LSP server
    */
   private handleDiagnostics(params: PublishDiagnosticsParams): void {
-    if (!this.monaco) return;
+    if (!this.monacoInstance) return;
 
-    const model = this.monaco.editor.getModels().find((m) => m.uri.toString() === params.uri);
+    const model = this.monacoInstance.editor
+      .getModels()
+      .find((m) => m.uri.toString() === params.uri);
     if (!model) return;
 
     const markers = params.diagnostics.map((d: Diagnostic) => ({
@@ -209,18 +212,18 @@ export class LspBridge {
       code: d.code?.toString(),
     }));
 
-    this.monaco.editor.setModelMarkers(model, 'lsp', markers);
+    this.monacoInstance.editor.setModelMarkers(model, 'lsp', markers);
   }
 
   /**
    * Register Monaco language providers
    */
   private registerProviders(language: string, client: LspClient): void {
-    if (!this.monaco) return;
+    if (!this.monacoInstance) return;
 
     // Completion Provider
     this.disposables.push(
-      this.monaco.languages.registerCompletionItemProvider(language, {
+      this.monacoInstance.languages.registerCompletionItemProvider(language, {
         triggerCharacters: ['.', ':', '<', '"', "'", '/', '@', '#'],
         provideCompletionItems: async (
           model: editor.ITextModel,
@@ -267,7 +270,7 @@ export class LspBridge {
 
     // Hover Provider
     this.disposables.push(
-      this.monaco.languages.registerHoverProvider(language, {
+      this.monacoInstance.languages.registerHoverProvider(language, {
         provideHover: async (
           model: editor.ITextModel,
           position: MonacoPosition,
@@ -294,7 +297,7 @@ export class LspBridge {
 
     // Definition Provider
     this.disposables.push(
-      this.monaco.languages.registerDefinitionProvider(language, {
+      this.monacoInstance.languages.registerDefinitionProvider(language, {
         provideDefinition: async (
           model: editor.ITextModel,
           position: MonacoPosition,
@@ -309,7 +312,7 @@ export class LspBridge {
 
             const locations = Array.isArray(result) ? result : [result];
             return locations.map((loc: Location) => ({
-              uri: this.monaco!.Uri.parse(loc.uri),
+              uri: this.monacoInstance!.Uri.parse(loc.uri),
               range: lspToMonacoRange(loc.range),
             }));
           } catch (error) {
@@ -322,7 +325,7 @@ export class LspBridge {
 
     // References Provider
     this.disposables.push(
-      this.monaco.languages.registerReferenceProvider(language, {
+      this.monacoInstance.languages.registerReferenceProvider(language, {
         provideReferences: async (
           model: editor.ITextModel,
           position: MonacoPosition,
@@ -335,7 +338,7 @@ export class LspBridge {
             const result = await client.getReferences(uri, lspPosition, context.includeDeclaration);
 
             return result.map((loc: Location) => ({
-              uri: this.monaco!.Uri.parse(loc.uri),
+              uri: this.monacoInstance!.Uri.parse(loc.uri),
               range: lspToMonacoRange(loc.range),
             }));
           } catch (error) {
@@ -348,7 +351,7 @@ export class LspBridge {
 
     // Signature Help Provider
     this.disposables.push(
-      this.monaco.languages.registerSignatureHelpProvider(language, {
+      this.monacoInstance.languages.registerSignatureHelpProvider(language, {
         signatureHelpTriggerCharacters: ['(', ','],
         provideSignatureHelp: async (
           model: editor.ITextModel,
@@ -389,7 +392,7 @@ export class LspBridge {
 
     // Rename Provider
     this.disposables.push(
-      this.monaco.languages.registerRenameProvider(language, {
+      this.monacoInstance.languages.registerRenameProvider(language, {
         provideRenameEdits: async (
           model: editor.ITextModel,
           position: MonacoPosition,
@@ -414,7 +417,7 @@ export class LspBridge {
 
     // Document Formatting Provider
     this.disposables.push(
-      this.monaco.languages.registerDocumentFormattingEditProvider(language, {
+      this.monacoInstance.languages.registerDocumentFormattingEditProvider(language, {
         provideDocumentFormattingEdits: async (
           model: editor.ITextModel,
           _options: languages.FormattingOptions,
@@ -488,7 +491,7 @@ export class LspBridge {
 import { useEffect, useRef } from 'react';
 
 export function useLspBridge(
-  monaco: typeof import('monaco-editor') | null,
+  monacoInstance: typeof monaco | null,
   config: LspBridgeConfig | null,
   languages: string[] = ['typescript', 'javascript', 'python']
 ): LspBridge | null {
@@ -496,14 +499,14 @@ export function useLspBridge(
   const languagesKey = languages.join(',');
 
   useEffect(() => {
-    if (!monaco || !config) {
+    if (!monacoInstance || !config) {
       bridgeRef.current?.disconnectAll();
       bridgeRef.current = null;
       return;
     }
 
     const bridge = new LspBridge(config);
-    bridge.initialize(monaco);
+    bridge.initialize(monacoInstance);
     bridgeRef.current = bridge;
 
     // Connect to all specified languages
@@ -513,7 +516,7 @@ export function useLspBridge(
       bridge.disconnectAll();
       bridgeRef.current = null;
     };
-  }, [monaco, config, languages, languagesKey]);
+  }, [monacoInstance, config, languages, languagesKey]);
 
   return bridgeRef.current;
 }

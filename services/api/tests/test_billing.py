@@ -71,7 +71,6 @@ def test_subscription_plan() -> dict[str, Any]:
         "price_yearly_cents": 29000,
         "currency": "USD",
         "tokens_included": 1000000,
-        "compute_hours_included": 100,
         "compute_credits_cents_included": 5000,
         "storage_gb_included": 50,
         "max_agents": 10,

@@ -1,6 +1,8 @@
 """HTTP client for compute service communication."""
 
 import contextlib
+import time
+from collections.abc import AsyncGenerator
 from http import HTTPStatus
 from typing import Any
 
@@ -9,6 +11,7 @@ import structlog
 
 from src.config import settings
 from src.exceptions import (
+    ComputeClientError,
     ComputeServiceConnectionError,
     ComputeServiceHTTPError,
 )
@@ -187,6 +190,60 @@ class ComputeClient:
         """Send heartbeat to keep workspace alive."""
         await self._request("POST", f"/workspaces/{workspace_id}/heartbeat", user_id=user_id)
 
+    async def health_check_workspace(
+        self,
+        workspace_id: str,
+        user_id: str,
+        timeout_seconds: int = 10,
+    ) -> dict[str, Any]:
+        """Check if a workspace container is healthy and responsive.
+
+        Performs a lightweight operation to verify container responsiveness
+        by executing a simple echo command.
+
+        Args:
+            workspace_id: The workspace ID.
+            user_id: User ID for authorization.
+            timeout_seconds: Command timeout in seconds.
+
+        Returns:
+            Dict with 'healthy', 'latency_ms', and optional 'error' fields.
+        """
+        start = time.monotonic()
+
+        try:
+            # Simple command that should complete quickly
+            result = await self._request(
+                "POST",
+                f"/workspaces/{workspace_id}/exec",
+                user_id=user_id,
+                json={
+                    "command": "echo 'health_check'",
+                    "timeout": timeout_seconds,
+                },
+            )
+            latency_ms = (time.monotonic() - start) * 1000
+
+            return {
+                "healthy": True,
+                "latency_ms": round(latency_ms, 2),
+                "exit_code": result.get("exit_code", 0) if result else 0,
+            }
+        except ComputeServiceHTTPError as e:
+            latency_ms = (time.monotonic() - start) * 1000
+            return {
+                "healthy": False,
+                "latency_ms": round(latency_ms, 2),
+                "error": f"HTTP {e.status_code}: {e.detail[:200] if e.detail else 'Unknown'}",
+            }
+        except Exception as e:
+            latency_ms = (time.monotonic() - start) * 1000
+            return {
+                "healthy": False,
+                "latency_ms": round(latency_ms, 2),
+                "error": str(e)[:200],
+            }
+
     # ==================== File Operations ====================
 
     async def list_files(
@@ -258,18 +315,184 @@ class ComputeClient:
         working_dir: str | None = None,
         exec_timeout: int = 60,
     ) -> dict[str, Any]:
-        """Execute a command in the workspace."""
-        result: dict[str, Any] = await self._request(
-            "POST",
-            f"/workspaces/{workspace_id}/exec",
-            user_id=user_id,
-            json={
-                "command": command,
-                "working_dir": working_dir,
-                "timeout": exec_timeout,
-            },
+        """Execute a command in the workspace.
+
+        Args:
+            workspace_id: The workspace ID.
+            user_id: User ID for authorization.
+            command: The command to execute.
+            working_dir: Working directory for the command.
+            exec_timeout: Timeout for command execution in seconds.
+
+        Returns:
+            Dict with exit_code, stdout, stderr.
+        """
+        # Use a longer HTTP timeout for long-running commands
+        # Add 30 seconds buffer for network overhead
+        http_timeout = max(exec_timeout + 30, 60)
+
+        logger.debug(
+            "Executing command in workspace",
+            workspace_id=workspace_id,
+            command=command[:100],
+            exec_timeout=exec_timeout,
+            http_timeout=http_timeout,
         )
-        return result
+
+        try:
+            # Create a custom client with appropriate timeout for this request
+            async with httpx.AsyncClient(
+                base_url=settings.COMPUTE_SERVICE_URL,
+                timeout=httpx.Timeout(float(http_timeout), connect=10.0),
+                headers={"X-Internal-API-Key": settings.COMPUTE_INTERNAL_API_KEY}
+                if settings.COMPUTE_INTERNAL_API_KEY
+                else {},
+            ) as client:
+                headers = {"X-User-ID": user_id}
+                response = await client.post(
+                    f"/workspaces/{workspace_id}/exec",
+                    headers=headers,
+                    json={
+                        "command": command,
+                        "working_dir": working_dir,
+                        "timeout": exec_timeout,
+                    },
+                )
+                response.raise_for_status()
+                result: dict[str, Any] = response.json()
+
+                logger.debug(
+                    "Command execution completed",
+                    workspace_id=workspace_id,
+                    exit_code=result.get("exit_code"),
+                    stdout_len=len(result.get("stdout", "")),
+                    stderr_len=len(result.get("stderr", "")),
+                )
+
+                return result
+        except httpx.TimeoutException:
+            logger.exception(
+                "Command execution timed out",
+                workspace_id=workspace_id,
+                command=command[:100],
+                exec_timeout=exec_timeout,
+            )
+            return {
+                "exit_code": -1,
+                "stdout": "",
+                "stderr": f"Command timed out after {exec_timeout} seconds",
+            }
+        except httpx.HTTPStatusError as e:
+            logger.exception(
+                "Command execution HTTP error",
+                workspace_id=workspace_id,
+                command=command[:100],
+                status_code=e.response.status_code,
+                detail=e.response.text[:500] if e.response.text else None,
+            )
+            raise ComputeServiceHTTPError(
+                e.response.status_code,
+                e.response.text,
+            ) from e
+        except httpx.RequestError as e:
+            logger.exception(
+                "Command execution request error",
+                workspace_id=workspace_id,
+                command=command[:100],
+            )
+            raise ComputeServiceConnectionError(str(e)) from e
+
+    async def exec_command_stream(
+        self,
+        workspace_id: str,
+        user_id: str,
+        command: str,
+        working_dir: str | None = None,
+        exec_timeout: int = 60,
+    ) -> AsyncGenerator[str, None]:
+        """Execute a command and stream output chunks.
+
+        Uses Server-Sent Events to stream command output in real-time.
+        Useful for interactive commands like authentication flows.
+
+        Args:
+            workspace_id: The workspace ID.
+            user_id: User ID for authorization.
+            command: The command to execute.
+            working_dir: Working directory for the command.
+            exec_timeout: Timeout for command execution in seconds.
+
+        Yields:
+            Output chunks as strings.
+        """
+        http_timeout = max(exec_timeout + 30, 60)
+
+        logger.debug(
+            "Streaming command in workspace",
+            workspace_id=workspace_id,
+            command=command[:100],
+            exec_timeout=exec_timeout,
+        )
+
+        try:
+            async with httpx.AsyncClient(
+                base_url=settings.COMPUTE_SERVICE_URL,
+                timeout=httpx.Timeout(float(http_timeout), connect=10.0),
+                headers={"X-Internal-API-Key": settings.COMPUTE_INTERNAL_API_KEY}
+                if settings.COMPUTE_INTERNAL_API_KEY
+                else {},
+            ) as client:
+                headers = {"X-User-ID": user_id}
+                async with client.stream(
+                    "POST",
+                    f"/workspaces/{workspace_id}/exec-stream",
+                    headers=headers,
+                    json={
+                        "command": command,
+                        "working_dir": working_dir,
+                        "timeout": exec_timeout,
+                    },
+                ) as response:
+                    response.raise_for_status()
+
+                    # Process SSE stream
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            data = line[6:]  # Remove "data: " prefix
+                            if data == "[DONE]":
+                                break
+                            if data.startswith("ERROR:"):
+                                logger.warning(
+                                    "Streaming exec error",
+                                    workspace_id=workspace_id,
+                                    error=data,
+                                )
+                                yield data
+                                break
+                            # Unescape newlines from SSE format
+                            chunk = data.replace("\\n", "\n")
+                            yield chunk
+
+        except httpx.TimeoutException:
+            logger.exception(
+                "Streaming exec timed out",
+                workspace_id=workspace_id,
+                command=command[:100],
+            )
+            yield f"Command timed out after {exec_timeout} seconds"
+        except httpx.HTTPStatusError as e:
+            logger.exception(
+                "Streaming exec HTTP error",
+                workspace_id=workspace_id,
+                status_code=e.response.status_code,
+            )
+            yield f"Error: HTTP {e.response.status_code}"
+        except Exception as e:
+            logger.exception(
+                "Streaming exec error",
+                workspace_id=workspace_id,
+            )
+            yield f"Error: {e}"
 
     # ==================== Git Operations ====================
 
@@ -323,13 +546,17 @@ class ComputeClient:
 
     async def git_stage(self, workspace_id: str, user_id: str, files: list[str]) -> None:
         """Stage files for commit."""
-        files_str = " ".join(f'"{f}"' for f in files)
-        await self.exec_command(workspace_id, user_id, f"git add {files_str}")
+        # Use -- to separate options from paths, and properly escape each file
+        escaped_files = [self._escape_shell_arg(f) for f in files]
+        files_str = " ".join(escaped_files)
+        await self.exec_command(workspace_id, user_id, f"git add -- {files_str}")
 
     async def git_unstage(self, workspace_id: str, user_id: str, files: list[str]) -> None:
         """Unstage files."""
-        files_str = " ".join(f'"{f}"' for f in files)
-        await self.exec_command(workspace_id, user_id, f"git reset HEAD {files_str}")
+        # Use -- to separate options from paths, and properly escape each file
+        escaped_files = [self._escape_shell_arg(f) for f in files]
+        files_str = " ".join(escaped_files)
+        await self.exec_command(workspace_id, user_id, f"git reset HEAD -- {files_str}")
 
     async def git_commit(
         self,
@@ -338,12 +565,12 @@ class ComputeClient:
         message: str,
     ) -> dict[str, str]:
         """Create a git commit."""
-        # Escape message for shell
-        safe_message = message.replace('"', '\\"').replace("$", "\\$")
+        # Use proper shell escaping for the commit message
+        safe_message = self._escape_shell_arg(message)
         result = await self.exec_command(
             workspace_id,
             user_id,
-            f'git commit -m "{safe_message}"',
+            f"git commit -m {safe_message}",
         )
         # Extract commit hash from output
         stdout = result.get("stdout", "")
@@ -407,7 +634,7 @@ class ComputeClient:
         workspace_id: str,
         user_id: str,
         branch_name: str,
-        delete_branch: bool = True,  # noqa: FBT001, FBT002
+        delete_branch: bool = True,
     ) -> dict[str, Any]:
         """Merge a worktree branch to main branch."""
         try:
@@ -518,7 +745,7 @@ class ComputeClient:
             with contextlib.suppress(Exception):
                 await self.exec_command(workspace_id, user_id, f"git branch -D {branch_name}")
 
-            return {  # noqa: TRY300
+            return {
                 "success": True,
                 "message": "Worktree deleted successfully",
             }
@@ -527,6 +754,216 @@ class ComputeClient:
                 "success": False,
                 "message": str(e),
             }
+
+    async def git_compare(
+        self,
+        workspace_id: str,
+        user_id: str,
+        base: str,
+        compare: str,
+    ) -> dict[str, Any]:
+        """Compare two branches and return commits and changed files.
+
+        Args:
+            workspace_id: The workspace ID.
+            user_id: The user ID.
+            base: The base branch to compare from.
+            compare: The branch to compare against.
+
+        Returns:
+            Dictionary with commits, files, and stats.
+        """
+        try:
+            # Get commits between branches
+            commits_result = await self.exec_command(
+                workspace_id,
+                user_id,
+                f"git log --oneline --format='%H|%s|%an|%ad' --date=iso {base}..{compare}",
+            )
+            commits_output = commits_result.get("stdout", "")
+            commits = []
+            for line in commits_output.strip().split("\n") if commits_output.strip() else []:
+                parts = line.split("|", 3)
+                if len(parts) >= MIN_COMMIT_LOG_PARTS - 1:
+                    commits.append(
+                        {
+                            "sha": parts[0],
+                            "message": parts[1],
+                            "author": parts[2],
+                            "date": parts[3],
+                        }
+                    )
+
+            # Get diff stat
+            stat_result = await self.exec_command(
+                workspace_id,
+                user_id,
+                f"git diff --stat {base}...{compare}",
+            )
+            stat_output = stat_result.get("stdout", "")
+
+            # Get list of changed files
+            files_result = await self.exec_command(
+                workspace_id,
+                user_id,
+                f"git diff --name-status {base}...{compare}",
+            )
+            files_output = files_result.get("stdout", "")
+            files = []
+            for line in files_output.strip().split("\n") if files_output.strip() else []:
+                parts = line.split("\t", 1)
+                if len(parts) >= MIN_COMMIT_INFO_PARTS:
+                    status = parts[0]
+                    path = parts[1]
+                    status_map = {
+                        "A": "added",
+                        "M": "modified",
+                        "D": "deleted",
+                        "R": "renamed",
+                    }
+                    files.append(
+                        {
+                            "path": path,
+                            "status": status_map.get(status[0], "modified"),
+                        }
+                    )
+
+            return {
+                "base": base,
+                "compare": compare,
+                "commits": commits,
+                "files": files,
+                "ahead": len(commits),
+                "stat": stat_output.strip() if stat_output else "",
+            }
+        except Exception as e:
+            raise ComputeClientError(f"Branch comparison failed: {e}") from e
+
+    async def git_merge_preview(
+        self,
+        workspace_id: str,
+        user_id: str,
+        source_branch: str,
+        target_branch: str,
+    ) -> dict[str, Any]:
+        """Preview a merge operation without actually merging.
+
+        Args:
+            workspace_id: The workspace ID.
+            user_id: The user ID.
+            source_branch: The branch to merge from.
+            target_branch: The branch to merge into.
+
+        Returns:
+            Dictionary with merge preview including conflict information.
+        """
+        try:
+            # Save current branch
+            current_branch_result = await self.exec_command(
+                workspace_id,
+                user_id,
+                "git branch --show-current",
+            )
+            current_branch = current_branch_result.get("stdout", "").strip()
+
+            # Check if there are uncommitted changes
+            status_result = await self.exec_command(
+                workspace_id,
+                user_id,
+                "git status --porcelain",
+            )
+            status_output = status_result.get("stdout", "")
+            if status_output.strip():
+                return {
+                    "can_merge": False,
+                    "has_conflicts": False,
+                    "conflicts": [],
+                    "files_changed": [],
+                    "error": "Uncommitted changes exist. Please commit or stash before merging.",
+                }
+
+            # Checkout target branch
+            await self.exec_command(workspace_id, user_id, f"git checkout {target_branch}")
+
+            try:
+                # Try merge with no commit and no fast-forward
+                await self.exec_command(
+                    workspace_id,
+                    user_id,
+                    f"git merge --no-commit --no-ff {source_branch}",
+                )
+
+                # Get list of files that would change
+                diff_result = await self.exec_command(
+                    workspace_id,
+                    user_id,
+                    "git diff --cached --name-status HEAD",
+                )
+                diff_output = diff_result.get("stdout", "")
+                files = []
+                for line in diff_output.strip().split("\n") if diff_output.strip() else []:
+                    parts = line.split("\t", 1)
+                    if len(parts) >= MIN_COMMIT_INFO_PARTS:
+                        files.append(
+                            {
+                                "path": parts[1],
+                                "status": parts[0],
+                            }
+                        )
+
+                result = {
+                    "can_merge": True,
+                    "has_conflicts": False,
+                    "conflicts": [],
+                    "files_changed": files,
+                }
+            except Exception:
+                # Merge failed - likely conflicts
+                # Get conflict files
+                conflict_result = await self.exec_command(
+                    workspace_id,
+                    user_id,
+                    "git diff --name-only --diff-filter=U",
+                )
+                conflict_output = conflict_result.get("stdout", "")
+                conflicts = [f.strip() for f in conflict_output.strip().split("\n") if f.strip()]
+
+                result = {
+                    "can_merge": False,
+                    "has_conflicts": True,
+                    "conflicts": conflicts,
+                    "files_changed": [],
+                }
+            finally:
+                # Abort merge and checkout original branch
+                with contextlib.suppress(Exception):
+                    await self.exec_command(workspace_id, user_id, "git merge --abort")
+                with contextlib.suppress(Exception):
+                    await self.exec_command(workspace_id, user_id, f"git checkout {current_branch}")
+
+            return result
+        except Exception as e:
+            raise ComputeClientError(f"Merge preview failed: {e}") from e
+
+    # ==================== Shell Escaping Helpers ====================
+
+    def _escape_shell_arg(self, arg: str) -> str:
+        """Safely escape a string for use as a shell argument.
+
+        Uses single quotes which prevent all shell interpretation.
+        Single quotes within the string are handled by ending the quoted
+        section, adding an escaped single quote, and starting a new section.
+
+        Args:
+            arg: The string to escape.
+
+        Returns:
+            A safely quoted shell argument.
+        """
+        # Replace single quotes with: end quote, escaped quote, start quote
+        # e.g., "it's" becomes 'it'\''s'
+        escaped = arg.replace("'", "'\"'\"'")
+        return f"'{escaped}'"
 
     # ==================== Git Parsing Helpers ====================
 

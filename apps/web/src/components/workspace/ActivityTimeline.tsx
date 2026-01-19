@@ -367,7 +367,8 @@ export function ActivityTimeline({ sessionId, className }: ActivityTimelineProps
       const event = events.find((e) => e.id === eventId);
       if (!event?.canUndo) return;
 
-      // TODO: Implement API call to undo event
+      // TODO: Implement API call to undo event - would require backend support for different event types
+      // await api.post(`/api/sessions/${sessionId}/events/${eventId}/undo`);
       // Remove the event from the list (simplified)
       setEvents((prev) => prev.filter((e) => e.id !== eventId));
     },

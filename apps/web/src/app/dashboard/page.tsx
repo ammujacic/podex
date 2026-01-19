@@ -70,6 +70,11 @@ import {
 import { useUser, useAuthStore } from '@/stores/auth';
 import { DashboardSkeleton } from '@/components/ui/Skeleton';
 import { TimeRangeSelector, getDaysFromValue } from '@/components/dashboard/TimeRangeSelector';
+import { ConfirmDialog, useConfirmDialog } from '@/components/dashboard/ConfirmDialog';
+import { useClickOutside } from '@/hooks/useClickOutside';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
+import { MobileHeader } from '@/components/ui/MobileHeader';
+import { InstallBanner } from '@/components/pwa';
 
 // Status colors and labels
 const defaultStatus = {
@@ -195,6 +200,7 @@ function TemplateIcon({
 }
 
 export default function DashboardPage() {
+  useDocumentTitle('Dashboard');
   const router = useRouter();
   const user = useUser();
   const isInitialized = useAuthStore((s) => s.isInitialized);
@@ -222,6 +228,15 @@ export default function DashboardPage() {
   const [loadingUsage, setLoadingUsage] = useState(false);
   const [visiblePods, setVisiblePods] = useState<Set<string>>(new Set());
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Click outside handler for notifications dropdown
+  const notificationsRef = useClickOutside<HTMLDivElement>(
+    () => setShowNotifications(false),
+    showNotifications
+  );
+
+  // Confirm dialog for delete
+  const { openDialog, dialogProps } = useConfirmDialog();
 
   // Keyboard shortcuts
   const handleKeyDown = useCallback(
@@ -464,7 +479,8 @@ export default function DashboardPage() {
   // Pinned sessions
   const pinnedSessions = sessions.filter((s) => s.pinned);
 
-  const handleDeleteSession = async (sessionId: string) => {
+  // Actual delete function (called after confirmation)
+  const performDeleteSession = async (sessionId: string) => {
     setDeleting(sessionId);
     try {
       await deleteSession(sessionId);
@@ -475,6 +491,18 @@ export default function DashboardPage() {
       setDeleting(null);
       setOpenMenuId(null);
     }
+  };
+
+  // Show confirmation dialog before deleting
+  const handleDeleteSession = (session: Session) => {
+    openDialog({
+      title: 'Delete Pod',
+      message: `Are you sure you want to delete "${session.name}"? This action cannot be undone.`,
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      variant: 'danger',
+      onConfirm: () => performDeleteSession(session.id),
+    });
   };
 
   const handlePauseSession = async (sessionId: string, workspaceId: string) => {
@@ -542,8 +570,11 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Header */}
-      <header className="bg-void/80 backdrop-blur-lg border-b border-border-subtle sticky top-0 z-50">
+      {/* Mobile Header */}
+      <MobileHeader />
+
+      {/* Desktop Header */}
+      <header className="hidden md:block bg-void/80 backdrop-blur-lg border-b border-border-subtle sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
             <Logo href="/dashboard" />
@@ -553,17 +584,18 @@ export default function DashboardPage() {
                 variant="ghost"
                 size="sm"
                 onClick={() => setShowShortcuts(true)}
-                className="hidden sm:flex"
+                className="hidden sm:flex min-w-[44px] min-h-[44px]"
               >
                 <Keyboard className="w-4 h-4" />
               </Button>
 
               {/* Notifications */}
-              <div className="relative">
+              <div className="relative" ref={notificationsRef}>
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => setShowNotifications(!showNotifications)}
+                  className="min-w-[44px] min-h-[44px]"
                 >
                   <Bell className="w-4 h-4" />
                   {unreadCount > 0 && (
@@ -654,6 +686,9 @@ export default function DashboardPage() {
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-6 py-8">
+        {/* PWA Install Banner */}
+        <InstallBanner className="mb-6" />
+
         {/* Welcome Section */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
           <h1 className="text-3xl font-bold text-text-primary mb-2">
@@ -1134,7 +1169,7 @@ export default function DashboardPage() {
                                   {session.pinned ? 'Unpin' : 'Pin'}
                                 </button>
                                 <button
-                                  onClick={() => handleDeleteSession(session.id)}
+                                  onClick={() => handleDeleteSession(session)}
                                   disabled={deleting === session.id}
                                   className="w-full flex items-center gap-2 px-3 py-2 text-sm text-accent-error hover:bg-overlay"
                                 >
@@ -1299,7 +1334,7 @@ export default function DashboardPage() {
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  onClick={() => handleDeleteSession(session.id)}
+                                  onClick={() => handleDeleteSession(session)}
                                   disabled={deleting === session.id}
                                 >
                                   {deleting === session.id ? (
@@ -1771,6 +1806,9 @@ export default function DashboardPage() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Delete Confirmation Dialog */}
+      {dialogProps && <ConfirmDialog {...dialogProps} />}
     </div>
   );
 }

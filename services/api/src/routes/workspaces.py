@@ -1,5 +1,8 @@
 """Workspace management routes."""
 
+import os
+import re
+from pathlib import Path
 from typing import Annotated, Any
 
 import structlog
@@ -10,13 +13,81 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.database.connection import get_db
-from src.database.models import PodTemplate, Session, Workspace
+from src.database.models import PodTemplate, Session, SessionShare, Workspace
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, RATE_LIMIT_UPLOAD, limiter
-from src.storage.s3 import S3Storage, get_storage
+from src.storage.gcs import S3Storage, get_storage
 
 logger = structlog.get_logger()
 
 router = APIRouter()
+
+# Allowed workspace root paths
+ALLOWED_WORKSPACE_ROOTS = {"/workspace", "/home/user", "/app"}
+
+# Dangerous path patterns
+_DANGEROUS_PATH_PATTERNS = re.compile(
+    r"(^|/)\.\.(/|$)|"  # Parent directory traversal
+    r"^\s*~|"  # Home directory expansion
+    r"[\x00-\x1f]|"  # Control characters
+    r"^/etc|^/proc|^/sys|^/dev|"  # System directories
+    r"^/root|^/var/run|^/var/log"  # Sensitive directories
+)
+
+
+def validate_file_path(path: str, workspace_root: str = "/workspace") -> str:
+    """Validate and normalize a file path to prevent path traversal attacks.
+
+    Args:
+        path: The file path to validate.
+        workspace_root: The allowed root directory for the workspace.
+
+    Returns:
+        The normalized, validated path.
+
+    Raises:
+        HTTPException: If the path is invalid or attempts traversal.
+    """
+    if not path:
+        raise HTTPException(status_code=400, detail="Path cannot be empty")
+
+    # Check for null bytes (common attack vector)
+    if "\x00" in path:
+        logger.warning("Path contains null byte", path=path[:50])
+        raise HTTPException(status_code=400, detail="Invalid path: contains null byte")
+
+    # Check for dangerous patterns
+    if _DANGEROUS_PATH_PATTERNS.search(path):
+        logger.warning("Path contains dangerous pattern", path=path[:100])
+        raise HTTPException(status_code=400, detail="Invalid path: contains forbidden pattern")
+
+    # Normalize the path
+    normalized = os.path.normpath(path)
+
+    # Ensure path doesn't escape workspace root
+    if not normalized.startswith(workspace_root):
+        # Check if it's a relative path that should be under workspace root
+        if not path.startswith("/"):
+            normalized = os.path.normpath(str(Path(workspace_root) / path))
+        else:
+            # Check against allowed roots
+            is_allowed = any(normalized.startswith(root) for root in ALLOWED_WORKSPACE_ROOTS)
+            if not is_allowed:
+                logger.warning(
+                    "Path traversal attempt detected",
+                    path=path[:100],
+                    normalized=normalized[:100],
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid path: access outside workspace not allowed",
+                )
+
+    # Final validation - ensure we're still within allowed bounds after normalization
+    if ".." in normalized:
+        raise HTTPException(status_code=400, detail="Invalid path: directory traversal not allowed")
+
+    return normalized
+
 
 # Type aliases for dependencies
 DbSession = Annotated[AsyncSession, Depends(get_db)]
@@ -29,6 +100,10 @@ async def verify_workspace_access(
     db: AsyncSession,
 ) -> Workspace:
     """Verify user has access to the workspace.
+
+    Access is granted if the user:
+    1. Owns the session associated with the workspace, OR
+    2. Has been shared access via SessionShare
 
     Args:
         workspace_id: The workspace ID to check.
@@ -56,14 +131,28 @@ async def verify_workspace_access(
     session_result = await db.execute(select(Session).where(Session.workspace_id == workspace_id))
     session = session_result.scalar_one_or_none()
 
-    if session and session.owner_id != user_id:
-        raise HTTPException(status_code=403, detail="Not authorized to access this workspace")
-
     # If no session is linked, this is an orphaned workspace - deny access
     if not session:
         raise HTTPException(status_code=403, detail="Workspace has no associated session")
 
-    return workspace
+    # Owner always has access
+    if session.owner_id == user_id:
+        return workspace
+
+    # Check if user has been shared access to this session
+    share_result = await db.execute(
+        select(SessionShare)
+        .where(SessionShare.session_id == session.id)
+        .where(SessionShare.shared_with_id == user_id)
+    )
+    share = share_result.scalar_one_or_none()
+
+    if share:
+        # User has shared access
+        return workspace
+
+    # No access - not owner and not shared
+    raise HTTPException(status_code=403, detail="Not authorized to access this workspace")
 
 
 class WorkspaceResponse(BaseModel):
@@ -813,13 +902,16 @@ async def list_files(
     path: str = "/workspace",
 ) -> list[FileNode]:
     """List files in workspace directory."""
+    # SECURITY: Validate path to prevent traversal attacks
+    validated_path = validate_file_path(path)
+
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
 
-    # Use S3 storage if configured, otherwise fall back to demo data
-    if settings.AWS_ENDPOINT or settings.S3_BUCKET != "podex-workspaces":
+    # Use S3 storage if configured (non-default bucket or custom endpoint)
+    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
         try:
-            tree = await storage.get_file_tree(workspace_id, path)
+            tree = await storage.get_file_tree(workspace_id, validated_path)
             return [FileNode(**node) for node in tree]
         except Exception:
             # Fall back to demo data on error
@@ -873,17 +965,20 @@ async def get_file_content(
     storage: Storage,
 ) -> FileContent:
     """Get file content."""
+    # SECURITY: Validate path to prevent traversal attacks
+    validated_path = validate_file_path(path)
+
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
 
-    # Try S3 storage first if configured
-    if settings.AWS_ENDPOINT or settings.S3_BUCKET != "podex-workspaces":
+    # Try S3 storage first if configured (non-default bucket or custom endpoint)
+    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
         try:
-            content = await storage.get_file_text(workspace_id, path)
+            content = await storage.get_file_text(workspace_id, validated_path)
             return FileContent(
-                path=path,
+                path=validated_path,
                 content=content,
-                language=get_language_from_path(path),
+                language=get_language_from_path(validated_path),
             )
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail="File not found") from e
@@ -892,18 +987,20 @@ async def get_file_content(
             logger.debug(
                 "Failed to get file content from storage, using demo data",
                 workspace_id=workspace_id,
-                path=path,
+                path=validated_path,
             )
 
     # Fall back to template-specific demo data
     template_slug = await get_template_slug_for_workspace(workspace_id, db)
     demo_contents = get_demo_contents(template_slug)
-    demo_content = demo_contents.get(path)
+    demo_content = demo_contents.get(validated_path)
 
     if demo_content is None:
         raise HTTPException(status_code=404, detail="File not found")
 
-    return FileContent(path=path, content=demo_content, language=get_language_from_path(path))
+    return FileContent(
+        path=validated_path, content=demo_content, language=get_language_from_path(validated_path)
+    )
 
 
 class UpdateFileRequest(BaseModel):
@@ -924,21 +1021,24 @@ async def update_file_content(
     storage: Storage,
 ) -> FileContent:
     """Update file content."""
+    # SECURITY: Validate path to prevent traversal attacks
+    validated_path = validate_file_path(path)
+
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
 
     # Save to S3 if configured
-    if settings.AWS_ENDPOINT or settings.S3_BUCKET != "podex-workspaces":
+    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
         try:
-            await storage.put_file(workspace_id, path, body.content)
+            await storage.put_file(workspace_id, validated_path, body.content)
         except Exception:
-            logger.exception("Failed to save file", workspace_id=workspace_id, path=path)
+            logger.exception("Failed to save file", workspace_id=workspace_id, path=validated_path)
             raise HTTPException(status_code=500, detail="Failed to save file") from None
 
     return FileContent(
-        path=path,
+        path=validated_path,
         content=body.content,
-        language=get_language_from_path(path),
+        language=get_language_from_path(validated_path),
     )
 
 
@@ -973,26 +1073,31 @@ async def create_file(
     storage: Storage,
 ) -> FileContent:
     """Create a new file."""
+    # SECURITY: Validate path to prevent traversal attacks
+    validated_path = validate_file_path(body.path)
+
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
 
     # Create in S3 if configured
-    if settings.AWS_ENDPOINT or settings.S3_BUCKET != "podex-workspaces":
+    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
         # Check if file already exists before try block
-        file_exists = await storage.file_exists(workspace_id, body.path)
+        file_exists = await storage.file_exists(workspace_id, validated_path)
         if file_exists:
             raise HTTPException(status_code=409, detail="File already exists")
 
         try:
-            await storage.put_file(workspace_id, body.path, body.content)
+            await storage.put_file(workspace_id, validated_path, body.content)
         except Exception:
-            logger.exception("Failed to create file", workspace_id=workspace_id, path=body.path)
+            logger.exception(
+                "Failed to create file", workspace_id=workspace_id, path=validated_path
+            )
             raise HTTPException(status_code=500, detail="Failed to create file") from None
 
     return FileContent(
-        path=body.path,
+        path=validated_path,
         content=body.content,
-        language=get_language_from_path(body.path),
+        language=get_language_from_path(validated_path),
     )
 
 
@@ -1007,32 +1112,39 @@ async def delete_file(
     storage: Storage,
 ) -> dict[str, str]:
     """Delete a file or directory."""
+    # SECURITY: Validate path to prevent traversal attacks
+    validated_path = validate_file_path(path)
+
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
 
     # Delete from S3 if configured
-    if settings.AWS_ENDPOINT or settings.S3_BUCKET != "podex-workspaces":
+    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
         # Check file existence before try block
-        file_exists = await storage.file_exists(workspace_id, path)
+        file_exists = await storage.file_exists(workspace_id, validated_path)
 
         if file_exists:
             try:
-                await storage.delete_file(workspace_id, path)
+                await storage.delete_file(workspace_id, validated_path)
             except Exception:
-                logger.exception("Failed to delete file", workspace_id=workspace_id, path=path)
+                logger.exception(
+                    "Failed to delete file", workspace_id=workspace_id, path=validated_path
+                )
                 raise HTTPException(status_code=500, detail="Failed to delete file") from None
         else:
             # Try as directory
             try:
-                deleted = await storage.delete_directory(workspace_id, path)
+                deleted = await storage.delete_directory(workspace_id, validated_path)
             except Exception:
-                logger.exception("Failed to delete file", workspace_id=workspace_id, path=path)
+                logger.exception(
+                    "Failed to delete directory", workspace_id=workspace_id, path=validated_path
+                )
                 raise HTTPException(status_code=500, detail="Failed to delete file") from None
 
             if deleted == 0:
                 raise HTTPException(status_code=404, detail="File or directory not found")
 
-    return {"deleted": path}
+    return {"deleted": validated_path}
 
 
 @router.post("/{workspace_id}/files/move")
@@ -1046,25 +1158,29 @@ async def move_file(
     storage: Storage,
 ) -> dict[str, str]:
     """Move or rename a file."""
+    # SECURITY: Validate both paths to prevent traversal attacks
+    validated_source = validate_file_path(body.source_path)
+    validated_dest = validate_file_path(body.dest_path)
+
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
 
     # Move in S3 if configured
-    if settings.AWS_ENDPOINT or settings.S3_BUCKET != "podex-workspaces":
+    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
         # Check source file existence before try block
-        source_exists = await storage.file_exists(workspace_id, body.source_path)
+        source_exists = await storage.file_exists(workspace_id, validated_source)
         if not source_exists:
             raise HTTPException(status_code=404, detail="Source file not found")
 
         try:
-            await storage.move_file(workspace_id, body.source_path, body.dest_path)
+            await storage.move_file(workspace_id, validated_source, validated_dest)
         except Exception:
             logger.exception("Failed to move file", workspace_id=workspace_id)
             raise HTTPException(status_code=500, detail="Failed to move file") from None
 
     return {
-        "source": body.source_path,
-        "destination": body.dest_path,
+        "source": validated_source,
+        "destination": validated_dest,
     }
 
 
@@ -1082,7 +1198,7 @@ async def initialize_workspace_files(
     await verify_workspace_access(workspace_id, request, db)
 
     # Initialize with template-specific demo files if S3 is configured
-    if settings.AWS_ENDPOINT or settings.S3_BUCKET != "podex-workspaces":
+    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
         try:
             template_slug = await get_template_slug_for_workspace(workspace_id, db)
             demo_contents = get_demo_contents(template_slug)
@@ -1119,9 +1235,9 @@ async def pause_workspace(
     db: DbSession,
 ) -> WorkspaceStatusResponse:
     """Pause a workspace (stop Docker container, enter standby mode)."""
-    from datetime import UTC, datetime  # noqa: PLC0415
+    from datetime import UTC, datetime
 
-    from src.compute_client import compute_client  # noqa: PLC0415
+    from src.compute_client import compute_client
 
     # Verify user has access to this workspace
     workspace = await verify_workspace_access(workspace_id, request, db)
@@ -1172,9 +1288,9 @@ async def resume_workspace(
     db: DbSession,
 ) -> WorkspaceStatusResponse:
     """Resume a paused workspace (restart Docker container)."""
-    from datetime import UTC, datetime  # noqa: PLC0415
+    from datetime import UTC, datetime
 
-    from src.compute_client import compute_client  # noqa: PLC0415
+    from src.compute_client import compute_client
 
     # Verify user has access to this workspace
     workspace = await verify_workspace_access(workspace_id, request, db)
@@ -1235,6 +1351,171 @@ async def get_workspace_status(
     )
 
 
+class WorkspaceForceStopResponse(BaseModel):
+    """Response from force-stopping a workspace."""
+
+    workspace_id: str
+    previous_status: str
+    success: bool
+    message: str
+    terminal_sessions_closed: int = 0
+
+
+@router.post("/{workspace_id}/force-stop", response_model=WorkspaceForceStopResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def force_stop_workspace(
+    workspace_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> WorkspaceForceStopResponse:
+    """Force-stop a stuck or unresponsive workspace.
+
+    This performs an aggressive cleanup:
+    - Forcefully stops the container (even if unresponsive)
+    - Kills all terminal sessions for this workspace
+    - Sets status to 'stopped'
+    - Notifies all connected clients
+
+    Use when normal pause/stop doesn't work or the container is unresponsive.
+    This is more aggressive than pause and should be used as a last resort.
+    """
+    from sqlalchemy import select
+
+    from src.compute_client import compute_client
+    from src.database.models import Session as SessionModel
+    from src.terminal.manager import terminal_manager
+    from src.websocket.hub import emit_to_session
+
+    # Verify user has access to this workspace
+    workspace = await verify_workspace_access(workspace_id, request, db)
+    user_id: str = getattr(request.state, "user_id", "") or ""
+
+    previous_status = workspace.status
+
+    # Force close all terminal sessions for this workspace
+    sessions_to_close = [
+        sid
+        for sid, session in terminal_manager.sessions.items()
+        if session.workspace_id == workspace_id
+    ]
+    for session_id in sessions_to_close:
+        try:
+            await terminal_manager.close_session(session_id)
+        except Exception as e:
+            logger.warning(
+                "Failed to close terminal session during force-stop",
+                session_id=session_id,
+                error=str(e),
+            )
+
+    # Force stop container (even if unresponsive - best effort)
+    try:
+        await compute_client.stop_workspace(workspace_id, user_id)
+    except Exception as e:
+        logger.warning(
+            "Failed to stop workspace via compute service during force-stop",
+            workspace_id=workspace_id,
+            error=str(e),
+        )
+        # Continue anyway - update our state regardless
+
+    # Update status to stopped
+    workspace.status = "stopped"
+    workspace.standby_at = None
+    await db.commit()
+
+    # Get session for notification
+    session_result = await db.execute(
+        select(SessionModel).where(SessionModel.workspace_id == workspace_id)
+    )
+    session = session_result.scalar_one_or_none()
+
+    if session:
+        await emit_to_session(
+            str(session.id),
+            "workspace_force_stopped",
+            {
+                "workspace_id": workspace_id,
+                "previous_status": previous_status,
+                "terminal_sessions_closed": len(sessions_to_close),
+            },
+        )
+
+    logger.info(
+        "Workspace force-stopped",
+        workspace_id=workspace_id,
+        previous_status=previous_status,
+        terminal_sessions_closed=len(sessions_to_close),
+    )
+
+    return WorkspaceForceStopResponse(
+        workspace_id=workspace_id,
+        previous_status=previous_status,
+        success=True,
+        message=f"Workspace force-stopped. {len(sessions_to_close)} terminal sessions closed.",
+        terminal_sessions_closed=len(sessions_to_close),
+    )
+
+
+class WorkspaceHealthResponse(BaseModel):
+    """Workspace health check response."""
+
+    workspace_id: str
+    healthy: bool
+    latency_ms: float | None
+    status: str
+    container_responsive: bool
+    last_activity: str | None
+    error: str | None = None
+
+
+@router.get("/{workspace_id}/health", response_model=WorkspaceHealthResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def check_workspace_health(
+    workspace_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> WorkspaceHealthResponse:
+    """Check workspace container health and responsiveness.
+
+    Executes a lightweight command to verify the container is responsive.
+    Returns health status, latency, and any error details.
+
+    Use this to verify a workspace is working before performing operations,
+    or to diagnose issues with unresponsive workspaces.
+    """
+    from src.compute_client import compute_client
+
+    workspace = await verify_workspace_access(workspace_id, request, db)
+    user_id: str = getattr(request.state, "user_id", "") or ""
+
+    if workspace.status != "running":
+        return WorkspaceHealthResponse(
+            workspace_id=workspace_id,
+            healthy=False,
+            latency_ms=None,
+            status=workspace.status,
+            container_responsive=False,
+            last_activity=workspace.last_activity.isoformat() if workspace.last_activity else None,
+            error=f"Workspace is in '{workspace.status}' state, not running",
+        )
+
+    # Perform health check
+    health = await compute_client.health_check_workspace(workspace_id, user_id)
+
+    return WorkspaceHealthResponse(
+        workspace_id=workspace_id,
+        healthy=health.get("healthy", False),
+        latency_ms=health.get("latency_ms"),
+        status=workspace.status,
+        container_responsive=health.get("healthy", False),
+        last_activity=workspace.last_activity.isoformat() if workspace.last_activity else None,
+        error=health.get("error"),
+    )
+
+
 # ==================== Terminal History ====================
 
 
@@ -1253,6 +1534,10 @@ class TerminalHistoryResponse(BaseModel):
     total: int
 
 
+# Maximum terminal history entries to prevent large payloads
+MAX_TERMINAL_HISTORY_ENTRIES = 250
+
+
 @router.get("/{workspace_id}/terminal/history", response_model=TerminalHistoryResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def get_terminal_history_endpoint(
@@ -1266,18 +1551,18 @@ async def get_terminal_history_endpoint(
 
     Args:
         workspace_id: The workspace ID
-        limit: Maximum number of history entries to return (default: 100, max: 1000)
+        limit: Maximum number of history entries to return (default: 100, max: 250)
 
     Returns:
         Terminal output history with timestamps
     """
-    from src.websocket.hub import get_terminal_history  # noqa: PLC0415
+    from src.websocket.hub import get_terminal_history
 
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
 
-    # Clamp limit
-    limit = max(1, min(1000, limit))
+    # Clamp limit to prevent large payloads
+    limit = max(1, min(MAX_TERMINAL_HISTORY_ENTRIES, limit))
 
     # Get history from hub
     history = get_terminal_history(workspace_id, limit)
@@ -1311,7 +1596,7 @@ async def clear_terminal_history_endpoint(
     Returns:
         Confirmation message
     """
-    from src.websocket.hub import clear_terminal_history  # noqa: PLC0415
+    from src.websocket.hub import clear_terminal_history
 
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)

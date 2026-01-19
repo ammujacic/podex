@@ -22,7 +22,9 @@
     ],
     "paths": {
       "@/*": ["./src/*"],
+      "@podex/api-client": ["../../packages/api-client/src"],
       "@podex/shared": ["../../packages/shared/src"],
+      "@podex/state": ["../../packages/state/src"],
       "@podex/ui": ["../../packages/ui/src"]
     }
   },

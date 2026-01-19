@@ -13,6 +13,8 @@ import {
   type InvoiceResponse,
 } from '@/lib/api';
 import { CreditCard, Download } from 'lucide-react';
+import CostInsights from '@/components/billing/CostInsights';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 const formatCurrency = (amount: number, currency = 'USD') => {
   return new Intl.NumberFormat('en-US', {
@@ -49,6 +51,7 @@ const statusColors: Record<string, string> = {
 };
 
 export default function BillingPage() {
+  useDocumentTitle('Billing');
   const [subscription, setSubscription] = useState<SubscriptionResponse | null>(null);
   const [credits, setCredits] = useState<CreditBalanceResponse | null>(null);
   const [invoices, setInvoices] = useState<InvoiceResponse[]>([]);
@@ -213,8 +216,8 @@ export default function BillingPage() {
                   ? 'Custom'
                   : formatCurrency(
                       subscription.billing_cycle === 'yearly'
-                        ? (subscription.plan.price_yearly || 0) / 100
-                        : (subscription.plan.price_monthly || 0) / 100
+                        ? subscription.plan.price_yearly || 0
+                        : subscription.plan.price_monthly || 0
                     )}
               </div>
               <div className="text-sm text-text-muted mb-2">
@@ -284,6 +287,11 @@ export default function BillingPage() {
           </div>
         </div>
       )}
+
+      {/* Cost Insights */}
+      <div className="mb-8">
+        <CostInsights />
+      </div>
 
       {/* Payment Methods */}
       <div className="bg-surface border border-border-default rounded-xl p-6 mb-8">

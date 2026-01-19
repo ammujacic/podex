@@ -5,7 +5,8 @@
  * Runs automatically on file save or after a typing pause.
  */
 
-import type { editor } from 'monaco-editor';
+import type * as monaco from '@codingame/monaco-vscode-editor-api';
+import type { editor } from '@codingame/monaco-vscode-editor-api';
 
 // ============================================================================
 // Types
@@ -203,7 +204,7 @@ export class BugDetector {
    */
   async analyzeAndUpdate(
     editor: editor.IStandaloneCodeEditor,
-    monaco: typeof import('monaco-editor')
+    monacoInstance: typeof monaco
   ): Promise<DetectedBug[]> {
     const model = editor.getModel();
     if (!model) return [];
@@ -223,7 +224,7 @@ export class BugDetector {
 
     // Update Monaco markers
     const markers = this.bugsToMarkers(result.bugs, model);
-    monaco.editor.setModelMarkers(model, 'ai-bug-detector', markers);
+    monacoInstance.editor.setModelMarkers(model, 'ai-bug-detector', markers);
 
     return result.bugs;
   }
@@ -232,12 +233,12 @@ export class BugDetector {
    * Schedule analysis with debounce
    */
   scheduleAnalysis(
-    editor: editor.IStandaloneCodeEditor,
-    monaco: typeof import('monaco-editor')
+    editorInstance: editor.IStandaloneCodeEditor,
+    monacoInstance: typeof monaco
   ): void {
     if (!this.config.enabled || !this.config.autoAnalyze) return;
 
-    const model = editor.getModel();
+    const model = editorInstance.getModel();
     if (!model) return;
 
     const modelUri = model.uri.toString();
@@ -250,7 +251,7 @@ export class BugDetector {
 
     // Schedule new analysis
     const timer = setTimeout(() => {
-      this.analyzeAndUpdate(editor, monaco);
+      this.analyzeAndUpdate(editorInstance, monacoInstance);
       this.debounceTimers.delete(modelUri);
     }, this.config.debounceMs);
 
@@ -260,7 +261,7 @@ export class BugDetector {
   /**
    * Clear all analysis timers and markers
    */
-  clearAll(monaco: typeof import('monaco-editor')): void {
+  clearAll(monacoInstance: typeof monaco): void {
     // Clear all timers
     for (const timer of this.debounceTimers.values()) {
       clearTimeout(timer);
@@ -274,8 +275,8 @@ export class BugDetector {
     this.pendingRequests.clear();
 
     // Clear all markers
-    for (const model of monaco.editor.getModels()) {
-      monaco.editor.setModelMarkers(model, 'ai-bug-detector', []);
+    for (const model of monacoInstance.editor.getModels()) {
+      monacoInstance.editor.setModelMarkers(model, 'ai-bug-detector', []);
     }
   }
 
@@ -283,30 +284,30 @@ export class BugDetector {
    * Setup auto-analysis for an editor
    */
   setupAutoAnalysis(
-    editor: editor.IStandaloneCodeEditor,
-    monaco: typeof import('monaco-editor')
+    editorInstance: editor.IStandaloneCodeEditor,
+    monacoInstance: typeof monaco
   ): { dispose: () => void } {
-    const model = editor.getModel();
+    const model = editorInstance.getModel();
     if (!model) {
       return { dispose: () => {} };
     }
 
     // Analyze on content change (debounced)
     const contentChangeDisposable = model.onDidChangeContent(() => {
-      this.scheduleAnalysis(editor, monaco);
+      this.scheduleAnalysis(editorInstance, monacoInstance);
     });
 
     // Analyze immediately on save
-    const saveDisposable = editor.onKeyDown((e) => {
+    const saveDisposable = editorInstance.onKeyDown((e) => {
       // Ctrl/Cmd + S
       if ((e.ctrlKey || e.metaKey) && e.keyCode === 49) {
         // KeyCode.KeyS
-        this.analyzeAndUpdate(editor, monaco);
+        this.analyzeAndUpdate(editorInstance, monacoInstance);
       }
     });
 
     // Initial analysis
-    this.analyzeAndUpdate(editor, monaco);
+    this.analyzeAndUpdate(editorInstance, monacoInstance);
 
     return {
       dispose: () => {
@@ -323,7 +324,7 @@ export class BugDetector {
         }
 
         // Clear markers for this model
-        monaco.editor.setModelMarkers(model, 'ai-bug-detector', []);
+        monacoInstance.editor.setModelMarkers(model, 'ai-bug-detector', []);
       },
     };
   }
@@ -388,14 +389,14 @@ export const bugGlyphStyles = `
 import { useEffect, useRef } from 'react';
 
 export function useBugDetector(
-  editor: editor.IStandaloneCodeEditor | null,
-  monaco: typeof import('monaco-editor') | null,
+  editorInstance: editor.IStandaloneCodeEditor | null,
+  monacoInstance: typeof monaco | null,
   enabled: boolean = true
 ): void {
   const disposableRef = useRef<{ dispose: () => void } | null>(null);
 
   useEffect(() => {
-    if (!editor || !monaco || !enabled) {
+    if (!editorInstance || !monacoInstance || !enabled) {
       disposableRef.current?.dispose();
       disposableRef.current = null;
       return;
@@ -403,11 +404,11 @@ export function useBugDetector(
 
     const detector = getBugDetector();
     detector.updateConfig({ enabled });
-    disposableRef.current = detector.setupAutoAnalysis(editor, monaco);
+    disposableRef.current = detector.setupAutoAnalysis(editorInstance, monacoInstance);
 
     return () => {
       disposableRef.current?.dispose();
       disposableRef.current = null;
     };
-  }, [editor, monaco, enabled]);
+  }, [editorInstance, monacoInstance, enabled]);
 }

@@ -37,9 +37,9 @@ class WorkspaceTier(str, Enum):
     ARM_STARTER = "arm_starter"  # 2 vCPU, 4GB RAM, Graviton
     ARM_PRO = "arm_pro"  # 4 vCPU, 8GB RAM, Graviton
 
-    # ML Accelerator tiers (AWS custom silicon - more cost-effective than NVIDIA)
-    ML_INFERENCE = "ml_inference"  # AWS Inferentia2 - optimized for inference
-    ML_TRAINING = "ml_training"  # AWS Trainium - optimized for training
+    # ML Accelerator tiers (TPU/custom silicon - more cost-effective than NVIDIA)
+    ML_INFERENCE = "ml_inference"  # TPU - optimized for inference
+    ML_TRAINING = "ml_training"  # TPU - optimized for training
 
 
 class Architecture(str, Enum):
@@ -66,9 +66,12 @@ class AcceleratorType(str, Enum):
     # NVIDIA GPUs for ARM (Graviton2 + NVIDIA)
     T4G = "t4g"  # 16GB VRAM, ARM-compatible (g5g instances - Graviton2 + T4G)
 
-    # AWS ML Accelerators (custom silicon, more cost-effective)
-    INFERENTIA2 = "inferentia2"  # AWS Inferentia2 - optimized for inference, 70% cheaper
-    TRAINIUM = "trainium"  # AWS Trainium - optimized for training, 50% cheaper
+    # TPU/ML Accelerators (custom silicon, more cost-effective)
+    TPU_V4 = "tpu_v4"  # TPU v4 - optimized for inference and training
+    TPU_V5 = "tpu_v5"  # TPU v5 - latest generation TPU
+
+    # AWS Inferentia (ML inference optimized)
+    INFERENTIA2 = "inferentia2"  # AWS Inferentia2 chip for ML inference
 
 
 # Backward compatibility alias
@@ -81,8 +84,9 @@ class OSVersion(str, Enum):
     UBUNTU_22_04 = "ubuntu-22.04"
     UBUNTU_24_04 = "ubuntu-24.04"
     DEBIAN_12 = "debian-12"
-    AMAZON_LINUX_2023 = "amazon-linux-2023"
+    ROCKY_LINUX_9 = "rocky-linux-9"
     ALPINE_3_19 = "alpine-3.19"
+    AMAZON_LINUX_2023 = "amazon-linux-2023"
 
 
 class PythonVersion(str, Enum):
@@ -188,12 +192,23 @@ class WorkspaceConfig(BaseModel):
     # Template reference (if using a template)
     template_id: str | None = None
 
+    # Git identity configuration (for commits)
+    git_name: str | None = Field(default=None, description="Git user.name for commits")
+    git_email: str | None = Field(default=None, description="Git user.email for commits")
+
     # Docker image to use (overrides default workspace image)
-    # Supports ECR URIs, Docker Hub, or custom registries
-    # Example: "podex/workspace:nodejs", "123456789.dkr.ecr.us-east-1.amazonaws.com/ws:python"
+    # Supports Artifact Registry, Docker Hub, or custom registries
+    # Example: "podex/workspace:nodejs", "us-docker.pkg.dev/my-project/workspace/ws:python"
     base_image: str | None = Field(
         default=None,
         description="Docker image for the workspace (template's base_image if not specified)",
+    )
+
+    # Dotfiles sync configuration
+    sync_dotfiles: bool = Field(default=True, description="Whether to sync dotfiles")
+    dotfiles_paths: list[str] | None = Field(
+        default=None,
+        description="List of dotfile paths to sync (e.g., '.bashrc', '.claude/')",
     )
 
 
@@ -215,6 +230,10 @@ class HardwareSpec(BaseModel):
     requires_subscription: str | None = None  # Minimum plan required
     region_availability: list[str] = Field(default_factory=list)
 
+    # Compute routing flags (admin-configurable)
+    is_gpu: bool = False  # Whether this tier has GPU/accelerator hardware
+    requires_gke: bool = False  # Whether this tier requires GKE (Cloud Run doesn't support GPUs)
+
     model_config = {"from_attributes": True}
 
 
@@ -230,7 +249,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_default=20,
         storage_gb_max=50,
         hourly_rate=Decimal("0.05"),
-        region_availability=["us-east-1", "us-west-2", "eu-west-1"],
+        region_availability=["us-east1"],
     ),
     WorkspaceTier.PRO: HardwareSpec(
         tier=WorkspaceTier.PRO,
@@ -243,7 +262,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=100,
         hourly_rate=Decimal("0.10"),
         requires_subscription="starter",
-        region_availability=["us-east-1", "us-west-2", "eu-west-1", "ap-northeast-1"],
+        region_availability=["us-east1"],
     ),
     WorkspaceTier.POWER: HardwareSpec(
         tier=WorkspaceTier.POWER,
@@ -256,7 +275,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=200,
         hourly_rate=Decimal("0.20"),
         requires_subscription="pro",
-        region_availability=["us-east-1", "us-west-2", "eu-west-1"],
+        region_availability=["us-east1"],
     ),
     WorkspaceTier.ENTERPRISE: HardwareSpec(
         tier=WorkspaceTier.ENTERPRISE,
@@ -269,7 +288,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=500,
         hourly_rate=Decimal("0.40"),
         requires_subscription="team",
-        region_availability=["us-east-1", "us-west-2", "eu-west-1"],
+        region_availability=["us-east1"],
     ),
     # x86 CPU tiers - for software requiring x86 compatibility (slightly more expensive than ARM)
     WorkspaceTier.X86_STARTER: HardwareSpec(
@@ -282,7 +301,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_default=20,
         storage_gb_max=50,
         hourly_rate=Decimal("0.06"),  # ~20% more than ARM
-        region_availability=["us-east-1", "us-west-2", "eu-west-1"],
+        region_availability=["us-east1"],
     ),
     WorkspaceTier.X86_PRO: HardwareSpec(
         tier=WorkspaceTier.X86_PRO,
@@ -295,7 +314,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=100,
         hourly_rate=Decimal("0.12"),  # ~20% more than ARM
         requires_subscription="starter",
-        region_availability=["us-east-1", "us-west-2", "eu-west-1"],
+        region_availability=["us-east1"],
     ),
     WorkspaceTier.X86_POWER: HardwareSpec(
         tier=WorkspaceTier.X86_POWER,
@@ -308,7 +327,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=200,
         hourly_rate=Decimal("0.24"),  # ~20% more than ARM
         requires_subscription="pro",
-        region_availability=["us-east-1", "us-west-2", "eu-west-1"],
+        region_availability=["us-east1"],
     ),
     # x86 GPU tiers (NVIDIA GPUs)
     WorkspaceTier.GPU_STARTER: HardwareSpec(
@@ -324,7 +343,9 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=200,
         hourly_rate=Decimal("0.50"),
         requires_subscription="pro",
-        region_availability=["us-east-1", "us-west-2"],
+        region_availability=["us-east1"],
+        is_gpu=True,
+        requires_gke=True,
     ),
     WorkspaceTier.GPU_PRO: HardwareSpec(
         tier=WorkspaceTier.GPU_PRO,
@@ -339,7 +360,9 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=500,
         hourly_rate=Decimal("1.00"),
         requires_subscription="team",
-        region_availability=["us-east-1", "us-west-2"],
+        region_availability=["us-east1"],
+        is_gpu=True,
+        requires_gke=True,
     ),
     WorkspaceTier.GPU_POWER: HardwareSpec(
         tier=WorkspaceTier.GPU_POWER,
@@ -354,7 +377,9 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=1000,
         hourly_rate=Decimal("3.00"),
         requires_subscription="enterprise",
-        region_availability=["us-east-1"],
+        region_availability=["us-east1"],
+        is_gpu=True,
+        requires_gke=True,
     ),
     WorkspaceTier.ARM_STARTER: HardwareSpec(
         tier=WorkspaceTier.ARM_STARTER,
@@ -366,7 +391,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_default=20,
         storage_gb_max=50,
         hourly_rate=Decimal("0.04"),
-        region_availability=["us-east-1", "us-west-2", "eu-west-1"],
+        region_availability=["us-east1"],
     ),
     WorkspaceTier.ARM_PRO: HardwareSpec(
         tier=WorkspaceTier.ARM_PRO,
@@ -379,7 +404,7 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=100,
         hourly_rate=Decimal("0.08"),
         requires_subscription="starter",
-        region_availability=["us-east-1", "us-west-2", "eu-west-1"],
+        region_availability=["us-east1"],
     ),
     # ARM GPU tiers - Graviton2 + NVIDIA T4G (best of both worlds!)
     # G5g instances: ARM CPU with NVIDIA T4G GPU for ML inference
@@ -396,7 +421,9 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=200,
         hourly_rate=Decimal("0.40"),  # Cheaper than x86 T4
         requires_subscription="pro",
-        region_availability=["us-east-1", "us-west-2"],
+        region_availability=["us-east1"],
+        is_gpu=True,
+        requires_gke=True,
     ),
     WorkspaceTier.ARM_GPU_PRO: HardwareSpec(
         tier=WorkspaceTier.ARM_GPU_PRO,
@@ -411,7 +438,9 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=500,
         hourly_rate=Decimal("0.65"),
         requires_subscription="pro",
-        region_availability=["us-east-1", "us-west-2"],
+        region_availability=["us-east1"],
+        is_gpu=True,
+        requires_gke=True,
     ),
     WorkspaceTier.ARM_GPU_POWER: HardwareSpec(
         tier=WorkspaceTier.ARM_GPU_POWER,
@@ -426,38 +455,44 @@ HARDWARE_SPECS: dict[WorkspaceTier, HardwareSpec] = {
         storage_gb_max=1000,
         hourly_rate=Decimal("1.10"),
         requires_subscription="team",
-        region_availability=["us-east-1", "us-west-2"],
+        region_availability=["us-east1"],
+        is_gpu=True,
+        requires_gke=True,
     ),
-    # ML Accelerator tiers - AWS custom silicon (more cost-effective than NVIDIA)
+    # ML Accelerator tiers - TPU (more cost-effective than NVIDIA GPUs)
     WorkspaceTier.ML_INFERENCE: HardwareSpec(
         tier=WorkspaceTier.ML_INFERENCE,
         display_name="ML Inference",
-        description="AWS Inferentia2 - optimized for ML inference at 70% lower cost than GPU",
-        architecture=Architecture.X86_64,  # inf2 instances are x86_64
+        description="TPU v4 - optimized for ML inference at lower cost than GPU",
+        architecture=Architecture.X86_64,
         vcpu=4,
         memory_mb=16384,
-        gpu_type=AcceleratorType.INFERENTIA2,
-        gpu_memory_gb=32,  # Inferentia2 has 32GB HBM per chip
+        gpu_type=AcceleratorType.TPU_V4,
+        gpu_memory_gb=32,  # TPU v4 has 32GB HBM per chip
         storage_gb_default=100,
         storage_gb_max=500,
-        hourly_rate=Decimal("0.35"),  # ~70% cheaper than T4
+        hourly_rate=Decimal("0.35"),
         requires_subscription="pro",
-        region_availability=["us-east-1", "us-west-2"],
+        region_availability=["us-east1"],
+        is_gpu=True,
+        requires_gke=True,
     ),
     WorkspaceTier.ML_TRAINING: HardwareSpec(
         tier=WorkspaceTier.ML_TRAINING,
         display_name="ML Training",
-        description="AWS Trainium - optimized for ML training at 50% lower cost than GPU",
-        architecture=Architecture.X86_64,  # trn1 instances are x86_64
+        description="TPU v5 - optimized for ML training at lower cost than GPU",
+        architecture=Architecture.X86_64,
         vcpu=8,
         memory_mb=32768,
-        gpu_type=AcceleratorType.TRAINIUM,
-        gpu_memory_gb=32,  # Trainium has 32GB HBM per chip
+        gpu_type=AcceleratorType.TPU_V5,
+        gpu_memory_gb=64,  # TPU v5 has 64GB HBM per chip
         storage_gb_default=200,
         storage_gb_max=1000,
-        hourly_rate=Decimal("0.75"),  # ~50% cheaper than A10G
+        hourly_rate=Decimal("0.75"),
         requires_subscription="team",
-        region_availability=["us-east-1", "us-west-2"],
+        region_availability=["us-east1"],
+        is_gpu=True,
+        requires_gke=True,
     ),
 }
 
@@ -540,7 +575,7 @@ SOFTWARE_STACKS: dict[str, SoftwareStackConfig] = {
         python_version=PythonVersion.PYTHON_3_12,
         go_version=GoVersion.GO_1_22,
         apt_packages=["apt-transport-https", "gnupg"],
-        pip_packages=["ansible", "boto3", "docker", "kubernetes"],
+        pip_packages=["ansible", "google-cloud-storage", "docker", "kubernetes"],
     ),
     "mobile-development": SoftwareStackConfig(
         os_version=OSVersion.UBUNTU_22_04,
@@ -576,7 +611,7 @@ class WorkspaceInfo(BaseModel):
     tier: WorkspaceTier
     host: str  # Internal hostname/IP
     port: int
-    container_id: str | None = None  # Docker container ID or ECS task ARN
+    container_id: str | None = None  # Docker container ID or Cloud Run execution name
     repos: list[str] = Field(default_factory=list)
     created_at: datetime
     last_activity: datetime

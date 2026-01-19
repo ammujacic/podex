@@ -15,7 +15,9 @@ import {
 } from 'lucide-react';
 import { useUIStore } from '@/stores/ui';
 import { useSessionStore } from '@/stores/session';
+import { useEditorStore } from '@/stores/editor';
 import { cn } from '@/lib/utils';
+import { getLanguageFromPath } from './CodeEditor';
 import { listFiles, type FileNode } from '@/lib/api';
 
 interface FlatFileNode {
@@ -175,7 +177,11 @@ function HighlightedText({ text, indices }: { text: string; indices: number[] })
 
 export function QuickOpen() {
   const { quickOpenOpen, closeQuickOpen } = useUIStore();
-  const { currentSessionId, openFilePreview, recentFiles, addRecentFile } = useSessionStore();
+  const { currentSessionId, sessions, createEditorGridCard, recentFiles, addRecentFile } =
+    useSessionStore();
+  const openTab = useEditorStore((s) => s.openTab);
+  const session = currentSessionId ? sessions[currentSessionId] : null;
+  const editorGridCardId = session?.editorGridCardId;
   const [search, setSearch] = useState('');
   const [files, setFiles] = useState<FlatFileNode[]>([]);
   const [loading, setLoading] = useState(false);
@@ -283,12 +289,35 @@ export function QuickOpen() {
   const handleSelect = useCallback(
     (path: string) => {
       if (currentSessionId) {
-        openFilePreview(currentSessionId, path);
+        // Create the editor grid card if it doesn't exist
+        if (!editorGridCardId) {
+          createEditorGridCard(currentSessionId);
+        }
+
+        // Open file as a tab in the editor store
+        const fileName = path.split('/').pop() || path;
+        const language = getLanguageFromPath(path);
+        openTab({
+          path,
+          name: fileName,
+          language,
+          isDirty: false,
+          isPreview: true, // Single-click opens as preview
+          paneId: 'main',
+        });
+
         addRecentFile?.(path);
       }
       closeQuickOpen();
     },
-    [currentSessionId, openFilePreview, closeQuickOpen, addRecentFile]
+    [
+      currentSessionId,
+      editorGridCardId,
+      createEditorGridCard,
+      openTab,
+      closeQuickOpen,
+      addRecentFile,
+    ]
   );
 
   // Close on escape

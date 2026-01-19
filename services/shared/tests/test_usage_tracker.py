@@ -1,14 +1,11 @@
 """Comprehensive tests for usage tracking utilities."""
 
-import asyncio
 from datetime import datetime
-from decimal import Decimal
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-import httpx
 import pytest
 
+from podex_shared.models.billing import UsageType
 from podex_shared.usage_tracker import (
     ComputeUsageParams,
     TokenUsageParams,
@@ -20,7 +17,6 @@ from podex_shared.usage_tracker import (
     init_usage_tracker,
     shutdown_usage_tracker,
 )
-from podex_shared.models.billing import UsageType
 
 
 class TestUsageEventStatus:

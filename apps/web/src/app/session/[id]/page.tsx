@@ -27,7 +27,13 @@ import {
 import type { Agent, AgentMessage } from '@/stores/session';
 import { useUser, useAuthStore } from '@/stores/auth';
 import { useSessionStore } from '@/stores/session';
-import { useOnboardingTour, WORKSPACE_TOUR_STEPS } from '@/components/ui/OnboardingTour';
+import {
+  useOnboardingTour,
+  WORKSPACE_TOUR_STEPS,
+  MOBILE_WORKSPACE_TOUR_STEPS,
+} from '@/components/ui/OnboardingTour';
+import { useSessionTitle } from '@/hooks/useDocumentTitle';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 // Agent colors for mapping
 const agentColors = ['agent-1', 'agent-2', 'agent-3', 'agent-4', 'agent-5', 'agent-6'];
@@ -59,14 +65,20 @@ export default function SessionPage() {
   const user = useUser();
   const isInitialized = useAuthStore((s) => s.isInitialized);
   const sessionId = params.id as string;
-  const { sessions, createSession } = useSessionStore();
+  // Use getState() for initial check to avoid dependency on sessions object
+  // This prevents the effect from re-running when any session changes
+  const createSession = useSessionStore((s) => s.createSession);
 
   // Onboarding tour
   const { startTour, hasCompleted } = useOnboardingTour();
   const hasTriggeredTourRef = useRef(false);
+  const isMobile = useIsMobile();
 
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Set document title with session name and notifications
+  useSessionTitle(session?.name, sessionId);
   const [error, setError] = useState<string | null>(null);
   const [podStatus, setPodStatus] = useState<'starting' | 'running' | 'stopped' | 'error'>(
     'starting'
@@ -147,7 +159,9 @@ export default function SessionPage() {
 
         setSession(data);
 
-        // Fetch messages for each agent
+        if (isCancelled) return;
+
+        // Fetch messages for each agent (backend creates default Chat agent on session creation)
         const agentsWithMessages: Agent[] = await Promise.all(
           agentsData.map(async (agentResponse: AgentResponse, index: number) => {
             try {
@@ -164,6 +178,7 @@ export default function SessionPage() {
                 name: agentResponse.name,
                 role: agentResponse.role as Agent['role'],
                 model: agentResponse.model,
+                modelDisplayName: agentResponse.model_display_name ?? undefined,
                 status: agentResponse.status as Agent['status'],
                 color: agentColors[index % agentColors.length] ?? 'agent-1',
                 messages,
@@ -176,6 +191,7 @@ export default function SessionPage() {
                 name: agentResponse.name,
                 role: agentResponse.role as Agent['role'],
                 model: agentResponse.model,
+                modelDisplayName: agentResponse.model_display_name ?? undefined,
                 status: agentResponse.status as Agent['status'],
                 color: agentColors[index % agentColors.length] ?? 'agent-1',
                 messages: [],
@@ -187,10 +203,12 @@ export default function SessionPage() {
 
         if (isCancelled) return;
 
-        // Sync session to Zustand store if not already present
+        // Sync session to Zustand store
         // Note: workspace_id can be null during session creation - handle gracefully
         // Components should check for valid workspaceId before performing terminal/LSP operations
-        if (!sessions[sessionId]) {
+        const existingSession = useSessionStore.getState().sessions[sessionId];
+        if (!existingSession) {
+          // Create new session if it doesn't exist
           createSession({
             id: sessionId,
             name: data.name,
@@ -203,7 +221,73 @@ export default function SessionPage() {
             workspaceStatus: data.status === 'active' ? 'running' : 'pending',
             standbyAt: null,
             standbySettings: null,
+            editorGridCardId: null,
           });
+        } else {
+          // Session exists (likely from localStorage) - sync from API
+          // This ensures agents created in other views/devices are loaded
+          // and workspace ID is up to date (critical for terminal/file explorer sync)
+          const {
+            updateAgent,
+            addAgent: addAgentToSession,
+            updateSessionWorkspaceId,
+            removeAgent,
+          } = useSessionStore.getState();
+
+          // CRITICAL: Sync workspace ID from API to fix terminal/file explorer mismatch
+          // The localStorage may have a stale workspace ID from a previous session
+          if (data.workspace_id && data.workspace_id !== existingSession.workspaceId) {
+            updateSessionWorkspaceId(sessionId, data.workspace_id);
+          }
+
+          // Merge agents: keep local state (messages, status) but ensure all API agents exist
+          const existingAgentIds = new Set(existingSession.agents.map((a: Agent) => a.id));
+
+          for (const apiAgent of agentsWithMessages) {
+            if (!existingAgentIds.has(apiAgent.id)) {
+              // Agent exists in API but not in local store - add it
+              addAgentToSession(sessionId, apiAgent);
+            } else {
+              // Agent exists in both - update with API data but keep local messages if more recent
+              const localAgent = existingSession.agents.find((a: Agent) => a.id === apiAgent.id);
+              if (localAgent) {
+                // Merge messages: use API messages if local is empty, otherwise keep local
+                const mergedMessages =
+                  localAgent.messages.length > 0 ? localAgent.messages : apiAgent.messages;
+                updateAgent(sessionId, apiAgent.id, {
+                  name: apiAgent.name,
+                  model: apiAgent.model,
+                  modelDisplayName: apiAgent.modelDisplayName,
+                  status: apiAgent.status,
+                  messages: mergedMessages,
+                  // Fix corrupted localStorage data: ensure color is always set
+                  color: localAgent.color || apiAgent.color,
+                  mode: localAgent.mode || apiAgent.mode,
+                });
+              }
+            }
+          }
+
+          // Remove agents that exist locally but not in API (i.e., were deleted elsewhere)
+          // Also remove corrupted agents (missing id or essential fields)
+          const apiAgentIds = new Set(agentsWithMessages.map((a) => a.id));
+          for (const localAgent of existingSession.agents) {
+            // Skip terminal agents - they're managed separately and may not exist in API
+            if (localAgent.terminalSessionId) continue;
+
+            // Remove corrupted agents (missing required fields)
+            if (!localAgent.id || !localAgent.name) {
+              if (localAgent.id) {
+                removeAgent(sessionId, localAgent.id);
+              }
+              continue;
+            }
+
+            // Remove agents not found in backend
+            if (!apiAgentIds.has(localAgent.id)) {
+              removeAgent(sessionId, localAgent.id);
+            }
+          }
         }
 
         // Check pod status
@@ -241,7 +325,6 @@ export default function SessionPage() {
     sessionId,
     user,
     router,
-    sessions,
     createSession,
     isInitialized,
     simulateStartup,
@@ -265,14 +348,16 @@ export default function SessionPage() {
       // Small delay to ensure UI is fully rendered
       const timer = setTimeout(() => {
         if (!hasCompleted('workspace-tour')) {
-          startTour(WORKSPACE_TOUR_STEPS, 'workspace-tour');
+          // Use mobile-specific tour steps on mobile devices
+          const tourSteps = isMobile ? MOBILE_WORKSPACE_TOUR_STEPS : WORKSPACE_TOUR_STEPS;
+          startTour(tourSteps, 'workspace-tour');
         }
       }, 800);
 
       return () => clearTimeout(timer);
     }
     return undefined;
-  }, [podStatus, hasCompleted, startTour]);
+  }, [podStatus, hasCompleted, startTour, isMobile]);
 
   const handleRestart = async () => {
     setRestarting(true);
