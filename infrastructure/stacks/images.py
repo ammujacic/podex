@@ -93,22 +93,21 @@ def create_docker_images(
         image_name = registry_url.apply(make_image_formatter(registry_name))
 
         tag = svc.get("tag", "latest")
-        build_args: dict[str, object] = {
-            "context": svc["context"],
-            "dockerfile": svc["dockerfile"],
-            "platform": "linux/amd64",  # Required for Cloud Run (even on ARM Macs)
-            "cache_from": docker.CacheFromArgs(
+        target = svc.get("target")
+        build = docker.DockerBuildArgs(
+            context=svc["context"],
+            dockerfile=svc["dockerfile"],
+            platform="linux/amd64",  # Required for Cloud Run (even on ARM Macs)
+            cache_from=docker.CacheFromArgs(
                 images=[image_name.apply(lambda n, t=tag: f"{n}:{t}")],  # type: ignore[misc]
             ),
-        }
-        target = svc.get("target")
-        if target:
-            build_args["target"] = target
+            target=target,
+        )
 
         # Build and push the image
         image = docker.Image(
             f"podex-{svc['name']}-image-{env}",
-            build=docker.DockerBuildArgs(**build_args),
+            build=build,
             image_name=image_name.apply(lambda n, t=tag: f"{n}:{t}"),  # type: ignore[misc]
             registry=docker.RegistryArgs(
                 server=pulumi.Output.concat(region, "-docker.pkg.dev"),

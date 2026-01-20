@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 import {
-  Activity,
   AlertTriangle,
   ArrowDown,
   ArrowUp,
@@ -374,180 +373,159 @@ export default function ProjectHealth({
   const hasScore = health && health.analysis_status !== 'not_run';
 
   return (
-    <div className="border border-border-default rounded-lg overflow-hidden bg-surface">
-      <div className="w-full p-3 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Activity className="w-4 h-4 text-accent-primary" />
-          <span className="font-medium text-text-primary text-sm">Project Health</span>
+    <div className="overflow-hidden">
+      {!hasScore ? (
+        // No analysis run yet
+        <div className="p-6 text-center">
+          <div className="w-12 h-12 rounded-full bg-overlay flex items-center justify-center mx-auto mb-3">
+            <FileCode className="w-6 h-6 text-text-muted" />
+          </div>
+          <p className="text-sm text-text-secondary mb-1">No health analysis yet</p>
+          <p className="text-xs text-text-muted mb-4">
+            Analyze your project to get insights on code quality, security, and more
+          </p>
+          <button
+            onClick={handleAnalyze}
+            disabled={analyzing}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-accent-primary hover:bg-accent-primary/90 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50"
+          >
+            {analyzing ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Analyzing...
+              </>
+            ) : (
+              <>
+                <Play className="w-4 h-4" />
+                Run Analysis
+              </>
+            )}
+          </button>
         </div>
-        <div className="flex items-center gap-2">
-          {hasScore && (
-            <span
-              className={cn(
-                'px-2 py-0.5 rounded border text-xs font-bold',
-                gradeColors[health.grade]
-              )}
-            >
-              {health.grade}
-            </span>
-          )}
-        </div>
-      </div>
+      ) : (
+        <>
+          {/* Score Overview */}
+          <div className="p-4 flex items-center gap-4">
+            <ScoreRing score={health.overall_score} grade={health.grade} size="md" />
 
-      <div className="border-t border-border-subtle">
-        {!hasScore ? (
-          // No analysis run yet
-          <div className="p-6 text-center">
-            <div className="w-12 h-12 rounded-full bg-overlay flex items-center justify-center mx-auto mb-3">
-              <FileCode className="w-6 h-6 text-text-muted" />
+            <div className="flex-1">
+              <div className="text-2xl font-bold text-text-primary">
+                {health.overall_score}
+                <span className="text-sm font-normal text-text-muted">/100</span>
+              </div>
+
+              {health.score_change !== null && (
+                <div
+                  className={cn(
+                    'flex items-center gap-1 text-sm',
+                    health.score_change > 0 ? 'text-accent-success' : 'text-accent-error'
+                  )}
+                >
+                  {health.score_change > 0 ? (
+                    <ArrowUp className="w-3.5 h-3.5" />
+                  ) : (
+                    <ArrowDown className="w-3.5 h-3.5" />
+                  )}
+                  <span>{Math.abs(health.score_change)} pts</span>
+                </div>
+              )}
+
+              <div className="text-xs text-text-muted mt-1">
+                {health.analyzed_files_count} files analyzed
+              </div>
             </div>
-            <p className="text-sm text-text-secondary mb-1">No health analysis yet</p>
-            <p className="text-xs text-text-muted mb-4">
-              Analyze your project to get insights on code quality, security, and more
-            </p>
+
             <button
               onClick={handleAnalyze}
               disabled={analyzing}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-accent-primary hover:bg-accent-primary/90 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50"
+              className="p-2 text-text-muted hover:text-text-primary hover:bg-overlay rounded-lg transition-colors disabled:opacity-50"
+              title="Re-analyze"
             >
               {analyzing ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Analyzing...
-                </>
+                <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
-                <>
-                  <Play className="w-4 h-4" />
-                  Run Analysis
-                </>
+                <RefreshCw className="w-4 h-4" />
               )}
             </button>
           </div>
-        ) : (
-          <>
-            {/* Score Overview */}
-            <div className="p-4 flex items-center gap-4">
-              <ScoreRing score={health.overall_score} grade={health.grade} size="md" />
 
-              <div className="flex-1">
-                <div className="text-2xl font-bold text-text-primary">
-                  {health.overall_score}
-                  <span className="text-sm font-normal text-text-muted">/100</span>
+          {/* Metric Bars */}
+          <div className="px-4 pb-4 space-y-3">
+            <MetricBar
+              label="Code Quality"
+              score={health.code_quality.score}
+              icon={Code}
+              details={health.code_quality.details as Record<string, unknown>}
+            />
+            <MetricBar
+              label="Test Coverage"
+              score={health.test_coverage.score}
+              icon={TestTube}
+              details={health.test_coverage.details as Record<string, unknown>}
+            />
+            <MetricBar
+              label="Security"
+              score={health.security.score}
+              icon={Shield}
+              details={health.security.details as Record<string, unknown>}
+            />
+            <MetricBar
+              label="Documentation"
+              score={health.documentation.score}
+              icon={Book}
+              details={health.documentation.details as Record<string, unknown>}
+            />
+            <MetricBar
+              label="Dependencies"
+              score={health.dependencies.score}
+              icon={Package}
+              details={health.dependencies.details as Record<string, unknown>}
+            />
+          </div>
+
+          {/* Recommendations */}
+          {recommendations && recommendations.total_count > 0 && (
+            <div className="border-t border-border-subtle">
+              <div className="p-3 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-amber-400" />
+                  <span className="text-sm font-medium text-text-primary">
+                    {recommendations.total_count} Recommendations
+                  </span>
                 </div>
-
-                {health.score_change !== null && (
-                  <div
-                    className={cn(
-                      'flex items-center gap-1 text-sm',
-                      health.score_change > 0 ? 'text-accent-success' : 'text-accent-error'
-                    )}
-                  >
-                    {health.score_change > 0 ? (
-                      <ArrowUp className="w-3.5 h-3.5" />
-                    ) : (
-                      <ArrowDown className="w-3.5 h-3.5" />
-                    )}
-                    <span>{Math.abs(health.score_change)} pts</span>
-                  </div>
+                {recommendations.by_priority.high && (
+                  <span className="text-xs text-accent-error">
+                    {recommendations.by_priority.high} critical
+                  </span>
                 )}
-
-                <div className="text-xs text-text-muted mt-1">
-                  {health.analyzed_files_count} files analyzed
-                </div>
               </div>
 
-              <button
-                onClick={handleAnalyze}
-                disabled={analyzing}
-                className="p-2 text-text-muted hover:text-text-primary hover:bg-overlay rounded-lg transition-colors disabled:opacity-50"
-                title="Re-analyze"
-              >
-                {analyzing ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="w-4 h-4" />
+              <div className="px-3 pb-3 space-y-2">
+                {recommendations.recommendations.slice(0, 3).map((rec) => (
+                  <RecommendationItem
+                    key={rec.id}
+                    recommendation={rec}
+                    onAutoFix={rec.auto_fixable ? handleAutoFix : undefined}
+                  />
+                ))}
+
+                {recommendations.total_count > 3 && (
+                  <button className="w-full py-2 text-xs text-accent-primary hover:text-accent-primary/80 transition-colors">
+                    View all {recommendations.total_count} recommendations
+                  </button>
                 )}
-              </button>
-            </div>
-
-            {/* Metric Bars */}
-            <div className="px-4 pb-4 space-y-3">
-              <MetricBar
-                label="Code Quality"
-                score={health.code_quality.score}
-                icon={Code}
-                details={health.code_quality.details as Record<string, unknown>}
-              />
-              <MetricBar
-                label="Test Coverage"
-                score={health.test_coverage.score}
-                icon={TestTube}
-                details={health.test_coverage.details as Record<string, unknown>}
-              />
-              <MetricBar
-                label="Security"
-                score={health.security.score}
-                icon={Shield}
-                details={health.security.details as Record<string, unknown>}
-              />
-              <MetricBar
-                label="Documentation"
-                score={health.documentation.score}
-                icon={Book}
-                details={health.documentation.details as Record<string, unknown>}
-              />
-              <MetricBar
-                label="Dependencies"
-                score={health.dependencies.score}
-                icon={Package}
-                details={health.dependencies.details as Record<string, unknown>}
-              />
-            </div>
-
-            {/* Recommendations */}
-            {recommendations && recommendations.total_count > 0 && (
-              <div className="border-t border-border-subtle">
-                <div className="p-3 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Sparkles className="w-4 h-4 text-amber-400" />
-                    <span className="text-sm font-medium text-text-primary">
-                      {recommendations.total_count} Recommendations
-                    </span>
-                  </div>
-                  {recommendations.by_priority.high && (
-                    <span className="text-xs text-accent-error">
-                      {recommendations.by_priority.high} critical
-                    </span>
-                  )}
-                </div>
-
-                <div className="px-3 pb-3 space-y-2">
-                  {recommendations.recommendations.slice(0, 3).map((rec) => (
-                    <RecommendationItem
-                      key={rec.id}
-                      recommendation={rec}
-                      onAutoFix={rec.auto_fixable ? handleAutoFix : undefined}
-                    />
-                  ))}
-
-                  {recommendations.total_count > 3 && (
-                    <button className="w-full py-2 text-xs text-accent-primary hover:text-accent-primary/80 transition-colors">
-                      View all {recommendations.total_count} recommendations
-                    </button>
-                  )}
-                </div>
               </div>
-            )}
-
-            {/* Analysis Info */}
-            <div className="px-4 pb-3 text-xs text-text-muted">
-              Last analyzed:{' '}
-              {health.analyzed_at ? new Date(health.analyzed_at).toLocaleString() : 'Unknown'} (
-              {health.analysis_duration_seconds.toFixed(1)}s)
             </div>
-          </>
-        )}
-      </div>
+          )}
+
+          {/* Analysis Info */}
+          <div className="px-4 pb-3 text-xs text-text-muted">
+            Last analyzed:{' '}
+            {health.analyzed_at ? new Date(health.analyzed_at).toLocaleString() : 'Unknown'} (
+            {health.analysis_duration_seconds.toFixed(1)}s)
+          </div>
+        </>
+      )}
     </div>
   );
 }

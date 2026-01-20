@@ -1,7 +1,10 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useCallback } from 'react';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { cn } from '@/lib/utils';
+import { Copy, Check } from 'lucide-react';
 
 interface MarkdownRendererProps {
   content: string;
@@ -377,17 +380,115 @@ function ListItemRenderer({ item, ordered: _ordered }: { item: NestedListItem; o
 }
 
 /**
- * Renders a code block with syntax highlighting hints
+ * Map common language aliases to syntax highlighter language names
+ */
+const LANGUAGE_MAP: Record<string, string> = {
+  js: 'javascript',
+  ts: 'typescript',
+  tsx: 'tsx',
+  jsx: 'jsx',
+  py: 'python',
+  sh: 'bash',
+  shell: 'bash',
+  zsh: 'bash',
+  yml: 'yaml',
+  htm: 'html',
+  rs: 'rust',
+  golang: 'go',
+  text: 'text',
+};
+
+/**
+ * Copy button component for code blocks
+ */
+function CopyButton({ content }: { content: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  }, [content]);
+
+  return (
+    <button
+      onClick={handleCopy}
+      className={cn(
+        'flex items-center gap-1 px-2 py-1 text-xs rounded transition-all',
+        'bg-surface-elevated/80 hover:bg-surface-elevated',
+        'text-text-muted hover:text-text-primary',
+        'border border-border-subtle hover:border-border-default',
+        copied && 'text-green-400 border-green-400/50'
+      )}
+      title={copied ? 'Copied!' : 'Copy code'}
+    >
+      {copied ? (
+        <>
+          <Check size={12} />
+          <span>Copied</span>
+        </>
+      ) : (
+        <>
+          <Copy size={12} />
+          <span>Copy</span>
+        </>
+      )}
+    </button>
+  );
+}
+
+/**
+ * Renders a code block with syntax highlighting and copy buttons
  */
 function CodeBlock({ content, language }: { content: string; language: string }) {
+  const normalizedLang = LANGUAGE_MAP[language.toLowerCase()] || language.toLowerCase();
+  const lineCount = content.split('\n').length;
+
+  // Custom style overrides to match the app theme
+  const customStyle: React.CSSProperties = {
+    margin: 0,
+    padding: '0.75rem',
+    fontSize: '0.75rem',
+    lineHeight: '1.625',
+    borderRadius: 0,
+    background: 'transparent',
+  };
+
   return (
-    <div className="relative group my-2">
-      <div className="absolute right-2 top-2 text-xs text-text-muted opacity-60 group-hover:opacity-100 transition-opacity">
-        {language}
+    <div className="relative group my-2 rounded-md overflow-hidden bg-void/80">
+      {/* Header with language and top copy button */}
+      <div className="flex items-center justify-between px-3 py-1.5 bg-void/90 border-b border-border-subtle">
+        <span className="text-xs text-text-muted font-medium">{language}</span>
+        <CopyButton content={content} />
       </div>
-      <pre className="rounded-md bg-void/80 p-3 overflow-x-auto text-xs font-mono leading-relaxed">
-        <code className="text-text-secondary whitespace-pre-wrap break-words">{content}</code>
-      </pre>
+
+      {/* Code content with syntax highlighting */}
+      <SyntaxHighlighter
+        language={normalizedLang}
+        style={oneDark}
+        customStyle={customStyle}
+        wrapLongLines
+        showLineNumbers={lineCount > 5}
+        lineNumberStyle={{
+          minWidth: '2.5em',
+          paddingRight: '1em',
+          color: 'rgb(var(--text-muted))',
+          userSelect: 'none',
+        }}
+      >
+        {content}
+      </SyntaxHighlighter>
+
+      {/* Bottom copy button - only show for longer code blocks */}
+      {lineCount > 15 && (
+        <div className="flex justify-end px-3 py-1.5 bg-void/90 border-t border-border-subtle">
+          <CopyButton content={content} />
+        </div>
+      )}
     </div>
   );
 }
