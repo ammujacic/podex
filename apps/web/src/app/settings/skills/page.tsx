@@ -25,6 +25,15 @@ import {
 } from 'lucide-react';
 import { Button } from '@podex/ui';
 import { cn } from '@/lib/utils';
+import {
+  getSkills,
+  getSkillsStats,
+  deleteSkill,
+  exportSkill,
+  createSkill,
+  updateSkill,
+  importSkills,
+} from '@/lib/api';
 
 // ============================================================================
 // Types
@@ -594,17 +603,37 @@ export default function SkillsSettingsPage() {
 
   const fetchSkills = useCallback(async () => {
     try {
-      const params = new URLSearchParams({
-        page: page.toString(),
-        page_size: '20',
+      const data = await getSkills({
+        page,
+        page_size: 20,
+        search: searchQuery || undefined,
+        category: selectedTag || undefined,
       });
-      if (searchQuery) params.set('search', searchQuery);
-      if (selectedTag) params.set('tag', selectedTag);
-
-      const response = await fetch(`/api/v1/skills?${params}`);
-      if (!response.ok) throw new Error('Failed to fetch skills');
-      const data = await response.json();
-      setSkills(data.skills);
+      const transformedSkills: Skill[] = data.skills.map((skill) => ({
+        id: skill.id,
+        user_id: '', // Default since API doesn't provide
+        name: skill.name,
+        slug: skill.slug,
+        description: skill.description,
+        version: skill.version,
+        triggers: skill.triggers,
+        tags: skill.tags,
+        required_tools: skill.required_tools,
+        steps: skill.steps.map((step) => ({
+          action: step.name, // Map name to action
+          description: step.description,
+          tool: step.tool,
+          parameters: step.parameters,
+        })),
+        system_prompt: skill.system_prompt || null,
+        generated_by_agent: false, // Default
+        source_conversation_id: null, // Default
+        is_public: false, // Default
+        usage_count: 0, // Default
+        created_at: '', // API doesn't provide
+        updated_at: '', // API doesn't provide
+      }));
+      setSkills(transformedSkills);
       setTotalPages(data.total_pages);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load skills');
@@ -613,10 +642,8 @@ export default function SkillsSettingsPage() {
 
   const fetchStats = useCallback(async () => {
     try {
-      const response = await fetch('/api/v1/skills/stats');
-      if (!response.ok) throw new Error('Failed to fetch stats');
-      const data = await response.json();
-      setStats(data);
+      const data = await getSkillsStats();
+      setStats(data as SkillStats);
     } catch (err) {
       console.error('Failed to fetch stats:', err);
     }
@@ -634,10 +661,7 @@ export default function SkillsSettingsPage() {
   const handleDelete = async (id: string) => {
     setDeletingId(id);
     try {
-      const response = await fetch(`/api/v1/skills/${id}`, {
-        method: 'DELETE',
-      });
-      if (!response.ok) throw new Error('Failed to delete skill');
+      await deleteSkill(id);
       setSkills((prev) => prev.filter((s) => s.id !== id));
       fetchStats();
     } catch (err) {
@@ -654,9 +678,7 @@ export default function SkillsSettingsPage() {
 
   const handleExport = async (id: string) => {
     try {
-      const response = await fetch(`/api/v1/skills/${id}/export`);
-      if (!response.ok) throw new Error('Failed to export skill');
-      const data = await response.json();
+      const data = (await exportSkill(id)) as { slug: string };
       const blob = new Blob([JSON.stringify(data, null, 2)], {
         type: 'application/json',
       });
@@ -674,18 +696,23 @@ export default function SkillsSettingsPage() {
   const handleSave = async (data: Partial<Skill>) => {
     setIsSaving(true);
     try {
-      const url = editingSkill ? `/api/v1/skills/${editingSkill.id}` : '/api/v1/skills';
-      const method = editingSkill ? 'PATCH' : 'POST';
+      // Transform local Skill format to API Skill format
+      const apiData: Partial<import('@/lib/api').Skill> = {
+        ...data,
+        system_prompt: data.system_prompt || undefined, // Convert null to undefined
+        steps: data.steps?.map((step) => ({
+          name: step.action, // Map action back to name
+          description: step.description,
+          tool: step.tool,
+          parameters: step.parameters || {},
+          required: true, // Default to required
+        })),
+      };
 
-      const response = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to save skill');
+      if (editingSkill) {
+        await updateSkill(editingSkill.id, apiData);
+      } else {
+        await createSkill(apiData);
       }
 
       setShowEditor(false);
@@ -703,16 +730,7 @@ export default function SkillsSettingsPage() {
     setIsImporting(true);
     try {
       const data = JSON.parse(jsonData);
-      const response = await fetch('/api/v1/skills/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to import skill');
-      }
+      await importSkills(data);
 
       setShowImport(false);
       fetchSkills();

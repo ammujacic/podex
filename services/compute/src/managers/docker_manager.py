@@ -691,61 +691,87 @@ fi
                             "Failed to clean up git credentials", workspace_id=workspace_id
                         )
 
-    async def stop_workspace(self, workspace_id: str) -> None:
-        """Stop a running workspace container."""
-        workspace = await self._get_workspace(workspace_id)
-        if not workspace:
-            logger.warning("Workspace not found", workspace_id=workspace_id)
-            return
-
-        if not workspace.container_id:
-            return
-
-        # Calculate compute usage before stopping
+    async def _calculate_compute_duration(self, workspace: Any) -> int:
+        """Calculate compute usage duration for billing."""
         stop_time = datetime.now(UTC)
-        duration_seconds = int((stop_time - workspace.created_at).total_seconds())
+        duration_seconds = 0
+        last_billing_str = workspace.metadata.get("last_billing_timestamp")
+        if last_billing_str:
+            try:
+                last_billing = datetime.fromisoformat(last_billing_str)
+                if last_billing.tzinfo is None:
+                    last_billing = last_billing.replace(tzinfo=UTC)
+                delta_seconds = (stop_time - last_billing).total_seconds()
+                if delta_seconds > 0:
+                    duration_seconds = int(delta_seconds)
+            except ValueError:
+                logger.warning(
+                    "Invalid last_billing_timestamp on stop, skipping compute billing",
+                    workspace_id=workspace.id,
+                    last_billing_timestamp=last_billing_str,
+                )
+        else:
+            logger.warning(
+                "Missing last_billing_timestamp on stop, skipping compute billing",
+                workspace_id=workspace.id,
+            )
 
-        # Sync files to GCS before stopping (stop background sync first)
+        workspace.metadata["last_billing_timestamp"] = stop_time.isoformat()
+        return duration_seconds
+
+    async def _sync_files_before_stop(self, workspace: Any) -> Exception | None:
+        """Sync files to GCS and save dotfiles before stopping workspace."""
         sync_error: Exception | None = None
+
+        # Sync files to GCS (stop background sync first)
         try:
-            await self._file_sync.stop_background_sync(workspace_id)
-            await self._file_sync.sync_to_gcs(workspace_id)
+            await self._file_sync.stop_background_sync(workspace.id)
+            await self._file_sync.sync_to_gcs(workspace.id)
             workspace.metadata["gcs_sync_status"] = "success"
         except Exception as e:
             logger.exception(
                 "Failed to sync files to GCS before stop",
-                workspace_id=workspace_id,
+                workspace_id=workspace.id,
             )
-            # Store sync error - this is important as data may be lost
             workspace.metadata["gcs_sync_status"] = "error"
             workspace.metadata["gcs_sync_error"] = str(e)
             sync_error = e
 
-        # Save user dotfiles (.claude/, .codex/, .gemini/ configs) before stopping
-        # Only sync if sync_dotfiles is enabled (default True for backwards compat)
+        # Save user dotfiles if enabled
         sync_dotfiles = workspace.metadata.get("sync_dotfiles", True)
         if sync_dotfiles:
             try:
                 dotfiles_paths = workspace.metadata.get("dotfiles_paths")
                 await self._file_sync.save_user_dotfiles(
-                    workspace_id=workspace_id,
+                    workspace_id=workspace.id,
                     user_id=workspace.user_id,
                     dotfiles_paths=dotfiles_paths,
                 )
                 workspace.metadata["dotfiles_sync_status"] = "success"
                 logger.info(
                     "Saved user dotfiles before workspace stop",
-                    workspace_id=workspace_id,
+                    workspace_id=workspace.id,
                     user_id=workspace.user_id,
                 )
             except Exception as e:
                 logger.exception(
                     "Failed to save user dotfiles before stop",
-                    workspace_id=workspace_id,
+                    workspace_id=workspace.id,
                     user_id=workspace.user_id,
                 )
                 workspace.metadata["dotfiles_sync_status"] = "error"
                 workspace.metadata["dotfiles_sync_error"] = str(e)
+
+        return sync_error
+
+    async def _stop_container(
+        self,
+        workspace: Any,
+        duration_seconds: int,
+        sync_error: Exception | None,
+    ) -> None:
+        """Stop the workspace container and handle post-stop operations."""
+        stop_time = datetime.now(UTC)
 
         try:
             container = await asyncio.to_thread(
@@ -759,20 +785,40 @@ fi
             await self._save_workspace(workspace)
 
             # Track compute usage for billing
-            await self._track_compute_usage(workspace, duration_seconds)
+            if duration_seconds > 0:
+                await self._track_compute_usage(workspace, duration_seconds)
 
             # Warn if sync failed but stop succeeded
             if sync_error:
                 logger.warning(
                     "Workspace stopped but GCS sync failed - data may be lost",
-                    workspace_id=workspace_id,
+                    workspace_id=workspace.id,
                 )
             else:
-                logger.info("Workspace stopped", workspace_id=workspace_id)
+                logger.info("Workspace stopped", workspace_id=workspace.id)
         except NotFound:
-            logger.warning("Container not found", workspace_id=workspace_id)
+            logger.warning("Container not found", workspace_id=workspace.id)
             workspace.status = WorkspaceStatus.ERROR
             await self._save_workspace(workspace)
+
+    async def stop_workspace(self, workspace_id: str) -> None:
+        """Stop a running workspace container."""
+        workspace = await self._get_workspace(workspace_id)
+        if not workspace:
+            logger.warning("Workspace not found", workspace_id=workspace_id)
+            return
+
+        if not workspace.container_id:
+            return
+
+        # Calculate compute usage duration
+        duration_seconds = await self._calculate_compute_duration(workspace)
+
+        # Sync files before stopping
+        sync_error = await self._sync_files_before_stop(workspace)
+
+        # Stop the container
+        await self._stop_container(workspace, duration_seconds, sync_error)
 
     async def restart_workspace(self, workspace_id: str) -> None:
         """Restart a stopped workspace container."""
@@ -893,12 +939,16 @@ fi
                     # Get last billing timestamp from metadata
                     last_billing_str = workspace.metadata.get("last_billing_timestamp")
                     if not last_billing_str:
-                        # Use workspace creation time as starting point for first billing cycle
-                        # This ensures we track usage from when the workspace started running
-                        last_billing = workspace.created_at
-                    else:
-                        # Parse last billing timestamp
-                        last_billing = datetime.fromisoformat(last_billing_str)
+                        workspace.metadata["last_billing_timestamp"] = now.isoformat()
+                        await self._save_workspace(workspace)
+                        logger.warning(
+                            "Missing last_billing_timestamp, skipping billing tick",
+                            workspace_id=workspace.id,
+                        )
+                        continue
+
+                    # Parse last billing timestamp
+                    last_billing = datetime.fromisoformat(last_billing_str)
 
                     # Ensure last_billing is timezone-aware
                     if last_billing.tzinfo is None:
@@ -906,6 +956,14 @@ fi
 
                     # Calculate duration since last billing
                     duration = (now - last_billing).total_seconds()
+                    if duration <= 0:
+                        workspace.metadata["last_billing_timestamp"] = now.isoformat()
+                        await self._save_workspace(workspace)
+                        logger.warning(
+                            "Non-positive billing duration, resetting timestamp",
+                            workspace_id=workspace.id,
+                        )
+                        continue
 
                     # Only track if at least 10 minutes have passed to avoid too many small entries
                     # This also helps with cost precision since per-minute billing at low rates

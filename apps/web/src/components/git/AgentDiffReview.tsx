@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { usePendingChangesStore } from '@/stores/pendingChanges';
-import { useAuthStore } from '@/stores/auth';
+import { acceptPendingChange, rejectPendingChange } from '@/lib/api';
 import { Button } from '@podex/ui';
 
 // ============================================================================
@@ -311,7 +311,6 @@ export function AgentDiffReview({ className }: AgentDiffReviewProps) {
     activeChange ? state.getSessionChanges(activeChange.sessionId) : []
   );
   const openReview = usePendingChangesStore((state) => state.openReview);
-  const activeToken = useAuthStore((state) => state.tokens?.accessToken);
 
   // Compute diff lines
   const diffLines = useMemo(() => {
@@ -336,58 +335,34 @@ export function AgentDiffReview({ className }: AgentDiffReviewProps) {
   );
 
   const handleAccept = useCallback(async () => {
-    if (!activeChange || !activeToken) return;
+    if (!activeChange) return;
 
     setIsSubmitting(true);
     try {
-      const response = await fetch(
-        `/api/v1/sessions/${activeChange.sessionId}/pending-changes/${activeChange.id}/accept`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${activeToken}`,
-          },
-        }
-      );
-
-      if (response.ok) {
-        updateStatus(activeChange.sessionId, activeChange.id, 'accepted');
-      }
+      await acceptPendingChange(activeChange.sessionId, activeChange.id);
+      updateStatus(activeChange.sessionId, activeChange.id, 'accepted');
     } catch (error) {
       console.error('Failed to accept change:', error);
     } finally {
       setIsSubmitting(false);
     }
-  }, [activeChange, activeToken, updateStatus]);
+  }, [activeChange, updateStatus]);
 
   const handleReject = useCallback(async () => {
-    if (!activeChange || !activeToken) return;
+    if (!activeChange) return;
 
     setIsSubmitting(true);
     try {
-      const response = await fetch(
-        `/api/v1/sessions/${activeChange.sessionId}/pending-changes/${activeChange.id}/reject`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${activeToken}`,
-          },
-          body: JSON.stringify({ feedback: feedback || null }),
-        }
-      );
-
-      if (response.ok) {
-        updateStatus(activeChange.sessionId, activeChange.id, 'rejected');
-        setFeedback('');
-        setShowFeedback(false);
-      }
+      await rejectPendingChange(activeChange.sessionId, activeChange.id, feedback || undefined);
+      updateStatus(activeChange.sessionId, activeChange.id, 'rejected');
+      setFeedback('');
+      setShowFeedback(false);
     } catch (error) {
       console.error('Failed to reject change:', error);
     } finally {
       setIsSubmitting(false);
     }
-  }, [activeChange, activeToken, feedback, updateStatus]);
+  }, [activeChange, feedback, updateStatus]);
 
   if (!activeChange) {
     return null;

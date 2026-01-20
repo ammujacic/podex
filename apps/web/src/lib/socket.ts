@@ -532,6 +532,19 @@ export interface WorkspaceStatusEvent {
   error?: string;
 }
 
+/**
+ * Event emitted when workspace is moved to standby due to credit exhaustion
+ */
+export interface WorkspaceBillingStandbyEvent {
+  workspace_id: string;
+  status: 'standby';
+  reason: 'credit_exhaustion';
+  message: string;
+  standby_at: string;
+  upgrade_url: string;
+  add_credits_url: string;
+}
+
 export interface SocketEvents {
   agent_message: (data: AgentMessageEvent) => void;
   agent_status: (data: AgentStatusEvent) => void;
@@ -600,6 +613,8 @@ export interface SocketEvents {
   agent_config_update: (data: AgentConfigUpdateEvent) => void;
   // Workspace status events
   workspace_status: (data: WorkspaceStatusEvent) => void;
+  // Billing standby event (credit exhaustion)
+  workspace_billing_standby: (data: WorkspaceBillingStandbyEvent) => void;
 }
 
 // Track active session for auto-rejoin on reconnect

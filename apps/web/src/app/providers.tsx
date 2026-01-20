@@ -13,6 +13,7 @@ import { useSettingsSync } from '@/hooks/useSettingsSync';
 import { usePWAInit } from '@/hooks/usePWAInit';
 import { IOSInstallModal, OfflineIndicator } from '@/components/pwa';
 import { useInitializeConfig } from '@/stores/config';
+import { GlobalCreditExhaustedModal } from '@/components/billing/GlobalCreditExhaustedModal';
 
 interface ProvidersProps {
   children: ReactNode;
@@ -219,6 +220,9 @@ export function Providers({ children }: ProvidersProps) {
                     {/* PWA components */}
                     <IOSInstallModal />
                     <OfflineIndicator />
+
+                    {/* Billing components */}
+                    <GlobalCreditExhaustedModal />
                   </KeyboardShortcuts>
                 </OnboardingTourProvider>
               </PWAInitializer>

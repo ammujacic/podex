@@ -19,11 +19,13 @@ import {
   type AgentAutoModeSwitchEvent,
   type AgentConfigUpdateEvent,
   type WorkspaceStatusEvent,
+  type WorkspaceBillingStandbyEvent,
   type PermissionRequestEvent,
 } from '@/lib/socket';
 import { sendAgentMessage } from '@/lib/api';
 import { parseModelIdToDisplayName } from '@/lib/model-utils';
 import { toast } from 'sonner';
+import { useBillingStore } from '@/stores/billing';
 
 interface UseAgentSocketOptions {
   sessionId: string;
@@ -296,6 +298,32 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       }
     });
 
+    // Handle billing standby events (credit exhaustion)
+    const unsubBillingStandby = onSocketEvent(
+      'workspace_billing_standby',
+      (data: WorkspaceBillingStandbyEvent) => {
+        // Update the session's workspace status in the store
+        callbacksRef.current.setWorkspaceStatus(sessionId, 'standby', data.standby_at);
+
+        // Show the credit exhausted modal
+        useBillingStore.getState().showCreditExhaustedModal({
+          error_code: 'CREDITS_EXHAUSTED',
+          message: data.message,
+          quota_remaining: 0,
+          credits_remaining: 0,
+          resource_type: 'compute',
+          upgrade_url: data.upgrade_url,
+          add_credits_url: data.add_credits_url,
+        });
+
+        // Also show a toast as backup notification
+        toast.warning('Workspace paused - credits exhausted', {
+          description: data.message,
+          duration: 10000,
+        });
+      }
+    );
+
     // Handle Claude Code CLI permission requests
     const unsubPermissionRequest = onSocketEvent(
       'permission_request',
@@ -327,6 +355,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       unsubStreamEnd();
       unsubConfigUpdate();
       unsubWorkspaceStatus();
+      unsubBillingStandby();
       unsubPermissionRequest();
       leaveSession(sessionId, userId);
     };

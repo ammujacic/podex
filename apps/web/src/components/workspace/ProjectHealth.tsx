@@ -21,6 +21,12 @@ import {
   Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import {
+  getSessionHealth,
+  getSessionHealthRecommendations,
+  analyzeSessionHealth,
+  applyHealthFix,
+} from '@/lib/api';
 
 // Types matching the backend API
 interface MetricScore {
@@ -277,10 +283,8 @@ export default function ProjectHealth({ sessionId, compact = false }: ProjectHea
   const fetchHealth = async () => {
     try {
       const [healthRes, recsRes] = await Promise.all([
-        fetch(`/api/v1/sessions/${sessionId}/health`).then((r) => (r.ok ? r.json() : null)),
-        fetch(`/api/v1/sessions/${sessionId}/health/recommendations`).then((r) =>
-          r.ok ? r.json() : null
-        ),
+        getSessionHealth(sessionId),
+        getSessionHealthRecommendations(sessionId),
       ]);
 
       setHealth(healthRes);
@@ -304,13 +308,14 @@ export default function ProjectHealth({ sessionId, compact = false }: ProjectHea
     if (!analyzing) return;
 
     const interval = setInterval(async () => {
-      const res = await fetch(`/api/v1/sessions/${sessionId}/health`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.analysis_status === 'completed' || data.analysis_status === 'failed') {
+      try {
+        const data = await getSessionHealth(sessionId);
+        if (data && (data.analysis_status === 'completed' || data.analysis_status === 'failed')) {
           setAnalyzing(false);
           fetchHealth();
         }
+      } catch (err) {
+        console.error('Failed to poll health status:', err);
       }
     }, 2000);
 
@@ -323,13 +328,7 @@ export default function ProjectHealth({ sessionId, compact = false }: ProjectHea
       setAnalyzing(true);
       setError(null);
 
-      const res = await fetch(`/api/v1/sessions/${sessionId}/health/analyze`, {
-        method: 'POST',
-      });
-
-      if (!res.ok) {
-        throw new Error('Failed to start analysis');
-      }
+      await analyzeSessionHealth(sessionId);
     } catch (err) {
       setError('Failed to start analysis');
       setAnalyzing(false);
@@ -339,13 +338,7 @@ export default function ProjectHealth({ sessionId, compact = false }: ProjectHea
 
   const handleAutoFix = async (recommendationId: string) => {
     try {
-      const res = await fetch(`/api/v1/sessions/${sessionId}/health/fix/${recommendationId}`, {
-        method: 'POST',
-      });
-
-      if (!res.ok) {
-        throw new Error('Failed to apply fix');
-      }
+      await applyHealthFix(sessionId, recommendationId);
 
       // Refresh after fix
       setTimeout(fetchHealth, 1000);

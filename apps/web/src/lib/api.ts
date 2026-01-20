@@ -11,8 +11,47 @@ import type { ThinkingConfig, AttachmentFile, HardwareSpec } from '@podex/shared
 
 // Re-export from @podex/api-client for backward compatibility
 export { ApiRequestError, isAbortError, isQuotaError } from '@podex/api-client';
+import { ApiRequestError as ApiError } from '@podex/api-client';
 import { calculateExpiry } from '@podex/api-client';
 export type { LoginRequest, RegisterRequest } from '@/lib/api-adapters';
+import { useBillingStore, type BillingErrorDetail } from '@/stores/billing';
+
+/**
+ * Check if an error is a billing/payment required error (402).
+ */
+export function isBillingError(
+  error: unknown
+): error is ApiError & { detail?: BillingErrorDetail } {
+  if (error instanceof ApiError && error.status === 402) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Handle billing errors by showing the credit exhausted modal.
+ * Call this in catch blocks for API calls that might return 402.
+ */
+export function handleBillingError(error: unknown): boolean {
+  if (isBillingError(error)) {
+    const store = useBillingStore.getState();
+    // Try to extract error detail from the error message (JSON)
+    try {
+      const detail = JSON.parse(error.message) as BillingErrorDetail;
+      store.showCreditExhaustedModal(detail);
+    } catch {
+      // If parsing fails, create a basic error detail
+      store.showCreditExhaustedModal({
+        error_code: 'CREDITS_EXHAUSTED',
+        message: error.message || 'Your credits have been exhausted.',
+        quota_remaining: 0,
+        credits_remaining: 0,
+      });
+    }
+    return true;
+  }
+  return false;
+}
 
 // Import adapters and client
 import {
@@ -740,18 +779,43 @@ export async function sendAgentMessage(
     );
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.detail || 'Failed to send message');
+      const errorData = await response.json();
+      // Handle 402 billing errors specially
+      if (response.status === 402) {
+        const store = useBillingStore.getState();
+        store.showCreditExhaustedModal(
+          errorData.detail || {
+            error_code: 'CREDITS_EXHAUSTED',
+            message:
+              errorData.detail?.message || 'Token quota exceeded. Please upgrade or add credits.',
+            quota_remaining: errorData.detail?.quota_remaining || 0,
+            credits_remaining: errorData.detail?.credits_remaining || 0,
+            resource_type: 'tokens',
+          }
+        );
+      }
+      throw new Error(errorData.detail?.message || errorData.detail || 'Failed to send message');
     }
 
     return response.json();
   }
 
   // Standard JSON request (no attachments)
-  return api.post<MessageResponse>(`/api/sessions/${sessionId}/agents/${agentId}/messages`, {
-    content,
-    thinking_config: thinkingConfig,
-  });
+  try {
+    return await api.post<MessageResponse>(
+      `/api/sessions/${sessionId}/agents/${agentId}/messages`,
+      {
+        content,
+        thinking_config: thinkingConfig,
+      }
+    );
+  } catch (error) {
+    // Handle billing errors
+    if (handleBillingError(error)) {
+      throw error; // Re-throw after showing modal
+    }
+    throw error;
+  }
 }
 
 export async function getAgentMessages(
@@ -4626,4 +4690,383 @@ export async function adminUpdateProvider(
  */
 export async function adminDeleteProvider(slug: string): Promise<void> {
   await api.delete(`/api/admin/settings/providers/${slug}`);
+}
+
+// ============================================================================
+// Memory Operations
+// ============================================================================
+
+export interface Memory {
+  id: string;
+  content: string;
+  category: string;
+  source: string;
+  created_at: string;
+  updated_at: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface MemoriesResponse {
+  memories: Memory[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+/**
+ * Get paginated list of memories with optional filters.
+ */
+export async function getMemories(params?: {
+  page?: number;
+  page_size?: number;
+  category?: string;
+  source?: string;
+  search?: string;
+}): Promise<MemoriesResponse> {
+  const searchParams = new URLSearchParams();
+  if (params?.page) searchParams.set('page', String(params.page));
+  if (params?.page_size) searchParams.set('page_size', String(params.page_size));
+  if (params?.category) searchParams.set('category', params.category);
+  if (params?.source) searchParams.set('source', params.source);
+  if (params?.search) searchParams.set('search', params.search);
+
+  const query = searchParams.toString();
+  return api.get<MemoriesResponse>(`/api/v1/memories${query ? `?${query}` : ''}`);
+}
+
+/**
+ * Delete a specific memory by ID.
+ */
+export async function deleteMemory(memoryId: string): Promise<void> {
+  await api.delete(`/api/v1/memories/${memoryId}`);
+}
+
+/**
+ * Clear all memories.
+ */
+export async function clearAllMemories(): Promise<{ deleted: number }> {
+  return api.delete<{ deleted: number }>('/api/v1/memories?confirm=true');
+}
+
+// ============================================================================
+// Skills Operations
+// ============================================================================
+
+export interface SkillsResponse {
+  skills: Skill[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+/**
+ * Get paginated list of skills with optional filters.
+ */
+export async function getSkills(params?: {
+  page?: number;
+  page_size?: number;
+  category?: string;
+  search?: string;
+  enabled?: boolean;
+}): Promise<SkillsResponse> {
+  const searchParams = new URLSearchParams();
+  if (params?.page) searchParams.set('page', String(params.page));
+  if (params?.page_size) searchParams.set('page_size', String(params.page_size));
+  if (params?.category) searchParams.set('category', params.category);
+  if (params?.search) searchParams.set('search', params.search);
+  if (params?.enabled !== undefined) searchParams.set('enabled', String(params.enabled));
+
+  const query = searchParams.toString();
+  return api.get<SkillsResponse>(`/api/v1/skills${query ? `?${query}` : ''}`);
+}
+
+/**
+ * Delete a skill by ID.
+ */
+export async function deleteSkill(skillId: string): Promise<void> {
+  await api.delete(`/api/v1/skills/${skillId}`);
+}
+
+/**
+ * Export a skill by ID.
+ */
+export async function exportSkill(skillId: string): Promise<unknown> {
+  return api.get(`/api/v1/skills/${skillId}/export`);
+}
+
+/**
+ * Create a new skill.
+ */
+export async function createSkill(data: Partial<Skill>): Promise<Skill> {
+  return api.post<Skill>('/api/v1/skills', data);
+}
+
+/**
+ * Update an existing skill.
+ */
+export async function updateSkill(skillId: string, data: Partial<Skill>): Promise<Skill> {
+  return api.patch<Skill>(`/api/v1/skills/${skillId}`, data);
+}
+
+// ============================================================================
+// LLM Provider Operations
+// ============================================================================
+
+export interface CreateLLMProviderRequest {
+  name: string;
+  type: string;
+  api_key?: string;
+  base_url?: string;
+  is_enabled?: boolean;
+  config?: Record<string, unknown>;
+}
+
+export interface LLMProviderTestResult {
+  success: boolean;
+  message: string;
+  latency_ms?: number;
+  model_info?: Record<string, unknown>;
+}
+
+/**
+ * Create a new LLM provider.
+ */
+export async function createLLMProvider(
+  data: CreateLLMProviderRequest
+): Promise<LLMProviderResponse> {
+  return api.post<LLMProviderResponse>('/api/llm-providers', data);
+}
+
+/**
+ * Update an existing LLM provider.
+ */
+export async function updateLLMProvider(
+  providerId: string,
+  data: Partial<CreateLLMProviderRequest>
+): Promise<LLMProviderResponse> {
+  return api.patch<LLMProviderResponse>(`/api/llm-providers/${providerId}`, data);
+}
+
+/**
+ * Delete an LLM provider.
+ */
+export async function deleteLLMProvider(providerId: string): Promise<void> {
+  await api.delete(`/api/llm-providers/${providerId}`);
+}
+
+/**
+ * Test an LLM provider connection.
+ */
+export async function testLLMProvider(
+  providerId: string,
+  prompt?: string
+): Promise<LLMProviderTestResult> {
+  return api.post<LLMProviderTestResult>(`/api/llm-providers/${providerId}/test`, {
+    prompt: prompt || 'Hello, this is a test.',
+  });
+}
+
+// ============================================================================
+// Terminal Agent Operations
+// ============================================================================
+
+/**
+ * Delete a terminal agent by session ID.
+ */
+export async function deleteTerminalAgent(terminalSessionId: string): Promise<void> {
+  await api.delete(`/api/v1/terminal-agents/${terminalSessionId}`);
+}
+
+// ============================================================================
+// Workspace Search & Symbols
+// ============================================================================
+
+export interface SearchResult {
+  path: string;
+  line: number;
+  column: number;
+  content: string;
+  match: string;
+}
+
+export interface SearchResponse {
+  results: SearchResult[];
+  total: number;
+  truncated: boolean;
+}
+
+/**
+ * Search workspace files for content.
+ */
+export async function searchWorkspace(
+  sessionId: string,
+  query: string,
+  options?: {
+    path?: string;
+    include?: string;
+    exclude?: string;
+    max_results?: number;
+    case_sensitive?: boolean;
+    regex?: boolean;
+  }
+): Promise<SearchResponse> {
+  const searchParams = new URLSearchParams({ query });
+  if (options?.path) searchParams.set('path', options.path);
+  if (options?.include) searchParams.set('include', options.include);
+  if (options?.exclude) searchParams.set('exclude', options.exclude);
+  if (options?.max_results) searchParams.set('max_results', String(options.max_results));
+  if (options?.case_sensitive) searchParams.set('case_sensitive', 'true');
+  if (options?.regex) searchParams.set('regex', 'true');
+
+  return api.get<SearchResponse>(`/api/sessions/${sessionId}/search?${searchParams.toString()}`);
+}
+
+export interface DocumentSymbol {
+  name: string;
+  detail?: string;
+  kind: number;
+  range: {
+    startLine: number;
+    startColumn: number;
+    endLine: number;
+    endColumn: number;
+  };
+  selectionRange: {
+    startLine: number;
+    startColumn: number;
+    endLine: number;
+    endColumn: number;
+  };
+  children?: DocumentSymbol[];
+}
+
+/**
+ * Get document symbols for a file.
+ */
+export async function getDocumentSymbols(
+  sessionId: string,
+  filePath: string
+): Promise<DocumentSymbol[]> {
+  return api.get<DocumentSymbol[]>(
+    `/api/sessions/${sessionId}/symbols?path=${encodeURIComponent(filePath)}`
+  );
+}
+
+// ============================================================================
+// Project Health
+// ============================================================================
+
+export interface MetricScore {
+  score: number;
+  grade: string;
+  details?: Record<string, unknown>;
+}
+
+export interface HealthScoreResponse {
+  id: string;
+  session_id: string;
+  overall_score: number;
+  grade: string;
+  code_quality: MetricScore;
+  test_coverage: MetricScore;
+  security: MetricScore;
+  documentation: MetricScore;
+  dependencies: MetricScore;
+  analyzed_files_count: number;
+  analysis_duration_seconds: number;
+  analysis_status: string;
+  analyzed_at: string | null;
+  previous_score: number | null;
+  score_change: number | null;
+}
+
+export interface Recommendation {
+  id: string;
+  type: string;
+  title: string;
+  description: string;
+  priority: string;
+  effort: string;
+  impact: string;
+  auto_fixable: boolean;
+}
+
+export interface RecommendationsResponse {
+  total_count: number;
+  by_priority: Record<string, number>;
+  by_type: Record<string, number>;
+  recommendations: Recommendation[];
+}
+
+/**
+ * Get project health score for a session.
+ */
+export async function getSessionHealth(sessionId: string): Promise<HealthScoreResponse | null> {
+  try {
+    return await api.get<HealthScoreResponse>(`/api/v1/sessions/${sessionId}/health`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get health recommendations for a session.
+ */
+export async function getSessionHealthRecommendations(
+  sessionId: string
+): Promise<RecommendationsResponse | null> {
+  try {
+    return await api.get<RecommendationsResponse>(
+      `/api/v1/sessions/${sessionId}/health/recommendations`
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Start health analysis for a session.
+ */
+export async function analyzeSessionHealth(sessionId: string): Promise<{ status: string }> {
+  return api.post<{ status: string }>(`/api/v1/sessions/${sessionId}/health/analyze`, {});
+}
+
+/**
+ * Apply an auto-fix recommendation.
+ */
+export async function applyHealthFix(
+  sessionId: string,
+  recommendationId: string
+): Promise<{ success: boolean; message: string }> {
+  return api.post<{ success: boolean; message: string }>(
+    `/api/v1/sessions/${sessionId}/health/fix/${recommendationId}`,
+    {}
+  );
+}
+
+// ============================================================================
+// Code Explanation
+// ============================================================================
+
+export interface ExplanationResponse {
+  explanation: string;
+  language?: string;
+  concepts?: string[];
+}
+
+/**
+ * Get an explanation for code.
+ */
+export async function explainCode(
+  code: string,
+  language?: string,
+  context?: string
+): Promise<ExplanationResponse> {
+  return api.post<ExplanationResponse>('/api/completion/explain', {
+    code,
+    language,
+    context,
+  });
 }

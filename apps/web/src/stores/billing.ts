@@ -158,6 +158,16 @@ export interface HardwareSpec {
   regionAvailability: string[];
 }
 
+export interface BillingErrorDetail {
+  error_code: string;
+  message: string;
+  quota_remaining: number;
+  credits_remaining: number;
+  resource_type?: 'tokens' | 'compute';
+  upgrade_url?: string;
+  add_credits_url?: string;
+}
+
 // =============================================================================
 // STATE INTERFACE
 // =============================================================================
@@ -200,6 +210,10 @@ interface BillingState {
   hardwareSpecsLoading: boolean;
   hardwareSpecsError: string | null;
 
+  // Credit exhausted modal
+  creditExhaustedModalOpen: boolean;
+  creditExhaustedErrorDetail: BillingErrorDetail | null;
+
   // Actions
   setPlans: (plans: SubscriptionPlan[]) => void;
   setPlansLoading: (loading: boolean) => void;
@@ -230,6 +244,10 @@ interface BillingState {
   setHardwareSpecs: (specs: HardwareSpec[]) => void;
   setHardwareSpecsLoading: (loading: boolean) => void;
   setHardwareSpecsError: (error: string | null) => void;
+
+  // Credit exhausted modal actions
+  showCreditExhaustedModal: (errorDetail: BillingErrorDetail) => void;
+  hideCreditExhaustedModal: () => void;
 
   // Computed helpers
   getQuotaByType: (type: string) => Quota | undefined;
@@ -276,6 +294,9 @@ const initialState = {
   hardwareSpecs: [],
   hardwareSpecsLoading: false,
   hardwareSpecsError: null,
+
+  creditExhaustedModalOpen: false,
+  creditExhaustedErrorDetail: null,
 };
 
 // =============================================================================
@@ -323,6 +344,12 @@ export const useBillingStore = create<BillingState>()(
       setHardwareSpecs: (hardwareSpecs) => set({ hardwareSpecs }),
       setHardwareSpecsLoading: (hardwareSpecsLoading) => set({ hardwareSpecsLoading }),
       setHardwareSpecsError: (hardwareSpecsError) => set({ hardwareSpecsError }),
+
+      // Credit exhausted modal
+      showCreditExhaustedModal: (errorDetail) =>
+        set({ creditExhaustedModalOpen: true, creditExhaustedErrorDetail: errorDetail }),
+      hideCreditExhaustedModal: () =>
+        set({ creditExhaustedModalOpen: false, creditExhaustedErrorDetail: null }),
 
       // Helpers
       getQuotaByType: (type) => get().quotas.find((q) => q.quotaType === type),
@@ -411,6 +438,17 @@ export const useQuotaExceeded = () =>
 // Low credit balance (less than $1.00)
 export const useLowCredits = () =>
   useBillingStore((state) => state.creditBalance && state.creditBalance.balance < 100);
+
+// Credit exhausted modal
+export const useCreditExhaustedModal = () =>
+  useBillingStore(
+    useShallow((state) => ({
+      isOpen: state.creditExhaustedModalOpen,
+      errorDetail: state.creditExhaustedErrorDetail,
+      show: state.showCreditExhaustedModal,
+      hide: state.hideCreditExhaustedModal,
+    }))
+  );
 
 // Check if user has any quota issues (warning or exceeded)
 export const useHasQuotaIssues = () =>

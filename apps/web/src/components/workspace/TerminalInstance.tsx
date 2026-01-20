@@ -53,6 +53,20 @@ export function TerminalInstance({
 
   const tokens = useAuthStore((state) => state.tokens);
 
+  const resizeTerminal = useCallback(() => {
+    if (!fitAddonRef.current || !termRef.current || !isActive) return;
+    fitAddonRef.current.fit();
+
+    if (socketRef.current?.connected && terminalReadyRef.current) {
+      socketRef.current.emit('terminal_resize', {
+        workspace_id: workspaceId,
+        terminal_id: tabId,
+        rows: termRef.current.rows,
+        cols: termRef.current.cols,
+      });
+    }
+  }, [workspaceId, tabId, isActive]);
+
   const initTerminal = useCallback(async () => {
     const container = containerRef.current;
     if (!container || initializedRef.current) return;
@@ -173,18 +187,7 @@ export function TerminalInstance({
   // Handle resize
   useEffect(() => {
     const handleResize = () => {
-      if (fitAddonRef.current && termRef.current && isActive) {
-        fitAddonRef.current.fit();
-
-        if (socketRef.current?.connected && terminalReadyRef.current) {
-          socketRef.current.emit('terminal_resize', {
-            workspace_id: workspaceId,
-            terminal_id: tabId,
-            rows: termRef.current.rows,
-            cols: termRef.current.cols,
-          });
-        }
-      }
+      resizeTerminal();
     };
 
     window.addEventListener('resize', handleResize);
@@ -195,7 +198,21 @@ export function TerminalInstance({
     }
 
     return () => window.removeEventListener('resize', handleResize);
-  }, [workspaceId, tabId, isActive]);
+  }, [resizeTerminal, isActive]);
+
+  // Handle container resize (panel drag/split resize)
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    if (typeof ResizeObserver === 'undefined') return;
+
+    const resizeObserver = new ResizeObserver(() => {
+      requestAnimationFrame(resizeTerminal);
+    });
+    resizeObserver.observe(container);
+
+    return () => resizeObserver.disconnect();
+  }, [resizeTerminal]);
 
   // Cleanup
   useEffect(() => {
@@ -257,10 +274,8 @@ export function TerminalInstance({
   }, [workspaceId, tabId, tokens, shell]);
 
   const fit = useCallback(() => {
-    if (fitAddonRef.current) {
-      fitAddonRef.current.fit();
-    }
-  }, []);
+    resizeTerminal();
+  }, [resizeTerminal]);
 
   // Attach methods to ref for parent access (via imperative handle pattern)
   useEffect(() => {

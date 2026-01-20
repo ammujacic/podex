@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@podex/ui';
 import { cn } from '@/lib/utils';
+import { getMemories, getMemoriesStats, deleteMemory, clearAllMemories } from '@/lib/api';
 
 // ============================================================================
 // Types
@@ -198,17 +199,25 @@ export default function MemorySettingsPage() {
 
   const fetchMemories = useCallback(async () => {
     try {
-      const params = new URLSearchParams({
-        page: page.toString(),
-        page_size: '20',
+      const data = await getMemories({
+        page,
+        page_size: 20,
+        search: searchQuery || undefined,
+        category: selectedType || undefined,
       });
-      if (searchQuery) params.set('search', searchQuery);
-      if (selectedType) params.set('memory_type', selectedType);
-
-      const response = await fetch(`/api/v1/memories?${params}`);
-      if (!response.ok) throw new Error('Failed to fetch memories');
-      const data = await response.json();
-      setMemories(data.memories);
+      const transformedMemories: Memory[] = data.memories.map((memory) => ({
+        id: memory.id,
+        content: memory.content,
+        memory_type: memory.category,
+        tags: null, // Default since API doesn't provide tags
+        importance: 0.5, // Default importance
+        session_id: null, // Default since API doesn't provide
+        project_id: null, // Default since API doesn't provide
+        access_count: 0, // Default since API doesn't provide
+        created_at: memory.created_at,
+        updated_at: memory.updated_at,
+      }));
+      setMemories(transformedMemories);
       setTotalPages(data.total_pages);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load memories');
@@ -217,10 +226,8 @@ export default function MemorySettingsPage() {
 
   const fetchStats = useCallback(async () => {
     try {
-      const response = await fetch('/api/v1/memories/stats');
-      if (!response.ok) throw new Error('Failed to fetch stats');
-      const data = await response.json();
-      setStats(data);
+      const data = await getMemoriesStats();
+      setStats(data as MemoryStats);
     } catch (err) {
       console.error('Failed to fetch stats:', err);
     }
@@ -238,10 +245,7 @@ export default function MemorySettingsPage() {
   const handleDelete = async (id: string) => {
     setDeletingId(id);
     try {
-      const response = await fetch(`/api/v1/memories/${id}`, {
-        method: 'DELETE',
-      });
-      if (!response.ok) throw new Error('Failed to delete memory');
+      await deleteMemory(id);
       setMemories((prev) => prev.filter((m) => m.id !== id));
       fetchStats();
     } catch (err) {
@@ -254,10 +258,7 @@ export default function MemorySettingsPage() {
   const handleClearAll = async () => {
     setIsClearing(true);
     try {
-      const response = await fetch('/api/v1/memories?confirm=true', {
-        method: 'DELETE',
-      });
-      if (!response.ok) throw new Error('Failed to clear memories');
+      await clearAllMemories();
       setMemories([]);
       setShowClearConfirm(false);
       fetchStats();

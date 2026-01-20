@@ -16,7 +16,7 @@ import { GridProvider } from './GridContext';
 import { useUIStore } from '@/stores/ui';
 import { CodeEditor } from './CodeEditor';
 import { EnhancedCodeEditor } from '@/components/editor/EnhancedCodeEditor';
-import { deleteAgent as deleteAgentApi } from '@/lib/api';
+import { deleteAgent as deleteAgentApi, deleteTerminalAgent } from '@/lib/api';
 
 // Error boundary for individual agent cards to prevent one broken card from crashing the entire grid
 interface AgentCardErrorBoundaryProps {
@@ -227,9 +227,7 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
     // Close the terminal session on the backend
     if (agent.terminalSessionId) {
       try {
-        await fetch(`/api/v1/terminal-agents/${agent.terminalSessionId}`, {
-          method: 'DELETE',
-        });
+        await deleteTerminalAgent(agent.terminalSessionId);
       } catch (err) {
         console.error('Failed to close terminal session:', err);
       }

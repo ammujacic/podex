@@ -4,6 +4,7 @@ import { useState, useCallback } from 'react';
 import { X, Lightbulb, Copy, Check, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { explainCode as explainCodeApi } from '@/lib/api';
 
 // ============================================================================
 // Types
@@ -23,36 +24,6 @@ interface ExplanationPanelProps {
 }
 
 // ============================================================================
-// API
-// ============================================================================
-
-async function fetchExplanation(
-  code: string,
-  language: string,
-  detailLevel: 'brief' | 'detailed' | 'comprehensive' = 'detailed'
-): Promise<CodeExplanation> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-
-  const response = await fetch(`${apiUrl}/api/completion/explain`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      code,
-      language,
-      detail_level: detailLevel,
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error('Failed to get explanation');
-  }
-
-  return response.json();
-}
-
-// ============================================================================
 // Component
 // ============================================================================
 
@@ -65,8 +36,8 @@ export function ExplanationPanel({ code, language, onClose, className }: Explana
 
   // Fetch explanation on mount
   useState(() => {
-    fetchExplanation(code, language)
-      .then(setExplanation)
+    explainCodeApi(code, language)
+      .then((result) => setExplanation(result as CodeExplanation))
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   });

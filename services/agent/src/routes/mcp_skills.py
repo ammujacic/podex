@@ -7,7 +7,7 @@ from typing import Any
 
 import structlog
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from src.deps import require_internal_service_token
 from src.tools.skill_tools import SkillRegistryHolder
@@ -32,6 +32,15 @@ class MCPToolCallRequest(BaseModel):
 
     name: str
     arguments: dict[str, Any] | None = None
+
+
+class JSONRPCRequest(BaseModel):
+    """Minimal JSON-RPC request payload."""
+
+    jsonrpc: str | None = None
+    id: str | int | None = None
+    method: str
+    params: dict[str, Any] | None = None
 
 
 def _extract_auth_context(
@@ -151,4 +160,48 @@ async def call_tool(
     return {
         "content": [{"type": "text", "text": result_payload}],
         "isError": not result.success,
+    }
+
+
+@router.post("")
+async def jsonrpc_entrypoint(request: Request, body: JSONRPCRequest) -> dict[str, Any]:
+    """JSON-RPC entrypoint for MCP HTTP clients."""
+    params = body.params or {}
+
+    try:
+        if body.method == "initialize":
+            return {
+                "jsonrpc": "2.0",
+                "id": body.id,
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {}, "resources": {}},
+                    "serverInfo": {"name": "podex-skills", "version": "1.0.0"},
+                },
+            }
+        if body.method == "tools/list":
+            tools_result = await list_tools(
+                request, MCPToolsListRequest(**params) if params else None
+            )
+            return {"jsonrpc": "2.0", "id": body.id, "result": tools_result}
+        if body.method == "tools/call":
+            tool_result = await call_tool(request, MCPToolCallRequest(**params))
+            return {"jsonrpc": "2.0", "id": body.id, "result": tool_result}
+        if body.method == "resources/list":
+            return {
+                "jsonrpc": "2.0",
+                "id": body.id,
+                "result": {"resources": []},
+            }
+    except ValidationError as exc:
+        return {
+            "jsonrpc": "2.0",
+            "id": body.id,
+            "error": {"code": -32602, "message": str(exc)},
+        }
+
+    return {
+        "jsonrpc": "2.0",
+        "id": body.id,
+        "error": {"code": -32601, "message": f"Method not found: {body.method}"},
     }

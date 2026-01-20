@@ -19,6 +19,13 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import {
+  getLLMProviders,
+  createLLMProvider,
+  updateLLMProvider,
+  deleteLLMProvider,
+  testLLMProvider,
+} from '@/lib/api';
 
 interface LLMProvider {
   id: string;
@@ -386,15 +393,16 @@ function TestModal({ provider, onClose }: TestModalProps) {
     setTesting(true);
     setResult(null);
     try {
-      const response = await fetch(`/api/llm-providers/${provider.id}/test`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ prompt: "Say 'Hello from Podex!' in exactly those words." }),
+      const data = await testLLMProvider(
+        provider.id,
+        "Say 'Hello from Podex!' in exactly those words."
+      );
+      setResult({
+        success: data.success,
+        response: data.success ? data.message : null,
+        error: data.success ? null : data.message,
+        latency_ms: data.latency_ms || null,
       });
-      if (!response.ok) throw new Error('Test request failed');
-      const data = await response.json();
-      setResult(data);
     } catch (err) {
       setResult({
         success: false,
@@ -497,9 +505,19 @@ export default function LLMProvidersPage() {
 
   const fetchProviders = useCallback(async () => {
     try {
-      const response = await fetch('/api/llm-providers', { credentials: 'include' });
-      if (!response.ok) throw new Error('Failed to fetch providers');
-      setProviders(await response.json());
+      const providersResponse = await getLLMProviders();
+      const providers: LLMProvider[] = providersResponse.map((provider) => ({
+        ...provider,
+        extra_body_params: provider.extra_body_params as Record<string, unknown> | null,
+        is_enabled: true, // Default to enabled
+        last_tested_at: null,
+        last_test_status: null,
+        last_test_error: null,
+        created_at: new Date().toISOString(), // This should come from API ideally
+        updated_at: new Date().toISOString(), // This should come from API ideally
+        has_api_key: false, // Default to false
+      }));
+      setProviders(providers);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -513,21 +531,30 @@ export default function LLMProvidersPage() {
 
   const handleSave = async (data: Partial<LLMProvider> & { api_key?: string }) => {
     try {
-      const url = editingProvider
-        ? `/api/llm-providers/${editingProvider.id}`
-        : '/api/llm-providers';
-      const method = editingProvider ? 'PATCH' : 'POST';
-
-      const response = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(data),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || 'Failed to save provider');
+      if (editingProvider) {
+        await updateLLMProvider(editingProvider.id, data);
+      } else {
+        await createLLMProvider({
+          name: data.name!,
+          type: data.provider_type!,
+          api_key: data.api_key,
+          base_url: data.base_url,
+          is_enabled: data.is_enabled,
+          config: {
+            auth_header: data.auth_header,
+            auth_scheme: data.auth_scheme,
+            default_model: data.default_model,
+            available_models: data.available_models,
+            context_window: data.context_window,
+            max_output_tokens: data.max_output_tokens,
+            supports_streaming: data.supports_streaming,
+            supports_tools: data.supports_tools,
+            supports_vision: data.supports_vision,
+            request_timeout_seconds: data.request_timeout_seconds,
+            extra_headers: data.extra_headers,
+            extra_body_params: data.extra_body_params,
+          },
+        });
       }
 
       setShowModal(false);
@@ -542,11 +569,7 @@ export default function LLMProvidersPage() {
     if (!confirm('Are you sure you want to delete this provider?')) return;
 
     try {
-      const response = await fetch(`/api/llm-providers/${providerId}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      });
-      if (!response.ok) throw new Error('Failed to delete provider');
+      await deleteLLMProvider(providerId);
       fetchProviders();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to delete provider');

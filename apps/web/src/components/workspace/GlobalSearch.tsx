@@ -4,6 +4,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { Search, X, File, ChevronRight, ChevronDown, Replace, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { searchWorkspace as searchWorkspaceApi } from '@/lib/api';
 
 // ============================================================================
 // Types
@@ -40,34 +41,35 @@ export interface SearchState {
 }
 
 // ============================================================================
-// Search API
+// Transform API results to grouped format
 // ============================================================================
 
-async function searchWorkspace(
-  sessionId: string,
-  query: string,
-  options: SearchOptions
-): Promise<{ results: FileSearchResult[]; totalMatches: number }> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+function transformSearchResults(
+  apiResults: Array<{ path: string; line: number; column: number; content: string; match: string }>,
+  total: number
+): { results: FileSearchResult[]; totalMatches: number } {
+  // Group results by file path
+  const fileMap = new Map<string, SearchMatch[]>();
 
-  const params = new URLSearchParams({
-    query,
-    case_sensitive: options.caseSensitive.toString(),
-    whole_word: options.wholeWord.toString(),
-    regex: options.regex.toString(),
-    include: options.includePattern || '*',
-    exclude: options.excludePattern || 'node_modules,dist,.git',
-  });
-
-  const response = await fetch(`${apiUrl}/api/sessions/${sessionId}/search?${params}`, {
-    method: 'GET',
-  });
-
-  if (!response.ok) {
-    throw new Error('Search failed');
+  for (const result of apiResults) {
+    const matches = fileMap.get(result.path) || [];
+    matches.push({
+      line: result.line,
+      column: result.column,
+      length: result.match.length,
+      lineContent: result.content,
+      previewStart: 0,
+      previewEnd: result.content.length,
+    });
+    fileMap.set(result.path, matches);
   }
 
-  return response.json();
+  const results: FileSearchResult[] = Array.from(fileMap.entries()).map(([path, matches]) => ({
+    path,
+    matches,
+  }));
+
+  return { results, totalMatches: total };
 }
 
 // ============================================================================
@@ -202,7 +204,14 @@ export function GlobalSearch({ sessionId, onResultClick, onClose, className }: G
       setState((s) => ({ ...s, searching: true, error: null }));
 
       try {
-        const { results, totalMatches } = await searchWorkspace(sessionId, searchQuery, options);
+        const response = await searchWorkspaceApi(sessionId, searchQuery, {
+          case_sensitive: options.caseSensitive,
+          regex: options.regex,
+          include: options.includePattern || '*',
+          exclude: options.excludePattern || 'node_modules,dist,.git,.next',
+        });
+
+        const { results, totalMatches } = transformSearchResults(response.results, response.total);
 
         setState({
           query: searchQuery,

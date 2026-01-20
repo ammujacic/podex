@@ -221,7 +221,7 @@ export default function PlansPage() {
                 </div>
                 <div>
                   <div className="text-2xl font-semibold text-text-primary">
-                    ${((subscription.plan.compute_credits_included || 0) / 100).toFixed(0)}
+                    ${(subscription.plan.compute_credits_included || 0).toFixed(0)}
                   </div>
                   <div className="text-xs text-text-muted">Compute Credits</div>
                 </div>

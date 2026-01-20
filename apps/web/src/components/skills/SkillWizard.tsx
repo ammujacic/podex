@@ -20,6 +20,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { createSkillFromTemplate } from '@/lib/api';
 
 // Types
 interface TemplateVariable {
@@ -176,30 +177,14 @@ export function SkillWizard({
     setError(null);
 
     try {
-      const response = await fetch(
-        `/api/v1/skill-templates/${selectedTemplate.slug}/create-skill`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({
-            name: skillName,
-            slug: skillSlug,
-            description: skillDescription,
-            variables,
-            customize_steps: true,
-            custom_steps: customSteps,
-          }),
-        }
-      );
+      const skill = await createSkillFromTemplate(selectedTemplate.slug, {
+        name: skillName,
+        slug: skillSlug,
+        description: skillDescription,
+        variables,
+      });
 
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.detail || 'Failed to create skill');
-      }
-
-      const skill = await response.json();
-      onComplete(skill);
+      onComplete(skill as CreatedSkill);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create skill');

@@ -535,7 +535,13 @@ class GCPComputeManager(ComputeManager):
             try:
                 last_billing_str = workspace.metadata.get("last_billing_timestamp")
                 if not last_billing_str:
-                    last_billing = workspace.created_at
+                    workspace.metadata["last_billing_timestamp"] = now.isoformat()
+                    await self._save_workspace(workspace)
+                    logger.warning(
+                        "Missing last_billing_timestamp, skipping billing tick",
+                        workspace_id=workspace.id,
+                    )
+                    continue
                 else:
                     last_billing = datetime.fromisoformat(last_billing_str)
 
@@ -548,6 +554,7 @@ class GCPComputeManager(ComputeManager):
                     duration_seconds = int(duration)
                     await self._track_compute_usage(workspace, duration_seconds)
                     workspace.metadata["last_billing_timestamp"] = now.isoformat()
+                    await self._save_workspace(workspace)
 
             except Exception:
                 logger.exception(

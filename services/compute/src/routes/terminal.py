@@ -267,6 +267,27 @@ class TmuxTerminalSession:
         )
         return True
 
+    async def _enable_tmux_mouse(self) -> None:
+        """Enable tmux mouse mode for scrollback and pane interactions."""
+        exit_code, output = await self._exec_in_container(
+            [
+                "tmux",
+                "set-option",
+                "-t",
+                self.session_name,
+                "-g",
+                "mouse",
+                "on",
+            ]
+        )
+        if exit_code != 0:
+            logger.warning(
+                "Failed to enable tmux mouse mode",
+                session_name=self.session_name,
+                exit_code=exit_code,
+                output=output,
+            )
+
     async def _start_with_tmux(self) -> bool:
         """Start terminal session using tmux for persistence."""
         # Check if tmux session exists
@@ -282,6 +303,8 @@ class TmuxTerminalSession:
                 workspace_id=self.workspace_id,
                 session_name=self.session_name,
             )
+
+        await self._enable_tmux_mouse()
 
         # Attach to the tmux session with a new PTY
         exec_instance = await asyncio.to_thread(
@@ -479,6 +502,13 @@ class TmuxTerminalSession:
                 logger.debug(
                     "Terminal resize skipped - exec not yet started",
                     workspace_id=self.workspace_id,
+                )
+                return False
+            if "process does not exist" in str(e):
+                logger.debug(
+                    "Terminal resize skipped - exec no longer exists",
+                    workspace_id=self.workspace_id,
+                    exec_id=self.exec_id[:12] if self.exec_id else None,
                 )
                 return False
             logger.warning(

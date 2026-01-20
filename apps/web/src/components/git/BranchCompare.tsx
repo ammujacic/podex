@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@podex/ui';
-import { useAuthStore } from '@/stores/auth';
+import { compareBranches, previewMerge } from '@/lib/api';
 
 // ============================================================================
 // Types
@@ -265,8 +265,6 @@ export function BranchCompare({ sessionId, branches, className, onClose }: Branc
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'commits' | 'files'>('commits');
 
-  const activeToken = useAuthStore((state) => state.tokens?.accessToken);
-
   // Set initial compare branch to current branch if not main
   useState(() => {
     const currentBranch = branches.find((b) => b.current);
@@ -276,7 +274,7 @@ export function BranchCompare({ sessionId, branches, className, onClose }: Branc
   });
 
   const handleCompare = useCallback(async () => {
-    if (!baseBranch || !compareBranch || !activeToken) return;
+    if (!baseBranch || !compareBranch) return;
 
     setIsLoading(true);
     setError(null);
@@ -284,50 +282,23 @@ export function BranchCompare({ sessionId, branches, className, onClose }: Branc
     setMergePreview(null);
 
     try {
-      const response = await fetch(
-        `/api/v1/sessions/${sessionId}/git/compare/${baseBranch}...${compareBranch}`,
-        {
-          headers: { Authorization: `Bearer ${activeToken}` },
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error('Failed to compare branches');
-      }
-
-      const data = await response.json();
-      setCompareResult(data);
+      const data = await compareBranches(sessionId, baseBranch, compareBranch);
+      setCompareResult(data as BranchCompareResult);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to compare branches');
     } finally {
       setIsLoading(false);
     }
-  }, [baseBranch, compareBranch, sessionId, activeToken]);
+  }, [baseBranch, compareBranch, sessionId]);
 
   const handlePreviewMerge = useCallback(async () => {
-    if (!baseBranch || !compareBranch || !activeToken) return;
+    if (!baseBranch || !compareBranch) return;
 
     setIsMergeLoading(true);
 
     try {
-      const response = await fetch(`/api/v1/sessions/${sessionId}/git/merge-preview`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${activeToken}`,
-        },
-        body: JSON.stringify({
-          source_branch: compareBranch,
-          target_branch: baseBranch,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to preview merge');
-      }
-
-      const data = await response.json();
-      setMergePreview(data);
+      const data = await previewMerge(sessionId, compareBranch, baseBranch);
+      setMergePreview(data as MergePreviewResult);
     } catch (err) {
       setMergePreview({
         can_merge: false,
@@ -339,7 +310,7 @@ export function BranchCompare({ sessionId, branches, className, onClose }: Branc
     } finally {
       setIsMergeLoading(false);
     }
-  }, [baseBranch, compareBranch, sessionId, activeToken]);
+  }, [baseBranch, compareBranch, sessionId]);
 
   const swapBranches = useCallback(() => {
     const temp = baseBranch;

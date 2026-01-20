@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { getDocumentSymbols } from '@/lib/api';
 
 // ============================================================================
 // Types
@@ -272,28 +273,6 @@ function FilterControls({ filter, onFilterChange, sortBy, onSortChange }: Filter
 }
 
 // ============================================================================
-// Symbol Outline API
-// ============================================================================
-
-async function fetchDocumentSymbols(
-  sessionId: string,
-  filePath: string
-): Promise<DocumentSymbol[]> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-
-  const response = await fetch(
-    `${apiUrl}/api/sessions/${sessionId}/symbols?path=${encodeURIComponent(filePath)}`,
-    { method: 'GET' }
-  );
-
-  if (!response.ok) {
-    throw new Error('Failed to fetch symbols');
-  }
-
-  return response.json();
-}
-
-// ============================================================================
 // Main Symbol Outline Component
 // ============================================================================
 
@@ -333,7 +312,7 @@ export function SymbolOutline({
       setState((s) => ({ ...s, loading: true, error: null }));
 
       try {
-        const symbols = await fetchDocumentSymbols(sessionId, filePath);
+        const symbols = (await getDocumentSymbols(sessionId, filePath)) as DocumentSymbol[];
         setState({ symbols, loading: false, error: null });
 
         // Auto-expand top-level symbols
@@ -436,7 +415,7 @@ export function SymbolOutline({
     setState((s) => ({ ...s, loading: true, error: null }));
 
     try {
-      const symbols = await fetchDocumentSymbols(sessionId, filePath);
+      const symbols = (await getDocumentSymbols(sessionId, filePath)) as DocumentSymbol[];
       setState({ symbols, loading: false, error: null });
     } catch (error) {
       setState((s) => ({

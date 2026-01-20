@@ -10,6 +10,7 @@ import type { Agent } from '@/stores/session';
 import { useSessionStore } from '@/stores/session';
 import { useAuthStore } from '@/stores/auth';
 import { cn } from '@/lib/utils';
+import { deleteTerminalAgent, createTerminalAgent } from '@/lib/api';
 import '@xterm/xterm/css/xterm.css';
 
 // Type for WebSocket messages from terminal backend
@@ -155,9 +156,7 @@ export const TerminalAgentCell = forwardRef<TerminalAgentCellRef, TerminalAgentC
       // Close existing terminal session
       if (agent.terminalSessionId) {
         try {
-          await fetch(`/api/v1/terminal-agents/${agent.terminalSessionId}`, {
-            method: 'DELETE',
-          });
+          await deleteTerminalAgent(agent.terminalSessionId);
         } catch (err) {
           console.error('Failed to close terminal session:', err);
         }
@@ -165,27 +164,15 @@ export const TerminalAgentCell = forwardRef<TerminalAgentCellRef, TerminalAgentC
 
       // Create new terminal session
       try {
-        const response = await fetch('/api/v1/terminal-agents', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            workspace_id: workspaceId,
-            agent_type_id: agent.terminalAgentTypeId,
-          }),
+        const data = await createTerminalAgent({
+          workspace_id: workspaceId,
+          agent_type_id: agent.terminalAgentTypeId,
         });
-
-        if (response.ok) {
-          const data = await response.json();
-          // Update the agent with new session ID
-          updateAgent(sessionId, agent.id, {
-            terminalSessionId: data.id,
-          });
-          // Connection will happen via the useEffect when terminalSessionId changes
-        } else {
-          setError('Failed to restart terminal');
-        }
+        // Update the agent with new session ID
+        updateAgent(sessionId, agent.id, {
+          terminalSessionId: data.id,
+        });
+        // Connection will happen via the useEffect when terminalSessionId changes
       } catch {
         setError('Failed to restart terminal');
       }

@@ -31,6 +31,12 @@ export default function UsagePage() {
       usageByAgent: summary.usageByAgent,
     });
   }
+  if (quotas) {
+    console.warn(
+      'Quotas:',
+      quotas.map((q) => ({ type: q.quotaType, limit: q.limitValue, usage: q.currentUsage }))
+    );
+  }
 
   const handleExportCSV = () => {
     if (!history || history.length === 0) return;
@@ -162,6 +168,47 @@ export default function UsagePage() {
           <div className="text-xs text-text-muted mt-1">
             {summary ? `$${summary.tokensCost.toFixed(2)}` : '$0.00'}
           </div>
+          {/* Progress bar for tokens quota */}
+          {(() => {
+            const tokensQuota = quotas?.find((q) => q.quotaType === 'tokens');
+            // Default to 100k tokens if no quota is available
+            const defaultLimit = 100000; // 100k tokens
+            // Use quota limit if available, otherwise use default
+            const limitValue =
+              tokensQuota?.limitValue !== undefined && tokensQuota?.limitValue !== null
+                ? tokensQuota.limitValue
+                : defaultLimit;
+            // Use quota currentUsage if available, otherwise use summary tokens or 0
+            const currentUsage =
+              tokensQuota?.currentUsage !== undefined && tokensQuota?.currentUsage !== null
+                ? tokensQuota.currentUsage
+                : summary?.tokensTotal || 0;
+
+            const percentage =
+              limitValue > 0 ? Math.min((currentUsage / limitValue) * 100, 100) : 0;
+            const isWarning = tokensQuota?.isWarning ?? percentage >= 80;
+            const isExceeded = tokensQuota?.isExceeded ?? percentage >= 100;
+
+            return (
+              <div className="mt-3">
+                <div className="w-full bg-overlay rounded-full h-2 overflow-hidden">
+                  <div
+                    className={`h-2 transition-all duration-500 ease-out ${
+                      isExceeded
+                        ? 'bg-accent-error'
+                        : isWarning
+                          ? 'bg-accent-warning'
+                          : 'bg-accent-success'
+                    }`}
+                    style={{ width: `${percentage}%` }}
+                  />
+                </div>
+                <div className="text-xs text-text-muted mt-1">
+                  {formatTokens(currentUsage)} / {formatTokens(limitValue)} included
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         <div className="bg-surface border border-border-default rounded-xl p-5">
@@ -175,6 +222,45 @@ export default function UsagePage() {
           <div className="text-xs text-text-muted mt-1">
             {summary ? `${summary.computeHours.toFixed(1)} hours` : '0 hours'}
           </div>
+          {/* Progress bar for compute credits */}
+          {(() => {
+            const computeQuota = quotas?.find((q) => q.quotaType === 'compute_credits');
+            const includedCredits = summary?.computeCreditsIncluded;
+            // Use quota limit if available, otherwise use included from summary
+            const limitValue = computeQuota?.limitValue
+              ? computeQuota.limitValue / 100 // Convert from cents to dollars
+              : includedCredits || 0;
+            // Prefer quota currentUsage (convert from cents), fallback to summary
+            const usedValue = computeQuota?.currentUsage
+              ? computeQuota.currentUsage / 100 // Convert from cents to dollars
+              : summary?.computeCreditsUsed || 0;
+
+            if (limitValue > 0) {
+              const percentage = Math.min((usedValue / limitValue) * 100, 100);
+              const isWarning = computeQuota?.isWarning ?? percentage >= 80;
+              const isExceeded = computeQuota?.isExceeded ?? percentage >= 100;
+              return (
+                <div className="mt-3">
+                  <div className="w-full bg-overlay rounded-full h-2 overflow-hidden">
+                    <div
+                      className={`h-2 transition-all duration-500 ease-out ${
+                        isExceeded
+                          ? 'bg-accent-error'
+                          : isWarning
+                            ? 'bg-accent-warning'
+                            : 'bg-accent-success'
+                      }`}
+                      style={{ width: `${percentage}%` }}
+                    />
+                  </div>
+                  <div className="text-xs text-text-muted mt-1">
+                    ${usedValue.toFixed(2)} / ${limitValue.toFixed(2)} included
+                  </div>
+                </div>
+              );
+            }
+            return null;
+          })()}
         </div>
 
         <div className="bg-surface border border-border-default rounded-xl p-5">
@@ -201,16 +287,23 @@ export default function UsagePage() {
       </div>
 
       {/* Quotas Section */}
-      {quotas && quotas.length > 0 && (
-        <div className="bg-surface border border-border-default rounded-xl p-6 mb-8">
-          <h2 className="text-lg font-semibold text-text-primary mb-4">Resource Quotas</h2>
+      <div className="bg-surface border border-border-default rounded-xl p-6 mb-8">
+        <h2 className="text-lg font-semibold text-text-primary mb-4">Resource Quotas</h2>
+        {quotas && quotas.length > 0 ? (
           <div className="space-y-4">
             {quotas.map((quota) => (
               <QuotaProgressBar key={quota.id} quota={quota} showDetails />
             ))}
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="text-center py-8">
+            <p className="text-sm text-text-muted">
+              No quota information available. Quotas are typically created when you have an active
+              subscription plan.
+            </p>
+          </div>
+        )}
+      </div>
 
       {/* Usage Breakdown */}
       {summary && (
