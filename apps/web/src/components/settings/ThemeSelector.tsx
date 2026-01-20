@@ -138,11 +138,19 @@ export function ThemeSelector({ className, compact = false }: ThemeSelectorProps
   const { currentThemeId, setTheme } = useThemeStore();
   const [previewThemeId, setPreviewThemeId] = useState<string | null>(null);
   const [showColorEditor, setShowColorEditor] = useState(false);
+  const [activeTab, setActiveTab] = useState<'dark' | 'light'>('dark');
 
   const presets = getThemePresets();
   const themes = getAllThemes();
   const currentTheme = themes.find((t) => t.id === currentThemeId);
   const activeTheme = themes.find((t) => t.id === (previewThemeId || currentThemeId));
+
+  // Keep active tab in sync with the current theme type
+  useEffect(() => {
+    if (currentTheme?.type === 'dark' || currentTheme?.type === 'light') {
+      setActiveTab(currentTheme.type);
+    }
+  }, [currentTheme?.type]);
 
   // Reset preview when component unmounts or selection changes
   useEffect(() => {
@@ -220,6 +228,38 @@ export function ThemeSelector({ className, compact = false }: ThemeSelectorProps
         )}
       </div>
 
+      {/* Dark / Light tabs */}
+      <div className="px-4 pt-2 pb-1 border-b border-border-subtle">
+        <div className="inline-flex rounded-lg bg-elevated border border-border-subtle p-0.5">
+          <button
+            type="button"
+            onClick={() => setActiveTab('dark')}
+            className={cn(
+              'inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
+              activeTab === 'dark'
+                ? 'bg-void text-text-primary'
+                : 'text-text-muted hover:text-text-primary hover:bg-overlay'
+            )}
+          >
+            <Moon className="h-3 w-3" />
+            <span>Dark</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('light')}
+            className={cn(
+              'inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
+              activeTab === 'light'
+                ? 'bg-void text-text-primary'
+                : 'text-text-muted hover:text-text-primary hover:bg-overlay'
+            )}
+          >
+            <Sun className="h-3 w-3" />
+            <span>Light</span>
+          </button>
+        </div>
+      </div>
+
       {/* Preview indicator */}
       {previewThemeId && (
         <div className="px-4 py-2 bg-warning/10 border-b border-warning/30 text-warning text-sm flex items-center gap-2">
@@ -230,36 +270,24 @@ export function ThemeSelector({ className, compact = false }: ThemeSelectorProps
 
       {/* Theme grid */}
       <div className="flex-1 overflow-y-auto p-4">
-        {/* Dark themes */}
+        {/* Active tab themes */}
         <div className="mb-6">
           <h3 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-            <Moon className="h-3 w-3" />
-            Dark Themes
+            {activeTab === 'dark' ? (
+              <>
+                <Moon className="h-3 w-3" />
+                <span>Dark Themes</span>
+              </>
+            ) : (
+              <>
+                <Sun className="h-3 w-3" />
+                <span>Light Themes</span>
+              </>
+            )}
           </h3>
           <div className="grid grid-cols-2 gap-3">
             {presets
-              .filter((p) => p.type === 'dark')
-              .map((preset) => (
-                <ThemePreviewCard
-                  key={preset.id}
-                  theme={preset}
-                  isSelected={currentThemeId === preset.id}
-                  onSelect={() => handleSelect(preset.id)}
-                  onPreview={() => handlePreview(preset.id)}
-                />
-              ))}
-          </div>
-        </div>
-
-        {/* Light themes */}
-        <div className="mb-6">
-          <h3 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-            <Sun className="h-3 w-3" />
-            Light Themes
-          </h3>
-          <div className="grid grid-cols-2 gap-3">
-            {presets
-              .filter((p) => p.type === 'light')
+              .filter((p) => p.type === activeTab)
               .map((preset) => (
                 <ThemePreviewCard
                   key={preset.id}

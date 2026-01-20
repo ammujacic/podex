@@ -114,8 +114,10 @@ services:
       # GCS Storage
       GCS_BUCKET: podex-workspaces-dev
       STORAGE_EMULATOR_HOST: http://fake-gcs:4443
-      # LLM Provider (Vertex AI)
-      LLM_PROVIDER: vertex
+      # LLM Provider: vertex (GCP), anthropic (API), ollama (local)
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:14b}
       # CORS
       CORS_ORIGINS: ${CORS_ORIGINS:-'["http://localhost:3000"]'}
       # Auth
@@ -196,8 +198,8 @@ services:
       # GCS Storage
       GCS_BUCKET: podex-workspaces-dev
       STORAGE_EMULATOR_HOST: http://fake-gcs:4443
-      # LLM Provider: set to "vertex" for GCP Vertex AI, "ollama" for local models
-      LLM_PROVIDER: ${LLM_PROVIDER:-vertex}
+      # LLM Provider: vertex (GCP), anthropic (API), ollama (local)
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:14b}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -209,6 +211,9 @@ services:
       # API Service (for usage tracking)
       API_BASE_URL: http://api:3001
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-service-token}
+      # Compute Service (for remote workspace operations)
+      COMPUTE_SERVICE_URL: http://compute:3003
+      COMPUTE_INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
     volumes:
       - ./services/agent/src:/app/services/agent/src
       - ./services/shared/src:/app/services/shared/src

@@ -35,7 +35,7 @@ const settingsNavItems = [
   { href: '/settings/memory', label: 'Memory', icon: Brain },
   { href: '/settings/voice', label: 'Voice & Audio', icon: Volume2 },
   { href: '/settings/local-pods', label: 'Local Pods', icon: Server },
-  { href: '/settings/integrations', label: 'Integrations', icon: Plug },
+  { href: '/settings/integrations', label: 'Integrations (MCP)', icon: Plug },
   { href: '/settings/organization', label: 'Organization', icon: Building2 },
   { href: '/settings/usage', label: 'Usage', icon: BarChart3 },
   { href: '/settings/plans', label: 'Plans', icon: Package },

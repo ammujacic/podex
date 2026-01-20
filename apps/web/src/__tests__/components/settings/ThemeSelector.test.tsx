@@ -95,14 +95,9 @@ describe('ThemeSelector', () => {
     expect(document.body.innerHTML).toBeTruthy();
   });
 
-  it('shows dark themes section', () => {
+  it('shows dark themes section when dark tab is active', () => {
     render(<ThemeSelector />);
     expect(screen.getByText('Dark Themes')).toBeInTheDocument();
-  });
-
-  it('shows light themes section', () => {
-    render(<ThemeSelector />);
-    expect(screen.getByText('Light Themes')).toBeInTheDocument();
   });
 
   it('renders in compact mode', () => {
@@ -119,5 +114,11 @@ describe('ThemeSelector', () => {
   it('accepts className prop', () => {
     const { container } = render(<ThemeSelector className="custom-class" />);
     expect(container.firstChild).toHaveClass('custom-class');
+  });
+
+  it('renders Dark and Light tabs', () => {
+    render(<ThemeSelector />);
+    expect(screen.getByText('Dark')).toBeInTheDocument();
+    expect(screen.getByText('Light')).toBeInTheDocument();
   });
 });

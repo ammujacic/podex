@@ -12,6 +12,8 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any
 
+from src.services.pricing import get_all_pricing_from_cache, get_pricing_from_cache
+
 logger = logging.getLogger(__name__)
 
 # Memory management configuration
@@ -32,71 +34,16 @@ class ModelProvider(str, Enum):
 
 
 @dataclass
-class ModelPricing:
-    """Pricing per million tokens for a model."""
+class ModelPricingRT:
+    """Pricing per million tokens for a model (realtime tracker internal)."""
 
     input_per_million: Decimal
     output_per_million: Decimal
     cached_input_per_million: Decimal | None = None  # For models with caching
 
 
-# Pricing as of late 2024/early 2025 (USD per million tokens)
-MODEL_PRICING: dict[str, ModelPricing] = {
-    # Anthropic
-    "claude-opus-4-20250514": ModelPricing(
-        input_per_million=Decimal("15.00"),
-        output_per_million=Decimal("75.00"),
-        cached_input_per_million=Decimal("1.50"),
-    ),
-    "claude-sonnet-4-20250514": ModelPricing(
-        input_per_million=Decimal("3.00"),
-        output_per_million=Decimal("15.00"),
-        cached_input_per_million=Decimal("0.30"),
-    ),
-    "claude-3-5-sonnet-20241022": ModelPricing(
-        input_per_million=Decimal("3.00"),
-        output_per_million=Decimal("15.00"),
-        cached_input_per_million=Decimal("0.30"),
-    ),
-    "claude-3-5-haiku-20241022": ModelPricing(
-        input_per_million=Decimal("0.80"),
-        output_per_million=Decimal("4.00"),
-        cached_input_per_million=Decimal("0.08"),
-    ),
-    # OpenAI
-    "gpt-4o": ModelPricing(
-        input_per_million=Decimal("2.50"),
-        output_per_million=Decimal("10.00"),
-    ),
-    "gpt-4o-mini": ModelPricing(
-        input_per_million=Decimal("0.15"),
-        output_per_million=Decimal("0.60"),
-    ),
-    "gpt-4-turbo": ModelPricing(
-        input_per_million=Decimal("10.00"),
-        output_per_million=Decimal("30.00"),
-    ),
-    "o1": ModelPricing(
-        input_per_million=Decimal("15.00"),
-        output_per_million=Decimal("60.00"),
-    ),
-    "o1-mini": ModelPricing(
-        input_per_million=Decimal("3.00"),
-        output_per_million=Decimal("12.00"),
-    ),
-    # Google
-    "gemini-2.0-flash": ModelPricing(
-        input_per_million=Decimal("0.10"),
-        output_per_million=Decimal("0.40"),
-    ),
-    "gemini-1.5-pro": ModelPricing(
-        input_per_million=Decimal("1.25"),
-        output_per_million=Decimal("5.00"),
-    ),
-}
-
 # Fallback pricing for unknown models
-DEFAULT_PRICING = ModelPricing(
+DEFAULT_PRICING = ModelPricingRT(
     input_per_million=Decimal("5.00"),
     output_per_million=Decimal("15.00"),
 )
@@ -286,19 +233,30 @@ class RealtimeCostTracker:
         """Set callback for cost update notifications."""
         self._update_callback = callback
 
-    def get_pricing(self, model: str) -> ModelPricing:
-        """Get pricing for a model, with fallback to default."""
-        # Normalize model name
-        model_lower = model.lower()
+    def get_pricing(self, model: str) -> ModelPricingRT:
+        """Get pricing for a model, with fallback to default.
 
-        # Try exact match
-        if model in MODEL_PRICING:
-            return MODEL_PRICING[model]
+        Uses pricing from the database via the pricing service cache.
+        """
+        # Try exact match from pricing service cache
+        cached_pricing = get_pricing_from_cache(model)
+        if cached_pricing:
+            return ModelPricingRT(
+                input_per_million=cached_pricing.input_price_per_million,
+                output_per_million=cached_pricing.output_price_per_million,
+                cached_input_per_million=cached_pricing.cached_input_price_per_million,
+            )
 
         # Try partial match
-        for known_model, pricing in MODEL_PRICING.items():
-            if known_model in model_lower or model_lower in known_model:
-                return pricing
+        model_lower = model.lower()
+        all_pricing = get_all_pricing_from_cache()
+        for known_model, pricing in all_pricing.items():
+            if known_model.lower() in model_lower or model_lower in known_model.lower():
+                return ModelPricingRT(
+                    input_per_million=pricing.input_price_per_million,
+                    output_per_million=pricing.output_price_per_million,
+                    cached_input_per_million=pricing.cached_input_price_per_million,
+                )
 
         logger.warning("Unknown model '%s', using default pricing", model)
         return DEFAULT_PRICING

@@ -81,6 +81,15 @@ class BulkDeleteRequest(BaseModel):
     tags: list[str] | None = None
 
 
+class CreateMemoryRequest(BaseModel):
+    """Request for creating a new memory."""
+
+    content: str
+    memory_type: str = "fact"
+    tags: list[str] | None = None
+    importance: float = 0.5
+
+
 # ============================================================================
 # Routes
 # ============================================================================
@@ -152,6 +161,59 @@ async def list_memories(
         page=page,
         page_size=page_size,
         total_pages=(total + page_size - 1) // page_size if total > 0 else 1,
+    )
+
+
+@router.post("/memories", response_model=MemoryResponse)
+async def create_memory(
+    request: Request,
+    db: DbSession,
+    body: CreateMemoryRequest,
+) -> MemoryResponse:
+    """Create a new memory manually."""
+    user_id = get_current_user_id(request)
+
+    # Validate memory type
+    valid_types = {"fact", "preference", "context", "code_pattern", "error_solution", "wiki"}
+    if body.memory_type not in valid_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid memory type. Must be one of: {', '.join(valid_types)}",
+        )
+
+    # Validate importance
+    importance = max(0.0, min(1.0, body.importance))
+
+    # Create memory
+    memory = Memory(
+        user_id=user_id,
+        content=body.content,
+        memory_type=body.memory_type,
+        tags=body.tags or [],
+        importance=importance,
+    )
+    db.add(memory)
+    await db.commit()
+    await db.refresh(memory)
+
+    logger.info(
+        "Memory created manually",
+        memory_id=memory.id,
+        memory_type=body.memory_type,
+        user_id=user_id,
+    )
+
+    return MemoryResponse(
+        id=memory.id,
+        content=memory.content,
+        memory_type=memory.memory_type,
+        tags=memory.tags,
+        importance=memory.importance,
+        session_id=memory.session_id,
+        project_id=memory.project_id,
+        access_count=0,
+        created_at=memory.created_at.isoformat(),
+        updated_at=memory.updated_at.isoformat(),
     )
 
 

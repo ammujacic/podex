@@ -8,6 +8,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import httpx
 import structlog
 
 from src.agents.agent_builder import AgentBuilderAgent, AgentBuilderConfig
@@ -82,6 +83,8 @@ class AgentCreationParams:
     mode: str = "ask"
     # Allowed command patterns for Auto mode
     command_allowlist: list[str] | None = None
+    # Workspace container ID for remote tool execution
+    workspace_id: str | None = None
 
 
 @dataclass
@@ -124,6 +127,68 @@ class AgentOrchestrator:
         self._task_lock = asyncio.Lock()
         # Lock for agent operations
         self._agent_lock = asyncio.Lock()
+        # HTTP client for calling API service (approvals, etc.)
+        self._http_timeout = httpx.Timeout(30.0, connect=5.0)
+
+    async def _notify_approval_request(self, approval_data: dict[str, Any]) -> None:
+        """Notify the API service about a pending approval request.
+
+        This is called when a native agent needs user approval for an action.
+        The API service will store the approval in the database and emit a
+        websocket event to notify the frontend.
+
+        Args:
+            approval_data: Dict containing approval_id, agent_id, session_id,
+                          tool_name, action_type, arguments, can_add_to_allowlist.
+        """
+        api_url = f"{settings.API_BASE_URL}/api/agents/approvals/request"
+        headers: dict[str, str] = {}
+        if settings.INTERNAL_SERVICE_TOKEN:
+            headers["Authorization"] = f"Bearer {settings.INTERNAL_SERVICE_TOKEN}"
+
+        try:
+            async with httpx.AsyncClient(timeout=self._http_timeout) as client:
+                response = await client.post(api_url, json=approval_data, headers=headers)
+                response.raise_for_status()
+                logger.info(
+                    "Approval request sent to API service",
+                    approval_id=approval_data.get("approval_id"),
+                    agent_id=approval_data.get("agent_id"),
+                )
+        except httpx.TimeoutException as e:
+            logger.error(
+                "Timeout sending approval request to API service",
+                approval_id=approval_data.get("approval_id"),
+                error=str(e),
+            )
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "HTTP error sending approval request to API service",
+                approval_id=approval_data.get("approval_id"),
+                status=e.response.status_code,
+                error=str(e),
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to send approval request to API service",
+                approval_id=approval_data.get("approval_id"),
+                error=str(e),
+            )
+
+    def _create_approval_callback(
+        self,
+    ) -> Any:  # Returns Callable[[dict[str, Any]], Awaitable[None]]
+        """Create an approval callback for a native agent.
+
+        Returns:
+            An async callback function that notifies the API service
+            when the agent needs user approval.
+        """
+
+        async def callback(approval_data: dict[str, Any]) -> None:
+            await self._notify_approval_request(approval_data)
+
+        return callback
 
     def _cleanup_old_tasks(self) -> None:
         """Remove old completed/failed tasks to prevent memory leaks.
@@ -537,6 +602,7 @@ class AgentOrchestrator:
                     mode=params.mode,
                     command_allowlist=params.command_allowlist,
                     user_id=params.user_id,
+                    workspace_id=params.workspace_id,
                 )
 
                 if db_agent:
@@ -580,6 +646,10 @@ class AgentOrchestrator:
             agent.command_allowlist = params.command_allowlist
             if agent.tool_executor:
                 agent.tool_executor.command_allowlist = params.command_allowlist
+
+        # Set up approval callback for Ask/Auto modes
+        # This allows the agent to request user approval for restricted actions
+        agent.set_approval_callback(self._create_approval_callback())
 
         return agent
 
@@ -723,9 +793,10 @@ class AgentOrchestrator:
                 mcp_config,
             )
 
-            # Get mode and command_allowlist from context
+            # Get mode, command_allowlist, and workspace_id from context
             mode = task.context.get("mode", "ask")
             command_allowlist = task.context.get("command_allowlist")
+            workspace_id = task.context.get("workspace_id")  # Workspace container ID
 
             # Get or create agent
             agent_params = AgentCreationParams(
@@ -738,8 +809,12 @@ class AgentOrchestrator:
                 mcp_config=mcp_config,
                 mode=mode,
                 command_allowlist=command_allowlist,
+                workspace_id=workspace_id,
             )
             agent = await self.get_or_create_agent(agent_params, mcp_lifecycle)
+
+            # Load conversation history from database to ensure context is preserved
+            await agent.load_conversation_history()
 
             # Execute agent - use streaming if message_id is provided
             stream_enabled = task.context.get("stream", False)
@@ -961,4 +1036,75 @@ class AgentOrchestrator:
                 "servers": [],
                 "total_tools": 0,
                 "error": str(e),
+            }
+
+    def resolve_approval(
+        self,
+        agent_id: str,
+        approval_id: str,
+        approved: bool,
+        add_to_allowlist: bool = False,
+    ) -> dict[str, Any]:
+        """Resolve a pending approval request for an agent.
+
+        This is called when a user approves or rejects an action in the frontend.
+
+        Args:
+            agent_id: The agent ID.
+            approval_id: The approval request ID.
+            approved: Whether the action was approved.
+            add_to_allowlist: Whether to add the command to the agent's allowlist.
+
+        Returns:
+            Dict with success status and message.
+        """
+        agent = self.agents.get(agent_id)
+        if not agent:
+            logger.warning(
+                "Agent not found for approval resolution",
+                agent_id=agent_id,
+                approval_id=approval_id,
+            )
+            return {
+                "success": False,
+                "error": f"Agent {agent_id} not found in memory",
+            }
+
+        # Agent must have a tool executor
+        if not agent.tool_executor:
+            logger.warning(
+                "Agent has no tool executor",
+                agent_id=agent_id,
+                approval_id=approval_id,
+            )
+            return {
+                "success": False,
+                "error": "Agent has no tool executor",
+            }
+
+        # Resolve the approval
+        resolved = agent.tool_executor.resolve_approval(
+            approval_id=approval_id,
+            approved=approved,
+            add_to_allowlist=add_to_allowlist,
+        )
+
+        if resolved:
+            logger.info(
+                "Approval resolved",
+                agent_id=agent_id,
+                approval_id=approval_id,
+                approved=approved,
+                add_to_allowlist=add_to_allowlist,
+            )
+            return {"success": True, "message": "Approval resolved"}
+        else:
+            logger.warning(
+                "Approval not found or already resolved",
+                agent_id=agent_id,
+                approval_id=approval_id,
+            )
+            return {
+                "success": False,
+                "error": "Approval not found or already resolved",
             }

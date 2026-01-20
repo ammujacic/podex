@@ -3,7 +3,7 @@
 This module handles the merging of MCP server configurations from multiple sources:
 1. Environment variables (highest priority for secrets)
 2. User database config (MCPServer records)
-3. Default registry (base configs)
+3. Default registry (base configs from DefaultMCPServer table)
 
 The effective configuration is what the agent service uses to connect to MCP servers.
 """
@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.database.models import MCPServer
-from src.mcp_defaults import DEFAULT_MCP_SERVERS, get_builtin_servers, get_default_server_by_slug
+from src.mcp_defaults import get_all_default_servers, get_default_server_by_slug
 
 
 @dataclass
@@ -134,8 +134,9 @@ async def get_effective_mcp_config(
     This merges all configuration sources and returns the effective
     configuration that should be passed to the agent service.
 
-    Built-in servers (filesystem, git) are always included and automatically
-    enabled for all users.
+    NOTE: There are no longer any built-in MCP servers. Native agents use
+    built-in tools (read_file, git_status, etc.) that execute directly on
+    the workspace container. MCP servers are optional integrations.
 
     Args:
         db: Database session
@@ -153,46 +154,7 @@ async def get_effective_mcp_config(
     )
     user_servers = list(result.scalars().all())
 
-    # Ensure built-in servers are always available
-    builtin_servers = get_builtin_servers()
-    builtin_slugs = {server["slug"] for server in builtin_servers}
-    existing_builtin_slugs = {
-        getattr(server, "source_slug", None)
-        for server in user_servers
-        if getattr(server, "source_slug", None) in builtin_slugs
-    }
-
-    # Create any missing built-in servers
-    for builtin_config in builtin_servers:
-        if builtin_config["slug"] not in existing_builtin_slugs:
-            # Create the built-in server in the database
-            server = MCPServer(
-                user_id=user_id,
-                name=builtin_config["name"],
-                description=builtin_config.get("description"),
-                transport=builtin_config["transport"],
-                command=builtin_config.get("command"),
-                args=builtin_config.get("args", []),
-                url=builtin_config.get("url"),
-                env_vars={},  # Built-ins don't need env vars by default
-                is_enabled=True,  # Always enabled for built-ins
-                source_slug=builtin_config["slug"],
-                category=(
-                    builtin_config["category"].value
-                    if hasattr(builtin_config["category"], "value")
-                    else builtin_config["category"]
-                ),
-                is_default=True,
-                config_source="builtin",
-                icon=builtin_config.get("icon"),
-            )
-            db.add(server)
-            user_servers.append(server)
-
-    # Commit any new built-in servers we created
-    await db.commit()
-
-    # If we still have no servers (shouldn't happen with built-ins), return None
+    # If no servers enabled, return None
     if not user_servers:
         return None
 
@@ -209,6 +171,15 @@ async def get_effective_mcp_config(
         is_default = getattr(server, "is_default", False)
         source = "default" if is_default else "custom"
 
+        # Rewrite internal agent URLs to use configured AGENT_SERVICE_URL
+        # This ensures URLs work across environments (Docker Compose, GCP, etc.)
+        url = server.url
+        if url and ("agent:3002" in url or "localhost:3002" in url):
+            # Replace hardcoded internal URL with configured one
+            agent_url = settings.AGENT_SERVICE_URL.rstrip("/")
+            url = url.replace("http://agent:3002", agent_url)
+            url = url.replace("http://localhost:3002", agent_url)
+
         effective_servers.append(
             EffectiveMCPServer(
                 id=str(server.id),
@@ -217,7 +188,7 @@ async def get_effective_mcp_config(
                 transport=server.transport,
                 command=server.command,
                 args=server.args or [],
-                url=server.url,
+                url=url,
                 env_vars=env_vars,
                 discovered_tools=server.discovered_tools or [],
                 source=source,
@@ -265,8 +236,8 @@ async def sync_servers_from_env(
     updated: list[str] = []
 
     for slug in enabled_slugs:
-        # Get default config for this slug
-        default_config = get_default_server_by_slug(slug)
+        # Get default config for this slug from database
+        default_config = await get_default_server_by_slug(db, slug)
         if not default_config:
             continue  # Skip unknown slugs
 
@@ -305,7 +276,7 @@ async def sync_servers_from_env(
                 server.config_source = "env"
             if hasattr(MCPServer, "category"):
                 cat = default_config.get("category")
-                server.category = cat.value if cat else None
+                server.category = cat.value if cat is not None and hasattr(cat, "value") else cat
             if hasattr(MCPServer, "icon"):
                 server.icon = default_config.get("icon")
 
@@ -347,12 +318,14 @@ def build_mcp_config_for_agent(
     }
 
 
-def get_default_catalog_for_user(
+async def get_default_catalog_for_user(
+    db: AsyncSession,
     user_servers: list[MCPServer],
 ) -> list[dict[str, Any]]:
     """Get the default MCP catalog with user's enablement status.
 
     Args:
+        db: Database session
         user_servers: List of user's MCPServer records
 
     Returns:
@@ -365,10 +338,13 @@ def get_default_catalog_for_user(
         if slug and server.is_enabled:
             user_enabled_slugs.add(slug)
 
+    # Get all default servers from database
+    default_servers = await get_all_default_servers(db)
+
     catalog: list[dict[str, Any]] = []
-    for default in DEFAULT_MCP_SERVERS:
+    for default in default_servers:
         slug = default["slug"]
-        required_env = default.get("required_env", [])
+        required_env = default.get("required_env", []) or []
 
         # Check if user has required secrets configured
         has_secrets = True

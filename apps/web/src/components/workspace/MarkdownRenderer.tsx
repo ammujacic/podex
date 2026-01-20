@@ -4,7 +4,10 @@ import React, { useMemo, useState, useCallback } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { cn } from '@/lib/utils';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, Save } from 'lucide-react';
+import { useSessionStore } from '@/stores/session';
+import { PromptDialog } from '@/components/ui/Dialogs';
+import { createFile } from '@/lib/api';
 
 interface MarkdownRendererProps {
   content: string;
@@ -442,6 +445,113 @@ function CopyButton({ content }: { content: string }) {
 }
 
 /**
+ * Save-to-file button and modal for code blocks
+ */
+function SaveToFileButton({ content, language }: { content: string; language: string }) {
+  const currentSessionId = useSessionStore((s) => s.currentSessionId);
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const suggestedPath = useMemo(() => {
+    const lang = (language || 'text').toLowerCase();
+    const extMap: Record<string, string> = {
+      typescript: 'ts',
+      ts: 'ts',
+      tsx: 'tsx',
+      javascript: 'js',
+      js: 'js',
+      jsx: 'jsx',
+      python: 'py',
+      py: 'py',
+      bash: 'sh',
+      sh: 'sh',
+      shell: 'sh',
+      json: 'json',
+      yaml: 'yml',
+      yml: 'yml',
+      markdown: 'md',
+      md: 'md',
+      html: 'html',
+      css: 'css',
+      sql: 'sql',
+      rust: 'rs',
+      rs: 'rs',
+      go: 'go',
+      golang: 'go',
+      text: 'txt',
+    };
+
+    const ext = extMap[lang] || 'txt';
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    return `snippets/snippet-${timestamp}.${ext}`;
+  }, [language]);
+
+  const handleOpenDialog = useCallback(() => {
+    if (!currentSessionId) {
+      console.warn('No active session; cannot save code to file.');
+      return;
+    }
+    setIsDialogOpen(true);
+  }, [currentSessionId]);
+
+  const handleConfirm = useCallback(
+    async (path: string) => {
+      if (!currentSessionId) {
+        console.warn('No active session; cannot save code to file.');
+        return;
+      }
+
+      setIsSaving(true);
+      try {
+        await createFile(currentSessionId, path, content);
+      } catch (error) {
+        console.error('Failed to save code to file:', error);
+      } finally {
+        setIsSaving(false);
+        setIsDialogOpen(false);
+      }
+    },
+    [content, currentSessionId]
+  );
+
+  return (
+    <>
+      <button
+        onClick={handleOpenDialog}
+        disabled={!currentSessionId || isSaving}
+        className={cn(
+          'flex items-center gap-1 px-2 py-1 text-xs rounded transition-all',
+          'bg-surface-elevated/80 hover:bg-surface-elevated',
+          'text-text-muted hover:text-text-primary',
+          'border border-border-subtle hover:border-border-default',
+          (!currentSessionId || isSaving) && 'opacity-60 cursor-not-allowed'
+        )}
+        title={
+          currentSessionId
+            ? isSaving
+              ? 'Saving...'
+              : 'Save code to workspace file'
+            : 'Open a session to enable saving'
+        }
+      >
+        <Save size={12} />
+        <span>{isSaving ? 'Saving...' : 'Save'}</span>
+      </button>
+
+      <PromptDialog
+        isOpen={isDialogOpen}
+        title="Save code to file"
+        message="Enter the file path in your workspace where this code should be saved."
+        defaultValue={suggestedPath}
+        placeholder="src/snippets/snippet.ts"
+        onConfirm={handleConfirm}
+        onCancel={() => setIsDialogOpen(false)}
+      />
+    </>
+  );
+}
+
+/**
  * Renders a code block with syntax highlighting and copy buttons
  */
 function CodeBlock({ content, language }: { content: string; language: string }) {
@@ -463,7 +573,10 @@ function CodeBlock({ content, language }: { content: string; language: string })
       {/* Header with language and top copy button */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-void/90 border-b border-border-subtle">
         <span className="text-xs text-text-muted font-medium">{language}</span>
-        <CopyButton content={content} />
+        <div className="flex items-center gap-2">
+          <CopyButton content={content} />
+          <SaveToFileButton content={content} language={language} />
+        </div>
       </div>
 
       {/* Code content with syntax highlighting */}
@@ -483,10 +596,13 @@ function CodeBlock({ content, language }: { content: string; language: string })
         {content}
       </SyntaxHighlighter>
 
-      {/* Bottom copy button - only show for longer code blocks */}
+      {/* Bottom copy/save buttons - only show for longer code blocks */}
       {lineCount > 15 && (
         <div className="flex justify-end px-3 py-1.5 bg-void/90 border-t border-border-subtle">
-          <CopyButton content={content} />
+          <div className="flex items-center gap-2">
+            <CopyButton content={content} />
+            <SaveToFileButton content={content} language={language} />
+          </div>
         </div>
       )}
     </div>

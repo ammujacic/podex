@@ -12,27 +12,22 @@ import {
   AlertTriangle,
   Sparkles,
   X,
+  Plus,
 } from 'lucide-react';
 import { Button } from '@podex/ui';
 import { cn } from '@/lib/utils';
-import { getMemories, getMemoriesStats, deleteMemory, clearAllMemories } from '@/lib/api';
+import {
+  getMemories,
+  getMemoriesStats,
+  deleteMemory,
+  clearAllMemories,
+  createMemory,
+  type Memory,
+} from '@/lib/api';
 
 // ============================================================================
 // Types
 // ============================================================================
-
-interface Memory {
-  id: string;
-  content: string;
-  memory_type: string;
-  tags: string[] | null;
-  importance: number;
-  session_id: string | null;
-  project_id: string | null;
-  access_count: number;
-  created_at: string;
-  updated_at: string;
-}
 
 interface MemoryStats {
   total_memories: number;
@@ -181,6 +176,154 @@ function StatsCard({ stats }: { stats: MemoryStats | null }) {
 }
 
 // ============================================================================
+// Create Memory Modal
+// ============================================================================
+
+const MEMORY_TYPES = [
+  { value: 'preference', label: 'Preference', description: 'Your preferences and coding style' },
+  { value: 'fact', label: 'Fact', description: 'Factual information to remember' },
+  { value: 'context', label: 'Context', description: 'Project or session context' },
+  { value: 'code_pattern', label: 'Code Pattern', description: 'Coding patterns and conventions' },
+  { value: 'wiki', label: 'Wiki', description: 'Documentation and references' },
+];
+
+function CreateMemoryModal({
+  isOpen,
+  onClose,
+  onCreated,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const [content, setContent] = useState('');
+  const [memoryType, setMemoryType] = useState('preference');
+  const [importance, setImportance] = useState(0.7);
+  const [isCreating, setIsCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!content.trim()) return;
+
+    setIsCreating(true);
+    setError(null);
+
+    try {
+      await createMemory({
+        content: content.trim(),
+        memory_type: memoryType,
+        importance,
+      });
+      setContent('');
+      setMemoryType('preference');
+      setImportance(0.7);
+      onCreated();
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create memory');
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative bg-surface border border-border-default rounded-xl shadow-xl w-full max-w-lg mx-4">
+        <div className="flex items-center justify-between p-4 border-b border-border-default">
+          <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2">
+            <Plus className="w-5 h-5" />
+            Add Memory
+          </h2>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded hover:bg-surface-hover text-text-muted hover:text-text-primary transition-colors"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-4 space-y-4">
+          {error && (
+            <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400">
+              {error}
+            </div>
+          )}
+
+          <div>
+            <label className="block text-sm font-medium text-text-primary mb-1.5">Content</label>
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="e.g., Always use TypeScript strict mode in this project"
+              rows={3}
+              className="w-full px-3 py-2 bg-background border border-border-default rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-accent-primary resize-none"
+              autoFocus
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-text-primary mb-1.5">Type</label>
+            <select
+              value={memoryType}
+              onChange={(e) => setMemoryType(e.target.value)}
+              className="w-full px-3 py-2 bg-background border border-border-default rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-accent-primary"
+            >
+              {MEMORY_TYPES.map((type) => (
+                <option key={type.value} value={type.value}>
+                  {type.label} - {type.description}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-text-primary mb-1.5">
+              Importance: {(importance * 100).toFixed(0)}%
+            </label>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.1"
+              value={importance}
+              onChange={(e) => setImportance(parseFloat(e.target.value))}
+              className="w-full accent-accent-primary"
+            />
+            <div className="flex justify-between text-xs text-text-muted mt-1">
+              <span>Low</span>
+              <span>High</span>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={!content.trim() || isCreating}>
+              {isCreating ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                  Creating...
+                </>
+              ) : (
+                <>
+                  <Plus className="w-4 h-4 mr-1" />
+                  Add Memory
+                </>
+              )}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
 // Main Page
 // ============================================================================
 
@@ -196,6 +339,7 @@ export default function MemorySettingsPage() {
   const [isClearing, setIsClearing] = useState(false);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+  const [showCreateModal, setShowCreateModal] = useState(false);
 
   const fetchMemories = useCallback(async () => {
     try {
@@ -203,21 +347,10 @@ export default function MemorySettingsPage() {
         page,
         page_size: 20,
         search: searchQuery || undefined,
-        category: selectedType || undefined,
+        memory_type: selectedType || undefined,
       });
-      const transformedMemories: Memory[] = data.memories.map((memory) => ({
-        id: memory.id,
-        content: memory.content,
-        memory_type: memory.category,
-        tags: null, // Default since API doesn't provide tags
-        importance: 0.5, // Default importance
-        session_id: null, // Default since API doesn't provide
-        project_id: null, // Default since API doesn't provide
-        access_count: 0, // Default since API doesn't provide
-        created_at: memory.created_at,
-        updated_at: memory.updated_at,
-      }));
-      setMemories(transformedMemories);
+      // API now returns correct fields - use them directly
+      setMemories(data.memories);
       setTotalPages(data.total_pages);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load memories');
@@ -330,6 +463,11 @@ export default function MemorySettingsPage() {
           <RefreshCw className="w-4 h-4" />
           Refresh
         </Button>
+
+        <Button onClick={() => setShowCreateModal(true)} className="gap-2">
+          <Plus className="w-4 h-4" />
+          Add Memory
+        </Button>
       </div>
 
       {/* Error */}
@@ -435,6 +573,16 @@ export default function MemorySettingsPage() {
           </div>
         </div>
       </section>
+
+      {/* Create Memory Modal */}
+      <CreateMemoryModal
+        isOpen={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        onCreated={() => {
+          fetchMemories();
+          fetchStats();
+        }}
+      />
     </div>
   );
 }

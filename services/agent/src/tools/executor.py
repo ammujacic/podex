@@ -16,6 +16,7 @@ from src.config import settings
 from src.mcp.integration import extract_mcp_qualified_name, is_mcp_tool_name
 
 if TYPE_CHECKING:
+    from src.compute_client import ComputeClient
     from src.mcp.registry import MCPToolRegistry
 
 
@@ -63,6 +64,8 @@ class PermissionResult:
     can_add_to_allowlist: bool = False  # For Auto mode command approval
 
 
+# Remote tools for workspace container operations
+from src.tools import remote_tools  # noqa: E402
 from src.tools.agent_builder_tools import (  # noqa: E402
     AgentTemplateConfig,
     AgentTemplatePreviewConfig,
@@ -70,36 +73,23 @@ from src.tools.agent_builder_tools import (  # noqa: E402
     list_available_tools,
     preview_agent_template,
 )
-from src.tools.command_tools import run_command  # noqa: E402
 from src.tools.deploy_tools import (  # noqa: E402
     DeployPreviewConfig,
     E2ETestConfig,
+    check_deployment_health,
     deploy_preview,
+    get_preview_logs,
     get_preview_status,
+    list_previews,
+    rollback_deploy,
     run_e2e_tests,
     stop_preview,
+    wait_for_deployment,
 )
-from src.tools.file_tools import (  # noqa: E402
-    apply_patch,
-    glob_files,
-    grep,
-    list_directory,
-    read_file,
-    search_code,
-    write_file,
-)
-from src.tools.file_tools import (  # noqa: E402
-    fetch_url as file_fetch_url,
-)
-from src.tools.git_tools import (  # noqa: E402
-    create_pr,
-    git_branch,
-    git_commit,
-    git_diff,
-    git_log,
-    git_push,
-    git_status,
-)
+
+# NOTE: Local file_tools, command_tools, git_tools removed.
+# All file/command/git operations now use remote_tools via ComputeClient
+# to execute on the workspace container instead of the agent's local filesystem.
 from src.tools.memory_tools import (  # noqa: E402
     RecallMemoryParams,
     StoreMemoryParams,
@@ -147,7 +137,12 @@ ToolHandler = Callable[[Path, str, str | None, dict[str, Any]], Awaitable[dict[s
 
 
 class ToolExecutor:
-    """Executes tools for agents within a workspace context."""
+    """Executes tools for agents within a workspace context.
+
+    Workspace tools (file operations, commands, git) execute remotely on the workspace
+    container via the compute service. Requires workspace_id to be configured.
+    Local tools (memory, skills, tasks, web, vision) run on the agent service directly.
+    """
 
     def __init__(
         self,
@@ -159,11 +154,12 @@ class ToolExecutor:
         agent_mode: AgentMode | str = AgentMode.ASK,
         command_allowlist: list[str] | None = None,
         approval_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        workspace_id: str | None = None,
     ) -> None:
         """Initialize tool executor.
 
         Args:
-            workspace_path: Path to the workspace directory.
+            workspace_path: Path to the workspace directory (used for local fallback).
             session_id: Session ID for task management.
             user_id: Optional user ID for user-scoped operations (e.g., agent templates).
             mcp_registry: Optional MCP tool registry for external tools.
@@ -171,12 +167,16 @@ class ToolExecutor:
             agent_mode: Agent operation mode (plan, ask, auto, sovereign).
             command_allowlist: List of allowed command patterns for Auto mode.
             approval_callback: Async callback to request user approval.
+            workspace_id: Optional workspace container ID for remote execution.
+                         When provided, file/command/git tools execute on the
+                         workspace container via the compute service.
         """
         self.workspace_path = Path(workspace_path).resolve()
         self.session_id = session_id
         self.user_id = user_id
         self._mcp_registry = mcp_registry
         self.agent_id = agent_id
+        self.workspace_id = workspace_id
 
         # Mode-based permissions
         if isinstance(agent_mode, str):
@@ -189,8 +189,27 @@ class ToolExecutor:
         # Pending approvals tracking
         self._pending_approvals: dict[str, asyncio.Future[tuple[bool, bool]]] = {}
 
-        # Ensure workspace exists
-        self.workspace_path.mkdir(parents=True, exist_ok=True)
+        # Create compute client for remote operations if workspace_id is provided
+        self._compute_client: ComputeClient | None = None
+        if workspace_id and user_id:
+            from src.compute_client import get_compute_client
+
+            self._compute_client = get_compute_client(
+                workspace_id=workspace_id,
+                user_id=user_id,
+            )
+            logger.info(
+                "ToolExecutor using remote workspace",
+                workspace_id=workspace_id,
+                user_id=user_id,
+            )
+        else:
+            # Local mode - ensure workspace exists
+            self.workspace_path.mkdir(parents=True, exist_ok=True)
+            logger.info(
+                "ToolExecutor using local workspace",
+                workspace_path=str(self.workspace_path),
+            )
 
     async def execute(
         self,
@@ -560,6 +579,11 @@ class ToolExecutor:
             "get_preview_status": self._handle_deploy_tools,
             "stop_preview": self._handle_deploy_tools,
             "run_e2e_tests": self._handle_deploy_tools,
+            "rollback_deploy": self._handle_deploy_tools,
+            "check_deployment_health": self._handle_deploy_tools,
+            "wait_for_deployment": self._handle_deploy_tools,
+            "list_previews": self._handle_deploy_tools,
+            "get_preview_logs": self._handle_deploy_tools,
             # Skill tools
             "list_skills": self._handle_skill_tools,
             "get_skill": self._handle_skill_tools,
@@ -582,45 +606,57 @@ class ToolExecutor:
         tool_name: str,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
-        """Handle file and command tools."""
+        """Handle file and command tools via remote workspace container.
+
+        All file operations execute on the workspace container via the compute service.
+        Requires workspace_id to be configured.
+        """
+        if not self._compute_client:
+            return {
+                "success": False,
+                "error": "Workspace not configured. File operations require a workspace container. "
+                "Ensure workspace_id is provided when creating the agent.",
+            }
+
         if tool_name == "read_file":
-            return await read_file(
-                workspace_path=self.workspace_path,
+            return await remote_tools.read_file(
+                client=self._compute_client,
                 path=arguments.get("path", ""),
             )
         if tool_name == "write_file":
-            return await write_file(
-                workspace_path=self.workspace_path,
+            return await remote_tools.write_file(
+                client=self._compute_client,
                 path=arguments.get("path", ""),
                 content=arguments.get("content", ""),
             )
         if tool_name == "list_directory":
-            return await list_directory(
-                workspace_path=self.workspace_path,
+            return await remote_tools.list_directory(
+                client=self._compute_client,
                 path=arguments.get("path", "."),
             )
         if tool_name == "search_code":
-            return await search_code(
-                workspace_path=self.workspace_path,
+            return await remote_tools.search_code(
+                client=self._compute_client,
                 query=arguments.get("query", ""),
                 file_pattern=arguments.get("file_pattern"),
             )
         if tool_name == "run_command":
-            return await run_command(
-                workspace_path=self.workspace_path,
+            return await remote_tools.run_command(
+                client=self._compute_client,
                 command=arguments.get("command", ""),
                 cwd=arguments.get("cwd"),
+                timeout=arguments.get("timeout", 60),
             )
         if tool_name == "glob_files":
-            return await glob_files(
-                workspace_path=self.workspace_path,
+            return await remote_tools.glob_files(
+                client=self._compute_client,
                 pattern=arguments.get("pattern", ""),
                 path=arguments.get("path", "."),
                 include_hidden=arguments.get("include_hidden", False),
             )
         if tool_name == "grep":
-            return await grep(
-                workspace_path=self.workspace_path,
+            return await remote_tools.grep(
+                client=self._compute_client,
                 pattern=arguments.get("pattern", ""),
                 path=arguments.get("path", "."),
                 file_pattern=arguments.get("file_pattern"),
@@ -628,14 +664,15 @@ class ToolExecutor:
                 context_lines=arguments.get("context_lines", 2),
             )
         if tool_name == "apply_patch":
-            return await apply_patch(
-                workspace_path=self.workspace_path,
+            return await remote_tools.apply_patch(
+                client=self._compute_client,
                 path=arguments.get("path", ""),
                 patch=arguments.get("patch", ""),
                 reverse=arguments.get("reverse", False),
             )
         if tool_name == "file_fetch_url":
-            return await file_fetch_url(
+            # fetch_url doesn't need remote execution - it fetches external URLs
+            return await remote_tools.fetch_url(
                 url=arguments.get("url", ""),
                 extract_text=arguments.get("extract_text", True),
                 max_length=arguments.get("max_length", 50000),
@@ -751,50 +788,62 @@ class ToolExecutor:
         tool_name: str,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
-        """Handle git tools using dispatch table."""
-        handlers: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {
-            "git_status": lambda: git_status(workspace_path=self.workspace_path),
-            "git_commit": lambda: git_commit(
-                workspace_path=self.workspace_path,
+        """Handle git tools via remote workspace container.
+
+        All git operations execute on the workspace container via the compute service.
+        Requires workspace_id to be configured.
+        """
+        if not self._compute_client:
+            return {
+                "success": False,
+                "error": "Workspace not configured. Git operations require a workspace container. "
+                "Ensure workspace_id is provided when creating the agent.",
+            }
+
+        if tool_name == "git_status":
+            return await remote_tools.git_status(client=self._compute_client)
+        if tool_name == "git_commit":
+            return await remote_tools.git_commit(
+                client=self._compute_client,
                 message=arguments.get("message", ""),
                 files=arguments.get("files"),
                 all_changes=arguments.get("all_changes", False),
-            ),
-            "git_push": lambda: git_push(
-                workspace_path=self.workspace_path,
+            )
+        if tool_name == "git_push":
+            return await remote_tools.git_push(
+                client=self._compute_client,
                 remote=arguments.get("remote", "origin"),
                 branch=arguments.get("branch"),
                 force=arguments.get("force", False),
                 set_upstream=arguments.get("set_upstream", False),
-            ),
-            "git_branch": lambda: git_branch(
-                workspace_path=self.workspace_path,
+            )
+        if tool_name == "git_branch":
+            return await remote_tools.git_branch(
+                client=self._compute_client,
                 action=arguments.get("action", "list"),
                 name=arguments.get("name"),
-            ),
-            "git_diff": lambda: git_diff(
-                workspace_path=self.workspace_path,
+            )
+        if tool_name == "git_diff":
+            return await remote_tools.git_diff(
+                client=self._compute_client,
                 staged=arguments.get("staged", False),
                 file=arguments.get("file"),
-            ),
-            "git_log": lambda: git_log(
-                workspace_path=self.workspace_path,
+            )
+        if tool_name == "git_log":
+            return await remote_tools.git_log(
+                client=self._compute_client,
                 limit=arguments.get("limit", 10),
                 oneline=arguments.get("oneline", True),
-            ),
-            "create_pr": lambda: create_pr(
-                workspace_path=self.workspace_path,
+            )
+        if tool_name == "create_pr":
+            return await remote_tools.create_pr(
+                client=self._compute_client,
                 title=arguments.get("title", ""),
                 body=arguments.get("body", ""),
                 base=arguments.get("base", "main"),
                 draft=arguments.get("draft", False),
-            ),
-        }
-
-        handler = handlers.get(tool_name)
-        if handler is None:
-            return {"success": False, "error": f"Unknown git tool: {tool_name}"}
-        return await handler()
+            )
+        return {"success": False, "error": f"Unknown git tool: {tool_name}"}
 
     async def _handle_web_tools(
         self,
@@ -945,6 +994,36 @@ class ToolExecutor:
                 framework=arguments.get("framework", "auto"),
             )
             result = await run_e2e_tests(e2e_config)
+            return cast("dict[str, Any]", json.loads(result))
+        if tool_name == "rollback_deploy":
+            result = await rollback_deploy(
+                preview_id=arguments.get("preview_id", ""),
+                to_commit=arguments.get("to_commit", ""),
+            )
+            return cast("dict[str, Any]", json.loads(result))
+        if tool_name == "check_deployment_health":
+            result = await check_deployment_health(
+                url=arguments.get("url", ""),
+                endpoints=arguments.get("endpoints"),
+                timeout=arguments.get("timeout", 10),
+            )
+            return cast("dict[str, Any]", json.loads(result))
+        if tool_name == "wait_for_deployment":
+            result = await wait_for_deployment(
+                url=arguments.get("url", ""),
+                endpoint=arguments.get("endpoint", "/health"),
+                timeout=arguments.get("timeout", 120),
+                interval=arguments.get("interval", 5),
+            )
+            return cast("dict[str, Any]", json.loads(result))
+        if tool_name == "list_previews":
+            result = await list_previews(session_id=self.session_id)
+            return cast("dict[str, Any]", json.loads(result))
+        if tool_name == "get_preview_logs":
+            result = await get_preview_logs(
+                preview_id=arguments.get("preview_id", ""),
+                lines=arguments.get("lines", 100),
+            )
             return cast("dict[str, Any]", json.loads(result))
         return {"success": False, "error": f"Unknown deploy tool: {tool_name}"}
 

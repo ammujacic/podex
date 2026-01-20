@@ -207,6 +207,31 @@ export interface ApprovalResponseEvent {
   added_to_allowlist: boolean;
 }
 
+// Native agent approval events (for Podex native agents, not CLI agents)
+export interface NativeApprovalRequestEvent {
+  approval_id: string;
+  session_id: string;
+  agent_id: string;
+  agent_name: string;
+  action_type: 'file_write' | 'command_execute' | 'other';
+  action_details: {
+    tool_name?: string;
+    file_path?: string;
+    command?: string;
+    arguments?: Record<string, unknown>;
+  };
+  can_add_to_allowlist: boolean;
+  expires_at: string;
+}
+
+export interface NativeApprovalDecisionEvent {
+  session_id: string;
+  agent_id: string;
+  approval_id: string;
+  approved: boolean;
+  add_to_allowlist: boolean;
+}
+
 // Permission request from Claude Code CLI
 export interface PermissionRequestEvent {
   session_id: string;
@@ -570,6 +595,9 @@ export interface SocketEvents {
   // Agent approval events
   approval_request: (data: ApprovalRequestEvent) => void;
   approval_response: (data: ApprovalResponseEvent) => void;
+  // Native Podex agent approval events
+  native_approval_request: (data: NativeApprovalRequestEvent) => void;
+  native_approval_decision: (data: NativeApprovalDecisionEvent) => void;
   // Claude Code CLI permission events
   permission_request: (data: PermissionRequestEvent) => void;
   permission_decision: (data: PermissionDecisionEvent) => void;
@@ -941,6 +969,24 @@ export function emitApprovalResponse(
     approval_id: approvalId,
     approved,
     added_to_allowlist: addToAllowlist,
+  });
+}
+
+// Native Podex agent approval response
+export function emitNativeApprovalResponse(
+  sessionId: string,
+  agentId: string,
+  approvalId: string,
+  approved: boolean,
+  addToAllowlist: boolean = false
+): void {
+  const sock = getSocket();
+  sock.emit('native_approval_response', {
+    session_id: sessionId,
+    agent_id: agentId,
+    approval_id: approvalId,
+    approved,
+    add_to_allowlist: addToAllowlist,
   });
 }
 

@@ -12,7 +12,10 @@ import {
   type SessionLayoutState,
   type FilePreviewLayoutState,
   type EditorLayoutState,
+  type EditorTabsLayoutState,
 } from '@/lib/api';
+import { useEditorStore } from '@/stores/editor';
+import { useShallow } from 'zustand/shallow';
 import { onSocketEvent, emitLayoutChange, type LayoutChangeEvent } from '@/lib/socket';
 
 // Generate a unique device ID for this browser session
@@ -102,6 +105,17 @@ export function useLayoutSync({ sessionId, enabled = true }: UseLayoutSyncOption
   const isApplyingRemote = useRef(false);
   const lastSyncedLayout = useRef<SessionLayoutState | null>(null);
 
+  // Track editor layout from editor store for backend sync
+  const editorLayout = useEditorStore(
+    useShallow((state) => ({
+      splitLayout: state.splitLayout,
+      panes: state.panes,
+      paneOrder: state.paneOrder,
+      activePaneId: state.activePaneId,
+      tabs: state.tabs,
+    }))
+  );
+
   // Load layout from server on mount
   useEffect(() => {
     if (!enabled || !sessionId) return;
@@ -190,6 +204,53 @@ export function useLayoutSync({ sessionId, enabled = true }: UseLayoutSyncOption
           // Sync to server immediately (not debounced for initial sync)
           apiUpdateEditorLayout(sessionId, payload).catch(console.error);
         }
+
+        // Apply editor tabs/layout snapshot if present
+        if (serverLayout.editor_tabs) {
+          const editorLayout = serverLayout.editor_tabs;
+          const setEditorLayout = useEditorStore.getState().setLayout;
+
+          // Convert API layout (snake_case) to editor store layout shape
+          const panes = Object.fromEntries(
+            Object.entries(editorLayout.panes).map(([id, pane]) => [
+              id,
+              {
+                id: pane.id,
+                tabs: pane.tabs,
+                activeTabId: pane.active_tab_id,
+                size: pane.size,
+              },
+            ])
+          );
+
+          const tabs = Object.fromEntries(
+            Object.entries(editorLayout.tabs).map(([id, tab]) => [
+              id,
+              {
+                id: tab.id,
+                path: tab.path,
+                name: tab.name,
+                language: tab.language,
+                isDirty: false,
+                isPreview: tab.is_preview,
+                paneId:
+                  Object.values(editorLayout.panes).find((p) => p.tabs.includes(id))?.id ||
+                  editorLayout.active_pane_id ||
+                  'main',
+              },
+            ])
+          );
+
+          setEditorLayout({
+            tabs,
+            panes,
+            paneOrder: editorLayout.pane_order,
+            activePaneId: editorLayout.active_pane_id,
+            splitLayout: editorLayout.split_layout as GridSpan['colSpan'] extends never
+              ? 'single'
+              : 'single' | 'horizontal' | 'vertical' | 'quad',
+          });
+        }
       } catch (error) {
         // Silently fail on connection errors - we'll work with local state
         const err = error as Error & { status?: number };
@@ -241,6 +302,47 @@ export function useLayoutSync({ sessionId, enabled = true }: UseLayoutSyncOption
     },
     [sessionId, user]
   );
+
+  // Sync editor tabs/layout to backend when it changes (debounced via saveLayout)
+  useEffect(() => {
+    if (!enabled || !sessionId) return;
+    if (isApplyingRemote.current) return;
+
+    const hasTabs = Object.keys(editorLayout.tabs || {}).length > 0;
+
+    const editorTabsPayload: EditorTabsLayoutState | null = hasTabs
+      ? {
+          split_layout: editorLayout.splitLayout,
+          panes: Object.fromEntries(
+            Object.entries(editorLayout.panes).map(([id, pane]) => [
+              id,
+              {
+                id: pane.id,
+                tabs: pane.tabs,
+                active_tab_id: pane.activeTabId,
+                size: pane.size,
+              },
+            ])
+          ),
+          pane_order: editorLayout.paneOrder,
+          active_pane_id: editorLayout.activePaneId,
+          tabs: Object.fromEntries(
+            Object.entries(editorLayout.tabs).map(([id, tab]) => [
+              id,
+              {
+                id: tab.id,
+                path: tab.path,
+                name: tab.name,
+                language: tab.language,
+                is_preview: tab.isPreview,
+              },
+            ])
+          ),
+        }
+      : null;
+
+    saveLayout({ editor_tabs: editorTabsPayload });
+  }, [enabled, sessionId, editorLayout, saveLayout]);
 
   // Listen for remote layout changes
   useEffect(() => {

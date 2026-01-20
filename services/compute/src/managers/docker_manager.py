@@ -97,7 +97,7 @@ class DockerComputeManager(ComputeManager):
         if self._workspace_store:
             await self._workspace_store.delete(workspace_id)
 
-    async def discover_existing_workspaces(self) -> None:
+    async def discover_existing_workspaces(self) -> None:  # noqa: PLR0915
         """Discover and re-register existing workspace containers.
 
         Called on startup to recover from service restarts without losing
@@ -196,6 +196,25 @@ class DockerComputeManager(ComputeManager):
                         container_id=container.id[:12] if container.id else "unknown",
                         tier=tier.value,
                     )
+
+                    # Start MCP gateway for rediscovered workspace
+                    try:
+                        mcp_result = await self.exec_command(
+                            workspace_id,
+                            "/home/dev/.local/bin/start-mcp-gateway.sh",
+                            timeout=30,
+                        )
+                        if mcp_result.exit_code == 0:
+                            logger.info(
+                                "MCP gateway started for rediscovered workspace",
+                                workspace_id=workspace_id,
+                            )
+                    except Exception:
+                        logger.warning(
+                            "Failed to start MCP gateway for rediscovered workspace",
+                            workspace_id=workspace_id,
+                            exc_info=True,
+                        )
 
                     # Notify API service about the rediscovered workspace
                     # This ensures database is synced with actual container state
@@ -482,6 +501,33 @@ class DockerComputeManager(ComputeManager):
                             workspace_id=workspace_id,
                             command=cmd[:100],
                         )
+
+            # Start MCP gateway for the workspace
+            # This provides HTTP access to MCP servers (filesystem, git) for the agent
+            try:
+                mcp_result = await self.exec_command(
+                    workspace_id,
+                    "/home/dev/.local/bin/start-mcp-gateway.sh",
+                    timeout=30,
+                )
+                if mcp_result.exit_code == 0:
+                    logger.info(
+                        "MCP gateway started",
+                        workspace_id=workspace_id,
+                    )
+                else:
+                    logger.warning(
+                        "MCP gateway startup failed",
+                        workspace_id=workspace_id,
+                        exit_code=mcp_result.exit_code,
+                        stderr=mcp_result.stderr[:200] if mcp_result.stderr else "",
+                    )
+            except Exception:
+                logger.warning(
+                    "Failed to start MCP gateway",
+                    workspace_id=workspace_id,
+                    exc_info=True,
+                )
 
             logger.info(
                 "Workspace created",
@@ -865,6 +911,25 @@ fi
                     "Failed to resume file sync after restart",
                     workspace_id=workspace_id,
                     error=str(e),
+                )
+
+            # Start MCP gateway after restart
+            try:
+                mcp_result = await self.exec_command(
+                    workspace_id,
+                    "/home/dev/.local/bin/start-mcp-gateway.sh",
+                    timeout=30,
+                )
+                if mcp_result.exit_code == 0:
+                    logger.info(
+                        "MCP gateway started after restart",
+                        workspace_id=workspace_id,
+                    )
+            except Exception:
+                logger.warning(
+                    "Failed to start MCP gateway after restart",
+                    workspace_id=workspace_id,
+                    exc_info=True,
                 )
 
             logger.info("Workspace restarted", workspace_id=workspace_id)

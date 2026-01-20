@@ -1,17 +1,18 @@
 import {
   Bot,
   Code2,
+  Compass,
   FileText,
+  HelpCircle,
   MessageCircle,
+  Network,
   Server,
-  Settings2,
-  Shield,
+  Sparkles,
   Terminal,
   TestTube2,
-  Workflow,
   Eye,
-  HelpCircle,
   Zap,
+  Shield,
   ShieldOff,
 } from 'lucide-react';
 import type { AgentMode } from '@/stores/session';
@@ -20,12 +21,15 @@ import type { AgentMode } from '@/stores/session';
  * Icon mapping for agent roles.
  */
 export const roleIcons = {
-  architect: Workflow,
+  // Core development workflow
+  architect: Compass,
   coder: Code2,
-  reviewer: Bot,
+  reviewer: Eye,
   tester: TestTube2,
-  agent_builder: Settings2,
-  orchestrator: Workflow,
+  // System / orchestration
+  agent_builder: Sparkles,
+  orchestrator: Network,
+  // Communication / meta roles
   chat: MessageCircle,
   security: Shield,
   devops: Server,

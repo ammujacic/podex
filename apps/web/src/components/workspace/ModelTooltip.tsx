@@ -2,7 +2,7 @@
 
 import type { ReactNode } from 'react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@podex/ui';
-import { Brain, DollarSign, Eye, EyeOff, Zap, Clock, ImageIcon } from 'lucide-react';
+import { Brain, Eye, EyeOff, Zap, Clock, ImageIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ModelInfo } from '@podex/shared';
 
@@ -97,13 +97,12 @@ export function ModelTooltip({
               {/* Pricing */}
               {(model.inputPricePerMillion || model.outputPricePerMillion) && (
                 <div className="flex items-center gap-2 text-xs">
-                  <DollarSign className="h-3.5 w-3.5 text-text-muted" />
                   <span className="text-text-secondary">Price:</span>
                   <span className="text-text-primary font-medium">
                     ${model.inputPricePerMillion?.toFixed(2) ?? '?'} / $
                     {model.outputPricePerMillion?.toFixed(2) ?? '?'}
                   </span>
-                  <span className="text-text-muted">/M tokens</span>
+                  <span className="text-text-secondary">/M tokens</span>
                 </div>
               )}
             </div>
@@ -142,15 +141,15 @@ function TierBadge({ tier }: { tier: ModelInfo['tier'] }) {
   const config = {
     flagship: {
       label: 'Flagship',
-      className: 'bg-amber-500/20 text-amber-400',
+      className: 'bg-overlay text-text-secondary',
     },
     balanced: {
       label: 'Balanced',
-      className: 'bg-blue-500/20 text-blue-400',
+      className: 'bg-overlay text-text-secondary',
     },
     fast: {
       label: 'Fast',
-      className: 'bg-green-500/20 text-green-400',
+      className: 'bg-overlay text-text-secondary',
     },
   };
 

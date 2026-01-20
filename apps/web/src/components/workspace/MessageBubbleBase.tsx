@@ -30,7 +30,49 @@ export const MessageBubbleBase = React.memo<MessageBubbleBaseProps>(
       message.toolCalls?.filter((tc) => tc.status === 'completed' && tc.result) ?? [];
     const hasToolResults = completedToolCalls.length > 0;
 
+    // Check if message content is just a simple tool execution summary that can be hidden
+    // when tool results are available (e.g., "Executed list_directory.", "Executed read_file.")
+    const isBoilerplateToolMessage =
+      hasToolResults && message.content && /^Executed \w+\.?$/i.test(message.content.trim());
+
     const toolResultsId = `tool-results-${message.id}`;
+
+    // For tool-only messages, show results directly without the bubble wrapper
+    if (isBoilerplateToolMessage) {
+      return (
+        <div
+          className={cn('flex flex-col', isUser ? 'items-end' : 'items-start')}
+          role={isMobile ? undefined : 'listitem'}
+        >
+          <div className="w-full max-w-[85%] space-y-2">
+            {completedToolCalls.map((toolCall) => (
+              <ToolResultDisplay
+                key={toolCall.id}
+                toolName={toolCall.name}
+                result={toolCall.result}
+              />
+            ))}
+          </div>
+          {/* Timestamp */}
+          {isMobile ? (
+            <span className="text-2xs text-text-tertiary mt-1 px-1">
+              {formatTime(message.timestamp)}
+            </span>
+          ) : (
+            <time
+              className="text-2xs text-text-tertiary mt-1 px-1"
+              dateTime={
+                typeof message.timestamp === 'string'
+                  ? message.timestamp
+                  : message.timestamp.toISOString()
+              }
+            >
+              {formatTime(message.timestamp)}
+            </time>
+          )}
+        </div>
+      );
+    }
 
     return (
       <div

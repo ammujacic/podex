@@ -25,6 +25,7 @@ import {
   Zap,
   Store,
   Cloud,
+  Plug,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUser, useAuthLoading } from '@/stores/auth';
@@ -51,6 +52,7 @@ const adminNavItems = [
       { href: '/admin/management/plans', label: 'Subscription Plans', icon: CreditCard },
       { href: '/admin/management/models', label: 'LLM Models', icon: Brain },
       { href: '/admin/management/providers', label: 'LLM Providers', icon: Cloud },
+      { href: '/admin/management/mcp-servers', label: 'MCP Servers', icon: Plug },
       { href: '/admin/management/hardware', label: 'Hardware Specs', icon: Server },
       { href: '/admin/management/templates', label: 'Pod Templates', icon: Box },
       { href: '/admin/management/terminal-agents', label: 'Terminal Agents', icon: Terminal },

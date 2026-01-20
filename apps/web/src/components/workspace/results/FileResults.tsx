@@ -65,27 +65,84 @@ export const ListDirectoryResult = React.memo<ResultComponentProps>(function Lis
   const entries = (result.entries as Array<Record<string, unknown>>) || [];
   const count = result.count as number;
 
+  // Sort entries: directories first, then files, alphabetically
+  const sortedEntries = [...entries].sort((a, b) => {
+    if (a.type === 'directory' && b.type !== 'directory') return -1;
+    if (a.type !== 'directory' && b.type === 'directory') return 1;
+    return (a.name as string).localeCompare(b.name as string);
+  });
+
+  const directories = sortedEntries.filter((e) => e.type === 'directory');
+  const files = sortedEntries.filter((e) => e.type !== 'directory');
+
   return (
-    <div className="mt-2 p-2 rounded-md bg-elevated border border-border-subtle">
-      <div className="flex items-center gap-2">
-        <FolderOpen className="h-4 w-4 text-accent-warning" />
-        <span className="text-sm font-medium text-text-primary truncate flex-1">{path}</span>
-        <span className="text-xs text-text-muted">{count} items</span>
+    <div className="mt-2 rounded-lg bg-void border border-border-default overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center gap-2 px-3 py-2 bg-elevated border-b border-border-default">
+        <FolderOpen className="h-4 w-4 text-text-muted" />
+        <span className="text-sm font-mono text-text-primary truncate flex-1">{path || '.'}</span>
+        <span className="text-xs text-text-muted bg-overlay px-2 py-0.5 rounded-full">
+          {count} {count === 1 ? 'item' : 'items'}
+        </span>
       </div>
+
+      {/* File tree */}
       {entries.length > 0 && (
-        <div className="mt-1 space-y-0.5 max-h-32 overflow-y-auto">
-          {entries.slice(0, 10).map((entry, i) => (
-            <div key={i} className="flex items-center gap-1 text-xs">
-              {entry.type === 'directory' ? (
-                <Folder className="h-3 w-3 text-accent-warning" />
-              ) : (
-                <File className="h-3 w-3 text-text-muted" />
-              )}
-              <span className="text-text-secondary truncate">{entry.name as string}</span>
+        <div className="py-1 max-h-48 overflow-y-auto">
+          {sortedEntries.slice(0, 20).map((entry, i) => {
+            const isDir = entry.type === 'directory';
+            const name = entry.name as string;
+            const size = entry.size as number | undefined;
+
+            return (
+              <div
+                key={i}
+                className="flex items-center gap-2 px-3 py-1.5 hover:bg-elevated transition-colors group"
+              >
+                {isDir ? (
+                  <Folder className="h-4 w-4 text-accent-primary flex-shrink-0" />
+                ) : (
+                  <File className="h-4 w-4 text-text-primary flex-shrink-0" />
+                )}
+                <span className="text-sm font-mono truncate flex-1 text-text-primary">
+                  {name}
+                  {isDir && '/'}
+                </span>
+                {size !== undefined && !isDir && (
+                  <span className="text-xs text-text-muted opacity-0 group-hover:opacity-100 transition-opacity">
+                    {formatBytes(size)}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+          {entries.length > 20 && (
+            <div className="px-3 py-2 text-xs text-text-muted border-t border-border-default">
+              +{entries.length - 20} more items
             </div>
-          ))}
-          {entries.length > 10 && (
-            <div className="text-xs text-text-muted">+{entries.length - 10} more</div>
+          )}
+        </div>
+      )}
+
+      {/* Empty state */}
+      {entries.length === 0 && (
+        <div className="px-3 py-4 text-center text-sm text-text-muted">Empty directory</div>
+      )}
+
+      {/* Footer summary */}
+      {entries.length > 0 && (
+        <div className="flex items-center gap-3 px-3 py-1.5 bg-elevated border-t border-border-default text-xs text-text-muted">
+          {directories.length > 0 && (
+            <span className="flex items-center gap-1">
+              <Folder className="h-3 w-3 text-accent-primary" />
+              {directories.length} {directories.length === 1 ? 'folder' : 'folders'}
+            </span>
+          )}
+          {files.length > 0 && (
+            <span className="flex items-center gap-1">
+              <File className="h-3 w-3" />
+              {files.length} {files.length === 1 ? 'file' : 'files'}
+            </span>
           )}
         </div>
       )}
@@ -96,7 +153,8 @@ export const ListDirectoryResult = React.memo<ResultComponentProps>(function Lis
 export const SearchCodeResult = React.memo<ResultComponentProps>(function SearchCodeResult({
   result,
 }) {
-  const query = result.query as string;
+  // Backend returns "pattern" but some tools may return "query"
+  const query = (result.query || result.pattern) as string;
   const results = (result.results as Array<Record<string, unknown>>) || [];
   const count = result.count as number;
 

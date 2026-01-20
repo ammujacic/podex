@@ -17,7 +17,12 @@ import httpx
 import structlog
 from pydantic import BaseModel, Field
 
-from podex_shared.models.billing import MODEL_PRICING, UsageType, calculate_token_cost
+from podex_shared.models.billing import (
+    DEFAULT_INPUT_PRICE_PER_MILLION,
+    DEFAULT_OUTPUT_PRICE_PER_MILLION,
+    UsageType,
+    calculate_token_cost_with_pricing,
+)
 
 logger = structlog.get_logger()
 
@@ -72,6 +77,9 @@ class TokenUsageParams:
     workspace_id: str | None = None
     agent_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Pricing from database (required for accurate cost calculation)
+    input_price_per_million: Decimal | None = None
+    output_price_per_million: Decimal | None = None
 
 
 @dataclass
@@ -255,23 +263,48 @@ class UsageTracker:
 
         Args:
             params: Token usage parameters including user_id, model, input_tokens,
-                   output_tokens, and optional session_id, workspace_id, agent_id, metadata
+                   output_tokens, and optional session_id, workspace_id, agent_id, metadata.
+                   Pricing should be provided via input_price_per_million and
+                   output_price_per_million from database lookup.
 
         Returns:
             The created usage event
         """
-        # Calculate cost
-        total_cost = calculate_token_cost(params.model, params.input_tokens, params.output_tokens)
+        # Use provided pricing or fall back to defaults
+        input_price = params.input_price_per_million or DEFAULT_INPUT_PRICE_PER_MILLION
+        output_price = params.output_price_per_million or DEFAULT_OUTPUT_PRICE_PER_MILLION
+
+        # Calculate cost using explicit pricing
+        total_cost = calculate_token_cost_with_pricing(
+            params.input_tokens,
+            params.output_tokens,
+            input_price,
+            output_price,
+        )
         total_tokens = params.input_tokens + params.output_tokens
 
-        # Get pricing info
-        pricing = MODEL_PRICING.get(params.model)
-        if pricing:
-            # Average price per token (weighted by input/output ratio)
-            avg_price_per_token = total_cost / total_tokens if total_tokens > 0 else Decimal("0")
-            unit_price_cents = int(avg_price_per_token * 100)
+        # Calculate average price per token (weighted by input/output ratio)
+        if total_tokens > 0:
+            avg_price_per_token = total_cost / total_tokens
+            # Use proper rounding to avoid truncating small values to 0
+            unit_price_cents = int(
+                (avg_price_per_token * Decimal("100")).quantize(
+                    Decimal("1"), rounding=ROUND_HALF_UP
+                )
+            )
         else:
             unit_price_cents = 0
+
+        # Convert total cost to cents with proper rounding
+        # Use ROUND_HALF_UP to round to nearest cent (0.5 cents rounds up)
+        # Apply minimum charge of 1 cent to ensure we always charge something for usage
+        total_cost_cents_decimal = (total_cost * Decimal("100")).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )
+        total_cost_cents = int(total_cost_cents_decimal)
+        # Enforce minimum charge of 1 cent for any non-zero usage
+        if total_cost > 0 and total_cost_cents == 0:
+            total_cost_cents = 1
 
         event = UsageEvent(
             user_id=params.user_id,
@@ -282,7 +315,7 @@ class UsageTracker:
             quantity=total_tokens,
             unit="tokens",
             unit_price_cents=unit_price_cents,
-            total_cost_cents=int(total_cost * 100),
+            total_cost_cents=total_cost_cents,
             model=params.model,
             input_tokens=params.input_tokens,
             output_tokens=params.output_tokens,

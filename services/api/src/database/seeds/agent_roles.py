@@ -376,18 +376,33 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
     {
         "role": "architect",
         "name": "Architect",
-        "color": "cyan",
+        # Use bright cyan accent, aligned with gradient
+        "color": "#06b6d4",
         "icon": "Compass",
         "description": "Designs system architecture and breaks down complex tasks",
         "system_prompt": ARCHITECT_SYSTEM_PROMPT,
         "tools": [
+            # File tools
             "read_file",
-            "search_code",
             "list_directory",
+            "search_code",
+            "glob_files",
+            "grep",
+            # Task/orchestration
             "create_task",
+            "delegate_task",
+            # Memory
+            "store_memory",
+            "recall_memory",
+            # Skills
             "list_skills",
+            "get_skill",
             "match_skills",
             "recommend_skills",
+            "get_skill_stats",
+            # Web (for research)
+            "fetch_url",
+            "search_web",
         ],
         "category": "development",
         "gradient_start": "#06b6d4",
@@ -409,19 +424,41 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
     {
         "role": "coder",
         "name": "Coder",
-        "color": "purple",
+        # Primary purple accent for implementation work
+        "color": "#8b5cf6",
         "icon": "Code2",
         "description": "Writes clean, maintainable code following best practices",
         "system_prompt": CODER_SYSTEM_PROMPT,
         "tools": [
+            # File tools
             "read_file",
             "write_file",
-            "search_code",
-            "run_command",
             "list_directory",
+            "search_code",
+            "glob_files",
+            "grep",
+            "apply_patch",
+            # Command
+            "run_command",
+            # Git
+            "git_status",
+            "git_diff",
+            "git_commit",
+            "git_branch",
+            "git_log",
+            "create_pr",
+            # Memory
+            "store_memory",
+            "recall_memory",
+            # Skills
             "list_skills",
+            "get_skill",
             "match_skills",
             "execute_skill",
+            "create_skill",
+            "delete_skill",
+            # Vision
+            "design_to_code",
         ],
         "category": "development",
         "gradient_start": "#a855f7",
@@ -443,11 +480,26 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
     {
         "role": "reviewer",
         "name": "Reviewer",
-        "color": "green",
+        # Green accent for quality/approval
+        "color": "#22c55e",
         "icon": "Eye",
         "description": "Reviews code for quality, bugs, and security issues",
         "system_prompt": REVIEWER_SYSTEM_PROMPT,
-        "tools": ["read_file", "search_code", "git_diff", "list_directory", "add_comment"],
+        "tools": [
+            # File tools
+            "read_file",
+            "list_directory",
+            "search_code",
+            "glob_files",
+            "grep",
+            # Git (read-only for review)
+            "git_status",
+            "git_diff",
+            "git_log",
+            # Memory
+            "store_memory",
+            "recall_memory",
+        ],
         "category": "development",
         "gradient_start": "#22c55e",
         "gradient_end": "#16a34a",
@@ -468,11 +520,38 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
     {
         "role": "tester",
         "name": "Tester",
-        "color": "orange",
+        # Orange accent for test runs and activity
+        "color": "#f97316",
         "icon": "FlaskConical",
         "description": "Writes tests and ensures code quality through testing",
         "system_prompt": TESTER_SYSTEM_PROMPT,
-        "tools": ["read_file", "write_file", "run_command", "search_code", "get_coverage"],
+        "tools": [
+            # File tools
+            "read_file",
+            "write_file",
+            "list_directory",
+            "search_code",
+            "glob_files",
+            "grep",
+            # Command
+            "run_command",
+            # Git
+            "git_status",
+            "git_diff",
+            # Memory
+            "store_memory",
+            "recall_memory",
+            # Deploy (for running e2e tests)
+            "deploy_preview",
+            "run_e2e_tests",
+            "get_preview_status",
+            "check_deployment_health",
+            # Browser/Vision (for e2e and visual testing)
+            "screenshot_page",
+            "interact_with_page",
+            "extract_page_data",
+            "analyze_screenshot",
+        ],
         "category": "development",
         "gradient_start": "#f97316",
         "gradient_end": "#ea580c",
@@ -493,11 +572,29 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
     {
         "role": "security",
         "name": "Security",
-        "color": "red",
+        # Red accent for security & warnings
+        "color": "#ef4444",
         "icon": "Shield",
         "description": "Identifies security vulnerabilities and suggests fixes",
         "system_prompt": SECURITY_SYSTEM_PROMPT,
-        "tools": ["read_file", "search_code", "list_directory", "git_diff", "add_comment"],
+        "tools": [
+            # File tools
+            "read_file",
+            "list_directory",
+            "search_code",
+            "glob_files",
+            "grep",
+            # Git (read-only for review)
+            "git_status",
+            "git_diff",
+            "git_log",
+            # Memory
+            "store_memory",
+            "recall_memory",
+            # Web (for CVE research)
+            "fetch_url",
+            "search_web",
+        ],
         "category": "development",
         "gradient_start": "#ef4444",
         "gradient_end": "#dc2626",
@@ -518,18 +615,49 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
     {
         "role": "devops",
         "name": "DevOps",
-        "color": "emerald",
+        # Emerald accent for infrastructure & health
+        "color": "#10b981",
         "icon": "Container",
         "description": "Manages CI/CD, infrastructure, and deployments",
         "system_prompt": DEVOPS_SYSTEM_PROMPT,
         "tools": [
+            # File tools
             "read_file",
             "write_file",
-            "run_command",
-            "search_code",
             "list_directory",
+            "search_code",
+            "glob_files",
+            "grep",
+            "apply_patch",
+            # Command
+            "run_command",
+            # Git
+            "git_status",
+            "git_diff",
+            "git_commit",
+            "git_push",
+            "git_branch",
+            "git_log",
+            "create_pr",
+            # Deploy tools
+            "deploy_preview",
+            "get_preview_status",
+            "stop_preview",
+            "run_e2e_tests",
+            "rollback_deploy",
+            "check_deployment_health",
+            "wait_for_deployment",
+            "list_previews",
+            "get_preview_logs",
+            # Memory
+            "store_memory",
+            "recall_memory",
+            # Skills
             "list_skills",
+            "get_skill",
             "execute_skill",
+            "create_skill",
+            "delete_skill",
         ],
         "category": "development",
         "gradient_start": "#10b981",
@@ -551,14 +679,23 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
     {
         "role": "orchestrator",
         "name": "Orchestrator",
-        "color": "cyan",
+        # Deeper cyan/blue for coordination and control
+        "color": "#0284c7",
         "icon": "Network",
         "description": "Coordinates tasks between multiple agents",
         "system_prompt": ORCHESTRATOR_SYSTEM_PROMPT,
         "tools": [
+            # File tools
             "read_file",
-            "search_code",
             "list_directory",
+            "search_code",
+            "glob_files",
+            "grep",
+            # Git (for understanding state)
+            "git_status",
+            "git_diff",
+            "git_log",
+            # Orchestration tools
             "create_execution_plan",
             "delegate_task",
             "create_custom_agent",
@@ -567,9 +704,17 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "wait_for_tasks",
             "get_all_pending_tasks",
             "synthesize_results",
+            "create_task",
+            # Memory
+            "store_memory",
+            "recall_memory",
+            # Skills
             "list_skills",
+            "get_skill",
             "match_skills",
             "execute_skill",
+            "recommend_skills",
+            "get_skill_stats",
         ],
         "category": "system",
         "gradient_start": "#06b6d4",
@@ -591,7 +736,8 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
     {
         "role": "agent_builder",
         "name": "Agent Builder",
-        "color": "pink",
+        # Pink accent for creation / customization
+        "color": "#ec4899",
         "icon": "Sparkles",
         "description": "Creates and configures custom agent definitions",
         "system_prompt": AGENT_BUILDER_SYSTEM_PROMPT,
@@ -620,11 +766,29 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
     {
         "role": "documentator",
         "name": "Documentator",
-        "color": "amber",
+        # Amber accent for documentation and highlights
+        "color": "#f59e0b",
         "icon": "FileText",
         "description": "Writes and maintains project documentation",
         "system_prompt": DOCUMENTATOR_SYSTEM_PROMPT,
-        "tools": ["read_file", "write_file", "search_code", "list_directory"],
+        "tools": [
+            # File tools
+            "read_file",
+            "write_file",
+            "list_directory",
+            "search_code",
+            "glob_files",
+            "grep",
+            # Git
+            "git_status",
+            "git_log",
+            # Memory
+            "store_memory",
+            "recall_memory",
+            # Web (for research)
+            "fetch_url",
+            "search_web",
+        ],
         "category": "development",
         "gradient_start": "#f59e0b",
         "gradient_end": "#d97706",
@@ -645,7 +809,8 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
     {
         "role": "chat",
         "name": "Chat",
-        "color": "violet",
+        # Soft violet accent for general conversation
+        "color": "#8b5cf6",
         "icon": "MessageCircle",
         "description": "Conversational assistant for questions and explanations",
         "system_prompt": CHAT_SYSTEM_PROMPT,
@@ -670,11 +835,34 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
     {
         "role": "custom",
         "name": "Custom",
-        "color": "indigo",
+        # Indigo accent for user-defined agents
+        "color": "#6366f1",
         "icon": "Bot",
         "description": "Customizable agent for any purpose",
         "system_prompt": "You are a helpful AI assistant.",
-        "tools": ["read_file", "write_file", "search_code", "run_command", "list_directory"],
+        "tools": [
+            # File tools
+            "read_file",
+            "write_file",
+            "list_directory",
+            "search_code",
+            "glob_files",
+            "grep",
+            "apply_patch",
+            # Command
+            "run_command",
+            # Git
+            "git_status",
+            "git_diff",
+            "git_commit",
+            "git_branch",
+            "git_log",
+            # Memory
+            "store_memory",
+            "recall_memory",
+            # Web
+            "fetch_url",
+        ],
         "category": "custom",
         "gradient_start": "#6366f1",
         "gradient_end": "#4f46e5",

@@ -334,6 +334,9 @@ async def delegate_to_custom_agent(
         )
         agent = await orchestrator.get_or_create_agent(agent_params)
 
+        # Load conversation history to ensure context is preserved
+        await agent.load_conversation_history()
+
         # Execute the agent
         response = await agent.execute(message)
 

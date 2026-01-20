@@ -39,6 +39,7 @@ import {
 } from 'lucide-react';
 import type { AppRouterInstance } from 'next/dist/shared/lib/app-router-context.shared-runtime';
 import type { Session, Agent } from '@/stores/session';
+import { useEditorStore } from '@/stores/editor';
 
 export interface CommandItem {
   id: string;
@@ -65,6 +66,7 @@ interface CommandDependencies {
 
   // Actions
   openModal: (modalId: string, data?: Record<string, unknown>) => void;
+  openQuickOpen: () => void;
   toggleTerminal: () => void;
   toggleSidebar: (side: 'left' | 'right') => void;
   togglePanel: () => void;
@@ -94,6 +96,7 @@ export function buildCommands(deps: CommandDependencies): CommandItem[] {
     rightSidebarCollapsed,
     focusMode,
     openModal,
+    openQuickOpen,
     toggleTerminal,
     toggleSidebar,
     togglePanel,
@@ -219,11 +222,12 @@ export function buildCommands(deps: CommandDependencies): CommandItem[] {
       icon: <FileCode className="h-4 w-4" />,
       group: 'Files',
       keywords: ['file', 'open', 'quick'],
-      action: () => openModal('file-picker'),
+      action: () => openQuickOpen(),
     },
     {
       id: 'new-file',
       label: 'New File',
+      shortcut: '⌘⇧P',
       icon: <Plus className="h-4 w-4" />,
       group: 'Files',
       keywords: ['new', 'create', 'file'],
@@ -236,7 +240,29 @@ export function buildCommands(deps: CommandDependencies): CommandItem[] {
       icon: <Save className="h-4 w-4" />,
       group: 'Files',
       keywords: ['save', 'all'],
-      action: () => announce('All files saved'),
+      action: async () => {
+        const editorState = useEditorStore.getState();
+        const dirtyTabs = Object.values(editorState.tabs).filter((t) => t.isDirty);
+
+        if (dirtyTabs.length === 0) {
+          announce('No unsaved changes');
+          return;
+        }
+
+        // If many files are dirty, confirm before saving all
+        if (dirtyTabs.length > 20) {
+          const confirmed = window.confirm(
+            `You have ${dirtyTabs.length} unsaved files. Do you want to save all of them?`
+          );
+          if (!confirmed) {
+            return;
+          }
+        }
+
+        // Broadcast a global save-all event handled by each open editor instance
+        window.dispatchEvent(new Event('podex-save-all'));
+        announce(`Saving ${dirtyTabs.length} file${dirtyTabs.length === 1 ? '' : 's'}...`);
+      },
     },
     {
       id: 'open-folder',

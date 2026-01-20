@@ -68,7 +68,7 @@ const panelConfig: Record<
   git: { icon: GitBranch, label: 'Git' },
   github: { icon: Github, label: 'GitHub' },
   preview: { icon: FileCode, label: 'Preview' },
-  mcp: { icon: Plug, label: 'Integrations' },
+  mcp: { icon: Plug, label: 'Integrations (MCP)' },
   extensions: { icon: Box, label: 'Extensions' },
   search: { icon: Search, label: 'Search' },
   problems: { icon: AlertTriangle, label: 'Problems' },

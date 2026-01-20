@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from src.database.connection import get_db_context
+from src.database.models import Memory as MemoryModel
 from src.memory.knowledge_base import KnowledgeBase, Memory, MemoryStoreRequest, MemoryType
 
 if TYPE_CHECKING:
@@ -142,6 +144,8 @@ class MemoryRetriever:
         - Factual information (is, are, has)
         - Decisions (decided, chose, will use)
 
+        Stores memories in both Redis (for fast retrieval) and PostgreSQL (for frontend display).
+
         Args:
             session_id: Session ID
             user_id: User ID
@@ -179,6 +183,9 @@ class MemoryRetriever:
                 )
                 memory = await self._kb.store(request)
                 extracted.append(memory)
+
+                # Also persist to PostgreSQL for frontend display
+                await self._persist_to_postgres(memory)
                 break
 
         # Decision patterns
@@ -207,10 +214,50 @@ class MemoryRetriever:
                         )
                         memory = await self._kb.store(request)
                         extracted.append(memory)
+
+                        # Also persist to PostgreSQL for frontend display
+                        await self._persist_to_postgres(memory)
                         break
                 break
 
         return extracted
+
+    async def _persist_to_postgres(self, memory: Memory) -> None:
+        """Persist a memory to PostgreSQL for frontend display.
+
+        Args:
+            memory: The memory to persist
+        """
+        try:
+            async with get_db_context() as db:
+                db_memory = MemoryModel(
+                    id=memory.id,
+                    user_id=memory.user_id,
+                    session_id=memory.session_id,
+                    project_id=memory.project_id,
+                    content=memory.content,
+                    memory_type=memory.memory_type.value
+                    if isinstance(memory.memory_type, MemoryType)
+                    else memory.memory_type,
+                    tags=memory.tags or [],
+                    memory_metadata=memory.metadata or {},
+                    importance=memory.importance,
+                    source_message_id=memory.source_message_id,
+                )
+                db.add(db_memory)
+                await db.commit()
+                logger.debug(
+                    "Memory persisted to PostgreSQL",
+                    memory_id=memory.id,
+                    memory_type=memory.memory_type,
+                )
+        except Exception as e:
+            # Log but don't fail - Redis storage succeeded
+            logger.warning(
+                "Failed to persist memory to PostgreSQL",
+                memory_id=memory.id,
+                error=str(e),
+            )
 
 
 class MemoryRetrieverHolder:

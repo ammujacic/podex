@@ -2,19 +2,20 @@
 Comprehensive tests for Agent tools.
 
 Tests cover:
-- File tools (read, write, list_directory)
-- Git tools (status, commit, branch)
-- Command tools (run_command)
+- Remote tools (read_file, write_file, run_command, git operations via ComputeClient)
 - Web tools (fetch_url, search_web)
 - Memory tools (store, recall)
 - Task tools (create, complete)
 - Vision tools (analyze_screenshot)
+
+NOTE: File, command, and git tools now execute remotely on workspace containers
+via the ComputeClient. Tests for these require mocking the ComputeClient.
 """
 
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
-from fastapi.testclient import TestClient
 
 # ============================================================================
 # FIXTURES
@@ -48,30 +49,27 @@ def mock_git_repo() -> dict[str, Any]:
     }
 
 
+@pytest.fixture
+def mock_compute_client() -> AsyncMock:
+    """Create a mock ComputeClient."""
+    client = AsyncMock()
+    client.workspace_id = "workspace-123"
+    client.user_id = "user-123"
+    return client
+
+
 # ============================================================================
-# FILE TOOLS TESTS
+# REMOTE FILE TOOLS TESTS
 # ============================================================================
 
 
-class TestFileTools:
-    """Tests for file operation tools."""
-
-    def test_list_tools(self, client: TestClient) -> None:
-        """Test listing available tools."""
-        response = client.get("/agents/tools")
-        assert response.status_code == 200
-        data = response.json()
-        assert isinstance(data, list)
-        assert len(data) > 0
-        # Verify tool structure
-        tool = data[0]
-        assert "name" in tool
-        assert "description" in tool
+class TestRemoteFileTools:
+    """Tests for remote file operation tools via ComputeClient."""
 
     @pytest.mark.asyncio
     async def test_read_file_tool_exists(self) -> None:
         """Test read_file tool exists."""
-        from src.tools.file_tools import read_file
+        from src.tools.remote_tools import read_file
 
         assert read_file is not None
         assert callable(read_file)
@@ -79,7 +77,7 @@ class TestFileTools:
     @pytest.mark.asyncio
     async def test_write_file_tool_exists(self) -> None:
         """Test write_file tool exists."""
-        from src.tools.file_tools import write_file
+        from src.tools.remote_tools import write_file
 
         assert write_file is not None
         assert callable(write_file)
@@ -87,7 +85,7 @@ class TestFileTools:
     @pytest.mark.asyncio
     async def test_list_directory_tool_exists(self) -> None:
         """Test list_directory tool exists."""
-        from src.tools.file_tools import list_directory
+        from src.tools.remote_tools import list_directory
 
         assert list_directory is not None
         assert callable(list_directory)
@@ -95,94 +93,96 @@ class TestFileTools:
     @pytest.mark.asyncio
     async def test_search_code_tool_exists(self) -> None:
         """Test search_code tool exists."""
-        from src.tools.file_tools import search_code
+        from src.tools.remote_tools import search_code
 
         assert search_code is not None
         assert callable(search_code)
 
+    @pytest.mark.asyncio
+    async def test_run_command_tool_exists(self) -> None:
+        """Test run_command tool exists."""
+        from src.tools.remote_tools import run_command
 
-# ============================================================================
-# GIT TOOLS TESTS
-# ============================================================================
-
-
-class TestGitTools:
-    """Tests for git operation tools."""
+        assert run_command is not None
+        assert callable(run_command)
 
     @pytest.mark.asyncio
-    async def test_git_status_tool(self) -> None:
+    async def test_read_file_with_mock_client(self, mock_compute_client: AsyncMock) -> None:
+        """Test read_file calls ComputeClient correctly."""
+        from src.tools.remote_tools import read_file
+
+        mock_compute_client.read_file.return_value = {
+            "success": True,
+            "content": "file content",
+            "path": "test.txt",
+        }
+
+        result = await read_file(mock_compute_client, "test.txt")
+
+        assert result["success"] is True
+        assert result["content"] == "file content"
+        mock_compute_client.read_file.assert_called_once_with("test.txt")
+
+
+# ============================================================================
+# REMOTE GIT TOOLS TESTS
+# ============================================================================
+
+
+class TestRemoteGitTools:
+    """Tests for remote git operation tools via ComputeClient."""
+
+    @pytest.mark.asyncio
+    async def test_git_status_tool_exists(self) -> None:
         """Test git_status tool exists."""
-        from src.tools.git_tools import git_status
+        from src.tools.remote_tools import git_status
 
         assert git_status is not None
         assert callable(git_status)
 
     @pytest.mark.asyncio
-    async def test_git_commit_tool(self) -> None:
+    async def test_git_commit_tool_exists(self) -> None:
         """Test git_commit tool exists."""
-        from src.tools.git_tools import git_commit
+        from src.tools.remote_tools import git_commit
 
         assert git_commit is not None
         assert callable(git_commit)
 
     @pytest.mark.asyncio
-    async def test_git_branch_tool(self) -> None:
+    async def test_git_branch_tool_exists(self) -> None:
         """Test git_branch tool exists."""
-        from src.tools.git_tools import git_branch
+        from src.tools.remote_tools import git_branch
 
         assert git_branch is not None
         assert callable(git_branch)
 
     @pytest.mark.asyncio
-    async def test_git_diff_tool(self) -> None:
+    async def test_git_diff_tool_exists(self) -> None:
         """Test git_diff tool exists."""
-        from src.tools.git_tools import git_diff
+        from src.tools.remote_tools import git_diff
 
         assert git_diff is not None
         assert callable(git_diff)
 
     @pytest.mark.asyncio
-    async def test_git_log_tool(self) -> None:
+    async def test_git_log_tool_exists(self) -> None:
         """Test git_log tool exists."""
-        from src.tools.git_tools import git_log
+        from src.tools.remote_tools import git_log
 
         assert git_log is not None
         assert callable(git_log)
 
-
-# ============================================================================
-# COMMAND TOOLS TESTS
-# ============================================================================
-
-
-class TestCommandTools:
-    """Tests for command execution tools."""
-
     @pytest.mark.asyncio
-    async def test_run_command_tool_exists(self) -> None:
-        """Test run_command tool exists."""
-        from src.tools.command_tools import run_command
+    async def test_git_status_with_mock_client(self, mock_compute_client: AsyncMock) -> None:
+        """Test git_status calls ComputeClient correctly."""
+        from src.tools.remote_tools import git_status
 
-        assert run_command is not None
-        assert callable(run_command)
+        mock_compute_client.git_command.return_value = (True, "## main\n", "")
 
-    def test_validate_command_helper(self) -> None:
-        """Test _validate_command helper function."""
-        from src.tools.command_tools import _validate_command
+        result = await git_status(mock_compute_client)
 
-        # Test valid command
-        is_valid, message = _validate_command("ls -la")
-        assert isinstance(is_valid, bool)
-        assert isinstance(message, str)
-
-    def test_check_dangerous_patterns(self) -> None:
-        """Test _check_dangerous_patterns helper."""
-        from src.tools.command_tools import _check_dangerous_patterns
-
-        # Test that rm -rf / is flagged as dangerous
-        is_safe, message = _check_dangerous_patterns("rm -rf /")
-        assert isinstance(is_safe, bool)
-        assert isinstance(message, str)
+        assert result["success"] is True
+        mock_compute_client.git_command.assert_called_once()
 
 
 # ============================================================================
@@ -370,3 +370,37 @@ class TestVisionTools:
 
         assert analyze_accessibility is not None
         assert callable(analyze_accessibility)
+
+
+# ============================================================================
+# COMPUTE CLIENT TESTS
+# ============================================================================
+
+
+class TestComputeClient:
+    """Tests for ComputeClient."""
+
+    def test_compute_client_exists(self) -> None:
+        """Test ComputeClient class exists."""
+        from src.compute_client import ComputeClient
+
+        assert ComputeClient is not None
+
+    def test_get_compute_client_exists(self) -> None:
+        """Test get_compute_client function exists."""
+        from src.compute_client import get_compute_client
+
+        assert get_compute_client is not None
+        assert callable(get_compute_client)
+
+    def test_create_compute_client(self) -> None:
+        """Test creating a ComputeClient instance."""
+        from src.compute_client import ComputeClient
+
+        client = ComputeClient(
+            workspace_id="workspace-123",
+            user_id="user-123",
+            base_url="http://localhost:3003",
+        )
+        assert client.workspace_id == "workspace-123"
+        assert client.user_id == "user-123"

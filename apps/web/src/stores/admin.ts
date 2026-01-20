@@ -4,7 +4,17 @@
 
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
-import { api } from '@/lib/api';
+import {
+  api,
+  listAdminMCPServers,
+  createAdminMCPServer,
+  updateAdminMCPServer,
+  deleteAdminMCPServer,
+  toggleAdminMCPServer,
+  type AdminDefaultMCPServer,
+  type CreateAdminMCPServerRequest,
+  type UpdateAdminMCPServerRequest,
+} from '@/lib/api';
 
 // ============================================================================
 // Types
@@ -281,6 +291,10 @@ interface AdminState {
   providers: AdminLLMProvider[];
   providersLoading: boolean;
 
+  // MCP Servers (Default Catalog)
+  mcpServers: AdminDefaultMCPServer[];
+  mcpServersLoading: boolean;
+
   // Error
   error: string | null;
 
@@ -333,6 +347,12 @@ interface AdminState {
     data: Omit<AdminLLMProvider, 'created_at' | 'updated_at' | 'logo_url'>
   ) => Promise<AdminLLMProvider>;
   deleteProvider: (slug: string) => Promise<void>;
+  // MCP Servers (Default Catalog)
+  fetchMCPServers: () => Promise<void>;
+  createMCPServer: (data: CreateAdminMCPServerRequest) => Promise<AdminDefaultMCPServer>;
+  updateMCPServer: (serverId: string, data: UpdateAdminMCPServerRequest) => Promise<void>;
+  deleteMCPServer: (serverId: string) => Promise<void>;
+  toggleMCPServer: (serverId: string) => Promise<void>;
   // User sponsorship and credits actions
   sponsorUser: (userId: string, planId: string, reason?: string) => Promise<void>;
   removeSponsor: (userId: string) => Promise<void>;
@@ -374,6 +394,8 @@ export const useAdminStore = create<AdminState>()(
       settingsLoading: false,
       providers: [],
       providersLoading: false,
+      mcpServers: [],
+      mcpServersLoading: false,
       error: null,
 
       // Actions
@@ -668,6 +690,62 @@ export const useAdminStore = create<AdminState>()(
         }
       },
 
+      // MCP Servers (Default Catalog)
+      fetchMCPServers: async () => {
+        set({ mcpServersLoading: true, error: null });
+        try {
+          const servers = await listAdminMCPServers();
+          set({ mcpServers: servers, mcpServersLoading: false });
+        } catch (err) {
+          set({ error: (err as Error).message, mcpServersLoading: false });
+        }
+      },
+
+      createMCPServer: async (data: CreateAdminMCPServerRequest) => {
+        set({ error: null });
+        try {
+          const result = await createAdminMCPServer(data);
+          await get().fetchMCPServers();
+          return result;
+        } catch (err) {
+          set({ error: (err as Error).message });
+          throw err;
+        }
+      },
+
+      updateMCPServer: async (serverId: string, data: UpdateAdminMCPServerRequest) => {
+        set({ error: null });
+        try {
+          await updateAdminMCPServer(serverId, data);
+          await get().fetchMCPServers();
+        } catch (err) {
+          set({ error: (err as Error).message });
+          throw err;
+        }
+      },
+
+      deleteMCPServer: async (serverId: string) => {
+        set({ error: null });
+        try {
+          await deleteAdminMCPServer(serverId);
+          await get().fetchMCPServers();
+        } catch (err) {
+          set({ error: (err as Error).message });
+          throw err;
+        }
+      },
+
+      toggleMCPServer: async (serverId: string) => {
+        set({ error: null });
+        try {
+          await toggleAdminMCPServer(serverId);
+          await get().fetchMCPServers();
+        } catch (err) {
+          set({ error: (err as Error).message });
+          throw err;
+        }
+      },
+
       // User sponsorship and credits actions
       sponsorUser: async (userId: string, planId: string, reason?: string) => {
         set({ error: null });
@@ -735,4 +813,5 @@ export const useAdminHardware = () => useAdminStore((state) => state.hardwareSpe
 export const useAdminTemplates = () => useAdminStore((state) => state.templates);
 export const useAdminSettings = () => useAdminStore((state) => state.settings);
 export const useAdminProviders = () => useAdminStore((state) => state.providers);
+export const useAdminMCPServers = () => useAdminStore((state) => state.mcpServers);
 export const useAdminError = () => useAdminStore((state) => state.error);

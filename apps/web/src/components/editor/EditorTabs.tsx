@@ -98,26 +98,26 @@ function TabItem({
       {/* File name */}
       <span className="flex-1 truncate text-xs">{tab.name}</span>
 
-      {/* Dirty indicator or close button */}
-      <div className="flex h-4 w-4 shrink-0 items-center justify-center">
-        {tab.isDirty ? (
+      {/* Dirty indicator */}
+      {tab.isDirty && (
+        <div className="mr-1 flex h-4 w-4 shrink-0 items-center justify-center">
           <Circle className="h-2 w-2 fill-accent-warning text-accent-warning" />
-        ) : (
-          <button
-            className={cn(
-              'rounded p-0.5 opacity-0 transition-opacity hover:bg-overlay',
-              'group-hover:opacity-100',
-              isActive && 'opacity-50'
-            )}
-            onClick={(e) => {
-              e.stopPropagation();
-              onClose();
-            }}
-          >
-            <X className="h-3 w-3" />
-          </button>
+        </div>
+      )}
+
+      {/* Close button (always visible, brighter on hover) */}
+      <button
+        className={cn(
+          'flex h-4 w-4 shrink-0 items-center justify-center rounded p-0.5 text-text-secondary transition-colors',
+          'hover:bg-overlay hover:text-text-primary'
         )}
-      </div>
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+      >
+        <X className="h-3 w-3" />
+      </button>
     </div>
   );
 }

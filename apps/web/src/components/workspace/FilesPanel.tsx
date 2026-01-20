@@ -24,10 +24,10 @@ import { useSessionStore } from '@/stores/session';
 import { useEditorStore } from '@/stores/editor';
 import { useUIStore } from '@/stores/ui';
 import { cn } from '@/lib/utils';
-import { NoFilesEmptyState, ErrorEmptyState, EmptyFolderState } from '@/components/ui/EmptyState';
+import { NoFilesEmptyState, ErrorEmptyState } from '@/components/ui/EmptyState';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { getLanguageFromPath } from './CodeEditor';
-import { listFiles, getFileContent, type FileNode } from '@/lib/api';
+import { listFiles, getFileContent, deleteFile, moveFile, type FileNode } from '@/lib/api';
 import { getUserConfig, updateUserConfig } from '@/lib/api/user-config';
 import { MobileFileItem } from './MobileFileItem';
 import { MobileFileActionsSheet } from './MobileFileActionsSheet';
@@ -51,6 +51,7 @@ interface FileTreeNodeProps {
   loadedFolders: Map<string, FileNode[]>;
   loadingFolders: Set<string>;
   onLoadFolder: (path: string) => void;
+  emptyFolders: Set<string>;
   showHiddenFiles: boolean;
   getSyncInfo: (path: string) => SyncInfo;
   onToggleSync?: (path: string) => void;
@@ -152,6 +153,7 @@ function FileTreeNode({
   loadedFolders,
   loadingFolders,
   onLoadFolder,
+  emptyFolders,
   showHiddenFiles,
   getSyncInfo,
   onToggleSync,
@@ -162,16 +164,23 @@ function FileTreeNode({
   const rawChildren = loadedFolders.get(item.path);
   const children = rawChildren ? filterFiles(rawChildren, showHiddenFiles) : undefined;
   const paddingLeft = 8 + depth * 12; // Base padding + indentation per level
+  const isEmptyFolder = emptyFolders.has(item.path);
   const [menuOpen, setMenuOpen] = useState(false);
   const shouldOpenMenuRef = useRef(false);
+  const openModal = useUIStore((state) => state.openModal);
 
   const handleFolderClick = useCallback(() => {
+    // Do nothing for folders known to be empty
+    if (isEmptyFolder) {
+      return;
+    }
+
     if (!isExpanded && !loadedFolders.has(item.path)) {
       // Load folder contents when first expanding
       onLoadFolder(item.path);
     }
     onToggleFolder(item.path);
-  }, [isExpanded, item.path, loadedFolders, onLoadFolder, onToggleFolder]);
+  }, [isExpanded, isEmptyFolder, item.path, loadedFolders, onLoadFolder, onToggleFolder]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -217,6 +226,7 @@ function FileTreeNode({
   );
 
   if (item.type === 'directory') {
+    const isHidden = isHiddenFile(item.name);
     return (
       <div>
         <DropdownMenu open={menuOpen} onOpenChange={handleOpenChange}>
@@ -225,18 +235,23 @@ function FileTreeNode({
               onClick={handleButtonClick}
               onPointerDown={handleTriggerPointerDown}
               onContextMenu={handleContextMenu}
-              className="flex w-full items-center gap-1 rounded py-1 pr-2 text-left text-sm text-text-secondary hover:bg-overlay hover:text-text-primary"
+              className={cn(
+                'flex w-full items-center gap-1 rounded py-1 pr-2 text-left text-sm hover:bg-overlay',
+                isHidden ? 'text-text-secondary hover:text-text-primary' : 'text-text-primary'
+              )}
               style={{ paddingLeft }}
+              data-file-node="true"
             >
               {isLoading ? (
                 <Loader2 className="h-4 w-4 animate-spin text-text-muted shrink-0" />
               ) : (
                 <span className="shrink-0 w-4 h-4 flex items-center justify-center">
-                  {isExpanded ? (
-                    <ChevronDown className="h-3.5 w-3.5 text-text-muted" />
-                  ) : (
-                    <ChevronRight className="h-3.5 w-3.5 text-text-muted" />
-                  )}
+                  {!isEmptyFolder &&
+                    (isExpanded ? (
+                      <ChevronDown className="h-3.5 w-3.5 text-text-muted" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5 text-text-muted" />
+                    ))}
                 </span>
               )}
               {isExpanded ? (
@@ -244,7 +259,14 @@ function FileTreeNode({
               ) : (
                 <Folder className="h-4 w-4 text-accent-primary shrink-0" />
               )}
-              <span className="truncate flex-1 ml-1">{item.name}</span>
+              <span
+                className={cn(
+                  'truncate flex-1 ml-1',
+                  isHidden ? 'text-text-secondary' : 'text-text-primary'
+                )}
+              >
+                {item.name}
+              </span>
               {syncInfo.isSynced && (
                 <CloudSync
                   className={cn(
@@ -261,6 +283,24 @@ function FileTreeNode({
           <DropdownMenuContent align="start" className="w-56">
             <DropdownMenuItem onClick={handleFolderClick}>
               {isExpanded ? 'Collapse' : 'Expand'} Folder
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() =>
+                openModal('new-file', {
+                  initialPath: item.path ? `${item.path}/` : '',
+                })
+              }
+            >
+              New File...
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() =>
+                openModal('new-folder', {
+                  initialPath: item.path ? `${item.path}/` : '',
+                })
+              }
+            >
+              New Folder...
             </DropdownMenuItem>
             {onToggleSync && (
               <>
@@ -282,7 +322,7 @@ function FileTreeNode({
             )}
           </DropdownMenuContent>
         </DropdownMenu>
-        {isExpanded && children && (
+        {isExpanded && children && children.length > 0 && (
           <div>
             {children
               .filter((child) => child.path || child.name)
@@ -298,18 +338,19 @@ function FileTreeNode({
                   loadedFolders={loadedFolders}
                   loadingFolders={loadingFolders}
                   onLoadFolder={onLoadFolder}
+                  emptyFolders={emptyFolders}
                   showHiddenFiles={showHiddenFiles}
                   getSyncInfo={getSyncInfo}
                   onToggleSync={onToggleSync}
                 />
               ))}
-            {children.length === 0 && <EmptyFolderState size="sm" />}
           </div>
         )}
       </div>
     );
   }
 
+  const isHidden = isHiddenFile(item.name);
   return (
     <DropdownMenu open={menuOpen} onOpenChange={handleOpenChange}>
       <DropdownMenuTrigger asChild>
@@ -327,11 +368,22 @@ function FileTreeNode({
             }
           }}
           onContextMenu={handleContextMenu}
-          className="flex w-full items-center gap-1 rounded py-1 pr-2 text-left text-sm text-text-secondary hover:bg-overlay hover:text-text-primary"
+          className={cn(
+            'flex w-full items-center gap-1 rounded py-1 pr-2 text-left text-sm hover:bg-overlay',
+            isHidden ? 'text-text-secondary hover:text-text-primary' : 'text-text-primary'
+          )}
           style={{ paddingLeft: paddingLeft + 20 }} // Extra indent for files (no chevron)
+          data-file-node="true"
         >
           <File className="h-4 w-4 text-text-muted shrink-0" />
-          <span className="truncate flex-1 ml-1">{item.name}</span>
+          <span
+            className={cn(
+              'truncate flex-1 ml-1',
+              isHidden ? 'text-text-secondary' : 'text-text-primary'
+            )}
+          >
+            {item.name}
+          </span>
           {syncInfo.isSynced && (
             <CloudSync
               className={cn(
@@ -347,6 +399,28 @@ function FileTreeNode({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56">
         <DropdownMenuItem onClick={() => onFileClick(item.path)}>Open File</DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => {
+            const newPath = window.prompt('Rename file', item.path);
+            if (!newPath || newPath === item.path) return;
+            moveFile(sessionId, item.path, newPath).catch((err) => {
+              console.error('Failed to rename file:', err);
+            });
+          }}
+        >
+          Rename...
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => {
+            const confirmed = window.confirm(`Delete ${item.path}? This cannot be undone.`);
+            if (!confirmed) return;
+            deleteFile(sessionId, item.path).catch((err) => {
+              console.error('Failed to delete file:', err);
+            });
+          }}
+        >
+          Delete
+        </DropdownMenuItem>
         {onToggleSync && (
           <>
             <DropdownMenuSeparator />
@@ -382,6 +456,7 @@ interface MobileFileTreeNodeProps {
   loadedFolders: Map<string, FileNode[]>;
   loadingFolders: Set<string>;
   onLoadFolder: (path: string) => void;
+  emptyFolders: Set<string>;
   showHiddenFiles: boolean;
   getSyncInfo: (path: string) => SyncInfo;
   onToggleSync?: (path: string) => void;
@@ -398,6 +473,7 @@ function MobileFileTreeNode({
   loadedFolders,
   loadingFolders,
   onLoadFolder,
+  emptyFolders,
   showHiddenFiles,
   getSyncInfo,
   onToggleSync,
@@ -406,13 +482,19 @@ function MobileFileTreeNode({
   const isLoading = loadingFolders.has(item.path);
   const rawChildren = loadedFolders.get(item.path);
   const children = rawChildren ? filterFiles(rawChildren, showHiddenFiles) : undefined;
+  const isEmptyFolder = emptyFolders.has(item.path);
 
   const handleToggleFolder = useCallback(() => {
+    // Don't attempt to load or expand folders known to be empty
+    if (isEmptyFolder) {
+      return;
+    }
+
     if (!isExpanded && !loadedFolders.has(item.path)) {
       onLoadFolder(item.path);
     }
     onToggleFolder(item.path);
-  }, [isExpanded, item.path, loadedFolders, onLoadFolder, onToggleFolder]);
+  }, [isExpanded, isEmptyFolder, item.path, loadedFolders, onLoadFolder, onToggleFolder]);
 
   return (
     <MobileFileItem
@@ -423,11 +505,11 @@ function MobileFileTreeNode({
       onCopyPath={onCopyPath}
       isExpanded={isExpanded}
       isLoading={isLoading}
-      onToggleFolder={handleToggleFolder}
+      onToggleFolder={isEmptyFolder ? undefined : handleToggleFolder}
       getSyncInfo={getSyncInfo}
       onToggleSync={onToggleSync}
     >
-      {item.type === 'directory' && isExpanded && children && (
+      {item.type === 'directory' && isExpanded && children && children.length > 0 && (
         <>
           {children
             .filter((child) => child.path || child.name)
@@ -444,11 +526,11 @@ function MobileFileTreeNode({
                 loadedFolders={loadedFolders}
                 loadingFolders={loadingFolders}
                 onLoadFolder={onLoadFolder}
+                emptyFolders={emptyFolders}
                 showHiddenFiles={showHiddenFiles}
                 getSyncInfo={getSyncInfo}
               />
             ))}
-          {children.length === 0 && <EmptyFolderState size="sm" />}
         </>
       )}
     </MobileFileItem>
@@ -472,8 +554,13 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [loadedFolders, setLoadedFolders] = useState<Map<string, FileNode[]>>(new Map());
   const [loadingFolders, setLoadingFolders] = useState<Set<string>>(new Set());
+  const [emptyFolders, setEmptyFolders] = useState<Set<string>>(new Set());
   const showHiddenFiles = useUIStore((state) => state.showHiddenFiles);
   const setShowHiddenFiles = useUIStore((state) => state.setShowHiddenFiles);
+  const openModal = useUIStore((state) => state.openModal);
+  const [rootMenuOpen, setRootMenuOpen] = useState(false);
+  const [rootMenuPosition, setRootMenuPosition] = useState<{ x: number; y: number } | null>(null);
+  const rootContainerRef = useRef<HTMLDivElement | null>(null);
 
   // User's dotfiles sync configuration
   const [userDotfilesPaths, setUserDotfilesPaths] = useState<string[]>(DEFAULT_DOTFILES);
@@ -514,6 +601,25 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
       try {
         const folderContents = await listFiles(sessionId, path);
         setLoadedFolders((prev) => new Map(prev).set(path, folderContents));
+
+        setEmptyFolders((prev) => {
+          const next = new Set(prev);
+          if (folderContents.length === 0) {
+            next.add(path);
+          } else {
+            next.delete(path);
+          }
+          return next;
+        });
+
+        if (folderContents.length === 0) {
+          // Ensure empty folders are not left expanded
+          setExpandedFolders((prev) => {
+            const next = new Set(prev);
+            next.delete(path);
+            return next;
+          });
+        }
       } catch (err) {
         console.error(`Failed to load folder ${path}:`, err);
         // Set empty array on error so user can try again
@@ -726,60 +832,132 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
         </div>
       </div>
       {/* File tree */}
-      <div className="flex-1 overflow-y-auto py-1">
-        {filesLoading && rootFiles.length === 0 ? (
-          <div className="flex items-center justify-center h-24">
-            <Loader2 className="h-5 w-5 animate-spin text-text-muted" />
-          </div>
-        ) : filesError ? (
-          <ErrorEmptyState message={filesError} onRetry={handleRefresh} size="sm" />
-        ) : rootFiles.length === 0 ? (
-          <NoFilesEmptyState size="sm" />
-        ) : isMobile ? (
-          // Mobile: Use swipeable file items
-          filterFiles(rootFiles, showHiddenFiles)
-            .filter((item) => item.path || item.name)
-            .map((item, index) => (
-              <MobileFileTreeNode
-                key={item.path || `file-${index}-${item.name}`}
-                item={item}
-                depth={0}
-                sessionId={sessionId}
-                onFileClick={handleFileClick}
-                onCopyPath={handleCopyPath}
-                expandedFolders={expandedFolders}
-                onToggleFolder={handleToggleFolder}
-                loadedFolders={loadedFolders}
-                loadingFolders={loadingFolders}
-                onLoadFolder={loadFolder}
-                showHiddenFiles={showHiddenFiles}
-                getSyncInfo={getSyncInfo}
-                onToggleSync={handleToggleSync}
+      <DropdownMenu
+        open={rootMenuOpen}
+        onOpenChange={(open) => {
+          setRootMenuOpen(open);
+          if (!open) {
+            setRootMenuPosition(null);
+          }
+        }}
+      >
+        <div
+          ref={rootContainerRef}
+          className="flex-1 overflow-y-auto py-1 relative"
+          onContextMenu={(e) => {
+            // Let file/folder nodes handle their own context menus
+            if ((e.target as HTMLElement).closest('[data-file-node]')) {
+              return;
+            }
+            e.preventDefault();
+
+            const container = rootContainerRef.current;
+            if (!container) return;
+
+            const rect = container.getBoundingClientRect();
+            setRootMenuPosition({
+              x: e.clientX - rect.left,
+              y: e.clientY - rect.top,
+            });
+            setRootMenuOpen(true);
+          }}
+        >
+          {rootMenuOpen && rootMenuPosition && (
+            <DropdownMenuTrigger asChild>
+              <div
+                style={{
+                  position: 'absolute',
+                  left: rootMenuPosition.x,
+                  top: rootMenuPosition.y,
+                  width: 0,
+                  height: 0,
+                }}
               />
-            ))
-        ) : (
-          // Desktop: Use regular file tree
-          filterFiles(rootFiles, showHiddenFiles)
-            .filter((item) => item.path || item.name)
-            .map((item, index) => (
-              <FileTreeNode
-                key={item.path || `file-${index}-${item.name}`}
-                item={item}
-                depth={0}
-                sessionId={sessionId}
-                onFileClick={handleFileClick}
-                expandedFolders={expandedFolders}
-                onToggleFolder={handleToggleFolder}
-                loadedFolders={loadedFolders}
-                loadingFolders={loadingFolders}
-                onLoadFolder={loadFolder}
-                showHiddenFiles={showHiddenFiles}
-                getSyncInfo={getSyncInfo}
-                onToggleSync={handleToggleSync}
-              />
-            ))
-        )}
-      </div>
+            </DropdownMenuTrigger>
+          )}
+          {filesLoading && rootFiles.length === 0 ? (
+            <div className="flex items-center justify-center h-24">
+              <Loader2 className="h-5 w-5 animate-spin text-text-muted" />
+            </div>
+          ) : filesError ? (
+            <ErrorEmptyState message={filesError} onRetry={handleRefresh} size="sm" />
+          ) : rootFiles.length === 0 ? (
+            <NoFilesEmptyState size="sm" />
+          ) : isMobile ? (
+            // Mobile: Use swipeable file items
+            filterFiles(rootFiles, showHiddenFiles)
+              .filter((item) => item.path || item.name)
+              .map((item, index) => (
+                <MobileFileTreeNode
+                  key={item.path || `file-${index}-${item.name}`}
+                  item={item}
+                  depth={0}
+                  sessionId={sessionId}
+                  onFileClick={handleFileClick}
+                  onCopyPath={handleCopyPath}
+                  expandedFolders={expandedFolders}
+                  onToggleFolder={handleToggleFolder}
+                  loadedFolders={loadedFolders}
+                  loadingFolders={loadingFolders}
+                  onLoadFolder={loadFolder}
+                  emptyFolders={emptyFolders}
+                  showHiddenFiles={showHiddenFiles}
+                  getSyncInfo={getSyncInfo}
+                  onToggleSync={handleToggleSync}
+                />
+              ))
+          ) : (
+            // Desktop: Use regular file tree
+            filterFiles(rootFiles, showHiddenFiles)
+              .filter((item) => item.path || item.name)
+              .map((item, index) => (
+                <FileTreeNode
+                  key={item.path || `file-${index}-${item.name}`}
+                  item={item}
+                  depth={0}
+                  sessionId={sessionId}
+                  onFileClick={handleFileClick}
+                  expandedFolders={expandedFolders}
+                  onToggleFolder={handleToggleFolder}
+                  loadedFolders={loadedFolders}
+                  loadingFolders={loadingFolders}
+                  onLoadFolder={loadFolder}
+                  emptyFolders={emptyFolders}
+                  showHiddenFiles={showHiddenFiles}
+                  getSyncInfo={getSyncInfo}
+                  onToggleSync={handleToggleSync}
+                />
+              ))
+          )}
+        </div>
+        <DropdownMenuContent align="start" className="w-56">
+          <DropdownMenuItem
+            onClick={() => {
+              openModal('new-file', { initialPath: '' });
+              setRootMenuOpen(false);
+            }}
+          >
+            New File...
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={() => {
+              openModal('new-folder', { initialPath: '' });
+              setRootMenuOpen(false);
+            }}
+          >
+            New Folder...
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onClick={() => {
+              setRootMenuOpen(false);
+              handleRefresh();
+            }}
+          >
+            Refresh
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
 
       {/* Mobile file actions sheet */}
       {isMobile && (

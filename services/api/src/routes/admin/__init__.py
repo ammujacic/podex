@@ -9,6 +9,7 @@ from src.routes.admin import (
     compliance,
     hardware,
     marketplace,
+    mcp,
     models,
     organizations,
     plans,
@@ -36,3 +37,4 @@ router.include_router(organizations.router, prefix="/organizations", tags=["admi
 router.include_router(tools.router, prefix="/tools", tags=["admin-tools"])
 router.include_router(skills.router, prefix="/skills", tags=["admin-skills"])
 router.include_router(marketplace.router, tags=["admin-marketplace"])
+router.include_router(mcp.router, prefix="/mcp", tags=["admin-mcp"])

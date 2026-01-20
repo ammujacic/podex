@@ -221,3 +221,55 @@ async def compact_agent_context(
             messages_preserved=len(messages_to_keep) + (1 if summary_text else 0),
             summary=summary_text,
         )
+
+
+class ApprovalResolveRequest(BaseModel):
+    """Request to resolve a pending approval."""
+
+    approved: bool
+    add_to_allowlist: bool = False
+
+
+class ApprovalResolveResponse(BaseModel):
+    """Response from approval resolution."""
+
+    success: bool
+    message: str | None = None
+    error: str | None = None
+
+
+@router.post(
+    "/agents/{agent_id}/approvals/{approval_id}/resolve",
+    response_model=ApprovalResolveResponse,
+)
+async def resolve_agent_approval(
+    agent_id: str,
+    approval_id: str,
+    request: ApprovalResolveRequest,
+) -> ApprovalResolveResponse:
+    """Resolve a pending approval request for a native agent.
+
+    This endpoint is called by the API service when a user approves or rejects
+    an action in the frontend. It finds the agent in the orchestrator's memory
+    and resolves the pending approval Future.
+
+    Args:
+        agent_id: The agent ID.
+        approval_id: The approval request ID.
+        request: The approval decision.
+
+    Returns:
+        Success status and any error message.
+    """
+    result = orchestrator.resolve_approval(
+        agent_id=agent_id,
+        approval_id=approval_id,
+        approved=request.approved,
+        add_to_allowlist=request.add_to_allowlist,
+    )
+
+    return ApprovalResolveResponse(
+        success=result.get("success", False),
+        message=result.get("message"),
+        error=result.get("error"),
+    )

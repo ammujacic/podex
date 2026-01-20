@@ -37,9 +37,12 @@ export function MobileAgentView({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showCreditExhausted, setShowCreditExhausted] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Track last submitted content to prevent double-submission on mobile
   const lastSubmittedRef = useRef<{ content: string; time: number } | null>(null);
+  // Track if user is at bottom of scroll container
+  const isUserAtBottomRef = useRef(true);
 
   const session = useSessionStore((state) => state.sessions[sessionId]);
   const streamingMessages = useSessionStore((state) => state.streamingMessages);
@@ -146,9 +149,19 @@ export function MobileAgentView({
     preventDefaultOnSwipe: true,
   });
 
-  // Auto-scroll to bottom on new messages or streaming updates
+  // Handle scroll to detect if user has scrolled up
+  const handleMessagesScroll = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    // Check if user is at or near the bottom (within 50px threshold)
+    const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+    isUserAtBottomRef.current = isAtBottom;
+  }, []);
+
+  // Auto-scroll to bottom on new messages or streaming updates (only if user is at bottom)
   useEffect(() => {
-    if (messagesEndRef.current) {
+    if (messagesEndRef.current && isUserAtBottomRef.current) {
       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [finalizedMessages, streamingMessage?.content]);
@@ -371,7 +384,11 @@ export function MobileAgentView({
       </div>
 
       {/* Messages area - scrollable middle section */}
-      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-4">
+      <div
+        ref={messagesContainerRef}
+        onScroll={handleMessagesScroll}
+        className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-4"
+      >
         {/* CLI Agent Login Prompt - shown when auth is needed or unknown and no messages yet */}
         {isCliAgent &&
         finalizedMessages.length === 0 &&

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime  # noqa: TC003 - used in Pydantic models at runtime
+from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any
 from uuid import uuid4
@@ -1709,6 +1709,8 @@ class AgentMessageContext:
     thinking_config: dict[str, Any] | None = None
     # User-provided LLM API keys for external providers
     llm_api_keys: dict[str, str] | None = None
+    # Workspace ID for workspace-based MCP servers
+    workspace_id: str | None = None
 
 
 def _build_agent_service_context(
@@ -1741,6 +1743,9 @@ def _build_agent_service_context(
     # Include user-provided LLM API keys (for external providers)
     if ctx.llm_api_keys:
         agent_context["llm_api_keys"] = ctx.llm_api_keys
+    # Include workspace_id for remote tool execution on workspace container
+    if ctx.workspace_id:
+        agent_context["workspace_id"] = ctx.workspace_id
     # Include message_id to enable streaming via Redis Pub/Sub
     if message_id:
         agent_context["message_id"] = message_id
@@ -1968,20 +1973,38 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:
                     effective_mcp = await get_effective_mcp_config(db, ctx.user_id)
                     # Convert to dict format expected by agent service
                     if effective_mcp is not None:
-                        ctx.mcp_config = {
-                            "servers": [
-                                {
-                                    "id": server.id,
-                                    "name": server.name,
-                                    "transport": server.transport,
-                                    "command": server.command,
-                                    "args": server.args,
-                                    "url": server.url,
-                                    "env_vars": server.env_vars,
-                                }
-                                for server in effective_mcp.servers
-                            ],
-                        }
+                        servers_config = []
+                        for server in effective_mcp.servers:
+                            server_dict = {
+                                "id": server.id,
+                                "name": server.name,
+                                "transport": server.transport,
+                                "command": server.command,
+                                "args": server.args,
+                                "url": server.url,
+                                "env_vars": server.env_vars,
+                            }
+                            # Transform workspace-based MCP servers to use HTTP
+                            # These servers run in the workspace container's MCP gateway
+                            if ctx.workspace_id and server.source_slug in (
+                                "filesystem",
+                                "git",
+                            ):
+                                workspace_container = f"podex-workspace-{ctx.workspace_id}"
+                                server_dict["transport"] = "http"
+                                server_dict["url"] = (
+                                    f"http://{workspace_container}:3100/mcp/{server.source_slug}"
+                                )
+                                # Clear stdio-specific fields
+                                server_dict["command"] = None
+                                server_dict["args"] = []
+                                logger.debug(
+                                    "Transformed MCP server to workspace HTTP",
+                                    server=server.name,
+                                    url=server_dict["url"],
+                                )
+                            servers_config.append(server_dict)
+                        ctx.mcp_config = {"servers": servers_config}
                         logger.debug(
                             "Loaded MCP config for agent",
                             user_id=ctx.user_id,
@@ -2717,6 +2740,7 @@ async def _send_message_impl(
         images=images_data,
         thinking_config=thinking_config_data,
         llm_api_keys=llm_api_keys,
+        workspace_id=str(session.workspace_id) if session.workspace_id else None,
     )
     deps.background_tasks.add_task(process_agent_message, msg_context)
 
@@ -3353,3 +3377,123 @@ async def delete_message(
     )
 
     return {"message": "Message deleted"}
+
+
+# ==================== Native Agent Approval Requests ====================
+
+
+class ApprovalRequestPayload(BaseModel):
+    """Payload from agent service when an agent needs user approval."""
+
+    approval_id: str
+    agent_id: str
+    session_id: str
+    tool_name: str
+    action_type: str  # file_write, command_execute, other
+    arguments: dict[str, Any]
+    can_add_to_allowlist: bool = False
+
+
+@router.post("/approvals/request")
+async def create_approval_request(
+    payload: ApprovalRequestPayload,
+    db: DbSession,
+) -> dict[str, Any]:
+    """Receive an approval request from the agent service.
+
+    When a native Podex agent in Ask/Auto mode needs user approval for a
+    restricted action (file write or command execution), it calls this
+    endpoint. We store the pending approval in the database and emit a
+    websocket event to notify the frontend.
+
+    This endpoint is called by the agent service, not by users directly.
+    """
+    from datetime import UTC, timedelta
+
+    from src.database.models import AgentPendingApproval
+
+    # Verify the agent exists
+    agent_query = select(AgentModel).where(AgentModel.id == payload.agent_id)
+    agent_result = await db.execute(agent_query)
+    agent = agent_result.scalar_one_or_none()
+
+    if not agent:
+        logger.warning(
+            "Approval request for unknown agent",
+            agent_id=payload.agent_id,
+            approval_id=payload.approval_id,
+        )
+        return {"success": False, "error": "Agent not found"}
+
+    # Create the pending approval record
+    expires_at = datetime.now(UTC) + timedelta(minutes=5)  # 5 minute timeout
+
+    pending_approval = AgentPendingApproval(
+        id=payload.approval_id,
+        agent_id=payload.agent_id,
+        session_id=payload.session_id,
+        action_type=payload.action_type,
+        action_details={
+            "tool_name": payload.tool_name,
+            "command": payload.arguments.get("command"),
+            "file_path": payload.arguments.get("path") or payload.arguments.get("file_path"),
+            "arguments": payload.arguments,
+        },
+        status="pending",
+        expires_at=expires_at,
+    )
+
+    db.add(pending_approval)
+    await db.commit()
+
+    logger.info(
+        "Created pending approval",
+        approval_id=payload.approval_id,
+        agent_id=payload.agent_id,
+        tool_name=payload.tool_name,
+        action_type=payload.action_type,
+    )
+
+    # Emit websocket event to notify frontend
+    await emit_to_session(
+        payload.session_id,
+        "native_approval_request",
+        {
+            "approval_id": payload.approval_id,
+            "agent_id": payload.agent_id,
+            "agent_name": agent.name,
+            "session_id": payload.session_id,
+            "action_type": payload.action_type,
+            "action_details": {
+                "tool_name": payload.tool_name,
+                "command": payload.arguments.get("command"),
+                "file_path": payload.arguments.get("path") or payload.arguments.get("file_path"),
+                "arguments": payload.arguments,
+            },
+            "can_add_to_allowlist": payload.can_add_to_allowlist,
+            "expires_at": expires_at.isoformat(),
+        },
+    )
+
+    # Also emit agent attention so the user notices
+    await emit_agent_attention(
+        AgentAttentionInfo(
+            session_id=payload.session_id,
+            agent_id=payload.agent_id,
+            agent_name=agent.name,
+            attention_type="needs_approval",
+            title=f"{agent.name} needs your approval",
+            message=(
+                f"{payload.tool_name}: "
+                f"{payload.arguments.get('command') or payload.arguments.get('path') or 'action'}"
+            ),
+            priority="high",
+            metadata={
+                "approval_request": True,
+                "approval_id": payload.approval_id,
+                "tool_name": payload.tool_name,
+            },
+        )
+    )
+
+    return {"success": True, "approval_id": payload.approval_id}

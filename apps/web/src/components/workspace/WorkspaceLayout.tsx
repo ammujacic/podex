@@ -4,6 +4,7 @@ import { type ReactNode } from 'react';
 import { useUIStore } from '@/stores/ui';
 import { useUser, useAuthStore } from '@/stores/auth';
 import { useKeybindings } from '@/hooks/useKeybindings';
+import { useWorkspaceKeybindingCommands } from '@/hooks/useWorkspaceKeybindingCommands';
 import { useAgentSocket } from '@/hooks/useAgentSocket';
 import { useContextSocket } from '@/hooks/useContextSocket';
 import { useCheckpointSocket } from '@/hooks/useCheckpointSocket';
@@ -39,6 +40,7 @@ export function WorkspaceLayout({ sessionId, children }: WorkspaceLayoutProps) {
 
   // Initialize keyboard shortcuts (desktop only)
   useKeybindings();
+  useWorkspaceKeybindingCommands(sessionId);
 
   // Connect to WebSocket for real-time agent updates
   useAgentSocket({

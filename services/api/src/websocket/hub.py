@@ -2163,6 +2163,121 @@ async def permission_response(sid: str, data: dict[str, Any]) -> None:
             )
 
 
+@sio.event
+async def native_approval_response(sid: str, data: dict[str, Any]) -> None:
+    """Handle approval response for native Podex agents.
+
+    When a user approves or rejects an action in the frontend approval dialog
+    for a native agent (not Claude Code CLI), this handler:
+    1. Updates the database record
+    2. Calls the agent service to resolve the pending approval
+
+    Args:
+        sid: Socket.IO session ID
+        data: {
+            session_id: str,
+            agent_id: str,
+            approval_id: str,
+            approved: bool,
+            add_to_allowlist: bool (optional)
+        }
+    """
+    session_id = data.get("session_id")
+    agent_id = data.get("agent_id")
+    approval_id = data.get("approval_id")
+    approved = data.get("approved", False)
+    add_to_allowlist = data.get("add_to_allowlist", False)
+
+    if not session_id or not agent_id or not approval_id:
+        logger.warning("Invalid native approval response", data=data)
+        return
+
+    # Verify client is in the session room
+    client = _client_info.get(sid)
+    if not client or client.get("session_id") != session_id:
+        logger.warning("Native approval response from unauthenticated client", sid=sid)
+        return
+
+    logger.info(
+        "Native approval response",
+        session_id=session_id,
+        agent_id=agent_id,
+        approval_id=approval_id,
+        approved=approved,
+        add_to_allowlist=add_to_allowlist,
+    )
+
+    # Update database record
+    try:
+        from sqlalchemy import update as sql_update
+
+        from src.database.connection import async_session_factory
+        from src.database.models import AgentPendingApproval
+
+        async with async_session_factory() as db:
+            status = "approved" if approved else "rejected"
+            await db.execute(
+                sql_update(AgentPendingApproval)
+                .where(AgentPendingApproval.id == approval_id)
+                .values(status=status)
+            )
+            await db.commit()
+    except Exception as e:
+        logger.exception("Failed to update approval status in DB", error=str(e))
+
+    # Call agent service to resolve the approval
+    import httpx
+
+    from src.config import settings
+
+    agent_service_url = (
+        f"{settings.AGENT_SERVICE_URL}/agents/agents/{agent_id}/approvals/{approval_id}/resolve"
+    )
+    headers: dict[str, str] = {}
+    if settings.INTERNAL_SERVICE_TOKEN:
+        headers["Authorization"] = f"Bearer {settings.INTERNAL_SERVICE_TOKEN}"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as http_client:
+            response = await http_client.post(
+                agent_service_url,
+                json={
+                    "approved": approved,
+                    "add_to_allowlist": add_to_allowlist,
+                },
+                headers=headers,
+            )
+            response.raise_for_status()
+            result = response.json()
+            logger.info(
+                "Agent approval resolved",
+                approval_id=approval_id,
+                result=result,
+            )
+    except httpx.HTTPStatusError as e:
+        logger.exception(
+            "HTTP error resolving agent approval",
+            approval_id=approval_id,
+            status=e.response.status_code,
+            error=str(e),
+        )
+    except Exception as e:
+        logger.exception("Failed to resolve agent approval", approval_id=approval_id, error=str(e))
+
+    # Broadcast the decision
+    await sio.emit(
+        "native_approval_decision",
+        {
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "approval_id": approval_id,
+            "approved": approved,
+            "add_to_allowlist": add_to_allowlist,
+        },
+        room=f"session:{session_id}",
+    )
+
+
 # ============== Agent Mode Switch Events ==============
 
 

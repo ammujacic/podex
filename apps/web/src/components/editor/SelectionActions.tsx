@@ -97,53 +97,69 @@ export function SelectionActions({ editor, onAIAction }: SelectionActionsProps) 
   const containerRef = useRef<HTMLDivElement>(null);
   const hideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Helper to update selection text and position, used by both selection
+  // changes and explicit context menu (right click).
+  const showForCurrentSelectionAt = useCallback(
+    (clientX?: number, clientY?: number) => {
+      const selection = editor.getSelection();
+      if (!selection || selection.isEmpty()) {
+        setVisible(false);
+        return;
+      }
+
+      const model = editor.getModel();
+      if (!model) return;
+
+      const text = model.getValueInRange(selection);
+      if (!text.trim()) {
+        setVisible(false);
+        return;
+      }
+
+      setSelectedText(text);
+
+      const domNode = editor.getDomNode();
+      if (!domNode) return;
+
+      const editorRect = domNode.getBoundingClientRect();
+
+      let x: number;
+      let y: number;
+
+      if (typeof clientX === 'number' && typeof clientY === 'number') {
+        // Position at the mouse cursor (right click).
+        x = clientX;
+        y = clientY;
+      } else {
+        // Fallback: position just under the selection, similar to the
+        // original behaviour in updatePosition.
+        const endPosition = selection.getEndPosition();
+        const scrollTop = editor.getScrollTop();
+        const top = editor.getTopForLineNumber(endPosition.lineNumber) - scrollTop;
+        const lineHeightOption = editor.getOption(66); // LineHeight
+        const lineHeight = typeof lineHeightOption === 'number' ? lineHeightOption : 18;
+
+        x = editorRect.left + 60; // Fixed offset from left edge
+        y = editorRect.top + top + lineHeight + 5;
+      }
+
+      const boundedPos = calculateBoundedPosition(x, y, 200, 350);
+      setPosition(boundedPos);
+
+      if (hideTimeoutRef.current) {
+        clearTimeout(hideTimeoutRef.current);
+      }
+      hideTimeoutRef.current = setTimeout(() => {
+        setVisible(true);
+      }, 300);
+    },
+    [editor]
+  );
+
   // Update position based on selection
   const updatePosition = useCallback(() => {
-    const selection = editor.getSelection();
-    if (!selection || selection.isEmpty()) {
-      setVisible(false);
-      return;
-    }
-
-    const model = editor.getModel();
-    if (!model) return;
-
-    const text = model.getValueInRange(selection);
-    if (!text.trim()) {
-      setVisible(false);
-      return;
-    }
-
-    setSelectedText(text);
-
-    // Get the end position of selection for positioning
-    const endPosition = selection.getEndPosition();
-    const domNode = editor.getDomNode();
-    if (!domNode) return;
-
-    // Use Monaco's coordinate conversion
-    const scrollTop = editor.getScrollTop();
-
-    // Get top position of selection
-    const top = editor.getTopForLineNumber(endPosition.lineNumber) - scrollTop;
-    const lineHeightOption = editor.getOption(66); // LineHeight
-    const lineHeight = typeof lineHeightOption === 'number' ? lineHeightOption : 18;
-
-    const editorRect = domNode.getBoundingClientRect();
-    const x = editorRect.left + 60; // Fixed offset from left edge
-    const y = editorRect.top + top + lineHeight + 5;
-
-    const boundedPos = calculateBoundedPosition(x, y, 200, 350);
-    setPosition(boundedPos);
-
-    // Delay showing to avoid flicker during selection
-    if (hideTimeoutRef.current) {
-      clearTimeout(hideTimeoutRef.current);
-    }
-    hideTimeoutRef.current = setTimeout(() => {
-      setVisible(true);
-    }, 300);
-  }, [editor]);
+    showForCurrentSelectionAt();
+  }, [showForCurrentSelectionAt]);
 
   // Listen for selection changes
   useEffect(() => {
@@ -167,6 +183,39 @@ export function SelectionActions({ editor, onAIAction }: SelectionActionsProps) 
 
     return () => disposable.dispose();
   }, [editor, updatePosition]);
+
+  // Also show the menu when the user right-clicks inside an existing
+  // non-empty selection. Monaco suppresses the native browser menu, so
+  // we hook into its context menu event to show our selection actions.
+  useEffect(() => {
+    const disposable = editor.onContextMenu((e) => {
+      const selection = editor.getSelection();
+      if (!selection || selection.isEmpty()) return;
+
+      const model = editor.getModel();
+      if (!model) return;
+
+      const text = model.getValueInRange(selection);
+      if (!text.trim()) return;
+
+      const browserEvent = (e.event as { browserEvent?: MouseEvent }).browserEvent;
+      const clientX = browserEvent?.clientX;
+      const clientY = browserEvent?.clientY;
+
+      // Position the menu at the cursor if possible.
+      showForCurrentSelectionAt(clientX, clientY);
+
+      // Prevent any underlying default context menu.
+      if (browserEvent) {
+        browserEvent.preventDefault();
+        browserEvent.stopPropagation();
+      }
+    });
+
+    return () => {
+      disposable.dispose();
+    };
+  }, [editor, showForCurrentSelectionAt]);
 
   // Hide on scroll
   useEffect(() => {

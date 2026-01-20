@@ -28,6 +28,7 @@ import {
 import type { Agent, AgentMessage } from '@/stores/session';
 import { useUser, useAuthStore } from '@/stores/auth';
 import { useSessionStore } from '@/stores/session';
+import { useEditorStore } from '@/stores/editor';
 import {
   useOnboardingTour,
   WORKSPACE_TOUR_STEPS,
@@ -70,6 +71,7 @@ export default function SessionPage() {
   // This prevents the effect from re-running when any session changes
   const createSession = useSessionStore((s) => s.createSession);
   const setWorkspaceStatusChecking = useSessionStore((s) => s.setWorkspaceStatusChecking);
+  const resetEditorLayout = useEditorStore((s) => s.resetLayout);
 
   // Onboarding tour
   const { startTour, hasCompleted } = useOnboardingTour();
@@ -106,6 +108,12 @@ export default function SessionPage() {
       startupTimeoutRef.current = null;
     }
   }, []);
+
+  // Reset editor layout when switching sessions so that open tabs
+  // are scoped per session instead of bleeding across sessions.
+  useEffect(() => {
+    resetEditorLayout();
+  }, [resetEditorLayout, sessionId]);
 
   // Simulate startup progress
   const simulateStartup = useCallback(() => {
@@ -184,7 +192,7 @@ export default function SessionPage() {
                 status: agentResponse.status as Agent['status'],
                 color: agentColors[index % agentColors.length] ?? 'agent-1',
                 messages,
-                mode: (agentResponse.mode as Agent['mode']) || 'auto',
+                mode: (agentResponse.mode as Agent['mode']) || 'ask',
               };
             } catch {
               // If messages fail to load, return agent with empty messages
@@ -197,7 +205,7 @@ export default function SessionPage() {
                 status: agentResponse.status as Agent['status'],
                 color: agentColors[index % agentColors.length] ?? 'agent-1',
                 messages: [],
-                mode: (agentResponse.mode as Agent['mode']) || 'auto',
+                mode: (agentResponse.mode as Agent['mode']) || 'ask',
               };
             }
           })

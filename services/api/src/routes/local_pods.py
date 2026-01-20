@@ -76,8 +76,7 @@ class LocalPodResponse(BaseModel):
 class LocalPodRegisterResponse(BaseModel):
     """Response with pod token (shown only once on creation)."""
 
-    id: str
-    name: str
+    pod: LocalPodResponse  # Full pod object
     token: str  # Full token - only shown once!
     connection_url: str  # WebSocket URL to connect to
 
@@ -247,8 +246,7 @@ async def register_pod(
     connection_url = f"{ws_protocol}://{api_host}/local-pod"
 
     return LocalPodRegisterResponse(
-        id=pod.id,
-        name=pod.name,
+        pod=_pod_to_response(pod),
         token=full_token,
         connection_url=connection_url,
     )

@@ -222,6 +222,7 @@ class UsageSummaryResponse(BaseModel):
     total_cost: float
     usage_by_model: dict[str, dict[str, Any]] = Field(default_factory=dict)
     usage_by_agent: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    usage_by_session: dict[str, dict[str, Any]] = Field(default_factory=dict)
     usage_by_tier: dict[str, dict[str, Any]] = Field(default_factory=dict)  # Compute by tier
 
 
@@ -2294,6 +2295,7 @@ class UsageAggregation:
     api_calls: int = 0
     usage_by_model: dict[str, dict[str, Any]] | None = None
     usage_by_agent: dict[str, dict[str, Any]] | None = None
+    usage_by_session: dict[str, dict[str, Any]] | None = None
     usage_by_tier: dict[str, dict[str, Any]] | None = None
 
 
@@ -2365,15 +2367,34 @@ def _aggregate_agent_usage(
         agg.usage_by_agent[record.agent_id]["cost"] += cost_dollars
 
 
+def _aggregate_session_usage(
+    agg: UsageAggregation,
+    record: UsageRecord,
+    cost_dollars: float,
+) -> None:
+    """Aggregate per-session (pod/workspace) usage from a record."""
+    if agg.usage_by_session is None:
+        agg.usage_by_session = {}
+
+    if record.session_id and record.usage_type in ["tokens_input", "tokens_output"]:
+        if record.session_id not in agg.usage_by_session:
+            agg.usage_by_session[record.session_id] = {"tokens": 0, "cost": 0}
+        agg.usage_by_session[record.session_id]["tokens"] += record.quantity
+        agg.usage_by_session[record.session_id]["cost"] += cost_dollars
+
+
 def _aggregate_usage_records(records: list[UsageRecord]) -> UsageAggregation:
     """Aggregate a list of usage records."""
-    agg = UsageAggregation(usage_by_model={}, usage_by_agent={}, usage_by_tier={})
+    agg = UsageAggregation(
+        usage_by_model={}, usage_by_agent={}, usage_by_session={}, usage_by_tier={}
+    )
 
     for record in records:
         cost_dollars = cents_to_dollars(record.total_cost_cents)
         _aggregate_token_usage(agg, record, cost_dollars)
         _aggregate_other_usage(agg, record, cost_dollars)
         _aggregate_agent_usage(agg, record, cost_dollars)
+        _aggregate_session_usage(agg, record, cost_dollars)
 
     return agg
 
@@ -2455,6 +2476,18 @@ async def get_usage_summary(
     # Aggregate using helper function
     agg = _aggregate_usage_records(records)
 
+    # Fetch session names for all sessions with usage
+    if agg.usage_by_session:
+        session_ids = list(agg.usage_by_session.keys())
+        session_result = await db.execute(
+            select(Session.id, Session.name).where(Session.id.in_(session_ids))
+        )
+        session_names = {str(row.id): row.name for row in session_result}
+        for session_id in agg.usage_by_session:
+            agg.usage_by_session[session_id]["name"] = session_names.get(
+                session_id, f"Pod {session_id[:8]}"
+            )
+
     return UsageSummaryResponse(
         period_start=period_start,
         period_end=period_end,
@@ -2473,6 +2506,7 @@ async def get_usage_summary(
         total_cost=agg.tokens_cost + agg.compute_cost + agg.storage_cost,
         usage_by_model=agg.usage_by_model or {},
         usage_by_agent=agg.usage_by_agent or {},
+        usage_by_session=agg.usage_by_session or {},
         usage_by_tier=agg.usage_by_tier or {},
     )
 
@@ -3191,6 +3225,62 @@ def _apply_margin_to_price(base_price: float, margin_percent: int) -> float:
     return float(total)
 
 
+def _calculate_token_cost_from_db(
+    model: str | None,
+    input_tokens: int,
+    output_tokens: int,
+) -> int:
+    """Calculate token cost in cents using database pricing.
+
+    SECURITY: Server-side cost calculation prevents clients from manipulating costs.
+    Always uses database pricing, with fallback to default rates.
+
+    Args:
+        model: Model ID (e.g., "claude-haiku-4-5")
+        input_tokens: Number of input tokens
+        output_tokens: Number of output tokens
+
+    Returns:
+        Cost in cents, with minimum 1 cent for any non-zero usage
+    """
+    import math
+
+    from src.services.pricing import get_pricing_from_cache
+
+    # Get pricing from database cache
+    pricing = get_pricing_from_cache(model or "") if model else None
+
+    if pricing:
+        input_price = pricing.input_price_per_million
+        output_price = pricing.output_price_per_million
+    else:
+        # Fallback to default pricing if model not found
+        # Use conservative defaults that don't undercharge
+        input_price = Decimal("3.00")  # $3/M input
+        output_price = Decimal("15.00")  # $15/M output
+        if model:
+            logger.warning(
+                "Model pricing not found in cache, using defaults",
+                model=model,
+            )
+
+    # Calculate cost in dollars
+    input_cost = (Decimal(input_tokens) / 1000000) * input_price
+    output_cost = (Decimal(output_tokens) / 1000000) * output_price
+    total_cost_dollars = input_cost + output_cost
+
+    # Convert to cents with ceiling to prevent revenue loss
+    total_cost_cents = math.ceil(total_cost_dollars * 100)
+
+    # SECURITY: Minimum 1 cent for any non-zero token usage
+    # This prevents abuse through many small requests that round to 0
+    total_tokens = input_tokens + output_tokens
+    if total_tokens > 0 and total_cost_cents == 0:
+        total_cost_cents = 1
+
+    return total_cost_cents
+
+
 async def _get_user_margin(
     db: AsyncSession,
     user_id: str,
@@ -3295,6 +3385,13 @@ def _calculate_cost_split_decimal(
         return base_cost, total_cost, 0, 0
 
     if not input_tokens:
+        return 0, 0, base_cost, total_cost
+
+    # SECURITY: For very small costs (1-2 cents), assign to the larger token count
+    # This prevents displaying $0.00 for one record while maintaining accurate totals
+    if total_cost <= 2:
+        if input_tokens >= output_tokens:
+            return base_cost, total_cost, 0, 0
         return 0, 0, base_cost, total_cost
 
     # Use Decimal for precise ratio calculation
@@ -3429,10 +3526,6 @@ async def _record_single_event(
         # Get margin for this user and usage type
         margin_percent = await _get_user_margin(db, event.user_id, event.usage_type)
 
-        # Apply margin to get final user cost
-        base_cost = event.total_cost_cents  # Provider cost
-        total_cost = _apply_margin(base_cost, margin_percent)
-
         is_overage = False
 
         # Determine usage type for database
@@ -3441,6 +3534,14 @@ async def _record_single_event(
             "tokens_input",
             "tokens_output",
         ) or event.usage_type.startswith("tokens"):
+            # SECURITY: Recalculate token cost server-side using database pricing
+            # This prevents clients from manipulating their own costs
+            base_cost = _calculate_token_cost_from_db(
+                event.model,
+                event.input_tokens or 0,
+                event.output_tokens or 0,
+            )
+            total_cost = _apply_margin(base_cost, margin_percent)
             # Check token quota first - use FOR UPDATE to prevent race conditions
             quota_result = await db.execute(
                 select(UsageQuota)
@@ -3529,9 +3630,10 @@ async def _record_single_event(
             # Record input and output separately with proportional cost splitting
             if event.input_tokens or event.output_tokens:
                 # SECURITY: Use Decimal-based cost split to prevent precision loss
-                from podex_shared.models.billing import MODEL_PRICING
+                # Fetch pricing from database (cached)
+                from src.services.pricing import get_pricing_from_cache
 
-                pricing = MODEL_PRICING.get(event.model or "")
+                pricing = get_pricing_from_cache(event.model or "")
                 input_base, input_total, output_base, output_total = _calculate_cost_split_decimal(
                     base_cost, total_cost, event.input_tokens, event.output_tokens, pricing
                 )
@@ -3582,6 +3684,10 @@ async def _record_single_event(
                 await db.flush()  # Write the change while still holding the lock
 
         elif event.usage_type in ("compute", "compute_seconds"):
+            # For compute, use client-provided cost (compute pricing is tier-based)
+            base_cost = event.total_cost_cents
+            total_cost = _apply_margin(base_cost, margin_percent)
+
             # Check compute quota first - use FOR UPDATE to prevent race conditions
             quota_result = await db.execute(
                 select(UsageQuota)
@@ -3651,6 +3757,10 @@ async def _record_single_event(
                 await db.flush()  # Write the change while still holding the lock
 
         elif event.usage_type == "storage":
+            # For storage, use client-provided cost
+            base_cost = event.total_cost_cents
+            total_cost = _apply_margin(base_cost, margin_percent)
+
             # Storage quota check - use FOR UPDATE to prevent race conditions
             quota_result = await db.execute(
                 select(UsageQuota)

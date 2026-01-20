@@ -25,6 +25,7 @@ export function CommandPalette() {
     terminalVisible,
     announce,
     setTheme,
+    openQuickOpen,
   } = useUIStore();
   const leftSidebarCollapsed = sidebarLayout.left.collapsed;
   const rightSidebarCollapsed = sidebarLayout.right.collapsed;
@@ -74,6 +75,7 @@ export function CommandPalette() {
         toggleSidebar,
         togglePanel,
         toggleFocusMode,
+        openQuickOpen,
         setViewMode,
         setTheme,
         announce,
@@ -94,6 +96,7 @@ export function CommandPalette() {
       toggleSidebar,
       togglePanel,
       toggleFocusMode,
+      openQuickOpen,
       setViewMode,
       setTheme,
       announce,

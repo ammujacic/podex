@@ -707,11 +707,6 @@ export default function SettingsPage() {
                     </div>
                   ))}
                 </div>
-
-                <Button variant="secondary" className="w-full">
-                  <Plus className="w-4 h-4 mr-2" />
-                  Create Custom Template
-                </Button>
               </div>
             )}
 

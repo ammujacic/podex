@@ -13,6 +13,10 @@ import {
   Zap,
   Settings,
   ExternalLink,
+  Key,
+  Eye,
+  EyeOff,
+  X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useMCPStore, selectIsServerTesting, selectTestResult } from '@/stores/mcp';
@@ -23,18 +27,36 @@ interface MCPPanelProps {
   sessionId: string;
 }
 
+// Environment variable placeholders for compact form
+const ENV_VAR_PLACEHOLDERS: Record<string, string> = {
+  GITHUB_TOKEN: 'ghp_xxx...',
+  BRAVE_API_KEY: 'BSAxxx...',
+  SLACK_BOT_TOKEN: 'xoxb-xxx...',
+  SLACK_TEAM_ID: 'T0XXX...',
+  POSTGRES_CONNECTION_STRING: 'postgresql://...',
+  SENTRY_AUTH_TOKEN: 'sntrys_xxx...',
+  SENTRY_ORG: 'org-slug',
+  SENTRY_PROJECT: 'project-slug',
+};
+
 function CompactServerCard({
   server,
   isDefault,
   onToggle,
+  onToggleWithEnv,
   onTest,
 }: {
   server: MCPDefaultServer | MCPServer;
   isDefault: boolean;
   onToggle: () => Promise<void>;
+  onToggleWithEnv?: (envVars: Record<string, string>) => Promise<void>;
   onTest?: () => Promise<void>;
 }) {
   const [isLoading, setIsLoading] = useState(false);
+  const [showEnvForm, setShowEnvForm] = useState(false);
+  const [envVars, setEnvVars] = useState<Record<string, string>>({});
+  const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
+
   const serverId = isDefault ? (server as MCPDefaultServer).slug : (server as MCPServer).id;
   const isBuiltin = isDefault ? (server as MCPDefaultServer).is_builtin : false;
   const isEnabled =
@@ -43,11 +65,23 @@ function CompactServerCard({
   const isTesting = useMCPStore((s) => selectIsServerTesting(s, serverId));
   const testResult = useMCPStore((s) => selectTestResult(s, serverId));
 
+  // Get required env vars for default servers
+  const requiredEnv = isDefault ? (server as MCPDefaultServer).required_env || [] : [];
+  const hasRequiredEnv = isDefault ? (server as MCPDefaultServer).has_required_env : true;
+
   // Get tools count and error status from server
   const toolsCount = !isDefault ? (server as MCPServer).discovered_tools?.length || 0 : 0;
   const lastError = !isDefault ? (server as MCPServer).last_error : null;
 
+  const allEnvVarsFilled = requiredEnv.every((v) => envVars[v]?.trim());
+
   const handleToggle = async () => {
+    // If needs env vars and doesn't have them, show form
+    if (!isEnabled && requiredEnv.length > 0 && !hasRequiredEnv && onToggleWithEnv) {
+      setShowEnvForm(true);
+      return;
+    }
+
     setIsLoading(true);
     try {
       await onToggle();
@@ -56,84 +90,168 @@ function CompactServerCard({
     }
   };
 
+  const handleEnableWithEnv = async () => {
+    if (!onToggleWithEnv) return;
+    setIsLoading(true);
+    try {
+      await onToggleWithEnv(envVars);
+      setShowEnvForm(false);
+      setEnvVars({});
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const togglePasswordVisibility = (envVar: string) => {
+    setShowPasswords((prev) => ({ ...prev, [envVar]: !prev[envVar] }));
+  };
+
   return (
-    <div
-      className={cn(
-        'flex items-center gap-2 px-2 py-1.5 rounded transition-colors',
-        isEnabled ? 'bg-accent-primary/10' : 'hover:bg-overlay'
-      )}
-    >
+    <div className="rounded transition-colors">
       <div
         className={cn(
-          'w-1.5 h-1.5 rounded-full',
-          isEnabled && lastError ? 'bg-error' : isEnabled ? 'bg-success' : 'bg-text-muted'
+          'flex items-center gap-2 px-2 py-1.5',
+          isEnabled ? 'bg-accent-primary/10' : 'hover:bg-overlay',
+          showEnvForm && 'rounded-t'
         )}
-        title={lastError || undefined}
-      />
-      <span className="flex-1 text-xs text-text-primary truncate">{server.name}</span>
-
-      {/* Show tools count for enabled servers */}
-      {isEnabled && toolsCount > 0 && (
-        <span className="text-[10px] text-text-muted px-1 bg-overlay rounded">
-          {toolsCount} tools
-        </span>
-      )}
-
-      {/* Show error indicator */}
-      {isEnabled && lastError && (
-        <span className="text-error" title={lastError}>
-          <AlertCircle className="h-3 w-3" />
-        </span>
-      )}
-
-      {testResult && (
-        <span className={cn('flex-shrink-0', testResult.success ? 'text-success' : 'text-error')}>
-          {testResult.success ? (
-            <CheckCircle className="h-3 w-3" />
-          ) : (
-            <AlertCircle className="h-3 w-3" />
-          )}
-        </span>
-      )}
-
-      {onTest && !isDefault && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onTest();
-          }}
-          disabled={isTesting}
-          className="p-0.5 rounded text-text-muted hover:text-text-primary"
-          title="Test connection"
-        >
-          {isTesting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
-        </button>
-      )}
-
-      {isBuiltin ? (
-        <span className="text-[10px] text-success font-medium px-1.5 py-0.5 rounded bg-success/10 whitespace-nowrap flex-shrink-0">
-          On
-        </span>
-      ) : (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            handleToggle();
-          }}
-          disabled={isLoading}
+      >
+        <div
           className={cn(
-            'relative w-7 h-4 rounded-full transition-colors flex-shrink-0',
-            isEnabled ? 'bg-accent-primary' : 'bg-overlay',
-            isLoading && 'opacity-50'
+            'w-1.5 h-1.5 rounded-full flex-shrink-0',
+            isEnabled && lastError ? 'bg-error' : isEnabled ? 'bg-success' : 'bg-text-muted'
           )}
-        >
-          <span
-            className={cn(
-              'absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-all',
-              isEnabled ? 'left-3.5' : 'left-0.5'
+          title={lastError || undefined}
+        />
+        <span className="flex-1 text-xs text-text-primary truncate">{server.name}</span>
+
+        {/* Show required env indicator for servers needing config */}
+        {!isEnabled && requiredEnv.length > 0 && !hasRequiredEnv && (
+          <span className="text-warning flex-shrink-0" title="Requires API key">
+            <Key className="h-3 w-3" />
+          </span>
+        )}
+
+        {/* Show tools count for enabled servers */}
+        {isEnabled && toolsCount > 0 && (
+          <span className="text-[10px] text-text-muted px-1 bg-overlay rounded flex-shrink-0">
+            {toolsCount} tools
+          </span>
+        )}
+
+        {/* Show error indicator */}
+        {isEnabled && lastError && (
+          <span className="text-error flex-shrink-0" title={lastError}>
+            <AlertCircle className="h-3 w-3" />
+          </span>
+        )}
+
+        {testResult && (
+          <span className={cn('flex-shrink-0', testResult.success ? 'text-success' : 'text-error')}>
+            {testResult.success ? (
+              <CheckCircle className="h-3 w-3" />
+            ) : (
+              <AlertCircle className="h-3 w-3" />
             )}
-          />
-        </button>
+          </span>
+        )}
+
+        {onTest && !isDefault && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onTest();
+            }}
+            disabled={isTesting}
+            className="p-0.5 rounded text-text-muted hover:text-text-primary flex-shrink-0"
+            title="Test connection"
+          >
+            {isTesting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
+          </button>
+        )}
+
+        {isBuiltin ? (
+          <span className="text-[10px] text-success font-medium px-1.5 py-0.5 rounded bg-success/10 whitespace-nowrap flex-shrink-0">
+            On
+          </span>
+        ) : (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleToggle();
+            }}
+            disabled={isLoading}
+            className={cn(
+              'relative w-7 h-4 rounded-full transition-colors flex-shrink-0',
+              isEnabled ? 'bg-accent-primary' : 'bg-overlay',
+              isLoading && 'opacity-50'
+            )}
+          >
+            <span
+              className={cn(
+                'absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-all',
+                isEnabled ? 'left-3.5' : 'left-0.5'
+              )}
+            />
+          </button>
+        )}
+      </div>
+
+      {/* Inline env var form */}
+      {showEnvForm && (
+        <div className="px-2 pb-2 pt-1 bg-elevated rounded-b border-t border-border-subtle">
+          <div className="space-y-2">
+            {requiredEnv.map((envVar) => {
+              const isVisible = showPasswords[envVar];
+              const isFilled = !!envVars[envVar]?.trim();
+              const placeholder = ENV_VAR_PLACEHOLDERS[envVar] || envVar;
+
+              return (
+                <div key={envVar} className="relative">
+                  <input
+                    type={isVisible ? 'text' : 'password'}
+                    value={envVars[envVar] || ''}
+                    onChange={(e) => setEnvVars({ ...envVars, [envVar]: e.target.value })}
+                    placeholder={placeholder}
+                    className={cn(
+                      'w-full px-2 py-1 pr-7 text-[11px] rounded bg-void border text-text-primary placeholder:text-text-muted font-mono',
+                      isFilled ? 'border-success/50' : 'border-border-default'
+                    )}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => togglePasswordVisibility(envVar)}
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary"
+                  >
+                    {isVisible ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex gap-1.5 mt-2">
+            <button
+              onClick={handleEnableWithEnv}
+              disabled={isLoading || !allEnvVarsFilled}
+              className={cn(
+                'flex-1 px-2 py-1 text-[10px] font-medium rounded flex items-center justify-center gap-1',
+                allEnvVarsFilled
+                  ? 'bg-accent-primary text-void hover:bg-accent-primary/90'
+                  : 'bg-overlay text-text-muted cursor-not-allowed'
+              )}
+            >
+              {isLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Enable'}
+            </button>
+            <button
+              onClick={() => {
+                setShowEnvForm(false);
+                setEnvVars({});
+              }}
+              className="px-2 py-1 text-[10px] rounded text-text-muted hover:text-text-primary hover:bg-overlay"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -260,6 +378,9 @@ export function MCPPanel({ sessionId: _sessionId }: MCPPanelProps) {
                           await enableDefault(server.slug);
                         }
                       }}
+                      onToggleWithEnv={async (envVars) => {
+                        await enableDefault(server.slug, envVars);
+                      }}
                     />
                   ))}
                   {activeCustom.map((server) => (
@@ -312,6 +433,9 @@ export function MCPPanel({ sessionId: _sessionId }: MCPPanelProps) {
                         isDefault={true}
                         onToggle={async () => {
                           await enableDefault(server.slug);
+                        }}
+                        onToggleWithEnv={async (envVars) => {
+                          await enableDefault(server.slug, envVars);
                         }}
                       />
                     ))}

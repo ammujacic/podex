@@ -502,8 +502,15 @@ export async function getMemoriesStats(): Promise<MemoryStatsResponse> {
   return api.get<MemoryStatsResponse>('/api/v1/memories/stats');
 }
 
-export async function createMemory(data: unknown): Promise<unknown> {
-  return api.post<unknown>('/api/v1/memories', data);
+export interface CreateMemoryRequest {
+  content: string;
+  memory_type?: string;
+  tags?: string[];
+  importance?: number;
+}
+
+export async function createMemory(data: CreateMemoryRequest): Promise<Memory> {
+  return api.post<Memory>('/api/v1/memories', data);
 }
 
 // Cost Insights methods
@@ -1536,6 +1543,23 @@ export async function createFile(
   return api.post<FileContent>(`/api/sessions/${sessionId}/files`, { path, content });
 }
 
+/**
+ * Convenience helper to create a new folder.
+ *
+ * We model folders as real directories on disk by creating
+ * a placeholder file inside the requested folder. This ensures
+ * the directory shows up in file listings even if it is empty.
+ */
+export async function createFolder(sessionId: string, folderPath: string): Promise<FileContent> {
+  const normalized =
+    folderPath.endsWith('/') || folderPath.endsWith('\\')
+      ? folderPath.replace(/[/\\]+$/, '')
+      : folderPath;
+
+  const placeholderPath = `${normalized}/.gitkeep`;
+  return createFile(sessionId, placeholderPath, '');
+}
+
 export async function updateFileContent(
   sessionId: string,
   path: string,
@@ -1545,6 +1569,18 @@ export async function updateFileContent(
     `/api/sessions/${sessionId}/files/content?path=${encodeURIComponent(path)}`,
     { content }
   );
+}
+
+/**
+ * Alias for updateFileContent to better reflect editor semantics.
+ * This makes call sites read as \"saveFile\" instead of \"updateFileContent\".
+ */
+export async function saveFile(
+  sessionId: string,
+  path: string,
+  content: string
+): Promise<FileContent> {
+  return updateFileContent(sessionId, path, content);
 }
 
 export async function deleteFile(sessionId: string, path: string): Promise<{ deleted: string }> {
@@ -1607,6 +1643,8 @@ export interface SessionLayoutState {
   editor_grid_card_id: string | null;
   editor_grid_span: GridSpanLayout | null;
   editor_freeform_position: PositionLayout | null;
+  // Optional editor tabs/layout snapshot (per session)
+  editor_tabs?: EditorTabsLayoutState | null;
 }
 
 export interface LayoutUpdateRequest {
@@ -1619,6 +1657,7 @@ export interface LayoutUpdateRequest {
   editor_grid_card_id?: string | null;
   editor_grid_span?: GridSpanLayout | null;
   editor_freeform_position?: PositionLayout | null;
+  editor_tabs?: EditorTabsLayoutState | null;
 }
 
 export async function getSessionLayout(sessionId: string): Promise<SessionLayoutState> {
@@ -1655,6 +1694,30 @@ export interface EditorLayoutState {
   editor_grid_card_id: string | null;
   editor_grid_span: GridSpanLayout | null;
   editor_freeform_position: PositionLayout | null;
+}
+
+// Editor tabs/panes layout persisted per session
+export interface EditorTabLayoutState {
+  id: string;
+  path: string;
+  name: string;
+  language: string;
+  is_preview: boolean;
+}
+
+export interface EditorPaneLayoutState {
+  id: string;
+  tabs: string[];
+  active_tab_id: string | null;
+  size: number;
+}
+
+export interface EditorTabsLayoutState {
+  split_layout: 'single' | 'horizontal' | 'vertical' | 'quad';
+  panes: Record<string, EditorPaneLayoutState>;
+  pane_order: string[];
+  active_pane_id: string | null;
+  tabs: Record<string, EditorTabLayoutState>;
 }
 
 export async function updateEditorLayout(
@@ -2130,6 +2193,7 @@ export interface UsageSummaryResponse {
   total_cost: number;
   usage_by_model: Record<string, { input: number; output: number; cost: number }>;
   usage_by_agent: Record<string, { tokens: number; cost: number }>;
+  usage_by_session: Record<string, { tokens: number; cost: number }>;
   usage_by_tier: Record<string, { seconds: number; cost: number }>; // Compute by tier
 }
 
@@ -2289,6 +2353,7 @@ export interface UsageSummary {
   totalCost: number;
   usageByModel: Record<string, { input: number; output: number; cost: number }>;
   usageByAgent: Record<string, { tokens: number; cost: number }>;
+  usageBySession: Record<string, { tokens: number; cost: number; name?: string }>;
   usageByTier: Record<string, { seconds: number; cost: number }>;
 }
 
@@ -2324,6 +2389,7 @@ export function transformUsageSummary(data: any): UsageSummary {
     totalCost: data.total_cost ?? 0,
     usageByModel: data.usage_by_model ?? {},
     usageByAgent: data.usage_by_agent ?? {},
+    usageBySession: data.usage_by_session ?? {},
     usageByTier: data.usage_by_tier ?? {},
   };
 }
@@ -2674,6 +2740,110 @@ export async function syncMCPServersFromEnv(): Promise<SyncFromEnvResponse> {
   const result = await api.post<SyncFromEnvResponse>('/api/mcp/servers/sync-from-env', {});
   // Invalidate cache after successful sync
   requestCache.invalidatePattern(/^GET:\/api\/mcp\//);
+  return result;
+}
+
+// ==================== Admin MCP Server Catalog ====================
+
+export interface AdminDefaultMCPServer {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  category: string;
+  transport: 'stdio' | 'sse' | 'http';
+  command: string | null;
+  args: string[] | null;
+  url: string | null;
+  env_vars: Record<string, string> | null;
+  required_env: string[] | null;
+  optional_env: string[] | null;
+  icon: string | null;
+  is_builtin: boolean;
+  docs_url: string | null;
+  sort_order: number;
+  is_enabled: boolean;
+  is_system: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateAdminMCPServerRequest {
+  slug: string;
+  name: string;
+  description?: string;
+  category: string;
+  transport: 'stdio' | 'sse' | 'http';
+  command?: string;
+  args?: string[];
+  url?: string;
+  env_vars?: Record<string, string>;
+  required_env?: string[];
+  optional_env?: string[];
+  icon?: string;
+  is_builtin?: boolean;
+  docs_url?: string;
+  sort_order?: number;
+}
+
+export interface UpdateAdminMCPServerRequest {
+  name?: string;
+  description?: string;
+  category?: string;
+  transport?: 'stdio' | 'sse' | 'http';
+  command?: string;
+  args?: string[];
+  url?: string;
+  env_vars?: Record<string, string>;
+  required_env?: string[];
+  optional_env?: string[];
+  icon?: string;
+  is_builtin?: boolean;
+  docs_url?: string;
+  sort_order?: number;
+  is_enabled?: boolean;
+}
+
+export async function listAdminMCPServers(): Promise<AdminDefaultMCPServer[]> {
+  const response = await api.get<{ servers: AdminDefaultMCPServer[]; total: number }>(
+    '/api/admin/mcp'
+  );
+  return response.servers;
+}
+
+export async function getAdminMCPServer(serverId: string): Promise<AdminDefaultMCPServer> {
+  return api.get<AdminDefaultMCPServer>(`/api/admin/mcp/${serverId}`);
+}
+
+export async function createAdminMCPServer(
+  data: CreateAdminMCPServerRequest
+): Promise<AdminDefaultMCPServer> {
+  const result = await api.post<AdminDefaultMCPServer>('/api/admin/mcp', data);
+  requestCache.invalidatePattern(/^GET:\/api\/admin\/mcp/);
+  requestCache.invalidatePattern(/^GET:\/api\/mcp\/defaults/);
+  return result;
+}
+
+export async function updateAdminMCPServer(
+  serverId: string,
+  data: UpdateAdminMCPServerRequest
+): Promise<AdminDefaultMCPServer> {
+  const result = await api.put<AdminDefaultMCPServer>(`/api/admin/mcp/${serverId}`, data);
+  requestCache.invalidatePattern(/^GET:\/api\/admin\/mcp/);
+  requestCache.invalidatePattern(/^GET:\/api\/mcp\/defaults/);
+  return result;
+}
+
+export async function deleteAdminMCPServer(serverId: string): Promise<void> {
+  await api.delete(`/api/admin/mcp/${serverId}`);
+  requestCache.invalidatePattern(/^GET:\/api\/admin\/mcp/);
+  requestCache.invalidatePattern(/^GET:\/api\/mcp\/defaults/);
+}
+
+export async function toggleAdminMCPServer(serverId: string): Promise<AdminDefaultMCPServer> {
+  const result = await api.post<AdminDefaultMCPServer>(`/api/admin/mcp/${serverId}/toggle`, {});
+  requestCache.invalidatePattern(/^GET:\/api\/admin\/mcp/);
+  requestCache.invalidatePattern(/^GET:\/api\/mcp\/defaults/);
   return result;
 }
 
@@ -4699,11 +4869,14 @@ export async function adminDeleteProvider(slug: string): Promise<void> {
 export interface Memory {
   id: string;
   content: string;
-  category: string;
-  source: string;
+  memory_type: string;
+  tags: string[] | null;
+  importance: number;
+  session_id: string | null;
+  project_id: string | null;
+  access_count: number;
   created_at: string;
   updated_at: string;
-  metadata?: Record<string, unknown>;
 }
 
 export interface MemoriesResponse {
@@ -4720,15 +4893,13 @@ export interface MemoriesResponse {
 export async function getMemories(params?: {
   page?: number;
   page_size?: number;
-  category?: string;
-  source?: string;
+  memory_type?: string;
   search?: string;
 }): Promise<MemoriesResponse> {
   const searchParams = new URLSearchParams();
   if (params?.page) searchParams.set('page', String(params.page));
   if (params?.page_size) searchParams.set('page_size', String(params.page_size));
-  if (params?.category) searchParams.set('category', params.category);
-  if (params?.source) searchParams.set('source', params.source);
+  if (params?.memory_type) searchParams.set('memory_type', params.memory_type);
   if (params?.search) searchParams.set('search', params.search);
 
   const query = searchParams.toString();
@@ -5068,6 +5239,33 @@ export async function explainCode(
     code,
     language,
     context,
+  });
+}
+
+// ============================================================================
+// Bug Detection
+// ============================================================================
+
+export interface BugDetectionIssue {
+  line: number;
+  column: number;
+  severity: 'error' | 'warning' | 'info';
+  message: string;
+  suggestion: string;
+}
+
+export interface BugDetectionResponse {
+  bugs: BugDetectionIssue[];
+  analysis_time_ms: number;
+}
+
+/**
+ * Analyze code for potential bugs and issues.
+ */
+export async function detectBugs(code: string, language: string): Promise<BugDetectionResponse> {
+  return api.post<BugDetectionResponse>('/api/completion/detect-bugs', {
+    code,
+    language,
   });
 }
 

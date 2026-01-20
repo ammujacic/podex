@@ -394,6 +394,11 @@ export default function NewSessionPage() {
       setCreatingProgress(100);
       setCreatingStatus('Pod is ready!');
 
+      // Validate session response
+      if (!session || !session.id) {
+        throw new Error('Invalid session response: session ID is missing');
+      }
+
       // Short delay to show completion
       setTimeout(() => {
         router.push(`/session/${session.id}`);

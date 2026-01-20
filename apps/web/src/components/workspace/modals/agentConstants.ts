@@ -10,17 +10,17 @@ import type { LucideIcon } from 'lucide-react';
 import type { ComponentType, SVGProps } from 'react';
 import {
   Bot,
-  Code,
+  Code2,
+  Compass,
+  Container,
   Eye,
   FileText,
+  FlaskConical,
   MessageCircle,
-  Server,
+  Network,
   Shield,
-  TestTube,
-  Wrench,
   Sparkles,
   User,
-  Workflow,
 } from 'lucide-react';
 import { ClaudeIcon, OpenAIIcon, GeminiIcon } from '@/components/icons';
 
@@ -53,15 +53,18 @@ export type AgentStatus = 'idle' | 'active' | 'error';
  * Use this with agent role data from useConfigStore().agentRoles.
  */
 export const ROLE_ICONS: Record<string, IconComponent> = {
-  architect: Wrench,
-  coder: Code,
+  // Core development workflow
+  architect: Compass,
+  coder: Code2,
   reviewer: Eye,
-  tester: TestTube,
+  tester: FlaskConical,
+  // System / orchestration
   agent_builder: Sparkles,
-  orchestrator: Workflow,
+  orchestrator: Network,
+  // Communication / meta roles
   chat: MessageCircle,
   security: Shield,
-  devops: Server,
+  devops: Container,
   documentator: FileText,
   custom: User,
   'claude-code': ClaudeIcon,

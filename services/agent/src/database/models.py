@@ -289,3 +289,46 @@ class AgentTemplate(Base):
 
     # Unique constraint
     __table_args__ = (UniqueConstraint("user_id", "slug", name="uq_agent_templates_user_slug"),)
+
+
+class Memory(Base):
+    """Memory storage for knowledge base (mirrors API service model)."""
+
+    __tablename__ = "memories"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        primary_key=True,
+        default=lambda: str(uuid4()),
+    )
+    session_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    project_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), index=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    memory_type: Mapped[str] = mapped_column(String(50), default="fact", nullable=False, index=True)
+    tags: Mapped[list[str] | None] = mapped_column(JSONB)
+    memory_metadata: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB)
+    importance: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
+    source_message_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        index=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )

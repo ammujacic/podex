@@ -110,6 +110,7 @@ services = compute.create_cloud_run_services(
     bucket=bucket,
     vpc=vpc,
     image_refs=image_refs,
+    domain=domain,
 )
 
 # ============================================

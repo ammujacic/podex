@@ -20,12 +20,13 @@ import {
   MessageSquare,
   Container,
   Brain,
-  FileText,
-  HelpCircle,
   Settings2,
   ExternalLink,
   Zap,
   Bug,
+  Key,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useMCPStore, selectIsServerTesting, selectTestResult } from '@/stores/mcp';
@@ -37,7 +38,6 @@ import { getGitHubStatus } from '@/lib/api';
 // ============================================================================
 
 const CATEGORY_ICONS: Record<string, React.ReactNode> = {
-  filesystem: <FileText className="h-4 w-4" />,
   version_control: <FolderGit className="h-4 w-4" />,
   database: <Database className="h-4 w-4" />,
   web: <Globe className="h-4 w-4" />,
@@ -45,11 +45,10 @@ const CATEGORY_ICONS: Record<string, React.ReactNode> = {
   containers: <Container className="h-4 w-4" />,
   memory: <Brain className="h-4 w-4" />,
   monitoring: <Bug className="h-4 w-4" />,
+  productivity: <Zap className="h-4 w-4" />,
 };
 
 const SERVER_ICONS: Record<string, React.ReactNode> = {
-  filesystem: <FileText className="h-5 w-5" />,
-  git: <FolderGit className="h-5 w-5" />,
   github: <FolderGit className="h-5 w-5" />,
   fetch: <Globe className="h-5 w-5" />,
   memory: <Brain className="h-5 w-5" />,
@@ -61,6 +60,47 @@ const SERVER_ICONS: Record<string, React.ReactNode> = {
   docker: <Container className="h-5 w-5" />,
   kubernetes: <Container className="h-5 w-5" />,
   sentry: <Bug className="h-5 w-5" />,
+  'podex-skills': <Zap className="h-5 w-5" />,
+};
+
+// Environment variable hints for better UX
+const ENV_VAR_HINTS: Record<string, { placeholder: string; hint: string; link?: string }> = {
+  GITHUB_TOKEN: {
+    placeholder: 'ghp_xxxxxxxxxxxxxxxxxxxx',
+    hint: 'Personal access token with repo scope',
+    link: 'https://github.com/settings/tokens',
+  },
+  BRAVE_API_KEY: {
+    placeholder: 'BSAxxxxxxxxxxxxxxxxxxxxx',
+    hint: 'Brave Search API key',
+    link: 'https://brave.com/search/api/',
+  },
+  SLACK_BOT_TOKEN: {
+    placeholder: 'xoxb-xxxxxxxxxxxxx-xxxxxxxxxxxxx',
+    hint: 'Slack Bot User OAuth Token',
+    link: 'https://api.slack.com/apps',
+  },
+  SLACK_TEAM_ID: {
+    placeholder: 'T0XXXXXXXXX',
+    hint: 'Your Slack workspace ID',
+  },
+  POSTGRES_CONNECTION_STRING: {
+    placeholder: 'postgresql://user:pass@host:5432/db',
+    hint: 'Full PostgreSQL connection string',
+  },
+  SENTRY_AUTH_TOKEN: {
+    placeholder: 'sntrys_xxxxxxxxxxxxxxxxxx',
+    hint: 'Sentry authentication token',
+    link: 'https://sentry.io/settings/account/api/auth-tokens/',
+  },
+  SENTRY_ORG: {
+    placeholder: 'my-organization',
+    hint: 'Your Sentry organization slug',
+  },
+  SENTRY_PROJECT: {
+    placeholder: 'my-project',
+    hint: 'Your Sentry project slug',
+  },
 };
 
 // ============================================================================
@@ -85,9 +125,12 @@ function DefaultServerCard({
   const [isLoading, setIsLoading] = useState(false);
   const [showEnvVars, setShowEnvVars] = useState(false);
   const [envVars, setEnvVars] = useState<Record<string, string>>({});
+  const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
+  const [error, setError] = useState<string | null>(null);
 
   const handleToggle = async () => {
     setIsLoading(true);
+    setError(null);
     try {
       if (server.is_enabled) {
         await onDisable(server.slug);
@@ -100,21 +143,39 @@ function DefaultServerCard({
         }
         await onEnable(server.slug, envVars);
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update server');
     } finally {
       setIsLoading(false);
-      setShowEnvVars(false);
+      if (!showEnvVars) {
+        setShowEnvVars(false);
+      }
     }
   };
 
   const handleEnableWithEnvVars = async () => {
     setIsLoading(true);
+    setError(null);
     try {
       await onEnable(server.slug, envVars);
       setShowEnvVars(false);
+      setEnvVars({});
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to enable server');
     } finally {
       setIsLoading(false);
     }
   };
+
+  const togglePasswordVisibility = (envVar: string) => {
+    setShowPasswords((prev) => ({ ...prev, [envVar]: !prev[envVar] }));
+  };
+
+  const getEnvVarHint = (envVar: string) => {
+    return ENV_VAR_HINTS[envVar] || { placeholder: `Enter ${envVar}`, hint: '' };
+  };
+
+  const allEnvVarsFilled = server.required_env.every((v) => envVars[v]?.trim());
 
   const isGitHub = server.slug === 'github';
   const isActive = isGitHub ? !!githubConnected : server.is_builtin || server.is_enabled;
@@ -156,7 +217,7 @@ function DefaultServerCard({
           <p className="text-xs text-text-muted mt-0.5 line-clamp-2">{server.description}</p>
 
           {/* Required env vars indicator */}
-          {server.required_env.length > 0 && (
+          {server.required_env.length > 0 && !showEnvVars && (
             <div className="mt-2 flex items-center gap-1 text-xs">
               {server.has_required_env ? (
                 <span className="flex items-center gap-1 text-success">
@@ -165,7 +226,7 @@ function DefaultServerCard({
                 </span>
               ) : (
                 <span className="flex items-center gap-1 text-warning">
-                  <AlertCircle className="h-3 w-3" />
+                  <Key className="h-3 w-3" />
                   Requires: {server.required_env.join(', ')}
                 </span>
               )}
@@ -211,37 +272,100 @@ function DefaultServerCard({
         )}
       </div>
 
-      {/* Env vars form */}
+      {/* Enhanced Env vars form */}
       {showEnvVars && (
         <div className="mt-4 pt-4 border-t border-border-subtle">
-          <h5 className="text-xs font-medium text-text-secondary mb-2">
-            Configure Environment Variables
-          </h5>
-          <div className="space-y-2">
-            {server.required_env.map((envVar) => (
-              <div key={envVar}>
-                <label className="text-xs text-text-muted">{envVar}</label>
-                <input
-                  type="password"
-                  value={envVars[envVar] || ''}
-                  onChange={(e) => setEnvVars({ ...envVars, [envVar]: e.target.value })}
-                  placeholder={`Enter ${envVar}`}
-                  className="w-full mt-1 px-2 py-1.5 text-sm rounded bg-void border border-border-default text-text-primary placeholder:text-text-muted"
-                />
-              </div>
-            ))}
+          <div className="flex items-center gap-2 mb-3">
+            <Key className="h-4 w-4 text-accent-primary" />
+            <h5 className="text-sm font-medium text-text-primary">Configure API Keys</h5>
           </div>
-          <div className="flex gap-2 mt-3">
+
+          {error && (
+            <div className="mb-3 p-2 rounded bg-error/10 border border-error/30 text-error text-xs flex items-center gap-2">
+              <AlertCircle className="h-3 w-3" />
+              {error}
+            </div>
+          )}
+
+          <div className="space-y-3">
+            {server.required_env.map((envVar) => {
+              const hint = getEnvVarHint(envVar);
+              const isFilled = !!envVars[envVar]?.trim();
+              const isVisible = showPasswords[envVar];
+
+              return (
+                <div key={envVar} className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium text-text-secondary flex items-center gap-1.5">
+                      {envVar}
+                      {isFilled && <CheckCircle className="h-3 w-3 text-success" />}
+                    </label>
+                    {hint.link && (
+                      <a
+                        href={hint.link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] text-accent-primary hover:underline flex items-center gap-0.5"
+                      >
+                        Get API key
+                        <ExternalLink className="h-2.5 w-2.5" />
+                      </a>
+                    )}
+                  </div>
+                  <div className="relative">
+                    <input
+                      type={isVisible ? 'text' : 'password'}
+                      value={envVars[envVar] || ''}
+                      onChange={(e) => setEnvVars({ ...envVars, [envVar]: e.target.value })}
+                      placeholder={hint.placeholder}
+                      className={cn(
+                        'w-full px-3 py-2 pr-10 text-sm rounded-lg bg-void border text-text-primary placeholder:text-text-muted font-mono transition-colors',
+                        isFilled
+                          ? 'border-success/50'
+                          : 'border-border-default focus:border-accent-primary'
+                      )}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => togglePasswordVisibility(envVar)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-text-muted hover:text-text-primary transition-colors"
+                    >
+                      {isVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+                  {hint.hint && <p className="text-[10px] text-text-muted">{hint.hint}</p>}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex gap-2 mt-4">
             <button
               onClick={handleEnableWithEnvVars}
-              disabled={isLoading || server.required_env.some((v) => !envVars[v])}
-              className="flex-1 px-3 py-1.5 text-xs font-medium rounded bg-accent-primary text-void hover:bg-accent-primary/90 disabled:opacity-50"
+              disabled={isLoading || !allEnvVarsFilled}
+              className={cn(
+                'flex-1 px-4 py-2 text-sm font-medium rounded-lg transition-colors flex items-center justify-center gap-2',
+                allEnvVarsFilled
+                  ? 'bg-accent-primary text-void hover:bg-accent-primary/90'
+                  : 'bg-overlay text-text-muted cursor-not-allowed'
+              )}
             >
-              Enable
+              {isLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <>
+                  <CheckCircle className="h-4 w-4" />
+                  Enable Integration
+                </>
+              )}
             </button>
             <button
-              onClick={() => setShowEnvVars(false)}
-              className="px-3 py-1.5 text-xs font-medium rounded bg-overlay text-text-secondary hover:text-text-primary"
+              onClick={() => {
+                setShowEnvVars(false);
+                setEnvVars({});
+                setError(null);
+              }}
+              className="px-4 py-2 text-sm font-medium rounded-lg bg-overlay text-text-secondary hover:text-text-primary transition-colors"
             >
               Cancel
             </button>
@@ -648,7 +772,7 @@ export function MCPSettings({ className }: MCPSettingsProps) {
   const [editingServer, setEditingServer] = useState<MCPServer | null>(null);
   const [isAddingServer, setIsAddingServer] = useState(false);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
-    new Set(['filesystem', 'version_control'])
+    new Set(['version_control', 'web'])
   );
   const [githubConnected, setGithubConnected] = useState<boolean | null>(null);
 
@@ -710,7 +834,7 @@ export function MCPSettings({ className }: MCPSettingsProps) {
       <div className="flex items-center justify-between px-4 py-3 border-b border-border-subtle">
         <div className="flex items-center gap-2">
           <Plug className="h-5 w-5 text-accent-primary" />
-          <h2 className="text-lg font-semibold text-text-primary">Integrations</h2>
+          <h2 className="text-lg font-semibold text-text-primary">Integrations (MCP)</h2>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -757,18 +881,6 @@ export function MCPSettings({ className }: MCPSettingsProps) {
 
         {!isLoading && (
           <>
-            {/* Info banner */}
-            <div className="p-3 rounded-lg bg-info/10 border border-info/30 text-info text-sm flex items-start gap-2">
-              <HelpCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-              <div>
-                <p className="font-medium">MCP (Model Context Protocol) Servers</p>
-                <p className="text-xs mt-1 opacity-80">
-                  MCP servers extend your agents with additional tools. Enable defaults or add
-                  custom servers. Servers connect automatically when agents need them.
-                </p>
-              </div>
-            </div>
-
             {/* Default servers by category */}
             {categories.map((category) => (
               <div

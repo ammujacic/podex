@@ -177,6 +177,54 @@ class MCPServer(Base):
     __table_args__ = (UniqueConstraint("user_id", "name", name="uq_mcp_servers_user_name"),)
 
 
+class DefaultMCPServer(Base):
+    """Default MCP server catalog entry.
+
+    This is the single source of truth for the MCP server catalog.
+    Seeded from DEFAULT_MCP_SERVERS and can be customized by admins.
+    Users enable servers from this catalog which creates MCPServer records.
+    """
+
+    __tablename__ = "default_mcp_servers"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
+    slug: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(
+        String(30), nullable=False
+    )  # version_control, web, memory, etc.
+    transport: Mapped[str] = mapped_column(String(20), nullable=False)  # stdio, sse, http
+    command: Mapped[str | None] = mapped_column(Text)  # For stdio transport
+    args: Mapped[list[str] | None] = mapped_column(JSONB)
+    url: Mapped[str | None] = mapped_column(Text)  # For sse/http transport
+    env_vars: Mapped[dict[str, str] | None] = mapped_column(JSONB)  # Default env vars
+    required_env: Mapped[list[str] | None] = mapped_column(JSONB)  # Required env var names
+    optional_env: Mapped[list[str] | None] = mapped_column(JSONB)  # Optional env var names
+    icon: Mapped[str | None] = mapped_column(String(50))
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    docs_url: Mapped[str | None] = mapped_column(Text)
+
+    # Ordering and visibility
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_system: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )  # System servers can't be deleted
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class GitHubIntegration(Base):
     """GitHub OAuth integration for PR/Actions access."""
 

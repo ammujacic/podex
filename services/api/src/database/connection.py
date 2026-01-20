@@ -18,6 +18,7 @@ from src.database.models import (
     AgentTool,
     Base,
     CustomCommand,
+    DefaultMCPServer,
     HardwareSpec,
     LLMModel,
     LLMProvider,
@@ -122,6 +123,7 @@ async def seed_database() -> None:
         DEFAULT_AGENT_TOOLS,
         DEFAULT_GLOBAL_COMMANDS,
         DEFAULT_HARDWARE_SPECS,
+        DEFAULT_MCP_SERVERS,
         DEFAULT_MODELS,
         DEFAULT_PLANS,
         DEFAULT_PROVIDERS,
@@ -147,6 +149,7 @@ async def seed_database() -> None:
                 "agent_tools": 0,
                 "system_skills": 0,
                 "skill_templates": 0,
+                "default_mcp_servers": 0,
             }
 
             # Seed subscription plans
@@ -331,6 +334,39 @@ async def seed_database() -> None:
                     db.add(SkillTemplate(**template_data))
                     totals["skill_templates"] += 1
 
+            # Seed default MCP servers catalog
+            for mcp_data in DEFAULT_MCP_SERVERS:
+                result = await db.execute(
+                    select(DefaultMCPServer).where(DefaultMCPServer.slug == mcp_data["slug"])
+                )
+                if not result.scalar_one_or_none():
+                    # Convert MCPCategory enum to string value if needed
+                    category = mcp_data.get("category")
+                    if category is not None and hasattr(category, "value"):
+                        category = category.value
+
+                    db.add(
+                        DefaultMCPServer(
+                            slug=mcp_data["slug"],
+                            name=mcp_data["name"],
+                            description=mcp_data.get("description"),
+                            category=category,
+                            transport=mcp_data["transport"],
+                            command=mcp_data.get("command"),
+                            args=mcp_data.get("args"),
+                            url=mcp_data.get("url"),
+                            env_vars=mcp_data.get("env_vars"),
+                            required_env=mcp_data.get("required_env"),
+                            optional_env=mcp_data.get("optional_env"),
+                            icon=mcp_data.get("icon"),
+                            is_builtin=mcp_data.get("is_builtin", False),
+                            docs_url=mcp_data.get("docs_url"),
+                            is_enabled=True,
+                            is_system=True,
+                        )
+                    )
+                    totals["default_mcp_servers"] += 1
+
             await db.commit()
 
             if any(totals.values()):
@@ -348,6 +384,7 @@ async def seed_database() -> None:
                     agent_roles=totals["agent_roles"],
                     system_skills=totals["system_skills"],
                     skill_templates=totals["skill_templates"],
+                    default_mcp_servers=totals["default_mcp_servers"],
                 )
 
         except Exception as e:

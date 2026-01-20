@@ -18,7 +18,7 @@ export function ResizableGridCard({ agent, sessionId, maxCols = 3 }: ResizableGr
   const cardRef = useRef<HTMLDivElement>(null);
   const gridContext = useOptionalGridContext();
 
-  const gridSpan = agent.gridSpan ?? { colSpan: 1, rowSpan: 1 };
+  const gridSpan = agent.gridSpan ?? { colSpan: 1, rowSpan: 2 };
 
   const handleResize = useCallback(
     (newSpan: GridSpan) => {

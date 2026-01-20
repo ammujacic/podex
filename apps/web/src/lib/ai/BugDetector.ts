@@ -7,6 +7,7 @@
 
 import type * as monaco from '@codingame/monaco-vscode-editor-api';
 import type { editor } from '@codingame/monaco-vscode-editor-api';
+import { detectBugs } from '@/lib/api';
 
 // ============================================================================
 // Types
@@ -38,7 +39,7 @@ export interface BugDetectorConfig {
 // ============================================================================
 
 const DEFAULT_CONFIG: BugDetectorConfig = {
-  apiUrl: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000',
+  apiUrl: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001',
   debounceMs: 5000, // 5 seconds after typing stops
   enabled: true,
   minCodeLength: 50,
@@ -73,35 +74,13 @@ export class BugDetector {
       return { bugs: [], analysisTimeMs: 0 };
     }
 
-    const controller = new AbortController();
-
     try {
-      const response = await fetch(`${this.config.apiUrl}/api/completion/detect-bugs`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          code,
-          language,
-        }),
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        console.warn('Bug detection API error:', response.status);
-        return { bugs: [], analysisTimeMs: 0 };
-      }
-
-      const data = await response.json();
+      const data = await detectBugs(code, language);
       return {
         bugs: data.bugs || [],
         analysisTimeMs: data.analysis_time_ms || 0,
       };
     } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        return { bugs: [], analysisTimeMs: 0 };
-      }
       console.warn('Bug detection error:', error);
       return { bugs: [], analysisTimeMs: 0 };
     }

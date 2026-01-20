@@ -876,6 +876,7 @@ class LayoutResponse(BaseModel):
     editor_grid_card_id: str | None = None
     editor_grid_span: dict[str, Any] | None = None
     editor_freeform_position: dict[str, Any] | None = None
+    editor_tabs: dict[str, Any] | None = None
 
 
 class LayoutUpdateRequest(BaseModel):
@@ -890,6 +891,7 @@ class LayoutUpdateRequest(BaseModel):
     editor_grid_card_id: str | None = None
     editor_grid_span: dict[str, Any] | None = None
     editor_freeform_position: dict[str, Any] | None = None
+    editor_tabs: dict[str, Any] | None = None
 
 
 @router.get("/{session_id}/layout", response_model=LayoutResponse)
@@ -917,6 +919,7 @@ async def get_session_layout(
         editor_grid_card_id=layout.get("editor_grid_card_id"),
         editor_grid_span=layout.get("editor_grid_span"),
         editor_freeform_position=layout.get("editor_freeform_position"),
+        editor_tabs=layout.get("editor_tabs"),
     )
 
 
@@ -955,6 +958,8 @@ async def update_session_layout(
         layout["editor_grid_span"] = data.editor_grid_span
     if data.editor_freeform_position is not None:
         layout["editor_freeform_position"] = data.editor_freeform_position
+    if data.editor_tabs is not None:
+        layout["editor_tabs"] = data.editor_tabs
 
     # Save back to session
     settings["layout"] = layout
@@ -2441,12 +2446,13 @@ Please perform the requested task on the code above."""
             from decimal import ROUND_HALF_UP, Decimal
             from uuid import uuid4
 
-            from podex_shared.models.billing import calculate_token_cost
             from src.routes.billing import UsageEventInput, _record_single_event
+            from src.services.pricing import calculate_token_cost
 
             normalized_model_id = model_id.replace("@", "-")
             total_tokens = input_tokens + output_tokens
-            total_cost = calculate_token_cost(
+            total_cost = await calculate_token_cost(
+                db,
                 normalized_model_id,
                 input_tokens,
                 output_tokens,

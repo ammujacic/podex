@@ -40,12 +40,14 @@ def create_cloud_run_services(
     bucket: gcp.storage.Bucket,
     vpc: dict[str, Any],
     image_refs: dict[str, pulumi.Output[str]] | None = None,
+    domain: str = "podex.dev",
 ) -> dict[str, Any]:
     """Create Cloud Run services (FREE TIER).
 
     Args:
         image_refs: Optional dict of service name -> image digest from pulumi-docker.
                    If provided, uses exact image digests; otherwise uses :latest tag.
+        domain: Custom domain for service URLs (e.g., podex.dev -> agent.podex.dev)
     """
     services: dict[str, Any] = {}
 
@@ -164,6 +166,18 @@ def create_cloud_run_services(
             ),
         ]
         if cfg["name"] == "compute":
+            # Compute service uses COMPUTE_ prefix for all env vars
+            envs.append(
+                gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
+                    name="COMPUTE_INTERNAL_API_KEY",
+                    value_source=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceArgs(
+                        secret_key_ref=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceSecretKeyRefArgs(
+                            secret=secrets["internal_api_key"].secret_id,
+                            version="latest",
+                        ),
+                    ),
+                )
+            )
             workspace_x86 = (
                 image_refs["workspace"]
                 if image_refs and "workspace" in image_refs
@@ -204,6 +218,19 @@ def create_cloud_run_services(
         envs.append(
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
                 name="INTERNAL_API_KEY",
+                value_source=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceArgs(
+                    secret_key_ref=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceSecretKeyRefArgs(
+                        secret=secrets["internal_api_key"].secret_id,
+                        version="latest",
+                    ),
+                ),
+            )
+        )
+
+        # Add internal service token (same as internal API key, used for MCP auth)
+        envs.append(
+            gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
+                name="INTERNAL_SERVICE_TOKEN",
                 value_source=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceArgs(
                     secret_key_ref=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceSecretKeyRefArgs(
                         secret=secrets["internal_api_key"].secret_id,
@@ -297,6 +324,14 @@ def create_cloud_run_services(
 
         # API service - OAuth, Stripe, VAPID, SendGrid
         if cfg["name"] == "api":
+            # Agent service URL for MCP config rewriting
+            envs.append(
+                gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
+                    name="AGENT_SERVICE_URL",
+                    value=f"https://agent.{domain}",
+                )
+            )
+
             # OAuth redirect URIs - derived from app-url secret
             # These are set via set-gcp-secrets.sh based on your domain
             envs.append(
@@ -350,6 +385,33 @@ def create_cloud_run_services(
 
         # Agent service - LLM API keys
         if cfg["name"] == "agent":
+            # Internal URL for MCP self-referencing endpoints (like /mcp/skills)
+            envs.append(
+                gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
+                    name="AGENT_INTERNAL_URL",
+                    value=f"https://agent.{domain}",
+                )
+            )
+            # Compute service URL
+            envs.append(
+                gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
+                    name="COMPUTE_SERVICE_URL",
+                    value=f"https://compute.{domain}",
+                )
+            )
+            # Compute service API key (for agent -> compute calls)
+            envs.append(
+                gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
+                    name="COMPUTE_INTERNAL_API_KEY",
+                    value_source=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceArgs(
+                        secret_key_ref=gcp.cloudrunv2.ServiceTemplateContainerEnvValueSourceSecretKeyRefArgs(
+                            secret=secrets["internal_api_key"].secret_id,
+                            version="latest",
+                        ),
+                    ),
+                )
+            )
+
             agent_secrets = [
                 ("ANTHROPIC_API_KEY", "anthropic_api_key"),
                 ("OPENAI_API_KEY", "openai_api_key"),

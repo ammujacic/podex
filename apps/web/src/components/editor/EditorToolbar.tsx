@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ChevronDown,
   AlignLeft,
@@ -28,6 +28,7 @@ import {
 } from '@podex/ui';
 import { cn } from '@/lib/utils';
 import { useEditorStore } from '@/stores/editor';
+import { getAvailableModels } from '@/lib/api';
 import type * as monaco from '@codingame/monaco-vscode-editor-api';
 
 // ============================================================================
@@ -93,6 +94,12 @@ export function EditorToolbar({
 }: EditorToolbarProps) {
   const settings = useEditorStore((s) => s.settings);
   const updateSettings = useEditorStore((s) => s.updateSettings);
+  const [editorModels, setEditorModels] = useState<
+    {
+      id: string;
+      displayName: string;
+    }[]
+  >([]);
 
   // Get current language display name
   const currentLanguage = useMemo(() => {
@@ -171,6 +178,33 @@ export function EditorToolbar({
     },
     [updateSettings]
   );
+
+  // Load available models for editor AI actions (Podex Native models)
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadModels() {
+      try {
+        const models = await getAvailableModels();
+        if (!isMounted) return;
+
+        setEditorModels(
+          models.map((m) => ({
+            id: m.model_id,
+            displayName: m.display_name.replace('Claude ', '').replace('Llama ', ''),
+          }))
+        );
+      } catch (error) {
+        console.error('Failed to load editor models', error);
+      }
+    }
+
+    loadModels();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   return (
     <div
@@ -361,6 +395,46 @@ export function EditorToolbar({
           >
             Format on Paste
           </DropdownMenuCheckboxItem>
+
+          <DropdownMenuSeparator />
+
+          {/* AI Action Model */}
+          {editorModels.length > 0 && (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <Sparkles className="mr-2 h-4 w-4" />
+                <span>AI Model (Editor Actions)</span>
+                <span className="ml-auto text-xs text-text-muted">
+                  {settings.aiActionModel
+                    ? (editorModels.find((m) => m.id === settings.aiActionModel)?.displayName ??
+                      'Custom')
+                    : 'Default'}
+                </span>
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent>
+                <DropdownMenuItem
+                  onClick={() => updateSettings({ aiActionModel: null })}
+                  className="flex items-center justify-between cursor-pointer"
+                >
+                  <span>Use default model</span>
+                  {!settings.aiActionModel && <Check className="h-3.5 w-3.5 text-accent-primary" />}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                {editorModels.map((model) => (
+                  <DropdownMenuItem
+                    key={model.id}
+                    onClick={() => updateSettings({ aiActionModel: model.id })}
+                    className="flex items-center justify-between cursor-pointer"
+                  >
+                    <span>{model.displayName}</span>
+                    {settings.aiActionModel === model.id && (
+                      <Check className="h-3.5 w-3.5 text-accent-primary" />
+                    )}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          )}
 
           <DropdownMenuSeparator />
 

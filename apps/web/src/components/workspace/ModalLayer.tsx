@@ -10,6 +10,7 @@ import {
   MCPSettingsModal,
   WorkspaceScalingModal,
   ExtensionMarketplaceModal,
+  NewPathModal,
 } from './modals';
 import type { WorkspaceTier } from '@podex/shared';
 
@@ -23,7 +24,7 @@ interface ModalLayerProps {
  * Handles global keyboard shortcuts (Escape to close).
  */
 export function ModalLayer({ sessionId }: ModalLayerProps) {
-  const { activeModal, closeModal } = useUIStore();
+  const { activeModal, modalData, closeModal } = useUIStore();
   const { sessions } = useSessionStore();
   const currentSession = sessions[sessionId];
 
@@ -64,6 +65,16 @@ export function ModalLayer({ sessionId }: ModalLayerProps) {
           sessionId={sessionId}
           workspaceId={workspaceId}
           currentTier={workspaceTier}
+          onClose={closeModal}
+        />
+      )}
+      {(activeModal === 'new-file' || activeModal === 'new-folder') && (
+        <NewPathModal
+          sessionId={sessionId}
+          mode={activeModal === 'new-file' ? 'file' : 'folder'}
+          initialPath={
+            typeof modalData?.initialPath === 'string' ? (modalData.initialPath as string) : ''
+          }
           onClose={closeModal}
         />
       )}

@@ -119,6 +119,17 @@ interface UIState {
     sessionId: string,
     filters: { branch?: string | null; status?: string | null }
   ) => void;
+  githubWidgetRepoBySession: Record<string, { owner: string; repo: string } | null>;
+  setGitHubWidgetRepo: (sessionId: string, repo: { owner: string; repo: string } | null) => void;
+  githubWidgetPanelStatesBySession: Record<
+    string,
+    { pullRequestsOpen?: boolean; actionsOpen?: boolean }
+  >;
+  setGitHubWidgetPanelState: (
+    sessionId: string,
+    panel: 'pullRequests' | 'actions',
+    isOpen: boolean
+  ) => void;
 
   // Legacy compatibility
   sidebarCollapsed: boolean;
@@ -250,6 +261,12 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
       if (serverPrefs.githubWidgetFiltersBySession) {
         updates.githubWidgetFiltersBySession = serverPrefs.githubWidgetFiltersBySession;
       }
+      if (serverPrefs.githubWidgetRepoBySession) {
+        updates.githubWidgetRepoBySession = serverPrefs.githubWidgetRepoBySession;
+      }
+      if (serverPrefs.githubWidgetPanelStatesBySession) {
+        updates.githubWidgetPanelStatesBySession = serverPrefs.githubWidgetPanelStatesBySession;
+      }
 
       if (serverPrefs.terminalHeight !== undefined) {
         updates.terminalHeight = serverPrefs.terminalHeight;
@@ -292,6 +309,8 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
       sidebarLayout: state.sidebarLayout,
       gitWidgetSettingsBySession: state.gitWidgetSettingsBySession,
       githubWidgetFiltersBySession: state.githubWidgetFiltersBySession,
+      githubWidgetRepoBySession: state.githubWidgetRepoBySession,
+      githubWidgetPanelStatesBySession: state.githubWidgetPanelStatesBySession,
       terminalHeight: state.terminalHeight,
       panelHeight: state.panelHeight,
       prefersReducedMotion: state.prefersReducedMotion,
@@ -401,6 +420,33 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
           [sessionId]: {
             branch: filters.branch ?? current.branch,
             status: filters.status ?? current.status,
+          },
+        },
+      };
+    });
+    debouncedSync(get());
+  },
+  githubWidgetRepoBySession: {},
+  setGitHubWidgetRepo: (sessionId, repo) => {
+    set((state) => ({
+      githubWidgetRepoBySession: {
+        ...state.githubWidgetRepoBySession,
+        [sessionId]: repo,
+      },
+    }));
+    debouncedSync(get());
+  },
+  githubWidgetPanelStatesBySession: {},
+  setGitHubWidgetPanelState: (sessionId, panel, isOpen) => {
+    set((state) => {
+      const current = state.githubWidgetPanelStatesBySession[sessionId] || {};
+      const panelKey = panel === 'pullRequests' ? 'pullRequestsOpen' : 'actionsOpen';
+      return {
+        githubWidgetPanelStatesBySession: {
+          ...state.githubWidgetPanelStatesBySession,
+          [sessionId]: {
+            ...current,
+            [panelKey]: isOpen,
           },
         },
       };
@@ -637,6 +683,8 @@ const persistedUIStore = persist(uiStoreCreator, {
     sidebarLayout: state.sidebarLayout,
     gitWidgetSettingsBySession: state.gitWidgetSettingsBySession,
     githubWidgetFiltersBySession: state.githubWidgetFiltersBySession,
+    githubWidgetRepoBySession: state.githubWidgetRepoBySession,
+    githubWidgetPanelStatesBySession: state.githubWidgetPanelStatesBySession,
     terminalVisible: state.terminalVisible,
     terminalHeight: state.terminalHeight,
     panelVisible: state.panelVisible,

@@ -276,10 +276,11 @@ class TestUsageTrackerRecordTokenUsage:
 
         event = await tracker.record_token_usage(params)
 
-        # Unknown models have zero cost (no pricing info available)
+        # Unknown models use default pricing and minimum charge applies
         assert event.model == "unknown-model"
         assert event.quantity == 150  # total tokens
-        assert event.total_cost_cents == 0
+        # When no pricing is provided, defaults are used and minimum charge of 1 cent applies
+        assert event.total_cost_cents >= 1
 
 
 class TestUsageTrackerRecordComputeUsage:

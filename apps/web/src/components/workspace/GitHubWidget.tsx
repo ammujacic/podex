@@ -35,9 +35,11 @@ import {
   getGitHubWorkflowRuns,
   getGitHubWorkflowJobs,
   getGitHubBranches,
+  getGitHubRepos,
   type GitHubPullRequest,
   type GitHubWorkflowRun,
   type GitHubWorkflowJob,
+  type GitHubRepo,
 } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { useSessionStore } from '@/stores/session';
@@ -132,6 +134,8 @@ function CollapsibleSection({
   defaultOpen = true,
   onRefresh,
   isLoading,
+  isOpen,
+  setIsOpen,
 }: {
   title: string;
   icon: React.ReactNode;
@@ -141,14 +145,18 @@ function CollapsibleSection({
   defaultOpen?: boolean;
   onRefresh?: () => void;
   isLoading?: boolean;
+  isOpen?: boolean;
+  setIsOpen?: (open: boolean) => void;
 }) {
-  const [isOpen, setIsOpen] = useState(defaultOpen);
+  const [localIsOpen, setLocalIsOpen] = useState(defaultOpen);
+  const effectiveIsOpen = isOpen !== undefined ? isOpen : localIsOpen;
+  const effectiveSetIsOpen = setIsOpen || setLocalIsOpen;
 
   return (
     <div className="border-b border-border-subtle last:border-b-0">
       <div className="flex items-center">
         <button
-          onClick={() => setIsOpen(!isOpen)}
+          onClick={() => effectiveSetIsOpen(!effectiveIsOpen)}
           className="flex-1 flex items-center justify-between px-3 py-2 hover:bg-surface-hover transition-colors"
         >
           <div className="flex items-center gap-2">
@@ -175,7 +183,7 @@ function CollapsibleSection({
             )}
           </div>
           <div className="flex items-center gap-1">
-            {isOpen ? (
+            {effectiveIsOpen ? (
               <ChevronUp className="w-4 h-4 text-text-muted" />
             ) : (
               <ChevronDown className="w-4 h-4 text-text-muted" />
@@ -192,7 +200,7 @@ function CollapsibleSection({
           </button>
         )}
       </div>
-      {isOpen && <div className="px-3 pb-3">{children}</div>}
+      {effectiveIsOpen && <div className="px-3 pb-3">{children}</div>}
     </div>
   );
 }
@@ -413,8 +421,12 @@ function WorkflowRunItem({
 export function GitHubWidget({ repoOwner, repoName, sessionId }: GitHubWidgetProps) {
   const session = useSessionStore((state) => state.sessions[sessionId]);
   const derivedRepo = useMemo(() => parseGitHubRepo(session?.gitUrl), [session?.gitUrl]);
-  const resolvedOwner = repoOwner ?? derivedRepo?.owner;
-  const resolvedRepo = repoName ?? derivedRepo?.repo;
+  const storedRepo = useUIStore((state) => state.githubWidgetRepoBySession[sessionId]);
+  const setGitHubWidgetRepo = useUIStore((state) => state.setGitHubWidgetRepo);
+
+  // Use stored repo, then prop repo, then derived repo
+  const resolvedOwner = repoOwner ?? storedRepo?.owner ?? derivedRepo?.owner;
+  const resolvedRepo = repoName ?? storedRepo?.repo ?? derivedRepo?.repo;
   const [isConnected, setIsConnected] = useState<boolean | null>(null);
   const [pullRequests, setPullRequests] = useState<GitHubPullRequest[]>([]);
   const [workflowRuns, setWorkflowRuns] = useState<GitHubWorkflowRun[]>([]);
@@ -427,15 +439,32 @@ export function GitHubWidget({ repoOwner, repoName, sessionId }: GitHubWidgetPro
   const selectedBranch = widgetFilters?.branch ?? null;
   const selectedStatus = widgetFilters?.status ?? null;
   const setGitHubWidgetFilters = useUIStore((state) => state.setGitHubWidgetFilters);
+  const panelStates = useUIStore((state) => state.githubWidgetPanelStatesBySession[sessionId]);
+  const setGitHubWidgetPanelState = useUIStore((state) => state.setGitHubWidgetPanelState);
   const hasInitialFetch = useRef(false);
   const [workflowJobs, setWorkflowJobs] = useState<Record<number, GitHubWorkflowJob[]>>({});
   const [loadingJobs, setLoadingJobs] = useState<Set<number>>(new Set());
+  const [availableRepos, setAvailableRepos] = useState<GitHubRepo[]>([]);
+  const [isLoadingRepos, setIsLoadingRepos] = useState(false);
+  const [showRepoSelector, setShowRepoSelector] = useState(false);
 
   // Check connection status
   const checkConnection = useCallback(async () => {
     try {
       const data = await getGitHubStatus();
       setIsConnected(data.connected);
+      // Fetch repos if connected
+      if (data.connected) {
+        setIsLoadingRepos(true);
+        try {
+          const repos = await getGitHubRepos({ per_page: 100 });
+          setAvailableRepos(repos);
+        } catch {
+          // Silently fail - repos list is optional
+        } finally {
+          setIsLoadingRepos(false);
+        }
+      }
     } catch {
       setIsConnected(false);
     }
@@ -551,7 +580,9 @@ export function GitHubWidget({ repoOwner, repoName, sessionId }: GitHubWidgetPro
     setPullRequests([]);
     setWorkflowRuns([]);
     setBranches([]);
-  }, [resolvedOwner, resolvedRepo]);
+    // Clear filters when repo changes
+    setGitHubWidgetFilters(sessionId, { branch: null, status: null });
+  }, [resolvedOwner, resolvedRepo, sessionId, setGitHubWidgetFilters]);
 
   // Fetch PRs and runs when repo/connection changes
   useEffect(() => {
@@ -625,10 +656,76 @@ export function GitHubWidget({ repoOwner, repoName, sessionId }: GitHubWidgetPro
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* Repo info bar */}
-      <div className="flex items-center justify-between px-3 py-2 bg-surface-hover/50 border-b border-border-subtle shrink-0">
-        <span className="text-xs text-text-secondary truncate">
-          {resolvedOwner}/{resolvedRepo}
-        </span>
+      <div className="flex items-center justify-between px-3 py-2 bg-surface-hover/50 border-b border-border-subtle shrink-0 gap-2">
+        <DropdownMenu open={showRepoSelector} onOpenChange={setShowRepoSelector}>
+          <DropdownMenuTrigger asChild>
+            <button
+              className="flex items-center gap-1.5 flex-1 min-w-0 hover:bg-surface-hover rounded px-1.5 py-1 transition-colors group"
+              title="Change repository"
+            >
+              <Github className="w-3.5 h-3.5 text-text-muted shrink-0" />
+              <span className="text-xs text-text-secondary truncate">
+                {resolvedOwner}/{resolvedRepo}
+              </span>
+              <ChevronDown className="w-3 h-3 text-text-muted shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="start"
+            className="min-w-[280px] max-h-[300px] overflow-y-auto"
+          >
+            <DropdownMenuLabel className="font-semibold">Select Repository</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            {isLoadingRepos ? (
+              <DropdownMenuItem disabled className="text-text-muted">
+                <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                Loading repositories...
+              </DropdownMenuItem>
+            ) : availableRepos.length === 0 ? (
+              <DropdownMenuItem disabled className="text-text-muted">
+                No repositories available
+              </DropdownMenuItem>
+            ) : (
+              availableRepos.map((repo) => {
+                const parts = repo.full_name.split('/');
+                const owner = parts[0];
+                const repoName = parts[1];
+                if (!owner || !repoName) return null;
+                const isSelected = owner === resolvedOwner && repoName === resolvedRepo;
+                return (
+                  <DropdownMenuItem
+                    key={repo.id}
+                    onClick={() => {
+                      setGitHubWidgetRepo(sessionId, { owner, repo: repoName });
+                      setShowRepoSelector(false);
+                    }}
+                    className={cn(
+                      'font-medium',
+                      isSelected && 'bg-accent-primary/20 text-accent-primary'
+                    )}
+                  >
+                    {repo.full_name}
+                    {isSelected && <Check className="w-4 h-4 ml-auto" />}
+                  </DropdownMenuItem>
+                );
+              })
+            )}
+            {derivedRepo && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => {
+                    setGitHubWidgetRepo(sessionId, null);
+                    setShowRepoSelector(false);
+                  }}
+                  className="font-medium"
+                >
+                  Use default ({derivedRepo.owner}/{derivedRepo.repo})
+                </DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
         <a
           href={`https://github.com/${resolvedOwner}/${resolvedRepo}`}
           target="_blank"
@@ -648,6 +745,8 @@ export function GitHubWidget({ repoOwner, repoName, sessionId }: GitHubWidgetPro
           count={pullRequests.length}
           onRefresh={fetchPRs}
           isLoading={isLoadingPRs}
+          isOpen={panelStates?.pullRequestsOpen ?? true}
+          setIsOpen={(open) => setGitHubWidgetPanelState(sessionId, 'pullRequests', open)}
         >
           {pullRequests.length === 0 ? (
             <p className="text-xs text-text-muted text-center py-2">No open pull requests</p>
@@ -683,22 +782,25 @@ export function GitHubWidget({ repoOwner, repoName, sessionId }: GitHubWidgetPro
           onRefresh={fetchRuns}
           isLoading={isLoadingRuns}
           defaultOpen={true}
+          isOpen={panelStates?.actionsOpen ?? true}
+          setIsOpen={(open) => setGitHubWidgetPanelState(sessionId, 'actions', open)}
         >
-          {/* Filter Controls */}
-          <div className="flex items-center gap-2 mb-4 pb-4 border-b border-border-subtle">
+          {/* Filter Controls - Compact */}
+          <div className="flex items-center gap-1.5 mb-3 pb-3 border-b border-border-subtle flex-wrap">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
                   className={cn(
-                    'flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border-2 transition-all font-medium',
-                    'border-border-subtle hover:border-border-default hover:bg-surface-hover hover:shadow-sm',
-                    selectedBranch && 'border-accent-primary/60 bg-accent-primary/8 shadow-sm'
+                    'flex items-center gap-1 px-2 py-1 text-xs rounded border transition-all',
+                    'border-border-subtle hover:border-border-default hover:bg-surface-hover',
+                    selectedBranch && 'border-accent-primary/60 bg-accent-primary/8'
                   )}
                   disabled={isLoadingBranches}
+                  title={selectedBranch || 'Filter by branch'}
                 >
-                  <GitBranch className="w-4 h-4" />
-                  <span className="max-w-[120px] truncate">{selectedBranch || 'All branches'}</span>
-                  <ChevronDown className="w-3.5 h-3.5" />
+                  <GitBranch className="w-3 h-3 shrink-0" />
+                  <span className="max-w-[80px] truncate">{selectedBranch || 'Branch'}</span>
+                  <ChevronDown className="w-3 h-3 shrink-0" />
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent
@@ -744,18 +846,17 @@ export function GitHubWidget({ repoOwner, repoName, sessionId }: GitHubWidgetPro
               <DropdownMenuTrigger asChild>
                 <button
                   className={cn(
-                    'flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border-2 transition-all font-medium',
-                    'border-border-subtle hover:border-border-default hover:bg-surface-hover hover:shadow-sm',
-                    selectedStatus && 'border-accent-primary/60 bg-accent-primary/8 shadow-sm'
+                    'flex items-center gap-1 px-2 py-1 text-xs rounded border transition-all',
+                    'border-border-subtle hover:border-border-default hover:bg-surface-hover',
+                    selectedStatus && 'border-accent-primary/60 bg-accent-primary/8'
                   )}
+                  title={selectedStatus ? `Status: ${selectedStatus}` : 'Filter by status'}
                 >
-                  <Filter className="w-4 h-4" />
-                  <span>
-                    {selectedStatus
-                      ? selectedStatus.charAt(0).toUpperCase() + selectedStatus.slice(1)
-                      : 'All statuses'}
+                  <Filter className="w-3 h-3 shrink-0" />
+                  <span className="capitalize">
+                    {selectedStatus ? selectedStatus.replace('_', ' ') : 'Status'}
                   </span>
-                  <ChevronDown className="w-3.5 h-3.5" />
+                  <ChevronDown className="w-3 h-3 shrink-0" />
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="min-w-[160px]">
@@ -840,10 +941,10 @@ export function GitHubWidget({ repoOwner, repoName, sessionId }: GitHubWidgetPro
                 onClick={() => {
                   setGitHubWidgetFilters(sessionId, { branch: null, status: null });
                 }}
-                className="p-2 rounded-lg hover:bg-surface-hover text-text-muted hover:text-text-primary transition-all hover:shadow-sm border border-transparent hover:border-border-subtle"
+                className="p-1 rounded hover:bg-surface-hover text-text-muted hover:text-text-primary transition-all"
                 title="Clear filters"
               >
-                <XCircle className="w-4 h-4" />
+                <XCircle className="w-3.5 h-3.5" />
               </button>
             )}
           </div>

@@ -130,6 +130,8 @@ export const ToolResultDisplay = React.memo<ToolResultDisplayProps>(function Too
     case 'Glob': // Claude Code Glob tool
       return <ListDirectoryResult result={parsedResult} />;
     case 'search_code':
+    case 'grep':
+    case 'glob_files':
     case 'Grep': // Claude Code Grep tool
       return <SearchCodeResult result={parsedResult} />;
     case 'Edit': // Claude Code Edit tool

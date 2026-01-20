@@ -82,6 +82,15 @@ class MCPLifecycleManager:
         for server_config in servers:
             self._attempted_servers.append(server_config.name)
 
+            # Determine auth token for HTTP transport to internal services
+            auth_token = None
+            if server_config.transport in ("http", "sse") and server_config.url:
+                # Internal agent service URLs need internal service token
+                # Check if URL matches the configured internal agent URL
+                internal_url = settings.AGENT_INTERNAL_URL.rstrip("/")
+                if server_config.url.startswith(internal_url):
+                    auth_token = settings.INTERNAL_SERVICE_TOKEN
+
             mcp_config = MCPServerConfig(
                 id=server_config.id,
                 name=server_config.name,
@@ -91,6 +100,7 @@ class MCPLifecycleManager:
                 url=server_config.url,
                 env_vars=server_config.env_vars,
                 timeout=settings.MCP_CONNECTION_TIMEOUT,
+                auth_token=auth_token,
             )
 
             success = await self._connect_with_retry(mcp_config)

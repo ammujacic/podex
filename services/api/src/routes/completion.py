@@ -513,22 +513,15 @@ Return a JSON array of any issues found. Each issue should have:
 Return ONLY valid JSON, no other text. If no issues found, return: []"""
 
     try:
-        client = CompletionProvider.get_anthropic_client()
-
-        api_response = await client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+        # Use the multi-provider completion interface so we can work with
+        # Vertex, Anthropic, Ollama, etc. without requiring a direct
+        # Anthropic API key in all environments.
+        text = await CompletionProvider.complete(
+            prompt=prompt,
+            system_prompt=BUG_DETECTION_SYSTEM_PROMPT,
             max_tokens=1024,
             temperature=0.2,
-            system=BUG_DETECTION_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
         )
-
-        # Parse the response
-        text = ""
-        for block in api_response.content:
-            if block.type == "text":
-                text = block.text.strip()
-                break
 
         # Extract JSON from the response
         try:

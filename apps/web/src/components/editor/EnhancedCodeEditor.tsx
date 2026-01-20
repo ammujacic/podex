@@ -16,6 +16,7 @@ import {
   generatorStyles,
 } from '@/lib/ai';
 import { VSCodeEditor, type VSCodeEditorRef } from '@/lib/vscode';
+import { useEditorCommands, useEditorFocusContext } from '@/hooks/useEditorCommands';
 import { updateFileContent, getFileContent } from '@/lib/api';
 import * as monaco from '@codingame/monaco-vscode-editor-api';
 import { SelectionActions } from './SelectionActions';
@@ -130,6 +131,7 @@ function EditorPaneContent({
   showToolbar = true,
 }: EditorPaneContentProps) {
   const editorRef = useRef<VSCodeEditorRef>(null);
+  const monacoEditorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const [currentLanguage, setCurrentLanguage] = useState(language);
   const [editorInstance, setEditorInstance] = useState<monaco.editor.IStandaloneCodeEditor | null>(
     null
@@ -144,11 +146,32 @@ function EditorPaneContent({
   const [cursorColumn, setCursorColumn] = useState(1);
   const [symbols, setSymbols] = useState<BreadcrumbSymbol[]>([]);
 
+  // Register Monaco-aware editor commands and focus context
+  useEditorCommands(monacoEditorRef);
+  useEditorFocusContext(monacoEditorRef);
+
+  // Handle global "Save All" requests from the command palette.
+  useEffect(() => {
+    const handleSaveAll = () => {
+      if (!onSave) return;
+      const editor = editorRef.current?.getEditor();
+      if (!editor) return;
+      const value = editor.getValue();
+      onSave(value);
+    };
+
+    window.addEventListener('podex-save-all', handleSaveAll);
+    return () => {
+      window.removeEventListener('podex-save-all', handleSaveAll);
+    };
+  }, [onSave]);
+
   // Handle editor mount
   const handleEditorMount = useCallback(
     async (editor: monaco.editor.IStandaloneCodeEditor) => {
       // Store editor instance for SelectionActions
       setEditorInstance(editor);
+      monacoEditorRef.current = editor;
 
       // Register theme
       registerTerminalNoirTheme();
@@ -432,7 +455,8 @@ export function EnhancedCodeEditor({ paneId, className }: EnhancedCodeEditorProp
     return tabs[pane.activeTabId] || null;
   }, [pane?.activeTabId, tabs]);
 
-  // Extract stable path for file loading - only reload when path actually changes
+  // Extract stable identifiers for file loading - only reload when path actually changes
+  const activeTabId = activeTab?.id;
   const activeTabPath = activeTab?.path;
 
   // Load file content when active tab path changes (not on every cursor move)
@@ -446,6 +470,12 @@ export function EnhancedCodeEditor({ paneId, className }: EnhancedCodeEditorProp
       try {
         const response = await getFileContent(currentSessionId, activeTabPath);
         setFileContent(response.content);
+
+        // On fresh load, assume the file on disk is the source of truth
+        // and clear any stale dirty state (e.g. from a previous session).
+        if (activeTabId) {
+          setTabDirty(activeTabId, false);
+        }
       } catch (error) {
         console.error('Failed to load file content:', error);
         setFileContent('');
@@ -453,20 +483,26 @@ export function EnhancedCodeEditor({ paneId, className }: EnhancedCodeEditorProp
     };
 
     loadFileContent();
-  }, [activeTabPath, currentSessionId]);
+  }, [activeTabPath, activeTabId, currentSessionId, setTabDirty]);
 
   // Handle content change
+  // Only mark the tab as dirty when the buffer actually diverges from the last
+  // loaded/saved content, not on initial model setup.
   const handleChange = useCallback(
-    (_value: string | undefined) => {
-      if (activeTab) {
-        setTabDirty(activeTab.id, true);
-        // Pin the tab when edited
-        if (activeTab.isPreview) {
-          pinTab(activeTab.id);
-        }
+    (value: string | undefined) => {
+      if (!activeTab || value === undefined) return;
+
+      // If the current value matches the last loaded/saved content, treat it as clean.
+      if (value === fileContent) return;
+
+      setTabDirty(activeTab.id, true);
+
+      // Pin the tab when edited
+      if (activeTab.isPreview) {
+        pinTab(activeTab.id);
       }
     },
-    [activeTab, setTabDirty, pinTab]
+    [activeTab, fileContent, setTabDirty, pinTab]
   );
 
   // Handle save
@@ -475,6 +511,8 @@ export function EnhancedCodeEditor({ paneId, className }: EnhancedCodeEditorProp
       if (activeTab && currentSessionId) {
         try {
           await updateFileContent(currentSessionId, activeTab.path, value);
+          // Persist the saved content as the new clean baseline
+          setFileContent(value);
           setTabDirty(activeTab.id, false);
         } catch (error) {
           console.error('Failed to save file:', error);

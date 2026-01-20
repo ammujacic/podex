@@ -64,6 +64,24 @@ export interface EditorState {
   // Global editor state
   settings: EditorSettings;
 
+  /**
+   * Reset editor layout state when switching sessions.
+   * This clears tabs/panes but keeps global settings.
+   */
+  resetLayout: () => void;
+
+  /**
+   * Replace the current layout with a provided snapshot.
+   * Used to hydrate editor state from backend/session-specific layout.
+   */
+  setLayout: (layout: {
+    tabs: Record<string, EditorTab>;
+    panes: Record<string, SplitPane>;
+    paneOrder: string[];
+    activePaneId: string | null;
+    splitLayout: SplitLayout;
+  }) => void;
+
   // Recently closed tabs (for reopening)
   recentlyClosed: EditorTab[];
 
@@ -163,6 +181,32 @@ export const useEditorStore = create<EditorState>()(
         activePaneId: DEFAULT_PANE_ID,
         settings: DEFAULT_SETTINGS,
         recentlyClosed: [],
+
+        // ========================================================================
+        // Session/Layout Reset
+        // ========================================================================
+
+        resetLayout: () =>
+          set(() => ({
+            tabs: {},
+            tabOrder: [],
+            splitLayout: 'single',
+            panes: { [DEFAULT_PANE_ID]: createDefaultPane() },
+            paneOrder: [DEFAULT_PANE_ID],
+            activePaneId: DEFAULT_PANE_ID,
+            recentlyClosed: [],
+          })),
+
+        setLayout: (layout) =>
+          set((state) => ({
+            ...state,
+            tabs: layout.tabs,
+            tabOrder: Object.keys(layout.tabs),
+            splitLayout: layout.splitLayout,
+            panes: layout.panes,
+            paneOrder: layout.paneOrder.length > 0 ? layout.paneOrder : [DEFAULT_PANE_ID],
+            activePaneId: layout.activePaneId ?? DEFAULT_PANE_ID,
+          })),
 
         // ========================================================================
         // Tab Management
@@ -717,12 +761,12 @@ export const useEditorStore = create<EditorState>()(
         name: 'podex-editor',
         partialize: (state) => ({
           settings: state.settings,
+          // Keep only global editor preferences in localStorage.
+          // Layout (tabs/panes) is session-specific and should be
+          // managed per session (and eventually synced via backend),
+          // so we intentionally do NOT persist it here to avoid
+          // cross-session bleed.
           recentlyClosed: state.recentlyClosed.slice(0, 5),
-          // Persist tabs and panes so editor state survives refresh
-          tabs: state.tabs,
-          panes: state.panes,
-          paneOrder: state.paneOrder,
-          activePaneId: state.activePaneId,
         }),
       }
     )

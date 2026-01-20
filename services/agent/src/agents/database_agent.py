@@ -108,6 +108,8 @@ class DatabaseAgentConfig:
     previous_mode: str | None = None
     command_allowlist: list[str] | None = None
     user_id: str | None = None
+    # Workspace container ID for remote tool execution
+    workspace_id: str | None = None
     # Optional overrides (if not provided, loaded from database)
     system_prompt_override: str | None = None
     tools_override: list[str] | None = None
@@ -330,6 +332,7 @@ class DatabaseAgent(BaseAgent):
             previous_mode=config.previous_mode,
             command_allowlist=config.command_allowlist,
             user_id=config.user_id,
+            workspace_id=config.workspace_id,
         )
 
         super().__init__(agent_config)
@@ -397,6 +400,7 @@ async def create_database_agent(
     user_id: str | None = None,
     system_prompt_override: str | None = None,
     tools_override: list[str] | None = None,
+    workspace_id: str | None = None,
 ) -> DatabaseAgent | None:
     """Create a database agent by loading config from the API.
 
@@ -416,6 +420,7 @@ async def create_database_agent(
         user_id: User ID for user-scoped operations.
         system_prompt_override: Optional override for system prompt.
         tools_override: Optional override for tool list.
+        workspace_id: Optional workspace container ID for remote execution.
 
     Returns:
         DatabaseAgent if config was loaded successfully, None otherwise.
@@ -445,6 +450,7 @@ async def create_database_agent(
         previous_mode=previous_mode,
         command_allowlist=command_allowlist,
         user_id=user_id,
+        workspace_id=workspace_id,
         system_prompt_override=system_prompt_override,
         tools_override=tools_override,
     )

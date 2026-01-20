@@ -25,6 +25,7 @@ from src.mode_detection import IntentDetector
 from src.providers.llm import CompletionRequest
 from src.streaming import get_stream_publisher
 from src.tools.executor import ToolExecutor
+from src.tools.memory_tools import get_knowledge_base, get_retriever
 
 if TYPE_CHECKING:
     from src.providers.llm import LLMProvider
@@ -213,6 +214,9 @@ class AgentConfig:
     command_allowlist: list[str] | None = None
     # User ID for user-scoped operations
     user_id: str | None = None
+    # Workspace container ID for remote execution
+    # When set, file/command/git tools execute on the workspace container
+    workspace_id: str | None = None
 
 
 class BaseAgent(ABC):
@@ -253,6 +257,7 @@ class BaseAgent(ABC):
 
         # Initialize tool executor if workspace is provided
         self.tool_executor: ToolExecutor | None = None
+        self.workspace_id = config.workspace_id
         if config.workspace_path:
             self.tool_executor = ToolExecutor(
                 workspace_path=config.workspace_path,
@@ -263,6 +268,7 @@ class BaseAgent(ABC):
                 command_allowlist=config.command_allowlist,
                 approval_callback=self._handle_approval_request,
                 user_id=config.user_id,
+                workspace_id=config.workspace_id,
             )
 
     def set_approval_callback(self, callback: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
@@ -368,9 +374,11 @@ class BaseAgent(ABC):
         # Refresh tools based on new mode
         self.tools = self._get_all_tools()
 
-        # Update tool executor mode
+        # Update tool executor mode (convert string to AgentMode enum)
         if self.tool_executor:
-            self.tool_executor.agent_mode = self.mode  # type: ignore[assignment]
+            from src.tools.executor import AgentMode
+
+            self.tool_executor.agent_mode = AgentMode(self.mode.lower())
 
     def _generate_mode_switch_announcement(
         self,
@@ -761,6 +769,62 @@ Use this power responsibly:
                 error=str(e),
             )
 
+    async def _get_memory_context(self, current_message: str) -> str | None:
+        """Retrieve relevant memories and format them as context.
+
+        Args:
+            current_message: The current user message for relevance matching
+
+        Returns:
+            Formatted memory context string, or None if no memories found
+        """
+        if not self.session_id or not self.user_id:
+            return None
+
+        try:
+            kb = get_knowledge_base()
+            memories = await kb.get_relevant_context(
+                session_id=self.session_id,
+                user_id=self.user_id,
+                current_message=current_message,
+                limit=5,
+            )
+
+            if not memories:
+                return None
+
+            # Format memories into context
+            memory_lines = []
+            for mem in memories:
+                mem_type = (
+                    mem.memory_type.value if hasattr(mem.memory_type, "value") else mem.memory_type
+                )
+                memory_lines.append(f"- [{mem_type}] {mem.content}")
+
+            context = "\n".join(memory_lines)
+            logger.debug(
+                "Retrieved memory context",
+                agent_id=self.agent_id,
+                memory_count=len(memories),
+            )
+
+            return f"""
+## Relevant Memories
+
+The following information has been remembered from previous interactions:
+
+{context}
+
+Use this context to provide more personalized and consistent responses.
+"""
+        except Exception as e:
+            logger.warning(
+                "Failed to retrieve memory context",
+                agent_id=self.agent_id,
+                error=str(e),
+            )
+            return None
+
     async def execute(
         self,
         message: str,
@@ -791,9 +855,15 @@ Use this power responsibly:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
 
+        # Retrieve relevant memories and build enhanced system prompt
+        memory_context = await self._get_memory_context(message)
+        enhanced_prompt = self.system_prompt
+        if memory_context:
+            enhanced_prompt = f"{self.system_prompt}\n{memory_context}"
+
         # Build messages for LLM (system prompt may have changed after mode switch)
         messages = [
-            {"role": "system", "content": self.system_prompt},
+            {"role": "system", "content": enhanced_prompt},
             *self.conversation_history,
         ]
 
@@ -804,11 +874,11 @@ Use this power responsibly:
                 messages, _total_tokens = await context_manager.prepare_context(
                     agent_id=self.agent_id,
                     messages=self.conversation_history,
-                    system_prompt=self.system_prompt,
+                    system_prompt=enhanced_prompt,
                 )
                 # Re-add system prompt as first message (prepare_context returns just conversation)
                 messages = [
-                    {"role": "system", "content": self.system_prompt},
+                    {"role": "system", "content": enhanced_prompt},
                     *messages,
                 ]
             except Exception as ctx_err:
@@ -918,6 +988,31 @@ Use this power responsibly:
                 )
                 await self.update_status("idle")
 
+            # Auto-extract memories from the conversation turn
+            if self.session_id and self.user_id:
+                try:
+                    retriever = get_retriever()
+                    extracted = await retriever.auto_extract_memories(
+                        session_id=self.session_id,
+                        user_id=self.user_id,
+                        message=message,
+                        response=final_content,
+                    )
+                    if extracted:
+                        logger.info(
+                            "Auto-extracted memories from conversation",
+                            agent_id=self.agent_id,
+                            session_id=self.session_id,
+                            memories_extracted=len(extracted),
+                        )
+                except Exception as mem_err:
+                    # Don't fail execution if memory extraction fails
+                    logger.warning(
+                        "Failed to auto-extract memories",
+                        agent_id=self.agent_id,
+                        error=str(mem_err),
+                    )
+
             return AgentResponse(
                 content=final_content,
                 tool_calls=processed_tool_calls,
@@ -970,9 +1065,15 @@ Use this power responsibly:
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
 
+        # Retrieve relevant memories and build enhanced system prompt
+        memory_context = await self._get_memory_context(message)
+        enhanced_prompt = self.system_prompt
+        if memory_context:
+            enhanced_prompt = f"{self.system_prompt}\n{memory_context}"
+
         # Build messages for LLM (system prompt may have changed after mode switch)
         messages = [
-            {"role": "system", "content": self.system_prompt},
+            {"role": "system", "content": enhanced_prompt},
             *self.conversation_history,
         ]
 
@@ -983,11 +1084,11 @@ Use this power responsibly:
                 messages, _total_tokens = await context_manager.prepare_context(
                     agent_id=self.agent_id,
                     messages=self.conversation_history,
-                    system_prompt=self.system_prompt,
+                    system_prompt=enhanced_prompt,
                 )
                 # Re-add system prompt as first message (prepare_context returns just conversation)
                 messages = [
-                    {"role": "system", "content": self.system_prompt},
+                    {"role": "system", "content": enhanced_prompt},
                     *messages,
                 ]
             except Exception as ctx_err:
@@ -1206,6 +1307,31 @@ Use this power responsibly:
                     tokens_used,
                 )
                 await self.update_status("idle")
+
+            # Auto-extract memories from the conversation turn
+            if self.session_id and self.user_id:
+                try:
+                    retriever = get_retriever()
+                    extracted = await retriever.auto_extract_memories(
+                        session_id=self.session_id,
+                        user_id=self.user_id,
+                        message=message,
+                        response=final_content,
+                    )
+                    if extracted:
+                        logger.info(
+                            "Auto-extracted memories from streaming conversation",
+                            agent_id=self.agent_id,
+                            session_id=self.session_id,
+                            memories_extracted=len(extracted),
+                        )
+                except Exception as mem_err:
+                    # Don't fail execution if memory extraction fails
+                    logger.warning(
+                        "Failed to auto-extract memories from streaming",
+                        agent_id=self.agent_id,
+                        error=str(mem_err),
+                    )
 
             return AgentResponse(
                 content=final_content,

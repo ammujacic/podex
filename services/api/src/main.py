@@ -103,6 +103,7 @@ from src.routes.billing import (
     reset_expired_quotas,
     update_expiring_soon_credits,
 )
+from src.services.pricing import refresh_pricing_cache
 from src.terminal.manager import terminal_manager
 from src.websocket.hub import cleanup_session_sync, init_session_sync, sio
 
@@ -1329,6 +1330,13 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Seed default data (plans, hardware, templates, settings)
     await seed_database()
+
+    # Initialize model pricing cache from database
+    # This must happen after seeding so models exist, and before any requests
+    async for db in get_db():
+        await refresh_pricing_cache(db)
+        break
+    logger.info("Model pricing cache initialized")
 
     # Seed development admin user (only in development mode)
     await seed_admin()

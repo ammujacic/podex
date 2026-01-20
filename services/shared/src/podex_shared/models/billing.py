@@ -184,10 +184,10 @@ class UsageSummary(BaseModel):
     # Breakdown by model
     usage_by_model: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
-    # Breakdown by agent
+    # Breakdown by agent (legacy)
     usage_by_agent: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
-    # Breakdown by session
+    # Breakdown by session/pod/workspace
     usage_by_session: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
@@ -307,6 +307,12 @@ class UsageHistoryRequest(BaseModel):
 
 
 # Model pricing configuration
+# NOTE: Model pricing is now loaded dynamically from the database via the pricing service.
+# Use src.services.pricing in the API for database-backed pricing.
+
+# Default pricing for unknown models (used as fallback)
+DEFAULT_INPUT_PRICE_PER_MILLION = Decimal("3.00")
+DEFAULT_OUTPUT_PRICE_PER_MILLION = Decimal("15.00")
 
 
 class ModelPricing(BaseModel):
@@ -320,93 +326,24 @@ class ModelPricing(BaseModel):
     is_available: bool = True
 
 
-# Predefined model pricing (can be loaded from config/database)
-MODEL_PRICING: dict[str, ModelPricing] = {
-    "claude-opus-4-5-20251101": ModelPricing(
-        model_id="claude-opus-4-5-20251101",
-        display_name="Claude Opus 4.5",
-        provider="anthropic",
-        input_price_per_million=Decimal("15.00"),
-        output_price_per_million=Decimal("75.00"),
-    ),
-    "claude-sonnet-4-20250514": ModelPricing(
-        model_id="claude-sonnet-4-20250514",
-        display_name="Claude Sonnet 4",
-        provider="anthropic",
-        input_price_per_million=Decimal("3.00"),
-        output_price_per_million=Decimal("15.00"),
-    ),
-    "claude-3-5-haiku-20241022": ModelPricing(
-        model_id="claude-3-5-haiku-20241022",
-        display_name="Claude 3.5 Haiku",
-        provider="anthropic",
-        input_price_per_million=Decimal("0.25"),
-        output_price_per_million=Decimal("1.25"),
-    ),
-    "gpt-4o": ModelPricing(
-        model_id="gpt-4o",
-        display_name="GPT-4o",
-        provider="openai",
-        input_price_per_million=Decimal("2.50"),
-        output_price_per_million=Decimal("10.00"),
-    ),
-    "gpt-4o-mini": ModelPricing(
-        model_id="gpt-4o-mini",
-        display_name="GPT-4o Mini",
-        provider="openai",
-        input_price_per_million=Decimal("0.15"),
-        output_price_per_million=Decimal("0.60"),
-    ),
-    "gpt-4-turbo": ModelPricing(
-        model_id="gpt-4-turbo",
-        display_name="GPT-4 Turbo",
-        provider="openai",
-        input_price_per_million=Decimal("10.00"),
-        output_price_per_million=Decimal("30.00"),
-    ),
-    "gemini-2.0-flash": ModelPricing(
-        model_id="gemini-2.0-flash",
-        display_name="Gemini 2.0 Flash",
-        provider="google",
-        input_price_per_million=Decimal("0.075"),
-        output_price_per_million=Decimal("0.30"),
-    ),
-    "gemini-1.5-pro": ModelPricing(
-        model_id="gemini-1.5-pro",
-        display_name="Gemini 1.5 Pro",
-        provider="google",
-        input_price_per_million=Decimal("1.25"),
-        output_price_per_million=Decimal("5.00"),
-    ),
-    "deepseek-chat": ModelPricing(
-        model_id="deepseek-chat",
-        display_name="DeepSeek Chat",
-        provider="deepseek",
-        input_price_per_million=Decimal("0.14"),
-        output_price_per_million=Decimal("0.28"),
-    ),
-    "deepseek-reasoner": ModelPricing(
-        model_id="deepseek-reasoner",
-        display_name="DeepSeek Reasoner",
-        provider="deepseek",
-        input_price_per_million=Decimal("0.55"),
-        output_price_per_million=Decimal("2.19"),
-    ),
-}
-
-
-def calculate_token_cost(
-    model_id: str,
+def calculate_token_cost_with_pricing(
     input_tokens: int,
     output_tokens: int,
+    input_price_per_million: Decimal,
+    output_price_per_million: Decimal,
 ) -> Decimal:
-    """Calculate the cost for token usage."""
-    pricing = MODEL_PRICING.get(model_id)
-    if not pricing:
-        # Default to Claude Sonnet pricing if model not found
-        pricing = MODEL_PRICING["claude-sonnet-4-20250514"]
+    """Calculate the cost for token usage with explicit pricing.
 
-    input_cost = (Decimal(input_tokens) / Decimal("1000000")) * pricing.input_price_per_million
-    output_cost = (Decimal(output_tokens) / Decimal("1000000")) * pricing.output_price_per_million
+    Args:
+        input_tokens: Number of input tokens
+        output_tokens: Number of output tokens
+        input_price_per_million: Price per million input tokens
+        output_price_per_million: Price per million output tokens
+
+    Returns:
+        Total cost in dollars as Decimal
+    """
+    input_cost = (Decimal(input_tokens) / Decimal("1000000")) * input_price_per_million
+    output_cost = (Decimal(output_tokens) / Decimal("1000000")) * output_price_per_million
 
     return input_cost + output_cost

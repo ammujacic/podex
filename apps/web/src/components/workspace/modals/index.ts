@@ -5,6 +5,7 @@ export { StandbySettingsModal } from './StandbySettingsModal';
 export { MCPSettingsModal } from './MCPSettingsModal';
 export { WorkspaceScalingModal } from './WorkspaceScalingModal';
 export { ExtensionMarketplaceModal } from './ExtensionMarketplaceModal';
+export { NewPathModal } from './NewPathModal';
 
 // Constants and types
 export {

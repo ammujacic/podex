@@ -30,64 +30,6 @@ function AriaLiveRegion() {
   );
 }
 
-// Keyboard shortcuts handler
-function KeyboardShortcuts({ children }: { children: ReactNode }) {
-  const { toggleCommandPalette, toggleQuickOpen, toggleTerminal, toggleGlobalSearch } =
-    useUIStore();
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't trigger shortcuts when typing in inputs
-      const target = e.target as HTMLElement;
-      const isInput =
-        target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
-
-      // Skip ALL shortcuts when terminal is focused - let the terminal handle keyboard input
-      // Check both .xterm and [data-terminal-container] to catch all terminal focus states
-      const isTerminalFocused =
-        target.closest('.xterm') !== null || target.closest('[data-terminal-container]') !== null;
-      if (isTerminalFocused) return;
-
-      // Require modifier key
-      const isModifierKey = e.metaKey || e.ctrlKey;
-      if (!isModifierKey) return;
-
-      // Cmd/Ctrl + Shift + P - Command palette
-      if (e.shiftKey && e.key === 'p') {
-        e.preventDefault();
-        toggleCommandPalette();
-        return;
-      }
-
-      // Cmd/Ctrl + P - Quick open (only if not in input)
-      if (e.key === 'p' && !e.shiftKey && !isInput) {
-        e.preventDefault();
-        toggleQuickOpen();
-        return;
-      }
-
-      // Cmd/Ctrl + K - Global search
-      if (e.key === 'k') {
-        e.preventDefault();
-        toggleGlobalSearch();
-        return;
-      }
-
-      // Cmd/Ctrl + ` - Toggle terminal
-      if (e.key === '`') {
-        e.preventDefault();
-        toggleTerminal();
-        return;
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [toggleCommandPalette, toggleQuickOpen, toggleTerminal, toggleGlobalSearch]);
-
-  return <>{children}</>;
-}
-
 // Auth initialization with Sentry user context
 function AuthInitializer({ children }: { children: ReactNode }) {
   const { isInitialized, tokens, user } = useAuthStore();
@@ -211,19 +153,17 @@ export function Providers({ children }: ProvidersProps) {
             <ThemeInitializer>
               <PWAInitializer>
                 <OnboardingTourProvider>
-                  <KeyboardShortcuts>
-                    {children}
+                  {children}
 
-                    {/* Global components */}
-                    <AriaLiveRegion />
+                  {/* Global components */}
+                  <AriaLiveRegion />
 
-                    {/* PWA components */}
-                    <IOSInstallModal />
-                    <OfflineIndicator />
+                  {/* PWA components */}
+                  <IOSInstallModal />
+                  <OfflineIndicator />
 
-                    {/* Billing components */}
-                    <GlobalCreditExhaustedModal />
-                  </KeyboardShortcuts>
+                  {/* Billing components */}
+                  <GlobalCreditExhaustedModal />
                 </OnboardingTourProvider>
               </PWAInitializer>
             </ThemeInitializer>

@@ -101,7 +101,6 @@ interface MCPState {
 // =============================================================================
 
 const CATEGORY_NAMES: Record<string, string> = {
-  filesystem: 'File System',
   version_control: 'Version Control',
   database: 'Database',
   web: 'Web & Browser',
@@ -109,6 +108,7 @@ const CATEGORY_NAMES: Record<string, string> = {
   containers: 'Containers & DevOps',
   memory: 'Memory & Context',
   monitoring: 'Monitoring & Observability',
+  productivity: 'Productivity',
 };
 
 // =============================================================================

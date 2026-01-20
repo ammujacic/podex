@@ -205,6 +205,7 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
           mode: 'auto',
           templateId: createdAgent.template_id ?? undefined,
           messages: [],
+          gridSpan: { colSpan: 1, rowSpan: 2 },
         };
 
         addAgent(sessionId, agent);

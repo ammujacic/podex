@@ -21,6 +21,7 @@ import {
   type WorkspaceStatusEvent,
   type WorkspaceBillingStandbyEvent,
   type PermissionRequestEvent,
+  type NativeApprovalRequestEvent,
 } from '@/lib/socket';
 import { sendAgentMessage } from '@/lib/api';
 import { parseModelIdToDisplayName } from '@/lib/model-utils';
@@ -344,6 +345,32 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       }
     );
 
+    // Handle native Podex agent approval requests
+    const unsubNativeApproval = onSocketEvent(
+      'native_approval_request',
+      (data: NativeApprovalRequestEvent) => {
+        if (data.session_id !== sessionId) return;
+
+        // Update the agent with the pending permission request
+        // Using the same pendingPermission structure as CLI agents for consistency
+        callbacksRef.current.updateAgent(sessionId, data.agent_id, {
+          pendingPermission: {
+            requestId: data.approval_id,
+            command: data.action_details.command ?? data.action_details.file_path ?? null,
+            description: `${data.action_details.tool_name}: ${data.action_details.command || data.action_details.file_path || 'action'}`,
+            toolName: data.action_details.tool_name || 'action',
+            timestamp: new Date().toISOString(),
+            attentionId: `approval-${data.approval_id}`,
+          },
+        });
+
+        // Show toast notification
+        toast.info(`${data.agent_name} needs your approval`, {
+          description: `${data.action_details.tool_name}: ${data.action_details.command || data.action_details.file_path || 'action'}`,
+        });
+      }
+    );
+
     // Cleanup on unmount
     return () => {
       unsubMessage();
@@ -357,6 +384,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       unsubWorkspaceStatus();
       unsubBillingStandby();
       unsubPermissionRequest();
+      unsubNativeApproval();
       leaveSession(sessionId, userId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

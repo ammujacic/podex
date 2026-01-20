@@ -87,6 +87,7 @@ class MCPServerConfig:
     url: str | None = None  # For sse/http
     env_vars: dict[str, str] = field(default_factory=dict)
     timeout: int = 30
+    auth_token: str | None = None  # Bearer token for HTTP transport auth
 
 
 @dataclass
@@ -395,10 +396,14 @@ class MCPClient:
             request["params"] = params
 
         try:
+            headers = {"Content-Type": "application/json"}
+            if self._config.auth_token:
+                headers["Authorization"] = f"Bearer {self._config.auth_token}"
+
             response = await self._http_client.post(
                 self._config.url,  # type: ignore
                 json=request,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
             )
             response.raise_for_status()
             result: dict[str, Any] = response.json()

@@ -289,10 +289,12 @@ export default function UsagePage() {
                   <td className="py-3 text-center">
                     {record.is_overage ? (
                       <span className="px-2 py-0.5 bg-amber-500/20 text-amber-400 rounded text-xs">
-                        Yes
+                        Overage
                       </span>
                     ) : (
-                      <span className="text-neutral-500">-</span>
+                      <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded text-xs">
+                        Included
+                      </span>
                     )}
                   </td>
                 </tr>

@@ -12,6 +12,7 @@ import {
   Search,
   Clock,
   X,
+  FilePlus2,
 } from 'lucide-react';
 import { useUIStore } from '@/stores/ui';
 import { useSessionStore } from '@/stores/session';
@@ -176,7 +177,7 @@ function HighlightedText({ text, indices }: { text: string; indices: number[] })
 }
 
 export function QuickOpen() {
-  const { quickOpenOpen, closeQuickOpen } = useUIStore();
+  const { quickOpenOpen, closeQuickOpen, openModal } = useUIStore();
   const { currentSessionId, sessions, createEditorGridCard, recentFiles, addRecentFile } =
     useSessionStore();
   const openTab = useEditorStore((s) => s.openTab);
@@ -288,6 +289,13 @@ export function QuickOpen() {
   // Handle file selection
   const handleSelect = useCallback(
     (path: string) => {
+      // Special case: "New File" action
+      if (path === '__new_file__') {
+        openModal('new-file');
+        closeQuickOpen();
+        return;
+      }
+
       if (currentSessionId) {
         // Create the editor grid card if it doesn't exist
         if (!editorGridCardId) {
@@ -317,6 +325,7 @@ export function QuickOpen() {
       openTab,
       closeQuickOpen,
       addRecentFile,
+      openModal,
     ]
   );
 
@@ -384,44 +393,69 @@ export function QuickOpen() {
             </Command.Empty>
           )}
 
-          {!loading && !error && searchResults.length > 0 && (
+          {!loading && !error && (
             <>
-              {/* Show recent files section if no search */}
-              {!search.trim() && recentFiles && recentFiles.length > 0 && (
-                <div className="px-2 py-1.5 text-xs font-medium text-text-muted uppercase tracking-wider flex items-center gap-2">
-                  <Clock className="h-3 w-3" />
-                  Recent Files
+              {/* New File option - always show at top */}
+              <Command.Item
+                key="__new_file__"
+                value="__new_file__ New File"
+                onSelect={() => handleSelect('__new_file__')}
+                className={cn(
+                  'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm cursor-pointer',
+                  'text-text-secondary hover:bg-overlay hover:text-text-primary',
+                  'data-[selected=true]:bg-overlay data-[selected=true]:text-text-primary',
+                  'border-b border-border-subtle mb-1 pb-3'
+                )}
+              >
+                <FilePlus2 className="h-4 w-4 text-accent-primary" />
+                <div className="flex-1 min-w-0">
+                  <div className="truncate font-medium">New File</div>
                 </div>
-              )}
+                <kbd className="hidden sm:inline-flex items-center gap-1 rounded bg-elevated px-2 py-0.5 text-xs text-text-muted">
+                  ⌘⇧P
+                </kbd>
+              </Command.Item>
 
-              {searchResults.map((result) => {
-                const isRecent = !search.trim() && recentFiles?.includes(result.path);
-
-                return (
-                  <Command.Item
-                    key={result.path}
-                    value={result.path}
-                    onSelect={() => handleSelect(result.path)}
-                    className={cn(
-                      'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm cursor-pointer',
-                      'text-text-secondary hover:bg-overlay hover:text-text-primary',
-                      'data-[selected=true]:bg-overlay data-[selected=true]:text-text-primary'
-                    )}
-                  >
-                    {getFileIcon(result.path)}
-                    <div className="flex-1 min-w-0">
-                      <div className="truncate">
-                        {search.trim() && result.matchIndices.length > 0 ? (
-                          <HighlightedText text={result.path} indices={result.matchIndices} />
-                        ) : (
-                          result.path
-                        )}
-                      </div>
+              {searchResults.length > 0 && (
+                <>
+                  {/* Show recent files section if no search */}
+                  {!search.trim() && recentFiles && recentFiles.length > 0 && (
+                    <div className="px-2 py-1.5 text-xs font-medium text-text-muted uppercase tracking-wider flex items-center gap-2">
+                      <Clock className="h-3 w-3" />
+                      Recent Files
                     </div>
-                    {isRecent && <Clock className="h-3 w-3 text-text-muted flex-shrink-0" />}
-                  </Command.Item>
-                );
-              })}
+                  )}
+
+                  {searchResults.map((result) => {
+                    const isRecent = !search.trim() && recentFiles?.includes(result.path);
+
+                    return (
+                      <Command.Item
+                        key={result.path}
+                        value={result.path}
+                        onSelect={() => handleSelect(result.path)}
+                        className={cn(
+                          'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm cursor-pointer',
+                          'text-text-secondary hover:bg-overlay hover:text-text-primary',
+                          'data-[selected=true]:bg-overlay data-[selected=true]:text-text-primary'
+                        )}
+                      >
+                        {getFileIcon(result.path)}
+                        <div className="flex-1 min-w-0">
+                          <div className="truncate">
+                            {search.trim() && result.matchIndices.length > 0 ? (
+                              <HighlightedText text={result.path} indices={result.matchIndices} />
+                            ) : (
+                              result.path
+                            )}
+                          </div>
+                        </div>
+                        {isRecent && <Clock className="h-3 w-3 text-text-muted flex-shrink-0" />}
+                      </Command.Item>
+                    );
+                  })}
+                </>
+              )}
             </>
           )}
         </Command.List>

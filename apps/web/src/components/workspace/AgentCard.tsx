@@ -41,7 +41,12 @@ import {
 } from '@/lib/api';
 import { useVoiceCapture } from '@/hooks/useVoiceCapture';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
-import { onSocketEvent, emitPermissionResponse, type AgentMessageEvent } from '@/lib/socket';
+import {
+  onSocketEvent,
+  emitPermissionResponse,
+  emitNativeApprovalResponse,
+  type AgentMessageEvent,
+} from '@/lib/socket';
 import { SUPPORTED_IMAGE_TYPES, MAX_ATTACHMENT_SIZE_MB } from '@podex/shared';
 import type { ThinkingConfig, AttachmentFile, ModelInfo, LLMProvider } from '@podex/shared';
 
@@ -122,6 +127,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   const cardRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const isUserAtBottomRef = useRef(true);
 
   // Store actions
   const {
@@ -151,9 +157,19 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     .map((msg) => msg.content)
     .reverse();
 
-  // Auto-scroll
+  // Handle scroll to detect if user has scrolled up
+  const handleMessagesScroll = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    // Check if user is at or near the bottom (within 50px threshold)
+    const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+    isUserAtBottomRef.current = isAtBottom;
+  }, []);
+
+  // Auto-scroll only when user is at bottom
   useEffect(() => {
-    if (messagesContainerRef.current) {
+    if (messagesContainerRef.current && isUserAtBottomRef.current) {
       messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
     }
   }, [agent.messages.length, isSending, streamingMessage?.content]);
@@ -776,21 +792,33 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     [agent.id, sessionId, updateAgent]
   );
 
-  // Permission approval handler (for Claude Code CLI)
+  // Permission approval handler (for both CLI and native agents)
   const handlePermissionApproval = useCallback(
     (approved: boolean, addedToAllowlist: boolean) => {
       if (!agent.pendingPermission) return;
 
-      // Emit the permission response via WebSocket
-      emitPermissionResponse(
-        sessionId,
-        agent.id,
-        agent.pendingPermission.requestId,
-        approved,
-        agent.pendingPermission.command,
-        agent.pendingPermission.toolName,
-        addedToAllowlist
-      );
+      // Use the appropriate emit function based on agent type
+      if (isCliAgentRole(agent.role)) {
+        // CLI agents (claude-code, openai-codex, gemini-cli) use permission_response
+        emitPermissionResponse(
+          sessionId,
+          agent.id,
+          agent.pendingPermission.requestId,
+          approved,
+          agent.pendingPermission.command,
+          agent.pendingPermission.toolName,
+          addedToAllowlist
+        );
+      } else {
+        // Native Podex agents use native_approval_response
+        emitNativeApprovalResponse(
+          sessionId,
+          agent.id,
+          agent.pendingPermission.requestId,
+          approved,
+          addedToAllowlist
+        );
+      }
 
       if (agent.pendingPermission.attentionId) {
         dismissAttention(sessionId, agent.pendingPermission.attentionId);
@@ -802,7 +830,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       // Clear the pending permission from the agent
       updateAgent(sessionId, agent.id, { pendingPermission: undefined });
     },
-    [sessionId, agent.id, agent.pendingPermission, updateAgent, dismissAttention]
+    [sessionId, agent.id, agent.role, agent.pendingPermission, updateAgent, dismissAttention]
   );
 
   const handleDuplicate = useCallback(async () => {
@@ -819,6 +847,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         color: agent.color,
         messages: [],
         mode: (newAgentData.mode || 'ask') as AgentMode,
+        gridSpan: agent.gridSpan ?? { colSpan: 1, rowSpan: 2 },
       });
       toast.success(`Agent duplicated as "${newAgentData.name}"`);
     } catch (error) {
@@ -827,7 +856,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     } finally {
       setIsDuplicating(false);
     }
-  }, [sessionId, agent.id, agent.color, isDuplicating, addAgent]);
+  }, [sessionId, agent.id, agent.color, agent.gridSpan, isDuplicating, addAgent]);
 
   const handleDeleteMessage = useCallback(
     async (messageId: string) => {
@@ -1095,6 +1124,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       {/* Messages area */}
       <div
         ref={messagesContainerRef}
+        onScroll={handleMessagesScroll}
         className={cn(
           'flex-1 overflow-y-auto p-4 space-y-4 min-h-0 selection:bg-accent-primary/30 selection:text-text-primary',
           !expanded && 'max-h-[300px]'

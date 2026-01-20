@@ -21,6 +21,7 @@ export function useKeybindings() {
     quickOpenOpen,
     commandPaletteOpen,
     activeModal,
+    openModal,
   } = useUIStore();
 
   // Get user-customized keybindings from store
@@ -73,6 +74,9 @@ export function useKeybindings() {
     keybindingManager.registerCommand('commandPalette.toggle', toggleCommandPalette);
     keybindingManager.registerCommand('nav.commandPalette', toggleCommandPalette);
 
+    // File commands
+    keybindingManager.registerCommand('file.newFile', () => openModal('new-file'));
+
     // View commands
     keybindingManager.registerCommand('terminal.toggle', toggleTerminal);
     keybindingManager.registerCommand('view.toggleTerminal', toggleTerminal);
@@ -87,6 +91,7 @@ export function useKeybindings() {
       keybindingManager.unregisterCommand('nav.quickOpen');
       keybindingManager.unregisterCommand('commandPalette.toggle');
       keybindingManager.unregisterCommand('nav.commandPalette');
+      keybindingManager.unregisterCommand('file.newFile');
       keybindingManager.unregisterCommand('terminal.toggle');
       keybindingManager.unregisterCommand('view.toggleTerminal');
       keybindingManager.unregisterCommand('sidebar.toggle');
@@ -95,7 +100,14 @@ export function useKeybindings() {
       keybindingManager.unregisterCommand('panel.toggle');
       keybindingManager.unregisterCommand('view.togglePanel');
     };
-  }, [toggleQuickOpen, toggleCommandPalette, toggleTerminal, toggleSidebar, togglePanel]);
+  }, [
+    toggleQuickOpen,
+    toggleCommandPalette,
+    toggleTerminal,
+    toggleSidebar,
+    togglePanel,
+    openModal,
+  ]);
 }
 
 /**

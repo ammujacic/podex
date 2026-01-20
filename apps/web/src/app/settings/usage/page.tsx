@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Loader2, Download, DollarSign, Zap, Cpu, Activity, AlertCircle } from 'lucide-react';
 import { Button } from '@podex/ui';
 import { useUsageData } from '@/hooks/useUsageData';
@@ -38,6 +38,104 @@ export default function UsagePage() {
     );
   }
 
+  // Calculate overage-only costs (what the user actually pays beyond included quota)
+  const overageCosts = useMemo(() => {
+    if (!history || history.length === 0) {
+      return { tokenCost: 0, computeCost: 0, totalCost: 0 };
+    }
+
+    let tokenCost = 0;
+    let computeCost = 0;
+
+    for (const record of history) {
+      if (record.is_overage) {
+        if (record.usage_type.startsWith('tokens_')) {
+          tokenCost += record.cost;
+        } else if (record.usage_type === 'compute_seconds') {
+          computeCost += record.cost;
+        }
+      }
+    }
+
+    return {
+      tokenCost,
+      computeCost,
+      totalCost: tokenCost + computeCost,
+    };
+  }, [history]);
+
+  // Calculate usage by model split by included/overage
+  const usageByModelSplit = useMemo(() => {
+    if (!history || history.length === 0) return {};
+
+    const result: Record<
+      string,
+      { included: { tokens: number; cost: number }; overage: { tokens: number; cost: number } }
+    > = {};
+
+    for (const record of history) {
+      if (!record.model || !record.usage_type.startsWith('tokens_')) continue;
+
+      let modelData = result[record.model];
+      if (!modelData) {
+        modelData = {
+          included: { tokens: 0, cost: 0 },
+          overage: { tokens: 0, cost: 0 },
+        };
+        result[record.model] = modelData;
+      }
+
+      const bucket = record.is_overage ? modelData.overage : modelData.included;
+      bucket.tokens += record.quantity;
+      bucket.cost += record.cost;
+    }
+
+    return result;
+  }, [history]);
+
+  // Calculate usage by session split by included/overage
+  const usageBySessionSplit = useMemo(() => {
+    if (!history || history.length === 0) return {};
+
+    const result: Record<
+      string,
+      {
+        name: string;
+        included: { tokens: number; cost: number };
+        overage: { tokens: number; cost: number };
+      }
+    > = {};
+
+    for (const record of history) {
+      if (!record.session_id || !record.usage_type.startsWith('tokens_')) continue;
+
+      let sessionData = result[record.session_id];
+      if (!sessionData) {
+        sessionData = {
+          name: '', // Will be filled from summary if available
+          included: { tokens: 0, cost: 0 },
+          overage: { tokens: 0, cost: 0 },
+        };
+        result[record.session_id] = sessionData;
+      }
+
+      const bucket = record.is_overage ? sessionData.overage : sessionData.included;
+      bucket.tokens += record.quantity;
+      bucket.cost += record.cost;
+    }
+
+    // Merge names from summary if available
+    if (summary?.usageBySession) {
+      for (const [sessionId, data] of Object.entries(summary.usageBySession)) {
+        if (result[sessionId]) {
+          result[sessionId].name = data.name || '';
+        }
+      }
+    }
+
+    return result;
+  }, [history, summary]);
+
   const handleExportCSV = () => {
     if (!history || history.length === 0) return;
 
@@ -47,6 +145,7 @@ export default function UsagePage() {
       'Quantity',
       'Unit',
       'Cost',
+      'Status',
       'Model',
       'Tier',
       'Agent ID',
@@ -58,6 +157,7 @@ export default function UsagePage() {
       record.quantity.toString(),
       record.unit,
       `$${record.cost.toFixed(4)}`,
+      record.is_overage ? 'Overage' : 'Included',
       record.model || '',
       record.tier || '',
       record.agent_id || '',
@@ -166,7 +266,10 @@ export default function UsagePage() {
             {summary ? formatTokens(summary.tokensTotal) : '0'}
           </div>
           <div className="text-xs text-text-muted mt-1">
-            {summary ? `$${summary.tokensCost.toFixed(2)}` : '$0.00'}
+            ${overageCosts.tokenCost.toFixed(2)} charged
+            {summary && summary.tokensCost > 0 && (
+              <span className="text-text-muted/60"> (${summary.tokensCost.toFixed(2)} value)</span>
+            )}
           </div>
           {/* Progress bar for tokens quota */}
           {(() => {
@@ -269,9 +372,14 @@ export default function UsagePage() {
             <Activity className="w-5 h-5 text-info" />
           </div>
           <div className="text-2xl font-semibold text-text-primary">
-            {summary ? `$${summary.tokensCost.toFixed(2)}` : '$0.00'}
+            ${overageCosts.tokenCost.toFixed(2)}
           </div>
-          <div className="text-xs text-text-muted mt-1">all models</div>
+          <div className="text-xs text-text-muted mt-1">
+            overage only
+            {summary && summary.tokensCost > 0 && (
+              <span className="text-text-muted/60"> (${summary.tokensCost.toFixed(2)} value)</span>
+            )}
+          </div>
         </div>
 
         <div className="bg-surface border border-border-default rounded-xl p-5">
@@ -280,9 +388,14 @@ export default function UsagePage() {
             <DollarSign className="w-5 h-5 text-accent-success" />
           </div>
           <div className="text-2xl font-semibold text-text-primary">
-            {summary ? formatCost(summary.totalCost) : '$0.00'}
+            ${overageCosts.totalCost.toFixed(2)}
           </div>
-          <div className="text-xs text-text-muted mt-1">this period</div>
+          <div className="text-xs text-text-muted mt-1">
+            overage this period
+            {summary && summary.totalCost > 0 && (
+              <span className="text-text-muted/60"> ({formatCost(summary.totalCost)} value)</span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -313,56 +426,95 @@ export default function UsagePage() {
             <h2 className="text-lg font-semibold text-text-primary mb-4">Usage by Model</h2>
             {summary.usageByModel && Object.keys(summary.usageByModel).length > 0 ? (
               <div className="space-y-3">
-                {Object.entries(summary.usageByModel).map(([model, data]) => (
-                  <div
-                    key={model}
-                    className="flex items-center justify-between py-2 border-b border-border-subtle last:border-0"
-                  >
-                    <div>
-                      <div className="font-medium text-text-primary text-sm">{model}</div>
-                      <div className="text-xs text-text-muted">
-                        {formatTokens(data.input + data.output)} tokens
+                {Object.entries(summary.usageByModel).map(([model, data]) => {
+                  const splitData = usageByModelSplit[model];
+                  return (
+                    <div
+                      key={model}
+                      className="flex items-center justify-between py-2 border-b border-border-subtle last:border-0"
+                    >
+                      <div>
+                        <div className="font-medium text-text-primary text-sm">{model}</div>
+                        <div className="text-xs text-text-muted">
+                          {formatTokens(data.input + data.output)} tokens
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-medium text-text-primary text-sm">
+                          ${data.cost.toFixed(2)}
+                        </div>
+                        {splitData &&
+                        (splitData.included.cost > 0 || splitData.overage.cost > 0) ? (
+                          <div className="text-xs space-x-2">
+                            {splitData.included.cost > 0 && (
+                              <span className="text-accent-success">
+                                ${splitData.included.cost.toFixed(2)} included
+                              </span>
+                            )}
+                            {splitData.overage.cost > 0 && (
+                              <span className="text-accent-warning">
+                                ${splitData.overage.cost.toFixed(2)} overage
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="text-xs text-text-muted">
+                            {formatTokens(data.input)} in / {formatTokens(data.output)} out
+                          </div>
+                        )}
                       </div>
                     </div>
-                    <div className="text-right">
-                      <div className="font-medium text-text-primary text-sm">
-                        ${data.cost.toFixed(2)}
-                      </div>
-                      <div className="text-xs text-text-muted">
-                        {formatTokens(data.input)} in / {formatTokens(data.output)} out
-                      </div>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : (
               <p className="text-sm text-text-muted text-center py-8">No usage data available</p>
             )}
           </div>
 
-          {/* By Agent */}
+          {/* By Pod (session/workspace) */}
           <div className="bg-surface border border-border-default rounded-xl p-6">
-            <h2 className="text-lg font-semibold text-text-primary mb-4">Usage by Agent</h2>
-            {summary.usageByAgent && Object.keys(summary.usageByAgent).length > 0 ? (
+            <h2 className="text-lg font-semibold text-text-primary mb-4">Usage by Pod</h2>
+            {summary.usageBySession && Object.keys(summary.usageBySession).length > 0 ? (
               <div className="space-y-3">
-                {Object.entries(summary.usageByAgent).map(([agentId, data]) => (
-                  <div
-                    key={agentId}
-                    className="flex items-center justify-between py-2 border-b border-border-subtle last:border-0"
-                  >
-                    <div>
-                      <div className="font-medium text-text-primary text-sm">
-                        Agent {agentId.slice(0, 8)}
+                {Object.entries(summary.usageBySession).map(([sessionId, data]) => {
+                  const splitData = usageBySessionSplit[sessionId];
+                  return (
+                    <div
+                      key={sessionId}
+                      className="flex items-center justify-between py-2 border-b border-border-subtle last:border-0"
+                    >
+                      <div>
+                        <div className="font-medium text-text-primary text-sm">
+                          {data.name || `Pod ${sessionId.slice(0, 8)}`}
+                        </div>
+                        <div className="text-xs text-text-muted">
+                          {formatTokens(data.tokens)} tokens
+                        </div>
                       </div>
-                      <div className="text-xs text-text-muted">
-                        {formatTokens(data.tokens)} tokens
+                      <div className="text-right">
+                        <div className="font-medium text-text-primary text-sm">
+                          ${data.cost.toFixed(2)}
+                        </div>
+                        {splitData &&
+                        (splitData.included.cost > 0 || splitData.overage.cost > 0) ? (
+                          <div className="text-xs space-x-2">
+                            {splitData.included.cost > 0 && (
+                              <span className="text-accent-success">
+                                ${splitData.included.cost.toFixed(2)} included
+                              </span>
+                            )}
+                            {splitData.overage.cost > 0 && (
+                              <span className="text-accent-warning">
+                                ${splitData.overage.cost.toFixed(2)} overage
+                              </span>
+                            )}
+                          </div>
+                        ) : null}
                       </div>
                     </div>
-                    <div className="font-medium text-text-primary text-sm">
-                      ${data.cost.toFixed(2)}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : (
               <p className="text-sm text-text-muted text-center py-8">No usage data available</p>
@@ -385,7 +537,9 @@ export default function UsagePage() {
                     Quantity
                   </th>
                   <th className="text-left py-3 px-4 text-sm font-medium text-text-muted">Model</th>
-                  <th className="text-left py-3 px-4 text-sm font-medium text-text-muted">Tier</th>
+                  <th className="text-center py-3 px-4 text-sm font-medium text-text-muted">
+                    Tier
+                  </th>
                   <th className="text-right py-3 px-4 text-sm font-medium text-text-muted">Cost</th>
                 </tr>
               </thead>
@@ -405,7 +559,17 @@ export default function UsagePage() {
                       {formatNumber(record.quantity)} {record.unit}
                     </td>
                     <td className="py-3 px-4 text-sm text-text-secondary">{record.model || '-'}</td>
-                    <td className="py-3 px-4 text-sm text-text-secondary">{record.tier || '-'}</td>
+                    <td className="py-3 px-4 text-sm text-center">
+                      {record.is_overage ? (
+                        <span className="px-2 py-0.5 bg-accent-warning/20 text-accent-warning rounded text-xs">
+                          Overage
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 bg-accent-success/20 text-accent-success rounded text-xs">
+                          Included
+                        </span>
+                      )}
+                    </td>
                     <td className="py-3 px-4 text-sm text-text-primary text-right">
                       ${record.cost.toFixed(4)}
                     </td>

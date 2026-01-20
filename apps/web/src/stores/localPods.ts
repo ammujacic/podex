@@ -66,6 +66,12 @@ export const useLocalPodsStore = create<LocalPodsState>()(
         set({ isCreating: true, error: null });
         try {
           const response = await api.createLocalPod(data);
+          if (!response.pod) {
+            throw new Error('Invalid response: pod data is missing');
+          }
+          if (!response.token) {
+            throw new Error('Invalid response: token is missing');
+          }
           set((state) => ({
             pods: [...state.pods, response.pod],
             isCreating: false,

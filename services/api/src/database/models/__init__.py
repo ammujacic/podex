@@ -93,6 +93,7 @@ from .extensions import (
 
 # Infrastructure models
 from .infrastructure import (
+    DefaultMCPServer,
     GitHubIntegration,
     LocalPod,
     MCPServer,
@@ -190,6 +191,7 @@ __all__ = [
     "CustomLLMProvider",
     "DataExportRequest",
     "DataRetentionPolicy",
+    "DefaultMCPServer",
     "ExecutionPlan",
     "ExternalAgentEnvProfile",
     "FileChange",

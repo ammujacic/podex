@@ -27,7 +27,7 @@ export function ResizableTerminalCard({
   const terminalRef = useRef<TerminalAgentCellRef>(null);
   const gridContext = useOptionalGridContext();
 
-  const gridSpan = agent.gridSpan ?? { colSpan: 1, rowSpan: 1 };
+  const gridSpan = agent.gridSpan ?? { colSpan: 1, rowSpan: 2 };
 
   const handleResize = useCallback(
     (newSpan: GridSpan) => {

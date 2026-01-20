@@ -593,7 +593,7 @@ class GCPComputeManager(ComputeManager):
             files_preserved=preserve_files,
         )
 
-    async def get_workspace(self, workspace_id: str) -> WorkspaceInfo | None:
+    async def get_workspace(self, workspace_id: str) -> WorkspaceInfo | None:  # noqa: PLR0912
         """Get workspace information."""
         workspace = await self._get_workspace(workspace_id)
         if not workspace:
@@ -616,22 +616,50 @@ class GCPComputeManager(ComputeManager):
 
                 await self._save_workspace(workspace)
 
-                # If status changed to RUNNING, set up git configuration
+                # If status changed to RUNNING, set up git configuration and MCP gateway
                 if (
                     old_status != WorkspaceStatus.RUNNING
                     and workspace.status == WorkspaceStatus.RUNNING
-                    and not workspace.metadata.get("git_setup_done")
                 ):
-                    try:
-                        await self.setup_workspace_git(workspace_id)
-                        workspace.metadata["git_setup_done"] = True
-                        await self._save_workspace(workspace)
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to setup git on workspace ready",
-                            workspace_id=workspace_id,
-                            error=str(e),
-                        )
+                    # Set up git configuration
+                    if not workspace.metadata.get("git_setup_done"):
+                        try:
+                            await self.setup_workspace_git(workspace_id)
+                            workspace.metadata["git_setup_done"] = True
+                            await self._save_workspace(workspace)
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to setup git on workspace ready",
+                                workspace_id=workspace_id,
+                                error=str(e),
+                            )
+
+                    # Start MCP gateway for agent access to filesystem/git
+                    if not workspace.metadata.get("mcp_gateway_started"):
+                        try:
+                            result = await self.exec_command(
+                                workspace_id,
+                                "/home/dev/.local/bin/start-mcp-gateway.sh",
+                            )
+                            if result.exit_code == 0:
+                                workspace.metadata["mcp_gateway_started"] = True
+                                await self._save_workspace(workspace)
+                                logger.info(
+                                    "MCP gateway started",
+                                    workspace_id=workspace_id,
+                                )
+                            else:
+                                logger.warning(
+                                    "MCP gateway startup failed",
+                                    workspace_id=workspace_id,
+                                    exit_code=result.exit_code,
+                                )
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to start MCP gateway",
+                                workspace_id=workspace_id,
+                                error=str(e),
+                            )
 
                 # If status changed, sync to API
                 if old_status != workspace.status:
@@ -881,6 +909,29 @@ fi
                 )
                 if success:
                     synced_count += 1
+
+                # Start MCP gateway if workspace is running but gateway not started
+                if workspace.status == WorkspaceStatus.RUNNING and not workspace.metadata.get(
+                    "mcp_gateway_started"
+                ):
+                    try:
+                        result = await self.exec_command(
+                            workspace.id,
+                            "/home/dev/.local/bin/start-mcp-gateway.sh",
+                        )
+                        if result.exit_code == 0:
+                            workspace.metadata["mcp_gateway_started"] = True
+                            await self._save_workspace(workspace)
+                            logger.info(
+                                "MCP gateway started during discovery",
+                                workspace_id=workspace.id,
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to start MCP gateway during discovery",
+                            workspace_id=workspace.id,
+                            error=str(e),
+                        )
 
             logger.info(
                 "GCP workspace discovery complete",

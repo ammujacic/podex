@@ -1,7 +1,8 @@
 """Shared Pydantic models for Podex services."""
 
 from podex_shared.models.billing import (
-    MODEL_PRICING,
+    DEFAULT_INPUT_PRICE_PER_MILLION,
+    DEFAULT_OUTPUT_PRICE_PER_MILLION,
     BillingEventType,
     CreditBalanceInfo,
     CreditTransactionInfo,
@@ -16,7 +17,7 @@ from podex_shared.models.billing import (
     UsageRecordInfo,
     UsageSummary,
     UsageType,
-    calculate_token_cost,
+    calculate_token_cost_with_pricing,
 )
 from podex_shared.models.preview import PortInfo, PreviewInfo
 from podex_shared.models.session import (
@@ -61,8 +62,9 @@ from podex_shared.models.workspace import (
 )
 
 __all__ = [
+    "DEFAULT_INPUT_PRICE_PER_MILLION",
+    "DEFAULT_OUTPUT_PRICE_PER_MILLION",
     "HARDWARE_SPECS",
-    "MODEL_PRICING",
     "SOFTWARE_STACKS",
     "AcceleratorType",
     "AgentLayout",
@@ -114,5 +116,5 @@ __all__ = [
     "WorkspaceSessionState",
     "WorkspaceStatus",
     "WorkspaceTier",
-    "calculate_token_cost",
+    "calculate_token_cost_with_pricing",
 ]

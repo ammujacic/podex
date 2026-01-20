@@ -266,6 +266,13 @@ export const defaultKeybindings: Keybinding[] = [
 
   // ==================== Editing ====================
   {
+    id: 'newFile',
+    key: 'mod+shift+p',
+    command: 'file.newFile',
+    description: 'New File',
+    category: 'Edit',
+  },
+  {
     id: 'save',
     key: 'mod+s',
     command: 'editor.save',

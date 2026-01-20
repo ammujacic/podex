@@ -9,7 +9,6 @@ import {
   RefreshCw,
   Eye,
   EyeOff,
-  Zap,
   ExternalLink,
   Brain,
   ImageIcon,
@@ -619,12 +618,12 @@ function PodexModelRow({ model }: PodexModelRowProps) {
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-text-primary">{model.displayName}</span>
           {model.tier === 'flagship' && (
-            <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-400">
+            <span className="px-1.5 py-0.5 rounded text-[10px] bg-overlay text-text-secondary">
               Best
             </span>
           )}
         </div>
-        <div className="flex items-center gap-3 text-xs text-text-muted mt-0.5">
+        <div className="flex items-center gap-3 text-xs text-text-secondary mt-0.5">
           <span className="flex items-center gap-1">
             <Clock className="h-3 w-3" />
             {(model.contextWindow / 1000).toFixed(0)}K context
@@ -634,22 +633,19 @@ function PodexModelRow({ model }: PodexModelRowProps) {
             model.outputPricePerMillion !== undefined) && (
             <span
               className="flex items-center gap-1"
-              title={`Input: $${(model.userInputPricePerMillion ?? model.inputPricePerMillion)?.toFixed(2) ?? '?'}/M tokens, Output: $${(model.userOutputPricePerMillion ?? model.outputPricePerMillion)?.toFixed(2) ?? '?'}/M tokens${model.llmMarginPercent ? ` (incl. ${model.llmMarginPercent}% plan fee)` : ''}`}
+              title={`Input: $${(model.userInputPricePerMillion ?? model.inputPricePerMillion)?.toFixed(2) ?? '?'}/M tokens, Output: $${(model.userOutputPricePerMillion ?? model.outputPricePerMillion)?.toFixed(2) ?? '?'}/M tokens`}
             >
-              <DollarSign className="h-3 w-3" />
-              <span className="text-green-400">
+              <DollarSign className="h-3 w-3 text-text-secondary" />
+              <span className="text-text-primary">
                 ${(model.userInputPricePerMillion ?? model.inputPricePerMillion)?.toFixed(2) ?? '?'}
               </span>
-              <span>/</span>
-              <span className="text-amber-400">
+              <span className="text-text-secondary">/</span>
+              <span className="text-text-primary">
                 $
                 {(model.userOutputPricePerMillion ?? model.outputPricePerMillion)?.toFixed(2) ??
                   '?'}
               </span>
-              <span className="text-text-muted/60">/M</span>
-              {model.llmMarginPercent != null && model.llmMarginPercent > 0 && (
-                <span className="text-[9px] text-text-muted/50">+{model.llmMarginPercent}%</span>
-              )}
+              <span className="text-text-secondary">/M</span>
             </span>
           )}
         </div>
@@ -696,13 +692,16 @@ function PodexModelRow({ model }: PodexModelRowProps) {
       {/* Good For Tags */}
       <div className="hidden lg:flex items-center gap-1">
         {model.goodFor.slice(0, 2).map((tag) => (
-          <span key={tag} className="px-1.5 py-0.5 rounded text-[10px] bg-overlay text-text-muted">
+          <span
+            key={tag}
+            className="px-1.5 py-0.5 rounded text-[10px] bg-overlay text-text-secondary"
+          >
             {tag}
           </span>
         ))}
       </div>
 
-      <Check className="h-4 w-4 text-green-400" />
+      <Check className="h-4 w-4 text-accent-primary" />
     </div>
   );
 }
@@ -716,12 +715,7 @@ interface ModelSettingsProps {
 }
 
 export function ModelSettings({ className }: ModelSettingsProps) {
-  const {
-    fallbackEnabled,
-    setFallbackEnabled,
-    configuredApiKeyProviders,
-    setConfiguredApiKeyProviders,
-  } = useModelSettings();
+  const { configuredApiKeyProviders, setConfiguredApiKeyProviders } = useModelSettings();
 
   const user = useAuthStore((state) => state.user);
   const isAuthenticated = !!user;
@@ -914,27 +908,13 @@ export function ModelSettings({ className }: ModelSettingsProps) {
         <section>
           <SectionHeader icon={Sparkles} title="Podex Native" badge="Default" badgeColor="amber" />
 
-          <div className="p-4 rounded-xl bg-amber-500/5 border border-amber-500/20 mb-4">
-            <div className="flex items-start gap-3">
-              <Check className="h-5 w-5 text-amber-400 mt-0.5" />
-              <div>
-                <p className="text-sm text-text-primary font-medium">
-                  Works out of the box - No API key required
-                </p>
-                <p className="text-xs text-text-muted mt-1">
-                  Vertex AI models included with your Podex subscription
-                </p>
-              </div>
-            </div>
-          </div>
-
           {/* Model Tiers */}
           <div className="space-y-4">
             {/* Flagship */}
             <div>
               <div className="flex items-center gap-2 mb-2">
-                <span className="text-xs font-semibold text-amber-400">FLAGSHIP</span>
-                <span className="text-xs text-text-muted">Best performance</span>
+                <span className="text-xs font-semibold text-text-primary">Flagship</span>
+                <span className="text-xs text-text-secondary">Best performance</span>
               </div>
               <div className="space-y-1">
                 {modelsByTier('flagship').map((model) => (
@@ -946,8 +926,8 @@ export function ModelSettings({ className }: ModelSettingsProps) {
             {/* Balanced */}
             <div>
               <div className="flex items-center gap-2 mb-2">
-                <span className="text-xs font-semibold text-blue-400">BALANCED</span>
-                <span className="text-xs text-text-muted">Speed + quality</span>
+                <span className="text-xs font-semibold text-text-primary">Balanced</span>
+                <span className="text-xs text-text-secondary">Speed + quality</span>
               </div>
               <div className="space-y-1">
                 {modelsByTier('balanced').map((model) => (
@@ -959,8 +939,8 @@ export function ModelSettings({ className }: ModelSettingsProps) {
             {/* Fast */}
             <div>
               <div className="flex items-center gap-2 mb-2">
-                <span className="text-xs font-semibold text-green-400">FAST</span>
-                <span className="text-xs text-text-muted">Quick responses</span>
+                <span className="text-xs font-semibold text-text-primary">Fast</span>
+                <span className="text-xs text-text-secondary">Quick responses</span>
               </div>
               <div className="space-y-1">
                 {modelsByTier('fast').map((model) => (
@@ -1197,46 +1177,6 @@ export function ModelSettings({ className }: ModelSettingsProps) {
 
         {/* Divider */}
         <div className="border-t border-border-subtle" />
-
-        {/* ================================================================
-            Section 5: Advanced Settings
-            ================================================================ */}
-        <section>
-          <SectionHeader icon={Zap} title="Advanced Settings" />
-
-          {/* Smart Fallback */}
-          <div className="p-4 rounded-xl bg-elevated border border-border-subtle">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-yellow-500/20">
-                  <Zap className="h-4 w-4 text-yellow-400" />
-                </div>
-                <div>
-                  <span className="text-sm font-medium text-text-primary">Smart Fallback</span>
-                  <p className="text-xs text-text-muted">
-                    Try local models first, fall back to cloud when unavailable
-                  </p>
-                </div>
-              </div>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={fallbackEnabled}
-                  onChange={(e) => setFallbackEnabled(e.target.checked)}
-                  className="sr-only peer"
-                />
-                <div className="w-11 h-6 bg-overlay rounded-full peer peer-checked:bg-accent-primary transition-colors">
-                  <div
-                    className={cn(
-                      'absolute w-5 h-5 bg-white rounded-full top-0.5 left-0.5 transition-transform shadow',
-                      fallbackEnabled && 'translate-x-5'
-                    )}
-                  />
-                </div>
-              </label>
-            </div>
-          </div>
-        </section>
       </div>
     </div>
   );

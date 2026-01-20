@@ -15,7 +15,6 @@ from typing import Any
 class MCPCategory(str, Enum):
     """Categories for organizing MCP servers in the UI."""
 
-    FILESYSTEM = "filesystem"
     VERSION_CONTROL = "version_control"
     WEB = "web"
     MEMORY = "memory"
@@ -25,35 +24,12 @@ class MCPCategory(str, Enum):
 
 # Default MCP servers - full productivity suite
 # These can be enabled by users with one click (after providing required secrets)
+#
+# NOTE: Filesystem and Git MCP servers have been REMOVED.
+# Native agents use built-in tools (read_file, write_file, git_status, etc.)
+# that execute directly on the workspace container via the compute service.
+# This is more reliable and doesn't require MCP server processes.
 DEFAULT_MCP_SERVERS: list[dict[str, Any]] = [
-    # ============== Core (built-in, cannot disable) ==============
-    {
-        "slug": "filesystem",
-        "name": "Filesystem",
-        "description": "Read, write, and navigate files in the workspace",
-        "category": MCPCategory.FILESYSTEM,
-        "transport": "stdio",
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
-        "env_vars": {},
-        "required_env": [],
-        "icon": "folder",
-        "is_builtin": True,
-    },
-    {
-        "slug": "git",
-        "name": "Git",
-        "description": "Git operations: clone, commit, branch, diff, log, status, push, pull",
-        "category": MCPCategory.VERSION_CONTROL,
-        "transport": "stdio",
-        "command": "npx",
-        "args": ["-y", "@mseep/git-mcp-server"],
-        "env_vars": {},
-        "required_env": [],
-        "icon": "git-branch",
-        "is_builtin": True,
-        "docs_url": "https://github.com/mseep/git-mcp-server",
-    },
     # ============== Version Control ==============
     {
         "slug": "github",
@@ -114,17 +90,19 @@ DEFAULT_MCP_SERVERS: list[dict[str, Any]] = [
         "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
     },
     # ============== Skills (Podex) ==============
+    # NOTE: This is for NON-NATIVE agents (external MCP clients) only.
+    # Native Podex agents use the built-in execute_skill tool instead.
     {
         "slug": "podex-skills",
         "name": "Podex Skills",
-        "description": "Execute Podex skills as MCP tools",
+        "description": "Execute Podex skills as MCP tools (for external MCP clients)",
         "category": MCPCategory.PRODUCTIVITY,
         "transport": "http",
         "url": "http://agent:3002/mcp/skills",
         "env_vars": {},
         "required_env": [],
         "icon": "sparkles",
-        "is_builtin": True,
+        "is_builtin": False,  # Not auto-enabled; native agents use execute_skill tool
         "docs_url": "https://docs.podex.ai/skills",
     },
     # ============== Monitoring ==============

@@ -18,6 +18,10 @@ import { useSwipeableItem, triggerHaptic, useLongPress } from '@/hooks/useGestur
 import { useUIStore } from '@/stores/ui';
 import type { FileNode } from '@/lib/api';
 
+function isHiddenFile(name: string): boolean {
+  return name.startsWith('.');
+}
+
 interface SyncInfo {
   isSynced: boolean;
   syncType: 'user' | 'session' | null;
@@ -36,6 +40,7 @@ interface MobileFileItemProps {
   children?: React.ReactNode;
   getSyncInfo?: (path: string) => SyncInfo;
   onToggleSync?: (path: string) => void;
+  isExpandable?: boolean;
 }
 
 export function MobileFileItem({
@@ -51,6 +56,7 @@ export function MobileFileItem({
   children,
   getSyncInfo,
   onToggleSync: _onToggleSync,
+  isExpandable = true,
 }: MobileFileItemProps) {
   const openMobileFileActions = useUIStore((state) => state.openMobileFileActions);
   const syncInfo = getSyncInfo
@@ -114,6 +120,7 @@ export function MobileFileItem({
   );
 
   const isDirectory = item.type === 'directory';
+  const isHidden = isHiddenFile(item.name);
 
   return (
     <div className="relative overflow-hidden">
@@ -152,9 +159,10 @@ export function MobileFileItem({
           onClick={handleClick}
           className={cn(
             'flex w-full items-center gap-2 py-3 pr-3 text-left text-sm',
-            'text-text-secondary active:bg-surface-hover touch-manipulation',
+            'active:bg-surface-hover touch-manipulation',
             isPressed && 'bg-surface-hover',
-            'border-b border-border-subtle'
+            'border-b border-border-subtle',
+            isHidden ? 'text-text-secondary' : 'text-text-primary'
           )}
           style={{ paddingLeft }}
         >
@@ -163,11 +171,13 @@ export function MobileFileItem({
             <span className="shrink-0 w-5 h-5 flex items-center justify-center">
               {isLoading ? (
                 <Loader2 className="h-4 w-4 animate-spin text-text-muted" />
-              ) : isExpanded ? (
-                <ChevronDown className="h-4 w-4 text-text-muted" />
-              ) : (
-                <ChevronRight className="h-4 w-4 text-text-muted" />
-              )}
+              ) : isExpandable ? (
+                isExpanded ? (
+                  <ChevronDown className="h-4 w-4 text-text-muted" />
+                ) : (
+                  <ChevronRight className="h-4 w-4 text-text-muted" />
+                )
+              ) : null}
             </span>
           ) : (
             <span className="shrink-0 w-5" />
@@ -185,7 +195,14 @@ export function MobileFileItem({
           )}
 
           {/* Name */}
-          <span className="truncate flex-1">{item.name}</span>
+          <span
+            className={cn(
+              'truncate flex-1',
+              isHidden ? 'text-text-secondary' : 'text-text-primary'
+            )}
+          >
+            {item.name}
+          </span>
 
           {/* Sync indicator */}
           {syncInfo.isSynced && (

@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from podex_shared.models.billing import (
-    MODEL_PRICING,
+    DEFAULT_INPUT_PRICE_PER_MILLION,
+    DEFAULT_OUTPUT_PRICE_PER_MILLION,
     BillingEventInfo,
     BillingEventType,
     CreateSubscriptionRequest,
@@ -24,7 +25,7 @@ from podex_shared.models.billing import (
     UsageRecordInfo,
     UsageSummary,
     UsageType,
-    calculate_token_cost,
+    calculate_token_cost_with_pricing,
 )
 
 
@@ -363,60 +364,28 @@ class TestModelPricing:
         assert pricing.is_available is True
 
 
-class TestModelPricingDict:
-    """Tests for MODEL_PRICING dictionary."""
+class TestDefaultPricing:
+    """Tests for default pricing constants."""
 
-    def test_claude_opus_pricing(self) -> None:
-        """Test Claude Opus pricing."""
-        pricing = MODEL_PRICING.get("claude-opus-4-5-20251101")
-        assert pricing is not None
-        assert pricing.display_name == "Claude Opus 4.5"
-        assert pricing.provider == "anthropic"
-        assert pricing.input_price_per_million == Decimal("15.00")
-        assert pricing.output_price_per_million == Decimal("75.00")
+    def test_default_input_price(self) -> None:
+        """Test default input price constant."""
+        assert DEFAULT_INPUT_PRICE_PER_MILLION == Decimal("3.00")
 
-    def test_claude_sonnet_pricing(self) -> None:
-        """Test Claude Sonnet pricing."""
-        pricing = MODEL_PRICING.get("claude-sonnet-4-20250514")
-        assert pricing is not None
-        assert pricing.display_name == "Claude Sonnet 4"
-        assert pricing.input_price_per_million == Decimal("3.00")
-        assert pricing.output_price_per_million == Decimal("15.00")
-
-    def test_claude_haiku_pricing(self) -> None:
-        """Test Claude Haiku pricing."""
-        pricing = MODEL_PRICING.get("claude-3-5-haiku-20241022")
-        assert pricing is not None
-        assert pricing.display_name == "Claude 3.5 Haiku"
-
-    def test_gpt4o_pricing(self) -> None:
-        """Test GPT-4o pricing."""
-        pricing = MODEL_PRICING.get("gpt-4o")
-        assert pricing is not None
-        assert pricing.provider == "openai"
-
-    def test_gemini_pricing(self) -> None:
-        """Test Gemini pricing."""
-        pricing = MODEL_PRICING.get("gemini-2.0-flash")
-        assert pricing is not None
-        assert pricing.provider == "google"
-
-    def test_deepseek_pricing(self) -> None:
-        """Test DeepSeek pricing."""
-        pricing = MODEL_PRICING.get("deepseek-chat")
-        assert pricing is not None
-        assert pricing.provider == "deepseek"
+    def test_default_output_price(self) -> None:
+        """Test default output price constant."""
+        assert DEFAULT_OUTPUT_PRICE_PER_MILLION == Decimal("15.00")
 
 
-class TestCalculateTokenCost:
-    """Tests for calculate_token_cost function."""
+class TestCalculateTokenCostWithPricing:
+    """Tests for calculate_token_cost_with_pricing function."""
 
-    def test_calculate_cost_claude_sonnet(self) -> None:
-        """Test cost calculation for Claude Sonnet."""
-        cost = calculate_token_cost(
-            model_id="claude-sonnet-4-20250514",
+    def test_calculate_cost_with_explicit_pricing(self) -> None:
+        """Test cost calculation with explicit pricing."""
+        cost = calculate_token_cost_with_pricing(
             input_tokens=1000000,
             output_tokens=500000,
+            input_price_per_million=Decimal("3.00"),
+            output_price_per_million=Decimal("15.00"),
         )
         # Input: 1M * $3/M = $3
         # Output: 0.5M * $15/M = $7.5
@@ -424,45 +393,44 @@ class TestCalculateTokenCost:
         expected = Decimal("3.00") + Decimal("7.50")
         assert cost == expected
 
-    def test_calculate_cost_claude_haiku(self) -> None:
-        """Test cost calculation for Claude Haiku."""
-        cost = calculate_token_cost(
-            model_id="claude-3-5-haiku-20241022",
-            input_tokens=1000000,
-            output_tokens=1000000,
-        )
-        # Input: 1M * $0.25/M = $0.25
-        # Output: 1M * $1.25/M = $1.25
-        # Total: $1.50
-        expected = Decimal("0.25") + Decimal("1.25")
-        assert cost == expected
-
-    def test_calculate_cost_unknown_model(self) -> None:
-        """Test cost calculation for unknown model (defaults to Sonnet)."""
-        cost = calculate_token_cost(
-            model_id="unknown-model",
-            input_tokens=1000,
-            output_tokens=1000,
-        )
-        # Should use Claude Sonnet pricing
-        assert cost > Decimal("0")
-
     def test_calculate_cost_zero_tokens(self) -> None:
         """Test cost calculation with zero tokens."""
-        cost = calculate_token_cost(
-            model_id="claude-sonnet-4-20250514",
+        cost = calculate_token_cost_with_pricing(
             input_tokens=0,
             output_tokens=0,
+            input_price_per_million=Decimal("3.00"),
+            output_price_per_million=Decimal("15.00"),
         )
         assert cost == Decimal("0")
 
     def test_calculate_cost_small_tokens(self) -> None:
         """Test cost calculation with small token count."""
-        cost = calculate_token_cost(
-            model_id="claude-sonnet-4-20250514",
+        cost = calculate_token_cost_with_pricing(
             input_tokens=100,
             output_tokens=50,
+            input_price_per_million=Decimal("3.00"),
+            output_price_per_million=Decimal("15.00"),
         )
         # Should be a small but non-zero amount
         assert cost > Decimal("0")
         assert cost < Decimal("1")
+
+    def test_calculate_cost_only_input(self) -> None:
+        """Test cost calculation with only input tokens."""
+        cost = calculate_token_cost_with_pricing(
+            input_tokens=1000000,
+            output_tokens=0,
+            input_price_per_million=Decimal("1.00"),
+            output_price_per_million=Decimal("2.00"),
+        )
+        assert cost == Decimal("1.00")
+
+    def test_calculate_cost_only_output(self) -> None:
+        """Test cost calculation with only output tokens."""
+        cost = calculate_token_cost_with_pricing(
+            input_tokens=0,
+            output_tokens=1000000,
+            input_price_per_million=Decimal("1.00"),
+            output_price_per_million=Decimal("2.00"),
+        )
+        assert cost == Decimal("2.00")

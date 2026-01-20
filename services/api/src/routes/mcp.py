@@ -984,8 +984,8 @@ async def list_default_servers(
     )
     user_servers = list(result.scalars().all())
 
-    # Get catalog with user status
-    catalog = get_default_catalog_for_user(user_servers)
+    # Get catalog with user status from database
+    catalog = await get_default_catalog_for_user(db, user_servers)
 
     servers = [
         MCPDefaultServerInfo(
@@ -1008,9 +1008,12 @@ async def list_default_servers(
         for s in catalog
     ]
 
+    # Get all categories from database
+    categories = await get_all_categories(db)
+
     return MCPDefaultsListResponse(
         servers=servers,
-        categories=get_all_categories(),
+        categories=categories,
     )
 
 
@@ -1024,7 +1027,7 @@ async def get_default_server(
     current_user: CurrentUser,
 ) -> MCPDefaultServerInfo:
     """Get details for a specific default server."""
-    default_config = get_default_server_by_slug(slug)
+    default_config = await get_default_server_by_slug(db, slug)
     if not default_config:
         raise HTTPException(status_code=404, detail=f"Default server '{slug}' not found")
 
@@ -1107,7 +1110,7 @@ async def enable_default_server(
         auto_refresh=data.auto_refresh,
     )
 
-    default_config = get_default_server_by_slug(slug)
+    default_config = await get_default_server_by_slug(db, slug)
     if not default_config:
         raise HTTPException(status_code=404, detail=f"Default server '{slug}' not found")
 
@@ -1194,6 +1197,7 @@ async def test_default_server(
     response: Response,
     slug: str,
     data: TestDefaultRequest,
+    db: DbSession,
     current_user: CurrentUser,
 ) -> TestDefaultResponse:
     """Test connection to a default MCP server before enabling it.
@@ -1201,7 +1205,7 @@ async def test_default_server(
     Allows testing with provided env_vars (like auth tokens) without
     permanently enabling the server.
     """
-    default_config = get_default_server_by_slug(slug)
+    default_config = await get_default_server_by_slug(db, slug)
     if not default_config:
         raise HTTPException(status_code=404, detail=f"Default server '{slug}' not found")
 
@@ -1241,7 +1245,7 @@ async def disable_default_server(
     current_user: CurrentUser,
 ) -> None:
     """Disable a default MCP server for the current user."""
-    default_config = get_default_server_by_slug(slug)
+    default_config = await get_default_server_by_slug(db, slug)
     if not default_config:
         raise HTTPException(status_code=404, detail=f"Default server '{slug}' not found")
 
