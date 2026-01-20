@@ -17,11 +17,11 @@ from src.database.connection import get_db
 from src.database.models import (
     PlatformSetting,
     SubscriptionPlan,
-    UsageQuota,
     User,
     UserSubscription,
 )
 from src.middleware.rate_limit import RATE_LIMIT_AUTH, RATE_LIMIT_SENSITIVE, limiter
+from src.routes.billing import sync_quotas_from_plan
 from src.services.mfa import get_mfa_service
 from src.services.token_blacklist import (
     is_token_revoked,
@@ -447,30 +447,14 @@ async def register(
             billing_cycle="monthly",
             current_period_start=now,
             current_period_end=period_end,
+            last_credit_grant=now,  # Mark credits as granted for initial period
         )
         db.add(subscription)
-        await db.flush()  # Flush to get subscription.id if needed
+        await db.flush()
 
-        # Create quotas for the subscription (required for usage tracking)
-        quota_types = [
-            ("tokens", free_plan.tokens_included),
-            ("compute_credits", free_plan.compute_credits_cents_included),
-            ("storage_gb", free_plan.storage_gb_included),
-            ("sessions", free_plan.max_sessions),
-            ("agents", free_plan.max_agents),
-        ]
+        # Create quotas using centralized function (single source of truth)
 
-        for quota_type, limit in quota_types:
-            quota = UsageQuota(
-                user_id=user.id,
-                quota_type=quota_type,
-                limit_value=limit,
-                current_usage=0,
-                reset_at=period_end if quota_type in ["tokens", "compute_credits"] else None,
-                overage_allowed=free_plan.overage_allowed,
-            )
-            db.add(quota)
-
+        await sync_quotas_from_plan(db, user.id, free_plan, subscription)
         await db.commit()
 
     # Get user role (will be "member" for new users)

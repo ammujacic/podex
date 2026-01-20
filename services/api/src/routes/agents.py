@@ -2624,6 +2624,27 @@ async def _send_message_impl(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
+    # Get user ID for credit check and agent context
+    user_id = get_current_user_id(deps.common.request)
+
+    # Check token credits before processing message
+    from src.services.credit_enforcement import (
+        check_credits_available,
+        create_billing_error_detail,
+    )
+
+    credit_check = await check_credits_available(deps.common.db, user_id, "tokens")
+
+    if not credit_check.can_proceed:
+        raise HTTPException(
+            status_code=402,  # Payment Required
+            detail=create_billing_error_detail(
+                credit_check,
+                "tokens",
+                "Token quota exceeded. Please upgrade your plan or add credits to continue.",
+            ),
+        )
+
     # Create user message
     message = MessageModel(
         agent_id=params.agent_id,
@@ -2648,9 +2669,6 @@ async def _send_message_impl(
             "created_at": message.created_at.isoformat(),
         },
     )
-
-    # Get user ID for agent context
-    user_id = get_current_user_id(deps.common.request)
 
     # Process image attachments if provided
     images_data: list[dict[str, Any]] | None = None

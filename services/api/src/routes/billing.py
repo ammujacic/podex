@@ -10,6 +10,7 @@ import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
@@ -830,6 +831,383 @@ async def process_subscription_period_ends(db: AsyncSession) -> tuple[int, int]:
     return canceled_count, trial_ended_count
 
 
+async def renew_subscription_periods(db: AsyncSession) -> int:
+    """Renew non-Stripe subscriptions that have reached their period end.
+
+    For subscriptions without Stripe (e.g., Free plans, sponsored, admin-created):
+    - Extends current_period_start and current_period_end by one billing cycle
+    - Does NOT cancel - that's handled by process_subscription_period_ends
+
+    This is the key function that was MISSING - it ensures Free plans and
+    non-Stripe subscriptions continue working indefinitely.
+
+    Returns:
+        Number of subscriptions renewed
+    """
+    now = datetime.now(UTC)
+    renewed_count = 0
+
+    # Find active non-Stripe subscriptions that have passed their period end
+    # but are NOT marked for cancellation
+    result = await db.execute(
+        select(UserSubscription, SubscriptionPlan)
+        .join(SubscriptionPlan, UserSubscription.plan_id == SubscriptionPlan.id)
+        .where(
+            UserSubscription.status.in_(["active", "trialing"]),
+            UserSubscription.current_period_end <= now,
+            UserSubscription.cancel_at_period_end == False,
+            # Only process non-Stripe subscriptions
+            UserSubscription.stripe_subscription_id.is_(None),
+        )
+    )
+    subscriptions = result.all()
+
+    for subscription, plan in subscriptions:
+        # Calculate new period based on billing cycle
+        if subscription.billing_cycle == "yearly":
+            new_period_end = now + timedelta(days=365)
+        else:
+            new_period_end = now + timedelta(days=30)
+
+        # Update subscription periods
+        old_period_end = subscription.current_period_end
+        subscription.current_period_start = now
+        subscription.current_period_end = new_period_end
+
+        # If trialing, transition to active
+        if subscription.status == "trialing":
+            subscription.status = "active"
+            subscription.trial_end = None
+
+        renewed_count += 1
+
+        # Log event
+        event = BillingEvent(
+            user_id=subscription.user_id,
+            event_type="subscription_renewed",
+            event_data={
+                "subscription_id": subscription.id,
+                "plan_slug": plan.slug,
+                "billing_cycle": subscription.billing_cycle,
+                "old_period_end": old_period_end.isoformat() if old_period_end else None,
+                "new_period_end": new_period_end.isoformat(),
+                "is_free_plan": plan.price_monthly_cents == 0,
+            },
+            subscription_id=subscription.id,
+        )
+        db.add(event)
+
+        logger.info(
+            "Renewed subscription period",
+            subscription_id=subscription.id,
+            user_id=subscription.user_id,
+            plan_slug=plan.slug,
+            new_period_end=new_period_end.isoformat(),
+        )
+
+    return renewed_count
+
+
+async def grant_monthly_credits(db: AsyncSession) -> int:
+    """Grant monthly credits to users whose quota period has renewed.
+
+    This function ensures users receive their plan's included credits
+    (tokens, compute credits) at the start of each MONTHLY period.
+
+    IMPORTANT: Quotas reset MONTHLY regardless of billing cycle.
+    - Monthly plans: quotas reset every 30 days (aligned with billing)
+    - Yearly plans: quotas STILL reset every 30 days (billing is yearly, usage is monthly)
+
+    Credits are only granted once per month using last_credit_grant tracking.
+
+    Returns:
+        Number of users who received credits
+    """
+    now = datetime.now(UTC)
+    granted_count = 0
+
+    # Find active subscriptions
+    result = await db.execute(
+        select(UserSubscription, SubscriptionPlan)
+        .join(SubscriptionPlan, UserSubscription.plan_id == SubscriptionPlan.id)
+        .where(
+            UserSubscription.status.in_(["active", "trialing"]),
+        )
+    )
+    subscriptions = result.all()
+
+    for subscription, plan in subscriptions:
+        # Determine if monthly credits should be granted
+        # For ALL plans, quotas reset monthly (every ~30 days)
+        should_grant = False
+
+        if subscription.last_credit_grant is None:
+            # Never granted - grant now
+            should_grant = True
+        else:
+            # Check if it's been at least 30 days since last grant
+            days_since_grant = (now - subscription.last_credit_grant).days
+            if (
+                days_since_grant >= 30
+                or subscription.last_credit_grant < subscription.current_period_start
+            ):
+                should_grant = True
+
+        if not should_grant:
+            continue
+
+        # Calculate the next quota reset date (always ~30 days from now)
+        # This ensures monthly resets even for yearly billing
+        next_quota_reset = now + timedelta(days=30)
+
+        # Reset quotas to plan limits with monthly reset date
+        await sync_quotas_from_plan_monthly(db, subscription.user_id, plan, next_quota_reset)
+
+        # Mark credits as granted
+        subscription.last_credit_grant = now
+        granted_count += 1
+
+        # Log event
+        event = BillingEvent(
+            user_id=subscription.user_id,
+            event_type="monthly_credits_granted",
+            event_data={
+                "subscription_id": subscription.id,
+                "plan_slug": plan.slug,
+                "billing_cycle": subscription.billing_cycle,
+                "tokens_included": plan.tokens_included,
+                "compute_credits_cents": plan.compute_credits_cents_included,
+                "storage_gb_included": plan.storage_gb_included,
+                "next_reset": next_quota_reset.isoformat(),
+            },
+            subscription_id=subscription.id,
+        )
+        db.add(event)
+
+        logger.info(
+            "Granted monthly credits",
+            user_id=subscription.user_id,
+            plan_slug=plan.slug,
+            billing_cycle=subscription.billing_cycle,
+            tokens_included=plan.tokens_included,
+            next_reset=next_quota_reset.isoformat(),
+        )
+
+    return granted_count
+
+
+async def sync_quotas_from_plan_monthly(
+    db: AsyncSession,
+    user_id: str,
+    plan: SubscriptionPlan,
+    next_reset: datetime,
+) -> None:
+    """Synchronize user quotas from plan with monthly reset.
+
+    This variant always uses the provided next_reset date (typically 30 days out)
+    regardless of subscription billing cycle.
+
+    Args:
+        db: Database session
+        user_id: User ID
+        plan: The subscription plan
+        next_reset: When quotas should reset next (typically now + 30 days)
+    """
+    now = datetime.now(UTC)
+
+    # Define quota mappings: (quota_type, plan_field, resettable)
+    quota_mappings = [
+        ("tokens", plan.tokens_included, True),
+        ("compute_credits", plan.compute_credits_cents_included, True),
+        ("storage_gb", plan.storage_gb_included, False),
+        ("sessions", plan.max_sessions, False),
+        ("agents", plan.max_agents, False),
+    ]
+
+    for quota_type, limit_value, resettable in quota_mappings:
+        quota_result = await db.execute(
+            select(UsageQuota).where(
+                UsageQuota.user_id == user_id,
+                UsageQuota.quota_type == quota_type,
+            )
+        )
+        quota = quota_result.scalar_one_or_none()
+
+        if quota:
+            quota.limit_value = limit_value
+            quota.overage_allowed = plan.overage_allowed
+
+            if quota_type == "tokens":
+                quota.overage_rate_cents = plan.overage_token_rate_cents
+            elif quota_type == "compute_credits":
+                quota.overage_rate_cents = plan.overage_compute_rate_cents
+            elif quota_type == "storage_gb":
+                quota.overage_rate_cents = plan.overage_storage_rate_cents
+
+            if resettable:
+                quota.current_usage = 0
+                quota.reset_at = next_reset  # Always monthly
+                quota.last_reset_at = now
+                quota.warning_sent_at = None
+        else:
+            quota = UsageQuota(
+                user_id=user_id,
+                quota_type=quota_type,
+                limit_value=limit_value,
+                current_usage=0,
+                reset_at=next_reset if resettable else None,
+                overage_allowed=plan.overage_allowed,
+            )
+
+            if quota_type == "tokens":
+                quota.overage_rate_cents = plan.overage_token_rate_cents
+            elif quota_type == "compute_credits":
+                quota.overage_rate_cents = plan.overage_compute_rate_cents
+            elif quota_type == "storage_gb":
+                quota.overage_rate_cents = plan.overage_storage_rate_cents
+
+            db.add(quota)
+
+    await db.flush()
+
+
+async def sync_quotas_from_plan(
+    db: AsyncSession,
+    user_id: str,
+    plan: SubscriptionPlan,
+    subscription: UserSubscription,
+) -> None:
+    """Synchronize user quotas from their subscription plan.
+
+    This is the SINGLE SOURCE OF TRUTH for quota values.
+    Call this when:
+    - Subscription is created
+    - Subscription plan changes
+    - Billing period renews (to reset usage)
+
+    Args:
+        db: Database session
+        user_id: User ID
+        plan: The subscription plan
+        subscription: The user's subscription (for period end date)
+    """
+    now = datetime.now(UTC)
+
+    # Define quota mappings: (quota_type, plan_field, resettable)
+    # resettable=True means the quota resets each billing period
+    quota_mappings = [
+        ("tokens", plan.tokens_included, True),
+        ("compute_credits", plan.compute_credits_cents_included, True),
+        ("storage_gb", plan.storage_gb_included, False),  # Storage doesn't reset
+        ("sessions", plan.max_sessions, False),  # Concurrent limit, doesn't reset
+        ("agents", plan.max_agents, False),  # Concurrent limit, doesn't reset
+    ]
+
+    for quota_type, limit_value, resettable in quota_mappings:
+        # Try to get existing quota
+        quota_result = await db.execute(
+            select(UsageQuota).where(
+                UsageQuota.user_id == user_id,
+                UsageQuota.quota_type == quota_type,
+            )
+        )
+        quota = quota_result.scalar_one_or_none()
+
+        if quota:
+            # Update existing quota
+            quota.limit_value = limit_value
+            quota.overage_allowed = plan.overage_allowed
+
+            # Set overage rate based on quota type
+            if quota_type == "tokens":
+                quota.overage_rate_cents = plan.overage_token_rate_cents
+            elif quota_type == "compute_credits":
+                quota.overage_rate_cents = plan.overage_compute_rate_cents
+            elif quota_type == "storage_gb":
+                quota.overage_rate_cents = plan.overage_storage_rate_cents
+
+            # Reset usage for resettable quotas at period renewal
+            if resettable:
+                quota.current_usage = 0
+                quota.reset_at = subscription.current_period_end
+                quota.last_reset_at = now
+                quota.warning_sent_at = None  # Clear warning for new period
+        else:
+            # Create new quota
+            quota = UsageQuota(
+                user_id=user_id,
+                quota_type=quota_type,
+                limit_value=limit_value,
+                current_usage=0,
+                reset_at=subscription.current_period_end if resettable else None,
+                overage_allowed=plan.overage_allowed,
+            )
+
+            # Set overage rate
+            if quota_type == "tokens":
+                quota.overage_rate_cents = plan.overage_token_rate_cents
+            elif quota_type == "compute_credits":
+                quota.overage_rate_cents = plan.overage_compute_rate_cents
+            elif quota_type == "storage_gb":
+                quota.overage_rate_cents = plan.overage_storage_rate_cents
+
+            db.add(quota)
+
+    await db.flush()
+
+
+async def get_effective_quota(
+    db: AsyncSession,
+    user_id: str,
+    quota_type: str,
+) -> tuple[int, int, bool]:
+    """Get effective quota for a user - SINGLE SOURCE OF TRUTH for usage checks.
+
+    This function consolidates quota checking logic. Use this instead of
+    directly querying UsageQuota to ensure consistent behavior.
+
+    Args:
+        db: Database session
+        user_id: User ID
+        quota_type: Type of quota (tokens, compute_credits, storage_gb, etc.)
+
+    Returns:
+        Tuple of (limit_value, current_usage, overage_allowed)
+    """
+    # Get quota
+    quota_result = await db.execute(
+        select(UsageQuota).where(
+            UsageQuota.user_id == user_id,
+            UsageQuota.quota_type == quota_type,
+        )
+    )
+    quota = quota_result.scalar_one_or_none()
+
+    if quota:
+        return (quota.limit_value, quota.current_usage, quota.overage_allowed)
+
+    # No quota found - check if user has a subscription to create one
+    sub_result = await db.execute(
+        select(UserSubscription, SubscriptionPlan)
+        .join(SubscriptionPlan, UserSubscription.plan_id == SubscriptionPlan.id)
+        .where(
+            UserSubscription.user_id == user_id,
+            UserSubscription.status.in_(["active", "trialing"]),
+        )
+    )
+    sub_row = sub_result.first()
+
+    if sub_row:
+        subscription, plan = sub_row
+        # Sync quotas from plan (creates missing quotas)
+        await sync_quotas_from_plan(db, user_id, plan, subscription)
+        # Recursively get the now-created quota
+        return await get_effective_quota(db, user_id, quota_type)
+
+    # No subscription - return zeros (user needs to subscribe)
+    return (0, 0, False)
+
+
 async def deduct_credits_for_overage(
     db: AsyncSession,
     user_id: str,
@@ -1225,49 +1603,13 @@ async def create_subscription(
         billing_cycle=data.billing_cycle,
         current_period_start=now,
         current_period_end=period_end,
+        last_credit_grant=now,  # Mark credits as granted for initial period
     )
     db.add(subscription)
+    await db.flush()
 
-    # Create or update quotas for the user (handles re-subscriptions)
-    # Note: compute_credits is stored in cents for precision
-    quota_types = [
-        ("tokens", plan.tokens_included),
-        ("compute_credits", plan.compute_credits_cents_included),  # In cents
-        ("storage_gb", plan.storage_gb_included),
-        ("sessions", plan.max_sessions),
-        ("agents", plan.max_agents),
-    ]
-
-    for quota_type, limit in quota_types:
-        # Check if quota already exists (from previous subscription)
-        existing_quota_result = await db.execute(
-            select(UsageQuota)
-            .where(UsageQuota.user_id == user_id)
-            .where(UsageQuota.quota_type == quota_type)
-        )
-        existing_quota = existing_quota_result.scalar_one_or_none()
-
-        if existing_quota:
-            # Update existing quota and reset usage
-            existing_quota.limit_value = limit
-            existing_quota.current_usage = 0
-            existing_quota.reset_at = (
-                period_end if quota_type in ["tokens", "compute_credits"] else None
-            )
-            existing_quota.overage_allowed = plan.overage_allowed
-            existing_quota.warning_sent_at = None
-            existing_quota.last_reset_at = now
-        else:
-            # Create new quota
-            quota = UsageQuota(
-                user_id=user_id,
-                quota_type=quota_type,
-                limit_value=limit,
-                current_usage=0,
-                reset_at=period_end if quota_type in ["tokens", "compute_credits"] else None,
-                overage_allowed=plan.overage_allowed,
-            )
-            db.add(quota)
+    # Sync quotas using centralized function (single source of truth)
+    await sync_quotas_from_plan(db, user_id, plan, subscription)
 
     # Log event
     event_ctx = BillingEventContext(
@@ -2218,6 +2560,107 @@ def _calculate_usage_percentage(current_usage: int, limit_value: int) -> float:
     return current_usage / limit_value * 100
 
 
+async def _calculate_quota_current_usage(
+    db: AsyncSession,
+    user_id: str,
+    period_start: datetime,
+    period_end: datetime,
+) -> tuple[int, int]:
+    """Calculate current usage for backfilled quotas (tokens, compute credits)."""
+    from sqlalchemy import func as sqlfunc
+
+    tokens_result = await db.execute(
+        select(sqlfunc.coalesce(sqlfunc.sum(UsageRecord.quantity), 0)).where(
+            UsageRecord.user_id == user_id,
+            UsageRecord.usage_type.in_(["tokens_input", "tokens_output"]),
+            UsageRecord.created_at >= period_start,
+            UsageRecord.created_at < period_end,
+        )
+    )
+    tokens_used = int(tokens_result.scalar_one() or 0)
+
+    compute_result = await db.execute(
+        select(sqlfunc.coalesce(sqlfunc.sum(UsageRecord.total_cost_cents), 0)).where(
+            UsageRecord.user_id == user_id,
+            UsageRecord.usage_type == "compute_seconds",
+            UsageRecord.created_at >= period_start,
+            UsageRecord.created_at < period_end,
+        )
+    )
+    compute_cost_cents = int(compute_result.scalar_one() or 0)
+
+    return tokens_used, compute_cost_cents
+
+
+async def _ensure_usage_quotas(db: AsyncSession, user_id: str) -> list[UsageQuota]:
+    """Ensure usage quotas exist for a user with an active subscription."""
+    result = await db.execute(select(UsageQuota).where(UsageQuota.user_id == user_id))
+    existing = list(result.scalars().all())
+    if existing:
+        return existing
+
+    sub_result = await db.execute(
+        select(UserSubscription)
+        .where(UserSubscription.user_id == user_id)
+        .where(UserSubscription.status.in_(["active", "trialing"]))
+        .order_by(UserSubscription.created_at.desc())
+        .limit(1),
+    )
+    subscription = sub_result.scalar_one_or_none()
+    if not subscription:
+        return []
+
+    plan_result = await db.execute(
+        select(SubscriptionPlan).where(SubscriptionPlan.id == subscription.plan_id)
+    )
+    plan = plan_result.scalar_one_or_none()
+    if not plan:
+        return []
+
+    period_start = subscription.current_period_start
+    period_end = subscription.current_period_end
+    tokens_used, compute_cost_cents = await _calculate_quota_current_usage(
+        db,
+        user_id,
+        period_start,
+        period_end,
+    )
+
+    quota_specs = [
+        ("tokens", int(plan.tokens_included or 0), tokens_used, period_end),
+        (
+            "compute_credits",
+            int(plan.compute_credits_cents_included or 0),
+            compute_cost_cents,
+            period_end,
+        ),
+        ("storage_gb", int(plan.storage_gb_included or 0), 0, None),
+        ("sessions", int(plan.max_sessions or 0), 0, None),
+        ("agents", int(plan.max_agents or 0), 0, None),
+    ]
+
+    for quota_type, limit_value, current_usage, reset_at in quota_specs:
+        db.add(
+            UsageQuota(
+                user_id=user_id,
+                quota_type=quota_type,
+                limit_value=limit_value,
+                current_usage=current_usage,
+                reset_at=reset_at,
+                overage_allowed=plan.overage_allowed,
+                warning_threshold_percent=USAGE_WARNING_THRESHOLD,
+            )
+        )
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+
+    result = await db.execute(select(UsageQuota).where(UsageQuota.user_id == user_id))
+    return list(result.scalars().all())
+
+
 @router.get("/quotas", response_model=list[QuotaResponse])
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def get_quotas(
@@ -2227,9 +2670,7 @@ async def get_quotas(
 ) -> list[QuotaResponse]:
     """Get current usage quotas and limits."""
     user_id = get_current_user_id(request)
-
-    result = await db.execute(select(UsageQuota).where(UsageQuota.user_id == user_id))
-    quotas = result.scalars().all()
+    quotas = await _ensure_usage_quotas(db, user_id)
 
     return [
         QuotaResponse(

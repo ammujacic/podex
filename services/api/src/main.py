@@ -97,7 +97,9 @@ from src.routes.admin.models import public_router as models_public_router
 from src.routes.admin.tools import public_router as agent_tools_public_router
 from src.routes.billing import (
     expire_credits,
+    grant_monthly_credits,
     process_subscription_period_ends,
+    renew_subscription_periods,
     reset_expired_quotas,
     update_expiring_soon_credits,
 )
@@ -158,6 +160,7 @@ class _BackgroundTasks:
     agent_watchdog: asyncio.Task[None] | None = None
     container_health_check: asyncio.Task[None] | None = None
     standby_cleanup: asyncio.Task[None] | None = None
+    credit_enforcement: asyncio.Task[None] | None = None
 
 
 _tasks = _BackgroundTasks()
@@ -229,7 +232,9 @@ async def quota_reset_background_task() -> None:
 async def billing_maintenance_background_task() -> None:
     """Background task for billing maintenance operations.
 
-    Runs every hour to:
+    Runs every 5 minutes to:
+    - Renew non-Stripe subscriptions (Free plans, sponsored, etc.)
+    - Grant monthly credits for renewed billing periods
     - Expire credits that have passed their expiration date
     - Update expiring_soon_cents for credit balances
     - Process subscriptions that need to be canceled at period end
@@ -237,26 +242,38 @@ async def billing_maintenance_background_task() -> None:
     """
     while True:
         try:
-            await asyncio.sleep(3600)  # Run every hour
+            await asyncio.sleep(300)  # Run every 5 minutes for more responsive renewals
 
             async for db in get_db():
                 try:
-                    # Expire credits
-                    expired_count = await expire_credits(db)
-                    if expired_count > 0:
-                        logger.info("Expired credits", count=expired_count)
+                    # STEP 1: Renew non-Stripe subscriptions first
+                    # This extends period_end for Free plans and sponsored subscriptions
+                    renewed_count = await renew_subscription_periods(db)
+                    if renewed_count > 0:
+                        logger.info("Renewed subscription periods", count=renewed_count)
 
-                    # Update expiring soon counts
-                    expiring_updated = await update_expiring_soon_credits(db)
-                    if expiring_updated > 0:
-                        logger.info("Updated expiring soon balances", count=expiring_updated)
+                    # STEP 2: Grant monthly credits for new billing periods
+                    # This resets quotas and grants included allowances
+                    credits_granted = await grant_monthly_credits(db)
+                    if credits_granted > 0:
+                        logger.info("Granted monthly credits", count=credits_granted)
 
-                    # Process subscription period ends
+                    # STEP 3: Process cancellations for subscriptions marked cancel_at_period_end
                     canceled, trial_ended = await process_subscription_period_ends(db)
                     if canceled > 0:
                         logger.info("Canceled subscriptions at period end", count=canceled)
                     if trial_ended > 0:
                         logger.info("Processed ended trials", count=trial_ended)
+
+                    # STEP 4: Expire promotional/bonus credits that have passed expiration
+                    expired_count = await expire_credits(db)
+                    if expired_count > 0:
+                        logger.info("Expired credits", count=expired_count)
+
+                    # STEP 5: Update expiring soon counts for user notifications
+                    expiring_updated = await update_expiring_soon_credits(db)
+                    if expiring_updated > 0:
+                        logger.info("Updated expiring soon balances", count=expiring_updated)
 
                     await db.commit()
                 except Exception as e:
@@ -268,6 +285,127 @@ async def billing_maintenance_background_task() -> None:
             break
         except Exception as e:
             logger.exception("Error in billing maintenance task", error=str(e))
+            await asyncio.sleep(60)  # Wait 1 minute before retrying
+
+
+async def credit_enforcement_background_task() -> None:
+    """Background task to enforce credit limits by moving workspaces to standby.
+
+    Runs every 5 minutes to check for users who have exhausted their compute credits
+    (both plan quota and prepaid credits) and moves their running workspaces to standby.
+    """
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    from src.compute_client import compute_client
+    from src.database.models import Session as SessionModel
+    from src.database.models import Workspace
+    from src.services.credit_enforcement import get_users_with_exhausted_credits
+    from src.websocket.hub import emit_to_session
+
+    while True:
+        try:
+            await asyncio.sleep(300)  # Check every 5 minutes
+
+            async for db in get_db():
+                try:
+                    now = datetime.now(UTC)
+                    standby_count = 0
+
+                    # Get users who have exhausted compute credits
+                    exhausted_users = await get_users_with_exhausted_credits(db, "compute")
+
+                    if not exhausted_users:
+                        continue
+
+                    logger.info(
+                        "Found users with exhausted compute credits",
+                        user_count=len(exhausted_users),
+                    )
+
+                    # For each exhausted user, find and standby their running workspaces
+                    for user_id in exhausted_users:
+                        # Find running workspaces owned by this user
+                        query = (
+                            select(Workspace, SessionModel)
+                            .join(SessionModel, SessionModel.workspace_id == Workspace.id)
+                            .where(
+                                SessionModel.owner_id == user_id,
+                                Workspace.status == "running",
+                            )
+                        )
+
+                        result = await db.execute(query)
+                        rows = result.all()
+
+                        for workspace, session in rows:
+                            try:
+                                from src.exceptions import ComputeServiceHTTPError
+
+                                # Stop the container
+                                try:
+                                    await compute_client.stop_workspace(workspace.id, user_id)
+                                except ComputeServiceHTTPError as compute_error:
+                                    # If workspace doesn't exist (404), it's already stopped
+                                    if compute_error.status_code != 404:
+                                        raise compute_error  # noqa: TRY201
+
+                                # Update database
+                                workspace.status = "standby"
+                                workspace.standby_at = now
+
+                                # Notify connected clients about billing standby
+                                await emit_to_session(
+                                    str(session.id),
+                                    "workspace_billing_standby",
+                                    {
+                                        "workspace_id": workspace.id,
+                                        "status": "standby",
+                                        "reason": "credit_exhaustion",
+                                        "message": (
+                                            "Your workspace has been paused due to "
+                                            "insufficient credits. Please upgrade your "
+                                            "plan or add credits to resume."
+                                        ),
+                                        "standby_at": now.isoformat(),
+                                        "upgrade_url": "/settings/plans",
+                                        "add_credits_url": "/settings/billing",
+                                    },
+                                )
+
+                                standby_count += 1
+                                logger.info(
+                                    "Moved workspace to standby due to credit exhaustion",
+                                    workspace_id=workspace.id,
+                                    session_id=str(session.id),
+                                    user_id=user_id,
+                                )
+
+                            except Exception as e:
+                                logger.exception(
+                                    "Failed to move workspace to standby for billing",
+                                    workspace_id=workspace.id,
+                                    user_id=user_id,
+                                    error=str(e),
+                                )
+
+                    if standby_count > 0:
+                        await db.commit()
+                        logger.info(
+                            "Credit enforcement completed",
+                            workspaces_standby=standby_count,
+                        )
+
+                except Exception as e:
+                    await db.rollback()
+                    logger.exception("Failed in credit enforcement", error=str(e))
+
+        except asyncio.CancelledError:
+            logger.info("Credit enforcement task cancelled")
+            break
+        except Exception as e:
+            logger.exception("Error in credit enforcement task", error=str(e))
             await asyncio.sleep(300)  # Wait 5 minutes before retrying
 
 
@@ -1150,7 +1288,8 @@ async def _create_dev_subscription(
     """
     from datetime import UTC, datetime, timedelta
 
-    from src.database.models import UsageQuota, UserSubscription
+    from src.database.models import UserSubscription
+    from src.routes.billing import sync_quotas_from_plan
 
     # Calculate subscription period (1 year for dev users)
     now = datetime.now(UTC)
@@ -1164,28 +1303,13 @@ async def _create_dev_subscription(
         billing_cycle="yearly",
         current_period_start=now,
         current_period_end=period_end,
+        last_credit_grant=now,  # Mark credits as granted for initial period
     )
     db.add(subscription)
+    await db.flush()
 
-    # Create quotas
-    quota_types = [
-        ("tokens", plan.tokens_included),
-        ("compute_credits", plan.compute_credits_cents_included),
-        ("storage_gb", plan.storage_gb_included),
-        ("sessions", plan.max_sessions),
-        ("agents", plan.max_agents),
-    ]
-
-    for quota_type, limit in quota_types:
-        quota = UsageQuota(
-            user_id=user_id,
-            quota_type=quota_type,
-            limit_value=limit,
-            current_usage=0,
-            reset_at=period_end if quota_type in ["tokens", "compute_credits"] else None,
-            overage_allowed=plan.overage_allowed,
-        )
-        db.add(quota)
+    # Create quotas using centralized function (single source of truth)
+    await sync_quotas_from_plan(db, user_id, plan, subscription)
 
 
 @asynccontextmanager
@@ -1245,6 +1369,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         standby_cleanup_background_task(), "standby_cleanup"
     )
     logger.info("Standby cleanup background task started")
+
+    _tasks.credit_enforcement = create_monitored_task(
+        credit_enforcement_background_task(), "credit_enforcement"
+    )
+    logger.info("Credit enforcement background task started")
 
     # Start terminal session cleanup task (cleans up stale sessions after 24 hours)
     await terminal_manager.start_cleanup_task()
@@ -1324,6 +1453,13 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         with contextlib.suppress(asyncio.CancelledError):
             await _tasks.standby_cleanup
         logger.info("Standby cleanup background task stopped")
+
+    # Cancel credit enforcement task
+    if _tasks.credit_enforcement:
+        _tasks.credit_enforcement.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _tasks.credit_enforcement
+        logger.info("Credit enforcement background task stopped")
 
     await cleanup_session_sync()
     await close_database()

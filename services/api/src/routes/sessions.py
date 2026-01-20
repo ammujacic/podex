@@ -343,6 +343,27 @@ async def create_session(
     # Check session quota before creating
     await check_session_quota(db, user_id)
 
+    # Check compute credits before creating workspace
+    from src.services.credit_enforcement import (
+        check_credits_available,
+        create_billing_error_detail,
+    )
+
+    credit_check = await check_credits_available(db, user_id, "compute")
+
+    if not credit_check.can_proceed:
+        raise HTTPException(
+            status_code=402,  # Payment Required
+            detail=create_billing_error_detail(
+                credit_check,
+                "compute",
+                (
+                    "Compute credits exhausted. Please upgrade your plan or "
+                    "add credits to create a session."
+                ),
+            ),
+        )
+
     # Create workspace first
     workspace = WorkspaceModel(status="pending")
     db.add(workspace)
@@ -740,6 +761,27 @@ async def scale_session_workspace(
 
     if not session.workspace_id:
         raise HTTPException(status_code=400, detail="Session does not have a workspace")
+
+    # Check compute credits before scaling workspace
+    from src.services.credit_enforcement import (
+        check_credits_available,
+        create_billing_error_detail,
+    )
+
+    credit_check = await check_credits_available(db, user_id, "compute")
+
+    if not credit_check.can_proceed:
+        raise HTTPException(
+            status_code=402,  # Payment Required
+            detail=create_billing_error_detail(
+                credit_check,
+                "compute",
+                (
+                    "Compute credits exhausted. Please upgrade your plan or "
+                    "add credits to scale your workspace."
+                ),
+            ),
+        )
 
     try:
         # Call the compute service to scale the workspace

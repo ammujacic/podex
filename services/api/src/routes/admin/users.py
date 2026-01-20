@@ -23,6 +23,7 @@ from src.database.models import (
 )
 from src.middleware.admin import get_admin_user_id, require_admin
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
+from src.routes.billing import sync_quotas_from_plan
 
 logger = structlog.get_logger()
 
@@ -603,6 +604,7 @@ async def sponsor_subscription(
         existing_sub.sponsored_at = now
         existing_sub.sponsor_reason = data.reason
         existing_sub.status = "active"
+        existing_sub.last_credit_grant = now  # Grant credits for new plan
         subscription = existing_sub
     else:
         # Create new sponsored subscription
@@ -618,8 +620,14 @@ async def sponsor_subscription(
             sponsored_by_id=admin_id,
             sponsored_at=now,
             sponsor_reason=data.reason,
+            last_credit_grant=now,  # Mark credits as granted
         )
         db.add(subscription)
+
+    await db.flush()
+
+    # Sync quotas from plan (single source of truth for quota creation/update)
+    await sync_quotas_from_plan(db, user_id, plan, subscription)
 
     await db.commit()
     await db.refresh(subscription)

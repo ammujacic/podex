@@ -21,7 +21,7 @@ from src.database.models import (
     User,
     UserSubscription,
 )
-from src.routes.billing import generate_invoice_number
+from src.routes.billing import generate_invoice_number, sync_quotas_from_plan
 from src.services.email import EmailTemplate, get_email_service
 
 logger = structlog.get_logger()
@@ -143,6 +143,9 @@ async def _sync_subscription_from_stripe(
 
     is_new_subscription = False
 
+    now = datetime.now(UTC)
+    old_period_start = subscription.current_period_start if subscription else None
+
     if subscription:
         # Update existing subscription
         subscription.plan_id = plan.id
@@ -163,6 +166,13 @@ async def _sync_subscription_from_stripe(
             )
         if stripe_subscription.trial_end:
             subscription.trial_end = datetime.fromtimestamp(stripe_subscription.trial_end, tz=UTC)
+
+        # Check if period has renewed (new billing cycle started)
+        new_period_start = subscription.current_period_start
+        if old_period_start and new_period_start > old_period_start:
+            # Period renewed - grant monthly credits
+            subscription.last_credit_grant = now
+            await sync_quotas_from_plan(db, user.id, plan, subscription)
     else:
         # Create new subscription
         period_start = datetime.fromtimestamp(stripe_subscription.current_period_start, tz=UTC)
@@ -178,28 +188,13 @@ async def _sync_subscription_from_stripe(
             cancel_at_period_end=stripe_subscription.cancel_at_period_end,
             stripe_subscription_id=stripe_subscription.id,
             stripe_customer_id=stripe_subscription.customer,
+            last_credit_grant=now,  # Mark credits as granted for initial period
         )
         db.add(subscription)
+        await db.flush()
 
-        # Create quotas for new subscription
-        quota_types = [
-            ("tokens", plan.tokens_included),
-            ("compute_credits", plan.compute_credits_cents_included),
-            ("storage_gb", plan.storage_gb_included),
-            ("sessions", plan.max_sessions),
-            ("agents", plan.max_agents),
-        ]
-
-        for quota_type, limit in quota_types:
-            quota = UsageQuota(
-                user_id=user.id,
-                quota_type=quota_type,
-                limit_value=limit,
-                current_usage=0,
-                reset_at=period_end if quota_type in ["tokens", "compute_credits"] else None,
-                overage_allowed=plan.overage_allowed,
-            )
-            db.add(quota)
+        # Create quotas using centralized function (single source of truth)
+        await sync_quotas_from_plan(db, user.id, plan, subscription)
 
         is_new_subscription = True
 

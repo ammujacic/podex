@@ -1316,6 +1316,27 @@ async def resume_workspace(
 
     user_id: str = getattr(request.state, "user_id", "") or ""
 
+    # Check compute credits before resuming workspace
+    from src.services.credit_enforcement import (
+        check_credits_available,
+        create_billing_error_detail,
+    )
+
+    credit_check = await check_credits_available(db, user_id, "compute")
+
+    if not credit_check.can_proceed:
+        raise HTTPException(
+            status_code=402,  # Payment Required
+            detail=create_billing_error_detail(
+                credit_check,
+                "compute",
+                (
+                    "Compute credits exhausted. Please upgrade your plan or "
+                    "add credits to resume your workspace."
+                ),
+            ),
+        )
+
     try:
         # First, check if the workspace exists in the compute service
         workspace_info = await compute_client.get_workspace(workspace_id, user_id)
@@ -1759,13 +1780,19 @@ async def sync_workspace_status_from_compute(
     """
     from datetime import UTC, datetime
 
+    from sqlalchemy.orm import selectinload
+
     from src.websocket.hub import emit_to_session
 
     # Verify internal service token
     verify_internal_service_token(request)
 
     # Find the workspace in database
-    result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    result = await db.execute(
+        select(Workspace)
+        .where(Workspace.id == workspace_id)
+        .options(selectinload(Workspace.session))
+    )
     workspace = result.scalar_one_or_none()
 
     if not workspace:

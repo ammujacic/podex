@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -282,6 +282,7 @@ def generate_invite_code() -> str:
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def create_organization(
     request: Request,
+    response: Response,  # noqa: ARG001
     data: CreateOrganizationRequest,
     db: DbSession,
 ) -> OrganizationResponse:
@@ -368,6 +369,7 @@ async def create_organization(
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def get_my_organization(
     request: Request,
+    response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> OrganizationResponse | None:
     """Get the current user's organization (if any)."""
@@ -411,6 +413,7 @@ async def get_my_organization(
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def get_my_org_context(
     request: Request,
+    response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> UserOrgContextResponse | None:
     """Get current user's organization context and limits."""
@@ -460,6 +463,7 @@ async def get_my_org_context(
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def get_my_limits(
     request: Request,
+    response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> dict[str, Any]:
     """Get current user's resource limits and usage."""
@@ -506,6 +510,7 @@ async def get_my_limits(
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def leave_organization(
     request: Request,
+    response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> dict[str, str]:
     """Leave the current organization.
@@ -555,6 +560,7 @@ async def leave_organization(
 @require_org_member
 async def get_organization(
     request: Request,
+    response: Response,  # noqa: ARG001
     org_id: str,
     db: DbSession,
 ) -> OrganizationResponse:
@@ -593,6 +599,7 @@ async def get_organization(
 @require_org_admin
 async def update_organization(
     request: Request,
+    response: Response,  # noqa: ARG001
     org_id: str,
     data: UpdateOrganizationRequest,
     db: DbSession,
@@ -663,6 +670,7 @@ async def update_organization(
 @require_org_owner
 async def delete_organization(
     request: Request,
+    response: Response,  # noqa: ARG001
     org_id: str,
     db: DbSession,
 ) -> dict[str, str]:
@@ -707,6 +715,7 @@ async def delete_organization(
 @require_org_member
 async def list_members(
     request: Request,  # noqa: ARG001
+    response: Response,  # noqa: ARG001
     org_id: str,
     db: DbSession,
     limit: int = Query(default=50, ge=1, le=100),
@@ -748,6 +757,7 @@ async def list_members(
 @require_org_member
 async def get_member(
     request: Request,  # noqa: ARG001
+    response: Response,  # noqa: ARG001
     org_id: str,
     user_id: str,
     db: DbSession,
@@ -786,6 +796,7 @@ async def get_member(
 @require_org_admin
 async def update_member(
     request: Request,
+    response: Response,  # noqa: ARG001
     org_id: str,
     user_id: str,
     data: UpdateMemberRequest,
@@ -861,6 +872,7 @@ async def update_member(
 @require_org_admin
 async def remove_member(
     request: Request,
+    response: Response,  # noqa: ARG001
     org_id: str,
     user_id: str,
     db: DbSession,
@@ -906,6 +918,7 @@ async def remove_member(
 @require_org_admin
 async def block_member(
     request: Request,
+    response: Response,  # noqa: ARG001
     org_id: str,
     user_id: str,
     db: DbSession,
@@ -949,6 +962,7 @@ async def block_member(
 @require_org_admin
 async def unblock_member(
     request: Request,
+    response: Response,  # noqa: ARG001
     org_id: str,
     user_id: str,
     db: DbSession,
@@ -992,6 +1006,7 @@ async def unblock_member(
 @require_org_admin
 async def list_invitations(
     request: Request,  # noqa: ARG001
+    response: Response,  # noqa: ARG001
     org_id: str,
     db: DbSession,
     status: str | None = Query(None, pattern=r"^(pending|accepted|expired|revoked)$"),
@@ -1029,6 +1044,7 @@ async def list_invitations(
 @require_org_admin
 async def send_invitation(
     request: Request,
+    response: Response,  # noqa: ARG001
     org_id: str,
     data: InviteMemberRequest,
     db: DbSession,
@@ -1140,6 +1156,7 @@ async def send_invitation(
 @require_org_admin
 async def revoke_invitation(
     request: Request,
+    response: Response,  # noqa: ARG001
     org_id: str,
     invitation_id: str,
     db: DbSession,
@@ -1184,6 +1201,7 @@ async def revoke_invitation(
 @require_org_admin
 async def list_invite_links(
     request: Request,  # noqa: ARG001
+    response: Response,  # noqa: ARG001
     org_id: str,
     db: DbSession,
 ) -> list[InviteLinkResponse]:
@@ -1219,6 +1237,7 @@ async def list_invite_links(
 @require_org_admin
 async def create_invite_link(
     request: Request,
+    response: Response,  # noqa: ARG001
     org_id: str,
     data: CreateInviteLinkRequest,
     db: DbSession,
@@ -1273,6 +1292,7 @@ async def create_invite_link(
 @require_org_admin
 async def deactivate_invite_link(
     request: Request,
+    response: Response,  # noqa: ARG001
     org_id: str,
     link_id: str,
     db: DbSession,
@@ -1313,6 +1333,7 @@ async def deactivate_invite_link(
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def join_via_invitation(
     request: Request,
+    response: Response,  # noqa: ARG001
     token: str,
     db: DbSession,
 ) -> JoinOrganizationResponse:
@@ -1416,6 +1437,7 @@ async def join_via_invitation(
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def join_via_link(
     request: Request,
+    response: Response,  # noqa: ARG001
     code: str,
     db: DbSession,
 ) -> JoinOrganizationResponse:
@@ -1525,6 +1547,7 @@ async def join_via_link(
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def check_domain_auto_join(
     request: Request,
+    response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> dict[str, Any]:
     """Check if user's email domain has auto-join enabled for any organization."""
@@ -1566,6 +1589,7 @@ async def check_domain_auto_join(
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def join_via_domain(
     request: Request,
+    response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> JoinOrganizationResponse:
     """Join an organization via domain-based auto-join."""
@@ -1664,6 +1688,7 @@ async def join_via_domain(
 @require_org_permission("billing:view")
 async def get_billing_summary(
     request: Request,
+    response: Response,  # noqa: ARG001
     org_id: str,
     db: DbSession,
 ) -> UsageSummaryResponse:
@@ -1748,6 +1773,7 @@ async def get_billing_summary(
 @require_org_admin
 async def allocate_credits_to_member(
     request: Request,
+    response: Response,  # noqa: ARG001
     org_id: str,
     user_id: str,
     data: AllocateCreditsRequest,

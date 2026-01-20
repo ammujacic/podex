@@ -171,6 +171,10 @@ class UserSubscription(Base):
     sponsored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sponsor_reason: Mapped[str | None] = mapped_column(Text)
 
+    # Credit grant tracking - when monthly credits were last granted
+    # Used to ensure credits are only granted once per billing period
+    last_credit_grant: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
