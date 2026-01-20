@@ -1,7 +1,97 @@
 import type { Theme } from './types';
 
 // ============================================================================
-// Terminal Noir (Default Dark Theme)
+// Podex (Default Theme - matches CSS defaults)
+// ============================================================================
+
+export const podexTheme: Theme = {
+  id: 'podex',
+  name: 'Podex',
+  type: 'dark',
+  monacoTheme: 'vs-dark',
+  colors: {
+    void: '#07070a',
+    surface: '#0f0f13',
+    elevated: '#1a1a1f',
+    overlay: '#232326',
+
+    textPrimary: '#ffffff',
+    textSecondary: '#e5e5e5',
+    textMuted: '#a3a3a3',
+
+    borderDefault: '#374151',
+    borderSubtle: '#1f2937',
+
+    accentPrimary: '#8B5CF6', // Purple from CSS defaults
+    accentSecondary: '#7C3AED',
+    accentMuted: '#6D28D9',
+
+    success: '#10b981',
+    warning: '#f59e0b',
+    error: '#ef4444',
+    info: '#3b82f6',
+
+    syntax: {
+      keyword: '#c084fc',
+      string: '#34d399',
+      number: '#fbbf24',
+      comment: '#6b7280',
+      function: '#8b5cf6',
+      variable: '#e5e7eb',
+      type: '#60a5fa',
+      operator: '#c084fc',
+      property: '#34d399',
+      punctuation: '#e5e7eb',
+      className: '#60a5fa',
+      constant: '#fbbf24',
+      parameter: '#f59e0b',
+      tag: '#c084fc',
+      attribute: '#8b5cf6',
+    },
+
+    editor: {
+      background: '#07070a',
+      foreground: '#ffffff',
+      lineHighlight: '#1a1a1f',
+      selection: '#374151',
+      cursor: '#8b5cf6',
+      gutterBackground: '#07070a',
+      gutterForeground: '#6b7280',
+      lineNumber: '#6b7280',
+      lineNumberActive: '#e5e7eb',
+      matchingBracket: '#374151',
+      indentGuide: '#1f2937',
+      activeIndentGuide: '#374151',
+      findMatch: '#f59e0b44',
+      findMatchHighlight: '#f59e0b22',
+    },
+
+    terminal: {
+      background: '#07070a',
+      foreground: '#ffffff',
+      cursor: '#8b5cf6',
+      black: '#000000',
+      red: '#ef4444',
+      green: '#10b981',
+      yellow: '#f59e0b',
+      blue: '#3b82f6',
+      magenta: '#8b5cf6',
+      cyan: '#06b6d4',
+      white: '#e5e7eb',
+      brightBlack: '#6b7280',
+      brightRed: '#f87171',
+      brightGreen: '#34d399',
+      brightYellow: '#fbbf24',
+      brightBlue: '#60a5fa',
+      brightMagenta: '#c084fc',
+      brightCyan: '#22d3ee',
+      brightWhite: '#ffffff',
+    },
+  },
+};
+
+// ============================================================================
+// Terminal Noir (Terminal-inspired Dark Theme)
 // ============================================================================
 
 export const terminalNoir: Theme = {
@@ -725,6 +815,7 @@ export const highContrastDark: Theme = {
 // ============================================================================
 
 export const themes: Theme[] = [
+  podexTheme,
   terminalNoir,
   lightTheme,
   monokai,

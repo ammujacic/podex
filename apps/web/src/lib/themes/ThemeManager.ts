@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Theme } from './types';
-import { themes, terminalNoir } from './themes';
+import { themes, podexTheme } from './themes';
 
 // ============================================================================
 // Theme Store
@@ -26,14 +26,14 @@ interface ThemeState {
 export const useThemeStore = create<ThemeState>()(
   persist(
     (set, get) => ({
-      currentThemeId: 'terminal-noir',
+      currentThemeId: 'podex',
       customThemes: [],
       cssVariablesApplied: false,
 
       get currentTheme() {
         const state = get();
         const allThemes = [...themes, ...state.customThemes];
-        return allThemes.find((t) => t.id === state.currentThemeId) || terminalNoir;
+        return allThemes.find((t) => t.id === state.currentThemeId) || podexTheme;
       },
 
       setTheme: (themeId) => {
@@ -56,7 +56,7 @@ export const useThemeStore = create<ThemeState>()(
         const state = get();
         // If removing current theme, switch to default
         if (state.currentThemeId === themeId) {
-          state.setTheme('terminal-noir');
+          state.setTheme('podex');
         }
         set((state) => ({
           customThemes: state.customThemes.filter((t) => t.id !== themeId),
@@ -264,7 +264,7 @@ export function getMonacoThemeData(theme: Theme): object {
 export function initializeTheme(): void {
   const state = useThemeStore.getState();
   const allThemes = [...themes, ...state.customThemes];
-  const theme = allThemes.find((t) => t.id === state.currentThemeId) || terminalNoir;
+  const theme = allThemes.find((t) => t.id === state.currentThemeId) || podexTheme;
   applyThemeToCss(theme);
 }
 

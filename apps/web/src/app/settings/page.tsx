@@ -7,7 +7,6 @@ import {
   Settings,
   Terminal,
   GitBranch,
-  Palette,
   FileCode,
   Save,
   Loader2,
@@ -37,7 +36,7 @@ import { ExternalAgentSettings } from '@/components/settings/ExternalAgentSettin
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { cn } from '@/lib/utils';
 
-type TabId = 'general' | 'dotfiles' | 'git' | 'appearance' | 'templates' | 'external-agents';
+type TabId = 'general' | 'dotfiles' | 'git' | 'templates' | 'external-agents';
 
 interface Tab {
   id: TabId;
@@ -49,7 +48,6 @@ const tabs: Tab[] = [
   { id: 'general', label: 'General', icon: <Settings className="w-4 h-4" /> },
   { id: 'dotfiles', label: 'Shell & Dotfiles', icon: <Terminal className="w-4 h-4" /> },
   { id: 'git', label: 'Git Config', icon: <GitBranch className="w-4 h-4" /> },
-  { id: 'appearance', label: 'Appearance', icon: <Palette className="w-4 h-4" /> },
   { id: 'templates', label: 'Pod Templates', icon: <FileCode className="w-4 h-4" /> },
   { id: 'external-agents', label: 'External Agents', icon: <Box className="w-4 h-4" /> },
 ];
@@ -64,20 +62,6 @@ const editorOptions = [
   { value: 'vscode', label: 'VS Code (Monaco)' },
   { value: 'vim', label: 'Vim' },
   { value: 'neovim', label: 'Neovim' },
-];
-
-const themeOptions = [
-  { value: 'dark', label: 'Dark' },
-  { value: 'light', label: 'Light' },
-  { value: 'system', label: 'System' },
-];
-
-const editorThemeOptions = [
-  { value: 'vs-dark', label: 'Visual Studio Dark' },
-  { value: 'vs-light', label: 'Visual Studio Light' },
-  { value: 'github-dark', label: 'GitHub Dark' },
-  { value: 'monokai', label: 'Monokai' },
-  { value: 'dracula', label: 'Dracula' },
 ];
 
 // Template icon configuration with CDN URLs (Simple Icons)
@@ -169,8 +153,6 @@ export default function SettingsPage() {
           git_name: configData.git_name,
           git_email: configData.git_email,
           default_template_id: configData.default_template_id,
-          theme: configData.theme,
-          editor_theme: configData.editor_theme,
         });
       } catch {
         setError('Failed to load settings');
@@ -667,52 +649,6 @@ export default function SettingsPage() {
                       placeholder="you@example.com"
                     />
                     <p className="text-xs text-text-muted mt-1">Used for git commit author email</p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Appearance Tab */}
-            {effectiveTab === 'appearance' && (
-              <div className="space-y-6">
-                <div>
-                  <h2 className="text-lg font-medium text-text-primary mb-1">Appearance</h2>
-                  <p className="text-sm text-text-secondary">Customize the look and feel.</p>
-                </div>
-
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium text-text-primary mb-1">
-                      Theme
-                    </label>
-                    <select
-                      value={formData.theme || 'dark'}
-                      onChange={(e) => updateFormData('theme', e.target.value)}
-                      className="w-full bg-surface border border-border-default rounded-md px-3 py-2 text-sm text-text-primary"
-                    >
-                      {themeOptions.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-text-primary mb-1">
-                      Editor Theme
-                    </label>
-                    <select
-                      value={formData.editor_theme || 'vs-dark'}
-                      onChange={(e) => updateFormData('editor_theme', e.target.value)}
-                      className="w-full bg-surface border border-border-default rounded-md px-3 py-2 text-sm text-text-primary"
-                    >
-                      {editorThemeOptions.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
                   </div>
                 </div>
               </div>
