@@ -19,6 +19,7 @@ export interface InlineCompletionRequest {
   language: string;
   filePath: string;
   maxTokens?: number;
+  model?: string | null; // User-selected model (platform, user API key, or local)
 }
 
 export interface InlineCompletionResponse {
@@ -32,6 +33,7 @@ export interface CompletionProviderConfig {
   debounceMs: number;
   maxTokens: number;
   minPrefixLength: number;
+  model?: string | null; // User-selected model for completions
 }
 
 // ============================================================================
@@ -56,6 +58,7 @@ async function fetchInlineCompletion(
         language: request.language,
         file_path: request.filePath,
         max_tokens: request.maxTokens || 128,
+        model: request.model || null,
       }),
     });
 
@@ -153,6 +156,7 @@ export function createInlineCompletionsProvider(
                 language,
                 filePath: uri,
                 maxTokens: config.maxTokens,
+                model: config.model,
               },
               signal
             );

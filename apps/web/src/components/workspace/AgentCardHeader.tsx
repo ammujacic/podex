@@ -8,7 +8,6 @@ import {
   ClipboardList,
   Copy,
   ImageOff,
-  Key,
   KeyRound,
   Loader2,
   MoreVertical,
@@ -420,7 +419,6 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-64">
-              <DropdownMenuLabel>Select Model</DropdownMenuLabel>
               <DropdownMenuSeparator />
 
               {isCliAgent ? (
@@ -441,7 +439,9 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                 /* Podex agents: Tiered categories */
                 <>
                   {/* Flagship Tier */}
-                  <DropdownMenuLabel className="text-xs text-amber-400">Flagship</DropdownMenuLabel>
+                  <DropdownMenuLabel className="text-xs text-text-primary">
+                    Flagship
+                  </DropdownMenuLabel>
                   <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
                     {modelsByTier.flagship.map((model) => (
                       <ModelTooltip key={model.id} model={model} side="right">
@@ -458,7 +458,9 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                   <DropdownMenuSeparator />
 
                   {/* Balanced Tier */}
-                  <DropdownMenuLabel className="text-xs text-blue-400">Balanced</DropdownMenuLabel>
+                  <DropdownMenuLabel className="text-xs text-text-primary">
+                    Balanced
+                  </DropdownMenuLabel>
                   <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
                     {modelsByTier.balanced.map((model) => (
                       <ModelTooltip key={model.id} model={model} side="right">
@@ -475,7 +477,7 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                   <DropdownMenuSeparator />
 
                   {/* Fast Tier */}
-                  <DropdownMenuLabel className="text-xs text-green-400">Fast</DropdownMenuLabel>
+                  <DropdownMenuLabel className="text-xs text-text-primary">Fast</DropdownMenuLabel>
                   <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
                     {modelsByTier.fast.map((model) => (
                       <ModelTooltip key={model.id} model={model} side="right">
@@ -494,8 +496,7 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                   {modelsByTier.userApi.length > 0 && (
                     <>
                       <DropdownMenuSeparator />
-                      <DropdownMenuLabel className="text-xs text-purple-400 flex items-center gap-1">
-                        <Key className="h-3 w-3" />
+                      <DropdownMenuLabel className="text-xs text-accent-primary">
                         Your API Keys
                       </DropdownMenuLabel>
                       <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
@@ -505,10 +506,7 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                               value={model.id}
                               className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
                             >
-                              <span className="flex items-center gap-1">
-                                <Key className="h-3 w-3 text-purple-400" />
-                                {model.shortName}
-                              </span>
+                              <span>{model.shortName}</span>
                               <ModelCapabilityBadges model={model} compact />
                             </DropdownMenuRadioItem>
                           </ModelTooltip>
@@ -568,7 +566,9 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                 /* Podex agents: Tiered categories */
                 <>
                   {/* Flagship */}
-                  <DropdownMenuLabel className="text-xs text-amber-400">Flagship</DropdownMenuLabel>
+                  <DropdownMenuLabel className="text-xs text-text-primary">
+                    Flagship
+                  </DropdownMenuLabel>
                   <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
                     {modelsByTier.flagship.map((model) => (
                       <DropdownMenuRadioItem
@@ -583,7 +583,9 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                   </DropdownMenuRadioGroup>
                   <DropdownMenuSeparator />
                   {/* Balanced */}
-                  <DropdownMenuLabel className="text-xs text-blue-400">Balanced</DropdownMenuLabel>
+                  <DropdownMenuLabel className="text-xs text-text-primary">
+                    Balanced
+                  </DropdownMenuLabel>
                   <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
                     {modelsByTier.balanced.map((model) => (
                       <DropdownMenuRadioItem
@@ -598,7 +600,7 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                   </DropdownMenuRadioGroup>
                   <DropdownMenuSeparator />
                   {/* Fast */}
-                  <DropdownMenuLabel className="text-xs text-green-400">Fast</DropdownMenuLabel>
+                  <DropdownMenuLabel className="text-xs text-text-primary">Fast</DropdownMenuLabel>
                   <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
                     {modelsByTier.fast.map((model) => (
                       <DropdownMenuRadioItem
@@ -615,8 +617,7 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                   {modelsByTier.userApi.length > 0 && (
                     <>
                       <DropdownMenuSeparator />
-                      <DropdownMenuLabel className="text-xs text-purple-400 flex items-center gap-1">
-                        <Key className="h-3 w-3" />
+                      <DropdownMenuLabel className="text-xs text-accent-primary">
                         Your API Keys
                       </DropdownMenuLabel>
                       <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
@@ -626,10 +627,7 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                             value={model.id}
                             className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
                           >
-                            <span className="flex items-center gap-1">
-                              <Key className="h-3 w-3 text-purple-400" />
-                              {model.shortName}
-                            </span>
+                            <span>{model.shortName}</span>
                             <ModelCapabilityBadges model={model} compact />
                           </DropdownMenuRadioItem>
                         ))}

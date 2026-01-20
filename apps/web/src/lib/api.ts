@@ -1403,60 +1403,102 @@ export interface GitDiffFile {
   diff: string | null;
 }
 
-export async function getGitStatus(sessionId: string): Promise<GitStatus> {
-  return api.get<GitStatus>(`/api/sessions/${sessionId}/git/status`);
+export async function getGitStatus(sessionId: string, workingDir?: string): Promise<GitStatus> {
+  const params = workingDir ? `?working_dir=${encodeURIComponent(workingDir)}` : '';
+  return api.get<GitStatus>(`/api/sessions/${sessionId}/git/status${params}`);
 }
 
-export async function getGitBranches(sessionId: string): Promise<GitBranch[]> {
-  return api.get<GitBranch[]>(`/api/sessions/${sessionId}/git/branches`);
+export async function getGitBranches(sessionId: string, workingDir?: string): Promise<GitBranch[]> {
+  const params = workingDir ? `?working_dir=${encodeURIComponent(workingDir)}` : '';
+  return api.get<GitBranch[]>(`/api/sessions/${sessionId}/git/branches${params}`);
 }
 
-export async function getGitLog(sessionId: string, limit = 20): Promise<GitCommit[]> {
-  return api.get<GitCommit[]>(`/api/sessions/${sessionId}/git/log?limit=${limit}`);
+export async function getGitLog(
+  sessionId: string,
+  limit = 20,
+  workingDir?: string
+): Promise<GitCommit[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (workingDir) params.set('working_dir', workingDir);
+  return api.get<GitCommit[]>(`/api/sessions/${sessionId}/git/log?${params}`);
 }
 
-export async function getGitDiff(sessionId: string, staged = false): Promise<GitDiffFile[]> {
-  return api.get<GitDiffFile[]>(`/api/sessions/${sessionId}/git/diff?staged=${staged}`);
+export async function getGitDiff(
+  sessionId: string,
+  staged = false,
+  workingDir?: string
+): Promise<GitDiffFile[]> {
+  const params = new URLSearchParams({ staged: String(staged) });
+  if (workingDir) params.set('working_dir', workingDir);
+  return api.get<GitDiffFile[]>(`/api/sessions/${sessionId}/git/diff?${params}`);
 }
 
-export async function stageFiles(sessionId: string, files: string[]): Promise<void> {
-  await api.post(`/api/sessions/${sessionId}/git/stage`, { files });
+export async function stageFiles(
+  sessionId: string,
+  files: string[],
+  workingDir?: string
+): Promise<void> {
+  await api.post(`/api/sessions/${sessionId}/git/stage`, { files, working_dir: workingDir });
 }
 
-export async function unstageFiles(sessionId: string, files: string[]): Promise<void> {
-  await api.post(`/api/sessions/${sessionId}/git/unstage`, { files });
+export async function unstageFiles(
+  sessionId: string,
+  files: string[],
+  workingDir?: string
+): Promise<void> {
+  await api.post(`/api/sessions/${sessionId}/git/unstage`, { files, working_dir: workingDir });
 }
 
 export async function commitChanges(
   sessionId: string,
   message: string,
-  files?: string[]
+  files?: string[],
+  workingDir?: string
 ): Promise<{ message: string; hash: string }> {
-  return api.post(`/api/sessions/${sessionId}/git/commit`, { message, files });
+  return api.post(`/api/sessions/${sessionId}/git/commit`, {
+    message,
+    files,
+    working_dir: workingDir,
+  });
 }
 
 export async function pushChanges(
   sessionId: string,
   remote = 'origin',
-  branch?: string
+  branch?: string,
+  workingDir?: string
 ): Promise<{ message: string }> {
-  return api.post(`/api/sessions/${sessionId}/git/push`, { remote, branch });
+  return api.post(`/api/sessions/${sessionId}/git/push`, {
+    remote,
+    branch,
+    working_dir: workingDir,
+  });
 }
 
 export async function pullChanges(
   sessionId: string,
   remote = 'origin',
-  branch?: string
+  branch?: string,
+  workingDir?: string
 ): Promise<{ message: string }> {
-  return api.post(`/api/sessions/${sessionId}/git/pull`, { remote, branch });
+  return api.post(`/api/sessions/${sessionId}/git/pull`, {
+    remote,
+    branch,
+    working_dir: workingDir,
+  });
 }
 
 export async function checkoutBranch(
   sessionId: string,
   branch: string,
-  create = false
+  create = false,
+  workingDir?: string
 ): Promise<{ message: string }> {
-  return api.post(`/api/sessions/${sessionId}/git/checkout`, { branch, create });
+  return api.post(`/api/sessions/${sessionId}/git/checkout`, {
+    branch,
+    create,
+    working_dir: workingDir,
+  });
 }
 
 // Branch Comparison
@@ -1492,21 +1534,30 @@ export interface MergePreviewResponse {
 export async function compareBranches(
   sessionId: string,
   base: string,
-  compare: string
+  compare: string,
+  workingDir?: string
 ): Promise<BranchCompareResponse> {
+  const params = new URLSearchParams();
+  params.append('base', base);
+  params.append('compare', compare);
+  if (workingDir) {
+    params.append('working_dir', workingDir);
+  }
   return api.get<BranchCompareResponse>(
-    `/api/sessions/${sessionId}/git/compare/${encodeURIComponent(base)}...${encodeURIComponent(compare)}`
+    `/api/sessions/${sessionId}/git/compare?${params.toString()}`
   );
 }
 
 export async function previewMerge(
   sessionId: string,
   sourceBranch: string,
-  targetBranch: string
+  targetBranch: string,
+  workingDir?: string
 ): Promise<MergePreviewResponse> {
   return api.post<MergePreviewResponse>(`/api/sessions/${sessionId}/git/merge-preview`, {
     source_branch: sourceBranch,
     target_branch: targetBranch,
+    working_dir: workingDir,
   });
 }
 
@@ -4043,6 +4094,58 @@ export async function getUserProviderModels(): Promise<UserProviderModel[]> {
 }
 
 // ============================================================================
+// Local Model Discovery
+// ============================================================================
+
+export interface DiscoveredModel {
+  id: string;
+  name: string;
+  size?: number;
+  modified_at?: string;
+}
+
+export interface DiscoverLocalModelsRequest {
+  provider: 'ollama' | 'lmstudio';
+  base_url: string;
+}
+
+export interface DiscoverLocalModelsResponse {
+  models: DiscoveredModel[];
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Discover available models from a local LLM provider (Ollama or LM Studio).
+ */
+export async function discoverLocalModels(
+  request: DiscoverLocalModelsRequest
+): Promise<DiscoverLocalModelsResponse> {
+  return api.post<DiscoverLocalModelsResponse>('/api/user/config/discover-local-models', request);
+}
+
+/**
+ * Get saved local LLM configuration (base URLs and discovered models).
+ */
+export async function getLocalLLMConfig(): Promise<
+  Record<string, { base_url: string; models: DiscoveredModel[] }>
+> {
+  return api.get<Record<string, { base_url: string; models: DiscoveredModel[] }>>(
+    '/api/user/config/local-llm-config'
+  );
+}
+
+/**
+ * Save a local LLM provider URL (without discovering models).
+ */
+export async function saveLocalLLMUrl(
+  provider: 'ollama' | 'lmstudio',
+  baseUrl: string
+): Promise<void> {
+  await api.post('/api/user/config/local-llm-config/url', { provider, base_url: baseUrl });
+}
+
+// ============================================================================
 // Admin Models APIs (for admin users)
 // ============================================================================
 
@@ -5233,12 +5336,14 @@ export interface ExplanationResponse {
 export async function explainCode(
   code: string,
   language?: string,
-  context?: string
+  context?: string,
+  model?: string | null
 ): Promise<ExplanationResponse> {
   return api.post<ExplanationResponse>('/api/completion/explain', {
     code,
     language,
     context,
+    model,
   });
 }
 
@@ -5262,10 +5367,15 @@ export interface BugDetectionResponse {
 /**
  * Analyze code for potential bugs and issues.
  */
-export async function detectBugs(code: string, language: string): Promise<BugDetectionResponse> {
+export async function detectBugs(
+  code: string,
+  language: string,
+  model?: string | null
+): Promise<BugDetectionResponse> {
   return api.post<BugDetectionResponse>('/api/completion/detect-bugs', {
     code,
     language,
+    model,
   });
 }
 

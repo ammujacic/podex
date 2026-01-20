@@ -9,7 +9,7 @@ export type SheetHeight = 'auto' | 'half' | 'full';
 interface MobileBottomSheetProps {
   isOpen: boolean;
   onClose: () => void;
-  title: string;
+  title?: string;
   icon?: React.ReactNode;
   height?: SheetHeight;
   /** Allow dragging to resize between half and full */
@@ -209,24 +209,28 @@ export function MobileBottomSheet({
         )}
 
         {/* Header */}
-        <div className="px-4 pb-2 flex items-center justify-between flex-shrink-0">
-          <div className="flex items-center gap-2">
-            {icon && <span className="text-text-secondary">{icon}</span>}
-            <h3 id="sheet-title" className="text-lg font-semibold text-text-primary">
-              {title}
-            </h3>
+        {(title || icon || showCloseButton) && (
+          <div className="px-4 pb-2 flex items-center justify-between flex-shrink-0">
+            <div className="flex items-center gap-2">
+              {icon && <span className="text-text-secondary">{icon}</span>}
+              {title && (
+                <h3 id="sheet-title" className="text-lg font-semibold text-text-primary">
+                  {title}
+                </h3>
+              )}
+            </div>
+            {showCloseButton && (
+              <button
+                ref={closeButtonRef}
+                onClick={onClose}
+                className="p-2 -mr-2 rounded-lg hover:bg-surface-hover transition-colors touch-manipulation min-w-[44px] min-h-[44px] flex items-center justify-center"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5 text-text-secondary" />
+              </button>
+            )}
           </div>
-          {showCloseButton && (
-            <button
-              ref={closeButtonRef}
-              onClick={onClose}
-              className="p-2 -mr-2 rounded-lg hover:bg-surface-hover transition-colors touch-manipulation min-w-[44px] min-h-[44px] flex items-center justify-center"
-              aria-label="Close"
-            >
-              <X className="h-5 w-5 text-text-secondary" />
-            </button>
-          )}
-        </div>
+        )}
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto overscroll-contain px-4 pb-4">{children}</div>

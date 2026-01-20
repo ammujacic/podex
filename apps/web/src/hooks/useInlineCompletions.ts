@@ -45,7 +45,7 @@ export function useInlineCompletions({
   const updateSettings = useEditorStore((s) => s.updateSettings);
   const registeredRef = useRef(false);
 
-  const { completionsEnabled, completionsDebounceMs } = settings;
+  const { completionsEnabled, completionsDebounceMs, aiActionModel } = settings;
 
   // Register/update provider when settings change
   useEffect(() => {
@@ -59,6 +59,7 @@ export function useInlineCompletions({
       debounceMs: completionsDebounceMs,
       maxTokens,
       minPrefixLength,
+      model: aiActionModel,
     });
     registeredRef.current = true;
 
@@ -67,7 +68,14 @@ export function useInlineCompletions({
       unregisterInlineCompletionsProvider();
       registeredRef.current = false;
     };
-  }, [monaco, completionsEnabled, completionsDebounceMs, maxTokens, minPrefixLength]);
+  }, [
+    monaco,
+    completionsEnabled,
+    completionsDebounceMs,
+    maxTokens,
+    minPrefixLength,
+    aiActionModel,
+  ]);
 
   // Toggle completions enabled
   const toggleEnabled = useCallback(() => {

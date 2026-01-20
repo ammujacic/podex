@@ -817,8 +817,45 @@ class GCPComputeManager(ComputeManager):
         This sets up a credential helper that reads the token from the GITHUB_TOKEN
         environment variable, enabling git push/pull/fetch operations to GitHub
         without requiring manual authentication.
+
+        Also exports GITHUB_TOKEN in .zshrc and .bashrc so it's available in interactive shells.
         """
         try:
+            # Get the GITHUB_TOKEN from the container's environment
+            # The token should be available in the environment since it was set during pod creation
+            env_check = await self.exec_command(
+                workspace_id,
+                'echo "$GITHUB_TOKEN"',
+            )
+            github_token = env_check.stdout.strip()
+
+            if not github_token:
+                logger.warning(
+                    "GITHUB_TOKEN not found in environment, skipping GitHub auth setup",
+                    workspace_id=workspace_id,
+                )
+                return
+
+            # Export GITHUB_TOKEN in .zshrc and .bashrc so it's available in interactive shells
+            # Check if it's already exported to avoid duplicates
+            # Escape single quotes in the token
+            escaped_token = github_token.replace("'", "'\"'\"'")
+            export_cmd = f"export GITHUB_TOKEN='{escaped_token}'"
+
+            # Add to .bashrc if not already present
+            bashrc_cmd = (
+                f'sh -c \'grep -q "GITHUB_TOKEN" ~/.bashrc 2>/dev/null || '
+                f'echo "{export_cmd}" >> ~/.bashrc\''
+            )
+            await self.exec_command(workspace_id, bashrc_cmd)
+
+            # Add to .zshrc if not already present
+            zshrc_cmd = (
+                f'sh -c \'grep -q "GITHUB_TOKEN" ~/.zshrc 2>/dev/null || '
+                f'echo "{export_cmd}" >> ~/.zshrc\''
+            )
+            await self.exec_command(workspace_id, zshrc_cmd)
+
             # Create a credential helper script that reads from GITHUB_TOKEN env var
             credential_helper_script = """#!/bin/bash
 if [ -n "$GITHUB_TOKEN" ]; then

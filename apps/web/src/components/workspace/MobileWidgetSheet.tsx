@@ -15,7 +15,8 @@ export type WidgetId =
   | 'extensions'
   | 'usage'
   | 'terminal'
-  | 'sentry';
+  | 'sentry'
+  | 'preview';
 
 interface MobileWidgetSheetProps {
   isOpen: boolean;

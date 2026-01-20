@@ -44,6 +44,9 @@ class UsageTrackingContext:
     session_id: str | None = None
     workspace_id: str | None = None
     agent_id: str | None = None
+    # Usage source: "included" (Vertex/platform), "external" (user API key),
+    # "local" (Ollama/LMStudio) - only "included" counts towards quota
+    usage_source: str = "included"
 
 
 @dataclass
@@ -169,6 +172,35 @@ class LLMProvider:
             return None
         return llm_api_keys.get(provider)
 
+    def _determine_usage_source(self, provider: str, llm_api_keys: dict[str, str] | None) -> str:
+        """Determine the usage source for billing purposes.
+
+        Args:
+            provider: The LLM provider being used
+            llm_api_keys: User-provided API keys (if any)
+
+        Returns:
+            Usage source: "included", "external", or "local"
+        """
+        # Local providers (Ollama, LM Studio) - free, no quota impact
+        if provider in ("ollama", "lmstudio"):
+            return "local"
+
+        # If user provided their own API key for this provider, it's external
+        if llm_api_keys and provider in llm_api_keys:
+            return "external"
+
+        # Vertex AI is our platform provider - counts as included
+        if provider == "vertex":
+            return "included"
+
+        # For anthropic/openai without user keys, check if we're using platform keys
+        # If using platform API keys (not Vertex), this is external since user is
+        # consuming their own quota on those providers
+        # NOTE: In current architecture, only Vertex is "included" (platform-provided)
+        # Direct anthropic/openai through platform keys is still "external"
+        return "external"
+
     async def complete(self, request: CompletionRequest) -> dict[str, Any]:
         """
         Generate a completion using the configured LLM provider.
@@ -216,6 +248,9 @@ class LLMProvider:
 
         # Track usage if user context is provided
         if request.user_id and result.get("usage"):
+            # Determine usage source for billing
+            usage_source = self._determine_usage_source(self.provider, request.llm_api_keys)
+
             tracking_context = UsageTrackingContext(
                 user_id=request.user_id,
                 model=request.model,
@@ -223,6 +258,7 @@ class LLMProvider:
                 session_id=request.session_id,
                 workspace_id=request.workspace_id,
                 agent_id=request.agent_id,
+                usage_source=usage_source,
             )
             await self._track_usage(tracking_context)
 
@@ -307,6 +343,7 @@ class LLMProvider:
                 workspace_id=context.workspace_id,
                 agent_id=context.agent_id,
                 metadata={"provider": self.provider},
+                usage_source=context.usage_source,
             )
             await tracker.record_token_usage(params)
         except Exception:

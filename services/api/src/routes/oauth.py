@@ -15,10 +15,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.cache import cache_delete, user_config_key
+from src.compute_client import compute_client
 from src.config import settings
 from src.database.connection import get_db
 from src.database.models import (
     GitHubIntegration,
+    Session,
     SubscriptionPlan,
     User,
     UserConfig,
@@ -412,6 +414,156 @@ async def _update_git_config_from_github(
     )
 
 
+async def _update_workspaces_with_github_token(
+    db: AsyncSession,
+    user_id: str,
+    github_token: str,
+) -> None:
+    """Update all running workspaces for a user with GitHub token configuration.
+
+    This ensures that when a user connects their GitHub account, all their
+    existing workspaces are configured to use git with GitHub authentication.
+    """
+    try:
+        # Get all active sessions for this user that have a workspace
+        result = await db.execute(
+            select(Session)
+            .where(Session.owner_id == user_id)
+            .where(Session.workspace_id.isnot(None))
+            .where(Session.status.in_(["running", "standby"]))
+        )
+        sessions = result.scalars().all()
+
+        if not sessions:
+            logger.info(
+                "No active workspaces to update with GitHub token",
+                user_id=user_id,
+            )
+            return
+
+        logger.info(
+            "Updating workspaces with GitHub token",
+            user_id=user_id,
+            workspace_count=len(sessions),
+        )
+
+        # Update each workspace
+        updated_count = 0
+        for session in sessions:
+            if not session.workspace_id:
+                continue
+
+            try:
+                workspace_id = session.workspace_id
+
+                # Export GITHUB_TOKEN in .zshrc and .bashrc
+                # First, check if it's already exported to avoid duplicates
+                # Use single quotes to properly escape the token
+                export_cmd = f"export GITHUB_TOKEN='{github_token}'"
+
+                # Add to .bashrc if not already present
+                # Use sh -c to properly handle the command
+                bashrc_cmd = (
+                    f'sh -c \'grep -q "GITHUB_TOKEN" ~/.bashrc 2>/dev/null || '
+                    f'echo "{export_cmd}" >> ~/.bashrc\''
+                )
+                await compute_client.exec_command(
+                    workspace_id, user_id, bashrc_cmd, exec_timeout=10
+                )
+
+                # Add to .zshrc if not already present
+                zshrc_cmd = (
+                    f'sh -c \'grep -q "GITHUB_TOKEN" ~/.zshrc 2>/dev/null || '
+                    f'echo "{export_cmd}" >> ~/.zshrc\''
+                )
+                await compute_client.exec_command(workspace_id, user_id, zshrc_cmd, exec_timeout=10)
+
+                # Set up git credential helper
+                credential_helper_script = """#!/bin/bash
+if [ -n "$GITHUB_TOKEN" ]; then
+    echo "protocol=https"
+    echo "host=github.com"
+    echo "username=x-access-token"
+    echo "password=$GITHUB_TOKEN"
+fi
+"""
+
+                # Create credential helper script
+                script_path = "~/.local/bin/git-credential-github-token"
+                await compute_client.exec_command(
+                    workspace_id,
+                    user_id,
+                    "mkdir -p ~/.local/bin",
+                    exec_timeout=10,
+                )
+
+                # Write the script using a heredoc (same approach as docker_manager)
+                # Use a single command with heredoc
+                script_cmd = (
+                    f"mkdir -p ~/.local/bin && cat > {script_path} << 'SCRIPT_EOF'\n"
+                    f"{credential_helper_script}SCRIPT_EOF"
+                )
+                await compute_client.exec_command(
+                    workspace_id,
+                    user_id,
+                    script_cmd,
+                    exec_timeout=10,
+                )
+
+                # Make it executable
+                await compute_client.exec_command(
+                    workspace_id,
+                    user_id,
+                    f"chmod +x {script_path}",
+                    exec_timeout=10,
+                )
+
+                # Configure git to use this credential helper
+                helper_cmd = (
+                    "git config --global credential.https://github.com.helper "
+                    "'!~/.local/bin/git-credential-github-token'"
+                )
+                await compute_client.exec_command(
+                    workspace_id,
+                    user_id,
+                    helper_cmd,
+                    exec_timeout=10,
+                )
+
+                updated_count += 1
+                logger.info(
+                    "Updated workspace with GitHub token",
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                )
+
+            except Exception as e:
+                logger.warning(
+                    "Failed to update workspace with GitHub token",
+                    workspace_id=session.workspace_id,
+                    user_id=user_id,
+                    error=str(e),
+                    exc_info=True,
+                )
+                # Continue with other workspaces even if one fails
+
+        logger.info(
+            "Finished updating workspaces with GitHub token",
+            user_id=user_id,
+            updated_count=updated_count,
+            total_count=len(sessions),
+        )
+
+    except Exception as e:
+        # Non-fatal: log error but don't fail the GitHub linking
+        logger.warning(
+            "Failed to update workspaces with GitHub token",
+            user_id=user_id,
+            error=str(e),
+            exc_info=True,
+        )
+
+
 def _build_token_response(
     user: User,
     request: Request,
@@ -540,6 +692,13 @@ async def github_callback(
         user.id,
         user_data.name,
         user_data.email,
+    )
+
+    # Update all existing workspaces with GitHub token configuration
+    await _update_workspaces_with_github_token(
+        db,
+        user.id,
+        access_token,
     )
 
     # Log token info for debugging
@@ -708,6 +867,13 @@ async def github_link_callback(
         user_id,
         user_data.name,
         user_data.email,
+    )
+
+    # Update all existing workspaces with GitHub token configuration
+    await _update_workspaces_with_github_token(
+        db,
+        user_id,
+        access_token,
     )
 
     logger.info(

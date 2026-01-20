@@ -655,41 +655,84 @@ async def list_user_provider_models(
     config_result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
     config = config_result.scalar_one_or_none()
 
-    if not config or not config.llm_api_keys:
-        return []
+    models: list[UserProviderModelResponse] = []
 
-    configured_providers = list(config.llm_api_keys.keys())
+    # Add models from API key providers (cloud providers)
+    if config and config.llm_api_keys:
+        configured_providers = list(config.llm_api_keys.keys())
 
-    # Query user-key models from database where provider matches user's configured keys
-    query = (
-        select(LLMModel)
-        .where(LLMModel.is_enabled == True)
-        .where(LLMModel.is_user_key_model == True)
-        .where(LLMModel.provider.in_(configured_providers))
-        .order_by(LLMModel.sort_order, LLMModel.display_name)
-    )
-
-    result = await db.execute(query)
-    db_models = result.scalars().all()
-
-    models: list[UserProviderModelResponse] = [
-        UserProviderModelResponse(
-            model_id=m.model_id,
-            display_name=m.display_name,
-            provider=m.provider,
-            family=m.family,
-            description=(m.model_metadata or {}).get("description"),
-            cost_tier=m.cost_tier,
-            capabilities=m.capabilities or {},
-            context_window=m.context_window,
-            max_output_tokens=m.max_output_tokens,
-            is_user_key=True,
-            input_cost_per_million=m.input_cost_per_million,
-            output_cost_per_million=m.output_cost_per_million,
-            good_for=(m.model_metadata or {}).get("good_for", []),
+        # Query user-key models from database where provider matches user's configured keys
+        query = (
+            select(LLMModel)
+            .where(LLMModel.is_enabled == True)
+            .where(LLMModel.is_user_key_model == True)
+            .where(LLMModel.provider.in_(configured_providers))
+            .order_by(LLMModel.sort_order, LLMModel.display_name)
         )
-        for m in db_models
-    ]
+
+        result = await db.execute(query)
+        db_models = result.scalars().all()
+
+        models.extend(
+            [
+                UserProviderModelResponse(
+                    model_id=m.model_id,
+                    display_name=m.display_name,
+                    provider=m.provider,
+                    family=m.family,
+                    description=(m.model_metadata or {}).get("description"),
+                    cost_tier=m.cost_tier,
+                    capabilities=m.capabilities or {},
+                    context_window=m.context_window,
+                    max_output_tokens=m.max_output_tokens,
+                    is_user_key=True,
+                    input_cost_per_million=m.input_cost_per_million,
+                    output_cost_per_million=m.output_cost_per_million,
+                    good_for=(m.model_metadata or {}).get("good_for", []),
+                )
+                for m in db_models
+            ]
+        )
+
+    # Add local models (Ollama, LM Studio) from discovered config
+    if config and config.agent_preferences:
+        local_config = config.agent_preferences.get("local_llm_config", {})
+        for provider, provider_config in local_config.items():
+            if provider in {"ollama", "lmstudio"} and provider_config.get("models"):
+                # Determine family based on provider
+                # Most local models are Llama-based
+                family = "llama"
+
+                for model_data in provider_config["models"]:
+                    model_name = model_data.get("name", model_data.get("id", ""))
+                    model_id = f"{provider}/{model_name}"
+
+                    # Estimate context window and capabilities for local models
+                    # Most local models have similar capabilities
+                    models.append(
+                        UserProviderModelResponse(
+                            model_id=model_id,
+                            display_name=f"{model_name} ({provider})",
+                            provider=provider,
+                            family=family,
+                            description=f"Local model via {provider}",
+                            cost_tier="low",  # Local models are free
+                            capabilities={
+                                "vision": False,  # Most local models don't support vision
+                                "thinking": False,
+                                "thinking_coming_soon": False,
+                                "tool_use": True,  # Many local models support tools
+                                "streaming": True,
+                                "json_mode": True,
+                            },
+                            context_window=200000,  # Conservative estimate
+                            max_output_tokens=8192,  # Conservative estimate
+                            is_user_key=False,  # Local models don't require API keys
+                            input_cost_per_million=0.0,  # Free
+                            output_cost_per_million=0.0,  # Free
+                            good_for=["Coding", "Local Development", "Privacy"],
+                        )
+                    )
 
     return models
 

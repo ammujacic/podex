@@ -470,7 +470,9 @@ class DockerComputeManager(ComputeManager):
 
             # Set up GitHub token authentication if GITHUB_TOKEN is in environment
             if config.environment.get("GITHUB_TOKEN"):
-                await self._setup_github_token_auth(workspace_id)
+                await self._setup_github_token_auth(
+                    workspace_id, config.environment["GITHUB_TOKEN"]
+                )
 
             # Clone repos if specified (only if no GCS files were synced)
             if config.repos:
@@ -601,14 +603,55 @@ class DockerComputeManager(ComputeManager):
                 exc_info=True,
             )
 
-    async def _setup_github_token_auth(self, workspace_id: str) -> None:
+    async def _setup_github_token_auth(self, workspace_id: str, github_token: str) -> None:
         """Configure git to use GITHUB_TOKEN environment variable for GitHub authentication.
 
         This sets up a credential helper that reads the token from the GITHUB_TOKEN
         environment variable, enabling git push/pull/fetch operations to GitHub
         without requiring manual authentication.
+
+        Also exports GITHUB_TOKEN in .zshrc and .bashrc so it's available in interactive shells.
+
+        Args:
+            workspace_id: The workspace ID.
+            github_token: The GitHub access token to use.
         """
         try:
+            if not github_token:
+                logger.warning(
+                    "GITHUB_TOKEN is empty, skipping GitHub auth setup",
+                    workspace_id=workspace_id,
+                )
+                return
+
+            # Export GITHUB_TOKEN in .zshrc and .bashrc so it's available in interactive shells
+            # Check if it's already exported to avoid duplicates
+            # Escape single quotes in the token
+            escaped_token = github_token.replace("'", "'\"'\"'")
+            export_cmd = f"export GITHUB_TOKEN='{escaped_token}'"
+
+            # Add to .bashrc if not already present
+            bashrc_cmd = (
+                f'sh -c \'grep -q "GITHUB_TOKEN" ~/.bashrc 2>/dev/null || '
+                f'echo "{export_cmd}" >> ~/.bashrc\''
+            )
+            await self.exec_command(
+                workspace_id,
+                bashrc_cmd,
+                timeout=10,
+            )
+
+            # Add to .zshrc if not already present
+            zshrc_cmd = (
+                f'sh -c \'grep -q "GITHUB_TOKEN" ~/.zshrc 2>/dev/null || '
+                f'echo "{export_cmd}" >> ~/.zshrc\''
+            )
+            await self.exec_command(
+                workspace_id,
+                zshrc_cmd,
+                timeout=10,
+            )
+
             # Create a credential helper script that reads from GITHUB_TOKEN env var
             # This script outputs the credentials in the format git expects
             credential_helper_script = """#!/bin/bash

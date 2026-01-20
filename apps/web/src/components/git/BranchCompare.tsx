@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import {
   GitBranch,
   GitCommit,
@@ -253,11 +253,18 @@ interface BranchCompareProps {
   branches: Branch[];
   className?: string;
   onClose?: () => void;
+  workingDir?: string;
 }
 
-export function BranchCompare({ sessionId, branches, className, onClose }: BranchCompareProps) {
-  const [baseBranch, setBaseBranch] = useState<string>('main');
-  const [compareBranch, setCompareBranch] = useState<string>('');
+export function BranchCompare({
+  sessionId,
+  branches,
+  className,
+  onClose,
+  workingDir,
+}: BranchCompareProps) {
+  const [baseBranch, setBaseBranch] = useState<string>('HEAD');
+  const [compareBranch, setCompareBranch] = useState<string>('origin/HEAD');
   const [compareResult, setCompareResult] = useState<BranchCompareResult | null>(null);
   const [mergePreview, setMergePreview] = useState<MergePreviewResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -265,16 +272,16 @@ export function BranchCompare({ sessionId, branches, className, onClose }: Branc
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'commits' | 'files'>('commits');
 
-  // Set initial compare branch to current branch if not main
-  useState(() => {
-    const currentBranch = branches.find((b) => b.current);
-    if (currentBranch && currentBranch.name !== 'main') {
-      setCompareBranch(currentBranch.name);
-    }
-  });
+  // Auto-load comparison on mount with default values (HEAD vs origin/HEAD)
+  useEffect(() => {
+    handleCompare();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only run on mount
 
   const handleCompare = useCallback(async () => {
-    if (!baseBranch || !compareBranch) return;
+    // Default to HEAD vs origin/HEAD if branches are empty
+    const base = baseBranch || 'HEAD';
+    const compare = compareBranch || 'origin/HEAD';
 
     setIsLoading(true);
     setError(null);
@@ -282,14 +289,14 @@ export function BranchCompare({ sessionId, branches, className, onClose }: Branc
     setMergePreview(null);
 
     try {
-      const data = await compareBranches(sessionId, baseBranch, compareBranch);
+      const data = await compareBranches(sessionId, base, compare, workingDir);
       setCompareResult(data as BranchCompareResult);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to compare branches');
     } finally {
       setIsLoading(false);
     }
-  }, [baseBranch, compareBranch, sessionId]);
+  }, [baseBranch, compareBranch, sessionId, workingDir]);
 
   const handlePreviewMerge = useCallback(async () => {
     if (!baseBranch || !compareBranch) return;
@@ -297,7 +304,7 @@ export function BranchCompare({ sessionId, branches, className, onClose }: Branc
     setIsMergeLoading(true);
 
     try {
-      const data = await previewMerge(sessionId, compareBranch, baseBranch);
+      const data = await previewMerge(sessionId, compareBranch, baseBranch, workingDir);
       setMergePreview(data as MergePreviewResult);
     } catch (err) {
       setMergePreview({
@@ -310,7 +317,7 @@ export function BranchCompare({ sessionId, branches, className, onClose }: Branc
     } finally {
       setIsMergeLoading(false);
     }
-  }, [baseBranch, compareBranch, sessionId]);
+  }, [baseBranch, compareBranch, sessionId, workingDir]);
 
   const swapBranches = useCallback(() => {
     const temp = baseBranch;
@@ -343,9 +350,8 @@ export function BranchCompare({ sessionId, branches, className, onClose }: Branc
             onChange={(e) => setBaseBranch(e.target.value)}
             className="w-40 px-3 py-1.5 text-sm rounded bg-elevated border border-border-subtle text-text-primary focus:outline-none focus:ring-2 focus:ring-brand-500/50"
           >
-            <option value="" disabled>
-              Base branch
-            </option>
+            <option value="HEAD">HEAD (Local)</option>
+            <option value="origin/HEAD">origin/HEAD (Remote)</option>
             {branches.map((branch) => (
               <option key={branch.name} value={branch.name}>
                 {branch.name}
@@ -366,9 +372,8 @@ export function BranchCompare({ sessionId, branches, className, onClose }: Branc
             onChange={(e) => setCompareBranch(e.target.value)}
             className="w-40 px-3 py-1.5 text-sm rounded bg-elevated border border-border-subtle text-text-primary focus:outline-none focus:ring-2 focus:ring-brand-500/50"
           >
-            <option value="" disabled>
-              Compare branch
-            </option>
+            <option value="HEAD">HEAD (Local)</option>
+            <option value="origin/HEAD">origin/HEAD (Remote)</option>
             {branches
               .filter((b) => b.name !== baseBranch)
               .map((branch) => (
@@ -380,7 +385,7 @@ export function BranchCompare({ sessionId, branches, className, onClose }: Branc
 
           <Button
             onClick={handleCompare}
-            disabled={!baseBranch || !compareBranch || isLoading}
+            disabled={!baseBranch || !compareBranch || isLoading || baseBranch === compareBranch}
             size="sm"
           >
             {isLoading ? (

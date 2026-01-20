@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Brain, Eye, Key } from 'lucide-react';
+import { Brain, Eye } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { PublicModel, UserProviderModel } from '@/lib/api';
 
@@ -28,7 +28,7 @@ export function ModelTierSection({
 
   return (
     <div>
-      <p className={cn('text-xs font-medium mb-2', titleColor)}>{title}</p>
+      <p className={cn('text-xs font-medium mb-2 text-text-primary', titleColor)}>{title}</p>
       <div className="space-y-1">
         {models.map((model) => (
           <button
@@ -71,10 +71,7 @@ export function UserModelsSection({ models, currentModel, onSelect }: UserModels
 
   return (
     <div>
-      <p className="text-xs font-medium text-purple-400 mb-2 flex items-center gap-1">
-        <Key className="h-3 w-3" />
-        Your API Keys
-      </p>
+      <p className="text-xs font-medium text-accent-primary mb-2">Your API Keys</p>
       <div className="space-y-1">
         {models.map((model) => (
           <button
@@ -87,10 +84,7 @@ export function UserModelsSection({ models, currentModel, onSelect }: UserModels
                 : 'bg-surface-hover text-text-primary hover:bg-surface-active'
             )}
           >
-            <span className="flex items-center gap-1">
-              <Key className="h-3 w-3 text-purple-400" />
-              {model.display_name}
-            </span>
+            <span>{model.display_name}</span>
             <div className="flex items-center gap-1 text-xs text-text-tertiary">
               {model.capabilities?.vision && (
                 <Eye className="h-3 w-3 text-green-400" aria-label="Supports vision" />

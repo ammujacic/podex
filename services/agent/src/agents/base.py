@@ -919,6 +919,16 @@ Use this context to provide more personalized and consistent responses.
                 tracker = get_usage_tracker()
                 if tracker:
                     try:
+                        # Determine usage_source based on provider
+                        # vertex = included, ollama/lmstudio = local, anthropic/openai = external
+                        provider = self.llm_provider.provider
+                        if provider in ("ollama", "lmstudio"):
+                            usage_source = "local"
+                        elif provider == "vertex":
+                            usage_source = "included"
+                        else:
+                            usage_source = "external"
+
                         params = TokenUsageParams(
                             user_id=self.user_id,
                             model=self.model,
@@ -927,6 +937,7 @@ Use this context to provide more personalized and consistent responses.
                             session_id=self.session_id,
                             agent_id=self.agent_id,
                             metadata={"streaming": False},
+                            usage_source=usage_source,
                         )
                         await tracker.record_token_usage(params)
                     except Exception:
@@ -1217,6 +1228,17 @@ Use this context to provide more personalized and consistent responses.
                         tracker = get_usage_tracker()
                         if tracker:
                             try:
+                                # Determine usage_source based on provider:
+                                # vertex = included, ollama/lmstudio = local,
+                                # anthropic/openai = external
+                                provider = self.llm_provider.provider
+                                if provider in ("ollama", "lmstudio"):
+                                    usage_source = "local"
+                                elif provider == "vertex":
+                                    usage_source = "included"
+                                else:
+                                    usage_source = "external"
+
                                 params = TokenUsageParams(
                                     user_id=self.user_id,
                                     model=self.model,
@@ -1225,6 +1247,7 @@ Use this context to provide more personalized and consistent responses.
                                     session_id=self.session_id,
                                     agent_id=self.agent_id,
                                     metadata={"streaming": True},
+                                    usage_source=usage_source,
                                 )
                                 await tracker.record_token_usage(params)
                             except Exception:

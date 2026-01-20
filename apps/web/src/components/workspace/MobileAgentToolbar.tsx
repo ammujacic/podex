@@ -532,27 +532,26 @@ export function MobileAgentToolbar({ sessionId, agent, onSendCommand }: MobileAg
       <MobileBottomSheet
         isOpen={showModelMenu}
         onClose={() => setShowModelMenu(false)}
-        title="Select Model"
         height="auto"
       >
         <div className="space-y-4">
           <ModelTierSection
             title="Flagship"
-            titleColor="text-amber-400"
+            titleColor="text-text-primary"
             models={modelsByTier.flagship}
             currentModel={agent.model}
             onSelect={handleChangeModel}
           />
           <ModelTierSection
             title="Balanced"
-            titleColor="text-blue-400"
+            titleColor="text-text-primary"
             models={modelsByTier.balanced}
             currentModel={agent.model}
             onSelect={handleChangeModel}
           />
           <ModelTierSection
             title="Fast"
-            titleColor="text-green-400"
+            titleColor="text-text-primary"
             models={modelsByTier.fast}
             currentModel={agent.model}
             onSelect={handleChangeModel}

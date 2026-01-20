@@ -134,6 +134,7 @@ class CommitRequest(BaseModel):
 
     message: str
     files: list[str] | None = None  # If None, commit all staged
+    working_dir: str | None = None  # Working directory for git commands
 
 
 class PushPullRequest(BaseModel):
@@ -141,12 +142,14 @@ class PushPullRequest(BaseModel):
 
     remote: str = "origin"
     branch: str | None = None  # If None, use current branch
+    working_dir: str | None = None  # Working directory for git commands
 
 
 class StageRequest(BaseModel):
     """Stage files request."""
 
     files: list[str]
+    working_dir: str | None = None  # Working directory for git commands
 
 
 class CheckoutRequest(BaseModel):
@@ -154,6 +157,7 @@ class CheckoutRequest(BaseModel):
 
     branch: str
     create: bool = False
+    working_dir: str | None = None  # Working directory for git commands
 
 
 async def get_workspace_and_user(
@@ -213,12 +217,13 @@ async def get_git_status(
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
+    working_dir: str | None = Query(default=None, description="Working directory for git commands"),
 ) -> GitStatus:
     """Get Git status for workspace."""
     workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
 
     try:
-        result = await compute_client.git_status(workspace_id, user_id)
+        result = await compute_client.git_status(workspace_id, user_id, working_dir=working_dir)
     except ComputeClientError as e:
         logger.exception(
             "Failed to get git status from compute service",
@@ -236,12 +241,13 @@ async def get_branches(
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
+    working_dir: str | None = Query(default=None, description="Working directory for git commands"),
 ) -> list[GitBranch]:
     """Get Git branches for workspace."""
     workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
 
     try:
-        result = await compute_client.git_branches(workspace_id, user_id)
+        result = await compute_client.git_branches(workspace_id, user_id, working_dir=working_dir)
     except ComputeClientError as e:
         logger.exception(
             "Failed to get git branches from compute service",
@@ -260,12 +266,15 @@ async def get_log(
     response: Response,  # noqa: ARG001
     db: DbSession,
     limit: int = 20,
+    working_dir: str | None = Query(default=None, description="Working directory for git commands"),
 ) -> list[GitCommit]:
     """Get Git commit log for workspace."""
     workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
 
     try:
-        result = await compute_client.git_log(workspace_id, user_id, limit=limit)
+        result = await compute_client.git_log(
+            workspace_id, user_id, limit=limit, working_dir=working_dir
+        )
     except ComputeClientError as e:
         logger.exception(
             "Failed to get git log from compute service",
@@ -285,12 +294,15 @@ async def get_diff(
     db: DbSession,
     *,
     staged: bool = Query(default=False),
+    working_dir: str | None = Query(default=None, description="Working directory for git commands"),
 ) -> list[GitDiffFile]:
     """Get Git diff for workspace."""
     workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
 
     try:
-        result = await compute_client.git_diff(workspace_id, user_id, staged=staged)
+        result = await compute_client.git_diff(
+            workspace_id, user_id, staged=staged, working_dir=working_dir
+        )
     except ComputeClientError as e:
         logger.exception(
             "Failed to get git diff from compute service",
@@ -314,7 +326,9 @@ async def stage_files(
     workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
 
     try:
-        await compute_client.git_stage(workspace_id, user_id, data.files)
+        await compute_client.git_stage(
+            workspace_id, user_id, data.files, working_dir=data.working_dir
+        )
     except ComputeClientError as e:
         logger.exception(
             "Failed to stage files",
@@ -338,7 +352,9 @@ async def unstage_files(
     workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
 
     try:
-        await compute_client.git_unstage(workspace_id, user_id, data.files)
+        await compute_client.git_unstage(
+            workspace_id, user_id, data.files, working_dir=data.working_dir
+        )
     except ComputeClientError as e:
         logger.exception(
             "Failed to unstage files",
@@ -364,9 +380,13 @@ async def commit_changes(
     try:
         # If specific files provided, stage them first
         if data.files:
-            await compute_client.git_stage(workspace_id, user_id, data.files)
+            await compute_client.git_stage(
+                workspace_id, user_id, data.files, working_dir=data.working_dir
+            )
 
-        result = await compute_client.git_commit(workspace_id, user_id, data.message)
+        result = await compute_client.git_commit(
+            workspace_id, user_id, data.message, working_dir=data.working_dir
+        )
     except ComputeClientError as e:
         logger.exception(
             "Failed to commit changes",
@@ -398,6 +418,7 @@ async def push_changes(
             user_id,
             remote=data.remote,
             branch=safe_branch,
+            working_dir=data.working_dir,
         )
     except ComputeClientError as e:
         logger.exception(
@@ -431,6 +452,7 @@ async def pull_changes(
             user_id,
             remote=data.remote,
             branch=safe_branch,
+            working_dir=data.working_dir,
         )
     except ComputeClientError as e:
         logger.exception(
@@ -466,6 +488,7 @@ async def checkout_branch(
             user_id,
             branch=safe_branch,
             create=data.create,
+            working_dir=data.working_dir,
         )
     except ComputeClientError as e:
         logger.exception(
@@ -508,24 +531,50 @@ class BranchCompareResponse(BaseModel):
     stat: str
 
 
-@router.get("/compare/{base}...{compare}", response_model=BranchCompareResponse)
+@router.get("/compare", response_model=BranchCompareResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def compare_branches(
     session_id: str,
-    base: str,
-    compare: str,
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
+    base: str | None = Query(
+        default=None,
+        description="Base branch or ref to compare from (e.g., 'HEAD', 'origin/HEAD', 'main').",
+    ),
+    compare: str | None = Query(
+        default=None,
+        description="Branch or ref to compare against (e.g., 'HEAD', 'origin/HEAD', 'main').",
+    ),
+    working_dir: str | None = Query(default=None, description="Working directory for git commands"),
 ) -> BranchCompareResponse:
-    """Compare two branches and return commits and changed files."""
+    """Compare two branches and return commits and changed files.
+
+    By default (if both base and compare are None), compares HEAD vs origin/HEAD.
+    """
     workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
 
-    # Validate branch names
-    safe_base = validate_branch_name(base)
-    safe_compare = validate_branch_name(compare)
+    # Default to HEAD (local) vs origin/HEAD (remote) if not specified
+    if base is None and compare is None:
+        base = "HEAD"
+        compare = "origin/HEAD"
+    elif base is None:
+        base = "HEAD"
+    elif compare is None:
+        compare = "origin/HEAD"
+
+    # Validate branch names (skip validation for special refs like HEAD, origin/HEAD)
+    # These are valid git refs but might not pass branch name validation
+    def is_special_ref(ref: str | None) -> bool:
+        if ref is None:
+            return False
+        return ref in ("HEAD", "origin/HEAD") or ref.startswith("@")
+
+    safe_base = base if is_special_ref(base) else validate_branch_name(base)
+    safe_compare = compare if is_special_ref(compare) else validate_branch_name(compare)
+
     if not safe_base or not safe_compare:
-        raise HTTPException(status_code=400, detail="Both branch names are required")
+        raise HTTPException(status_code=400, detail="Both branch/ref names are required")
 
     try:
         result = await compute_client.git_compare(
@@ -533,6 +582,7 @@ async def compare_branches(
             user_id,
             base=safe_base,
             compare=safe_compare,
+            working_dir=working_dir,
         )
     except ComputeClientError as e:
         logger.exception(
@@ -558,6 +608,7 @@ class MergePreviewRequest(BaseModel):
 
     source_branch: str
     target_branch: str
+    working_dir: str | None = None  # Working directory for git commands
 
 
 class MergePreviewFile(BaseModel):
@@ -604,6 +655,7 @@ async def preview_merge(
             user_id,
             source_branch=safe_source,
             target_branch=safe_target,
+            working_dir=data.working_dir,
         )
     except ComputeClientError as e:
         logger.exception(

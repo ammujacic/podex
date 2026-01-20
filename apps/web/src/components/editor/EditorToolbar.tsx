@@ -28,7 +28,7 @@ import {
 } from '@podex/ui';
 import { cn } from '@/lib/utils';
 import { useEditorStore } from '@/stores/editor';
-import { getAvailableModels } from '@/lib/api';
+import { getAvailableModels, getUserProviderModels, getLocalLLMConfig } from '@/lib/api';
 import type * as monaco from '@codingame/monaco-vscode-editor-api';
 
 // ============================================================================
@@ -94,11 +94,12 @@ export function EditorToolbar({
 }: EditorToolbarProps) {
   const settings = useEditorStore((s) => s.settings);
   const updateSettings = useEditorStore((s) => s.updateSettings);
-  const [editorModels, setEditorModels] = useState<
-    {
-      id: string;
-      displayName: string;
-    }[]
+  const [platformModels, setPlatformModels] = useState<{ id: string; displayName: string }[]>([]);
+  const [userProviderModels, setUserProviderModels] = useState<
+    { id: string; displayName: string; provider: string }[]
+  >([]);
+  const [localModels, setLocalModels] = useState<
+    { id: string; displayName: string; provider: string }[]
   >([]);
 
   // Get current language display name
@@ -179,21 +180,52 @@ export function EditorToolbar({
     [updateSettings]
   );
 
-  // Load available models for editor AI actions (Podex Native models)
+  // Load available models for editor AI actions (Platform, User API Key, and Local models)
   useEffect(() => {
     let isMounted = true;
 
     async function loadModels() {
       try {
-        const models = await getAvailableModels();
+        // Fetch all model types in parallel
+        const [platformModelsList, userModelsList, localConfig] = await Promise.all([
+          getAvailableModels(),
+          getUserProviderModels().catch(() => []),
+          getLocalLLMConfig().catch(() => ({})),
+        ]);
+
         if (!isMounted) return;
 
-        setEditorModels(
-          models.map((m) => ({
+        // Platform models (Vertex/included)
+        setPlatformModels(
+          platformModelsList.map((m) => ({
             id: m.model_id,
             displayName: m.display_name.replace('Claude ', '').replace('Llama ', ''),
           }))
         );
+
+        // User provider models (external API keys)
+        setUserProviderModels(
+          userModelsList.map((m) => ({
+            id: m.model_id,
+            displayName: m.display_name,
+            provider: m.provider,
+          }))
+        );
+
+        // Local models (Ollama/LMStudio)
+        const localModelsList: { id: string; displayName: string; provider: string }[] = [];
+        for (const [provider, config] of Object.entries(localConfig)) {
+          if (config.models && config.models.length > 0) {
+            for (const model of config.models) {
+              localModelsList.push({
+                id: `${provider}:${model.id}`,
+                displayName: model.name || model.id,
+                provider,
+              });
+            }
+          }
+        }
+        setLocalModels(localModelsList);
       } catch (error) {
         console.error('Failed to load editor models', error);
       }
@@ -399,19 +431,24 @@ export function EditorToolbar({
           <DropdownMenuSeparator />
 
           {/* AI Action Model */}
-          {editorModels.length > 0 && (
+          {(platformModels.length > 0 ||
+            userProviderModels.length > 0 ||
+            localModels.length > 0) && (
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
                 <Sparkles className="mr-2 h-4 w-4" />
                 <span>AI Model (Editor Actions)</span>
                 <span className="ml-auto text-xs text-text-muted">
                   {settings.aiActionModel
-                    ? (editorModels.find((m) => m.id === settings.aiActionModel)?.displayName ??
+                    ? (platformModels.find((m) => m.id === settings.aiActionModel)?.displayName ??
+                      userProviderModels.find((m) => m.id === settings.aiActionModel)
+                        ?.displayName ??
+                      localModels.find((m) => m.id === settings.aiActionModel)?.displayName ??
                       'Custom')
                     : 'Default'}
                 </span>
               </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent>
+              <DropdownMenuSubContent className="max-h-80 overflow-y-auto">
                 <DropdownMenuItem
                   onClick={() => updateSettings({ aiActionModel: null })}
                   className="flex items-center justify-between cursor-pointer"
@@ -419,19 +456,72 @@ export function EditorToolbar({
                   <span>Use default model</span>
                   {!settings.aiActionModel && <Check className="h-3.5 w-3.5 text-accent-primary" />}
                 </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                {editorModels.map((model) => (
-                  <DropdownMenuItem
-                    key={model.id}
-                    onClick={() => updateSettings({ aiActionModel: model.id })}
-                    className="flex items-center justify-between cursor-pointer"
-                  >
-                    <span>{model.displayName}</span>
-                    {settings.aiActionModel === model.id && (
-                      <Check className="h-3.5 w-3.5 text-accent-primary" />
-                    )}
-                  </DropdownMenuItem>
-                ))}
+
+                {/* Platform Models (Included) */}
+                {platformModels.length > 0 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel className="text-xs text-text-muted">
+                      Platform Models
+                    </DropdownMenuLabel>
+                    {platformModels.map((model) => (
+                      <DropdownMenuItem
+                        key={model.id}
+                        onClick={() => updateSettings({ aiActionModel: model.id })}
+                        className="flex items-center justify-between cursor-pointer"
+                      >
+                        <span>{model.displayName}</span>
+                        {settings.aiActionModel === model.id && (
+                          <Check className="h-3.5 w-3.5 text-accent-primary" />
+                        )}
+                      </DropdownMenuItem>
+                    ))}
+                  </>
+                )}
+
+                {/* User API Key Models (External) */}
+                {userProviderModels.length > 0 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel className="text-xs text-text-muted">
+                      Your API Keys
+                    </DropdownMenuLabel>
+                    {userProviderModels.map((model) => (
+                      <DropdownMenuItem
+                        key={model.id}
+                        onClick={() => updateSettings({ aiActionModel: model.id })}
+                        className="flex items-center justify-between cursor-pointer"
+                      >
+                        <span>{model.displayName}</span>
+                        {settings.aiActionModel === model.id && (
+                          <Check className="h-3.5 w-3.5 text-accent-primary" />
+                        )}
+                      </DropdownMenuItem>
+                    ))}
+                  </>
+                )}
+
+                {/* Local Models (Ollama/LMStudio) */}
+                {localModels.length > 0 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel className="text-xs text-text-muted">
+                      Local Models
+                    </DropdownMenuLabel>
+                    {localModels.map((model) => (
+                      <DropdownMenuItem
+                        key={model.id}
+                        onClick={() => updateSettings({ aiActionModel: model.id })}
+                        className="flex items-center justify-between cursor-pointer"
+                      >
+                        <span>{model.displayName}</span>
+                        {settings.aiActionModel === model.id && (
+                          <Check className="h-3.5 w-3.5 text-accent-primary" />
+                        )}
+                      </DropdownMenuItem>
+                    ))}
+                  </>
+                )}
               </DropdownMenuSubContent>
             </DropdownMenuSub>
           )}

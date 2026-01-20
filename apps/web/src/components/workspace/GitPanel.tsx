@@ -31,12 +31,14 @@ import {
   pullChanges,
   listFiles,
   checkoutBranch,
+  getGitDiff,
   type GitStatus,
   type GitBranch as GitBranchType,
   type FileNode,
 } from '@/lib/api';
 import { useUIStore } from '@/stores/ui';
 import { BranchCompare } from '@/components/git/BranchCompare';
+import { DiffViewer } from '@/components/git/DiffViewer';
 
 export interface GitPanelProps {
   sessionId: string;
@@ -64,6 +66,10 @@ export function GitPanel({ sessionId }: GitPanelProps) {
   const [showUntrackedSection, setShowUntrackedSection] = useState(true);
   const [showBranchSelector, setShowBranchSelector] = useState(false);
   const [showBranchCompare, setShowBranchCompare] = useState(false);
+  const [showFileDiff, setShowFileDiff] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [fileDiff, setFileDiff] = useState<string | null>(null);
+  const [loadingDiff, setLoadingDiff] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const workingDirectory = useUIStore(
     (state) => state.gitWidgetSettingsBySession[sessionId]?.workingDirectory ?? 'projects'
@@ -71,13 +77,16 @@ export function GitPanel({ sessionId }: GitPanelProps) {
   const setWorkingDirectory = useUIStore((state) => state.setGitWidgetWorkingDirectory);
   const [showWorkingDirSelector, setShowWorkingDirSelector] = useState(false);
 
+  // Convert relative path to absolute path for git commands
+  const absoluteWorkingDir = `/home/dev/${workingDirectory}`;
+
   const loadGitData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const [statusData, branchesData] = await Promise.all([
-        getGitStatus(sessionId),
-        getGitBranches(sessionId),
+        getGitStatus(sessionId, absoluteWorkingDir),
+        getGitBranches(sessionId, absoluteWorkingDir),
       ]);
       setStatus(statusData);
       setBranches(branchesData);
@@ -86,7 +95,7 @@ export function GitPanel({ sessionId }: GitPanelProps) {
     } finally {
       setLoading(false);
     }
-  }, [sessionId]);
+  }, [sessionId, absoluteWorkingDir]);
 
   useEffect(() => {
     loadGitData();
@@ -94,7 +103,7 @@ export function GitPanel({ sessionId }: GitPanelProps) {
 
   const handleStageFile = async (path: string) => {
     try {
-      await stageFiles(sessionId, [path]);
+      await stageFiles(sessionId, [path], absoluteWorkingDir);
       await loadGitData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to stage file');
@@ -103,7 +112,7 @@ export function GitPanel({ sessionId }: GitPanelProps) {
 
   const handleUnstageFile = async (path: string) => {
     try {
-      await unstageFiles(sessionId, [path]);
+      await unstageFiles(sessionId, [path], absoluteWorkingDir);
       await loadGitData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to unstage file');
@@ -114,7 +123,7 @@ export function GitPanel({ sessionId }: GitPanelProps) {
     if (!status) return;
     const files = [...status.unstaged.map((f) => f.path), ...status.untracked];
     try {
-      await stageFiles(sessionId, files);
+      await stageFiles(sessionId, files, absoluteWorkingDir);
       await loadGitData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to stage files');
@@ -125,7 +134,7 @@ export function GitPanel({ sessionId }: GitPanelProps) {
     if (!status) return;
     const files = status.staged.map((f) => f.path);
     try {
-      await unstageFiles(sessionId, files);
+      await unstageFiles(sessionId, files, absoluteWorkingDir);
       await loadGitData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to unstage files');
@@ -136,7 +145,7 @@ export function GitPanel({ sessionId }: GitPanelProps) {
     if (!commitMessage.trim()) return;
     setCommitting(true);
     try {
-      await commitChanges(sessionId, commitMessage.trim());
+      await commitChanges(sessionId, commitMessage.trim(), undefined, absoluteWorkingDir);
       setCommitMessage('');
       await loadGitData();
     } catch (err) {
@@ -149,7 +158,7 @@ export function GitPanel({ sessionId }: GitPanelProps) {
   const handlePush = async () => {
     setPushing(true);
     try {
-      await pushChanges(sessionId);
+      await pushChanges(sessionId, 'origin', undefined, absoluteWorkingDir);
       await loadGitData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to push');
@@ -161,7 +170,7 @@ export function GitPanel({ sessionId }: GitPanelProps) {
   const handlePull = async () => {
     setPulling(true);
     try {
-      await pullChanges(sessionId);
+      await pullChanges(sessionId, 'origin', undefined, absoluteWorkingDir);
       await loadGitData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to pull');
@@ -172,11 +181,37 @@ export function GitPanel({ sessionId }: GitPanelProps) {
 
   const handleBranchSwitch = async (branchName: string) => {
     try {
-      await checkoutBranch(sessionId, branchName);
+      await checkoutBranch(sessionId, branchName, false, absoluteWorkingDir);
       setShowBranchSelector(false);
       await loadGitData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to switch branch');
+    }
+  };
+
+  const handleFileClick = async (filePath: string, isStaged: boolean) => {
+    try {
+      setLoadingDiff(true);
+      setSelectedFile(filePath);
+      setShowFileDiff(true);
+      setError(null);
+
+      // Fetch diff for staged or unstaged files
+      const diffs = await getGitDiff(sessionId, isStaged, absoluteWorkingDir);
+      const fileDiffData = diffs.find((diff) => diff.path === filePath);
+
+      if (fileDiffData?.diff) {
+        setFileDiff(fileDiffData.diff);
+      } else {
+        // If no diff found (e.g., untracked file), show empty diff
+        setFileDiff('');
+        setError(`No diff available for ${filePath}`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load diff');
+      setFileDiff(null);
+    } finally {
+      setLoadingDiff(false);
     }
   };
 
@@ -545,7 +580,8 @@ export function GitPanel({ sessionId }: GitPanelProps) {
                     {status.staged.map((file) => (
                       <div
                         key={file.path}
-                        className="flex items-center gap-2 px-2 py-1 text-xs rounded hover:bg-overlay group"
+                        className="flex items-center gap-2 px-2 py-1 text-xs rounded hover:bg-overlay group cursor-pointer"
+                        onClick={() => handleFileClick(file.path, true)}
                       >
                         <span
                           className={cn(
@@ -558,7 +594,10 @@ export function GitPanel({ sessionId }: GitPanelProps) {
                         <File className="h-3 w-3 text-text-muted" />
                         <span className="flex-1 truncate text-text-secondary">{file.path}</span>
                         <button
-                          onClick={() => handleUnstageFile(file.path)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleUnstageFile(file.path);
+                          }}
                           className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-elevated"
                           title="Unstage"
                         >
@@ -600,7 +639,8 @@ export function GitPanel({ sessionId }: GitPanelProps) {
                     {status.unstaged.map((file) => (
                       <div
                         key={file.path}
-                        className="flex items-center gap-2 px-2 py-1 text-xs rounded hover:bg-overlay group"
+                        className="flex items-center gap-2 px-2 py-1 text-xs rounded hover:bg-overlay group cursor-pointer"
+                        onClick={() => handleFileClick(file.path, false)}
                       >
                         <span
                           className={cn(
@@ -613,7 +653,10 @@ export function GitPanel({ sessionId }: GitPanelProps) {
                         <File className="h-3 w-3 text-text-muted" />
                         <span className="flex-1 truncate text-text-secondary">{file.path}</span>
                         <button
-                          onClick={() => handleStageFile(file.path)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleStageFile(file.path);
+                          }}
                           className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-elevated"
                           title="Stage"
                         >
@@ -645,13 +688,17 @@ export function GitPanel({ sessionId }: GitPanelProps) {
                     {status.untracked.map((path) => (
                       <div
                         key={path}
-                        className="flex items-center gap-2 px-2 py-1 text-xs rounded hover:bg-overlay group"
+                        className="flex items-center gap-2 px-2 py-1 text-xs rounded hover:bg-overlay group cursor-pointer"
+                        onClick={() => handleFileClick(path, false)}
                       >
                         <span className="font-mono text-gray-400">U</span>
                         <File className="h-3 w-3 text-text-muted" />
                         <span className="flex-1 truncate text-text-secondary">{path}</span>
                         <button
-                          onClick={() => handleStageFile(path)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleStageFile(path);
+                          }}
                           className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-elevated"
                           title="Stage"
                         >
@@ -702,8 +749,55 @@ export function GitPanel({ sessionId }: GitPanelProps) {
                 name: b.name,
                 current: b.is_current,
               }))}
+              workingDir={absoluteWorkingDir}
               onClose={() => setShowBranchCompare(false)}
             />
+          </div>
+        </div>
+      )}
+
+      {/* File Diff Modal */}
+      {showFileDiff && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-6xl max-h-[90vh] overflow-hidden rounded-lg border border-border-subtle shadow-xl bg-surface flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border-subtle">
+              <div className="flex items-center gap-2">
+                <File className="h-4 w-4 text-text-muted" />
+                <span className="text-sm font-medium text-text-primary font-mono">
+                  {selectedFile}
+                </span>
+              </div>
+              <button
+                onClick={() => {
+                  setShowFileDiff(false);
+                  setSelectedFile(null);
+                  setFileDiff(null);
+                  setError(null);
+                }}
+                className="p-1 rounded hover:bg-overlay text-text-muted hover:text-text-primary"
+                title="Close"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Diff Content */}
+            <div className="flex-1 overflow-hidden">
+              {loadingDiff ? (
+                <div className="flex items-center justify-center h-32">
+                  <Loader2 className="h-6 w-6 animate-spin text-text-muted" />
+                </div>
+              ) : fileDiff !== null ? (
+                <div className="h-full overflow-auto">
+                  <DiffViewer diff={fileDiff} />
+                </div>
+              ) : (
+                <div className="flex items-center justify-center h-32 text-text-muted text-sm">
+                  {error || 'No diff available'}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

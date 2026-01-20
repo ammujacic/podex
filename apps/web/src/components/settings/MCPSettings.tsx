@@ -76,7 +76,7 @@ const ENV_VAR_HINTS: Record<string, { placeholder: string; hint: string; link?: 
     link: 'https://brave.com/search/api/',
   },
   SLACK_BOT_TOKEN: {
-    placeholder: 'xoxb-xxxxxxxxxxxxx-xxxxxxxxxxxxx',
+    placeholder: 'xoxb-your-token-here',
     hint: 'Slack Bot User OAuth Token',
     link: 'https://api.slack.com/apps',
   },

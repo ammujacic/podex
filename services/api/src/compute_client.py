@@ -655,21 +655,33 @@ class ComputeClient:
 
     # ==================== Git Operations ====================
 
-    async def git_status(self, workspace_id: str, user_id: str) -> dict[str, Any]:
+    async def git_status(
+        self,
+        workspace_id: str,
+        user_id: str,
+        working_dir: str | None = None,
+    ) -> dict[str, Any]:
         """Get git status for the workspace."""
         result = await self.exec_command(
             workspace_id,
             user_id,
             "git status --porcelain -b",
+            working_dir=working_dir,
         )
         return self._parse_git_status(result.get("stdout", ""))
 
-    async def git_branches(self, workspace_id: str, user_id: str) -> list[dict[str, Any]]:
+    async def git_branches(
+        self,
+        workspace_id: str,
+        user_id: str,
+        working_dir: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Get list of git branches."""
         result = await self.exec_command(
             workspace_id,
             user_id,
             "git branch -a --format='%(refname:short)|%(objectname:short)|%(HEAD)'",
+            working_dir=working_dir,
         )
         return self._parse_git_branches(result.get("stdout", ""))
 
@@ -678,12 +690,14 @@ class ComputeClient:
         workspace_id: str,
         user_id: str,
         limit: int = 20,
+        working_dir: str | None = None,
     ) -> list[dict[str, str]]:
         """Get git commit log."""
         result = await self.exec_command(
             workspace_id,
             user_id,
             f"git log --format='%H|%h|%s|%an|%aI' -n {limit}",
+            working_dir=working_dir,
         )
         return self._parse_git_log(result.get("stdout", ""))
 
@@ -693,6 +707,7 @@ class ComputeClient:
         user_id: str,
         *,
         staged: bool = False,
+        working_dir: str | None = None,
     ) -> list[dict[str, Any]]:
         """Get git diff."""
         flag = "--staged" if staged else ""
@@ -700,28 +715,46 @@ class ComputeClient:
             workspace_id,
             user_id,
             f"git diff {flag} --numstat",
+            working_dir=working_dir,
         )
         return self._parse_git_diff(result.get("stdout", ""))
 
-    async def git_stage(self, workspace_id: str, user_id: str, files: list[str]) -> None:
+    async def git_stage(
+        self,
+        workspace_id: str,
+        user_id: str,
+        files: list[str],
+        working_dir: str | None = None,
+    ) -> None:
         """Stage files for commit."""
         # Use -- to separate options from paths, and properly escape each file
         escaped_files = [self._escape_shell_arg(f) for f in files]
         files_str = " ".join(escaped_files)
-        await self.exec_command(workspace_id, user_id, f"git add -- {files_str}")
+        await self.exec_command(
+            workspace_id, user_id, f"git add -- {files_str}", working_dir=working_dir
+        )
 
-    async def git_unstage(self, workspace_id: str, user_id: str, files: list[str]) -> None:
+    async def git_unstage(
+        self,
+        workspace_id: str,
+        user_id: str,
+        files: list[str],
+        working_dir: str | None = None,
+    ) -> None:
         """Unstage files."""
         # Use -- to separate options from paths, and properly escape each file
         escaped_files = [self._escape_shell_arg(f) for f in files]
         files_str = " ".join(escaped_files)
-        await self.exec_command(workspace_id, user_id, f"git reset HEAD -- {files_str}")
+        await self.exec_command(
+            workspace_id, user_id, f"git reset HEAD -- {files_str}", working_dir=working_dir
+        )
 
     async def git_commit(
         self,
         workspace_id: str,
         user_id: str,
         message: str,
+        working_dir: str | None = None,
     ) -> dict[str, str]:
         """Create a git commit."""
         # Use proper shell escaping for the commit message
@@ -730,6 +763,7 @@ class ComputeClient:
             workspace_id,
             user_id,
             f"git commit -m {safe_message}",
+            working_dir=working_dir,
         )
         # Extract commit hash from output
         stdout = result.get("stdout", "")
@@ -747,12 +781,13 @@ class ComputeClient:
         user_id: str,
         remote: str = "origin",
         branch: str | None = None,
+        working_dir: str | None = None,
     ) -> dict[str, str]:
         """Push commits to remote."""
         cmd = f"git push {remote}"
         if branch:
             cmd += f" {branch}"
-        result = await self.exec_command(workspace_id, user_id, cmd)
+        result = await self.exec_command(workspace_id, user_id, cmd, working_dir=working_dir)
         return {"message": result.get("stdout", "") or result.get("stderr", "")}
 
     async def git_pull(
@@ -761,12 +796,13 @@ class ComputeClient:
         user_id: str,
         remote: str = "origin",
         branch: str | None = None,
+        working_dir: str | None = None,
     ) -> dict[str, str]:
         """Pull changes from remote."""
         cmd = f"git pull {remote}"
         if branch:
             cmd += f" {branch}"
-        result = await self.exec_command(workspace_id, user_id, cmd)
+        result = await self.exec_command(workspace_id, user_id, cmd, working_dir=working_dir)
         return {"message": result.get("stdout", "") or result.get("stderr", "")}
 
     async def git_checkout(
@@ -776,6 +812,7 @@ class ComputeClient:
         branch: str,
         *,
         create: bool = False,
+        working_dir: str | None = None,
     ) -> dict[str, str]:
         """Checkout a branch."""
         flag = "-b" if create else ""
@@ -783,6 +820,7 @@ class ComputeClient:
             workspace_id,
             user_id,
             f"git checkout {flag} {branch}",
+            working_dir=working_dir,
         )
         return {"message": result.get("stdout", "") or result.get("stderr", "")}
 
@@ -920,6 +958,7 @@ class ComputeClient:
         user_id: str,
         base: str,
         compare: str,
+        working_dir: str | None = None,
     ) -> dict[str, Any]:
         """Compare two branches and return commits and changed files.
 
@@ -928,6 +967,7 @@ class ComputeClient:
             user_id: The user ID.
             base: The base branch to compare from.
             compare: The branch to compare against.
+            working_dir: Working directory for git commands.
 
         Returns:
             Dictionary with commits, files, and stats.
@@ -938,6 +978,7 @@ class ComputeClient:
                 workspace_id,
                 user_id,
                 f"git log --oneline --format='%H|%s|%an|%ad' --date=iso {base}..{compare}",
+                working_dir=working_dir,
             )
             commits_output = commits_result.get("stdout", "")
             commits = []
@@ -958,6 +999,7 @@ class ComputeClient:
                 workspace_id,
                 user_id,
                 f"git diff --stat {base}...{compare}",
+                working_dir=working_dir,
             )
             stat_output = stat_result.get("stdout", "")
 
@@ -966,6 +1008,7 @@ class ComputeClient:
                 workspace_id,
                 user_id,
                 f"git diff --name-status {base}...{compare}",
+                working_dir=working_dir,
             )
             files_output = files_result.get("stdout", "")
             files = []
@@ -1004,6 +1047,7 @@ class ComputeClient:
         user_id: str,
         source_branch: str,
         target_branch: str,
+        working_dir: str | None = None,
     ) -> dict[str, Any]:
         """Preview a merge operation without actually merging.
 
@@ -1012,6 +1056,7 @@ class ComputeClient:
             user_id: The user ID.
             source_branch: The branch to merge from.
             target_branch: The branch to merge into.
+            working_dir: Working directory for git commands.
 
         Returns:
             Dictionary with merge preview including conflict information.
@@ -1022,6 +1067,7 @@ class ComputeClient:
                 workspace_id,
                 user_id,
                 "git branch --show-current",
+                working_dir=working_dir,
             )
             current_branch = current_branch_result.get("stdout", "").strip()
 
@@ -1030,6 +1076,7 @@ class ComputeClient:
                 workspace_id,
                 user_id,
                 "git status --porcelain",
+                working_dir=working_dir,
             )
             status_output = status_result.get("stdout", "")
             if status_output.strip():
@@ -1042,7 +1089,9 @@ class ComputeClient:
                 }
 
             # Checkout target branch
-            await self.exec_command(workspace_id, user_id, f"git checkout {target_branch}")
+            await self.exec_command(
+                workspace_id, user_id, f"git checkout {target_branch}", working_dir=working_dir
+            )
 
             try:
                 # Try merge with no commit and no fast-forward
@@ -1050,6 +1099,7 @@ class ComputeClient:
                     workspace_id,
                     user_id,
                     f"git merge --no-commit --no-ff {source_branch}",
+                    working_dir=working_dir,
                 )
 
                 # Get list of files that would change
@@ -1057,6 +1107,7 @@ class ComputeClient:
                     workspace_id,
                     user_id,
                     "git diff --cached --name-status HEAD",
+                    working_dir=working_dir,
                 )
                 diff_output = diff_result.get("stdout", "")
                 files = []
@@ -1083,6 +1134,7 @@ class ComputeClient:
                     workspace_id,
                     user_id,
                     "git diff --name-only --diff-filter=U",
+                    working_dir=working_dir,
                 )
                 conflict_output = conflict_result.get("stdout", "")
                 conflicts = [f.strip() for f in conflict_output.strip().split("\n") if f.strip()]
@@ -1096,9 +1148,16 @@ class ComputeClient:
             finally:
                 # Abort merge and checkout original branch
                 with contextlib.suppress(Exception):
-                    await self.exec_command(workspace_id, user_id, "git merge --abort")
+                    await self.exec_command(
+                        workspace_id, user_id, "git merge --abort", working_dir=working_dir
+                    )
                 with contextlib.suppress(Exception):
-                    await self.exec_command(workspace_id, user_id, f"git checkout {current_branch}")
+                    await self.exec_command(
+                        workspace_id,
+                        user_id,
+                        f"git checkout {current_branch}",
+                        working_dir=working_dir,
+                    )
 
             return result
         except Exception as e:

@@ -373,7 +373,7 @@ export default function ProjectHealth({
   const hasScore = health && health.analysis_status !== 'not_run';
 
   return (
-    <div className="overflow-hidden">
+    <div className="h-full flex flex-col overflow-hidden">
       {!hasScore ? (
         // No analysis run yet
         <div className="p-6 text-center">
@@ -403,7 +403,7 @@ export default function ProjectHealth({
           </button>
         </div>
       ) : (
-        <>
+        <div className="flex-1 overflow-y-auto">
           {/* Score Overview */}
           <div className="p-4 flex items-center gap-4">
             <ScoreRing score={health.overall_score} grade={health.grade} size="md" />
@@ -524,7 +524,7 @@ export default function ProjectHealth({
             {health.analyzed_at ? new Date(health.analyzed_at).toLocaleString() : 'Unknown'} (
             {health.analysis_duration_seconds.toFixed(1)}s)
           </div>
-        </>
+        </div>
       )}
     </div>
   );

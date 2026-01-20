@@ -20,6 +20,7 @@ import {
   BarChart3,
   Terminal,
   RefreshCw,
+  Globe,
 } from 'lucide-react';
 
 // Error boundary for agent view to prevent crashes from taking down the whole layout
@@ -96,6 +97,7 @@ import { MCPPanel } from './MCPPanel';
 import { UsageSidebarPanel } from './UsageSidebarPanel';
 import { TerminalPanel } from './TerminalPanel';
 import { SentryPanel } from './SentryPanel';
+import { PreviewPanel } from './PreviewPanel';
 
 interface MobileWorkspaceLayoutProps {
   sessionId: string;
@@ -223,6 +225,18 @@ export function MobileWorkspaceLayout({ sessionId }: MobileWorkspaceLayoutProps)
       icon: <Bug className="h-5 w-5" />,
       height: 'full',
       component: <SentryPanel sessionId={sessionId} />,
+    },
+    preview: {
+      title: 'Preview',
+      icon: <Globe className="h-5 w-5" />,
+      height: 'full',
+      component: session?.workspaceId ? (
+        <PreviewPanel workspaceId={session.workspaceId} onClose={closeMobileWidget} />
+      ) : (
+        <div className="p-4 text-text-secondary">
+          Workspace not available. Please wait for the workspace to initialize.
+        </div>
+      ),
     },
   };
 

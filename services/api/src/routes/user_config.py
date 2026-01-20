@@ -6,7 +6,7 @@ from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -916,3 +916,262 @@ async def remove_llm_api_key(
 
     providers = list(config.llm_api_keys.keys()) if config.llm_api_keys else []
     return LLMApiKeysResponse(providers=providers)
+
+
+# ============================================================================
+# Local Model Discovery
+# ============================================================================
+
+
+class DiscoverLocalModelsRequest(BaseModel):
+    """Request to discover models from a local provider."""
+
+    provider: str = Field(..., description="Provider: ollama or lmstudio")
+    base_url: str = Field(..., description="Base URL of the local provider server")
+
+
+class DiscoveredModel(BaseModel):
+    """A discovered model from a local provider."""
+
+    id: str
+    name: str
+    size: int | None = None
+    modified_at: str | None = None
+
+
+class DiscoverLocalModelsResponse(BaseModel):
+    """Response with discovered models."""
+
+    models: list[DiscoveredModel]
+    success: bool
+    error: str | None = None
+
+
+@router.post("/discover-local-models", response_model=DiscoverLocalModelsResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def discover_local_models(
+    request_data: DiscoverLocalModelsRequest,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> DiscoverLocalModelsResponse:
+    """Discover available models from a local LLM provider (Ollama or LM Studio)."""
+    import httpx
+
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    provider = request_data.provider.lower()
+    base_url = request_data.base_url.rstrip("/")
+
+    if provider not in {"ollama", "lmstudio"}:
+        return DiscoverLocalModelsResponse(
+            models=[],
+            success=False,
+            error=f"Unsupported provider: {provider}. Supported: ollama, lmstudio",
+        )
+
+    try:
+        # Ollama uses /api/tags endpoint, LM Studio uses OpenAI-compatible /v1/models
+        endpoint = f"{base_url}/api/tags" if provider == "ollama" else f"{base_url}/v1/models"
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            http_response = await client.get(endpoint)
+            http_response.raise_for_status()
+            data = http_response.json()
+
+        # Parse response based on provider
+        models: list[DiscoveredModel] = []
+        if provider == "ollama":
+            # Ollama returns: {"models": [{"name": "...", "size": ..., "modified_at": "..."}, ...]}
+            for model in data.get("models", []):
+                models.append(
+                    DiscoveredModel(
+                        id=model.get("name", ""),
+                        name=model.get("name", ""),
+                        size=model.get("size"),
+                        modified_at=model.get("modified_at"),
+                    )
+                )
+        else:  # lmstudio
+            # LM Studio uses OpenAI format: {"data": [{"id": "...", ...}, ...]}
+            for model in data.get("data", []):
+                models.append(
+                    DiscoveredModel(
+                        id=model.get("id", ""),
+                        name=model.get("id", ""),  # LM Studio uses id as name
+                    )
+                )
+
+        logger.info(
+            "Discovered local models",
+            user_id=user_id,
+            provider=provider,
+            base_url=base_url,
+            model_count=len(models),
+        )
+
+        # Save discovered models to user config for later retrieval
+        result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+        config = result.scalar_one_or_none()
+
+        if not config:
+            config = UserConfig(
+                user_id=user_id,
+                agent_preferences={"local_llm_config": {}},
+            )
+            db.add(config)
+        elif not config.agent_preferences:
+            config.agent_preferences = {"local_llm_config": {}}
+
+        # Update local LLM config with discovered models
+        if config.agent_preferences is None:
+            config.agent_preferences = {}
+        local_config = config.agent_preferences.get("local_llm_config", {})
+        local_config[provider] = {
+            "base_url": base_url,
+            "models": [
+                {"id": m.id, "name": m.name, "size": m.size, "modified_at": m.modified_at}
+                for m in models
+            ],
+            "discovered_at": datetime.now(UTC).isoformat(),
+        }
+        config.agent_preferences["local_llm_config"] = local_config
+        await db.commit()
+        await db.refresh(config)
+
+        return DiscoverLocalModelsResponse(models=models, success=True)
+
+    except httpx.HTTPStatusError as e:
+        error_msg = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
+        logger.warning(
+            "Failed to discover local models - HTTP error",
+            user_id=user_id,
+            provider=provider,
+            base_url=base_url,
+            error=error_msg,
+        )
+        return DiscoverLocalModelsResponse(
+            models=[],
+            success=False,
+            error=error_msg,
+        )
+    except httpx.RequestError as e:
+        error_msg = f"Connection error: {e!s}"
+        logger.warning(
+            "Failed to discover local models - connection error",
+            user_id=user_id,
+            provider=provider,
+            base_url=base_url,
+            error=error_msg,
+        )
+        return DiscoverLocalModelsResponse(
+            models=[],
+            success=False,
+            error=error_msg,
+        )
+    except Exception as e:
+        error_msg = f"Error: {e!s}"
+        logger.exception(
+            "Failed to discover local models",
+            user_id=user_id,
+            provider=provider,
+            base_url=base_url,
+            error=error_msg,
+        )
+        return DiscoverLocalModelsResponse(
+            models=[],
+            success=False,
+            error=error_msg,
+        )
+
+
+@router.get("/local-llm-config", response_model=dict[str, Any])
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def get_local_llm_config(
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> dict[str, Any]:
+    """Get saved local LLM configuration (base URLs and discovered models)."""
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+    config = result.scalar_one_or_none()
+
+    if not config or not config.agent_preferences:
+        return {}
+
+    local_config = config.agent_preferences.get("local_llm_config", {})
+    if not isinstance(local_config, dict):
+        return {}
+    return local_config
+
+
+class SaveLocalLLMUrlRequest(BaseModel):
+    """Request to save a local LLM provider URL."""
+
+    provider: str = Field(..., description="Provider: ollama or lmstudio")
+    base_url: str = Field(..., description="Base URL of the local provider server")
+
+
+@router.post("/local-llm-config/url", response_model=dict[str, Any])
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def save_local_llm_url(
+    request_data: SaveLocalLLMUrlRequest,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> dict[str, Any]:
+    """Save a local LLM provider URL (without discovering models)."""
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    provider = request_data.provider.lower()
+    base_url = request_data.base_url.rstrip("/")
+
+    if provider not in {"ollama", "lmstudio"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported provider: {provider}. Supported: ollama, lmstudio",
+        )
+
+    result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+    config = result.scalar_one_or_none()
+
+    if not config:
+        config = UserConfig(
+            user_id=user_id,
+            agent_preferences={"local_llm_config": {}},
+        )
+        db.add(config)
+    elif not config.agent_preferences:
+        config.agent_preferences = {"local_llm_config": {}}
+
+    # Update local LLM config with URL (preserve existing models if any)
+    if config.agent_preferences is None:
+        config.agent_preferences = {}
+    local_config = config.agent_preferences.get("local_llm_config", {})
+    if not isinstance(local_config, dict):
+        local_config = {}
+    if provider not in local_config:
+        local_config[provider] = {"base_url": base_url, "models": []}
+    else:
+        local_config[provider]["base_url"] = base_url
+
+    config.agent_preferences["local_llm_config"] = local_config
+    await db.commit()
+    await db.refresh(config)
+
+    logger.info(
+        "Saved local LLM URL",
+        user_id=user_id,
+        provider=provider,
+        base_url=base_url,
+    )
+
+    return local_config

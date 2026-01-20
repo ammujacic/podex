@@ -19,6 +19,7 @@ import {
   Puzzle,
   BarChart3,
   Terminal,
+  Globe,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUIStore } from '@/stores/ui';
@@ -36,6 +37,7 @@ const widgetItems = [
   { id: 'mcp', label: 'MCP', icon: <Puzzle className="h-4 w-4" /> },
   { id: 'usage', label: 'Usage', icon: <BarChart3 className="h-4 w-4" /> },
   { id: 'terminal', label: 'Terminal', icon: <Terminal className="h-4 w-4" /> },
+  { id: 'preview', label: 'Preview', icon: <Globe className="h-4 w-4" /> },
 ];
 
 // Mobile menu component (hamburger slide-out menu)

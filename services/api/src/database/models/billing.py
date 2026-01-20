@@ -257,6 +257,10 @@ class UsageRecord(Base):
     model: Mapped[str | None] = mapped_column(String(100))  # For token usage
     tier: Mapped[str | None] = mapped_column(String(50))  # For compute usage
 
+    # Usage source: "included" (Vertex/platform), "external" (user API key),
+    # "local" (Ollama/LMStudio). Only "included" usage counts towards quota and incurs cost
+    usage_source: Mapped[str | None] = mapped_column(String(20), default="included", index=True)
+
     # Billing period reference
     billing_period_start: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),

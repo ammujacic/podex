@@ -95,14 +95,21 @@ export function ModelTooltip({
               </div>
 
               {/* Pricing */}
-              {(model.inputPricePerMillion || model.outputPricePerMillion) && (
+              {(model.inputPricePerMillion !== undefined ||
+                model.outputPricePerMillion !== undefined) && (
                 <div className="flex items-center gap-2 text-xs">
                   <span className="text-text-secondary">Price:</span>
                   <span className="text-text-primary font-medium">
-                    ${model.inputPricePerMillion?.toFixed(2) ?? '?'} / $
-                    {model.outputPricePerMillion?.toFixed(2) ?? '?'}
+                    {(() => {
+                      const input = model.inputPricePerMillion ?? 0;
+                      const output = model.outputPricePerMillion ?? 0;
+                      // For zero values, show "0/0 M", otherwise show decimal format
+                      if (input === 0 && output === 0) {
+                        return '0/0 M';
+                      }
+                      return `${input.toFixed(2)} / ${output.toFixed(2)} M`;
+                    })()}
                   </span>
-                  <span className="text-text-secondary">/M tokens</span>
                 </div>
               )}
             </div>

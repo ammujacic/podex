@@ -211,6 +211,11 @@ class UsageSummaryResponse(BaseModel):
     tokens_output: int
     tokens_total: int
     tokens_cost: float
+    # Breakdown by usage source
+    tokens_included: int = 0  # Tokens from Vertex/platform (counts towards quota)
+    tokens_external: int = 0  # Tokens from user's own API keys ($0 cost)
+    tokens_local: int = 0  # Tokens from local models like Ollama ($0 cost)
+    tokens_included_limit: int = 0  # Plan's token limit
     compute_seconds: int
     compute_hours: float  # Legacy display
     compute_credits_used: float  # Compute cost in dollars
@@ -224,6 +229,7 @@ class UsageSummaryResponse(BaseModel):
     usage_by_agent: dict[str, dict[str, Any]] = Field(default_factory=dict)
     usage_by_session: dict[str, dict[str, Any]] = Field(default_factory=dict)
     usage_by_tier: dict[str, dict[str, Any]] = Field(default_factory=dict)  # Compute by tier
+    usage_by_source: dict[str, dict[str, Any]] = Field(default_factory=dict)  # By usage_source
 
 
 class UsageRecordResponse(BaseModel):
@@ -2288,6 +2294,10 @@ class UsageAggregation:
     tokens_input: int = 0
     tokens_output: int = 0
     tokens_cost: float = 0.0
+    # Breakdown by usage source
+    tokens_included: int = 0  # Tokens from Vertex/platform (counts towards quota)
+    tokens_external: int = 0  # Tokens from user's own API keys ($0 cost)
+    tokens_local: int = 0  # Tokens from local models like Ollama ($0 cost)
     compute_seconds: int = 0
     compute_cost: float = 0.0
     storage_gb: float = 0.0
@@ -2297,6 +2307,7 @@ class UsageAggregation:
     usage_by_agent: dict[str, dict[str, Any]] | None = None
     usage_by_session: dict[str, dict[str, Any]] | None = None
     usage_by_tier: dict[str, dict[str, Any]] | None = None
+    usage_by_source: dict[str, dict[str, Any]] | None = None  # By usage_source
 
 
 def _aggregate_token_usage(
@@ -2307,21 +2318,62 @@ def _aggregate_token_usage(
     """Aggregate token usage from a record."""
     if agg.usage_by_model is None:
         agg.usage_by_model = {}
+    if agg.usage_by_source is None:
+        agg.usage_by_source = {}
+
+    # Get usage source (default to "included" for backwards compatibility)
+    usage_source = getattr(record, "usage_source", None) or "included"
+
+    # Track by usage source
+    if usage_source not in agg.usage_by_source:
+        agg.usage_by_source[usage_source] = {"tokens": 0, "cost": 0.0}
 
     if record.usage_type == "tokens_input":
         agg.tokens_input += record.quantity
         agg.tokens_cost += cost_dollars
+        agg.usage_by_source[usage_source]["tokens"] += record.quantity
+        agg.usage_by_source[usage_source]["cost"] += cost_dollars
+
+        # Track by usage source type
+        if usage_source == "included":
+            agg.tokens_included += record.quantity
+        elif usage_source == "external":
+            agg.tokens_external += record.quantity
+        elif usage_source == "local":
+            agg.tokens_local += record.quantity
+
         if record.model:
             if record.model not in agg.usage_by_model:
-                agg.usage_by_model[record.model] = {"input": 0, "output": 0, "cost": 0}
+                agg.usage_by_model[record.model] = {
+                    "input": 0,
+                    "output": 0,
+                    "cost": 0,
+                    "source": usage_source,
+                }
             agg.usage_by_model[record.model]["input"] += record.quantity
             agg.usage_by_model[record.model]["cost"] += cost_dollars
     elif record.usage_type == "tokens_output":
         agg.tokens_output += record.quantity
         agg.tokens_cost += cost_dollars
+        agg.usage_by_source[usage_source]["tokens"] += record.quantity
+        agg.usage_by_source[usage_source]["cost"] += cost_dollars
+
+        # Track by usage source type
+        if usage_source == "included":
+            agg.tokens_included += record.quantity
+        elif usage_source == "external":
+            agg.tokens_external += record.quantity
+        elif usage_source == "local":
+            agg.tokens_local += record.quantity
+
         if record.model:
             if record.model not in agg.usage_by_model:
-                agg.usage_by_model[record.model] = {"input": 0, "output": 0, "cost": 0}
+                agg.usage_by_model[record.model] = {
+                    "input": 0,
+                    "output": 0,
+                    "cost": 0,
+                    "source": usage_source,
+                }
             agg.usage_by_model[record.model]["output"] += record.quantity
             agg.usage_by_model[record.model]["cost"] += cost_dollars
 
@@ -2386,7 +2438,11 @@ def _aggregate_session_usage(
 def _aggregate_usage_records(records: list[UsageRecord]) -> UsageAggregation:
     """Aggregate a list of usage records."""
     agg = UsageAggregation(
-        usage_by_model={}, usage_by_agent={}, usage_by_session={}, usage_by_tier={}
+        usage_by_model={},
+        usage_by_agent={},
+        usage_by_session={},
+        usage_by_tier={},
+        usage_by_source={},
     )
 
     for record in records:
@@ -2455,6 +2511,7 @@ async def get_usage_summary(
         .limit(1),
     )
     subscription = sub_result.scalar_one_or_none()
+    tokens_included_limit = 0
     if subscription:
         plan_result = await db.execute(
             select(SubscriptionPlan).where(SubscriptionPlan.id == subscription.plan_id)
@@ -2463,6 +2520,7 @@ async def get_usage_summary(
         if plan:
             # Convert from cents to dollars
             compute_credits_included = float(plan.compute_credits_cents_included) / 100.0
+            tokens_included_limit = plan.tokens_included
 
     # Query usage records
     result = await db.execute(
@@ -2495,6 +2553,10 @@ async def get_usage_summary(
         tokens_output=agg.tokens_output,
         tokens_total=agg.tokens_input + agg.tokens_output,
         tokens_cost=agg.tokens_cost,
+        tokens_included=agg.tokens_included,
+        tokens_external=agg.tokens_external,
+        tokens_local=agg.tokens_local,
+        tokens_included_limit=tokens_included_limit,
         compute_seconds=agg.compute_seconds,
         compute_hours=agg.compute_seconds / 3600,
         compute_credits_used=agg.compute_cost,
@@ -2508,6 +2570,7 @@ async def get_usage_summary(
         usage_by_agent=agg.usage_by_agent or {},
         usage_by_session=agg.usage_by_session or {},
         usage_by_tier=agg.usage_by_tier or {},
+        usage_by_source=agg.usage_by_source or {},
     )
 
 
@@ -3118,6 +3181,9 @@ class UsageEventInput(BaseModel):
     duration_seconds: int | None = Field(
         default=None, ge=0, le=settings.MAX_QUANTITY_COMPUTE_SECONDS
     )
+    # Usage source: "included" (Vertex/platform), "external" (user API key), "local" (Ollama/LMStudio)
+    # Only "included" usage counts towards quota and incurs cost
+    usage_source: str = Field(default="included", max_length=20)
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime | None = None
 
@@ -3528,115 +3594,146 @@ async def _record_single_event(
 
         is_overage = False
 
+        # Determine usage source: "included" (Vertex/platform), "external" (user API key), "local" (Ollama)
+        # Only "included" usage counts towards quota and incurs cost
+        usage_source = getattr(event, "usage_source", "included") or "included"
+        is_billable = usage_source == "included"
+
         # Determine usage type for database
         if event.usage_type in (
             "tokens",
             "tokens_input",
             "tokens_output",
         ) or event.usage_type.startswith("tokens"):
-            # SECURITY: Recalculate token cost server-side using database pricing
-            # This prevents clients from manipulating their own costs
-            base_cost = _calculate_token_cost_from_db(
-                event.model,
-                event.input_tokens or 0,
-                event.output_tokens or 0,
-            )
-            total_cost = _apply_margin(base_cost, margin_percent)
-            # Check token quota first - use FOR UPDATE to prevent race conditions
-            quota_result = await db.execute(
-                select(UsageQuota)
-                .where(UsageQuota.user_id == event.user_id)
-                .where(UsageQuota.quota_type == "tokens")
-                .with_for_update()
-            )
-            quota = quota_result.scalar_one_or_none()
-
-            # SECURITY: Require quota record to exist - prevents quota bypass
-            if not quota:
-                logger.error(
-                    "User missing token quota record - rejecting usage",
-                    user_id=event.user_id,
-                    event_id=event.id,
+            # For external/local usage: $0 cost, no quota impact, but still track tokens
+            if is_billable:
+                # SECURITY: Recalculate token cost server-side using database pricing
+                # This prevents clients from manipulating their own costs
+                base_cost = _calculate_token_cost_from_db(
+                    event.model,
+                    event.input_tokens or 0,
+                    event.output_tokens or 0,
                 )
-                return (
-                    False,
-                    "Usage quota not configured. Please contact support.",
-                )
+                total_cost = _apply_margin(base_cost, margin_percent)
 
-            # SECURITY: Use safe_add to prevent integer overflow
-            new_usage = _safe_add(quota.current_usage, event.quantity)
-            if new_usage > quota.limit_value:
-                # Quota exceeded - check overage handling
-                overage_tokens = new_usage - quota.limit_value
-
-                # Get the user's plan to use proper overage rate
-                overage_rate_cents = 0
-                sub_result = await db.execute(
-                    select(UserSubscription)
-                    .where(UserSubscription.user_id == event.user_id)
-                    .where(UserSubscription.status.in_(["active", "trialing"]))
+                # Check token quota first - use FOR UPDATE to prevent race conditions
+                quota_result = await db.execute(
+                    select(UsageQuota)
+                    .where(UsageQuota.user_id == event.user_id)
+                    .where(UsageQuota.quota_type == "tokens")
+                    .with_for_update()
                 )
-                subscription = sub_result.scalar_one_or_none()
-                if subscription:
-                    plan_result = await db.execute(
-                        select(SubscriptionPlan).where(SubscriptionPlan.id == subscription.plan_id)
+                quota = quota_result.scalar_one_or_none()
+
+                # SECURITY: Require quota record to exist - prevents quota bypass
+                if not quota:
+                    logger.error(
+                        "User missing token quota record - rejecting usage",
+                        user_id=event.user_id,
+                        event_id=event.id,
                     )
-                    plan = plan_result.scalar_one_or_none()
-                    if plan and plan.overage_token_rate_cents:
-                        # Rate is per 1000 tokens
-                        overage_rate_cents = plan.overage_token_rate_cents
-
-                # Calculate overage cost using plan rate (rate is per 1000 tokens)
-                # SECURITY: Use math.ceil to round up to prevent revenue loss
-                import math
-
-                if overage_rate_cents > 0:
-                    overage_cost = math.ceil((overage_tokens * overage_rate_cents) / 1000)
-                else:
-                    # Fallback: prorate from current event cost
-                    overage_cost = (
-                        math.ceil((total_cost * overage_tokens) / event.quantity)
-                        if event.quantity > 0
-                        else 0
+                    return (
+                        False,
+                        "Usage quota not configured. Please contact support.",
                     )
 
-                if quota.overage_allowed:
-                    # Try to deduct from prepaid credits
-                    credit_deducted = await deduct_credits_for_overage(
-                        db,
-                        event.user_id,
-                        overage_cost,
-                        "tokens",
-                        f"Token overage: {overage_tokens} tokens at plan rate",
+                # SECURITY: Use safe_add to prevent integer overflow
+                new_usage = _safe_add(quota.current_usage, event.quantity)
+                if new_usage > quota.limit_value:
+                    # Quota exceeded - check overage handling
+                    overage_tokens = new_usage - quota.limit_value
+
+                    # Get the user's plan to use proper overage rate
+                    overage_rate_cents = 0
+                    sub_result = await db.execute(
+                        select(UserSubscription)
+                        .where(UserSubscription.user_id == event.user_id)
+                        .where(UserSubscription.status.in_(["active", "trialing"]))
                     )
-                    if not credit_deducted:
-                        # Insufficient credits to cover overage - block usage
-                        await check_and_send_limit_reached(db, event.user_id, quota)
-                        return (
-                            False,
-                            f"Token quota exceeded and insufficient credits "
-                            f"(need {cents_to_dollars(overage_cost):.4f}, have insufficient balance)",
+                    subscription = sub_result.scalar_one_or_none()
+                    if subscription:
+                        plan_result = await db.execute(
+                            select(SubscriptionPlan).where(
+                                SubscriptionPlan.id == subscription.plan_id
+                            )
+                        )
+                        plan = plan_result.scalar_one_or_none()
+                        if plan and plan.overage_token_rate_cents:
+                            # Rate is per 1000 tokens
+                            overage_rate_cents = plan.overage_token_rate_cents
+
+                    # Calculate overage cost using plan rate (rate is per 1000 tokens)
+                    # SECURITY: Use math.ceil to round up to prevent revenue loss
+                    import math
+
+                    if overage_rate_cents > 0:
+                        overage_cost = math.ceil((overage_tokens * overage_rate_cents) / 1000)
+                    else:
+                        # Fallback: prorate from current event cost
+                        overage_cost = (
+                            math.ceil((total_cost * overage_tokens) / event.quantity)
+                            if event.quantity > 0
+                            else 0
                         )
 
-                    is_overage = True
-                else:
-                    await check_and_send_limit_reached(db, event.user_id, quota)
-                    return False, "Token quota exceeded and overage not allowed"
+                    if quota.overage_allowed:
+                        # Try to deduct from prepaid credits
+                        credit_deducted = await deduct_credits_for_overage(
+                            db,
+                            event.user_id,
+                            overage_cost,
+                            "tokens",
+                            f"Token overage: {overage_tokens} tokens at plan rate",
+                        )
+                        if not credit_deducted:
+                            # Insufficient credits to cover overage - block usage
+                            await check_and_send_limit_reached(db, event.user_id, quota)
+                            return (
+                                False,
+                                f"Token quota exceeded and insufficient credits "
+                                f"(need {cents_to_dollars(overage_cost):.4f}, have insufficient balance)",
+                            )
 
-            # Check for usage warning (80% threshold)
-            usage_percent = (new_usage / quota.limit_value * 100) if quota.limit_value > 0 else 0
-            await check_and_send_usage_warning(db, event.user_id, quota, usage_percent)
+                        is_overage = True
+                    else:
+                        await check_and_send_limit_reached(db, event.user_id, quota)
+                        return False, "Token quota exceeded and overage not allowed"
+
+                # Check for usage warning (80% threshold)
+                usage_percent = (
+                    (new_usage / quota.limit_value * 100) if quota.limit_value > 0 else 0
+                )
+                await check_and_send_usage_warning(db, event.user_id, quota, usage_percent)
+            else:
+                # External/local usage: track tokens but no cost, no quota impact
+                base_cost = 0
+                total_cost = 0
+                quota = None  # Don't update quota for external/local
+
+                logger.debug(
+                    "Recording non-billable usage",
+                    usage_source=usage_source,
+                    model=event.model,
+                    input_tokens=event.input_tokens,
+                    output_tokens=event.output_tokens,
+                )
 
             # Record input and output separately with proportional cost splitting
             if event.input_tokens or event.output_tokens:
-                # SECURITY: Use Decimal-based cost split to prevent precision loss
-                # Fetch pricing from database (cached)
-                from src.services.pricing import get_pricing_from_cache
+                if is_billable:
+                    # SECURITY: Use Decimal-based cost split to prevent precision loss
+                    # Fetch pricing from database (cached)
+                    from src.services.pricing import get_pricing_from_cache
 
-                pricing = get_pricing_from_cache(event.model or "")
-                input_base, input_total, output_base, output_total = _calculate_cost_split_decimal(
-                    base_cost, total_cost, event.input_tokens, event.output_tokens, pricing
-                )
+                    pricing = get_pricing_from_cache(event.model or "")
+                    input_base, input_total, output_base, output_total = (
+                        _calculate_cost_split_decimal(
+                            base_cost, total_cost, event.input_tokens, event.output_tokens, pricing
+                        )
+                    )
+                else:
+                    # External/local: $0 cost
+                    input_base = input_total = output_base = output_total = 0
 
                 if event.input_tokens:
                     input_record = UsageRecord(
@@ -3648,10 +3745,11 @@ async def _record_single_event(
                         usage_type="tokens_input",
                         quantity=event.input_tokens,
                         unit="tokens",
-                        unit_price_cents=event.unit_price_cents,
+                        unit_price_cents=event.unit_price_cents if is_billable else 0,
                         base_cost_cents=input_base,
                         total_cost_cents=input_total,
                         model=event.model,
+                        usage_source=usage_source,
                         is_overage=is_overage,
                         record_metadata=event.metadata,
                     )
@@ -3667,18 +3765,19 @@ async def _record_single_event(
                         usage_type="tokens_output",
                         quantity=event.output_tokens,
                         unit="tokens",
-                        unit_price_cents=event.unit_price_cents,
+                        unit_price_cents=event.unit_price_cents if is_billable else 0,
                         base_cost_cents=output_base,
                         total_cost_cents=output_total,
                         model=event.model,
+                        usage_source=usage_source,
                         is_overage=is_overage,
                         record_metadata=event.metadata,
                     )
                     db.add(output_record)
 
             # Update token quota using the locked row to prevent race conditions
-            # We already have the quota locked from SELECT FOR UPDATE above
-            if quota:
+            # Only update quota for billable (included) usage
+            if is_billable and quota:
                 effective_tokens = int(event.quantity * (1 + margin_percent / 100))
                 quota.current_usage += effective_tokens
                 await db.flush()  # Write the change while still holding the lock

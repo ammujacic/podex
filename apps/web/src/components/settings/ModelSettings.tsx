@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   Settings,
   Cloud,
@@ -34,10 +34,14 @@ import {
   getAvailableModels,
   getUserProviderModels,
   getModelDefaults,
+  discoverLocalModels,
+  getLocalLLMConfig,
+  saveLocalLLMUrl,
   type AgentTypeDefaults,
   type PublicModel,
   type UserProviderModel,
   type LLMProvider,
+  type DiscoveredModel,
 } from '@/lib/api';
 import { toast } from 'sonner';
 import { useAuthStore } from '@/stores/auth';
@@ -395,7 +399,11 @@ function ProviderCard({
           </div>
           <p className="text-sm text-text-muted mt-0.5">{info.description}</p>
           <p className="text-xs text-text-muted mt-1">
-            {info.isLocal ? 'Auto-discover models' : `${modelCount} models available`}
+            {info.isLocal
+              ? modelCount > 0
+                ? `${modelCount} model${modelCount === 1 ? '' : 's'} available`
+                : 'Auto-discover models'
+              : `${modelCount} models available`}
           </p>
         </div>
       </div>
@@ -430,6 +438,106 @@ function ProviderConfigPanel({
   const [showKey, setShowKey] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
+  const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>([]);
+  const [isDiscovering, setIsDiscovering] = useState(false);
+  const [discoverError, setDiscoverError] = useState<string | null>(null);
+  const loadingRef = useRef<string | null>(null); // Track which provider is currently loading
+
+  const handleDiscoverModels = useCallback(
+    async (urlToUse?: string) => {
+      const url = urlToUse || baseUrl.trim();
+      if (!url) {
+        toast.error('Please enter a server URL');
+        return;
+      }
+
+      setIsDiscovering(true);
+      setDiscoverError(null);
+      setDiscoveredModels([]);
+
+      try {
+        const result = await discoverLocalModels({
+          provider: providerId as 'ollama' | 'lmstudio',
+          base_url: url,
+        });
+
+        if (result.success) {
+          setDiscoveredModels(result.models);
+          // Update baseUrl state if it was changed
+          if (url !== baseUrl) {
+            setBaseUrl(url);
+          }
+          if (result.models.length > 0) {
+            toast.success(`Discovered ${result.models.length} model(s)`);
+            // Notify parent to refresh config
+            onConfigured();
+          } else {
+            toast.info('No models found on this server');
+          }
+        } else {
+          setDiscoverError(result.error || 'Failed to discover models');
+          toast.error(result.error || 'Failed to discover models');
+        }
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : 'Failed to discover models';
+        setDiscoverError(errorMsg);
+        toast.error(errorMsg);
+      } finally {
+        setIsDiscovering(false);
+      }
+    },
+    [baseUrl, providerId, onConfigured]
+  );
+
+  // Load saved URL and models on mount (only once per provider)
+  useEffect(() => {
+    if (!info?.isLocal) return;
+
+    // Prevent duplicate calls - if already loading this provider, skip
+    if (loadingRef.current === providerId) return;
+    loadingRef.current = providerId;
+
+    const currentProvider = providerId;
+    let isMounted = true;
+
+    const loadSavedConfig = async () => {
+      try {
+        const config = await getLocalLLMConfig();
+        if (!isMounted || currentProvider !== providerId) {
+          loadingRef.current = null;
+          return;
+        }
+
+        const providerConfig = config[providerId];
+        if (providerConfig?.base_url) {
+          setBaseUrl(providerConfig.base_url);
+          // Auto-discover models if URL is saved
+          if (providerConfig.models && providerConfig.models.length > 0) {
+            setDiscoveredModels(providerConfig.models);
+            // Also trigger a refresh to get latest models
+            handleDiscoverModels(providerConfig.base_url);
+          }
+        }
+        loadingRef.current = null;
+      } catch (error) {
+        // Silently fail - user can manually discover
+        if (isMounted && currentProvider === providerId) {
+          console.error('Failed to load saved local LLM config:', error);
+        }
+        loadingRef.current = null;
+      }
+    };
+    loadSavedConfig();
+
+    return () => {
+      isMounted = false;
+      // Reset loading ref if component unmounts or provider changes
+      if (loadingRef.current === currentProvider) {
+        loadingRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providerId, info?.isLocal]); // Only depend on providerId and isLocal, not handleDiscoverModels
 
   if (!info) return null;
 
@@ -549,14 +657,64 @@ function ProviderConfigPanel({
               type="text"
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
+              onBlur={async () => {
+                // Save URL when user leaves the field
+                if (baseUrl.trim() && baseUrl.trim() !== info?.defaultUrl) {
+                  try {
+                    await saveLocalLLMUrl(providerId as 'ollama' | 'lmstudio', baseUrl.trim());
+                  } catch (error) {
+                    // Silently fail - URL will be saved on next discovery
+                    console.error('Failed to save URL:', error);
+                  }
+                }
+              }}
               placeholder={info.defaultUrl}
               className="w-full px-3 py-2.5 rounded-lg bg-void border border-border-subtle text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-accent-primary/50 focus:border-accent-primary"
             />
           </div>
-          <button className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-sm font-medium transition-colors">
-            <RefreshCw className="h-4 w-4" />
-            Discover Models
+          <button
+            onClick={() => handleDiscoverModels()}
+            disabled={isDiscovering || !baseUrl.trim()}
+            className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isDiscovering ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Discovering...
+              </>
+            ) : (
+              <>
+                <RefreshCw className="h-4 w-4" />
+                Discover Models
+              </>
+            )}
           </button>
+
+          {/* Error message */}
+          {discoverError && (
+            <div className="p-3 rounded-lg bg-error/10 border border-error/30 text-error text-xs">
+              {discoverError}
+            </div>
+          )}
+
+          {/* Discovered models */}
+          {discoveredModels.length > 0 && (
+            <div>
+              <p className="text-xs text-text-muted mb-2">
+                Discovered {discoveredModels.length} model(s):
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {discoveredModels.map((model) => (
+                  <span
+                    key={model.id}
+                    className="px-2 py-1 rounded-lg bg-green-500/10 border border-green-500/20 text-xs text-green-400"
+                  >
+                    {model.name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         // Cloud provider API key configuration
@@ -742,6 +900,11 @@ export function ModelSettings({ className }: ModelSettingsProps) {
   const [platformDefaults, setPlatformDefaults] = useState<Record<string, AgentTypeDefaults>>({});
   const [_isLoadingModels, setIsLoadingModels] = useState(true);
 
+  // Local LLM config (for model counts)
+  const [localLLMConfig, setLocalLLMConfig] = useState<
+    Record<string, { base_url: string; models: DiscoveredModel[] }>
+  >({});
+
   // Convert API model to ModelInfo format for display
   const apiModelToModelInfo = useCallback(
     (m: PublicModel): ModelInfo => ({
@@ -839,9 +1002,14 @@ export function ModelSettings({ className }: ModelSettingsProps) {
       }
 
       try {
-        const [prefs, apiKeys] = await Promise.all([getUserAgentPreferences(), getLLMApiKeys()]);
+        const [prefs, apiKeys, localConfig] = await Promise.all([
+          getUserAgentPreferences(),
+          getLLMApiKeys(),
+          getLocalLLMConfig().catch(() => ({})), // Silently fail if not available
+        ]);
         setUserModelDefaults(prefs.model_defaults || {});
         setConfiguredApiKeyProviders(apiKeys.providers);
+        setLocalLLMConfig(localConfig);
       } catch (error) {
         console.error('Failed to load user preferences:', error);
         toast.error('Failed to load model preferences');
@@ -1052,19 +1220,23 @@ export function ModelSettings({ className }: ModelSettingsProps) {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-              {localProviderIds.map((providerId) => (
-                <ProviderCard
-                  key={providerId}
-                  providerId={providerId}
-                  providers={configProviders}
-                  isConfigured={false}
-                  isSelected={selectedProvider === providerId}
-                  modelCount={0} // Local models are auto-discovered
-                  onSelect={() =>
-                    setSelectedProvider(selectedProvider === providerId ? null : providerId)
-                  }
-                />
-              ))}
+              {localProviderIds.map((providerId) => {
+                const localConfig = localLLMConfig[providerId];
+                const modelCount = localConfig?.models?.length || 0;
+                return (
+                  <ProviderCard
+                    key={providerId}
+                    providerId={providerId}
+                    providers={configProviders}
+                    isConfigured={modelCount > 0} // Show as configured if models are discovered
+                    isSelected={selectedProvider === providerId}
+                    modelCount={modelCount}
+                    onSelect={() =>
+                      setSelectedProvider(selectedProvider === providerId ? null : providerId)
+                    }
+                  />
+                );
+              })}
             </div>
           )}
 
@@ -1073,10 +1245,26 @@ export function ModelSettings({ className }: ModelSettingsProps) {
             <ProviderConfigPanel
               providerId={selectedProvider}
               providers={configProviders}
-              isConfigured={false}
-              models={[]} // Local models are auto-discovered
-              onConfigured={() => {}}
-              onRemove={() => {}}
+              isConfigured={(localLLMConfig[selectedProvider]?.models?.length || 0) > 0}
+              models={localLLMConfig[selectedProvider]?.models || []}
+              onConfigured={async () => {
+                // Refresh local config after discovery
+                try {
+                  const config = await getLocalLLMConfig();
+                  setLocalLLMConfig(config);
+                } catch (error) {
+                  console.error('Failed to refresh local config:', error);
+                }
+              }}
+              onRemove={async () => {
+                // Refresh local config after removal (if needed)
+                try {
+                  const config = await getLocalLLMConfig();
+                  setLocalLLMConfig(config);
+                } catch (error) {
+                  console.error('Failed to refresh local config:', error);
+                }
+              }}
             />
           )}
 

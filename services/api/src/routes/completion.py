@@ -4,14 +4,18 @@ import json
 import re
 import time
 from typing import Annotated, Any, Literal
+from uuid import uuid4
 
 import structlog
 from anthropic import AsyncAnthropic, AsyncAnthropicVertex
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
+from src.database import get_db
+from src.database.models import UsageRecord
 from src.middleware.auth import get_current_user
 from src.middleware.rate_limit import RATE_LIMIT_AGENT, limiter
 
@@ -20,6 +24,79 @@ router = APIRouter()
 
 # Minimum number of lines needed to strip markdown code block (opening, content, closing)
 MIN_CODE_BLOCK_LINES = 2
+
+
+async def _record_editor_usage(
+    db: AsyncSession,
+    user_id: str,
+    result: "CompletionResult",
+    usage_type: str = "editor_completion",
+) -> None:
+    """Record token usage from editor AI completions.
+
+    Args:
+        db: Database session
+        user_id: User ID
+        result: CompletionResult with usage data
+        usage_type: Type of usage (editor_completion, editor_explain, editor_bugs)
+    """
+    if result.input_tokens == 0 and result.output_tokens == 0:
+        return  # No usage to record
+
+    try:
+        # Create usage records for input and output tokens
+        # Cost is 0 for non-vertex providers (external/local)
+        is_billable = result.usage_source == "included"
+
+        if result.input_tokens > 0:
+            input_record = UsageRecord(
+                id=str(uuid4()),
+                idempotency_key=f"editor:{user_id}:{uuid4()}:input",
+                user_id=user_id,
+                usage_type=f"{usage_type}_input",
+                quantity=result.input_tokens,
+                unit="tokens",
+                unit_price_cents=0,
+                base_cost_cents=0 if not is_billable else 1,  # Minimal cost for tracking
+                total_cost_cents=0 if not is_billable else 1,
+                model=result.model,
+                usage_source=result.usage_source,
+                is_overage=False,
+            )
+            db.add(input_record)
+
+        if result.output_tokens > 0:
+            output_record = UsageRecord(
+                id=str(uuid4()),
+                idempotency_key=f"editor:{user_id}:{uuid4()}:output",
+                user_id=user_id,
+                usage_type=f"{usage_type}_output",
+                quantity=result.output_tokens,
+                unit="tokens",
+                unit_price_cents=0,
+                base_cost_cents=0 if not is_billable else 1,
+                total_cost_cents=0 if not is_billable else 1,
+                model=result.model,
+                usage_source=result.usage_source,
+                is_overage=False,
+            )
+            db.add(output_record)
+
+        await db.commit()
+
+        logger.debug(
+            "Recorded editor AI usage",
+            user_id=user_id,
+            usage_type=usage_type,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            model=result.model,
+            usage_source=result.usage_source,
+        )
+    except Exception:
+        logger.exception("Failed to record editor AI usage")
+        await db.rollback()
+
 
 # Type alias for current user dependency
 CurrentUser = Annotated[dict[str, Any], Depends(get_current_user)]
@@ -38,6 +115,10 @@ class InlineCompletionRequest(BaseModel):
     language: str = Field(..., description="Programming language (e.g., 'typescript', 'python')")
     file_path: str = Field(default="", description="Path to the file being edited")
     max_tokens: int = Field(default=128, ge=16, le=512, description="Maximum tokens to generate")
+    model: str | None = Field(
+        default=None,
+        description="Model ID to use (e.g., 'claude-3-5-haiku', 'ollama:qwen2.5-coder')",
+    )
 
 
 class InlineCompletionResponse(BaseModel):
@@ -57,6 +138,7 @@ class CodeExplanationRequest(BaseModel):
         default="detailed",
         description="Level of detail in explanation",
     )
+    model: str | None = Field(default=None, description="Model ID to use")
 
 
 class CodeExplanationResponse(BaseModel):
@@ -72,6 +154,7 @@ class BugDetectionRequest(BaseModel):
 
     code: str = Field(..., description="Code to analyze")
     language: str = Field(..., description="Programming language")
+    model: str | None = Field(default=None, description="Model ID to use")
 
 
 class Bug(BaseModel):
@@ -94,6 +177,34 @@ class BugDetectionResponse(BaseModel):
 # ============================================================================
 # LLM Clients - Multi-provider support
 # ============================================================================
+
+
+class CompletionResult:
+    """Result from a completion request including usage data."""
+
+    def __init__(
+        self,
+        text: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        model: str = "",
+        provider: str = "vertex",
+    ) -> None:
+        self.text = text
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.model = model
+        self.provider = provider
+
+    @property
+    def usage_source(self) -> str:
+        """Determine usage source for billing."""
+        if self.provider in ("ollama", "lmstudio"):
+            return "local"
+        if self.provider == "vertex":
+            return "included"
+        # Direct anthropic/openai API usage is "external"
+        return "external"
 
 
 class CompletionProvider:
@@ -147,33 +258,102 @@ class CompletionProvider:
     ) -> str:
         """Generate completion using configured provider.
 
-        Uses LLM_PROVIDER setting:
-        - vertex (default): Claude Haiku on Google Cloud Vertex AI
-        - ollama: Local LLM via Ollama
-        - anthropic: Direct Anthropic API
+        Returns text only for backwards compatibility.
         """
-        provider = settings.LLM_PROVIDER
+        result = await cls.complete_with_usage(prompt, system_prompt, max_tokens, temperature)
+        return result.text
+
+    @classmethod
+    def _parse_model_id(cls, model_id: str | None) -> tuple[str, str | None]:
+        """Parse model ID to determine provider and actual model name.
+
+        Returns (provider, model_name) tuple.
+        Model ID formats:
+        - None or empty: use default LLM_PROVIDER
+        - "ollama:model-name": use Ollama with specified model
+        - "lmstudio:model-name": use LMStudio with specified model
+        - "anthropic:model-name": use direct Anthropic API
+        - "openai:model-name": use OpenAI API
+        - Other: platform model via Vertex AI
+        """
+        if not model_id:
+            return settings.LLM_PROVIDER, None
+
+        # Check for provider prefix
+        if ":" in model_id:
+            parts = model_id.split(":", 1)
+            provider_prefix = parts[0].lower()
+            model_name = parts[1] if len(parts) > 1 else None
+
+            if provider_prefix in ("ollama", "lmstudio"):
+                return provider_prefix, model_name
+            if provider_prefix == "anthropic":
+                return "anthropic", model_name
+            if provider_prefix == "openai":
+                return "openai", model_name
+
+        # No prefix - assume it's a platform model (Vertex AI)
+        return "vertex", model_id
+
+    @classmethod
+    async def complete_with_usage(
+        cls,
+        prompt: str,
+        system_prompt: str,
+        max_tokens: int = 128,
+        temperature: float = 0.2,
+        model_id: str | None = None,
+    ) -> CompletionResult:
+        """Generate completion using configured provider with usage tracking.
+
+        Args:
+            prompt: The user prompt
+            system_prompt: System instructions
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            model_id: Optional model ID to override default provider
+                - None: use LLM_PROVIDER setting
+                - "ollama:model": use Ollama with model
+                - "lmstudio:model": use LMStudio with model
+                - "anthropic:model": use direct Anthropic API
+                - "model-name": use Vertex AI with model
+        """
+        provider, model_name = cls._parse_model_id(model_id)
+        logger.debug(
+            "Completion provider selected",
+            provider=provider,
+            model_name=model_name,
+            original_model_id=model_id,
+        )
 
         try:
             if provider == "vertex":
-                return await cls._complete_vertex(prompt, system_prompt, max_tokens, temperature)
-            if provider == "ollama":
-                return await cls._complete_ollama(prompt, system_prompt, max_tokens, temperature)
+                return await cls._complete_vertex_with_usage(
+                    prompt, system_prompt, max_tokens, temperature, model_name
+                )
+            if provider in ("ollama", "lmstudio"):
+                return await cls._complete_ollama_with_usage(
+                    prompt, system_prompt, max_tokens, temperature, model_name, provider
+                )
             if provider == "anthropic":
-                return await cls._complete_anthropic(prompt, system_prompt, max_tokens, temperature)
+                return await cls._complete_anthropic_with_usage(
+                    prompt, system_prompt, max_tokens, temperature, model_name
+                )
             # Fallback to vertex for unknown provider
             logger.warning("Unknown LLM provider, falling back to vertex", provider=provider)
-            return await cls._complete_vertex(prompt, system_prompt, max_tokens, temperature)
+            return await cls._complete_vertex_with_usage(
+                prompt, system_prompt, max_tokens, temperature, model_name
+            )
         except Exception as e:
             # If primary provider fails and we have Ollama configured, try it as fallback
-            if provider != "ollama" and settings.OLLAMA_URL:
+            if provider not in ("ollama", "lmstudio") and settings.OLLAMA_URL:
                 logger.warning(
                     "Primary provider failed, trying Ollama fallback",
                     provider=provider,
                     error=str(e),
                 )
                 try:
-                    return await cls._complete_ollama(
+                    return await cls._complete_ollama_with_usage(
                         prompt, system_prompt, max_tokens, temperature
                     )
                 except Exception as fallback_error:
@@ -190,8 +370,23 @@ class CompletionProvider:
         temperature: float,
     ) -> str:
         """Complete using Google Cloud Vertex AI with Claude Haiku."""
-        # Use Claude 3.5 Haiku on Vertex AI for fast completions
-        model_id = "claude-3-5-haiku-20241022"
+        result = await cls._complete_vertex_with_usage(
+            prompt, system_prompt, max_tokens, temperature
+        )
+        return result.text
+
+    @classmethod
+    async def _complete_vertex_with_usage(
+        cls,
+        prompt: str,
+        system_prompt: str,
+        max_tokens: int,
+        temperature: float,
+        model_name: str | None = None,
+    ) -> CompletionResult:
+        """Complete using Google Cloud Vertex AI with Claude (with usage tracking)."""
+        # Use specified model or default to Claude 3.5 Haiku
+        model_id = model_name or "claude-3-5-haiku-20241022"
 
         client = cls.get_vertex_client()
         response = await client.messages.create(
@@ -203,11 +398,19 @@ class CompletionProvider:
         )
 
         # Extract text from Anthropic format response
+        text = ""
         for block in response.content:
             if block.type == "text":
-                return block.text.strip()
+                text = block.text.strip()
+                break
 
-        return ""
+        return CompletionResult(
+            text=text,
+            input_tokens=response.usage.input_tokens if response.usage else 0,
+            output_tokens=response.usage.output_tokens if response.usage else 0,
+            model=model_id,
+            provider="vertex",
+        )
 
     @classmethod
     async def _complete_ollama(
@@ -218,8 +421,25 @@ class CompletionProvider:
         temperature: float,
     ) -> str:
         """Complete using Ollama (local LLM)."""
+        result = await cls._complete_ollama_with_usage(
+            prompt, system_prompt, max_tokens, temperature
+        )
+        return result.text
+
+    @classmethod
+    async def _complete_ollama_with_usage(
+        cls,
+        prompt: str,
+        system_prompt: str,
+        max_tokens: int,
+        temperature: float,
+        model_name: str | None = None,
+        provider_name: str = "ollama",
+    ) -> CompletionResult:
+        """Complete using Ollama or LMStudio (local LLM) with usage tracking."""
         client = cls.get_ollama_client()
-        model = settings.OLLAMA_MODEL  # e.g., "qwen2.5-coder:14b"
+        # Use specified model or fall back to settings
+        model = model_name or settings.OLLAMA_MODEL  # e.g., "qwen2.5-coder:14b"
 
         response = await client.chat.completions.create(
             model=model,
@@ -231,9 +451,17 @@ class CompletionProvider:
             temperature=temperature,
         )
 
+        text = ""
         if response.choices and response.choices[0].message.content:
-            return response.choices[0].message.content.strip()
-        return ""
+            text = response.choices[0].message.content.strip()
+
+        return CompletionResult(
+            text=text,
+            input_tokens=response.usage.prompt_tokens if response.usage else 0,
+            output_tokens=response.usage.completion_tokens if response.usage else 0,
+            model=model,
+            provider=provider_name,
+        )
 
     @classmethod
     async def _complete_anthropic(
@@ -244,20 +472,46 @@ class CompletionProvider:
         temperature: float,
     ) -> str:
         """Complete using direct Anthropic API."""
+        result = await cls._complete_anthropic_with_usage(
+            prompt, system_prompt, max_tokens, temperature
+        )
+        return result.text
+
+    @classmethod
+    async def _complete_anthropic_with_usage(
+        cls,
+        prompt: str,
+        system_prompt: str,
+        max_tokens: int,
+        temperature: float,
+        model_name: str | None = None,
+    ) -> CompletionResult:
+        """Complete using direct Anthropic API with usage tracking."""
         client = cls.get_anthropic_client()
+        # Use specified model or default to Haiku
+        model_id = model_name or "claude-3-5-haiku-20241022"
 
         response = await client.messages.create(
-            model="claude-3-5-haiku-20241022",
+            model=model_id,
             max_tokens=max_tokens,
             temperature=temperature,
             system=system_prompt,
             messages=[{"role": "user", "content": prompt}],
         )
 
+        text = ""
         for block in response.content:
             if block.type == "text":
-                return block.text.strip()
-        return ""
+                text = block.text.strip()
+                break
+
+        return CompletionResult(
+            text=text,
+            input_tokens=response.usage.input_tokens if response.usage else 0,
+            output_tokens=response.usage.output_tokens if response.usage else 0,
+            model=model_id,
+            provider="anthropic",
+        )
 
 
 # ============================================================================
@@ -320,6 +574,7 @@ async def get_inline_completion(
     request: Request,  # noqa: ARG001
     response: Response,  # noqa: ARG001
     current_user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> InlineCompletionResponse:
     """
     Get an inline code completion suggestion.
@@ -327,11 +582,12 @@ async def get_inline_completion(
     This endpoint provides Copilot-style code completions based on the
     code context (prefix and suffix around the cursor).
     """
+    user_id = current_user.get("id")
     logger.info(
         "Inline completion request",
         language=body.language,
         prefix_length=len(body.prefix),
-        user_id=current_user.get("id"),
+        user_id=user_id,
     )
 
     # Build the prompt
@@ -350,15 +606,21 @@ async def get_inline_completion(
 ### Completion:"""
 
     try:
-        # Use multi-provider completion
-        completion = await CompletionProvider.complete(
+        # Use multi-provider completion with usage tracking
+        result = await CompletionProvider.complete_with_usage(
             prompt=prompt,
             system_prompt=COMPLETION_SYSTEM_PROMPT,
             max_tokens=body.max_tokens,
             temperature=0.2,  # Low temperature for predictable completions
+            model_id=body.model,
         )
 
+        # Track usage (async, non-blocking)
+        if user_id:
+            await _record_editor_usage(db, user_id, result, "editor_completion")
+
         # Clean up the completion
+        completion = result.text
         # Remove markdown code blocks if the model added them
         if completion.startswith("```"):
             lines = completion.split("\n")
@@ -368,7 +630,9 @@ async def get_inline_completion(
         logger.info(
             "Completion generated",
             completion_length=len(completion),
-            provider=settings.LLM_PROVIDER,
+            provider=result.provider,
+            model=result.model,
+            usage_source=result.usage_source,
         )
 
         return InlineCompletionResponse(
@@ -388,7 +652,8 @@ async def explain_code(
     body: CodeExplanationRequest,
     request: Request,  # noqa: ARG001
     response: Response,  # noqa: ARG001
-    _current_user: CurrentUser,
+    current_user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> CodeExplanationResponse:
     """
     Get an AI-powered explanation of code.
@@ -396,11 +661,13 @@ async def explain_code(
     Analyzes the provided code and returns a detailed explanation
     of what it does and how it works.
     """
+    user_id = current_user.get("id")
     logger.info(
         "Code explanation request",
         language=body.language,
         code_length=len(body.code),
         detail_level=body.detail_level,
+        user_id=user_id,
     )
 
     detail_instruction = {
@@ -422,22 +689,21 @@ EXPLANATION: [Detailed explanation]
 CONCEPTS: [Comma-separated list of key concepts]"""
 
     try:
-        client = CompletionProvider.get_anthropic_client()
-
-        api_response = await client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+        # Use multi-provider completion with usage tracking
+        result = await CompletionProvider.complete_with_usage(
+            prompt=prompt,
+            system_prompt=EXPLANATION_SYSTEM_PROMPT,
             max_tokens=1024,
             temperature=0.3,
-            system=EXPLANATION_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
+            model_id=body.model,
         )
 
+        # Track usage
+        if user_id:
+            await _record_editor_usage(db, user_id, result, "editor_explain")
+
         # Parse the response
-        text = ""
-        for block in api_response.content:
-            if block.type == "text":
-                text = block.text
-                break
+        text = result.text
 
         # Extract sections
         summary = ""
@@ -478,7 +744,8 @@ async def detect_bugs(
     body: BugDetectionRequest,
     request: Request,  # noqa: ARG001
     response: Response,  # noqa: ARG001
-    _current_user: CurrentUser,
+    current_user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> BugDetectionResponse:
     """
     Analyze code for potential bugs and issues.
@@ -487,11 +754,13 @@ async def detect_bugs(
     in the provided code snippet.
     """
     start_time = time.time()
+    user_id = current_user.get("id")
 
     logger.info(
         "Bug detection request",
         language=body.language,
         code_length=len(body.code),
+        user_id=user_id,
     )
 
     # Add line numbers to help the model reference specific lines
@@ -516,12 +785,19 @@ Return ONLY valid JSON, no other text. If no issues found, return: []"""
         # Use the multi-provider completion interface so we can work with
         # Vertex, Anthropic, Ollama, etc. without requiring a direct
         # Anthropic API key in all environments.
-        text = await CompletionProvider.complete(
+        result = await CompletionProvider.complete_with_usage(
             prompt=prompt,
             system_prompt=BUG_DETECTION_SYSTEM_PROMPT,
             max_tokens=1024,
             temperature=0.2,
+            model_id=body.model,
         )
+
+        # Track usage
+        if user_id:
+            await _record_editor_usage(db, user_id, result, "editor_bugs")
+
+        text = result.text
 
         # Extract JSON from the response
         try:

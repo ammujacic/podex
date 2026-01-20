@@ -59,6 +59,10 @@ class UsageEvent(BaseModel):
     tier: str | None = None
     duration_seconds: int | None = None
 
+    # Usage source: "included" (Vertex/platform), "external" (user API key),
+    # "local" (Ollama/LMStudio). Only "included" usage counts towards quota and incurs cost
+    usage_source: str = "included"
+
     # Metadata
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -80,6 +84,9 @@ class TokenUsageParams:
     # Pricing from database (required for accurate cost calculation)
     input_price_per_million: Decimal | None = None
     output_price_per_million: Decimal | None = None
+    # Usage source: "included" (Vertex/platform), "external" (user API key),
+    # "local" (Ollama/LMStudio). Only "included" usage counts towards quota and incurs cost
+    usage_source: str = "included"
 
 
 @dataclass
@@ -266,45 +273,58 @@ class UsageTracker:
                    output_tokens, and optional session_id, workspace_id, agent_id, metadata.
                    Pricing should be provided via input_price_per_million and
                    output_price_per_million from database lookup.
+                   usage_source determines if usage counts towards quota:
+                   - "included" (Vertex/platform): counts towards quota, has cost
+                   - "external" (user API key): tracked but $0 cost, no quota impact
+                   - "local" (Ollama/LMStudio): tracked but $0 cost, no quota impact
 
         Returns:
             The created usage event
         """
-        # Use provided pricing or fall back to defaults
-        input_price = params.input_price_per_million or DEFAULT_INPUT_PRICE_PER_MILLION
-        output_price = params.output_price_per_million or DEFAULT_OUTPUT_PRICE_PER_MILLION
-
-        # Calculate cost using explicit pricing
-        total_cost = calculate_token_cost_with_pricing(
-            params.input_tokens,
-            params.output_tokens,
-            input_price,
-            output_price,
-        )
         total_tokens = params.input_tokens + params.output_tokens
+        usage_source = params.usage_source or "included"
 
-        # Calculate average price per token (weighted by input/output ratio)
-        if total_tokens > 0:
-            avg_price_per_token = total_cost / total_tokens
-            # Use proper rounding to avoid truncating small values to 0
-            unit_price_cents = int(
-                (avg_price_per_token * Decimal("100")).quantize(
-                    Decimal("1"), rounding=ROUND_HALF_UP
-                )
+        # Only calculate cost for "included" (platform/Vertex) usage
+        # External and local usage is tracked but with $0 cost
+        if usage_source == "included":
+            # Use provided pricing or fall back to defaults
+            input_price = params.input_price_per_million or DEFAULT_INPUT_PRICE_PER_MILLION
+            output_price = params.output_price_per_million or DEFAULT_OUTPUT_PRICE_PER_MILLION
+
+            # Calculate cost using explicit pricing
+            total_cost = calculate_token_cost_with_pricing(
+                params.input_tokens,
+                params.output_tokens,
+                input_price,
+                output_price,
             )
-        else:
-            unit_price_cents = 0
 
-        # Convert total cost to cents with proper rounding
-        # Use ROUND_HALF_UP to round to nearest cent (0.5 cents rounds up)
-        # Apply minimum charge of 1 cent to ensure we always charge something for usage
-        total_cost_cents_decimal = (total_cost * Decimal("100")).quantize(
-            Decimal("1"), rounding=ROUND_HALF_UP
-        )
-        total_cost_cents = int(total_cost_cents_decimal)
-        # Enforce minimum charge of 1 cent for any non-zero usage
-        if total_cost > 0 and total_cost_cents == 0:
-            total_cost_cents = 1
+            # Calculate average price per token (weighted by input/output ratio)
+            if total_tokens > 0:
+                avg_price_per_token = total_cost / total_tokens
+                # Use proper rounding to avoid truncating small values to 0
+                unit_price_cents = int(
+                    (avg_price_per_token * Decimal("100")).quantize(
+                        Decimal("1"), rounding=ROUND_HALF_UP
+                    )
+                )
+            else:
+                unit_price_cents = 0
+
+            # Convert total cost to cents with proper rounding
+            # Use ROUND_HALF_UP to round to nearest cent (0.5 cents rounds up)
+            # Apply minimum charge of 1 cent to ensure we always charge something for usage
+            total_cost_cents_decimal = (total_cost * Decimal("100")).quantize(
+                Decimal("1"), rounding=ROUND_HALF_UP
+            )
+            total_cost_cents = int(total_cost_cents_decimal)
+            # Enforce minimum charge of 1 cent for any non-zero usage
+            if total_cost > 0 and total_cost_cents == 0:
+                total_cost_cents = 1
+        else:
+            # External/local usage: track tokens but no cost
+            unit_price_cents = 0
+            total_cost_cents = 0
 
         event = UsageEvent(
             user_id=params.user_id,
@@ -319,6 +339,7 @@ class UsageTracker:
             model=params.model,
             input_tokens=params.input_tokens,
             output_tokens=params.output_tokens,
+            usage_source=usage_source,
             metadata=params.metadata,
         )
 
@@ -331,6 +352,7 @@ class UsageTracker:
             input_tokens=params.input_tokens,
             output_tokens=params.output_tokens,
             cost_cents=event.total_cost_cents,
+            usage_source=usage_source,
         )
 
         return event

@@ -171,7 +171,7 @@ export default function NewSessionPage() {
   const [useCustomBranch, setUseCustomBranch] = useState(false);
 
   // Pod configuration state
-  const [selectedTier, setSelectedTier] = useState<string>('small');
+  const [selectedTier, setSelectedTier] = useState<string>('starter');
   const [selectedPythonVersion, setSelectedPythonVersion] = useState<string>('3.12');
   const [selectedNodeVersion, setSelectedNodeVersion] = useState<string>('20');
   const [selectedOsVersion, setSelectedOsVersion] = useState<string>('ubuntu-22.04');
