@@ -36,6 +36,7 @@ import {
   type FileNode,
 } from '@/lib/api';
 import { useUIStore } from '@/stores/ui';
+import { BranchCompare } from '@/components/git/BranchCompare';
 
 export interface GitPanelProps {
   sessionId: string;
@@ -62,6 +63,7 @@ export function GitPanel({ sessionId }: GitPanelProps) {
   const [showUnstagedSection, setShowUnstagedSection] = useState(true);
   const [showUntrackedSection, setShowUntrackedSection] = useState(true);
   const [showBranchSelector, setShowBranchSelector] = useState(false);
+  const [showBranchCompare, setShowBranchCompare] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const workingDirectory = useUIStore(
     (state) => state.gitWidgetSettingsBySession[sessionId]?.workingDirectory ?? 'projects'
@@ -494,6 +496,14 @@ export function GitPanel({ sessionId }: GitPanelProps) {
         >
           {pushing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
         </button>
+        <div className="w-px h-4 bg-border-subtle mx-1" />
+        <button
+          onClick={() => setShowBranchCompare(true)}
+          className="p-1.5 rounded text-text-muted hover:text-text-primary hover:bg-overlay"
+          title="Compare Branches"
+        >
+          <GitCompare className="h-4 w-4" />
+        </button>
       </div>
 
       {/* Changes */}
@@ -679,6 +689,22 @@ export function GitPanel({ sessionId }: GitPanelProps) {
             )}
             Commit
           </button>
+        </div>
+      )}
+
+      {/* Branch Compare Modal */}
+      {showBranchCompare && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-full max-w-2xl max-h-[80vh] overflow-hidden rounded-lg border border-border-subtle shadow-xl">
+            <BranchCompare
+              sessionId={sessionId}
+              branches={branches.map((b) => ({
+                name: b.name,
+                current: b.is_current,
+              }))}
+              onClose={() => setShowBranchCompare(false)}
+            />
+          </div>
         </div>
       )}
     </div>

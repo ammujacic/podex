@@ -758,4 +758,154 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "is_enabled": True,
         "is_system": True,
     },
+    # ==================== Memory Tools ====================
+    {
+        "name": "store_memory",
+        "description": (
+            "Store a fact or insight for later recall. Use this to remember user preferences, "
+            "project patterns, decisions made, or solutions discovered."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The information to remember",
+                },
+                "memory_type": {
+                    "type": "string",
+                    "enum": ["fact", "preference", "context", "code_pattern", "error_solution"],
+                    "description": "Type of memory",
+                    "default": "fact",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tags for categorization",
+                },
+                "importance": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "Importance score (0-1)",
+                    "default": 0.5,
+                },
+            },
+            "required": ["content"],
+        },
+        "category": "memory",
+        "sort_order": 700,
+        "is_enabled": True,
+        "is_system": True,
+    },
+    {
+        "name": "recall_memory",
+        "description": (
+            "Search memories for relevant information. Use this to recall user preferences, "
+            "patterns, or solutions from previous interactions."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query describing what you're looking for",
+                },
+                "memory_type": {
+                    "type": "string",
+                    "enum": ["fact", "preference", "context", "code_pattern", "error_solution"],
+                    "description": "Filter by memory type",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Filter by tags",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "description": "Maximum results to return",
+                    "default": 5,
+                },
+            },
+            "required": ["query"],
+        },
+        "category": "memory",
+        "sort_order": 710,
+        "is_enabled": True,
+        "is_system": True,
+    },
+    {
+        "name": "update_memory",
+        "description": "Update an existing memory's content, tags, or importance.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "ID of the memory to update",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "New content for the memory",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "New tags for the memory",
+                },
+                "importance": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "New importance score (0-1)",
+                },
+            },
+            "required": ["memory_id"],
+        },
+        "category": "memory",
+        "sort_order": 720,
+        "is_enabled": True,
+        "is_system": True,
+    },
+    {
+        "name": "delete_memory",
+        "description": "Delete a memory by its ID.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "ID of the memory to delete",
+                },
+            },
+            "required": ["memory_id"],
+        },
+        "category": "memory",
+        "sort_order": 730,
+        "is_enabled": True,
+        "is_system": True,
+    },
+    {
+        "name": "get_session_memories",
+        "description": "Get all memories stored in the current session.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "Maximum memories to return",
+                    "default": 20,
+                },
+            },
+            "required": [],
+        },
+        "category": "memory",
+        "sort_order": 740,
+        "is_enabled": True,
+        "is_system": True,
+    },
 ]

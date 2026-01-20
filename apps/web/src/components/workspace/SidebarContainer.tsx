@@ -18,6 +18,7 @@ import {
   AlertTriangle,
   BarChart3,
   Zap,
+  Activity,
 } from 'lucide-react';
 
 // Custom Sentry icon component to match lucide-react API
@@ -51,6 +52,7 @@ import { DiagnosticsSidebarPanel } from './DiagnosticsSidebarPanel';
 import { UsageSidebarPanel } from './UsageSidebarPanel';
 import { SentryPanel } from './SentryPanel';
 import { SkillsPanel } from './SkillsPanel';
+import ProjectHealth from './ProjectHealth';
 
 interface SidebarContainerProps {
   side: SidebarSide;
@@ -73,10 +75,11 @@ const panelConfig: Record<
   usage: { icon: BarChart3, label: 'Usage' },
   sentry: { icon: SentryIcon, label: 'Sentry MCP' },
   skills: { icon: Zap, label: 'Skills' },
+  health: { icon: Activity, label: 'Health' },
 };
 
 // Left sidebar: traditional coding tools
-const leftPanelIds: PanelId[] = ['files', 'search', 'git', 'github', 'problems'];
+const leftPanelIds: PanelId[] = ['files', 'search', 'git', 'github', 'problems', 'health'];
 
 // Right sidebar: AI-related and utility panels
 const rightPanelIds: PanelId[] = [
@@ -193,6 +196,8 @@ function SidebarPanel({ panelId, sessionId }: SidebarPanelProps) {
         return <SentryPanel sessionId={sessionId} />;
       case 'skills':
         return <SkillsPanel sessionId={sessionId} />;
+      case 'health':
+        return <ProjectHealth sessionId={sessionId} compact />;
       default:
         return null;
     }

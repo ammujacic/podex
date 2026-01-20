@@ -8,6 +8,7 @@ This module provides:
 """
 
 import asyncio
+import time
 import warnings
 from collections.abc import AsyncGenerator, Generator
 from typing import Any
@@ -17,6 +18,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
+from jose import jwt as jose_jwt
 
 from src.config import settings
 from src.middleware.auth import AuthMiddleware
@@ -263,10 +265,57 @@ def test_user() -> dict[str, Any]:
 
 
 @pytest.fixture
-def auth_headers() -> dict[str, str]:
+def auth_headers(
+    test_user: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, str]:
     """Create authentication headers for test requests."""
+    from src.middleware import auth as auth_middleware
+    from src.services import token_blacklist
+
+    class _FakeUser:
+        def __init__(self) -> None:
+            self.id = test_user["id"]
+            self.email = test_user["email"]
+            self.role = "member"
+            self.is_active = True
+
+    class _FakeResult:
+        def scalar_one_or_none(self) -> _FakeUser:
+            return _FakeUser()
+
+    class _FakeSession:
+        async def execute(self, *args: Any, **kwargs: Any) -> _FakeResult:  # noqa: ARG002
+            return _FakeResult()
+
+        async def __aenter__(self) -> "_FakeSession":
+            return self
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+    def _fake_async_session_factory() -> _FakeSession:
+        return _FakeSession()
+
+    async def _fake_is_token_revoked(jti: str) -> bool:  # noqa: ARG001
+        return False
+
+    monkeypatch.setattr(auth_middleware, "async_session_factory", _fake_async_session_factory)
+    monkeypatch.setattr(token_blacklist, "is_token_revoked", _fake_is_token_revoked)
+
+    token = jose_jwt.encode(
+        {
+            "sub": test_user["id"],
+            "jti": "test-jti-123",
+            "exp": int(time.time()) + 3600,
+            "type": "access",
+        },
+        settings.JWT_SECRET_KEY,
+        algorithm=settings.JWT_ALGORITHM,
+    )
+
     return {
-        "Authorization": "Bearer test-token-for-testing",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
 

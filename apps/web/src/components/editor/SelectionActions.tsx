@@ -1,17 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import {
-  Wand2,
-  Bug,
-  FileCode,
-  TestTube,
-  BookOpen,
-  MessageSquare,
-  Copy,
-  Scissors,
-  Sparkles,
-} from 'lucide-react';
+import { Wand2, Bug, FileCode, TestTube, BookOpen, Copy, Scissors, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { calculateBoundedPosition } from '@/lib/ui-utils';
 import type { editor } from '@codingame/monaco-vscode-editor-api';
@@ -74,13 +64,6 @@ const actions: SelectionAction[] = [
     aiPrompt: 'Add documentation comments to this code',
   },
   {
-    id: 'chat',
-    label: 'Ask AI',
-    icon: <MessageSquare className="h-3.5 w-3.5" />,
-    shortcut: '⌘I',
-    action: 'ai-action',
-  },
-  {
     id: 'divider',
     label: '',
     icon: null,
@@ -104,11 +87,10 @@ const actions: SelectionAction[] = [
 
 interface SelectionActionsProps {
   editor: editor.IStandaloneCodeEditor;
-  onOpenInlineChat: (prompt?: string) => void;
   onAIAction: (prompt: string, selectedText: string) => void;
 }
 
-export function SelectionActions({ editor, onOpenInlineChat, onAIAction }: SelectionActionsProps) {
+export function SelectionActions({ editor, onAIAction }: SelectionActionsProps) {
   const [visible, setVisible] = useState(false);
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [selectedText, setSelectedText] = useState('');
@@ -236,9 +218,7 @@ export function SelectionActions({ editor, onOpenInlineChat, onAIAction }: Selec
           break;
         }
         case 'ai-action':
-          if (action.id === 'chat') {
-            onOpenInlineChat();
-          } else if (action.aiPrompt) {
+          if (action.aiPrompt) {
             onAIAction(action.aiPrompt, selectedText);
           }
           break;
@@ -247,7 +227,7 @@ export function SelectionActions({ editor, onOpenInlineChat, onAIAction }: Selec
       // Refocus editor
       editor.focus();
     },
-    [editor, selectedText, onOpenInlineChat, onAIAction]
+    [editor, selectedText, onAIAction]
   );
 
   if (!visible) return null;
@@ -305,43 +285,4 @@ export function SelectionActions({ editor, onOpenInlineChat, onAIAction }: Selec
       </div>
     </div>
   );
-}
-
-// Hook to manage selection actions
-export function useSelectionActions(
-  _editorRef: React.RefObject<editor.IStandaloneCodeEditor | null>,
-  _sessionId: string
-) {
-  const [inlineChatOpen, setInlineChatOpen] = useState(false);
-  const [pendingAIAction, setPendingAIAction] = useState<{
-    prompt: string;
-    text: string;
-  } | null>(null);
-
-  const openInlineChat = useCallback((prompt?: string) => {
-    setInlineChatOpen(true);
-    if (prompt) {
-      setPendingAIAction({ prompt, text: '' });
-    }
-  }, []);
-
-  const closeInlineChat = useCallback(() => {
-    setInlineChatOpen(false);
-    setPendingAIAction(null);
-  }, []);
-
-  const handleAIAction = useCallback((prompt: string, text: string) => {
-    // For now, open inline chat with the prompt
-    // In the future, this could directly send to the agent
-    setInlineChatOpen(true);
-    setPendingAIAction({ prompt, text });
-  }, []);
-
-  return {
-    inlineChatOpen,
-    pendingAIAction,
-    openInlineChat,
-    closeInlineChat,
-    handleAIAction,
-  };
 }

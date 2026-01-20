@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.auth_constants import COOKIE_ACCESS_TOKEN
 from src.compute_client import ComputeClient
 from src.config import settings
 from src.database import (
@@ -39,7 +40,6 @@ from src.database import (
 )
 from src.middleware.admin import require_admin
 from src.middleware.auth import get_current_user
-from src.routes.auth import COOKIE_ACCESS_TOKEN
 from src.services.token_blacklist import is_token_revoked
 from src.terminal.manager import terminal_manager
 

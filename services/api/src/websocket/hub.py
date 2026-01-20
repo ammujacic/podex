@@ -13,12 +13,12 @@ import structlog
 from jose import JWTError, jwt
 from sqlalchemy import select, update
 
+from src.auth_constants import COOKIE_ACCESS_TOKEN
 from src.config import settings
 from src.database.connection import async_session_factory
 from src.database.models import Agent as AgentModel
 from src.database.models import AgentAttention, SessionShare
 from src.database.models import Session as SessionModel
-from src.routes.auth import COOKIE_ACCESS_TOKEN
 from src.session_sync.manager import session_sync_manager
 from src.session_sync.models import SharingMode, SyncAction, SyncActionType
 from src.terminal.manager import terminal_manager

@@ -14,39 +14,23 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
-
-interface SkillRepository {
-  id: string;
-  name: string;
-  repo_url: string;
-  branch: string;
-  skills_path: string;
-  sync_direction: 'pull' | 'push' | 'bidirectional';
-  last_synced_at: string | null;
-  last_sync_status: 'success' | 'failed' | 'pending' | null;
-  last_sync_error: string | null;
-  is_active: boolean;
-  created_at: string;
-}
-
-interface SyncLog {
-  id: string;
-  direction: string;
-  status: string;
-  skills_added: number;
-  skills_updated: number;
-  skills_removed: number;
-  error_message: string | null;
-  started_at: string;
-  completed_at: string | null;
-}
+import {
+  getSkillRepositories,
+  createSkillRepository,
+  deleteSkillRepository,
+  syncSkillRepository,
+  getSkillSyncLogs,
+  getSkillRepositoryWebhook,
+  type SkillRepository,
+  type SkillSyncLog,
+} from '@/lib/api';
 
 export default function SkillRepositoriesPage() {
   const [repositories, setRepositories] = useState<SkillRepository[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [selectedRepo, setSelectedRepo] = useState<SkillRepository | null>(null);
-  const [syncLogs, setSyncLogs] = useState<SyncLog[]>([]);
+  const [syncLogs, setSyncLogs] = useState<SkillSyncLog[]>([]);
   const [isSyncing, setIsSyncing] = useState<string | null>(null);
 
   useEffect(() => {
@@ -55,13 +39,8 @@ export default function SkillRepositoriesPage() {
 
   const fetchRepositories = async () => {
     try {
-      const response = await fetch('/api/v1/skill-repositories', {
-        credentials: 'include',
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setRepositories(data.repositories);
-      }
+      const data = await getSkillRepositories();
+      setRepositories(data);
     } catch (error) {
       console.error('Failed to fetch repositories:', error);
     } finally {
@@ -72,14 +51,9 @@ export default function SkillRepositoriesPage() {
   const handleSync = async (repoId: string) => {
     setIsSyncing(repoId);
     try {
-      const response = await fetch(`/api/v1/skill-repositories/${repoId}/sync`, {
-        method: 'POST',
-        credentials: 'include',
-      });
-      if (response.ok) {
-        // Refresh repositories after sync
-        await fetchRepositories();
-      }
+      await syncSkillRepository(repoId);
+      // Refresh repositories after sync
+      await fetchRepositories();
     } catch (error) {
       console.error('Sync failed:', error);
     } finally {
@@ -91,13 +65,8 @@ export default function SkillRepositoriesPage() {
     if (!confirm('Are you sure you want to disconnect this repository?')) return;
 
     try {
-      const response = await fetch(`/api/v1/skill-repositories/${repoId}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      });
-      if (response.ok) {
-        setRepositories((prev) => prev.filter((r) => r.id !== repoId));
-      }
+      await deleteSkillRepository(repoId);
+      setRepositories((prev) => prev.filter((r) => r.id !== repoId));
     } catch (error) {
       console.error('Delete failed:', error);
     }
@@ -105,13 +74,8 @@ export default function SkillRepositoriesPage() {
 
   const fetchSyncLogs = async (repoId: string) => {
     try {
-      const response = await fetch(`/api/v1/skill-repositories/${repoId}/logs`, {
-        credentials: 'include',
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setSyncLogs(data.logs);
-      }
+      const logs = await getSkillSyncLogs(repoId);
+      setSyncLogs(logs);
     } catch (error) {
       console.error('Failed to fetch sync logs:', error);
     }
@@ -299,24 +263,13 @@ function AddRepositoryModal({
     setError(null);
 
     try {
-      const response = await fetch('/api/v1/skill-repositories', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          name,
-          repo_url: repoUrl,
-          branch,
-          skills_path: skillsPath,
-          sync_direction: syncDirection,
-        }),
+      await createSkillRepository({
+        name,
+        repo_url: repoUrl,
+        branch,
+        skills_path: skillsPath,
+        sync_direction: syncDirection,
       });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.detail || 'Failed to connect repository');
-      }
-
       onSuccess();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to connect repository');
@@ -433,7 +386,7 @@ function RepositoryDetailsModal({
   onClose,
 }: {
   repo: SkillRepository;
-  logs: SyncLog[];
+  logs: SkillSyncLog[];
   onClose: () => void;
 }) {
   const [webhookUrl, setWebhookUrl] = useState<string | null>(null);
@@ -442,13 +395,8 @@ function RepositoryDetailsModal({
   useEffect(() => {
     const fetchWebhookUrl = async () => {
       try {
-        const response = await fetch(`/api/v1/skill-repositories/${repo.id}/webhook-url`, {
-          credentials: 'include',
-        });
-        if (response.ok) {
-          const data = await response.json();
-          setWebhookUrl(data.webhook_url);
-        }
+        const data = await getSkillRepositoryWebhook(repo.id);
+        setWebhookUrl(data.webhook_url);
       } catch (error) {
         console.error('Failed to fetch webhook URL:', error);
       }

@@ -46,6 +46,8 @@ export interface EditorSettings {
   // AI Completions
   completionsEnabled: boolean;
   completionsDebounceMs: number; // Delay before triggering completion
+  // AI Action Model (for selection context menu actions like Explain, Refactor, etc.)
+  aiActionModel: string | null; // null = use default model
 }
 
 export interface EditorState {
@@ -120,6 +122,8 @@ const DEFAULT_SETTINGS: EditorSettings = {
   // AI Completions - enabled by default
   completionsEnabled: true,
   completionsDebounceMs: 300,
+  // AI Action Model - null means use the default model
+  aiActionModel: null,
 };
 
 const DEFAULT_PANE_ID = 'main';

@@ -32,9 +32,12 @@ import {
   getMyMarketplaceSkills,
   installMarketplaceSkill,
   uninstallMarketplaceSkill,
+  getSkillTemplates,
   type MarketplaceSkill,
   type UserAddedSkill,
+  type SkillTemplate,
 } from '@/lib/api';
+import { SkillWizard } from '@/components/skills/SkillWizard';
 import { useSkillsStore, type Skill, type SkillExecution, type SkillStep } from '@/stores/skills';
 import { useSkillSocket, useLoadSkills } from '@/hooks/useSkillSocket';
 
@@ -730,6 +733,9 @@ function SkillCard({ skill, onRun }: { skill: Skill; onRun?: () => void }) {
 
 export function SkillsPanel({ sessionId }: SkillsPanelProps) {
   const [showMarketplace, setShowMarketplace] = useState(false);
+  const [showWizard, setShowWizard] = useState(false);
+  const [templates, setTemplates] = useState<SkillTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
 
   // Subscribe to socket events
   useSkillSocket({ sessionId });
@@ -743,6 +749,25 @@ export function SkillsPanel({ sessionId }: SkillsPanelProps) {
   const handleSkillInstalled = () => {
     // Reload skills when a marketplace skill is installed/uninstalled
     loadSkills();
+  };
+
+  const handleOpenWizard = async () => {
+    setShowWizard(true);
+    setTemplatesLoading(true);
+    try {
+      const data = await getSkillTemplates();
+      setTemplates(data.templates || []);
+    } catch (err) {
+      console.error('Failed to fetch skill templates:', err);
+      toast.error('Failed to load skill templates');
+    } finally {
+      setTemplatesLoading(false);
+    }
+  };
+
+  const handleSkillCreated = () => {
+    loadSkills();
+    toast.success('Skill created successfully');
   };
 
   // Store state
@@ -881,8 +906,15 @@ export function SkillsPanel({ sessionId }: SkillsPanelProps) {
         )}
       </div>
 
-      {/* Marketplace button */}
-      <div className="p-2 border-t border-border-subtle shrink-0">
+      {/* Action buttons */}
+      <div className="p-2 border-t border-border-subtle shrink-0 space-y-2">
+        <button
+          onClick={handleOpenWizard}
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm bg-accent-primary hover:bg-accent-primary/90 text-white rounded-lg transition-colors"
+        >
+          <Plus className="h-4 w-4" />
+          Create Custom Skill
+        </button>
         <button
           onClick={() => setShowMarketplace(true)}
           className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm bg-elevated hover:bg-overlay text-text-secondary hover:text-text-primary rounded-lg transition-colors"
@@ -897,6 +929,15 @@ export function SkillsPanel({ sessionId }: SkillsPanelProps) {
         isOpen={showMarketplace}
         onClose={() => setShowMarketplace(false)}
         onSkillInstalled={handleSkillInstalled}
+      />
+
+      {/* Skill Wizard */}
+      <SkillWizard
+        isOpen={showWizard}
+        onClose={() => setShowWizard(false)}
+        onComplete={handleSkillCreated}
+        templates={templates as any} // eslint-disable-line @typescript-eslint/no-explicit-any
+        isLoading={templatesLoading}
       />
     </div>
   );

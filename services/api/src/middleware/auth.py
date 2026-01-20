@@ -9,10 +9,10 @@ from jose import JWTError, jwt
 from sqlalchemy import select
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from src.auth_constants import COOKIE_ACCESS_TOKEN
 from src.config import settings
 from src.database.connection import async_session_factory
 from src.database.models import User
-from src.routes.auth import COOKIE_ACCESS_TOKEN
 
 logger = structlog.get_logger()
 

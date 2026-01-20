@@ -13,13 +13,12 @@ from typing import Any
 import pytest
 
 from src.services.cli_translators import (
+    TRANSLATORS,
     ClaudeCodeTranslator,
     CodexTranslator,
     GeminiCLITranslator,
     get_translator,
-    TRANSLATORS,
 )
-
 
 # ============================================================================
 # FIXTURES

@@ -5070,3 +5070,41 @@ export async function explainCode(
     context,
   });
 }
+
+// ============================================================================
+// Editor AI Actions
+// ============================================================================
+
+export interface EditorAIActionRequest {
+  sessionId: string;
+  prompt: string; // e.g., "Explain this code", "Refactor this code"
+  code: string; // Selected code
+  language: string;
+  filePath: string;
+  model?: string | null; // Optional - uses default if not provided
+}
+
+export interface EditorAIActionResponse {
+  response: string;
+  model: string;
+  tokens_used: {
+    input: number;
+    output: number;
+  };
+}
+
+/**
+ * Perform an AI action on selected code in the editor.
+ * This consumes included tokens or credits.
+ */
+export async function performEditorAIAction(
+  request: EditorAIActionRequest
+): Promise<EditorAIActionResponse> {
+  return api.post<EditorAIActionResponse>(`/api/sessions/${request.sessionId}/editor/ai-action`, {
+    prompt: request.prompt,
+    code: request.code,
+    language: request.language,
+    file_path: request.filePath,
+    model: request.model,
+  });
+}

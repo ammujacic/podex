@@ -23,6 +23,11 @@ VALID_TOOLS = {
     "run_command",
     "list_directory",
     "create_task",
+    "store_memory",
+    "recall_memory",
+    "update_memory",
+    "delete_memory",
+    "get_session_memories",
 }
 
 # Tool descriptions for the list_available_tools function
@@ -37,6 +42,18 @@ TOOL_DESCRIPTIONS = {
     "run_command": "Execute shell commands - for running tests, builds, git commands, etc.",
     "list_directory": "Browse directory contents - for exploring project structure",
     "create_task": "Delegate tasks to other agents - for orchestration/architect-type agents",
+    "store_memory": (
+        "Store facts, preferences, or insights for later recall - "
+        "for agents that need to remember information across sessions"
+    ),
+    "recall_memory": (
+        "Search and retrieve stored memories - "
+        "for agents that need to recall user preferences, patterns, or solutions"
+    ),
+    "update_memory": "Update existing memories - for managing stored information",
+    "delete_memory": "Delete memories - for cleaning up outdated information",
+    "get_session_memories": "Get all memories from the current session - "
+    "for session context awareness",
 }
 
 

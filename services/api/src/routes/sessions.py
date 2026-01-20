@@ -2317,3 +2317,201 @@ async def get_file_diff(
         "diff": change.diff,
         "created_at": change.created_at.isoformat(),
     }
+
+
+# ==================== Editor AI Actions ====================
+
+
+class EditorAIActionRequest(BaseModel):
+    """Request for editor AI action (Explain, Refactor, Fix, etc.)."""
+
+    prompt: str  # The action prompt (e.g., "Explain this code in detail")
+    code: str  # Selected code to act on
+    language: str  # Programming language
+    file_path: str  # Path to the file
+    model: str | None = None  # Optional model override (uses default if None)
+
+
+class EditorAIActionResponse(BaseModel):
+    """Response for editor AI action."""
+
+    response: str
+    model: str
+    tokens_used: dict[str, int]  # {"input": ..., "output": ...}
+
+
+@router.post("/{session_id}/editor/ai-action", response_model=EditorAIActionResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def perform_editor_ai_action(
+    session_id: str,
+    request: Request,
+    response: Response,
+    data: EditorAIActionRequest,
+    db: DbSession,
+) -> EditorAIActionResponse:
+    """Perform an AI action on selected code in the editor.
+
+    This endpoint handles actions like Explain, Refactor, Fix Issues, Optimize,
+    Generate Tests, and Add Docs. It consumes included tokens or credits.
+    """
+    from anthropic import AsyncAnthropicVertex
+
+    from src.services.credit_enforcement import (
+        check_credits_available,
+        create_billing_error_detail,
+    )
+
+    # Verify session exists and user has access
+    session = await get_session_or_404(session_id, request, db)
+    user_id = get_current_user_id(request)
+
+    # Check AI credits before proceeding
+    credit_check = await check_credits_available(db, user_id, "tokens")
+    if not credit_check.can_proceed:
+        raise HTTPException(
+            status_code=402,
+            detail=create_billing_error_detail(
+                credit_check,
+                "ai",
+                "AI credits exhausted. Please upgrade your plan or add credits.",
+            ),
+        )
+
+    # Determine model to use (user override or default)
+    model_id = data.model or "claude-3-5-haiku"
+
+    # Build the prompt for the AI action
+    system_prompt = """You are an expert software engineer assisting with code tasks.
+Provide clear, accurate, and helpful responses. Format your response appropriately:
+- For explanations: Use clear prose with code examples where helpful
+- For refactoring: Show the improved code with brief comments on changes
+- For bug fixes: Show the corrected code and explain what was fixed
+- For optimization: Show optimized code and explain the improvements
+- For test generation: Provide complete, runnable test code
+- For documentation: Add clear docstrings/comments following language conventions"""
+
+    user_prompt = f"""Task: {data.prompt}
+
+Language: {data.language}
+File: {data.file_path}
+
+Code:
+```{data.language}
+{data.code}
+```
+
+Please perform the requested task on the code above."""
+
+    def _validate_gcp_config() -> None:
+        if not settings.GCP_PROJECT_ID:
+            raise HTTPException(
+                status_code=503,
+                detail="AI service not configured (GCP_PROJECT_ID required)",
+            )
+
+    try:
+        # Use Vertex AI with Claude
+        _validate_gcp_config()
+
+        client = AsyncAnthropicVertex(
+            project_id=settings.GCP_PROJECT_ID,  # type: ignore
+            region=settings.GCP_REGION,  # type: ignore
+        )
+
+        api_response = await client.messages.create(
+            model=model_id,
+            max_tokens=2048,
+            temperature=0.3,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+
+        # Extract response text
+        response_text = ""
+        for block in api_response.content:
+            if block.type == "text":
+                response_text = block.text
+                break
+
+        # Track token usage
+        input_tokens = api_response.usage.input_tokens if api_response.usage else 0
+        output_tokens = api_response.usage.output_tokens if api_response.usage else 0
+
+        if input_tokens or output_tokens:
+            from decimal import ROUND_HALF_UP, Decimal
+            from uuid import uuid4
+
+            from podex_shared.models.billing import calculate_token_cost
+            from src.routes.billing import UsageEventInput, _record_single_event
+
+            normalized_model_id = model_id.replace("@", "-")
+            total_tokens = input_tokens + output_tokens
+            total_cost = calculate_token_cost(
+                normalized_model_id,
+                input_tokens,
+                output_tokens,
+            )
+            total_cost_cents = int(
+                (total_cost * Decimal(100)).quantize(Decimal(1), rounding=ROUND_HALF_UP)
+            )
+            avg_price_per_token = (
+                total_cost / Decimal(total_tokens) if total_tokens > 0 else Decimal(0)
+            )
+            unit_price_cents = int(
+                (avg_price_per_token * Decimal(100)).quantize(
+                    Decimal(1),
+                    rounding=ROUND_HALF_UP,
+                )
+            )
+
+            usage_event = UsageEventInput(
+                id=uuid4().hex,
+                user_id=user_id,
+                session_id=session_id,
+                workspace_id=str(session.workspace_id) if session.workspace_id else None,
+                usage_type="tokens",
+                quantity=total_tokens,
+                unit="tokens",
+                unit_price_cents=unit_price_cents,
+                total_cost_cents=total_cost_cents,
+                model=normalized_model_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                metadata={"source": "editor_ai_action"},
+            )
+            recorded, record_error = await _record_single_event(db, usage_event)
+            if recorded:
+                await db.commit()
+            else:
+                logger.warning(
+                    "Failed to record editor AI token usage",
+                    session_id=session_id,
+                    user_id=user_id,
+                    error=record_error,
+                )
+
+        logger.info(
+            "Editor AI action completed",
+            session_id=session_id,
+            user_id=user_id,
+            prompt_preview=data.prompt[:50],
+            model=model_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+
+        return EditorAIActionResponse(
+            response=response_text,
+            model=model_id,
+            tokens_used={"input": input_tokens, "output": output_tokens},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(
+            "Editor AI action failed",
+            session_id=session_id,
+            error=str(e),
+        )
+        raise HTTPException(status_code=500, detail="AI action failed") from e

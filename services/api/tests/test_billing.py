@@ -376,19 +376,23 @@ class TestInvoices:
 class TestHardwareSpecs:
     """Tests for hardware specification endpoints."""
 
-    def test_list_hardware_specs(self, client: TestClient) -> None:
+    def test_list_hardware_specs(self, client: TestClient, auth_headers: dict[str, str]) -> None:
         """Test listing hardware specs."""
-        response = client.get("/api/billing/hardware-specs")
+        response = client.get("/api/billing/hardware-specs", headers=auth_headers)
         assert response.status_code in [200, 404]
 
-    def test_get_hardware_spec_by_tier(self, client: TestClient) -> None:
+    def test_get_hardware_spec_by_tier(
+        self, client: TestClient, auth_headers: dict[str, str]
+    ) -> None:
         """Test getting hardware spec by tier."""
-        response = client.get("/api/billing/hardware-specs/standard")
+        response = client.get("/api/billing/hardware-specs/standard", headers=auth_headers)
         assert response.status_code in [200, 404]
 
-    def test_get_nonexistent_hardware_spec(self, client: TestClient) -> None:
+    def test_get_nonexistent_hardware_spec(
+        self, client: TestClient, auth_headers: dict[str, str]
+    ) -> None:
         """Test getting hardware spec that doesn't exist."""
-        response = client.get("/api/billing/hardware-specs/nonexistent")
+        response = client.get("/api/billing/hardware-specs/nonexistent", headers=auth_headers)
         assert response.status_code == 404
 
 

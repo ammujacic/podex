@@ -8,10 +8,17 @@ import { EditorTabs, EditorEmptyState } from './EditorTabs';
 import { EditorToolbar } from './EditorToolbar';
 import { Breadcrumbs, type BreadcrumbSymbol, convertMonacoSymbolKind } from './Breadcrumbs';
 import { getSnippetManager, registerDefaultSnippets } from '@/lib/snippets';
-import { getCompletionProvider } from '@/lib/ai';
+import {
+  getCompletionProvider,
+  getBugDetector,
+  getCodeGenerator,
+  bugGlyphStyles,
+  generatorStyles,
+} from '@/lib/ai';
 import { VSCodeEditor, type VSCodeEditorRef } from '@/lib/vscode';
 import { updateFileContent, getFileContent } from '@/lib/api';
 import * as monaco from '@codingame/monaco-vscode-editor-api';
+import { SelectionActions } from './SelectionActions';
 
 // ============================================================================
 // Types
@@ -39,6 +46,16 @@ interface EditorPaneContentProps {
 // ============================================================================
 
 let themeRegistered = false;
+let aiStylesInjected = false;
+
+function injectAIStyles() {
+  if (aiStylesInjected || typeof document === 'undefined') return;
+
+  const style = document.createElement('style');
+  style.textContent = bugGlyphStyles + generatorStyles;
+  document.head.appendChild(style);
+  aiStylesInjected = true;
+}
 
 function registerTerminalNoirTheme() {
   if (themeRegistered) return;
@@ -114,10 +131,14 @@ function EditorPaneContent({
 }: EditorPaneContentProps) {
   const editorRef = useRef<VSCodeEditorRef>(null);
   const [currentLanguage, setCurrentLanguage] = useState(language);
+  const [editorInstance, setEditorInstance] = useState<monaco.editor.IStandaloneCodeEditor | null>(
+    null
+  );
 
   const settings = useEditorStore((s) => s.settings);
   const updateTabCursorPosition = useEditorStore((s) => s.updateTabCursorPosition);
   const getTabByPath = useEditorStore((s) => s.getTabByPath);
+  const currentSessionId = useSessionStore((s) => s.currentSessionId);
 
   const [cursorLine, setCursorLine] = useState(1);
   const [cursorColumn, setCursorColumn] = useState(1);
@@ -125,10 +146,16 @@ function EditorPaneContent({
 
   // Handle editor mount
   const handleEditorMount = useCallback(
-    async (editorInstance: monaco.editor.IStandaloneCodeEditor) => {
+    async (editor: monaco.editor.IStandaloneCodeEditor) => {
+      // Store editor instance for SelectionActions
+      setEditorInstance(editor);
+
       // Register theme
       registerTerminalNoirTheme();
       monaco.editor.setTheme('terminal-noir');
+
+      // Inject AI feature styles (bug glyphs, generator markers)
+      injectAIStyles();
 
       // Register snippets
       registerDefaultSnippets();
@@ -142,10 +169,20 @@ function EditorPaneContent({
         aiProvider.register(monaco);
       }
 
+      // Register AI Bug Detector if enabled
+      if (settings.completionsEnabled) {
+        const bugDetector = getBugDetector();
+        bugDetector.setupAutoAnalysis(editor, monaco);
+      }
+
+      // Register AI Code Generator (TODO comment detection)
+      const codeGenerator = getCodeGenerator();
+      codeGenerator.register(monaco);
+
       // Add save keybinding
-      editorInstance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
         if (onSave) {
-          const currentValue = editorInstance.getValue();
+          const currentValue = editor.getValue();
           onSave(currentValue);
         }
       });
@@ -154,7 +191,7 @@ function EditorPaneContent({
       // Note: Document symbols are provided by language services via DocumentSymbolProvider
       // This requires language server integration which may not be available for all languages
       const updateSymbols = async () => {
-        const model = editorInstance.getModel();
+        const model = editor.getModel();
         if (!model) return;
 
         try {
@@ -207,7 +244,7 @@ function EditorPaneContent({
         }
       };
 
-      editorInstance.onDidChangeModelContent(() => {
+      editor.onDidChangeModelContent(() => {
         // Debounce symbol updates
         setTimeout(updateSymbols, 500);
       });
@@ -215,7 +252,7 @@ function EditorPaneContent({
       updateSymbols();
 
       // Focus the editor
-      editorInstance.focus();
+      editor.focus();
     },
     [language, onSave, settings.completionsEnabled]
   );
@@ -285,6 +322,36 @@ function EditorPaneContent({
     }
   }, []);
 
+  // SelectionActions handler for AI actions
+  const handleAIAction = useCallback(
+    async (prompt: string, selectedText: string) => {
+      if (!currentSessionId || !path) return;
+
+      try {
+        const { performEditorAIAction } = await import('@/lib/api');
+        const result = await performEditorAIAction({
+          sessionId: currentSessionId,
+          prompt,
+          code: selectedText,
+          language: currentLanguage,
+          filePath: path,
+          model: settings.aiActionModel,
+        });
+
+        if (result.response) {
+          // For now, log the result - could be shown in a panel or applied to editor
+          console.warn('AI Action result:', result.response.slice(0, 200));
+        }
+      } catch (error) {
+        console.error('AI action failed:', error);
+        // Handle billing errors
+        const { handleBillingError } = await import('@/lib/api');
+        handleBillingError(error);
+      }
+    },
+    [currentSessionId, path, currentLanguage, settings.aiActionModel]
+  );
+
   return (
     <div className={cn('flex h-full flex-col', className)}>
       {/* Editor Toolbar */}
@@ -307,7 +374,7 @@ function EditorPaneContent({
       />
 
       {/* VS Code Editor */}
-      <div className="flex-1">
+      <div className="flex-1 relative">
         <VSCodeEditor
           ref={editorRef}
           value={content}
@@ -326,6 +393,9 @@ function EditorPaneContent({
           options={editorOptions}
           className="h-full"
         />
+
+        {/* Selection Actions (floating context menu on text selection) */}
+        {editorInstance && <SelectionActions editor={editorInstance} onAIAction={handleAIAction} />}
       </div>
 
       {/* Status Bar */}

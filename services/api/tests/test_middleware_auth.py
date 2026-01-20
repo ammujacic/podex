@@ -21,11 +21,11 @@ class TestIsPublicPath:
     """Tests for _is_public_path function."""
 
     def test_exact_match_public_path(self) -> None:
-        """Test exact match for public path."""
+        """Test exact match for public and private paths."""
         assert _is_public_path("/health") is True
-        assert _is_public_path("/api/docs") is True
-        assert _is_public_path("/api/redoc") is True
-        assert _is_public_path("/api/openapi.json") is True
+        assert _is_public_path("/api/docs") is False
+        assert _is_public_path("/api/redoc") is False
+        assert _is_public_path("/api/openapi.json") is False
 
     def test_auth_endpoints_are_public(self) -> None:
         """Test auth endpoints are public."""
@@ -41,15 +41,15 @@ class TestIsPublicPath:
         assert _is_public_path("/api/oauth/google") is True
         assert _is_public_path("/api/oauth/google/callback") is True
 
-    def test_preview_endpoints_are_public(self) -> None:
-        """Test preview endpoints are public."""
-        assert _is_public_path("/api/preview") is True
-        assert _is_public_path("/api/preview/some-preview-id") is True
+    def test_preview_endpoints_require_auth(self) -> None:
+        """Test preview endpoints are not public."""
+        assert _is_public_path("/api/preview") is False
+        assert _is_public_path("/api/preview/some-preview-id") is False
 
-    def test_template_endpoints_are_public(self) -> None:
-        """Test template listing endpoints are public."""
-        assert _is_public_path("/api/templates") is True
-        assert _is_public_path("/api/templates/nodejs") is True
+    def test_template_endpoints_require_auth(self) -> None:
+        """Test template endpoints are not public."""
+        assert _is_public_path("/api/templates") is False
+        assert _is_public_path("/api/templates/nodejs") is False
 
     def test_webhook_endpoints_are_public(self) -> None:
         """Test webhook endpoints are public."""
@@ -81,10 +81,10 @@ class TestIsPublicPath:
         # But similar paths without proper boundary don't match
         assert _is_public_path("/api/oauth/githubx") is False
 
-    def test_admin_settings_public_is_public(self) -> None:
-        """Test admin public settings endpoint is public."""
-        assert _is_public_path("/api/admin/settings/public") is True
-        assert _is_public_path("/api/admin/settings/public/some-setting") is True
+    def test_admin_settings_public_requires_auth(self) -> None:
+        """Test admin public settings endpoint is not public."""
+        assert _is_public_path("/api/admin/settings/public") is False
+        assert _is_public_path("/api/admin/settings/public/some-setting") is False
 
 
 class TestGetCurrentUserId:

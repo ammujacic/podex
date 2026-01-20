@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.audit_logger import AuditAction, AuditLogger, AuditStatus
+from src.auth_constants import COOKIE_ACCESS_TOKEN, COOKIE_REFRESH_TOKEN
 from src.config import settings
 from src.database.connection import get_db
 from src.database.models import (
@@ -38,10 +39,6 @@ DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 # OAuth2 token type constant - standard OAuth2 token type identifier
 _OAUTH2_TYPE_STR = "bearer"  # not a password, standard OAuth2 type identifier
-
-# Cookie names for httpOnly auth tokens (not passwords, just cookie names)
-COOKIE_ACCESS_TOKEN = "podex_access"
-COOKIE_REFRESH_TOKEN = "podex_refresh"
 
 
 def set_auth_cookies(
