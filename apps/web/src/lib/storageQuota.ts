@@ -7,10 +7,32 @@
  * - Automatic cleanup of old data when quota is exceeded
  */
 
-// Most browsers have 5-10MB localStorage quota per origin
-const DEFAULT_QUOTA_BYTES = 5 * 1024 * 1024; // Conservative 5MB estimate
-const WARNING_THRESHOLD = 0.8; // 80% threshold for warnings
-const CRITICAL_THRESHOLD = 0.95; // 95% threshold for auto-cleanup
+import { useConfigStore } from '@/stores/config';
+
+// Helper functions to get config values (config is guaranteed to be loaded by ConfigGate)
+function getDefaultQuotaBytes(): number {
+  const config = useConfigStore.getState().getStorageQuotaDefaults();
+  if (!config) {
+    throw new Error('ConfigStore not initialized - storage_quota_defaults not available');
+  }
+  return config.defaultQuotaBytes;
+}
+
+function getWarningThreshold(): number {
+  const config = useConfigStore.getState().getStorageQuotaDefaults();
+  if (!config) {
+    throw new Error('ConfigStore not initialized - storage_quota_defaults not available');
+  }
+  return config.warningThreshold;
+}
+
+function getCriticalThreshold(): number {
+  const config = useConfigStore.getState().getStorageQuotaDefaults();
+  if (!config) {
+    throw new Error('ConfigStore not initialized - storage_quota_defaults not available');
+  }
+  return config.criticalThreshold;
+}
 
 export interface StorageQuota {
   /** Bytes currently used */
@@ -59,36 +81,39 @@ export function getStorageQuota(): StorageQuota {
     }
   } catch {
     // localStorage might be inaccessible in some contexts
+    const quotaBytes = getDefaultQuotaBytes();
     return {
       used: 0,
-      total: DEFAULT_QUOTA_BYTES,
+      total: quotaBytes,
       percentage: 0,
       usedFormatted: '0 B',
-      totalFormatted: formatBytes(DEFAULT_QUOTA_BYTES),
+      totalFormatted: formatBytes(quotaBytes),
     };
   }
 
+  const quotaBytes = getDefaultQuotaBytes();
   return {
     used,
-    total: DEFAULT_QUOTA_BYTES,
-    percentage: used / DEFAULT_QUOTA_BYTES,
+    total: quotaBytes,
+    percentage: used / quotaBytes,
     usedFormatted: formatBytes(used),
-    totalFormatted: formatBytes(DEFAULT_QUOTA_BYTES),
+    totalFormatted: formatBytes(quotaBytes),
   };
 }
 
 /**
  * Check if localStorage is near its quota limit.
  */
-export function isNearQuota(threshold = WARNING_THRESHOLD): boolean {
-  return getStorageQuota().percentage >= threshold;
+export function isNearQuota(threshold?: number): boolean {
+  const effectiveThreshold = threshold ?? getWarningThreshold();
+  return getStorageQuota().percentage >= effectiveThreshold;
 }
 
 /**
  * Check if localStorage is critically full.
  */
 export function isCriticallyFull(): boolean {
-  return getStorageQuota().percentage >= CRITICAL_THRESHOLD;
+  return getStorageQuota().percentage >= getCriticalThreshold();
 }
 
 /**
@@ -153,8 +178,10 @@ export function setupQuotaMonitoring(
 
   const check = () => {
     const quota = getStorageQuota();
+    const criticalThreshold = getCriticalThreshold();
+    const warningThreshold = getWarningThreshold();
 
-    if (quota.percentage >= CRITICAL_THRESHOLD) {
+    if (quota.percentage >= criticalThreshold) {
       // Only fire callback if level changed or first time
       if (lastWarningLevel !== 'critical') {
         lastWarningLevel = 'critical';
@@ -164,7 +191,7 @@ export function setupQuotaMonitoring(
           quota,
         });
       }
-    } else if (quota.percentage >= WARNING_THRESHOLD) {
+    } else if (quota.percentage >= warningThreshold) {
       if (lastWarningLevel !== 'warning') {
         lastWarningLevel = 'warning';
         onWarning({

@@ -147,6 +147,7 @@ export interface Session {
   // Workspace status tracking
   workspaceStatus: WorkspaceStatus;
   workspaceStatusChecking?: boolean;
+  workspaceError?: string | null; // Error message when workspace is unavailable (503/500)
   standbyAt: string | null;
   standbySettings: StandbySettings | null;
   // Consolidated editor grid card
@@ -154,6 +155,11 @@ export interface Session {
   editorGridSpan?: GridSpan;
   // Editor position for freeform mode
   editorFreeformPosition?: AgentPosition;
+  // Live Preview grid card
+  previewGridCardId: string | null;
+  previewGridSpan?: GridSpan;
+  // Preview position for freeform mode
+  previewFreeformPosition?: AgentPosition;
 }
 
 // ============================================================================

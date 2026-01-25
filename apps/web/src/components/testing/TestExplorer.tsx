@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { create } from 'zustand';
+import { api } from '@/lib/api';
 
 // ============================================================================
 // Types
@@ -475,74 +476,18 @@ export function TestExplorer({ sessionId, onGoToFile, className }: TestExplorerP
 
   // Load test suites
   useEffect(() => {
-    // Mock data - in real implementation, fetch from API
-    const mockSuites: TestSuite[] = [
-      {
-        id: 'suite-1',
-        name: 'Button.test.tsx',
-        file: 'src/components/Button.test.tsx',
-        status: 'passed',
-        duration: 245,
-        tests: [
-          {
-            id: 'test-1-1',
-            name: 'renders correctly',
-            fullName: 'Button > renders correctly',
-            status: 'passed',
-            duration: 45,
-            file: 'src/components/Button.test.tsx',
-            line: 10,
-          },
-          {
-            id: 'test-1-2',
-            name: 'handles click events',
-            fullName: 'Button > handles click events',
-            status: 'passed',
-            duration: 32,
-            file: 'src/components/Button.test.tsx',
-            line: 25,
-          },
-          {
-            id: 'test-1-3',
-            name: 'applies variant styles',
-            fullName: 'Button > applies variant styles',
-            status: 'failed',
-            duration: 18,
-            file: 'src/components/Button.test.tsx',
-            line: 40,
-            error: {
-              message: 'Expected class "bg-primary" to be present',
-              expected: 'bg-primary',
-              actual: 'bg-secondary',
-              stack: 'at Button.test.tsx:42\nat processTest\nat runTest',
-            },
-          },
-        ],
-        suites: [],
-      },
-      {
-        id: 'suite-2',
-        name: 'utils.test.ts',
-        file: 'src/lib/utils.test.ts',
-        status: 'passed',
-        duration: 89,
-        tests: [
-          {
-            id: 'test-2-1',
-            name: 'cn merges classes correctly',
-            fullName: 'utils > cn merges classes correctly',
-            status: 'passed',
-            duration: 12,
-            file: 'src/lib/utils.test.ts',
-            line: 5,
-          },
-        ],
-        suites: [],
-      },
-    ];
+    async function loadTestSuites() {
+      try {
+        const data = await api.get<TestSuite[]>(`/api/sessions/${sessionId}/tests`);
+        setSuites(data);
+        setExpandedSuites(new Set(data.map((s) => s.id)));
+      } catch {
+        // Tests may not be available, set empty array
+        setSuites([]);
+      }
+    }
 
-    setSuites(mockSuites);
-    setExpandedSuites(new Set(mockSuites.map((s) => s.id)));
+    loadTestSuites();
   }, [sessionId, setSuites]);
 
   // Get selected test
@@ -601,23 +546,37 @@ export function TestExplorer({ sessionId, onGoToFile, className }: TestExplorerP
     });
   }, []);
 
-  const handleRunAll = useCallback(() => {
+  const handleRunAll = useCallback(async () => {
     startRun(stats.total);
-    // In real implementation, trigger test run via API
-    setTimeout(() => endRun('completed'), 2000);
-  }, [startRun, endRun, stats.total]);
+    try {
+      await api.post(`/api/sessions/${sessionId}/tests/run-all`, {});
+      endRun('completed');
+    } catch {
+      endRun('cancelled');
+    }
+  }, [startRun, endRun, stats.total, sessionId]);
 
-  const handleRunSuite = useCallback(async (_suiteId: string) => {
-    // TODO: Implement test suite execution via API
-    // await api.post(`/api/sessions/${sessionId}/tests/run-suite`, { suiteId: _suiteId });
-    console.warn('Running test suite:', _suiteId);
-  }, []);
+  const handleRunSuite = useCallback(
+    async (suiteId: string) => {
+      try {
+        await api.post(`/api/sessions/${sessionId}/tests/run-suite`, { suiteId });
+      } catch {
+        // Test run may fail if test framework is not configured
+      }
+    },
+    [sessionId]
+  );
 
-  const handleRunTest = useCallback(async (_testId: string) => {
-    // TODO: Implement single test execution via API
-    // await api.post(`/api/sessions/${sessionId}/tests/run-test`, { testId: _testId });
-    console.warn('Running test:', _testId);
-  }, []);
+  const handleRunTest = useCallback(
+    async (testId: string) => {
+      try {
+        await api.post(`/api/sessions/${sessionId}/tests/run-test`, { testId });
+      } catch {
+        // Test run may fail if test framework is not configured
+      }
+    },
+    [sessionId]
+  );
 
   const handleGoToFile = useCallback(
     (file: string, line?: number) => {

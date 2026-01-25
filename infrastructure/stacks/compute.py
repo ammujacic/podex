@@ -58,10 +58,11 @@ def create_cloud_run_services(
         display_name=f"Podex Cloud Run ({env})",
     )
 
-    # Grant permissions
+    # Grant permissions with minimal required scopes
+    # Note: storage.objectUser provides read/write without delete/admin capabilities
     roles = [
         "roles/secretmanager.secretAccessor",
-        "roles/storage.objectAdmin",
+        "roles/storage.objectUser",  # Read + create + update (no delete, no admin)
         "roles/cloudsql.client",
         "roles/aiplatform.user",  # For Vertex AI
         "roles/logging.logWriter",
@@ -162,7 +163,7 @@ def create_cloud_run_services(
             ),
             gcp.cloudrunv2.ServiceTemplateContainerEnvArgs(
                 name="EMAIL_BACKEND",
-                value="console",
+                value="sendgrid",  # Uses SendGrid for production email
             ),
         ]
         if cfg["name"] == "compute":
@@ -509,14 +510,31 @@ def create_cloud_run_services(
             },
         )
 
-        # Allow public access (unauthenticated)
-        gcp.cloudrunv2.ServiceIamMember(
-            f"podex-{cfg['name']}-{env}-public",
-            location=region,
-            name=service.name,
-            role="roles/run.invoker",
-            member="allUsers",
-        )
+        # IAM access control
+        # Only web service (frontend) should be publicly accessible
+        # Backend services (api, agent, compute) require IAM authentication
+        # via GCP ID tokens from authorized service accounts
+        if cfg["name"] == "web":
+            # Web frontend: allow public access (unauthenticated)
+            gcp.cloudrunv2.ServiceIamMember(
+                f"podex-{cfg['name']}-{env}-public",
+                location=region,
+                name=service.name,
+                role="roles/run.invoker",
+                member="allUsers",
+            )
+        else:
+            # Backend services: require IAM authentication
+            # Only the Cloud Run service account can invoke these services
+            # Callers must include a GCP ID token in the Authorization header
+            # The token is validated by Cloud Run before the request reaches the app
+            gcp.cloudrunv2.ServiceIamMember(
+                f"podex-{cfg['name']}-{env}-service-auth",
+                location=region,
+                name=service.name,
+                role="roles/run.invoker",
+                member=service_account.email.apply(lambda e: f"serviceAccount:{e}"),
+            )
 
         services[str(cfg["name"])] = service
 

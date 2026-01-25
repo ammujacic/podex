@@ -92,14 +92,6 @@ def create_test_app() -> FastAPI:
 app = create_test_app()
 
 
-@pytest.fixture(scope="session")
-def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
-    """Create an instance of the default event loop for each test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
-
 @pytest.fixture
 def mock_redis() -> MagicMock:
     """Mock Redis client."""
@@ -348,3 +340,183 @@ def test_workspace_context() -> dict[str, Any]:
             "untracked": [],
         },
     }
+
+
+@pytest.fixture
+def mock_compute_client() -> MagicMock:
+    """Mock ComputeClient for workspace operations."""
+    mock = MagicMock()
+    mock.workspace_id = "workspace-123"
+    mock.user_id = "user-123"
+    mock.read_file = AsyncMock(return_value="file content")
+    mock.write_file = AsyncMock(return_value=True)
+    mock.list_directory = AsyncMock(return_value=["file1.py", "file2.py"])
+    mock.search_code = AsyncMock(return_value=[{"file": "main.py", "line": 10, "content": "result"}])
+    mock.run_command = AsyncMock(return_value={"stdout": "output", "stderr": "", "exit_code": 0})
+    mock.git_status = AsyncMock(return_value={"branch": "main", "modified": []})
+    return mock
+
+
+@pytest.fixture
+def mock_llm_streaming() -> MagicMock:
+    """Mock LLM provider with streaming support."""
+    mock = MagicMock()
+
+    # Non-streaming response
+    mock.complete = AsyncMock(return_value={
+        "content": "Test response",
+        "finish_reason": "stop",
+        "usage": {"input_tokens": 100, "output_tokens": 50},
+        "tool_calls": [],
+    })
+
+    # Streaming response
+    async def stream_generator():
+        """Generate stream events."""
+        yield {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}}
+        yield {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Test"}}
+        yield {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " response"}}
+        yield {"type": "content_block_stop", "index": 0}
+        yield {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
+        yield {"type": "message_stop"}
+
+    mock.stream = AsyncMock(return_value=stream_generator())
+    return mock
+
+
+# ============================================
+# Integration test fixtures (real DB/Redis)
+# ============================================
+
+@pytest.fixture(scope="session")
+async def test_db_engine() -> AsyncGenerator[Any, None]:
+    """Real PostgreSQL connection for integration tests.
+
+    Connects to postgres-test from docker-compose.test.yml.
+    Database URL: postgresql+asyncpg://test:test@localhost:5433/podex_test
+    """
+    import os
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
+    from sqlalchemy import text
+
+    # Get database URL from environment or use default test URL
+    db_url = os.getenv("DATABASE_URL", "postgresql+asyncpg://test:test@localhost:5433/podex_test")
+
+    # Create async engine
+    engine: AsyncEngine = create_async_engine(
+        db_url,
+        echo=False,
+        pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=10,
+    )
+
+    # Create tables (basic schema for testing)
+    async with engine.begin() as conn:
+        # Create agents table
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS agents (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                user_id TEXT,
+                role TEXT NOT NULL,
+                model TEXT NOT NULL,
+                mode TEXT DEFAULT 'ask',
+                status TEXT DEFAULT 'idle',
+                system_prompt TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+
+        # Create messages table
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id SERIAL PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tool_calls JSONB,
+                tool_results JSONB,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+
+        # Create memories table (without VECTOR type for CI compatibility)
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS memories (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                embedding BYTEA,
+                metadata JSONB,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+
+    yield engine
+
+    # Cleanup
+    await engine.dispose()
+
+
+@pytest.fixture
+async def clean_db(test_db_engine: Any) -> AsyncGenerator[None, None]:
+    """Clean database between integration tests."""
+    from sqlalchemy import text
+
+    # Clean before test
+    async with test_db_engine.begin() as conn:
+        await conn.execute(text("TRUNCATE TABLE messages, agents CASCADE"))
+        await conn.execute(text("DELETE FROM memories"))
+
+    yield
+
+    # Clean after test
+    async with test_db_engine.begin() as conn:
+        await conn.execute(text("TRUNCATE TABLE messages, agents CASCADE"))
+        await conn.execute(text("DELETE FROM memories"))
+
+
+@pytest.fixture(scope="session")
+async def test_redis_client() -> AsyncGenerator[Any, None]:
+    """Real Redis connection for integration tests.
+
+    Connects to redis-test from docker-compose.test.yml.
+    Redis URL: redis://localhost:6380
+    """
+    import os
+    import redis.asyncio as aioredis
+
+    # Get Redis URL from environment or use default test URL
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6380")
+
+    # Create async Redis client
+    client = await aioredis.from_url(
+        redis_url,
+        encoding="utf-8",
+        decode_responses=True,
+    )
+
+    # Test connection
+    await client.ping()
+
+    yield client
+
+    # Cleanup
+    await client.flushdb()
+    await client.close()
+
+
+@pytest.fixture
+async def clean_redis(test_redis_client: Any) -> AsyncGenerator[None, None]:
+    """Clean Redis between integration tests."""
+    # Clean before test
+    await test_redis_client.flushdb()
+
+    yield
+
+    # Clean after test
+    await test_redis_client.flushdb()

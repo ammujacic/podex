@@ -13,6 +13,9 @@ export default tseslint.config(
       'node_modules/',
       'coverage/',
       'next-env.d.ts',
+      '**/__tests__/**',
+      '**/*.test.*',
+      '**/*.spec.*',
     ],
   },
   // Config for CommonJS files (next.config.js, postcss.config.js, etc.)

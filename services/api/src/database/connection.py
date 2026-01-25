@@ -4,7 +4,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -20,6 +20,7 @@ from src.database.models import (
     CustomCommand,
     DefaultMCPServer,
     HardwareSpec,
+    HealthCheck,
     LLMModel,
     LLMProvider,
     PlatformSetting,
@@ -43,6 +44,74 @@ engine: AsyncEngine = create_async_engine(
     pool_recycle=settings.DB_POOL_RECYCLE,
 )
 
+
+# MEDIUM FIX: Add connection pool event listeners for monitoring
+def _setup_pool_listeners(async_engine: AsyncEngine) -> None:
+    """Setup connection pool event listeners for metrics and debugging.
+
+    This helps detect pool exhaustion before it causes request failures.
+    """
+    pool = async_engine.sync_engine.pool
+
+    @event.listens_for(pool, "checkout")
+    def _on_checkout(
+        _dbapi_conn: object, _connection_record: object, _connection_proxy: object
+    ) -> None:
+        """Log when connection is checked out from pool."""
+        checked_out = pool.checkedout()  # type: ignore[attr-defined]
+        pool_size = pool.size()  # type: ignore[attr-defined]
+        overflow = pool.overflow()  # type: ignore[attr-defined]
+        if checked_out >= pool_size:
+            logger.warning(
+                "DB pool at capacity",
+                checked_out=checked_out,
+                pool_size=pool_size,
+                overflow=overflow,
+                max_overflow=settings.DB_POOL_MAX_OVERFLOW,
+            )
+
+    @event.listens_for(pool, "checkin")
+    def _on_checkin(_dbapi_conn: object, _connection_record: object) -> None:
+        """Log when connection returns to pool after high usage."""
+        checked_out = pool.checkedout()  # type: ignore[attr-defined]
+        pool_size = pool.size()  # type: ignore[attr-defined]
+        # Only log when returning from near-capacity state
+        if checked_out >= pool_size - 1:
+            logger.debug(
+                "DB connection returned to pool",
+                checked_out=checked_out,
+                pool_size=pool_size,
+            )
+
+    @event.listens_for(pool, "invalidate")
+    def _on_invalidate(
+        _dbapi_conn: object, _connection_record: object, exception: Exception | None
+    ) -> None:
+        """Log when connection is invalidated."""
+        logger.warning(
+            "DB connection invalidated",
+            exception=str(exception) if exception else None,
+        )
+
+
+# Setup pool listeners
+_setup_pool_listeners(engine)
+
+
+def get_pool_status() -> dict[str, int]:
+    """Get current connection pool status for health checks.
+
+    MEDIUM FIX: Provides visibility into pool state for monitoring.
+    """
+    pool = engine.sync_engine.pool
+    return {
+        "pool_size": pool.size(),  # type: ignore[attr-defined]
+        "checked_out": pool.checkedout(),  # type: ignore[attr-defined]
+        "overflow": pool.overflow(),  # type: ignore[attr-defined]
+        "checked_in": pool.checkedin(),  # type: ignore[attr-defined]
+    }
+
+
 # Create async session factory
 async_session_factory = async_sessionmaker(
     engine,
@@ -54,7 +123,12 @@ async_session_factory = async_sessionmaker(
 
 async def init_database() -> None:
     """Initialize database connection and create tables if needed."""
-    logger.info("Initializing database connection", url=settings.DATABASE_URL.split("@")[-1])
+    # Only log the database host, not port or path to minimize information disclosure
+    try:
+        db_host = settings.DATABASE_URL.split("@")[-1].split(":")[0].split("/")[0]
+    except (IndexError, AttributeError):
+        db_host = "unknown"
+    logger.info("Initializing database connection", host=db_host)
 
     async with engine.begin() as conn:
         # Create all tables from models (idempotent - won't recreate existing tables)
@@ -123,6 +197,7 @@ async def seed_database() -> None:
         DEFAULT_AGENT_TOOLS,
         DEFAULT_GLOBAL_COMMANDS,
         DEFAULT_HARDWARE_SPECS,
+        DEFAULT_HEALTH_CHECKS,
         DEFAULT_MCP_SERVERS,
         DEFAULT_MODELS,
         DEFAULT_PLANS,
@@ -150,6 +225,7 @@ async def seed_database() -> None:
                 "system_skills": 0,
                 "skill_templates": 0,
                 "default_mcp_servers": 0,
+                "health_checks": 0,
             }
 
             # Seed subscription plans
@@ -367,6 +443,37 @@ async def seed_database() -> None:
                     )
                     totals["default_mcp_servers"] += 1
 
+            # Seed built-in health checks
+            for check_data in DEFAULT_HEALTH_CHECKS:
+                result = await db.execute(
+                    select(HealthCheck).where(
+                        HealthCheck.name == check_data["name"],
+                        HealthCheck.category == check_data["category"],
+                        HealthCheck.is_builtin == True,
+                    )
+                )
+                if not result.scalar_one_or_none():
+                    db.add(
+                        HealthCheck(
+                            category=check_data["category"],
+                            name=check_data["name"],
+                            description=check_data.get("description"),
+                            command=check_data["command"],
+                            working_directory=check_data.get("working_directory"),
+                            timeout=check_data.get("timeout", 60),
+                            parse_mode=check_data["parse_mode"],
+                            parse_config=check_data["parse_config"],
+                            weight=check_data.get("weight", 1.0),
+                            enabled=check_data.get("enabled", True),
+                            is_builtin=True,
+                            project_types=check_data.get("project_types"),
+                            fix_command=check_data.get("fix_command"),
+                            user_id=None,
+                            session_id=None,
+                        )
+                    )
+                    totals["health_checks"] += 1
+
             await db.commit()
 
             if any(totals.values()):
@@ -385,6 +492,7 @@ async def seed_database() -> None:
                     system_skills=totals["system_skills"],
                     skill_templates=totals["skill_templates"],
                     default_mcp_servers=totals["default_mcp_servers"],
+                    health_checks=totals["health_checks"],
                 )
 
         except Exception as e:

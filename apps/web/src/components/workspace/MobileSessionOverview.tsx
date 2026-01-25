@@ -16,6 +16,7 @@ import {
 import { ClaudeIcon, GeminiIcon, OpenAIIcon, PodexIcon } from '@/components/icons';
 import { cn } from '@/lib/utils';
 import { useSessionStore, type Agent } from '@/stores/session';
+import { useStreamingStore } from '@/stores/streaming';
 import { useAttentionStore } from '@/stores/attention';
 import {
   getAgentColor,
@@ -37,7 +38,7 @@ export function MobileSessionOverview({
   onAddAgent,
 }: MobileSessionOverviewProps) {
   const session = useSessionStore((state) => state.sessions[sessionId]);
-  const streamingMessages = useSessionStore((state) => state.streamingMessages);
+  const streamingMessages = useStreamingStore((state) => state.streamingMessages);
 
   // Attention state
   const { getUnreadCountForAgent, getHighestPriorityAttention, hasUnreadForAgent } =

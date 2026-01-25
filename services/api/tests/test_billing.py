@@ -41,21 +41,17 @@ def mock_stripe() -> MagicMock:
         amount=1000,
         currency="usd",
     )
-    mock.Invoice.retrieve.return_value = MagicMock(
-        payment_intent="pi_test123"
-    )
+    mock.Invoice.retrieve.return_value = MagicMock(payment_intent="pi_test123")
     mock.Invoice.upcoming.return_value = MagicMock(
-        lines=MagicMock(data=[
-            MagicMock(proration=True, amount=500),
-            MagicMock(proration=True, amount=-200),
-        ])
+        lines=MagicMock(
+            data=[
+                MagicMock(proration=True, amount=500),
+                MagicMock(proration=True, amount=-200),
+            ]
+        )
     )
-    mock.Subscription.retrieve.return_value = {
-        "items": {"data": [{"id": "si_test123"}]}
-    }
-    mock.PromotionCode.list.return_value = MagicMock(data=[
-        MagicMock(id="promo_test123")
-    ])
+    mock.Subscription.retrieve.return_value = {"items": {"data": [{"id": "si_test123"}]}}
+    mock.PromotionCode.list.return_value = MagicMock(data=[MagicMock(id="promo_test123")])
     return mock
 
 
@@ -162,9 +158,7 @@ def test_invoice(test_user: dict[str, Any]) -> dict[str, Any]:
         "total_cents": 2900,
         "currency": "USD",
         "status": "paid",
-        "line_items": [
-            {"description": "Pro Plan - Monthly", "amount": 2900}
-        ],
+        "line_items": [{"description": "Pro Plan - Monthly", "amount": 2900}],
         "period_start": now - timedelta(days=30),
         "period_end": now,
         "due_date": now,
@@ -404,9 +398,7 @@ class TestHardwareSpecs:
 class TestStripeCheckout:
     """Tests for Stripe checkout endpoints."""
 
-    def test_create_subscription_checkout_unauthenticated(
-        self, client: TestClient
-    ) -> None:
+    def test_create_subscription_checkout_unauthenticated(self, client: TestClient) -> None:
         """Test creating subscription checkout without auth."""
         response = client.post(
             "/api/billing/checkout/subscription",
@@ -414,9 +406,7 @@ class TestStripeCheckout:
         )
         assert response.status_code in [401, 404]
 
-    def test_create_credits_checkout_unauthenticated(
-        self, client: TestClient
-    ) -> None:
+    def test_create_credits_checkout_unauthenticated(self, client: TestClient) -> None:
         """Test creating credits checkout without auth."""
         response = client.post(
             "/api/billing/checkout/credits",
@@ -424,9 +414,7 @@ class TestStripeCheckout:
         )
         assert response.status_code in [401, 404]
 
-    def test_create_portal_session_unauthenticated(
-        self, client: TestClient
-    ) -> None:
+    def test_create_portal_session_unauthenticated(self, client: TestClient) -> None:
         """Test creating portal session without auth."""
         response = client.post("/api/billing/portal")
         assert response.status_code in [401, 404]
@@ -539,7 +527,7 @@ class TestHelperFunctions:
 
     def test_cents_to_dollars_conversion(self) -> None:
         """Test cents to dollars conversion."""
-        from src.routes.billing import cents_to_dollars  # noqa: PLC0415
+        from src.routes.billing import cents_to_dollars
 
         assert cents_to_dollars(100) == 1.0
         assert cents_to_dollars(150) == 1.5
@@ -548,7 +536,7 @@ class TestHelperFunctions:
 
     def test_apply_margin(self) -> None:
         """Test margin application."""
-        from src.routes.billing import _apply_margin  # noqa: PLC0415
+        from src.routes.billing import _apply_margin
 
         assert _apply_margin(1000, 0) == 1000  # No margin
         assert _apply_margin(1000, 10) == 1100  # 10% margin
@@ -557,7 +545,7 @@ class TestHelperFunctions:
 
     def test_calculate_usage_percentage(self) -> None:
         """Test usage percentage calculation."""
-        from src.routes.billing import _calculate_usage_percentage  # noqa: PLC0415
+        from src.routes.billing import _calculate_usage_percentage
 
         assert _calculate_usage_percentage(500, 1000) == 50.0
         assert _calculate_usage_percentage(0, 1000) == 0.0

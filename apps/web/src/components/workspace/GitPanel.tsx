@@ -32,6 +32,8 @@ import {
   listFiles,
   checkoutBranch,
   getGitDiff,
+  handleWorkspaceError,
+  clearWorkspaceError,
   type GitStatus,
   type GitBranch as GitBranchType,
   type FileNode,
@@ -90,8 +92,15 @@ export function GitPanel({ sessionId }: GitPanelProps) {
       ]);
       setStatus(statusData);
       setBranches(branchesData);
+      // Clear any previous workspace error on success
+      clearWorkspaceError(sessionId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load Git data');
+      // Check if this is a workspace unavailability error (503/500)
+      if (handleWorkspaceError(err, sessionId)) {
+        setError('Workspace unavailable');
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to load Git data');
+      }
     } finally {
       setLoading(false);
     }

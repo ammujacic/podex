@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 import structlog
 
+from podex_shared.auth import ServiceAuthClient
 from src.config import settings
 
 logger = structlog.get_logger()
@@ -20,6 +21,21 @@ logger = structlog.get_logger()
 # Default timeout for compute service requests
 DEFAULT_TIMEOUT = 30.0
 EXEC_TIMEOUT = 120.0  # Longer timeout for command execution
+
+# Service auth client for compute service (module-level singleton)
+_service_auth: ServiceAuthClient | None = None
+
+
+def _get_service_auth() -> ServiceAuthClient:
+    """Get or create the service auth client for compute service."""
+    global _service_auth
+    if _service_auth is None:
+        _service_auth = ServiceAuthClient(
+            target_url=settings.COMPUTE_SERVICE_URL,
+            api_key=settings.COMPUTE_INTERNAL_API_KEY,
+            environment=settings.ENVIRONMENT,
+        )
+    return _service_auth
 
 
 class ComputeClientError(Exception):
@@ -58,18 +74,23 @@ class ComputeClient:
         self.workspace_id = workspace_id
         self.user_id = user_id
         self.base_url = (base_url or settings.COMPUTE_SERVICE_URL).rstrip("/")
-        # Use COMPUTE_INTERNAL_API_KEY for compute service authentication
+        # Use COMPUTE_INTERNAL_API_KEY for compute service authentication (dev mode)
         self.auth_token = auth_token or settings.COMPUTE_INTERNAL_API_KEY
 
-    def _get_headers(self) -> dict[str, str]:
-        """Get HTTP headers for compute service requests."""
+    async def _get_headers(self) -> dict[str, str]:
+        """Get HTTP headers for compute service requests.
+
+        In production (GCP): Uses ID token from metadata server
+        In development (Docker): Uses API key header
+        """
+        # Get auth headers from service auth client
+        auth_headers = await _get_service_auth().get_auth_headers()
+
         headers = {
             "Content-Type": "application/json",
             "X-User-ID": self.user_id,
+            **auth_headers,
         }
-        if self.auth_token:
-            # Compute service expects X-Internal-API-Key header
-            headers["X-Internal-API-Key"] = self.auth_token
         return headers
 
     async def read_file(self, path: str) -> dict[str, Any]:
@@ -86,7 +107,7 @@ class ComputeClient:
                 response = await client.get(
                     f"{self.base_url}/workspaces/{self.workspace_id}/files/content",
                     params={"path": path},
-                    headers=self._get_headers(),
+                    headers=await self._get_headers(),
                 )
 
                 if response.status_code == 404:
@@ -145,7 +166,7 @@ class ComputeClient:
                 response = await client.put(
                     f"{self.base_url}/workspaces/{self.workspace_id}/files/content",
                     json={"path": path, "content": content},
-                    headers=self._get_headers(),
+                    headers=await self._get_headers(),
                 )
 
                 if response.status_code == 403:
@@ -200,7 +221,7 @@ class ComputeClient:
                 response = await client.get(
                     f"{self.base_url}/workspaces/{self.workspace_id}/files",
                     params={"path": path},
-                    headers=self._get_headers(),
+                    headers=await self._get_headers(),
                 )
 
                 if response.status_code == 404:
@@ -261,7 +282,7 @@ class ComputeClient:
                         "working_dir": working_dir,
                         "timeout": timeout,
                     },
-                    headers=self._get_headers(),
+                    headers=await self._get_headers(),
                 )
 
                 if response.status_code == 404:
@@ -475,7 +496,7 @@ class ComputeClient:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
                     f"{self.base_url}/workspaces/{self.workspace_id}",
-                    headers=self._get_headers(),
+                    headers=await self._get_headers(),
                 )
                 return response.status_code == 200
         except Exception:

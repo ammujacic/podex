@@ -23,21 +23,6 @@ export default function UsagePage() {
   const [period, setPeriod] = useState<Period>('current');
   const { summary, quotas, history, loading, error, refetch } = useUsageData({ period });
 
-  // Debug logging
-  if (summary) {
-    console.warn('Usage Summary:', {
-      tokensTotal: summary.tokensTotal,
-      usageByModel: summary.usageByModel,
-      usageByAgent: summary.usageByAgent,
-    });
-  }
-  if (quotas) {
-    console.warn(
-      'Quotas:',
-      quotas.map((q) => ({ type: q.quotaType, limit: q.limitValue, usage: q.currentUsage }))
-    );
-  }
-
   // Calculate overage-only costs (what the user actually pays beyond included quota)
   const overageCosts = useMemo(() => {
     if (!history || history.length === 0) {

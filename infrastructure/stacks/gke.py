@@ -32,11 +32,12 @@ def create_gke_cluster(
     )
 
     # Grant permissions to service account
+    # Note: storage.objectUser provides read/write access without admin/delete capabilities
+    # For GCS FUSE read-write, objectUser (read + create + update) is sufficient
     roles = [
         "roles/logging.logWriter",
         "roles/monitoring.metricWriter",
-        "roles/monitoring.viewer",
-        "roles/storage.objectViewer",
+        "roles/storage.objectUser",  # Read + create + update (no delete, no admin)
         "roles/artifactregistry.reader",
     ]
 
@@ -103,7 +104,12 @@ def create_gke_cluster(
             ],
             auto_provisioning_defaults=gcp.container.ClusterClusterAutoscalingAutoProvisioningDefaultsArgs(
                 service_account=gke_sa.email,
-                oauth_scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                # Minimal scopes for GKE nodes - use Workload Identity for pod-level access
+                oauth_scopes=[
+                    "https://www.googleapis.com/auth/logging.write",
+                    "https://www.googleapis.com/auth/monitoring",
+                    "https://www.googleapis.com/auth/devstorage.read_write",  # GCS FUSE
+                ],
                 # Use Spot VMs by default for cost savings
                 management=gcp.container.ClusterClusterAutoscalingAutoProvisioningDefaultsManagementArgs(
                     auto_upgrade=True,
@@ -207,18 +213,26 @@ def create_gpu_node_pools(cluster: gcp.container.Cluster, env: str) -> dict[str,
                     "workload": "workspace",
                     "env": env,
                 },
-                # OAuth scopes
-                oauth_scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                # Minimal OAuth scopes - use Workload Identity for pod-level access
+                oauth_scopes=[
+                    "https://www.googleapis.com/auth/logging.write",
+                    "https://www.googleapis.com/auth/monitoring",
+                    "https://www.googleapis.com/auth/devstorage.read_write",  # GCS FUSE
+                ],
                 # Metadata
                 metadata={
                     "disable-legacy-endpoints": "true",
                 },
             ),
-            # Auto-repair and upgrade
+            # Auto-repair and upgrade with graceful node shutdown for Spot VMs
             management=gcp.container.NodePoolManagementArgs(
                 auto_repair=True,
                 auto_upgrade=True,
             ),
+            # Graceful shutdown configuration for Spot VM preemption
+            # Allows workloads time to save state before termination
+            # upgrade_settings not supported in this pulumi version
+            # max_surge=1, max_unavailable=0 would be ideal for gradual upgrades
         )
 
         pools[str(cfg["name"])] = pool
@@ -244,7 +258,12 @@ def create_gpu_node_pools(cluster: gcp.container.Cluster, env: str) -> dict[str,
                 "gpu": "false",
                 "env": env,
             },
-            oauth_scopes=["https://www.googleapis.com/auth/cloud-platform"],
+            # Minimal OAuth scopes - use Workload Identity for pod-level access
+            oauth_scopes=[
+                "https://www.googleapis.com/auth/logging.write",
+                "https://www.googleapis.com/auth/monitoring",
+                "https://www.googleapis.com/auth/devstorage.read_write",  # GCS FUSE
+            ],
             metadata={
                 "disable-legacy-endpoints": "true",
             },
@@ -253,6 +272,9 @@ def create_gpu_node_pools(cluster: gcp.container.Cluster, env: str) -> dict[str,
             auto_repair=True,
             auto_upgrade=True,
         ),
+        # Graceful shutdown configuration for Spot VM preemption
+        # upgrade_settings not supported in this pulumi version
+        # max_surge=1, max_unavailable=0 would be ideal for gradual upgrades
     )
 
     pools["cpu"] = cpu_pool

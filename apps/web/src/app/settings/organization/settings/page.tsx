@@ -115,10 +115,12 @@ export default function OrganizationSettingsPage() {
     if (!orgContext || deleteConfirm !== orgContext.organization.name) return;
     setDeleteLoading(true);
     try {
-      // TODO: Call API
-      // await api.organizations.delete(orgContext.organization.id);
-      // setContext(null);
-      // router.push('/settings');
+      await api.delete(`/api/organizations/${orgContext.organization.id}`);
+      _setContext(null);
+      router.push('/settings');
+    } catch (error) {
+      console.error('Failed to delete organization:', error);
+      alert('Failed to delete organization. Please try again.');
     } finally {
       setDeleteLoading(false);
     }

@@ -45,11 +45,14 @@ export function useInlineCompletions({
   const updateSettings = useEditorStore((s) => s.updateSettings);
   const registeredRef = useRef(false);
 
-  const { completionsEnabled, completionsDebounceMs, aiActionModel } = settings;
+  // Wait for settings to be initialized
+  const completionsEnabled = settings?.completionsEnabled ?? false;
+  const completionsDebounceMs = settings?.completionsDebounceMs ?? 300;
+  const aiActionModel = settings?.aiActionModel ?? null;
 
   // Register/update provider when settings change
   useEffect(() => {
-    if (!monaco) {
+    if (!monaco || !settings) {
       return;
     }
 
@@ -70,6 +73,7 @@ export function useInlineCompletions({
     };
   }, [
     monaco,
+    settings,
     completionsEnabled,
     completionsDebounceMs,
     maxTokens,

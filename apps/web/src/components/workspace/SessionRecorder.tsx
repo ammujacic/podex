@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { create } from 'zustand';
+import { api } from '@/lib/api';
 
 // ============================================================================
 // Types
@@ -628,26 +629,47 @@ export function SessionRecorder({ sessionId, className }: SessionRecorderProps) 
         <RecordingList
           recordings={recordings}
           onSelect={loadRecording}
-          onDelete={() => {
-            /* TODO: Implement delete recording API */
-            // await api.delete(`/api/sessions/${sessionId}/recordings/${recording.id}`);
-            console.warn('Delete recording');
+          onDelete={async (recording) => {
+            try {
+              await api.delete(`/api/sessions/${sessionId}/recordings/${recording.id}`);
+              // Refresh recordings list after deletion
+              const updatedRecordings = (await api.get(
+                `/api/sessions/${sessionId}/recordings`
+              )) as Recording[];
+              useRecordingStore.setState({ recordings: updatedRecordings });
+            } catch (error) {
+              console.error('Failed to delete recording:', error);
+            }
           }}
-          onShare={() => {
-            /* TODO: Implement share recording API */
-            // const shareUrl = await api.post(`/api/sessions/${sessionId}/recordings/${recording.id}/share`);
-            // navigator.clipboard.writeText(shareUrl);
-            console.warn('Share recording');
+          onShare={async (recording) => {
+            try {
+              const result = (await api.post(
+                `/api/sessions/${sessionId}/recordings/${recording.id}/share`,
+                {}
+              )) as { url: string };
+              await navigator.clipboard.writeText(result.url);
+              alert('Share link copied to clipboard!');
+            } catch (error) {
+              console.error('Failed to share recording:', error);
+            }
           }}
-          onDownload={() => {
-            /* TODO: Implement download recording API */
-            // const blob = await api.get(`/api/sessions/${sessionId}/recordings/${recording.id}/download`, { responseType: 'blob' });
-            // const url = URL.createObjectURL(blob);
-            // const a = document.createElement('a');
-            // a.href = url;
-            // a.download = 'session-recording.json';
-            // a.click();
-            console.warn('Download recording');
+          onDownload={async (recording) => {
+            try {
+              const data = await api.get(
+                `/api/sessions/${sessionId}/recordings/${recording.id}/download`
+              );
+              const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `recording-${recording.id}.json`;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+            } catch (error) {
+              console.error('Failed to download recording:', error);
+            }
           }}
         />
       </div>

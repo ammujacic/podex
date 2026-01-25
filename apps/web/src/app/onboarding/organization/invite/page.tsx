@@ -55,11 +55,12 @@ export default function OnboardingInvitePage() {
       const validInvites = invites.filter((inv) => inv.email.trim());
 
       // Create organization via API
+      // Logo upload not yet implemented - would need user-level image upload endpoint
       const response = (await api.post('/api/organizations/', {
         name: data.name,
         slug: data.slug,
         website: data.website || null,
-        logo_url: null, // TODO: Handle logo upload
+        logo_url: null,
         credit_model: data.creditModel,
       })) as { id: string; name: string; slug: string; creditModel: string };
 

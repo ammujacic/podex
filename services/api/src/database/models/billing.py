@@ -144,7 +144,10 @@ class UserSubscription(Base):
     # Billing cycle: "monthly" or "yearly"
     billing_cycle: Mapped[str] = mapped_column(String(20), default="monthly", nullable=False)
     current_period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    current_period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # MEDIUM FIX: Added index for efficient period-end queries in background tasks
+    current_period_end: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
 
     # Cancellation
     cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -237,6 +240,13 @@ class UsageRecord(Base):
         index=True,
     )
 
+    # Snapshot fields - preserve entity names at time of recording for historical accuracy
+    # These are populated when the record is created and never updated (even on rename)
+    # This ensures billing/audit data remains accurate even after entities are deleted
+    session_name: Mapped[str | None] = mapped_column(String(255))
+    workspace_name: Mapped[str | None] = mapped_column(String(255))
+    agent_name: Mapped[str | None] = mapped_column(String(255))
+
     # Usage type and quantity
     usage_type: Mapped[str] = mapped_column(
         String(50),
@@ -307,7 +317,8 @@ class UsageQuota(Base):
     current_usage: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     # Reset timing
-    reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # MEDIUM FIX: Added index for efficient quota reset queries in background tasks
+    reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     last_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Overage settings
@@ -345,6 +356,15 @@ class CreditTransaction(Base):
         UUID(as_uuid=False),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
+    )
+
+    # MEDIUM FIX: Idempotency key to prevent duplicate transactions from retries
+    # Format: "{user_id}:{operation}:{unique_id}" - ensures same transaction isn't created twice
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(200),
+        unique=True,
+        nullable=True,
         index=True,
     )
 

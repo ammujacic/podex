@@ -1,4 +1,5 @@
 import { ChevronDown } from 'lucide-react';
+import { useConfigStore } from '@/stores/config';
 
 export interface TimeRangeOption {
   label: string;
@@ -13,20 +14,24 @@ interface TimeRangeSelectorProps {
   className?: string;
 }
 
-const DEFAULT_OPTIONS: TimeRangeOption[] = [
-  { label: 'Last 24 Hours', value: '1d', days: 1 },
-  { label: 'Last 7 Days', value: '7d', days: 7 },
-  { label: 'Last 30 Days', value: '30d', days: 30 },
-  { label: 'Last Year', value: '1y', days: 365 },
-  { label: 'All Time', value: 'all', days: 9999 },
-];
+// Helper function to get options from ConfigStore (config is guaranteed to be loaded by ConfigGate)
+function getDefaultOptions(): TimeRangeOption[] {
+  const config = useConfigStore.getState().getTimeRangeOptions();
+  if (!config) {
+    throw new Error('ConfigStore not initialized - time_range_options not available');
+  }
+  return config;
+}
 
 export function TimeRangeSelector({
   value,
   onChange,
-  options = DEFAULT_OPTIONS,
+  options,
   className = '',
 }: TimeRangeSelectorProps) {
+  // Get options from ConfigStore if not provided (config is guaranteed to be loaded by ConfigGate)
+  const configOptions = useConfigStore((s) => s.getTimeRangeOptions());
+  const effectiveOptions = options ?? configOptions!;
   return (
     <div className={`relative ${className}`}>
       <select
@@ -34,7 +39,7 @@ export function TimeRangeSelector({
         onChange={(e) => onChange(e.target.value)}
         className="appearance-none bg-surface border border-border-default rounded-lg px-3 py-2 pr-8 text-sm text-text-primary hover:border-border-hover focus:outline-none focus:border-accent-primary transition-colors cursor-pointer"
       >
-        {options.map((opt) => (
+        {effectiveOptions.map((opt) => (
           <option key={opt.value} value={opt.value}>
             {opt.label}
           </option>
@@ -46,19 +51,15 @@ export function TimeRangeSelector({
 }
 
 // Helper function to get days from value
-export function getDaysFromValue(
-  value: string,
-  options: TimeRangeOption[] = DEFAULT_OPTIONS
-): number {
-  const option = options.find((opt) => opt.value === value);
+export function getDaysFromValue(value: string, options?: TimeRangeOption[]): number {
+  const effectiveOptions = options ?? getDefaultOptions();
+  const option = effectiveOptions.find((opt) => opt.value === value);
   return option?.days || 30;
 }
 
 // Helper function to get label from value
-export function getLabelFromValue(
-  value: string,
-  options: TimeRangeOption[] = DEFAULT_OPTIONS
-): string {
-  const option = options.find((opt) => opt.value === value);
+export function getLabelFromValue(value: string, options?: TimeRangeOption[]): string {
+  const effectiveOptions = options ?? getDefaultOptions();
+  const option = effectiveOptions.find((opt) => opt.value === value);
   return option?.label || 'Last 30 Days';
 }

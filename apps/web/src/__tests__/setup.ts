@@ -1,3 +1,7 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable @typescript-eslint/no-require-imports */
+/* eslint-disable @typescript-eslint/no-unused-vars */
+/* eslint-disable @next/next/no-assign-module-variable */
 import '@testing-library/jest-dom';
 import { vi, beforeAll, afterAll } from 'vitest';
 import { GlobalRegistrator } from '@happy-dom/global-registrator';

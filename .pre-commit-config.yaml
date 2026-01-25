@@ -30,6 +30,7 @@ repos:
         entry: pnpm typecheck
         language: system
         files: \.(ts|tsx)$
+        exclude: (__tests__|\.test\.|\.spec\.)
         pass_filenames: false
 
       - id: frontend-format
@@ -123,7 +124,7 @@ repos:
         types: [python]
         pass_filenames: false
 
-      # mypy type checks
+      # mypy type checks (uses service-local venvs to match CI)
       - id: mypy-api
         name: mypy (api)
         entry: bash -c 'cd services/api && uv run mypy src/'

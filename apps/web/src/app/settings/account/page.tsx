@@ -3,21 +3,24 @@
 import { useState } from 'react';
 import { User, Mail, Key, Shield, Trash2, Save, Loader2 } from 'lucide-react';
 import { Button } from '@podex/ui';
-import { useUser } from '@/stores/auth';
+import { useUser, useAuthStore } from '@/stores/auth';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
+import { api } from '@/lib/api';
 
 export default function AccountPage() {
   useDocumentTitle('Account');
   const user = useUser();
+  const { setUser } = useAuthStore();
   const [saving, setSaving] = useState(false);
   const [displayName, setDisplayName] = useState(user?.name || '');
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      // TODO: Implement user profile update API endpoint
-      // await api.patch('/api/auth/me', { name: displayName });
-      await new Promise((resolve) => setTimeout(resolve, 1000)); // Simulate API call
+      const updated = await api.patch('/api/auth/me', { name: displayName });
+      if (user && updated) {
+        setUser({ ...user, name: displayName });
+      }
     } catch (error) {
       console.error('Failed to save account settings:', error);
     } finally {

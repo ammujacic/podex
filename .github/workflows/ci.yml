@@ -75,11 +75,36 @@ jobs:
       - name: Check formatting
         run: pnpm format:check
 
-  # Frontend unit tests with coverage
-  frontend-test:
-    name: Frontend Unit Tests
+  # Frontend package tests with coverage
+  frontend-packages-test:
+    name: Frontend Package Tests
     runs-on: ubuntu-latest
     needs: [frontend-lint, frontend-typecheck, frontend-format]
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [shared, api-client, state, ui]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests with coverage (90% required)
+        run: pnpm --filter @podex/${{ matrix.package }} test:coverage
+
+  # Frontend unit tests with coverage
+  frontend-test:
+    name: Frontend App Tests
+    runs-on: ubuntu-latest
+    needs: [frontend-packages-test]
     steps:
       - uses: actions/checkout@v4
 
@@ -96,13 +121,6 @@ jobs:
       - name: Run unit tests with coverage
         run: pnpm test:coverage
         working-directory: apps/web
-
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./apps/web/coverage/coverage-final.json
-          flags: frontend-unit
-          fail_ci_if_error: false
 
   # ==========================================
   # Backend Lint & Type Check (runs first)
@@ -217,12 +235,6 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./services/api/coverage.xml
-          flags: backend-api
-          fail_ci_if_error: false
 
   # Backend Agent service tests
   backend-agent-test:
@@ -277,12 +289,6 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./services/agent/coverage.xml
-          flags: backend-agent
-          fail_ci_if_error: false
 
   # Backend Compute service tests
   backend-compute-test:
@@ -321,14 +327,8 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./services/compute/coverage.xml
-          flags: backend-compute
-          fail_ci_if_error: false
 
-  # Backend Shared library tests
+  # Backend Shared library tests (with integration tests)
   backend-shared-test:
     name: Backend Shared Tests
     runs-on: ubuntu-latest
@@ -348,6 +348,7 @@ jobs:
           --health-retries 5
     env:
       REDIS_URL: redis://localhost:6379
+      RUN_INTEGRATION_TESTS: "true"
       ENVIRONMENT: test
     steps:
       - uses: actions/checkout@v4
@@ -365,12 +366,6 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./services/shared/coverage.xml
-          flags: backend-shared
-          fail_ci_if_error: false
 
   # Backend Local-Pod service tests
   backend-local-pod-test:
@@ -398,12 +393,6 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./services/local-pod/coverage.xml
-          flags: backend-local-pod
-          fail_ci_if_error: false
 
   # ==========================================
   # E2E Tests (Playwright)
@@ -627,6 +616,7 @@ jobs:
     name: All Tests Pass
     runs-on: ubuntu-latest
     needs:
+      - frontend-packages-test
       - frontend-test
       - backend-api-test
       - backend-agent-test

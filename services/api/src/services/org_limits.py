@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database.models import (
@@ -25,6 +26,8 @@ from src.database.models import (
     OrganizationCreditTransaction,
     OrganizationMember,
     OrganizationUsageRecord,
+    Session,
+    User,
 )
 
 logger = structlog.get_logger()
@@ -362,10 +365,32 @@ class OrgLimitsService:
         Returns:
             The created usage record
         """
+        # Fetch entity names for snapshot fields (preserves names even after deletion)
+        user_name = None
+        user_email = None
+        session_name = None
+
+        if member.user_id:
+            user_result = await self.db.execute(
+                select(User.name, User.email).where(User.id == member.user_id)
+            )
+            user_row = user_result.one_or_none()
+            if user_row:
+                user_name = user_row.name
+                user_email = user_row.email
+
+        if session_id:
+            session_result = await self.db.execute(
+                select(Session.name).where(Session.id == session_id)
+            )
+            session_name = session_result.scalar_one_or_none()
+
         # Create usage record
         record = OrganizationUsageRecord(
             organization_id=org.id,
             user_id=member.user_id,
+            user_name=user_name,
+            user_email=user_email,
             usage_type=usage_type,
             quantity=quantity,
             unit=unit,
@@ -373,6 +398,7 @@ class OrgLimitsService:
             model=model,
             tier=tier,
             session_id=session_id,
+            session_name=session_name,
             billing_period_start=member.billing_period_start,
             record_metadata=metadata,
         )

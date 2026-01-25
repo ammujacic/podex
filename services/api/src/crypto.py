@@ -187,6 +187,9 @@ def decrypt_dict(encrypted: str | None) -> dict[str, Any]:
     Handles both encrypted data and legacy plaintext JSON for backward
     compatibility during migration.
 
+    HIGH FIX: Uses strict type validation to prevent deserialization of
+    malicious payloads that could cause unexpected behavior.
+
     Args:
         encrypted: Encrypted string, plaintext JSON, or None.
 
@@ -196,11 +199,35 @@ def decrypt_dict(encrypted: str | None) -> dict[str, Any]:
     if not encrypted:
         return {}
 
+    def _validate_dict_values(obj: Any, depth: int = 0) -> bool:
+        """Recursively validate dict contains only safe JSON types.
+
+        HIGH FIX: Prevents deserialization of arbitrary Python objects.
+        Only allows: str, int, float, bool, None, list, dict
+        """
+        if depth > 10:  # Prevent stack overflow from deeply nested data
+            return False
+
+        if obj is None or isinstance(obj, (str, int, float, bool)):
+            return True
+        if isinstance(obj, list):
+            return all(_validate_dict_values(item, depth + 1) for item in obj)
+        if isinstance(obj, dict):
+            return all(
+                isinstance(k, str) and _validate_dict_values(v, depth + 1) for k, v in obj.items()
+            )
+        return False  # Reject unknown types
+
     # Handle legacy plaintext JSON (not yet encrypted)
     if not is_encrypted(encrypted):
         try:
             result = json.loads(encrypted)
-            return result if isinstance(result, dict) else {}
+            if not isinstance(result, dict):
+                return {}
+            # HIGH FIX: Validate all values are safe JSON types
+            if not _validate_dict_values(result):
+                return {}
+            return result  # noqa: TRY300
         except (json.JSONDecodeError, TypeError):
             return {}
 
@@ -208,7 +235,12 @@ def decrypt_dict(encrypted: str | None) -> dict[str, Any]:
     try:
         decrypted = decrypt_string(encrypted)
         result = json.loads(decrypted)
-        return result if isinstance(result, dict) else {}
+        if not isinstance(result, dict):
+            return {}
+        # HIGH FIX: Validate all values are safe JSON types
+        if not _validate_dict_values(result):
+            return {}
+        return result  # noqa: TRY300
     except (DecryptionError, json.JSONDecodeError, TypeError):
         # If decryption or parsing fails, return empty dict
         return {}

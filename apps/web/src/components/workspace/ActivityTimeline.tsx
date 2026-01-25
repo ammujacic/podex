@@ -23,6 +23,7 @@ import {
   Play,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { api } from '@/lib/api';
 
 // ============================================================================
 // Types
@@ -219,100 +220,11 @@ export function ActivityTimeline({ sessionId, className }: ActivityTimelineProps
     async function loadEvents() {
       setLoading(true);
       try {
-        // In real implementation, fetch from API
-        // const data = await api.get(`/api/sessions/${sessionId}/activity`);
-
-        // Mock data
-        const mockEvents: ActivityEvent[] = [
-          {
-            id: '1',
-            type: 'message_sent',
-            status: 'completed',
-            agentId: 'architect-1',
-            agentName: 'Architect',
-            description: 'Analyze the codebase structure',
-            timestamp: new Date(Date.now() - 60000),
-            duration: 150,
-          },
-          {
-            id: '2',
-            type: 'file_read',
-            status: 'completed',
-            agentId: 'architect-1',
-            agentName: 'Architect',
-            description: 'Read package.json',
-            details: { path: 'package.json', size: 1250 },
-            timestamp: new Date(Date.now() - 55000),
-            duration: 45,
-          },
-          {
-            id: '3',
-            type: 'file_read',
-            status: 'completed',
-            agentId: 'architect-1',
-            agentName: 'Architect',
-            description: 'Read tsconfig.json',
-            details: { path: 'tsconfig.json', size: 850 },
-            timestamp: new Date(Date.now() - 50000),
-            duration: 32,
-          },
-          {
-            id: '4',
-            type: 'message_received',
-            status: 'completed',
-            agentId: 'architect-1',
-            agentName: 'Architect',
-            description: 'Analysis complete',
-            timestamp: new Date(Date.now() - 45000),
-            duration: 2500,
-          },
-          {
-            id: '5',
-            type: 'file_write',
-            status: 'completed',
-            agentId: 'coder-1',
-            agentName: 'Coder',
-            description: 'Create src/components/Button.tsx',
-            details: { path: 'src/components/Button.tsx', lines: 45 },
-            timestamp: new Date(Date.now() - 30000),
-            duration: 120,
-            canUndo: true,
-          },
-          {
-            id: '6',
-            type: 'command_run',
-            status: 'completed',
-            agentId: 'coder-1',
-            agentName: 'Coder',
-            description: 'npm run build',
-            details: { command: 'npm run build', exitCode: 0 },
-            timestamp: new Date(Date.now() - 20000),
-            duration: 5600,
-          },
-          {
-            id: '7',
-            type: 'error',
-            status: 'error',
-            agentId: 'tester-1',
-            agentName: 'Tester',
-            description: 'Test failed: Button.test.tsx',
-            details: { error: 'Expected 3 but got 2', file: 'Button.test.tsx' },
-            timestamp: new Date(Date.now() - 10000),
-          },
-          {
-            id: '8',
-            type: 'file_write',
-            status: 'running',
-            agentId: 'coder-1',
-            agentName: 'Coder',
-            description: 'Fixing Button.tsx',
-            timestamp: new Date(),
-          },
-        ];
-
-        setEvents(mockEvents);
-      } catch (error) {
-        console.error('Failed to load activity:', error);
+        const data = await api.get<ActivityEvent[]>(`/api/sessions/${sessionId}/activity`);
+        setEvents(data);
+      } catch {
+        // Activity may not be available, set empty array
+        setEvents([]);
       } finally {
         setLoading(false);
       }
@@ -367,12 +279,15 @@ export function ActivityTimeline({ sessionId, className }: ActivityTimelineProps
       const event = events.find((e) => e.id === eventId);
       if (!event?.canUndo) return;
 
-      // TODO: Implement API call to undo event - would require backend support for different event types
-      // await api.post(`/api/sessions/${sessionId}/events/${eventId}/undo`);
-      // Remove the event from the list (simplified)
-      setEvents((prev) => prev.filter((e) => e.id !== eventId));
+      try {
+        await api.post(`/api/sessions/${sessionId}/events/${eventId}/undo`, {});
+        // Remove the event from the list after successful undo
+        setEvents((prev) => prev.filter((e) => e.id !== eventId));
+      } catch {
+        // Undo may not be supported for all event types - silently fail
+      }
     },
-    [events]
+    [events, sessionId]
   );
 
   // Export timeline

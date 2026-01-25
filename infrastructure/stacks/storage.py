@@ -8,8 +8,30 @@ GCP Free Tier:
 import pulumi_gcp as gcp
 
 
-def create_bucket(project_id: str, env: str) -> gcp.storage.Bucket:
-    """Create Cloud Storage bucket (5GB free)."""
+def create_bucket(
+    project_id: str, env: str, allowed_origins: list[str] | None = None
+) -> gcp.storage.Bucket:
+    """Create Cloud Storage bucket (5GB free).
+
+    Args:
+        project_id: GCP project ID
+        env: Environment (dev, staging, prod)
+        allowed_origins: List of allowed CORS origins. Defaults to app domains.
+    """
+    # Default CORS origins based on environment
+    if allowed_origins is None:
+        if env == "prod":
+            allowed_origins = ["https://app.podex.dev", "https://podex.dev"]
+        elif env == "staging":
+            allowed_origins = ["https://staging.podex.dev", "https://app.staging.podex.dev"]
+        else:
+            # Dev environment: allow localhost for development
+            allowed_origins = [
+                "http://localhost:3000",
+                "http://localhost:3001",
+                "https://dev.podex.dev",
+            ]
+
     bucket = gcp.storage.Bucket(
         f"podex-workspaces-{env}",
         name=f"podex-workspaces-{env}-{project_id}",
@@ -23,12 +45,13 @@ def create_bucket(project_id: str, env: str) -> gcp.storage.Bucket:
                 condition=gcp.storage.BucketLifecycleRuleConditionArgs(age=30),
             ),
         ],
-        # CORS for web uploads
+        # Restrictive CORS - only allow specific origins and read-only methods
+        # Uploads should use signed URLs, not direct CORS uploads
         cors=[
             gcp.storage.BucketCorArgs(
-                origins=["*"],
-                methods=["GET", "PUT", "POST", "DELETE", "HEAD"],
-                response_headers=["*"],
+                origins=allowed_origins,
+                methods=["GET", "HEAD", "OPTIONS"],  # Read-only for CORS
+                response_headers=["Content-Length", "Content-Type", "Content-Range"],
                 max_age_seconds=3600,
             ),
         ],

@@ -14,7 +14,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import UUID, uuid4
 
 import structlog
@@ -36,9 +36,6 @@ from src.services.cli_translators import (
     TRANSLATORS,
     CLITranslator,
 )
-
-if TYPE_CHECKING:
-    from src.services.dotfiles_sync import DotfilesSync
 
 logger = structlog.get_logger()
 
@@ -81,16 +78,14 @@ class CLISyncService:
     def __init__(
         self,
         db: AsyncSession,
-        dotfiles_sync: DotfilesSync | None = None,
     ) -> None:
         """Initialize the CLI sync service.
 
         Args:
             db: Database session
-            dotfiles_sync: DotfilesSync instance for writing to GCS
         """
         self.db = db
-        self.dotfiles_sync = dotfiles_sync
+        self.dotfiles_sync = None  # Legacy: was used for GCS dotfiles sync
         self._translators: dict[str, CLITranslator] = {
             name: cls() for name, cls in TRANSLATORS.items()
         }

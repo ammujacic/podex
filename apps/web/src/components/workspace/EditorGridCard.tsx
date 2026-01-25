@@ -4,6 +4,7 @@ import { useRef, useCallback, useEffect, useMemo } from 'react';
 import { X, Maximize2, Minimize2 } from 'lucide-react';
 import { useEditorStore } from '@/stores/editor';
 import { useSessionStore, type GridSpan } from '@/stores/session';
+import { useUIStore } from '@/stores/ui';
 import { EnhancedCodeEditor } from '@/components/editor/EnhancedCodeEditor';
 import { useOptionalGridContext } from './GridContext';
 import { useGridResize } from '@/hooks/useGridResize';
@@ -32,6 +33,7 @@ export function EditorGridCard({
 }: EditorGridCardProps) {
   const cardRef = useRef<HTMLDivElement>(null);
   const gridContext = useOptionalGridContext();
+  const gridConfig = useUIStore((state) => state.gridConfig);
 
   // Editor store state
   const pane = useEditorStore((s) => s.panes[paneId]);
@@ -47,6 +49,12 @@ export function EditorGridCard({
     () => session?.editorGridSpan ?? { colSpan: 1, rowSpan: 1 },
     [session?.editorGridSpan]
   );
+
+  // Calculate dynamic heights based on rowSpan
+  const gap = 16; // matches gap-4 in Tailwind
+  const calculateHeight = (rowSpan: number) => {
+    return rowSpan * gridConfig.rowHeight + (rowSpan - 1) * gap;
+  };
 
   // Handle resize
   const handleResize = useCallback(
@@ -117,9 +125,9 @@ export function EditorGridCard({
           ? `${displaySpan.colStart} / span ${displaySpan.colSpan}`
           : `span ${displaySpan.colSpan}`,
         gridRow: `span ${displaySpan.rowSpan}`,
-        minHeight: displaySpan.rowSpan === 1 ? '300px' : '616px',
-        maxHeight: displaySpan.rowSpan === 1 ? '300px' : '616px',
-        height: displaySpan.rowSpan === 1 ? '300px' : '616px',
+        minHeight: `${calculateHeight(displaySpan.rowSpan)}px`,
+        maxHeight: `${calculateHeight(displaySpan.rowSpan)}px`,
+        height: `${calculateHeight(displaySpan.rowSpan)}px`,
       }}
     >
       {/* Size indicator during resize */}

@@ -1243,7 +1243,7 @@ async def pause_workspace(
     """Pause a workspace (stop Docker container, enter standby mode)."""
     from datetime import UTC, datetime
 
-    from src.compute_client import compute_client
+    from src.services.workspace_router import workspace_router
 
     # Verify user has access to this workspace
     workspace = await verify_workspace_access(workspace_id, request, db)
@@ -1260,7 +1260,7 @@ async def pause_workspace(
     try:
         # Stop the container first
         user_id: str = getattr(request.state, "user_id", "") or ""
-        await compute_client.stop_workspace(workspace_id, user_id)
+        await workspace_router.stop_workspace(workspace_id, user_id)
 
         # Only update DB status after container stop succeeds
         now = datetime.now(UTC)
@@ -1303,6 +1303,7 @@ async def resume_workspace(
     from src.compute_client import compute_client
     from src.exceptions import ComputeServiceHTTPError
     from src.routes.sessions import build_workspace_config
+    from src.services.workspace_router import workspace_router
 
     # Verify user has access to this workspace
     workspace = await verify_workspace_access(workspace_id, request, db)
@@ -1316,38 +1317,41 @@ async def resume_workspace(
 
     user_id: str = getattr(request.state, "user_id", "") or ""
 
-    # Check compute credits before resuming workspace
-    from src.services.credit_enforcement import (
-        check_credits_available,
-        create_billing_error_detail,
-    )
-
-    credit_check = await check_credits_available(db, user_id, "compute")
-
-    if not credit_check.can_proceed:
-        raise HTTPException(
-            status_code=402,  # Payment Required
-            detail=create_billing_error_detail(
-                credit_check,
-                "compute",
-                (
-                    "Compute credits exhausted. Please upgrade your plan or "
-                    "add credits to resume your workspace."
-                ),
-            ),
+    # Check compute credits before resuming workspace (only for cloud workspaces)
+    # Local pod workspaces don't consume cloud credits
+    if not workspace.local_pod_id:
+        from src.services.credit_enforcement import (
+            check_credits_available,
+            create_billing_error_detail,
         )
 
+        credit_check = await check_credits_available(db, user_id, "compute")
+
+        if not credit_check.can_proceed:
+            raise HTTPException(
+                status_code=402,  # Payment Required
+                detail=create_billing_error_detail(
+                    credit_check,
+                    "compute",
+                    (
+                        "Compute credits exhausted. Please upgrade your plan or "
+                        "add credits to resume your workspace."
+                    ),
+                ),
+            )
+
     try:
-        # First, check if the workspace exists in the compute service
-        workspace_info = await compute_client.get_workspace(workspace_id, user_id)
+        # First, check if the workspace exists in the compute/pod
+        workspace_info = await workspace_router.get_workspace(workspace_id, user_id)
 
         if workspace_info is not None:
-            # Workspace exists in compute service, try to restart it
+            # Workspace exists, try to restart it
             logger.info(
-                "Workspace found in compute service, restarting",
+                "Workspace found, restarting",
                 workspace_id=workspace_id,
+                is_local_pod=bool(workspace.local_pod_id),
             )
-            await compute_client.restart_workspace(workspace_id, user_id)
+            await workspace_router.restart_workspace(workspace_id, user_id)
         else:
             # Workspace doesn't exist in compute service (removed after standby)
             # Need to recreate it
@@ -1484,8 +1488,8 @@ async def force_stop_workspace(
     """
     from sqlalchemy import select
 
-    from src.compute_client import compute_client
     from src.database.models import Session as SessionModel
+    from src.services.workspace_router import workspace_router
     from src.terminal.manager import terminal_manager
     from src.websocket.hub import emit_to_session
 
@@ -1513,7 +1517,7 @@ async def force_stop_workspace(
 
     # Force stop container (even if unresponsive - best effort)
     try:
-        await compute_client.stop_workspace(workspace_id, user_id)
+        await workspace_router.stop_workspace(workspace_id, user_id)
     except Exception as e:
         logger.warning(
             "Failed to stop workspace via compute service during force-stop",
@@ -1588,7 +1592,7 @@ async def check_workspace_health(
     Use this to verify a workspace is working before performing operations,
     or to diagnose issues with unresponsive workspaces.
     """
-    from src.compute_client import compute_client
+    from src.services.workspace_router import workspace_router
 
     workspace = await verify_workspace_access(workspace_id, request, db)
     user_id: str = getattr(request.state, "user_id", "") or ""
@@ -1605,7 +1609,7 @@ async def check_workspace_health(
         )
 
     # Perform health check
-    health = await compute_client.health_check_workspace(workspace_id, user_id)
+    health = await workspace_router.health_check_workspace(workspace_id, user_id)
 
     return WorkspaceHealthResponse(
         workspace_id=workspace_id,

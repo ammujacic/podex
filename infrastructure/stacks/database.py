@@ -21,15 +21,22 @@ def create_cloud_sql(
     config = pulumi.Config()
 
     # Get authorized networks for dev environment (customizable)
-    dev_authorized_networks: dict[str, str] = config.get_object("dev_db_authorized_networks") or {}
+    _dev_authorized_networks: dict[str, str] = config.get_object("dev_db_authorized_networks") or {}
 
     # Cloud SQL Instance
+    # Deletion protection is always enabled to prevent accidental data loss
+    # Use `pulumi config set delete_protection false` to disable for cleanup
+    delete_protection_config = config.get_bool("delete_protection")
+    deletion_protection_enabled = (
+        delete_protection_config if delete_protection_config is not None else True
+    )
+
     instance = gcp.sql.DatabaseInstance(
         f"podex-db-{env}",
         name=f"podex-db-{env}",
         database_version="POSTGRES_16",
         region=region,
-        deletion_protection=env == "prod",
+        deletion_protection=deletion_protection_enabled,
         settings=gcp.sql.DatabaseInstanceSettingsArgs(
             # db-f1-micro: 0.25 vCPU, 0.6GB RAM, ~$9/mo
             tier="db-f1-micro",
@@ -48,24 +55,19 @@ def create_cloud_sql(
                 if env == "prod"
                 else None,
             ),
-            # IP Configuration - Secure access with environment-specific controls
+            # IP Configuration - Secure access with SSL required
+            # Public IP is disabled by default - use Cloud SQL Proxy for local development
             ip_configuration=gcp.sql.DatabaseInstanceSettingsIpConfigurationArgs(
-                ipv4_enabled=env == "dev"
-                and len(dev_authorized_networks)
-                > 0,  # Public IP only if specific networks configured
+                # Disable public IP by default for security
+                # Use Cloud SQL Proxy or VPN for local development access
+                ipv4_enabled=False,
                 # Private IP for VPC access (Cloud Run can reach via VPC connector)
                 private_network=vpc["network"].id,
                 enable_private_path_for_google_cloud_services=True,
-                # Authorized networks - restrict based on environment
-                authorized_networks=[
-                    gcp.sql.DatabaseInstanceSettingsIpConfigurationAuthorizedNetworkArgs(
-                        name=name,
-                        value=cidr,
-                    )
-                    for name, cidr in dev_authorized_networks.items()
-                ]
-                if env == "dev" and dev_authorized_networks
-                else [],  # Production: VPC-only access (no public authorized networks)
+                # Require SSL for all connections
+                ssl_mode="ENCRYPTED_ONLY",
+                # No authorized networks - VPC-only access
+                authorized_networks=[],
             ),
             # Flags for performance
             database_flags=[

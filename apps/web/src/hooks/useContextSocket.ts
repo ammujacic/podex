@@ -43,14 +43,18 @@ export function useContextSocket({ sessionId, agentIds = [] }: UseContextSocketO
     return unsubscribe;
   }, []);
 
-  // Fetch initial context usage for all agents
+  // Fetch initial context usage for all agents with proper cleanup
   useEffect(() => {
     if (!sessionId || stableAgentIds.length === 0) return;
 
+    let isCancelled = false;
+
     const fetchInitialUsage = async () => {
       for (const agentId of stableAgentIds) {
+        if (isCancelled) break;
         try {
           const usage = await getAgentContextUsage(agentId);
+          if (isCancelled) break;
           setAgentUsageRef.current(agentId, {
             tokensUsed: usage.tokens_used,
             tokensMax: usage.tokens_max,
@@ -58,12 +62,17 @@ export function useContextSocket({ sessionId, agentIds = [] }: UseContextSocketO
             lastUpdated: new Date(),
           });
         } catch (error) {
+          if (isCancelled) break;
           console.warn(`Failed to fetch context usage for agent ${agentId}:`, error);
         }
       }
     };
 
     fetchInitialUsage();
+
+    return () => {
+      isCancelled = true;
+    };
   }, [sessionId, stableAgentIds]);
 
   useEffect(() => {
@@ -96,11 +105,13 @@ export function useContextSocket({ sessionId, agentIds = [] }: UseContextSocketO
 
         setCompactingRef.current(data.agent_id, false);
 
-        // Update the context usage
+        // Update the context usage - preserve existing tokensMax from store
+        const currentUsage = useContextStore.getState().agentUsage[data.agent_id];
+        const tokensMax = currentUsage?.tokensMax ?? 200000;
         setAgentUsageRef.current(data.agent_id, {
           tokensUsed: data.tokens_after,
-          tokensMax: 200000, // Default, should come from agent config
-          percentage: Math.round((data.tokens_after / 200000) * 100),
+          tokensMax,
+          percentage: Math.round((data.tokens_after / tokensMax) * 100),
           lastUpdated: new Date(),
         });
 

@@ -23,6 +23,8 @@ export function useSidebarBadges(sessionId: string): Partial<Record<PanelId, num
     let errors = 0;
     let warnings = 0;
     Object.values(diagnostics).forEach((diags) => {
+      // Handle null or undefined diagnostic arrays
+      if (!diags) return;
       diags.forEach((d) => {
         if (d.severity === DiagnosticSeverity.Error) errors++;
         else if (d.severity === DiagnosticSeverity.Warning) warnings++;

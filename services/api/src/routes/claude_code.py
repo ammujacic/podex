@@ -448,10 +448,9 @@ async def list_commands(
 ) -> list[SlashCommand]:
     """List all available slash commands.
 
-    Returns both built-in Claude Code commands and user-defined custom commands.
+    Returns built-in Claude Code commands. Custom commands are defined in the
+    workspace's .claude/commands/ directory and loaded by Claude Code CLI directly.
     """
-    # For now, just return built-in commands
-    # TODO: Add user's custom commands from database
     return BUILTIN_COMMANDS
 
 

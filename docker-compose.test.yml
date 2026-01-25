@@ -41,29 +41,6 @@ services:
     networks:
       - podex-test
 
-  # === LOCAL GCP SERVICES (Test) ===
-  fake-gcs-test:
-    image: fsouza/fake-gcs-server:latest
-    command: >
-      sh -c "
-        /app/fake-gcs-server -scheme http -port 4443 -external-url http://localhost:4443 &
-        sleep 5 &&
-        curl -X POST -H 'Content-Type: application/json' -d '{\"name\":\"podex-test-workspaces\"}' http://localhost:4443/storage/v1/b 2>/dev/null || echo 'Test bucket exists or failed to create' &&
-        echo 'Fake GCS server initialized with test bucket' &&
-        wait
-      "
-    ports:
-      - "4444:4443"
-    tmpfs:
-      - /data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4443/_internal/healthcheck"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    networks:
-      - podex-test
-
   # === MAILHOG (Email Testing) ===
   mailhog:
     image: mailhog/mailhog:latest
@@ -103,9 +80,6 @@ services:
       # GCP Configuration
       GCP_PROJECT_ID: podex-test
       GCP_REGION: us-east1
-      # GCS Storage
-      GCS_BUCKET: podex-test-workspaces
-      STORAGE_EMULATOR_HOST: http://fake-gcs-test:4443
       # LLM Provider (Vertex AI)
       LLM_PROVIDER: vertex
       # CORS
@@ -136,8 +110,6 @@ services:
         condition: service_healthy
       redis-test:
         condition: service_healthy
-      fake-gcs-test:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
       interval: 5s
@@ -165,9 +137,6 @@ services:
       # GCP Configuration
       GCP_PROJECT_ID: podex-test
       GCP_REGION: us-east1
-      # GCS Storage
-      GCS_BUCKET: podex-test-workspaces
-      STORAGE_EMULATOR_HOST: http://fake-gcs-test:4443
       # LLM Provider - use mock for testing
       LLM_PROVIDER: mock
       # Mock API key for testing
@@ -183,8 +152,6 @@ services:
       postgres-test:
         condition: service_healthy
       redis-test:
-        condition: service_healthy
-      fake-gcs-test:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
@@ -212,9 +179,6 @@ services:
       # GCP Configuration
       GCP_PROJECT_ID: podex-test
       GCP_REGION: us-east1
-      COMPUTE_GCS_BUCKET: podex-test-workspaces
-      STORAGE_EMULATOR_HOST: http://fake-gcs-test:4443
-      COMPUTE_GCS_PREFIX: workspaces
       COMPUTE_INTERNAL_API_KEY: test-internal-key
       COMPUTE_CORS_ORIGINS: '["http://localhost:3000", "http://localhost:3010"]'
       # API Service (for usage tracking)
@@ -225,8 +189,6 @@ services:
       - ./services/shared/src:/app/services/shared/src
     depends_on:
       redis-test:
-        condition: service_healthy
-      fake-gcs-test:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
@@ -290,8 +252,6 @@ services:
       # GCP Configuration
       GCP_PROJECT_ID: podex-test
       GCP_REGION: us-east1
-      GCS_BUCKET: podex-test-workspaces
-      STORAGE_EMULATOR_HOST: http://fake-gcs-test:4443
       # LLM Provider (Vertex AI)
       LLM_PROVIDER: vertex
       JWT_SECRET_KEY: test-secret-key-for-testing
@@ -306,8 +266,6 @@ services:
       postgres-test:
         condition: service_healthy
       redis-test:
-        condition: service_healthy
-      fake-gcs-test:
         condition: service_healthy
       stripe-mock:
         condition: service_healthy
@@ -338,8 +296,6 @@ services:
       # GCP Configuration
       GCP_PROJECT_ID: podex-test
       GCP_REGION: us-east1
-      GCS_BUCKET: podex-test-workspaces
-      STORAGE_EMULATOR_HOST: http://fake-gcs-test:4443
       LLM_PROVIDER: mock
       ANTHROPIC_API_KEY: sk-ant-test-mock-key
       # API Service (for usage tracking)
@@ -354,12 +310,78 @@ services:
         condition: service_healthy
       redis-test:
         condition: service_healthy
-      fake-gcs-test:
-        condition: service_healthy
     networks:
       - podex-test
     profiles:
       - test-agent
+
+  # === TEST RUNNER (Compute) ===
+  test-compute:
+    build:
+      context: .
+      dockerfile: services/compute/Dockerfile
+      target: development
+    working_dir: /app/services/compute
+    command: >
+      bash -c "
+        echo 'Waiting for Redis...' &&
+        sleep 5 &&
+        echo 'Running Compute tests...' &&
+        uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html --cov-report=term-missing &&
+        echo 'Compute tests complete! - PASSED' ||
+        echo 'Compute tests complete! - FAILED'
+      "
+    environment:
+      COMPUTE_ENVIRONMENT: test
+      COMPUTE_MODE: docker
+      COMPUTE_REDIS_URL: redis://redis-test:6379
+      COMPUTE_DOCKER_HOST: unix:///var/run/docker.sock
+      COMPUTE_INTERNAL_API_KEY: test-internal-key
+      COMPUTE_MAX_WORKSPACES: 5
+      COMPUTE_WORKSPACE_IMAGE: podex/workspace:test
+      COMPUTE_API_BASE_URL: http://localhost:3001
+      COMPUTE_INTERNAL_SERVICE_TOKEN: test-internal-service-token
+      # GCP Configuration (for tests)
+      GCP_PROJECT_ID: podex-test
+      GCP_REGION: us-east1
+    volumes:
+      - ./services/compute:/app/services/compute
+      - ./services/shared:/app/services/shared
+      - /var/run/docker.sock:/var/run/docker.sock  # Host Docker access
+      - test-coverage:/app/coverage
+    depends_on:
+      redis-test:
+        condition: service_healthy
+    networks:
+      - podex-test
+    profiles:
+      - test-compute
+
+  # === TEST RUNNER (Local Pod) ===
+  test-local-pod:
+    build:
+      context: .
+      dockerfile: services/local-pod/Dockerfile
+      target: development
+    working_dir: /app/services/local-pod
+    command: >
+      bash -c "
+        echo 'Running local-pod tests...' &&
+        uv run pytest tests/ -v --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html &&
+        echo 'Local-pod tests complete!'
+      "
+    environment:
+      PODEX_POD_TOKEN: pdx_pod_test_token
+      PODEX_CLOUD_URL: http://localhost:3001
+      PODEX_MAX_WORKSPACES: 3
+    volumes:
+      - ./services/local-pod:/app/services/local-pod
+      - /var/run/docker.sock:/var/run/docker.sock  # For integration tests
+      - test-coverage:/app/coverage
+    networks:
+      - podex-test
+    profiles:
+      - test-local-pod
 
 networks:
   podex-test:

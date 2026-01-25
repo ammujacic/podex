@@ -3,13 +3,14 @@
 This module provides a comprehensive email service with:
 - Beautiful, responsive HTML templates matching the Podex design system
 - Plain text fallbacks for all emails
-- Multiple backend support (console, SMTP)
+- Multiple backend support (console, SMTP, SendGrid)
 - Email tracking and logging
 - Template rendering with Jinja2-style variables
 
 Backends:
 - console: Logs emails to console (development)
 - smtp: Uses standard SMTP (production - works with any SMTP relay)
+- sendgrid: Uses SendGrid API (recommended for production)
 """
 
 from dataclasses import dataclass
@@ -47,6 +48,7 @@ class EmailTemplate(str, Enum):
     ACCOUNT_DEACTIVATED = "account_deactivated"
     TEAM_INVITE = "team_invite"
     SESSION_SHARED = "session_shared"
+    PLATFORM_INVITE = "platform_invite"
 
 
 @dataclass
@@ -109,6 +111,10 @@ class EmailService:
         if self._backend == "smtp":
             return await self._send_smtp(
                 to_email, from_address, subject, html_body, text_body, template, cc, bcc
+            )
+        if self._backend == "sendgrid":
+            return await self._send_sendgrid(
+                to_email, subject, html_body, text_body, template, cc, bcc
             )
         logger.warning("Unknown email backend: %s, using console", self._backend)
         return await self._send_console(to_email, subject, html_body, text_body, template, cc, bcc)
@@ -210,6 +216,105 @@ class EmailService:
             )
             return EmailResult(success=False, error=error_msg)
 
+    async def _send_sendgrid(
+        self,
+        to_email: str,
+        subject: str,
+        html_body: str,
+        text_body: str,
+        template: EmailTemplate,
+        cc: list[str] | None,
+        bcc: list[str] | None,
+    ) -> EmailResult:
+        """Send email via SendGrid API (recommended for production)."""
+        import httpx  # noqa: PLC0415
+
+        api_key = getattr(settings, "SENDGRID_API_KEY", None)
+        if not api_key:
+            logger.warning("SENDGRID_API_KEY not set, falling back to console")
+            return await self._send_console(
+                to_email, subject, html_body, text_body, template, cc, bcc
+            )
+
+        try:
+            # Build SendGrid API payload
+            payload: dict[str, Any] = {
+                "personalizations": [
+                    {
+                        "to": [{"email": to_email}],
+                    }
+                ],
+                "from": {
+                    "email": self._from_email,
+                    "name": self._from_name,
+                },
+                "reply_to": {
+                    "email": settings.EMAIL_REPLY_TO,
+                },
+                "subject": subject,
+                "content": [
+                    {"type": "text/plain", "value": text_body},
+                    {"type": "text/html", "value": html_body},
+                ],
+                # Track opens and clicks for analytics
+                "tracking_settings": {
+                    "click_tracking": {"enable": True},
+                    "open_tracking": {"enable": True},
+                },
+                # Add category for filtering in SendGrid dashboard
+                "categories": [template.value, "transactional"],
+            }
+
+            # Add CC/BCC if provided
+            if cc:
+                payload["personalizations"][0]["cc"] = [{"email": e} for e in cc]
+            if bcc:
+                payload["personalizations"][0]["bcc"] = [{"email": e} for e in bcc]
+
+            # Send via SendGrid API
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    settings.SENDGRID_API_URL,
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=settings.HTTP_TIMEOUT_SENDGRID,
+                )
+
+            # SendGrid returns 202 Accepted on success
+            if response.status_code == 202:
+                # Extract message ID from headers
+                message_id = response.headers.get("X-Message-Id", f"sg-{uuid4().hex[:12]}")
+                logger.info(
+                    "Email sent via SendGrid",
+                    to=to_email,
+                    template=template.value,
+                    message_id=message_id,
+                )
+                return EmailResult(success=True, message_id=message_id)
+
+            # Handle errors
+            error_msg = f"SendGrid API error: {response.status_code} - {response.text}"
+            logger.error(
+                "SendGrid API error",
+                status_code=response.status_code,
+                response=response.text,
+                to=to_email,
+                template=template.value,
+            )
+            return EmailResult(success=False, error=error_msg)
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.exception(
+                "Failed to send email via SendGrid",
+                to=to_email,
+                template=template.value,
+            )
+            return EmailResult(success=False, error=error_msg)
+
     def _get_subject(self, template: EmailTemplate, context: dict[str, Any]) -> str:
         """Get the email subject for a template."""
         plan_name = context.get("plan_name", "Pro")
@@ -217,6 +322,7 @@ class EmailService:
         amount = context.get("amount", 0)
         team_name = context.get("team_name", "a team")
         sharer_name = context.get("sharer_name", "Someone")
+        inviter_name = context.get("inviter_name", "The Podex team")
 
         subjects = {
             EmailTemplate.WELCOME: "Welcome to Podex - Your AI-Powered IDE",
@@ -235,6 +341,7 @@ class EmailService:
             EmailTemplate.ACCOUNT_DEACTIVATED: "Your Podex account has been deactivated",
             EmailTemplate.TEAM_INVITE: f"You've been invited to join {team_name} on Podex",
             EmailTemplate.SESSION_SHARED: f"{sharer_name} shared a session with you",
+            EmailTemplate.PLATFORM_INVITE: f"{inviter_name} invited you to join Podex",
         }
         return subjects.get(template, "Message from Podex")
 
@@ -259,6 +366,9 @@ class EmailService:
 
     def _get_preheader(self, template: EmailTemplate, context: dict[str, Any]) -> str:
         """Get preheader text (preview text in email clients)."""
+        gift_months = context.get("gift_months")
+        gift_text = f" - includes {gift_months} months free!" if gift_months else ""
+
         preheaders = {
             EmailTemplate.WELCOME: "Get started with AI-powered development",
             EmailTemplate.EMAIL_VERIFICATION: "Please verify your email to continue",
@@ -268,6 +378,7 @@ class EmailService:
             EmailTemplate.PAYMENT_RECEIVED: f"Payment of ${context.get('amount', 0):.2f} received",
             EmailTemplate.PAYMENT_FAILED: "Please update your payment method",
             EmailTemplate.USAGE_WARNING: "Consider upgrading your plan",
+            EmailTemplate.PLATFORM_INVITE: f"Join the AI-powered IDE{gift_text}",
         }
         return preheaders.get(template, "")
 
@@ -373,6 +484,9 @@ class EmailService:
             EmailTemplate.TEAM_INVITE: self._render_team_invite(name, context, h1, p_main, p_small),
             EmailTemplate.SESSION_SHARED: self._render_session_shared(
                 name, context, h1, p_main, box_purple
+            ),
+            EmailTemplate.PLATFORM_INVITE: self._render_platform_invite(
+                name, context, h1, p_main, p_small, box_gradient, box_purple
             ),
         }
 
@@ -592,6 +706,87 @@ class EmailService:
 </div>
         """
 
+    def _render_platform_invite(
+        self,
+        name: str,
+        context: dict[str, Any],
+        h1: str,
+        p_main: str,
+        p_small: str,
+        box_gradient: str,
+        box_purple: str,
+    ) -> str:
+        """Render platform invitation email content."""
+        inviter = context.get("inviter_name", "The Podex team")
+        message = context.get("message", "")
+        gift_plan_name = context.get("gift_plan_name")
+        gift_months = context.get("gift_months")
+        expires_days = context.get("expires_days", 7)
+        purple = "color: #8B5CF6;"
+
+        # Build gift section if subscription is being gifted
+        gift_section = ""
+        if gift_plan_name and gift_months:
+            month_word = "month" if gift_months == 1 else "months"
+            gift_section = f"""
+<div style="{box_purple}">
+    <p style="margin: 0 0 8px; font-size: 14px; color: #9898a8;">Included Gift</p>
+    <p style="margin: 0; font-size: 20px; font-weight: 600; color: #8B5CF6;">
+        {gift_months} {month_word} of {gift_plan_name}
+    </p>
+    <p style="margin: 8px 0 0; font-size: 14px; color: #5c5c6e;">
+        Start coding with full access from day one
+    </p>
+</div>
+"""
+
+        # Build personal message section if provided
+        message_section = ""
+        if message:
+            message_section = f"""
+<div style="background: rgba(255, 255, 255, 0.03); border-left: 3px solid #8B5CF6; padding: 16px; margin: 24px 0; border-radius: 4px;">
+    <p style="margin: 0; font-size: 14px; color: #9898a8; font-style: italic;">
+        "{message}"
+    </p>
+    <p style="margin: 8px 0 0 0; font-size: 13px; color: #5c5c6e;">
+        — {inviter}
+    </p>
+</div>
+"""
+
+        # Use the recipient's name for a personalized greeting
+        greeting = f"Hi {name}," if name else "Hi there,"
+
+        return f"""
+<p style="margin: 0 0 16px; font-size: 16px; color: #f0f0f5;">{greeting}</p>
+<h1 style="{h1}">You're invited to join Podex</h1>
+<p style="{p_main}">
+    <strong style="{purple}">{inviter}</strong> has invited you to join Podex,
+    the AI-powered development platform that brings intelligent coding agents,
+    cloud workspaces, and powerful tools together in one place.
+</p>
+{message_section}
+{gift_section}
+<div style="{box_gradient}">
+    <p style="margin: 0 0 12px; font-size: 16px; font-weight: 600; color: #f0f0f5;">
+        What you can do with Podex:
+    </p>
+    <p style="margin: 0 0 8px; font-size: 14px; color: #9898a8;">
+        • Create cloud development workspaces in seconds
+    </p>
+    <p style="margin: 0 0 8px; font-size: 14px; color: #9898a8;">
+        • Use AI agents to help with coding and debugging
+    </p>
+    <p style="margin: 0 0 8px; font-size: 14px; color: #9898a8;">
+        • Collaborate in real-time with your team
+    </p>
+    <p style="margin: 0; font-size: 14px; color: #9898a8;">
+        • Access your projects from anywhere
+    </p>
+</div>
+<p style="{p_small}">This invitation will expire in {expires_days} days.</p>
+        """
+
     def _get_cta_button(self, template: EmailTemplate, context: dict[str, Any]) -> str:
         """Get the call-to-action button for a template."""
         base = settings.FRONTEND_URL
@@ -615,6 +810,10 @@ class EmailService:
             EmailTemplate.CREDITS_ADDED: ("View Balance", f"{billing}/credits"),
             EmailTemplate.TEAM_INVITE: ("Accept Invite", context.get("invite_url", "#")),
             EmailTemplate.SESSION_SHARED: ("Open Session", context.get("session_url", "#")),
+            EmailTemplate.PLATFORM_INVITE: (
+                "Accept Invitation",
+                context.get("invite_url", "#"),
+            ),
         }
 
         if template not in cta_map:
@@ -739,6 +938,42 @@ Hi {name}, you've used {percent}% of your {quota_type} quota.
 
 Consider upgrading your plan to avoid service interruption:
 {frontend_url}/settings/billing/plans
+
+--
+The Podex Team
+"""
+
+        # Handle PLATFORM_INVITE separately for readability
+        inviter = context.get("inviter_name", "The Podex team")
+        invite_url = context.get("invite_url", f"{frontend_url}/register")
+        message = context.get("message", "")
+        gift_plan_name = context.get("gift_plan_name")
+        gift_months = context.get("gift_months")
+        expires_days = context.get("expires_days", 7)
+
+        gift_text = ""
+        if gift_plan_name and gift_months:
+            month_word = "month" if gift_months == 1 else "months"
+            gift_text = f"\n\nIncluded Gift: {gift_months} {month_word} of {gift_plan_name}\n"
+
+        message_text = ""
+        if message:
+            message_text = f'\n\n"{message}"\n— {inviter}\n'
+
+        text_map[EmailTemplate.PLATFORM_INVITE] = f"""
+You're invited to join Podex
+
+{inviter} has invited you to join Podex, the AI-powered development platform.
+{message_text}{gift_text}
+What you can do with Podex:
+- Create cloud development workspaces in seconds
+- Use AI agents to help with coding and debugging
+- Collaborate in real-time with your team
+- Access your projects from anywhere
+
+Accept your invitation: {invite_url}
+
+This invitation will expire in {expires_days} days.
 
 --
 The Podex Team

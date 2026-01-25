@@ -1,9 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Shield, Eye, Database, Download, Trash2, Save, Loader2, ExternalLink } from 'lucide-react';
 import { Button } from '@podex/ui';
 import { cn } from '@/lib/utils';
+import { api } from '@/lib/api';
 
 function ToggleSwitch({
   enabled,
@@ -33,21 +34,58 @@ function ToggleSwitch({
 
 export default function PrivacyPage() {
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
   const [analyticsEnabled, setAnalyticsEnabled] = useState(true);
   const [crashReportsEnabled, setCrashReportsEnabled] = useState(true);
   const [usageDataEnabled, setUsageDataEnabled] = useState(true);
   const [activityHistoryEnabled, setActivityHistoryEnabled] = useState(true);
 
+  // Load saved preferences on mount
+  useEffect(() => {
+    const loadPreferences = async () => {
+      try {
+        const config = (await api.get('/api/user/config')) as {
+          ui_preferences?: {
+            privacy?: {
+              analyticsEnabled?: boolean;
+              crashReportsEnabled?: boolean;
+              usageDataEnabled?: boolean;
+              activityHistoryEnabled?: boolean;
+            };
+          };
+        };
+        if (config?.ui_preferences?.privacy) {
+          const prefs = config.ui_preferences.privacy;
+          if (prefs.analyticsEnabled !== undefined) setAnalyticsEnabled(prefs.analyticsEnabled);
+          if (prefs.crashReportsEnabled !== undefined)
+            setCrashReportsEnabled(prefs.crashReportsEnabled);
+          if (prefs.usageDataEnabled !== undefined) setUsageDataEnabled(prefs.usageDataEnabled);
+          if (prefs.activityHistoryEnabled !== undefined)
+            setActivityHistoryEnabled(prefs.activityHistoryEnabled);
+        }
+      } catch (error) {
+        console.error('Failed to load privacy preferences:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadPreferences();
+  }, []);
+
   const handleSave = async () => {
     setSaving(true);
     try {
-      // TODO: Implement privacy preferences save API
-      // await api.patch('/api/user/privacy-settings', {
-      //   dataCollection,
-      //   analyticsEnabled,
-      //   marketingEmails,
-      // });
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await api.patch('/api/user/config', {
+        ui_preferences: {
+          privacy: {
+            analyticsEnabled,
+            crashReportsEnabled,
+            usageDataEnabled,
+            activityHistoryEnabled,
+          },
+        },
+      });
     } catch (error) {
       console.error('Failed to save privacy settings:', error);
     } finally {
@@ -56,24 +94,45 @@ export default function PrivacyPage() {
   };
 
   const handleExportData = async () => {
-    // TODO: Implement data export API
-    // const response = await api.post('/api/user/export-data');
-    // const blob = new Blob([response], { type: 'application/json' });
-    // const url = URL.createObjectURL(blob);
-    // const a = document.createElement('a');
-    // a.href = url;
-    // a.download = 'user-data.json';
-    // a.click();
-    alert('Data export feature coming soon');
+    setExporting(true);
+    try {
+      const data = await api.get('/api/user/export');
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'podex-user-data.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Failed to export data:', error);
+      alert('Failed to export data. Please try again.');
+    } finally {
+      setExporting(false);
+    }
   };
 
   const handleDeleteData = async () => {
-    // TODO: Implement data deletion API
     if (confirm('Are you sure you want to delete all your data? This action cannot be undone.')) {
-      // await api.delete('/api/user/delete-account');
-      alert('Data deletion feature coming soon');
+      try {
+        await api.delete('/api/user/delete-account');
+        window.location.href = '/';
+      } catch (error) {
+        console.error('Failed to delete account:', error);
+        alert('Failed to delete account. Please contact support.');
+      }
     }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-accent-primary" />
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-2xl mx-auto px-8 py-8">
@@ -157,9 +216,13 @@ export default function PrivacyPage() {
                 Download a copy of all your data in JSON format
               </p>
             </div>
-            <Button variant="outline" size="sm" onClick={handleExportData}>
-              <Download className="w-4 h-4 mr-2" />
-              Export
+            <Button variant="outline" size="sm" onClick={handleExportData} disabled={exporting}>
+              {exporting ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Download className="w-4 h-4 mr-2" />
+              )}
+              {exporting ? 'Exporting...' : 'Export'}
             </Button>
           </div>
           <div className="border-t border-border-subtle pt-4 flex items-center justify-between">

@@ -86,6 +86,13 @@ from src.tools.deploy_tools import (  # noqa: E402
     stop_preview,
     wait_for_deployment,
 )
+from src.tools.health_tools import (  # noqa: E402
+    HealthAnalysisConfig,
+    analyze_project_health,
+    apply_health_fix,
+    get_health_score,
+    list_health_checks,
+)
 
 # NOTE: Local file_tools, command_tools, git_tools removed.
 # All file/command/git operations now use remote_tools via ComputeClient
@@ -593,6 +600,11 @@ class ToolExecutor:
             "delete_skill": self._handle_skill_tools,
             "get_skill_stats": self._handle_skill_tools,
             "recommend_skills": self._handle_skill_tools,
+            # Health tools
+            "analyze_project_health": self._handle_health_tools,
+            "get_health_score": self._handle_health_tools,
+            "apply_health_fix": self._handle_health_tools,
+            "list_health_checks": self._handle_health_tools,
         }
 
         handler = handlers.get(tool_name)
@@ -1081,6 +1093,43 @@ class ToolExecutor:
             )
             return cast("dict[str, Any]", json.loads(result))
         return {"success": False, "error": f"Unknown skill tool: {tool_name}"}
+
+    async def _handle_health_tools(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Handle health analysis tools."""
+        if not self.user_id:
+            return {"success": False, "error": "User ID required for health tools"}
+
+        if tool_name == "analyze_project_health":
+            config = HealthAnalysisConfig(
+                session_id=self.session_id,
+                user_id=self.user_id,
+                workspace_id=self.workspace_id,
+                working_directory=arguments.get("working_directory"),
+            )
+            return await analyze_project_health(config)
+        if tool_name == "get_health_score":
+            return await get_health_score(
+                session_id=self.session_id,
+                user_id=self.user_id,
+            )
+        if tool_name == "apply_health_fix":
+            return await apply_health_fix(
+                session_id=self.session_id,
+                user_id=self.user_id,
+                recommendation_id=arguments.get("recommendation_id", ""),
+                workspace_id=self.workspace_id,
+            )
+        if tool_name == "list_health_checks":
+            return await list_health_checks(
+                session_id=self.session_id,
+                user_id=self.user_id,
+                category=arguments.get("category"),
+            )
+        return {"success": False, "error": f"Unknown health tool: {tool_name}"}
 
     def _make_mcp_error(self, error_type: str, message: str) -> dict[str, Any]:
         """Create a standardized MCP error response.

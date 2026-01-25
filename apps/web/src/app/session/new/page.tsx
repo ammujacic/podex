@@ -21,6 +21,12 @@ import {
   Cpu,
   Activity,
   RefreshCw,
+  Plus,
+  Key,
+  Eye,
+  EyeOff,
+  Copy,
+  X,
 } from 'lucide-react';
 import { Button, Input } from '@podex/ui';
 import Image from 'next/image';
@@ -30,14 +36,18 @@ import {
   getUserConfig,
   listHardwareSpecs,
   listLocalPods,
+  getLocalPodPricing,
   getGitHubLinkURL,
   getGitHubBranches,
   type PodTemplate,
   type UserConfig,
   type HardwareSpecResponse,
   type LocalPod,
+  type LocalPodPricing,
 } from '@/lib/api';
 import { useUser } from '@/stores/auth';
+import { useLocalPodsStore } from '@/stores/localPods';
+import { toast } from 'sonner';
 import { HardwareSelector } from '@/components/billing/HardwareSelector';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { cn } from '@/lib/utils';
@@ -87,6 +97,274 @@ function TemplateIcon({
   }
 
   return <Box className={`${sizeClasses[size]} text-text-muted`} />;
+}
+
+// ============================================================================
+// TOKEN DISPLAY (shown after pod creation)
+// ============================================================================
+
+interface TokenDisplayProps {
+  token: string;
+  podName: string;
+  onDone: () => void;
+}
+
+function TokenDisplay({ token, podName, onDone }: TokenDisplayProps) {
+  const [copied, setCopied] = useState(false);
+  const [visible, setVisible] = useState(false);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(token);
+    setCopied(true);
+    toast.success('Token copied to clipboard');
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Success message */}
+      <div className="flex items-center gap-3 p-3 rounded-lg bg-success/10 border border-success/30">
+        <Check className="h-5 w-5 text-success" />
+        <div>
+          <p className="text-sm font-medium text-success">Pod "{podName}" created!</p>
+          <p className="text-xs text-success/80">Save your token below to connect it.</p>
+        </div>
+      </div>
+
+      {/* Token warning */}
+      <div className="p-4 rounded-lg bg-warning/10 border border-warning/30">
+        <div className="flex items-start gap-3">
+          <Key className="h-5 w-5 text-warning mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <h4 className="text-sm font-semibold text-warning">Save Your Pod Token</h4>
+            <p className="text-xs text-warning/80 mt-1">
+              This token will only be shown once. You'll need it to connect your local pod.
+            </p>
+
+            <div className="mt-3 flex items-center gap-2">
+              <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded bg-void border border-warning/30 font-mono text-xs">
+                <code className="flex-1 truncate text-text-primary">
+                  {visible ? token : '••••••••••••••••••••••••••••••••'}
+                </code>
+                <button
+                  onClick={() => setVisible(!visible)}
+                  className="p-1 hover:bg-warning/20 rounded text-warning/80 hover:text-warning"
+                >
+                  {visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+              <button
+                onClick={handleCopy}
+                className="flex items-center gap-1.5 px-3 py-2 rounded bg-warning/20 text-warning hover:bg-warning/30 text-xs font-medium"
+              >
+                {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                {copied ? 'Copied!' : 'Copy'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Setup instructions */}
+      <div className="p-4 rounded-lg bg-overlay border border-border-subtle">
+        <h4 className="text-sm font-semibold text-text-primary mb-3">Next Steps</h4>
+        <ol className="space-y-3 text-sm">
+          <li className="flex gap-3">
+            <span className="flex-shrink-0 w-5 h-5 rounded-full bg-accent-primary/20 text-accent-primary text-xs font-medium flex items-center justify-center">
+              1
+            </span>
+            <div>
+              <p className="text-text-secondary">Install the local pod agent:</p>
+              <code className="text-xs text-text-muted font-mono block mt-1 p-2 bg-void rounded">
+                npm install -g @podex/local-pod
+              </code>
+            </div>
+          </li>
+          <li className="flex gap-3">
+            <span className="flex-shrink-0 w-5 h-5 rounded-full bg-accent-primary/20 text-accent-primary text-xs font-medium flex items-center justify-center">
+              2
+            </span>
+            <div>
+              <p className="text-text-secondary">Start the agent with your token:</p>
+              <code className="text-xs text-text-muted font-mono block mt-1 p-2 bg-void rounded">
+                podex-local-pod start --token {visible ? token : 'pdx_pod_...'}
+              </code>
+            </div>
+          </li>
+          <li className="flex gap-3">
+            <span className="flex-shrink-0 w-5 h-5 rounded-full bg-accent-primary/20 text-accent-primary text-xs font-medium flex items-center justify-center">
+              3
+            </span>
+            <p className="text-text-secondary">
+              Your pod will appear as "Online" in the list above!
+            </p>
+          </li>
+        </ol>
+      </div>
+
+      {/* Done button */}
+      <div className="flex justify-end">
+        <button
+          onClick={onDone}
+          className="px-4 py-2 text-sm font-medium rounded bg-accent-primary text-void hover:bg-accent-primary/90"
+        >
+          Done
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// ADD LOCAL POD MODAL
+// ============================================================================
+
+interface AddLocalPodModalProps {
+  onClose: () => void;
+  onPodCreated: () => void;
+}
+
+function AddLocalPodModal({ onClose, onPodCreated }: AddLocalPodModalProps) {
+  const [name, setName] = useState('');
+  const [maxWorkspaces, setMaxWorkspaces] = useState(3);
+  const [error, setError] = useState<string | null>(null);
+  const { createPod, isCreating, newToken, clearNewToken } = useLocalPodsStore();
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) {
+      setError('Name is required');
+      return;
+    }
+
+    try {
+      await createPod({
+        name: name.trim(),
+        max_workspaces: maxWorkspaces,
+      });
+      // Token will be shown via newToken state
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create pod');
+    }
+  };
+
+  const handleDone = () => {
+    clearNewToken();
+    onPodCreated();
+    onClose();
+  };
+
+  const handleClose = () => {
+    if (newToken) {
+      clearNewToken();
+    }
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-void/80">
+      <div className="w-full max-w-lg mx-4 rounded-lg border border-border-default bg-surface shadow-xl max-h-[90vh] overflow-y-auto">
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border-subtle sticky top-0 bg-surface">
+          <div className="flex items-center gap-2">
+            <Laptop className="h-5 w-5 text-accent-primary" />
+            <h3 className="text-lg font-semibold text-text-primary">
+              {newToken ? 'Pod Created' : 'Add Local Pod'}
+            </h3>
+          </div>
+          <button
+            onClick={handleClose}
+            className="p-1 rounded hover:bg-overlay text-text-muted hover:text-text-primary"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="p-4">
+          {newToken ? (
+            <TokenDisplay token={newToken.token} podName={name} onDone={handleDone} />
+          ) : (
+            <>
+              {/* Info banner */}
+              <div className="mb-4 p-3 rounded-lg bg-accent-primary/5 border border-accent-primary/20">
+                <p className="text-sm text-text-secondary">
+                  A local pod lets you run workspaces on your own hardware.{' '}
+                  <span className="text-accent-primary font-medium">
+                    Free, private, and fully under your control.
+                  </span>
+                </p>
+              </div>
+
+              {/* Form */}
+              <form onSubmit={handleSubmit} className="space-y-4">
+                {error && (
+                  <div className="p-3 rounded bg-error/10 border border-error/30 text-error text-sm flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4" />
+                    {error}
+                  </div>
+                )}
+
+                <div>
+                  <label className="text-sm font-medium text-text-secondary">Pod Name *</label>
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="e.g., My MacBook Pro"
+                    className="w-full mt-1 px-3 py-2 text-sm rounded bg-void border border-border-default text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:ring-1 focus:ring-accent-primary"
+                    autoFocus
+                  />
+                  <p className="text-xs text-text-muted mt-1">
+                    A friendly name to identify this machine
+                  </p>
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium text-text-secondary">
+                    Max Concurrent Workspaces
+                  </label>
+                  <select
+                    value={maxWorkspaces}
+                    onChange={(e) => setMaxWorkspaces(Number(e.target.value))}
+                    className="w-full mt-1 px-3 py-2 text-sm rounded bg-void border border-border-default text-text-primary"
+                  >
+                    {[1, 2, 3, 4, 5, 6, 8, 10].map((n) => (
+                      <option key={n} value={n}>
+                        {n} workspace{n > 1 ? 's' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-text-muted mt-1">
+                    Limit how many workspaces can run simultaneously
+                  </p>
+                </div>
+
+                {/* Footer */}
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={handleClose}
+                    className="px-4 py-2 text-sm font-medium rounded bg-overlay text-text-secondary hover:text-text-primary"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isCreating || !name.trim()}
+                    className="px-4 py-2 text-sm font-medium rounded bg-accent-primary text-void hover:bg-accent-primary/90 disabled:opacity-50 flex items-center gap-2"
+                  >
+                    {isCreating && <Loader2 className="h-4 w-4 animate-spin" />}
+                    {isCreating ? 'Creating...' : 'Create Pod'}
+                  </button>
+                </div>
+              </form>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // Step type
@@ -147,6 +425,7 @@ export default function NewSessionPage() {
   const [templates, setTemplates] = useState<PodTemplate[]>([]);
   const [hardwareSpecs, setHardwareSpecs] = useState<HardwareSpecResponse[]>([]);
   const [localPods, setLocalPods] = useState<LocalPod[]>([]);
+  const [localPodPricing, setLocalPodPricing] = useState<LocalPodPricing | null>(null);
   const [_userConfig, setUserConfig] = useState<UserConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [_creating, setCreating] = useState(false);
@@ -179,6 +458,7 @@ export default function NewSessionPage() {
 
   // Compute target (cloud or local pod)
   const [computeTarget, setComputeTarget] = useState<ComputeTarget>('cloud');
+  const [showAddPodModal, setShowAddPodModal] = useState(false);
 
   useEffect(() => {
     if (!user) {
@@ -188,16 +468,23 @@ export default function NewSessionPage() {
 
     async function loadData() {
       try {
-        const [templatesData, configData, hardwareData, localPodsData] = await Promise.all([
-          listTemplates(true),
-          getUserConfig().catch(() => null),
-          listHardwareSpecs().catch(() => []),
-          listLocalPods().catch(() => []),
-        ]);
+        const [templatesData, configData, hardwareData, localPodsData, localPodPricingData] =
+          await Promise.all([
+            listTemplates(true),
+            getUserConfig().catch(() => null),
+            listHardwareSpecs().catch(() => []),
+            listLocalPods().catch(() => []),
+            getLocalPodPricing().catch(() => ({
+              hourly_rate_cents: 0,
+              description: 'Your local machine',
+              billing_enabled: false,
+            })),
+          ]);
         setTemplates(templatesData);
         setUserConfig(configData);
         setHardwareSpecs(hardwareData);
         setLocalPods(localPodsData);
+        setLocalPodPricing(localPodPricingData);
 
         // Pre-select default template if set
         if (configData?.default_template_id) {
@@ -630,138 +917,173 @@ export default function NewSessionPage() {
               </div>
 
               {/* Compute Target Selection */}
-              {localPods.length > 0 && (
-                <div className="mb-8">
-                  <h2 className="text-sm font-medium text-text-muted uppercase tracking-wider mb-4">
-                    Compute Target
-                  </h2>
-                  <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                    {/* Cloud option */}
-                    <button
-                      onClick={() => setComputeTarget('cloud')}
-                      className={`p-4 rounded-xl border-2 text-left transition-all ${
-                        computeTarget === 'cloud'
-                          ? 'border-accent-primary bg-accent-primary/5 shadow-lg shadow-accent-primary/10'
-                          : 'border-border-default hover:border-border-hover bg-surface'
-                      }`}
-                    >
-                      <div className="flex items-start gap-3">
-                        <div
-                          className={`p-2 rounded-lg ${
-                            computeTarget === 'cloud'
-                              ? 'bg-accent-primary/20 text-accent-primary'
-                              : 'bg-overlay text-text-muted'
-                          }`}
-                        >
-                          <Cloud className="w-5 h-5" />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <h3 className="font-semibold text-text-primary">Podex Cloud</h3>
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent-primary/20 text-accent-primary">
-                              Recommended
-                            </span>
-                          </div>
-                          <p className="text-sm text-text-muted mt-1">
-                            Managed infrastructure, instant scaling
-                          </p>
-                        </div>
-                        {computeTarget === 'cloud' && (
-                          <div className="w-5 h-5 rounded-full bg-accent-primary flex items-center justify-center">
-                            <Check className="w-3 h-3 text-white" />
-                          </div>
-                        )}
+              <div className="mb-8">
+                <h2 className="text-sm font-medium text-text-muted uppercase tracking-wider mb-4">
+                  Compute Target
+                </h2>
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                  {/* Cloud option */}
+                  <button
+                    onClick={() => setComputeTarget('cloud')}
+                    className={`p-4 rounded-xl border-2 text-left transition-all ${
+                      computeTarget === 'cloud'
+                        ? 'border-accent-primary bg-accent-primary/5 shadow-lg shadow-accent-primary/10'
+                        : 'border-border-default hover:border-border-hover bg-surface'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div
+                        className={`p-2 rounded-lg ${
+                          computeTarget === 'cloud'
+                            ? 'bg-accent-primary/20 text-accent-primary'
+                            : 'bg-overlay text-text-muted'
+                        }`}
+                      >
+                        <Cloud className="w-5 h-5" />
                       </div>
-                    </button>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-semibold text-text-primary">Podex Cloud</h3>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent-primary/20 text-accent-primary">
+                            Recommended
+                          </span>
+                        </div>
+                        <p className="text-sm text-text-muted mt-1">
+                          Managed infrastructure, instant scaling
+                        </p>
+                      </div>
+                      {computeTarget === 'cloud' && (
+                        <div className="w-5 h-5 rounded-full bg-accent-primary flex items-center justify-center">
+                          <Check className="w-3 h-3 text-white" />
+                        </div>
+                      )}
+                    </div>
+                  </button>
 
-                    {/* Local pods */}
-                    {localPods
-                      .filter((p) => p.status === 'online')
-                      .map((pod) => (
-                        <button
-                          key={pod.id}
-                          onClick={() => setComputeTarget(pod.id)}
-                          className={`p-4 rounded-xl border-2 text-left transition-all ${
-                            computeTarget === pod.id
-                              ? 'border-success bg-success/5 shadow-lg shadow-success/10'
-                              : 'border-border-default hover:border-border-hover bg-surface'
-                          }`}
-                        >
-                          <div className="flex items-start gap-3">
-                            <div
-                              className={`p-2 rounded-lg ${
-                                computeTarget === pod.id
-                                  ? 'bg-success/20 text-success'
-                                  : 'bg-overlay text-text-muted'
-                              }`}
-                            >
-                              <Laptop className="w-5 h-5" />
+                  {/* Local pods */}
+                  {localPods
+                    .filter((p) => p.status === 'online')
+                    .map((pod) => (
+                      <button
+                        key={pod.id}
+                        onClick={() => setComputeTarget(pod.id)}
+                        className={`p-4 rounded-xl border-2 text-left transition-all ${
+                          computeTarget === pod.id
+                            ? 'border-success bg-success/5 shadow-lg shadow-success/10'
+                            : 'border-border-default hover:border-border-hover bg-surface'
+                        }`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <div
+                            className={`p-2 rounded-lg ${
+                              computeTarget === pod.id
+                                ? 'bg-success/20 text-success'
+                                : 'bg-overlay text-text-muted'
+                            }`}
+                          >
+                            <Laptop className="w-5 h-5" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <h3 className="font-semibold text-text-primary">{pod.name}</h3>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-success/20 text-success">
+                                Online
+                              </span>
                             </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2">
-                                <h3 className="font-semibold text-text-primary">{pod.name}</h3>
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-success/20 text-success">
-                                  Online
+                            <div className="flex items-center gap-3 mt-1 text-xs text-text-muted">
+                              {pod.total_cpu_cores && (
+                                <span className="flex items-center gap-1">
+                                  <Cpu className="w-3 h-3" />
+                                  {pod.total_cpu_cores} cores
                                 </span>
-                              </div>
-                              <div className="flex items-center gap-3 mt-1 text-xs text-text-muted">
-                                {pod.total_cpu_cores && (
-                                  <span className="flex items-center gap-1">
-                                    <Cpu className="w-3 h-3" />
-                                    {pod.total_cpu_cores} cores
-                                  </span>
-                                )}
-                                {pod.total_memory_mb && (
-                                  <span className="flex items-center gap-1">
-                                    <Activity className="w-3 h-3" />
-                                    {pod.total_memory_mb >= 1024
-                                      ? `${(pod.total_memory_mb / 1024).toFixed(0)} GB`
-                                      : `${pod.total_memory_mb} MB`}
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-xs text-text-muted mt-1">
+                              )}
+                              {pod.total_memory_mb && (
+                                <span className="flex items-center gap-1">
+                                  <Activity className="w-3 h-3" />
+                                  {pod.total_memory_mb >= 1024
+                                    ? `${(pod.total_memory_mb / 1024).toFixed(0)} GB`
+                                    : `${pod.total_memory_mb} MB`}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center justify-between mt-1">
+                              <p className="text-xs text-text-muted">
                                 {pod.current_workspaces}/{pod.max_workspaces} workspaces
                               </p>
-                            </div>
-                            {computeTarget === pod.id && (
-                              <div className="w-5 h-5 rounded-full bg-success flex items-center justify-center">
-                                <Check className="w-3 h-3 text-white" />
-                              </div>
-                            )}
-                          </div>
-                        </button>
-                      ))}
-
-                    {/* Offline pods (disabled) */}
-                    {localPods
-                      .filter((p) => p.status !== 'online')
-                      .map((pod) => (
-                        <div
-                          key={pod.id}
-                          className="p-4 rounded-xl border-2 border-border-subtle bg-surface/50 opacity-60 cursor-not-allowed"
-                        >
-                          <div className="flex items-start gap-3">
-                            <div className="p-2 rounded-lg bg-overlay text-text-muted">
-                              <Laptop className="w-5 h-5" />
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2">
-                                <h3 className="font-semibold text-text-muted">{pod.name}</h3>
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-text-muted/20 text-text-muted">
-                                  Offline
+                              {localPodPricing && (
+                                <span className="text-xs font-medium text-success">
+                                  {localPodPricing.hourly_rate_cents === 0
+                                    ? 'Free'
+                                    : `$${(localPodPricing.hourly_rate_cents / 100).toFixed(2)}/hr`}
                                 </span>
-                              </div>
-                              <p className="text-xs text-text-muted mt-1">
+                              )}
+                            </div>
+                          </div>
+                          {computeTarget === pod.id && (
+                            <div className="w-5 h-5 rounded-full bg-success flex items-center justify-center">
+                              <Check className="w-3 h-3 text-white" />
+                            </div>
+                          )}
+                        </div>
+                      </button>
+                    ))}
+
+                  {/* Offline pods (disabled) */}
+                  {localPods
+                    .filter((p) => p.status !== 'online')
+                    .map((pod) => (
+                      <div
+                        key={pod.id}
+                        className="p-4 rounded-xl border-2 border-border-subtle bg-surface/50 opacity-60 cursor-not-allowed"
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className="p-2 rounded-lg bg-overlay text-text-muted">
+                            <Laptop className="w-5 h-5" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <h3 className="font-semibold text-text-muted">{pod.name}</h3>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-text-muted/20 text-text-muted">
+                                Offline
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between mt-1">
+                              <p className="text-xs text-text-muted">
                                 Start the agent to use this pod
                               </p>
+                              {localPodPricing && (
+                                <span className="text-xs text-text-muted">
+                                  {localPodPricing.hourly_rate_cents === 0
+                                    ? 'Free'
+                                    : `$${(localPodPricing.hourly_rate_cents / 100).toFixed(2)}/hr`}
+                                </span>
+                              )}
                             </div>
                           </div>
                         </div>
-                      ))}
-                  </div>
+                      </div>
+                    ))}
+
+                  {/* Add Local Pod card */}
+                  <button
+                    onClick={() => setShowAddPodModal(true)}
+                    className="p-4 rounded-xl border-2 border-dashed border-border-default hover:border-accent-primary/50 bg-surface/50 hover:bg-accent-primary/5 text-left transition-all group"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="p-2 rounded-lg bg-overlay group-hover:bg-accent-primary/20 text-text-muted group-hover:text-accent-primary transition-colors">
+                        <Plus className="w-5 h-5" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="font-semibold text-text-primary group-hover:text-accent-primary transition-colors">
+                          Add Local Pod
+                        </h3>
+                        <p className="text-sm text-text-muted mt-1">Run on your hardware</p>
+                        <p className="text-xs text-text-muted mt-1">Free · Private · Yours</p>
+                      </div>
+                    </div>
+                  </button>
                 </div>
-              )}
+              </div>
 
               {/* Hardware Tier Selection */}
               <div className="mb-8">
@@ -1342,6 +1664,18 @@ export default function NewSessionPage() {
           )}
         </AnimatePresence>
       </main>
+
+      {/* Add Local Pod Modal */}
+      {showAddPodModal && (
+        <AddLocalPodModal
+          onClose={() => setShowAddPodModal(false)}
+          onPodCreated={async () => {
+            // Refresh local pods list
+            const updatedPods = await listLocalPods().catch(() => []);
+            setLocalPods(updatedPods);
+          }}
+        />
+      )}
     </div>
   );
 }

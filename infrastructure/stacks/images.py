@@ -4,6 +4,8 @@ Uses pulumi-docker to build images for linux/amd64 (required for Cloud Run)
 and push them to Google Artifact Registry as part of the Pulumi deployment.
 """
 
+from collections.abc import Mapping
+
 import pulumi
 import pulumi_docker as docker
 import pulumi_gcp as gcp
@@ -123,7 +125,7 @@ def create_docker_images(
 
 
 def get_image_refs(
-    images: dict[str, docker.Image],
+    images: Mapping[str, docker.Image],
 ) -> dict[str, pulumi.Output[str]]:
     """Get image references (with digest) for use in Cloud Run.
 

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Loader2, LogIn, Mic, Paperclip, RefreshCw, Send, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { type Agent, type AgentMode, useSessionStore } from '@/stores/session';
+import { useStreamingStore } from '@/stores/streaming';
 import { useAttentionStore } from '@/stores/attention';
 import { useApprovalsStore } from '@/stores/approvals';
 import { useWorktreesStore } from '@/stores/worktrees';
@@ -64,6 +65,7 @@ import { SlashCommandMenu, isBuiltInCommand, type BuiltInCommand } from './Slash
 import { CreditExhaustedBanner } from './CreditExhaustedBanner';
 import { SlashCommandDialog } from './SlashCommandSheet';
 import { ApprovalDialog } from './ApprovalDialog';
+import { BrowserContextDialog } from './BrowserContextDialog';
 import {
   isCliAgentRole,
   getCliAgentType,
@@ -72,6 +74,12 @@ import {
   useCliAgentAuth,
 } from '@/hooks/useCliAgentCommands';
 import { useUIStore } from '@/stores/ui';
+import {
+  useBrowserContextStore,
+  useIsCaptureEnabled,
+  useIsAutoInclude,
+  useHasPendingContext,
+} from '@/stores/browserContext';
 
 export interface AgentCardProps {
   agent: Agent;
@@ -106,6 +114,18 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [thinkingDialogOpen, setThinkingDialogOpen] = useState(false);
   const [slashCommandSheetOpen, setSlashCommandSheetOpen] = useState(false);
+  const [browserContextDialogOpen, setBrowserContextDialogOpen] = useState(false);
+
+  // Browser context state for forwarding preview data to agent
+  const browserCaptureEnabled = useIsCaptureEnabled(agent.id);
+  const browserAutoInclude = useIsAutoInclude(agent.id);
+  const hasPendingBrowserContext = useHasPendingContext(agent.id);
+  const {
+    toggleCapture: toggleBrowserCapture,
+    captureContext: captureBrowserContext,
+    getPendingContext: getPendingBrowserContext,
+    clearPendingContext: clearPendingBrowserContext,
+  } = useBrowserContextStore();
 
   // Attachments
   const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
@@ -136,9 +156,9 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     addAgent,
     addAgentMessage,
     deleteAgentMessage,
-    streamingMessages,
     updateAgentThinking,
   } = useSessionStore();
+  const streamingMessages = useStreamingStore((state) => state.streamingMessages);
   const { getAgentWorktree } = useWorktreesStore();
   const { getAgentCheckpoints, restoringCheckpointId } = useCheckpointsStore();
 
@@ -546,9 +566,22 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       updateAgent(sessionId, agent.id, { status: 'active' });
 
       try {
+        // Build browser context if auto-include is enabled or there's pending context
+        let browserContext = undefined;
+        if (browserAutoInclude || hasPendingBrowserContext) {
+          browserContext = hasPendingBrowserContext
+            ? getPendingBrowserContext(agent.id)
+            : captureBrowserContext(agent.id);
+          // Clear pending context after capturing
+          if (hasPendingBrowserContext) {
+            clearPendingBrowserContext(agent.id);
+          }
+        }
+
         await sendAgentMessage(sessionId, agent.id, messageContent, {
           attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
           thinkingConfig: agent.thinkingConfig,
+          browserContext: browserContext || undefined,
         });
       } catch (error) {
         console.error('Failed to send message:', error);
@@ -581,6 +614,11 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       addAgentMessage,
       updateAgent,
       router,
+      browserAutoInclude,
+      hasPendingBrowserContext,
+      getPendingBrowserContext,
+      captureBrowserContext,
+      clearPendingBrowserContext,
     ]
   );
 
@@ -1119,6 +1157,11 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         onDelete={() => setDeleteDialogOpen(true)}
         onOpenSlashCommands={isCliAgent ? handleOpenSlashCommands : undefined}
         onReauthenticate={isCliAgent ? handleClaudeCodeReauthenticate : undefined}
+        browserCaptureEnabled={browserCaptureEnabled}
+        browserAutoInclude={browserAutoInclude}
+        hasPendingBrowserContext={hasPendingBrowserContext}
+        onToggleBrowserCapture={() => toggleBrowserCapture(agent.id)}
+        onOpenBrowserContextDialog={() => setBrowserContextDialogOpen(true)}
       />
 
       {/* Messages area */}
@@ -1511,6 +1554,13 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
           agentType={cliAgentType}
         />
       )}
+
+      {/* Browser Context Dialog - preview and configure browser context for agents */}
+      <BrowserContextDialog
+        agentId={agent.id}
+        isOpen={browserContextDialogOpen}
+        onClose={() => setBrowserContextDialogOpen(false)}
+      />
     </div>
   );
 }

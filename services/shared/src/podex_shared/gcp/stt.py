@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, cast
 
-from google.cloud import speech  # type: ignore[import-untyped]
+from google.cloud import speech  # type: ignore[import-untyped,attr-defined]
 from google.longrunning import operations_pb2  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)

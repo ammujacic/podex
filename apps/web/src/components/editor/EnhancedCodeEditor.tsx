@@ -186,14 +186,14 @@ function EditorPaneContent({
       snippetManager.registerCompletionProvider(monaco, language);
 
       // Register AI inline completions if enabled
-      if (settings.completionsEnabled) {
+      if (settings?.completionsEnabled) {
         const aiProvider = getCompletionProvider();
         aiProvider.setEnabled(true);
         aiProvider.register(monaco);
       }
 
       // Register AI Bug Detector if enabled
-      if (settings.completionsEnabled) {
+      if (settings?.completionsEnabled) {
         const bugDetector = getBugDetector();
         bugDetector.setupAutoAnalysis(editor, monaco);
       }
@@ -277,7 +277,7 @@ function EditorPaneContent({
       // Focus the editor
       editor.focus();
     },
-    [language, onSave, settings.completionsEnabled]
+    [language, onSave, settings?.completionsEnabled]
   );
 
   // Handle cursor position change
@@ -314,23 +314,17 @@ function EditorPaneContent({
       fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
       fontLigatures: true,
       lineHeight: 1.6,
-      cursorBlinking: settings.cursorBlinking,
+      cursorBlinking: settings?.cursorBlinking ?? 'smooth',
       renderLineHighlight: 'line' as const,
-      renderWhitespace: settings.renderWhitespace,
-      bracketPairColorization: { enabled: settings.bracketPairColorization },
-      formatOnPaste: settings.formatOnPaste,
+      renderWhitespace: settings?.renderWhitespace ?? 'selection',
+      bracketPairColorization: { enabled: settings?.bracketPairColorization ?? true },
+      formatOnPaste: settings?.formatOnPaste ?? true,
       inlineSuggest: {
-        enabled: settings.completionsEnabled,
+        enabled: settings?.completionsEnabled ?? false,
         mode: 'subword' as const,
       },
     }),
-    [
-      settings.cursorBlinking,
-      settings.renderWhitespace,
-      settings.bracketPairColorization,
-      settings.formatOnPaste,
-      settings.completionsEnabled,
-    ]
+    [settings]
   );
 
   // Navigate to symbol
@@ -358,12 +352,12 @@ function EditorPaneContent({
           code: selectedText,
           language: currentLanguage,
           filePath: path,
-          model: settings.aiActionModel,
+          model: settings?.aiActionModel ?? null,
         });
 
         if (result.response) {
-          // For now, log the result - could be shown in a panel or applied to editor
-          console.warn('AI Action result:', result.response.slice(0, 200));
+          // Result is available in result.response for further processing
+          // Could be shown in a panel or applied to editor based on action type
         }
       } catch (error) {
         console.error('AI action failed:', error);
@@ -372,8 +366,20 @@ function EditorPaneContent({
         handleBillingError(error);
       }
     },
-    [currentSessionId, path, currentLanguage, settings.aiActionModel]
+    [currentSessionId, path, currentLanguage, settings?.aiActionModel]
   );
+
+  // Wait for settings to be initialized from ConfigStore (after all hooks)
+  if (!settings) {
+    return (
+      <div className={cn('flex h-full items-center justify-center bg-surface', className)}>
+        <div className="flex items-center gap-2 text-text-muted">
+          <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+          <span className="text-sm">Loading editor settings...</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={cn('flex h-full flex-col', className)}>

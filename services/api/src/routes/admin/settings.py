@@ -14,6 +14,7 @@ from src.database import get_db
 from src.database.models import LLMProvider, PlatformSetting
 from src.middleware.admin import get_admin_user_id, require_admin, require_super_admin
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
+from src.services.settings_service import invalidate_cache as invalidate_settings_cache
 
 logger = structlog.get_logger()
 
@@ -480,6 +481,9 @@ async def create_setting(
         details={"action": "created", "category": setting.category},
     )
 
+    # Invalidate Redis cache so all instances see the new setting
+    await invalidate_settings_cache()
+
     logger.info("Admin created platform setting", admin_id=admin_id, key=setting.key)
 
     return AdminSettingResponse(
@@ -562,6 +566,9 @@ async def update_setting(
         changes={"before": old_values, "after": update_data},
     )
 
+    # Invalidate Redis cache so all instances see the updated setting
+    await invalidate_settings_cache()
+
     logger.info(
         "Admin updated platform setting",
         admin_id=admin_id,
@@ -610,6 +617,9 @@ async def delete_setting(
     await db.delete(setting)
     await db.commit()
 
+    # Invalidate Redis cache so all instances see the deletion
+    await invalidate_settings_cache()
+
     logger.info("Admin deleted platform setting", admin_id=admin_id, key=key)
 
     return {"message": "Setting deleted"}
@@ -652,6 +662,9 @@ async def bulk_update_settings(
     # Refresh all updated settings
     for setting in updated_settings:
         await db.refresh(setting)
+
+    # Invalidate Redis cache so all instances see the updates
+    await invalidate_settings_cache()
 
     logger.info(
         "Admin bulk updated settings",
@@ -766,6 +779,9 @@ async def reset_setting_to_default(
 
     await db.commit()
     await db.refresh(setting)
+
+    # Invalidate Redis cache so all instances see the reset
+    await invalidate_settings_cache()
 
     logger.info("Admin reset setting to default", admin_id=admin_id, key=key)
 

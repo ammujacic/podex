@@ -260,8 +260,8 @@ export class LspBridge {
                 return baseItem;
               }) as languages.CompletionItem[],
             };
-          } catch (error) {
-            console.error('Completion error:', error);
+          } catch {
+            // LSP completion not available for this context
             return null;
           }
         },
@@ -287,8 +287,8 @@ export class LspBridge {
               contents: [{ value: extractMarkdownContent(hover.contents) }],
               range: hover.range ? lspToMonacoRange(hover.range) : undefined,
             };
-          } catch (error) {
-            console.error('Hover error:', error);
+          } catch {
+            // LSP hover not available for this context
             return null;
           }
         },
@@ -315,8 +315,8 @@ export class LspBridge {
               uri: this.monacoInstance!.Uri.parse(loc.uri),
               range: lspToMonacoRange(loc.range),
             }));
-          } catch (error) {
-            console.error('Definition error:', error);
+          } catch {
+            // LSP definition not available for this context
             return null;
           }
         },
@@ -341,8 +341,8 @@ export class LspBridge {
               uri: this.monacoInstance!.Uri.parse(loc.uri),
               range: lspToMonacoRange(loc.range),
             }));
-          } catch (error) {
-            console.error('References error:', error);
+          } catch {
+            // LSP references not available for this context
             return null;
           }
         },
@@ -382,8 +382,8 @@ export class LspBridge {
               },
               dispose: () => {},
             };
-          } catch (error) {
-            console.error('Signature help error:', error);
+          } catch {
+            // LSP signature help not available for this context
             return null;
           }
         },
@@ -407,8 +407,8 @@ export class LspBridge {
             // Convert LSP WorkspaceEdit to Monaco WorkspaceEdit
             // This is a simplified version
             return result as languages.WorkspaceEdit;
-          } catch (error) {
-            console.error('Rename error:', error);
+          } catch {
+            // LSP rename not available for this context
             return null;
           }
         },

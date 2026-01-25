@@ -12,8 +12,10 @@ from typing import Any
 
 import socketio
 import structlog
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, Response
 from slowapi import _rate_limit_exceeded_handler as _slowapi_handler
 from slowapi.errors import RateLimitExceeded
@@ -29,6 +31,7 @@ from src.exceptions import (
     MigrationExecutionError,
     MigrationFileNotFoundError,
 )
+from src.middleware.admin import require_admin
 from src.middleware.auth import AuthMiddleware
 from src.middleware.csrf import CSRFMiddleware
 from src.middleware.logging_filter import configure_logging_filter
@@ -55,8 +58,10 @@ from src.routes import (
     gemini_cli,
     git,
     github,
+    health_checks,
     hooks,
     knowledge,
+    llm_bridge,
     llm_providers,
     local_pods,
     lsp,
@@ -103,7 +108,9 @@ from src.routes.billing import (
     reset_expired_quotas,
     update_expiring_soon_credits,
 )
+from src.services.local_pod_usage_tracker import local_pod_usage_tracker
 from src.services.pricing import refresh_pricing_cache
+from src.services.settings_service import ensure_settings_cached
 from src.terminal.manager import terminal_manager
 from src.websocket.hub import cleanup_session_sync, init_session_sync, sio
 
@@ -201,31 +208,92 @@ def create_monitored_task(coro: Any, name: str) -> asyncio.Task[None]:
     return task
 
 
+def _report_background_error(
+    task_name: str,
+    message: str,
+    exc: Exception | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Report background task errors to error tracking (Sentry) if configured.
+
+    MEDIUM FIX: Ensures background task failures are visible in error tracking
+    rather than just being logged and potentially lost.
+
+    Args:
+        task_name: Name of the background task that failed
+        message: Error message
+        exc: Optional exception object
+        extra: Optional extra context data
+    """
+    try:
+        import sentry_sdk
+
+        if sentry_sdk.is_initialized():
+            with sentry_sdk.push_scope() as scope:
+                scope.set_tag("background_task", task_name)
+                scope.set_context(
+                    "task_info",
+                    {
+                        "task_name": task_name,
+                        "message": message,
+                        **(extra or {}),
+                    },
+                )
+                if exc:
+                    sentry_sdk.capture_exception(exc)
+                else:
+                    sentry_sdk.capture_message(f"Background task error: {task_name} - {message}")
+    except ImportError:
+        # Sentry not installed, just log
+        pass
+    except Exception as e:
+        logger.warning("Failed to report error to Sentry", error=str(e))
+
+
 async def quota_reset_background_task() -> None:
     """Background task to periodically reset expired quotas.
 
     Runs every 5 minutes to check for quotas that need to be reset
     based on their reset_at timestamp.
+
+    RELIABILITY: Uses asyncio.wait_for() timeout to prevent connection pool
+    exhaustion from hung database operations.
     """
     while True:
         try:
-            await asyncio.sleep(300)  # Check every 5 minutes
+            await asyncio.sleep(settings.BG_TASK_QUOTA_RESET_INTERVAL)
 
             async for db in get_db():
                 try:
-                    reset_count = await reset_expired_quotas(db)
+                    # CRITICAL FIX: Add timeout to prevent pool exhaustion
+                    reset_count = await asyncio.wait_for(
+                        reset_expired_quotas(db),
+                        timeout=settings.BG_TASK_DB_TIMEOUT,
+                    )
                     if reset_count > 0:
-                        await db.commit()
+                        await asyncio.wait_for(
+                            db.commit(),
+                            timeout=settings.BG_TASK_DB_TIMEOUT,
+                        )
                         logger.info("Reset expired quotas", count=reset_count)
+                except TimeoutError:
+                    await db.rollback()
+                    logger.exception("Quota reset timed out - possible DB connection issue")
+                    # MEDIUM FIX: Report to error tracking for alerting
+                    _report_background_error("quota_reset", "Database operation timed out")
                 except Exception as e:
                     await db.rollback()
                     logger.exception("Failed to reset quotas", error=str(e))
+                    # MEDIUM FIX: Report to error tracking for alerting
+                    _report_background_error("quota_reset", str(e), exc=e)
 
         except asyncio.CancelledError:
             logger.info("Quota reset task cancelled")
             break
         except Exception as e:
             logger.exception("Error in quota reset task", error=str(e))
+            # MEDIUM FIX: Report to error tracking for alerting
+            _report_background_error("quota_reset", str(e), exc=e)
             # Continue running despite errors
             await asyncio.sleep(60)  # Wait a bit before retrying
 
@@ -240,52 +308,91 @@ async def billing_maintenance_background_task() -> None:
     - Update expiring_soon_cents for credit balances
     - Process subscriptions that need to be canceled at period end
     - Handle trials that have ended
+
+    RELIABILITY: Uses asyncio.wait_for() timeout to prevent connection pool
+    exhaustion from hung database operations.
     """
     while True:
         try:
-            await asyncio.sleep(300)  # Run every 5 minutes for more responsive renewals
+            await asyncio.sleep(settings.BG_TASK_BILLING_INTERVAL)
 
             async for db in get_db():
                 try:
                     # STEP 1: Renew non-Stripe subscriptions first
                     # This extends period_end for Free plans and sponsored subscriptions
-                    renewed_count = await renew_subscription_periods(db)
+                    renewed_count = await asyncio.wait_for(
+                        renew_subscription_periods(db),
+                        timeout=settings.BG_TASK_DB_TIMEOUT,
+                    )
                     if renewed_count > 0:
                         logger.info("Renewed subscription periods", count=renewed_count)
 
                     # STEP 2: Grant monthly credits for new billing periods
                     # This resets quotas and grants included allowances
-                    credits_granted = await grant_monthly_credits(db)
+                    credits_granted = await asyncio.wait_for(
+                        grant_monthly_credits(db),
+                        timeout=settings.BG_TASK_DB_TIMEOUT,
+                    )
                     if credits_granted > 0:
                         logger.info("Granted monthly credits", count=credits_granted)
 
                     # STEP 3: Process cancellations for subscriptions marked cancel_at_period_end
-                    canceled, trial_ended = await process_subscription_period_ends(db)
+                    canceled, trial_ended = await asyncio.wait_for(
+                        process_subscription_period_ends(db),
+                        timeout=settings.BG_TASK_DB_TIMEOUT,
+                    )
                     if canceled > 0:
                         logger.info("Canceled subscriptions at period end", count=canceled)
                     if trial_ended > 0:
                         logger.info("Processed ended trials", count=trial_ended)
 
                     # STEP 4: Expire promotional/bonus credits that have passed expiration
-                    expired_count = await expire_credits(db)
+                    expired_count = await asyncio.wait_for(
+                        expire_credits(db),
+                        timeout=settings.BG_TASK_DB_TIMEOUT,
+                    )
                     if expired_count > 0:
                         logger.info("Expired credits", count=expired_count)
 
                     # STEP 5: Update expiring soon counts for user notifications
-                    expiring_updated = await update_expiring_soon_credits(db)
+                    expiring_updated = await asyncio.wait_for(
+                        update_expiring_soon_credits(db),
+                        timeout=settings.BG_TASK_DB_TIMEOUT,
+                    )
                     if expiring_updated > 0:
                         logger.info("Updated expiring soon balances", count=expiring_updated)
 
-                    await db.commit()
+                    # CRITICAL FIX: Commit with timeout and verify success
+                    try:
+                        await asyncio.wait_for(
+                            db.commit(),
+                            timeout=settings.BG_TASK_DB_TIMEOUT,
+                        )
+                    except TimeoutError:
+                        logger.exception(
+                            "Billing commit timed out - transaction may be inconsistent"
+                        )
+                        await db.rollback()
+                        raise
+
+                except TimeoutError:
+                    await db.rollback()
+                    logger.exception("Billing maintenance timed out - possible DB connection issue")
+                    # MEDIUM FIX: Report to error tracking for alerting
+                    _report_background_error("billing_maintenance", "Database operation timed out")
                 except Exception as e:
                     await db.rollback()
                     logger.exception("Failed in billing maintenance", error=str(e))
+                    # MEDIUM FIX: Report to error tracking for alerting
+                    _report_background_error("billing_maintenance", str(e), exc=e)
 
         except asyncio.CancelledError:
             logger.info("Billing maintenance task cancelled")
             break
         except Exception as e:
             logger.exception("Error in billing maintenance task", error=str(e))
+            # MEDIUM FIX: Report to error tracking for alerting
+            _report_background_error("billing_maintenance", str(e), exc=e)
             await asyncio.sleep(60)  # Wait 1 minute before retrying
 
 
@@ -444,7 +551,26 @@ async def standby_background_task() -> None:
                     result = await db.execute(query)
                     rows = result.all()
 
+                    # Group sessions by workspace to avoid duplicate processing
+                    # A workspace may have multiple sessions, but we only want to
+                    # stop it once and emit one notification per session
+                    workspace_sessions: dict[
+                        str, list[tuple[Workspace, SessionModel, UserConfig | None]]
+                    ] = {}
                     for workspace, session, user_config in rows:
+                        ws_id = str(workspace.id)
+                        if ws_id not in workspace_sessions:
+                            workspace_sessions[ws_id] = []
+                        workspace_sessions[ws_id].append((workspace, session, user_config))
+
+                    # Track workspaces we've already processed
+                    processed_workspaces: set[str] = set()
+
+                    for ws_id, sessions_data in workspace_sessions.items():
+                        # Use the first session's data for timeout calculation
+                        # (all sessions share the same workspace)
+                        workspace, session, user_config = sessions_data[0]
+
                         # Determine effective timeout
                         timeout_minutes = None
 
@@ -464,11 +590,13 @@ async def standby_background_task() -> None:
                             continue
 
                         # Check if workspace has been idle long enough
-                        # Use the most recent activity from either workspace or session
-                        # Session.updated_at is updated on any DB change (messages, etc.)
+                        # Use the most recent activity from workspace and ALL sessions
                         workspace_activity = workspace.last_activity or workspace.created_at
-                        session_activity = session.updated_at or session.created_at
-                        last_activity = max(workspace_activity, session_activity)
+                        last_activity = workspace_activity
+                        for _, sess, _ in sessions_data:
+                            session_activity = sess.updated_at or sess.created_at
+                            last_activity = max(last_activity, session_activity)
+
                         idle_duration = now - last_activity
 
                         if idle_duration > timedelta(minutes=timeout_minutes):
@@ -476,7 +604,7 @@ async def standby_background_task() -> None:
                                 from src.exceptions import ComputeServiceHTTPError
                                 from src.websocket.hub import emit_to_session
 
-                                # Stop the container
+                                # Stop the container (only once per workspace)
                                 try:
                                     await compute_client.stop_workspace(
                                         workspace.id, session.owner_id
@@ -494,11 +622,12 @@ async def standby_background_task() -> None:
                                     else:
                                         raise compute_error  # noqa: TRY201
 
-                                # Update database
+                                # Update database (only once per workspace)
                                 workspace.status = "standby"
                                 workspace.standby_at = now
 
-                                # Notify connected clients about the status change
+                                # Notify the PRIMARY session only (avoid duplicate toasts)
+                                # Other sessions will get status on next API call or reconnect
                                 await emit_to_session(
                                     str(session.id),
                                     "workspace_status",
@@ -510,10 +639,12 @@ async def standby_background_task() -> None:
                                 )
 
                                 standby_count += 1
+                                processed_workspaces.add(ws_id)
                                 logger.info(
                                     "Workspace moved to standby due to inactivity",
                                     workspace_id=workspace.id,
                                     session_id=session.id,
+                                    session_count=len(sessions_data),
                                     idle_minutes=int(idle_duration.total_seconds() / 60),
                                 )
 
@@ -984,10 +1115,14 @@ async def standby_cleanup_background_task() -> None:
 
                         if standby_duration > timedelta(hours=max_hours):
                             try:
-                                # Delete workspace from compute service
-                                await compute_client.delete_workspace(
-                                    workspace.id,
-                                    session.owner_id,
+                                # Delete workspace from compute service with timeout
+                                # MEDIUM FIX: Add timeout to prevent cleanup task from hanging
+                                await asyncio.wait_for(
+                                    compute_client.delete_workspace(
+                                        workspace.id,
+                                        session.owner_id,
+                                    ),
+                                    timeout=settings.BG_TASK_WORKSPACE_DELETE_TIMEOUT,
                                 )
 
                                 # Archive the session instead of deleting
@@ -1009,6 +1144,12 @@ async def standby_cleanup_background_task() -> None:
                                     standby_hours=int(standby_duration.total_seconds() / 3600),
                                 )
 
+                            except TimeoutError:
+                                logger.warning(
+                                    "Standby workspace deletion timed out",
+                                    workspace_id=workspace.id,
+                                    timeout=settings.BG_TASK_WORKSPACE_DELETE_TIMEOUT,
+                                )
                             except Exception as cleanup_error:
                                 logger.warning(
                                     "Failed to cleanup standby workspace",
@@ -1099,9 +1240,14 @@ def run_migrations() -> None:
         raise AlembicConfigNotFoundError(str(alembic_ini))
 
     try:
-        logger.info("Running database migrations...", cwd=str(api_dir))
-        result = subprocess.run(
-            ["alembic", "upgrade", "head"],
+        # MEDIUM FIX: Use absolute path from shutil.which to prevent path manipulation
+        alembic_path = shutil.which("alembic")
+        if not alembic_path:
+            raise AlembicNotFoundError
+
+        logger.info("Running database migrations...", cwd=str(api_dir), alembic_path=alembic_path)
+        result = subprocess.run(  # noqa: S603
+            [alembic_path, "upgrade", "head"],
             cwd=str(api_dir),
             capture_output=True,
             text=True,
@@ -1338,6 +1484,13 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         break
     logger.info("Model pricing cache initialized")
 
+    # Initialize platform settings cache from database
+    # This must happen after seeding so settings exist
+    async for db in get_db():
+        await ensure_settings_cached(db)
+        break
+    logger.info("Platform settings cache initialized")
+
     # Seed development admin user (only in development mode)
     await seed_admin()
 
@@ -1395,6 +1548,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     # Configure sensitive data logging filter (redacts passwords, tokens, API keys from logs)
     configure_logging_filter()
     logger.info("Sensitive data logging filter configured")
+
+    # Start local pod usage tracker (tracks compute usage for workspaces on local pods)
+    await local_pod_usage_tracker.start()
+    logger.info("Local pod usage tracker started")
 
     yield
 
@@ -1469,6 +1626,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             await _tasks.credit_enforcement
         logger.info("Credit enforcement background task stopped")
 
+    # Stop local pod usage tracker
+    await local_pod_usage_tracker.stop()
+    logger.info("Local pod usage tracker stopped")
+
     await cleanup_session_sync()
     await close_database()
     await close_redis_client()  # Close rate limit Redis connection
@@ -1487,7 +1648,7 @@ OPENAPI_TAGS = [
     {"name": "admin", "description": "Administrative operations"},
 ]
 
-# Create FastAPI app with comprehensive OpenAPI documentation
+# Create FastAPI app - API docs are ONLY available via protected admin routes
 app = FastAPI(
     title="Podex API",
     description="""
@@ -1524,9 +1685,10 @@ API requests are rate-limited. Current limits:
 Real-time updates are available via Socket.IO at the `/socket.io` endpoint.
 """,
     version=settings.VERSION,
-    docs_url="/api/docs",
-    redoc_url="/api/redoc",
-    openapi_url="/api/openapi.json",
+    # Disable public docs - only available via /admin/api/docs (admin-protected)
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
     openapi_tags=OPENAPI_TAGS,
     terms_of_service="https://podex.dev/terms",
     contact={
@@ -1540,6 +1702,49 @@ Real-time updates are available via Socket.IO at the `/socket.io` endpoint.
     },
     lifespan=lifespan,
 )
+
+# ==========================================
+# Protected API Documentation (Admin Only)
+# ==========================================
+# API docs are only accessible to admins and super_admins via these routes.
+# Public docs are disabled for security.
+
+
+@app.get("/admin/api/openapi.json", include_in_schema=False)
+async def get_protected_openapi(
+    _: None = Depends(require_admin),  # type: ignore[type-arg]
+) -> dict[str, Any]:
+    """Get OpenAPI schema (admin only)."""
+    return get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+        tags=app.openapi_tags,
+    )
+
+
+@app.get("/admin/api/docs", include_in_schema=False)
+async def get_protected_docs(
+    _: None = Depends(require_admin),  # type: ignore[type-arg]
+) -> Response:
+    """Get Swagger UI (admin only)."""
+    return get_swagger_ui_html(
+        openapi_url="/admin/api/openapi.json",
+        title=f"{app.title} - API Docs",
+    )
+
+
+@app.get("/admin/api/redoc", include_in_schema=False)
+async def get_protected_redoc(
+    _: None = Depends(require_admin),  # type: ignore[type-arg]
+) -> Response:
+    """Get ReDoc (admin only)."""
+    return get_redoc_html(
+        openapi_url="/admin/api/openapi.json",
+        title=f"{app.title} - API Reference",
+    )
+
 
 # Configure slowapi rate limiter
 app.state.limiter = limiter
@@ -1604,6 +1809,7 @@ api_v1.include_router(skill_repositories.router, tags=["skill-repositories"])
 api_v1.include_router(marketplace.router, tags=["marketplace"])
 api_v1.include_router(llm_providers.router, tags=["llm-providers"])
 api_v1.include_router(local_pods.router)  # Already has prefix
+api_v1.include_router(llm_bridge.router, tags=["llm-bridge"])
 api_v1.include_router(voice.router, prefix="/voice", tags=["voice"])
 api_v1.include_router(uploads.router, prefix="/sessions", tags=["uploads"])
 api_v1.include_router(billing.router, tags=["billing"])
@@ -1617,6 +1823,7 @@ api_v1.include_router(platform_settings.router, tags=["platform"])
 api_v1.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 api_v1.include_router(productivity.router, tags=["productivity"])
 api_v1.include_router(project_health.router, tags=["project-health"])
+api_v1.include_router(health_checks.router, tags=["health-checks"])
 api_v1.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
 api_v1.include_router(organizations.router, prefix="/organizations", tags=["organizations"])
 api_v1.include_router(push.router, prefix="/push", tags=["push"])

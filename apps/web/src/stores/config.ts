@@ -19,6 +19,22 @@ import {
   type TimeoutOption,
   type VoiceLanguage,
   type AgentModeConfig,
+  type SidebarLayoutDefaults,
+  type GridConfigDefaults,
+  type CardDimensions,
+  type ContextCompactionDefaults,
+  type ContextUsageDefaults,
+  type AICompletionConfig,
+  type CodeGeneratorConfig,
+  type BugDetectorConfig,
+  type EditorAIConfig,
+  type TimeRangeOption,
+  type StorageQuotaDefaults,
+  type EditorDefaults,
+  type VoiceDefaults,
+  type FeatureFlags,
+  type PlatformLimits,
+  type PreviewPortConfig,
 } from '@/lib/api';
 import { getAgentRoleConfigs, type AgentRoleConfig } from '@/lib/api';
 import { useAuthStore } from '@/stores/auth';
@@ -51,6 +67,25 @@ interface ConfigState {
   getProvider: (slug: string) => LLMProvider | undefined;
   getAgentRole: (role: string) => AgentRoleConfig | undefined;
   getSetting: <T = unknown>(key: string) => T | null;
+
+  // New selectors for additional settings
+  getSidebarLayoutDefaults: () => SidebarLayoutDefaults | null;
+  getGridConfigDefaults: () => GridConfigDefaults | null;
+  getCardDimensions: () => CardDimensions | null;
+  getContextCompactionDefaults: () => ContextCompactionDefaults | null;
+  getContextUsageDefaults: () => ContextUsageDefaults | null;
+  getDefaultDotfiles: () => string[] | null;
+  getAICompletionConfig: () => AICompletionConfig | null;
+  getCodeGeneratorConfig: () => CodeGeneratorConfig | null;
+  getBugDetectorConfig: () => BugDetectorConfig | null;
+  getEditorAIConfig: () => EditorAIConfig | null;
+  getTimeRangeOptions: () => TimeRangeOption[] | null;
+  getStorageQuotaDefaults: () => StorageQuotaDefaults | null;
+  getEditorDefaults: () => EditorDefaults | null;
+  getVoiceDefaults: () => VoiceDefaults | null;
+  getFeatureFlags: () => FeatureFlags | null;
+  getPlatformLimits: () => PlatformLimits | null;
+  getDefaultPreviewPorts: () => PreviewPortConfig[] | null;
 
   // Actions
   initialize: () => Promise<void>;
@@ -140,6 +175,143 @@ export const useConfigStore = create<ConfigState>()(
       getSetting: <T = unknown>(key: string): T | null => {
         const value = get().settingsMap[key];
         if (value !== undefined) return value as T;
+        return null;
+      },
+
+      // New selectors for additional settings
+      getSidebarLayoutDefaults: () => {
+        const setting = get().settingsMap['sidebar_layout_defaults'];
+        if (setting && typeof setting === 'object') {
+          return setting as SidebarLayoutDefaults;
+        }
+        return null;
+      },
+
+      getGridConfigDefaults: () => {
+        const setting = get().settingsMap['grid_config_defaults'];
+        if (setting && typeof setting === 'object') {
+          return setting as GridConfigDefaults;
+        }
+        return null;
+      },
+
+      getCardDimensions: () => {
+        const setting = get().settingsMap['card_dimensions'];
+        if (setting && typeof setting === 'object') {
+          return setting as CardDimensions;
+        }
+        return null;
+      },
+
+      getContextCompactionDefaults: () => {
+        const setting = get().settingsMap['context_compaction_defaults'];
+        if (setting && typeof setting === 'object') {
+          return setting as ContextCompactionDefaults;
+        }
+        return null;
+      },
+
+      getContextUsageDefaults: () => {
+        const setting = get().settingsMap['context_usage_defaults'];
+        if (setting && typeof setting === 'object') {
+          return setting as ContextUsageDefaults;
+        }
+        return null;
+      },
+
+      getDefaultDotfiles: () => {
+        const setting = get().settingsMap['default_dotfiles'];
+        if (Array.isArray(setting)) {
+          return setting as string[];
+        }
+        return null;
+      },
+
+      getAICompletionConfig: () => {
+        const setting = get().settingsMap['ai_completion_config'];
+        if (setting && typeof setting === 'object') {
+          return setting as AICompletionConfig;
+        }
+        return null;
+      },
+
+      getCodeGeneratorConfig: () => {
+        const setting = get().settingsMap['code_generator_config'];
+        if (setting && typeof setting === 'object') {
+          return setting as CodeGeneratorConfig;
+        }
+        return null;
+      },
+
+      getBugDetectorConfig: () => {
+        const setting = get().settingsMap['bug_detector_config'];
+        if (setting && typeof setting === 'object') {
+          return setting as BugDetectorConfig;
+        }
+        return null;
+      },
+
+      getEditorAIConfig: () => {
+        const setting = get().settingsMap['editor_ai_config'];
+        if (setting && typeof setting === 'object') {
+          return setting as EditorAIConfig;
+        }
+        return null;
+      },
+
+      getTimeRangeOptions: () => {
+        const setting = get().settingsMap['time_range_options'];
+        if (Array.isArray(setting)) {
+          return setting as TimeRangeOption[];
+        }
+        return null;
+      },
+
+      getStorageQuotaDefaults: () => {
+        const setting = get().settingsMap['storage_quota_defaults'];
+        if (setting && typeof setting === 'object') {
+          return setting as StorageQuotaDefaults;
+        }
+        return null;
+      },
+
+      getEditorDefaults: () => {
+        const setting = get().settingsMap['editor_defaults'];
+        if (setting && typeof setting === 'object') {
+          return setting as EditorDefaults;
+        }
+        return null;
+      },
+
+      getVoiceDefaults: () => {
+        const setting = get().settingsMap['voice_defaults'];
+        if (setting && typeof setting === 'object') {
+          return setting as VoiceDefaults;
+        }
+        return null;
+      },
+
+      getFeatureFlags: () => {
+        const setting = get().settingsMap['feature_flags'];
+        if (setting && typeof setting === 'object') {
+          return setting as FeatureFlags;
+        }
+        return null;
+      },
+
+      getPlatformLimits: () => {
+        const setting = get().settingsMap['platform_limits'];
+        if (setting && typeof setting === 'object') {
+          return setting as PlatformLimits;
+        }
+        return null;
+      },
+
+      getDefaultPreviewPorts: () => {
+        const setting = get().settingsMap['default_preview_ports'];
+        if (Array.isArray(setting)) {
+          return setting as PreviewPortConfig[];
+        }
         return null;
       },
 

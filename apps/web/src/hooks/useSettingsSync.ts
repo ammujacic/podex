@@ -23,12 +23,32 @@ export function useSettingsSync() {
     // Only load settings if user is authenticated
     if (!isAuthenticated) return;
 
-    // Load all settings from server in parallel
-    Promise.all([
-      loadKeybindings().catch((err) => console.error('Failed to load keybindings:', err)),
-      loadEditorSettings().catch((err) => console.error('Failed to load editor settings:', err)),
-      loadVoiceSettings().catch((err) => console.error('Failed to load voice settings:', err)),
-      loadUIPreferences().catch((err) => console.error('Failed to load UI preferences:', err)),
-    ]);
+    // Load all settings from server in parallel (only if functions exist)
+    const loadPromises: Promise<void>[] = [];
+
+    if (typeof loadKeybindings === 'function') {
+      loadPromises.push(
+        loadKeybindings().catch((err) => console.error('Failed to load keybindings:', err))
+      );
+    }
+    if (typeof loadEditorSettings === 'function') {
+      loadPromises.push(
+        loadEditorSettings().catch((err) => console.error('Failed to load editor settings:', err))
+      );
+    }
+    if (typeof loadVoiceSettings === 'function') {
+      loadPromises.push(
+        loadVoiceSettings().catch((err) => console.error('Failed to load voice settings:', err))
+      );
+    }
+    if (typeof loadUIPreferences === 'function') {
+      loadPromises.push(
+        loadUIPreferences().catch((err) => console.error('Failed to load UI preferences:', err))
+      );
+    }
+
+    if (loadPromises.length > 0) {
+      Promise.all(loadPromises);
+    }
   }, [isAuthenticated, loadKeybindings, loadEditorSettings, loadVoiceSettings, loadUIPreferences]);
 }

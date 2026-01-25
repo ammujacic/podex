@@ -1,5 +1,6 @@
 """Podex Shared - Common utilities and models for Podex services."""
 
+from podex_shared.auth.service_auth import ServiceAuthClient, get_service_auth_headers
 from podex_shared.gcp.storage import GCSClient, WorkspaceGCSClient
 from podex_shared.models import (
     AgentLayout,
@@ -83,6 +84,7 @@ __all__ = [
     "PreviewInfo",
     "RedisClient",
     "SentryConfig",
+    "ServiceAuthClient",
     "SessionLayout",
     "SessionState",
     "SessionViewer",
@@ -119,6 +121,7 @@ __all__ = [
     "generate_tts_summary",
     "get_command_description",
     "get_redis_client",
+    "get_service_auth_headers",
     "get_usage_tracker",
     "incr",
     "init_sentry",

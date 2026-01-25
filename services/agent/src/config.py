@@ -149,7 +149,101 @@ _FALLBACK_THINKING_CAPABLE_MODELS = frozenset(
     ]
 )
 
-# Default thinking budget (tokens) when enabled
+# Redis cache key for platform settings (same as API service)
+PLATFORM_SETTINGS_CACHE_KEY = "podex:cache:platform_settings:all"
+
+
+class SettingsNotAvailableError(Exception):
+    """Raised when platform settings are not available in Redis cache."""
+
+    pass
+
+
+async def get_settings_from_cache() -> dict[str, Any]:
+    """Get all platform settings from Redis cache.
+
+    Returns:
+        Dictionary of settings
+
+    Raises:
+        SettingsNotAvailableError: If settings are not available in cache
+    """
+    try:
+        from podex_shared.redis_client import get_redis_client
+
+        settings = get_settings()
+        redis_client = get_redis_client(settings.REDIS_URL)
+        await redis_client.connect()
+        cached = await redis_client.get_json(PLATFORM_SETTINGS_CACHE_KEY)
+        if cached and isinstance(cached, dict):
+            return cached
+    except Exception as e:
+        raise SettingsNotAvailableError(f"Failed to get settings from Redis cache: {e}") from e
+
+    raise SettingsNotAvailableError("Platform settings not found in Redis cache")
+
+
+async def get_setting_from_cache(key: str) -> Any:
+    """Get a single setting from Redis cache.
+
+    Args:
+        key: The setting key to look up
+
+    Returns:
+        Setting value
+
+    Raises:
+        SettingsNotAvailableError: If settings are not available or key not found
+    """
+    settings = await get_settings_from_cache()
+    if key not in settings:
+        raise SettingsNotAvailableError(f"Setting '{key}' not found in platform settings cache")
+    return settings[key]
+
+
+async def get_thinking_budget_config() -> dict[str, int]:
+    """Get thinking budget configuration from Redis cache.
+
+    Returns:
+        Dictionary with default_budget, min_budget, max_budget
+
+    Raises:
+        SettingsNotAvailableError: If settings are not available
+    """
+    config = await get_setting_from_cache("thinking_budget_config")
+    if not config or not isinstance(config, dict):
+        raise SettingsNotAvailableError("thinking_budget_config not found or invalid")
+
+    return {
+        "default_budget": config["defaultBudget"],
+        "min_budget": config["minBudget"],
+        "max_budget": config["maxBudget"],
+    }
+
+
+async def get_context_limits() -> dict[str, int]:
+    """Get context limits from Redis cache.
+
+    Returns:
+        Dictionary with max_tokens, output_reservation, summarization_threshold, token_threshold
+
+    Raises:
+        SettingsNotAvailableError: If settings are not available
+    """
+    config = await get_setting_from_cache("context_limits")
+    if not config or not isinstance(config, dict):
+        raise SettingsNotAvailableError("context_limits not found or invalid")
+
+    return {
+        "max_tokens": config.get("maxContextTokens", 100_000),
+        "output_reservation": config.get("outputReservation", 4096),
+        "summarization_threshold": config.get("summarizationThreshold", 80_000),
+        "token_threshold": config.get("tokenThreshold", 50_000),
+    }
+
+
+# Default thinking budget values (these are used by synchronous code
+# that can't call async functions). Should match database seed values.
 DEFAULT_THINKING_BUDGET = 8000
 MIN_THINKING_BUDGET = 1024
 MAX_THINKING_BUDGET = 32000

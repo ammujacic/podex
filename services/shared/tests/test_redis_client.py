@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,6 +12,9 @@ from podex_shared.redis_client import (
     clear_redis_clients,
     get_redis_client,
 )
+
+# Use same REDIS_URL as conftest.py
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
 
 class TestRedisClientInit:
@@ -69,14 +73,14 @@ class TestRedisClientConnect:
     async def test_disconnect_cleans_up(self) -> None:
         """Test that disconnect cleans up resources."""
         mock_redis_client = MagicMock()
-        mock_redis_client.close = AsyncMock()
+        mock_redis_client.aclose = AsyncMock()
 
         client = RedisClient("redis://localhost:6379")
         client._client = mock_redis_client
 
         await client.disconnect()
 
-        mock_redis_client.close.assert_called_once()
+        mock_redis_client.aclose.assert_called_once()
         assert client._client is None
 
     @pytest.mark.asyncio
@@ -85,7 +89,7 @@ class TestRedisClientConnect:
         client = RedisClient("redis://localhost:6379")
         client._running = True
         client._client = MagicMock()
-        client._client.close = AsyncMock()
+        client._client.aclose = AsyncMock()
 
         # Create a mock task
         async def dummy_task() -> None:
@@ -230,7 +234,7 @@ class TestRedisClientJSON:
     async def test_get_json_list(self) -> None:
         """Test get_json returns parsed list."""
         mock_redis_client = MagicMock()
-        mock_redis_client.get = AsyncMock(return_value='[1, 2, 3]')
+        mock_redis_client.get = AsyncMock(return_value="[1, 2, 3]")
 
         client = RedisClient("redis://localhost:6379")
         client._client = mock_redis_client
@@ -411,3 +415,240 @@ class TestRedisClientSingleton:
 
         # After clearing, should get a new instance
         assert client1 is not client2
+
+
+@pytest.mark.integration
+class TestRedisClientSubscribeIntegration:
+    """Integration tests for pub/sub functionality with real Redis."""
+
+    @pytest.mark.asyncio
+    async def test_subscribe_and_receive_messages(
+        self,
+        real_redis_client: "redis.Redis",  # type: ignore[name-defined]
+    ) -> None:
+        """Test subscribing to a channel and receiving messages."""
+        client = RedisClient(REDIS_URL)
+        await client.connect()
+
+        messages = []
+
+        async def handler(message: dict) -> None:  # type: ignore[type-arg]
+            messages.append(message)
+
+        try:
+            # Subscribe to test channel
+            await client.subscribe("test:channel", handler)
+
+            # Give subscription time to establish
+            await asyncio.sleep(0.1)
+
+            # Publish messages from real Redis client
+            await real_redis_client.publish("test:channel", json.dumps({"data": "message1"}))
+            await real_redis_client.publish("test:channel", json.dumps({"data": "message2"}))
+
+            # Wait for messages to be processed
+            await asyncio.sleep(0.2)
+
+            # Check messages received
+            assert len(messages) == 2
+            assert messages[0]["data"] == "message1"
+            assert messages[1]["data"] == "message2"
+
+        finally:
+            await client.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_subscribe_multiple_channels(
+        self,
+        real_redis_client: "redis.Redis",  # type: ignore[name-defined]
+    ) -> None:
+        """Test subscribing to multiple channels."""
+        client1 = RedisClient(REDIS_URL)
+        client2 = RedisClient(REDIS_URL)
+        await client1.connect()
+        await client2.connect()
+
+        channel1_messages = []
+        channel2_messages = []
+
+        async def handler1(message: dict) -> None:  # type: ignore[type-arg]
+            channel1_messages.append(message)
+
+        async def handler2(message: dict) -> None:  # type: ignore[type-arg]
+            channel2_messages.append(message)
+
+        try:
+            # Subscribe to different channels with different clients
+            await client1.subscribe("test:channel1", handler1)
+            await client2.subscribe("test:channel2", handler2)
+
+            await asyncio.sleep(0.1)
+
+            # Publish to different channels
+            await real_redis_client.publish("test:channel1", json.dumps({"ch": 1}))
+            await real_redis_client.publish("test:channel2", json.dumps({"ch": 2}))
+
+            await asyncio.sleep(0.2)
+
+            # Each handler should receive its channel's messages
+            assert len(channel1_messages) == 1
+            assert channel1_messages[0]["ch"] == 1
+
+            assert len(channel2_messages) == 1
+            assert channel2_messages[0]["ch"] == 2
+
+        finally:
+            await client1.disconnect()
+            await client2.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_unsubscribe_stops_receiving(
+        self,
+        real_redis_client: "redis.Redis",  # type: ignore[name-defined]
+    ) -> None:
+        """Test unsubscribing stops message reception."""
+        client = RedisClient(REDIS_URL)
+        await client.connect()
+
+        messages = []
+
+        async def handler(message: dict) -> None:  # type: ignore[type-arg]
+            messages.append(message)
+
+        try:
+            # Subscribe
+            await client.subscribe("test:unsub", handler)
+            await asyncio.sleep(0.1)
+
+            # Send first message
+            await real_redis_client.publish("test:unsub", json.dumps({"msg": 1}))
+            await asyncio.sleep(0.1)
+
+            # Unsubscribe
+            await client.unsubscribe("test:unsub")
+            await asyncio.sleep(0.1)
+
+            # Send second message (should not be received)
+            await real_redis_client.publish("test:unsub", json.dumps({"msg": 2}))
+            await asyncio.sleep(0.1)
+
+            # Only first message should be received
+            assert len(messages) == 1
+            assert messages[0]["msg"] == 1
+
+        finally:
+            await client.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_publish_and_subscribe_integration(
+        self,
+        real_redis_client: "redis.Redis",  # type: ignore[name-defined]
+    ) -> None:
+        """Test publishing and subscribing work together."""
+        client1 = RedisClient(REDIS_URL)
+        client2 = RedisClient(REDIS_URL)
+
+        await client1.connect()
+        await client2.connect()
+
+        messages = []
+
+        async def handler(message: dict) -> None:  # type: ignore[type-arg]
+            messages.append(message)
+
+        try:
+            # client2 subscribes
+            await client2.subscribe("test:pubsub", handler)
+            await asyncio.sleep(0.1)
+
+            # client1 publishes
+            await client1.publish("test:pubsub", {"from": "client1"})
+            await asyncio.sleep(0.1)
+
+            # client2 should receive
+            assert len(messages) == 1
+            assert messages[0]["from"] == "client1"
+
+        finally:
+            await client1.disconnect()
+            await client2.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_subscribe_with_invalid_json_gracefully_handled(
+        self,
+        real_redis_client: "redis.Redis",  # type: ignore[name-defined]
+    ) -> None:
+        """Test that invalid JSON messages don't crash the subscriber."""
+        client = RedisClient(REDIS_URL)
+        await client.connect()
+
+        messages = []
+
+        async def handler(message: dict) -> None:  # type: ignore[type-arg]
+            messages.append(message)
+
+        try:
+            await client.subscribe("test:invalid", handler)
+            await asyncio.sleep(0.1)
+
+            # Publish valid JSON
+            await real_redis_client.publish("test:invalid", json.dumps({"valid": True}))
+            await asyncio.sleep(0.05)
+
+            # Publish invalid JSON (raw string - should be logged as warning)
+            await real_redis_client.publish("test:invalid", "not-json")
+            await asyncio.sleep(0.05)
+
+            # Publish another valid JSON
+            await real_redis_client.publish("test:invalid", json.dumps({"valid": True}))
+            await asyncio.sleep(0.1)
+
+            # Should receive both valid messages, invalid one is skipped
+            assert len(messages) == 2
+
+        finally:
+            await client.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_after_disconnect(
+        self,
+        real_redis_client: "redis.Redis",  # type: ignore[name-defined]
+    ) -> None:
+        """Test client can reconnect after disconnect."""
+        client = RedisClient(REDIS_URL)
+
+        # First connection
+        await client.connect()
+        messages1 = []
+
+        async def handler1(message: dict) -> None:  # type: ignore[type-arg]
+            messages1.append(message)
+
+        await client.subscribe("test:reconnect", handler1)
+        await asyncio.sleep(0.1)
+
+        await real_redis_client.publish("test:reconnect", json.dumps({"phase": 1}))
+        await asyncio.sleep(0.1)
+
+        assert len(messages1) == 1
+
+        # Disconnect
+        await client.disconnect()
+
+        # Reconnect
+        await client.connect()
+        messages2 = []
+
+        async def handler2(message: dict) -> None:  # type: ignore[type-arg]
+            messages2.append(message)
+
+        await client.subscribe("test:reconnect", handler2)
+        await asyncio.sleep(0.1)
+
+        await real_redis_client.publish("test:reconnect", json.dumps({"phase": 2}))
+        await asyncio.sleep(0.1)
+
+        assert len(messages2) == 1
+        assert messages2[0]["phase"] == 2
+
+        await client.disconnect()

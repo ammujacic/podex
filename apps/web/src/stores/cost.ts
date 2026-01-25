@@ -262,6 +262,9 @@ export function formatCost(cost: number | undefined | null): string {
   if (cost == null || cost === undefined) {
     return '$0.00';
   }
+  if (cost === 0) {
+    return '$0.00';
+  }
   if (cost < 0.01) {
     return `$${cost.toFixed(1)}`;
   }

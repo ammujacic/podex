@@ -529,8 +529,9 @@ class GeminiCliExecutor:
             # Use only specified extensions
             parts.extend(["-e", ",".join(allowed_tools)])
         elif denied_tools:
-            # Gemini doesn't have deny list, use -e none and enable specific ones
-            pass  # TODO: Implement if Gemini adds this feature
+            # Gemini CLI doesn't support deny lists - only allow lists via -e flag
+            # Skipping denied_tools as there's no CLI equivalent
+            pass
 
         # Include additional directories
         if include_directories:

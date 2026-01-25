@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useCallback } from 'react';
+import React, { useRef, useCallback, useEffect } from 'react';
 import { Send, Mic, Paperclip, Loader2, StopCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -37,6 +37,13 @@ export const AgentInputArea = React.memo<AgentInputAreaProps>(function AgentInpu
   isClaudeCodeAgent = false,
 }) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Reset textarea height when value is cleared externally (e.g., after submit)
+  useEffect(() => {
+    if (!value && inputRef.current) {
+      inputRef.current.style.height = 'auto';
+    }
+  }, [value]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {

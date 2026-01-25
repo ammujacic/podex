@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, cast
 
-from google.cloud import texttospeech  # type: ignore[import-untyped]
+from google.cloud import texttospeech  # type: ignore[import-untyped,attr-defined]
 
 logger = logging.getLogger(__name__)
 

@@ -295,6 +295,23 @@ async def heartbeat(
     await compute.heartbeat(workspace_id)
 
 
+@router.get("/{workspace_id}/health")
+async def check_workspace_health(
+    workspace_id: str,
+    user_id: AuthenticatedUser,
+    _auth: InternalAuth,
+    compute: Annotated[ComputeManager, Depends(get_compute_manager)],
+) -> dict[str, bool | str]:
+    """Check if workspace container is healthy and can execute commands."""
+    await verify_workspace_ownership(workspace_id, user_id, compute)
+    is_healthy = await compute.check_workspace_health(workspace_id)
+    workspace = await compute.get_workspace(workspace_id)
+    return {
+        "healthy": is_healthy,
+        "status": workspace.status.value if workspace else "unknown",
+    }
+
+
 @router.post("/{workspace_id}/scale", response_model=WorkspaceScaleResponse)
 async def scale_workspace(
     workspace_id: str,

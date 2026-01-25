@@ -1,6 +1,5 @@
 """Dependency injection for compute service."""
 
-import asyncio
 import secrets
 from typing import Annotated
 
@@ -12,20 +11,54 @@ from src.managers.base import ComputeManager
 from src.managers.docker_manager import DockerComputeManager
 from src.managers.gcp_manager import GCPComputeManager
 from src.storage.workspace_store import WorkspaceStore
-from src.sync.file_sync import FileSync
 
 logger = structlog.get_logger()
 
 
-def validate_internal_api_key(x_internal_api_key: str | None) -> None:
-    """Validate internal service-to-service API key value."""
-    # In development with no key configured, allow requests
+def validate_internal_auth(
+    x_internal_api_key: str | None = None,
+    authorization: str | None = None,
+) -> None:
+    """Validate internal service-to-service authentication.
+
+    Supports two authentication modes:
+    - Production (GCP Cloud Run): GCP ID token via Authorization header
+      The token is already validated by Cloud Run's IAM layer before reaching here.
+      We only check that the header is present.
+    - Development (Docker): API key via X-Internal-API-Key header
+
+    Args:
+        x_internal_api_key: API key header (development mode)
+        authorization: Bearer token header (production mode)
+    """
+    if settings.environment == "production":
+        # In production, Cloud Run validates the ID token via IAM
+        # The request only reaches here if IAM allowed it
+        # We check for the Authorization header to confirm it went through IAM
+        if authorization and authorization.startswith("Bearer "):
+            # Token already validated by Cloud Run IAM - allow request
+            logger.debug("Request authenticated via GCP IAM")
+            return
+
+        # No bearer token - check if API key is present as fallback
+        # This allows gradual migration: some services may still use API keys
+        if (
+            x_internal_api_key
+            and settings.internal_api_key
+            and secrets.compare_digest(x_internal_api_key, settings.internal_api_key)
+        ):
+            logger.debug("Request authenticated via API key (production fallback)")
+            return
+
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid authentication",
+        )
+
+    # Development mode: Use API key authentication
     if not settings.internal_api_key:
-        if settings.environment == "production":
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Internal API key not configured",
-            )
+        # No key configured in development - allow all requests
+        logger.debug("No internal API key configured, allowing request (dev mode)")
         return
 
     if not x_internal_api_key:
@@ -42,15 +75,30 @@ def validate_internal_api_key(x_internal_api_key: str | None) -> None:
         )
 
 
+def verify_internal_auth(
+    x_internal_api_key: Annotated[str | None, Header(alias="X-Internal-API-Key")] = None,
+    authorization: Annotated[str | None, Header()] = None,
+) -> None:
+    """Verify internal service-to-service authentication.
+
+    Supports dual-mode authentication:
+    - Production (GCP): ID token in Authorization header (validated by Cloud Run IAM)
+    - Development (Docker): API key in X-Internal-API-Key header
+    """
+    validate_internal_auth(x_internal_api_key, authorization)
+
+
+# Keep legacy function name for backward compatibility
 def verify_internal_api_key(
     x_internal_api_key: Annotated[str | None, Header(alias="X-Internal-API-Key")] = None,
+    authorization: Annotated[str | None, Header()] = None,
 ) -> None:
     """Verify internal service-to-service API key.
 
-    In production, this ensures only authorized internal services
-    (like the API service) can call compute endpoints.
+    Deprecated: Use verify_internal_auth instead.
+    This function is kept for backward compatibility.
     """
-    validate_internal_api_key(x_internal_api_key)
+    validate_internal_auth(x_internal_api_key, authorization)
 
 
 def get_user_id(
@@ -71,8 +119,8 @@ def get_user_id(
 # Type alias for authenticated user dependency
 AuthenticatedUser = Annotated[str, Depends(get_user_id)]
 
-# Dependency that verifies internal API key
-InternalAuth = Annotated[None, Depends(verify_internal_api_key)]
+# Dependency that verifies internal service auth (supports both API key and IAM)
+InternalAuth = Annotated[None, Depends(verify_internal_auth)]
 
 
 class ComputeManagerSingleton:
@@ -119,37 +167,29 @@ def get_compute_manager() -> ComputeManager:
 async def init_compute_manager() -> None:
     """Initialize the compute manager on startup.
 
-    Raises:
-        RuntimeError: If WorkspaceStore (Redis) or FileSync (GCS) fails to initialize.
-            These are required services and the compute service cannot operate without them.
+    Uses volume mounts for file persistence - no FileSync needed.
     """
-    # Initialize WorkspaceStore first (connects to Redis) - required
+    # Initialize WorkspaceStore (connects to Redis)
     workspace_store = ComputeManagerSingleton.get_workspace_store()
     await workspace_store._get_client()
     logger.info("WorkspaceStore initialized", redis_url=settings.redis_url)
 
-    manager = get_compute_manager()
-
-    # Initialize FileSync for GCS dotfiles/workspace file sync (required)
-    file_sync = FileSync(compute_manager=manager)
-    manager.set_file_sync(file_sync)
+    # Get compute manager (uses volume mounts for storage)
+    get_compute_manager()
     logger.info(
-        "FileSync initialized",
-        bucket=settings.gcs_bucket,
+        "ComputeManager initialized with volume mounts",
         compute_mode=settings.compute_mode,
+        local_storage_path=settings.local_storage_path,
     )
 
 
 async def cleanup_compute_manager() -> None:
     """Cleanup compute manager on shutdown.
 
-    Saves dotfiles for all running workspaces before clearing the manager.
-    This ensures user data is persisted even during hot-reload or restart.
+    With volume mounts, files are automatically persisted - no sync needed.
     """
     instance = ComputeManagerSingleton._instance
     if instance is not None:
-        # Save dotfiles for all running workspaces before shutting down
-        file_sync = instance.get_file_sync()
         workspaces = await instance.list_workspaces()
         running_workspaces = [w for w in workspaces if w.status.value == "running"]
 
@@ -159,45 +199,12 @@ async def cleanup_compute_manager() -> None:
             running_workspaces=len(running_workspaces),
         )
 
+        # With volume mounts, all files are already persisted
         if running_workspaces:
-            logger.info("Saving dotfiles for running workspaces before shutdown")
-            for i, workspace in enumerate(running_workspaces, 1):
-                logger.info(
-                    "Saving dotfiles for workspace",
-                    progress=f"{i}/{len(running_workspaces)}",
-                    workspace_id=workspace.id[:12],
-                    user_id=workspace.user_id,
-                )
-                try:
-                    # Get dotfiles_paths from metadata (if configured by user)
-                    dotfiles_paths = workspace.metadata.get("dotfiles_paths")
-                    # Timeout to prevent blocking shutdown
-                    await asyncio.wait_for(
-                        file_sync.save_user_dotfiles(
-                            workspace_id=workspace.id,
-                            user_id=workspace.user_id,
-                            dotfiles_paths=dotfiles_paths,
-                        ),
-                        timeout=30.0,  # 30 seconds for larger dotfiles directories
-                    )
-                    logger.info(
-                        "Saved dotfiles on shutdown",
-                        workspace_id=workspace.id,
-                        user_id=workspace.user_id,
-                    )
-                except TimeoutError:
-                    logger.warning(
-                        "Timeout saving dotfiles on shutdown",
-                        workspace_id=workspace.id,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to save dotfiles on shutdown",
-                        workspace_id=workspace.id,
-                        error=str(e),
-                    )
-
-            logger.info("Dotfiles saved for all running workspaces")
+            logger.info(
+                "Volume mounts active - all files already persisted",
+                count=len(running_workspaces),
+            )
 
         # Cleanup idle workspaces
         await instance.cleanup_idle_workspaces(0)

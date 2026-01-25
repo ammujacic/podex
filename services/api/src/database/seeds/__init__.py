@@ -8,6 +8,7 @@ from src.database.seeds.agent_roles import DEFAULT_AGENT_ROLES, AgentRoleData
 from src.database.seeds.agent_tools import DEFAULT_AGENT_TOOLS, AgentToolData
 from src.database.seeds.commands import DEFAULT_GLOBAL_COMMANDS, GlobalCommandData
 from src.database.seeds.hardware import DEFAULT_HARDWARE_SPECS
+from src.database.seeds.health_checks import DEFAULT_HEALTH_CHECKS, HealthCheckData
 from src.database.seeds.mcp_servers import DEFAULT_MCP_SERVERS, MCPCategory
 from src.database.seeds.models import DEFAULT_MODELS
 from src.database.seeds.plans import DEFAULT_PLANS
@@ -27,6 +28,8 @@ __all__ = [
     "DEFAULT_GLOBAL_COMMANDS",
     # Hardware Specifications
     "DEFAULT_HARDWARE_SPECS",
+    # Health Checks
+    "DEFAULT_HEALTH_CHECKS",
     # MCP Servers
     "DEFAULT_MCP_SERVERS",
     # LLM Models
@@ -48,6 +51,7 @@ __all__ = [
     "AgentRoleData",
     "AgentToolData",
     "GlobalCommandData",
+    "HealthCheckData",
     "LLMProviderData",
     "MCPCategory",
     "TerminalAgentData",

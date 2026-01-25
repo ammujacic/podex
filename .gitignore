@@ -64,3 +64,4 @@ pnpm-debug.log*
 .husky/
 .claude/
 apps/web/.env.sentry-build-plugin
+coverage-summary.json

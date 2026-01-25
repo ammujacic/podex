@@ -5,6 +5,7 @@ import { Plus, Loader2 } from 'lucide-react';
 import { ClaudeIcon, GeminiIcon, OpenAIIcon, PodexIcon } from '@/components/icons';
 import { cn } from '@/lib/utils';
 import { useSessionStore, type Agent } from '@/stores/session';
+import { useStreamingStore } from '@/stores/streaming';
 
 interface MobileAgentTabsProps {
   sessionId: string;
@@ -20,7 +21,7 @@ export function MobileAgentTabs({
   onAddAgent,
 }: MobileAgentTabsProps) {
   const session = useSessionStore((state) => state.sessions[sessionId]);
-  const streamingMessages = useSessionStore((state) => state.streamingMessages);
+  const streamingMessages = useStreamingStore((state) => state.streamingMessages);
   const agents = session?.agents ?? [];
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 

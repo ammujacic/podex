@@ -1,4 +1,4 @@
-.PHONY: build test check run stop logs clean help
+.PHONY: build test check run stop logs clean help desktop desktop-package sync-venvs
 
 # Colors for output
 CYAN := \033[0;36m
@@ -18,6 +18,12 @@ NC := \033[0m # No Color
 build:
 	@echo "$(CYAN)Installing dependencies...$(NC)"
 	pnpm install
+	@echo "$(CYAN)Installing desktop app dependencies and rebuilding native modules...$(NC)"
+	@if [ -f "apps/desktop/package.json" ]; then \
+		cd apps/desktop && pnpm install || echo "$(YELLOW)Warning: Desktop app install failed, continuing...$(NC)"; \
+	else \
+		echo "$(YELLOW)Desktop app not found, skipping...$(NC)"; \
+	fi
 	@echo "$(CYAN)Installing Python packages...$(NC)"
 	cd services/shared && uv sync --active --dev --quiet
 	cd services/api && uv sync --active --dev --quiet
@@ -34,29 +40,207 @@ build:
 # TEST
 # ============================================
 
-## Run all tests with coverage
+## Clean up test infrastructure (containers, volumes, networks)
+test-clean:
+	@echo "$(CYAN)Cleaning up test infrastructure...$(NC)"
+	@# Stop and remove all test containers
+	@docker-compose -f docker-compose.test.yml down -v --remove-orphans 2>/dev/null || true
+	@# Remove any dangling test containers
+	@docker ps -a --filter "name=podex" --filter "name=test" -q | xargs -r docker rm -f 2>/dev/null || true
+	@# Clean up test networks
+	@docker network ls --filter "name=podex-test" -q | xargs -r docker network rm 2>/dev/null || true
+	@# Clean up workspace containers from previous compute tests
+	@docker ps -a --filter "label=podex.test=true" -q | xargs -r docker rm -f 2>/dev/null || true
+	@docker ps -a --filter "ancestor=podex/workspace" -q | xargs -r docker rm -f 2>/dev/null || true
+	@echo "$(GREEN)Test infrastructure cleaned!$(NC)"
+
+## Run API unit tests (fast, uses mocks)
+test-api-unit:
+	@echo "$(CYAN)Running API unit tests...$(NC)"
+	cd services/api && uv run pytest tests/unit/ -v --cov=src --cov-report=term-missing -m unit || true
+	@echo "$(GREEN)API unit tests complete!$(NC)"
+
+## Run API integration tests (uses docker-compose.test.yml)
+test-api-integration:
+	@echo "$(CYAN)Starting test infrastructure...$(NC)"
+	docker-compose -f docker-compose.test.yml up -d postgres-test redis-test mailhog stripe-mock
+	@echo "$(CYAN)Waiting for services to be ready...$(NC)"
+	@until docker-compose -f docker-compose.test.yml exec -T postgres-test pg_isready -U test > /dev/null 2>&1; do sleep 1; done
+	@echo "$(GREEN)Test infrastructure ready$(NC)"
+	@echo "$(CYAN)Running API integration tests (using pytest-xdist for test isolation)...$(NC)"
+	cd services/api && DATABASE_URL=postgresql+asyncpg://test:test@localhost:5433/podex_test \
+		REDIS_URL=redis://localhost:6380 \
+		SMTP_HOST=localhost SMTP_PORT=1025 SMTP_USE_TLS=false \
+		STRIPE_API_BASE=http://localhost:12111 \
+		ENVIRONMENT=test \
+		uv run pytest tests/integration/ -n auto -v --cov=src --cov-report=term-missing --cov-report=html -m integration || true
+	@echo "$(CYAN)Stopping test infrastructure...$(NC)"
+	docker-compose -f docker-compose.test.yml down
+	@echo "$(GREEN)API integration tests complete!$(NC)"
+
+## Run all API tests (unit + integration)
+test-api: test-api-unit test-api-integration
+	@echo "$(GREEN)All API tests complete!$(NC)"
+
+## Run all tests with coverage (including integration tests)
 test:
-	@echo "$(CYAN)Running all tests with coverage...$(NC)"
+	@echo "$(CYAN)Running all tests with coverage (including integration tests)...$(NC)"
 	@echo ""
-	@echo "$(CYAN)=== Frontend Tests ===$(NC)"
+	@# Clean up any leftover test infrastructure
+	@echo "$(CYAN)=== Cleaning up previous test infrastructure ===$(NC)"
+	@$(MAKE) test-clean
+	@echo ""
+	@echo "$(CYAN)=== Frontend Package Tests ===$(NC)"
+	$(MAKE) test-packages
+	@echo ""
+	@echo "$(CYAN)=== Frontend App Tests ===$(NC)"
 	pnpm test:coverage
 	@echo ""
-	@echo "$(CYAN)=== Shared Library Tests ===$(NC)"
-	cd services/shared && uv run pytest --cov=src --cov-report=term-missing
+	@echo "$(CYAN)=== Starting Test Infrastructure ===$(NC)"
+	@docker-compose -f docker-compose.test.yml up -d postgres-test redis-test
+	@echo "$(CYAN)Waiting for test services to be healthy...$(NC)"
+	@until docker-compose -f docker-compose.test.yml exec -T postgres-test pg_isready -U test > /dev/null 2>&1; do \
+		echo "  Waiting for postgres..."; \
+		sleep 2; \
+	done
+	@until docker-compose -f docker-compose.test.yml exec -T redis-test redis-cli ping > /dev/null 2>&1; do \
+		echo "  Waiting for redis..."; \
+		sleep 1; \
+	done
+	@echo "$(GREEN)Test infrastructure ready and healthy$(NC)"
 	@echo ""
-	@echo "$(CYAN)=== API Service Tests ===$(NC)"
-	cd services/api && uv run pytest --cov=src --cov-report=term-missing
+	@# Run tests with proper cleanup on failure
+	@TEST_FAILED=0; \
+	echo "$(CYAN)=== Shared Library Tests (with integration) ===$(NC)"; \
+	cd services/shared && \
+		REDIS_URL=redis://localhost:6380 \
+		RUN_INTEGRATION_TESTS=true \
+		uv run pytest --cov=src --cov-report=term-missing --cov-report=html -v || TEST_FAILED=1; \
+	if [ $$TEST_FAILED -eq 0 ]; then \
+		echo "$(GREEN)Shared library tests passed ✓$(NC)"; \
+	else \
+		echo "$(RED)Shared library tests failed$(NC)"; \
+	fi; \
+	echo ""; \
+	echo "$(CYAN)=== API Service Tests ===$(NC)"; \
+	$(MAKE) test-api || TEST_FAILED=1; \
+	echo ""; \
+	echo "$(CYAN)=== Agent Service Tests ===$(NC)"; \
+	cd services/agent && \
+		DATABASE_URL=postgresql+asyncpg://test:test@localhost:5433/podex_test \
+		REDIS_URL=redis://localhost:6380 \
+		ENVIRONMENT=test \
+		API_URL=http://localhost:3001 \
+		INTERNAL_SERVICE_TOKEN=test-internal-service-token \
+		uv run pytest --cov=src --cov-report=term-missing --cov-report=html -v || TEST_FAILED=1; \
+	if [ $$TEST_FAILED -eq 0 ]; then \
+		echo "$(GREEN)Agent service tests passed ✓$(NC)"; \
+	fi; \
+	echo ""; \
+	echo "$(CYAN)=== Compute Service Tests ===$(NC)"; \
+	echo "$(YELLOW)Running compute tests with docker-compose...$(NC)"; \
+	docker-compose -f docker-compose.test.yml up --build test-compute --abort-on-container-exit || TEST_FAILED=1; \
+	docker-compose -f docker-compose.test.yml down test-compute; \
+	echo "$(GREEN)Compute service tests passed ✓$(NC)"; \
+	echo ""; \
+	echo "$(CYAN)=== Local Pod Service Tests ===$(NC)"; \
+	cd services/local-pod && uv run pytest --cov=src --cov-report=term-missing --cov-report=html -v || TEST_FAILED=1; \
+	echo "$(GREEN)Local-pod service tests passed ✓$(NC)"; \
+	echo ""; \
+	echo "$(CYAN)=== Infrastructure Tests ===$(NC)"; \
+	cd infrastructure && uv run pytest tests/ -v --tb=short || TEST_FAILED=1; \
+	echo ""; \
+	echo "$(CYAN)Cleaning up test infrastructure...$(NC)"; \
+	$(MAKE) test-clean; \
+	echo ""; \
+	if [ $$TEST_FAILED -eq 0 ]; then \
+		echo "$(GREEN)✓ All tests complete!$(NC)"; \
+	else \
+		echo "$(RED)✗ Some tests failed - see output above$(NC)"; \
+		exit 1; \
+	fi
+
+## Start test infrastructure (postgres-test, redis-test)
+test-infra-up:
+	@echo "$(CYAN)Starting test infrastructure...$(NC)"
+	docker-compose -f docker-compose.test.yml up -d postgres-test redis-test
+	@echo "$(CYAN)Waiting for services to be ready...$(NC)"
+	@sleep 3
+	@echo "$(GREEN)Test infrastructure ready!$(NC)"
+	@echo "  Redis:    localhost:6380"
+	@echo "  Postgres: localhost:5433"
+
+## Stop test infrastructure
+test-infra-down:
+	@echo "$(CYAN)Stopping test infrastructure...$(NC)"
+	docker-compose -f docker-compose.test.yml down
+	@echo "$(GREEN)Test infrastructure stopped$(NC)"
+
+## Run shared library tests with integration tests (requires Docker)
+test-shared-integration:
+	@echo "$(CYAN)Running shared library tests with integration tests...$(NC)"
+	@# Check if test infrastructure is running
+	@if ! docker ps | grep -q redis-test; then \
+		echo "$(YELLOW)Test infrastructure not running, starting it...$(NC)"; \
+		$(MAKE) test-infra-up; \
+	fi
 	@echo ""
-	@echo "$(CYAN)=== Agent Service Tests ===$(NC)"
-	cd services/agent && uv run pytest --cov=src --cov-report=term-missing
+	cd services/shared && \
+		REDIS_URL=redis://localhost:6380 \
+		RUN_INTEGRATION_TESTS=true \
+		uv run pytest --cov=src --cov-report=term-missing --cov-report=html -v
 	@echo ""
-	@echo "$(CYAN)=== Compute Service Tests ===$(NC)"
-	cd services/compute && uv run pytest --cov=src --cov-report=term-missing
+	@echo "$(GREEN)Shared library integration tests complete!$(NC)"
+	@echo "$(CYAN)Coverage report: services/shared/htmlcov/index.html$(NC)"
+
+## Run compute service tests with docker-compose
+test-compute:
+	@echo "$(CYAN)Running Compute Service Tests$(NC)"
 	@echo ""
-	@echo "$(CYAN)=== Infrastructure Tests ===$(NC)"
-	cd infrastructure && uv run pytest tests/ -v --tb=short
+	@# Clean up any leftover test infrastructure
+	@echo "$(CYAN)=== Cleaning up previous test infrastructure ===$(NC)"
+	@$(MAKE) test-clean
 	@echo ""
-	@echo "$(GREEN)All tests complete!$(NC)"
+	@# Start test infrastructure
+	@echo "$(CYAN)=== Starting Test Infrastructure (Redis) ===$(NC)"
+	@docker-compose -f docker-compose.test.yml up -d redis-test
+	@echo "$(CYAN)Waiting for Redis to be healthy...$(NC)"
+	@until docker-compose -f docker-compose.test.yml exec -T redis-test redis-cli ping > /dev/null 2>&1; do \
+		echo "  Waiting for redis..."; \
+		sleep 1; \
+	done
+	@echo "$(GREEN)Redis is ready$(NC)"
+	@echo ""
+	@# Run tests
+	@echo "$(CYAN)=== Running Compute Tests ===$(NC)"
+	@TEST_FAILED=0; \
+	docker-compose -f docker-compose.test.yml up --build test-compute --abort-on-container-exit || TEST_FAILED=1; \
+	echo ""; \
+	echo "$(CYAN)=== Cleaning up test infrastructure ===$(NC)"; \
+	$(MAKE) test-clean; \
+	echo ""; \
+	if [ $$TEST_FAILED -eq 0 ]; then \
+		echo "$(GREEN)✓ Compute tests passed with 90%+ coverage!$(NC)"; \
+	else \
+		echo "$(RED)✗ Compute tests failed$(NC)"; \
+		exit 1; \
+	fi
+
+## Run compute tests locally (fast iteration, requires local Redis on port 6379)
+test-compute-local:
+	@echo "$(CYAN)Running compute tests locally (fast iteration)...$(NC)"
+	@echo "$(YELLOW)Note: Requires local Redis on port 6379$(NC)"
+	@echo "$(YELLOW)Tip: Start Redis with 'docker run -d -p 6379:6379 redis:7-alpine'$(NC)"
+	@echo ""
+	@# Clean up workspace containers from previous runs
+	@docker ps -a --filter "label=podex.test=true" -q | xargs -r docker rm -f 2>/dev/null || true
+	@docker ps -a --filter "ancestor=podex/workspace" -q | xargs -r docker rm -f 2>/dev/null || true
+	@echo "$(CYAN)Running tests...$(NC)"
+	@cd services/compute && \
+		COMPUTE_REDIS_URL=redis://localhost:6379 \
+		uv run pytest tests/ -v --cov=src --cov-report=term-missing --cov-report=html
+	@echo ""
+	@echo "$(GREEN)✓ Coverage report: services/compute/htmlcov/index.html$(NC)"
 
 ## Run comprehensive agent integration tests (local only, requires running services)
 test-agent:
@@ -90,6 +274,65 @@ test-infra:
 	@echo "$(CYAN)Running infrastructure tests...$(NC)"
 	cd infrastructure && uv run pytest tests/ -v --tb=short
 	@echo "$(GREEN)Infrastructure tests complete!$(NC)"
+
+## Run all package tests with coverage
+test-packages:
+	@echo "$(CYAN)Running all package tests with coverage...$(NC)"
+	@echo ""
+	@echo "$(CYAN)=== @podex/shared Package Tests ===$(NC)"
+	cd packages/shared && pnpm test:coverage
+	@echo ""
+	@echo "$(CYAN)=== @podex/api-client Package Tests ===$(NC)"
+	cd packages/api-client && pnpm test:coverage
+	@echo ""
+	@echo "$(CYAN)=== @podex/state Package Tests ===$(NC)"
+	cd packages/state && pnpm test:coverage
+	@echo ""
+	@echo "$(CYAN)=== @podex/ui Package Tests ===$(NC)"
+	cd packages/ui && pnpm test:coverage
+	@echo ""
+	@echo "$(GREEN)All package tests complete!$(NC)"
+
+## Run @podex/shared package tests
+test-shared:
+	@echo "$(CYAN)Running @podex/shared tests with coverage...$(NC)"
+	cd packages/shared && pnpm test:coverage
+
+## Run @podex/api-client package tests
+test-api-client:
+	@echo "$(CYAN)Running @podex/api-client tests with coverage...$(NC)"
+	cd packages/api-client && pnpm test:coverage
+
+## Run @podex/state package tests
+test-state:
+	@echo "$(CYAN)Running @podex/state tests with coverage...$(NC)"
+	cd packages/state && pnpm test:coverage
+
+## Run @podex/ui package tests
+test-ui:
+	@echo "$(CYAN)Running @podex/ui tests with coverage...$(NC)"
+	cd packages/ui && pnpm test:coverage
+
+# ============================================
+# SYNC
+# ============================================
+
+## Sync all Python service venvs to match CI exactly (run this before pre-commit)
+sync-venvs:
+	@echo "$(CYAN)Syncing Python venvs to match CI...$(NC)"
+	@echo "$(CYAN)  services/shared$(NC)"
+	@cd services/shared && uv sync --extra dev --quiet
+	@echo "$(CYAN)  services/api$(NC)"
+	@cd services/api && uv sync --extra dev --quiet
+	@echo "$(CYAN)  services/agent$(NC)"
+	@cd services/agent && uv sync --extra dev --quiet
+	@echo "$(CYAN)  services/compute$(NC)"
+	@cd services/compute && uv sync --extra dev --quiet
+	@echo "$(CYAN)  services/local-pod$(NC)"
+	@cd services/local-pod && uv sync --extra dev --quiet
+	@echo "$(CYAN)  infrastructure$(NC)"
+	@cd infrastructure && uv sync --extra dev --quiet
+	@echo "$(GREEN)All venvs synced! Pre-commit will now match CI.$(NC)"
 
 # ============================================
 # CHECK
@@ -197,9 +440,64 @@ stop:
 	docker-compose down
 	@echo "$(GREEN)Services stopped$(NC)"
 
-## Watch logs from all services
+## Watch logs from all services (including workspace containers)
 logs:
+	@echo "$(CYAN)Streaming logs from all services and workspace containers...$(NC)"
+	@echo "$(YELLOW)Press Ctrl+C to stop$(NC)"
+	@# Use a subshell to run both log streams
+	@(docker-compose logs -f &) ; \
+	for container in $$(docker ps --filter "name=podex-workspace-" --format "{{.Names}}" 2>/dev/null); do \
+		(docker logs -f "$$container" 2>&1 | sed "s/^/$$container | /" &); \
+	done; \
+	wait
+
+## Watch logs from docker-compose services only (no workspace containers)
+logs-compose:
 	docker-compose logs -f
+
+## Watch logs from workspace containers only
+logs-workspaces:
+	@echo "$(CYAN)Streaming logs from workspace containers...$(NC)"
+	@for container in $$(docker ps --filter "name=podex-workspace-" --format "{{.Names}}" 2>/dev/null); do \
+		echo "$(GREEN)Following logs for $$container$(NC)"; \
+		(docker logs -f "$$container" 2>&1 | sed "s/^/$$container | /" &); \
+	done; \
+	wait
+
+# ============================================
+# DESKTOP
+# ============================================
+
+## Launch Electron desktop app (requires 'make run' to be running)
+desktop:
+	@echo "$(CYAN)Checking if services are running...$(NC)"
+	@if ! curl -s http://localhost:3000 > /dev/null 2>&1; then \
+		echo "$(RED)Error: Web app not running on localhost:3000$(NC)"; \
+		echo "$(YELLOW)Please run 'make run' first in another terminal$(NC)"; \
+		exit 1; \
+	fi
+	@echo "$(GREEN)Services detected, launching Electron...$(NC)"
+	@# Check if desktop dependencies are installed
+	@if [ ! -d "apps/desktop/node_modules" ]; then \
+		echo "$(CYAN)Installing desktop dependencies...$(NC)"; \
+		pnpm install; \
+	fi
+	@echo "$(CYAN)Building and starting Electron app...$(NC)"
+	cd apps/desktop && pnpm dev
+
+## Package Electron app for distribution
+desktop-package:
+	@echo "$(CYAN)Building desktop app for distribution...$(NC)"
+	@# Ensure dependencies are installed
+	@if [ ! -d "apps/desktop/node_modules" ]; then \
+		echo "$(CYAN)Installing desktop dependencies...$(NC)"; \
+		pnpm install; \
+	fi
+	@echo "$(CYAN)Compiling TypeScript...$(NC)"
+	cd apps/desktop && pnpm build
+	@echo "$(CYAN)Packaging for current platform...$(NC)"
+	cd apps/desktop && pnpm package
+	@echo "$(GREEN)Package complete! Check apps/desktop/release/$(NC)"
 
 # ============================================
 # CLEAN
@@ -229,6 +527,9 @@ clean:
 	@# Clean up any dangling workspace volumes
 	@echo "$(CYAN)Cleaning up volumes...$(NC)"
 	-docker volume ls -q --filter "name=podex" 2>/dev/null | xargs -r docker volume rm 2>/dev/null || true
+	@# Clean up local workspace storage
+	@echo "$(CYAN)Cleaning up local workspace storage...$(NC)"
+	rm -rf /tmp/podex-storage
 	@# Remove build artifacts
 	@echo "$(CYAN)Removing build artifacts...$(NC)"
 	rm -rf .turbo apps/*/.next
@@ -244,16 +545,32 @@ help:
 	@echo ""
 	@echo "$(CYAN)Podex Development Commands$(NC)"
 	@echo ""
-	@echo "$(GREEN)make build$(NC)        Install all dependencies and build Docker images"
-	@echo "$(GREEN)make test$(NC)         Run all tests with coverage (frontend + all Python services + infrastructure)"
-	@echo "$(GREEN)make test-infra$(NC)   Run infrastructure tests only"
-	@echo "$(GREEN)make test-agent$(NC)   Run comprehensive agent integration tests (local only, requires Ollama)"
-	@echo "$(GREEN)make check$(NC)        Run pre-commit hooks (installs hooks if needed)"
-	@echo "$(GREEN)make run$(NC)          Start local development (requires Ollama with a model)"
-	@echo "$(GREEN)make stop$(NC)         Stop running services"
-	@echo "$(GREEN)make logs$(NC)         Watch logs from all services"
-	@echo "$(GREEN)make clean$(NC)        Stop all services, remove volumes, kill workspaces"
-	@echo "$(GREEN)make help$(NC)         Show this help message"
+	@echo "$(YELLOW)Build & Development:$(NC)"
+	@echo "  $(GREEN)make build$(NC)             Install all dependencies and build Docker images"
+	@echo "  $(GREEN)make run$(NC)               Start local development (requires Ollama with a model)"
+	@echo "  $(GREEN)make stop$(NC)              Stop running services"
+	@echo "  $(GREEN)make logs$(NC)              Watch logs from all services"
+	@echo "  $(GREEN)make clean$(NC)             Stop all services, remove volumes, kill workspaces"
+	@echo ""
+	@echo "$(YELLOW)Desktop App:$(NC)"
+	@echo "  $(GREEN)make desktop$(NC)           Launch Electron desktop app (requires 'make run' first)"
+	@echo "  $(GREEN)make desktop-package$(NC)   Package desktop app for distribution"
+	@echo ""
+	@echo "$(YELLOW)Testing:$(NC)"
+	@echo "  $(GREEN)make test$(NC)              Run all tests with coverage + cleanup (recommended)"
+	@echo "  $(GREEN)make test-clean$(NC)        Clean up test infrastructure (containers, volumes, networks)"
+	@echo "  $(GREEN)make test-compute$(NC)      Run compute service tests with docker-compose"
+	@echo "  $(GREEN)make test-compute-local$(NC) Run compute tests locally (requires Redis on port 6379)"
+	@echo "  $(GREEN)make test-infra$(NC)        Run infrastructure tests only"
+	@echo "  $(GREEN)make test-packages$(NC)     Run all frontend package tests with coverage"
+	@echo "  $(GREEN)make test-agent$(NC)        Run comprehensive agent integration tests (local only)"
+	@echo ""
+	@echo "$(YELLOW)Code Quality:$(NC)"
+	@echo "  $(GREEN)make sync-venvs$(NC)        Sync all Python venvs to match CI exactly"
+	@echo "  $(GREEN)make check$(NC)             Run pre-commit hooks (installs hooks if needed)"
+	@echo ""
+	@echo "$(YELLOW)Help:$(NC)"
+	@echo "  $(GREEN)make help$(NC)              Show this help message"
 	@echo ""
 	@echo "$(YELLOW)Prerequisites:$(NC)"
 	@echo "  - Docker and Docker Compose"

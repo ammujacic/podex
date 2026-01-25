@@ -20,6 +20,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { api } from '@/lib/api';
 
 // ============================================================================
 // Types
@@ -422,7 +423,7 @@ function PRCard({ pr, expanded, onToggle, onViewDiff }: PRCardProps) {
 // ============================================================================
 
 export function PRPanel({
-  sessionId: _sessionId,
+  sessionId,
   onViewDiff,
   onCreatePR: _onCreatePR,
   className,
@@ -432,74 +433,21 @@ export function PRPanel({
   const [expandedPRs, setExpandedPRs] = useState<Set<number>>(new Set());
   const [filter, setFilter] = useState<'all' | 'open' | 'closed'>('open');
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Load PRs
   const loadPRs = useCallback(async () => {
     setLoading(true);
     try {
-      // In real implementation, fetch from API
-      // const data = await api.get(`/api/sessions/${sessionId}/git/prs`);
-
-      // Mock data
-      const mockPRs: PullRequest[] = [
-        {
-          id: 1,
-          number: 42,
-          title: 'Add user authentication system',
-          body: 'This PR adds a complete authentication system with login, signup, and session management.',
-          author: 'john-doe',
-          status: 'open',
-          sourceBranch: 'feature/auth',
-          targetBranch: 'main',
-          createdAt: new Date(Date.now() - 86400000),
-          updatedAt: new Date(Date.now() - 3600000),
-          additions: 450,
-          deletions: 50,
-          changedFiles: 12,
-          checks: [
-            { id: '1', name: 'CI / Build', status: 'success' },
-            { id: '2', name: 'CI / Test', status: 'success' },
-            { id: '3', name: 'CI / Lint', status: 'pending' },
-          ],
-          reviews: [{ id: '1', author: 'jane-smith', status: 'approved', submittedAt: new Date() }],
-          labels: [
-            { name: 'feature', color: '#7c3aed' },
-            { name: 'auth', color: '#059669' },
-          ],
-          url: 'https://github.com/example/repo/pull/42',
-          mergeable: true,
-          conflicted: false,
-        },
-        {
-          id: 2,
-          number: 41,
-          title: 'Fix dashboard loading issue',
-          author: 'jane-smith',
-          status: 'merged',
-          sourceBranch: 'fix/dashboard',
-          targetBranch: 'main',
-          createdAt: new Date(Date.now() - 172800000),
-          updatedAt: new Date(Date.now() - 86400000),
-          additions: 25,
-          deletions: 10,
-          changedFiles: 3,
-          checks: [
-            { id: '1', name: 'CI / Build', status: 'success' },
-            { id: '2', name: 'CI / Test', status: 'success' },
-          ],
-          reviews: [],
-          labels: [{ name: 'bug', color: '#dc2626' }],
-          url: 'https://github.com/example/repo/pull/41',
-        },
-      ];
-
-      setPullRequests(mockPRs);
-    } catch (error) {
-      console.error('Failed to load PRs:', error);
+      const data = await api.get<PullRequest[]>(`/api/sessions/${sessionId}/git/prs`);
+      setPullRequests(data);
+    } catch {
+      // PRs may not be available if GitHub integration is not configured
+      setPullRequests([]);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [sessionId]);
 
   useEffect(() => {
     loadPRs();
@@ -526,16 +474,20 @@ export function PRPanel({
     });
   }, []);
 
-  const handleCreatePR = async (_title: string, _body: string, _draft: boolean) => {
-    // TODO: Implement API call to create PR - would require GitHub API integration
-    // await api.post(`/api/sessions/${sessionId}/git/pr`, {
-    //   title: _title,
-    //   body: _body,
-    //   draft: _draft,
-    // });
-    console.warn('Creating PR:', { title: _title, body: _body, draft: _draft });
-    setCreateModalOpen(false);
-    loadPRs();
+  const handleCreatePR = async (title: string, body: string, draft: boolean) => {
+    setError(null);
+    try {
+      await api.post(`/api/sessions/${sessionId}/git/pr`, {
+        title,
+        body,
+        draft,
+      });
+      setCreateModalOpen(false);
+      loadPRs();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to create PR';
+      setError(`${message}. Ensure GitHub integration is configured for this session.`);
+    }
   };
 
   return (
@@ -563,6 +515,13 @@ export function PRPanel({
           </button>
         </div>
       </div>
+
+      {/* Error message */}
+      {error && (
+        <div className="px-4 py-2 border-b border-border-subtle bg-red-500/10 text-red-400 text-sm">
+          {error}
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex items-center gap-2 px-4 py-2 border-b border-border-subtle">
@@ -614,8 +573,11 @@ export function PRPanel({
           onConfirm={handleCreatePR}
           onCancel={() => setCreateModalOpen(false)}
           onGenerateDescription={async () => {
-            // In real implementation, call AI to generate description
-            return '## Summary\n\nThis PR implements...\n\n## Changes\n\n- Added...\n- Fixed...\n\n## Testing\n\n- [ ] Unit tests\n- [ ] Integration tests';
+            const response = await api.post<{ description: string }>(
+              `/api/sessions/${sessionId}/git/generate-pr-description`,
+              {}
+            );
+            return response.description;
           }}
         />
       )}

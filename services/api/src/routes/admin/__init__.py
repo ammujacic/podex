@@ -8,6 +8,7 @@ from src.routes.admin import (
     audit,
     compliance,
     hardware,
+    invitations,
     marketplace,
     mcp,
     models,
@@ -33,6 +34,7 @@ router.include_router(settings.router, prefix="/settings", tags=["admin-settings
 router.include_router(models.router, prefix="/models", tags=["admin-models"])
 router.include_router(audit.router, prefix="/audit", tags=["admin-audit"])
 router.include_router(compliance.router, prefix="/compliance", tags=["admin-compliance"])
+router.include_router(invitations.router, prefix="/invitations", tags=["admin-invitations"])
 router.include_router(organizations.router, prefix="/organizations", tags=["admin-organizations"])
 router.include_router(tools.router, prefix="/tools", tags=["admin-tools"])
 router.include_router(skills.router, prefix="/skills", tags=["admin-skills"])

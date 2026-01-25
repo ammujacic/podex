@@ -298,6 +298,7 @@ class TestAuthMiddleware:
         assert response.status_code == 401
         assert "missing user ID" in response.json()["detail"]
 
+
 class TestPublicPathsList:
     """Tests for PUBLIC_PATHS configuration."""
 

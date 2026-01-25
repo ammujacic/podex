@@ -6,6 +6,7 @@ from typing import Any
 import httpx
 import structlog
 
+from podex_shared.auth import ServiceAuthClient
 from src.config import settings
 from src.exceptions import (
     AgentServiceConnectionError,
@@ -19,6 +20,40 @@ from src.exceptions import (
 )
 
 logger = structlog.get_logger()
+
+# Service auth client for agent service (singleton)
+_service_auth: ServiceAuthClient | None = None
+
+
+def _get_service_auth() -> ServiceAuthClient:
+    """Get or create the service auth client for agent service."""
+    global _service_auth
+    if _service_auth is None:
+        _service_auth = ServiceAuthClient(
+            target_url=settings.AGENT_SERVICE_URL,
+            api_key=settings.INTERNAL_SERVICE_TOKEN,
+            environment=settings.ENVIRONMENT,
+            api_key_header="Authorization",  # Agent service uses Bearer token format
+        )
+    return _service_auth
+
+
+async def _get_auth_headers() -> dict[str, str]:
+    """Get authentication headers for agent service requests.
+
+    In production (GCP): Uses ID token from metadata server
+    In development (Docker): Uses Bearer token header
+    """
+    auth = _get_service_auth()
+
+    # In development, format the token as Bearer token
+    if not auth.is_production and settings.INTERNAL_SERVICE_TOKEN:
+        return {"Authorization": f"Bearer {settings.INTERNAL_SERVICE_TOKEN}"}
+
+    # In production, the ServiceAuthClient returns proper Bearer token format
+    # Cast needed because podex_shared types are not visible to mypy
+    result: dict[str, str] = await auth.get_auth_headers()
+    return result
 
 
 class AgentClient:
@@ -49,9 +84,8 @@ class AgentClient:
             AgentClientError: If the request fails
         """
         url = f"{self.base_url}{path}"
-        headers: dict[str, str] = {}
-        if settings.INTERNAL_SERVICE_TOKEN:
-            headers["Authorization"] = f"Bearer {settings.INTERNAL_SERVICE_TOKEN}"
+        # Get auth headers (GCP ID token in production, Bearer token in development)
+        headers = await _get_auth_headers()
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:

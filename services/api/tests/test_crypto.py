@@ -7,7 +7,6 @@ Verifies that:
 - Legacy plaintext data is handled gracefully
 """
 
-
 import pytest
 
 from src.crypto import (
@@ -62,7 +61,7 @@ class TestEncryptionBasics:
         special = '!@#$%^&*()_+-={}[]|\\:";<>?,./~`'
         assert decrypt_string(encrypt_string(special)) == special
 
-        unicode_str = "Hello \u4e16\u754c \u0391\u03b1 \U0001F600"
+        unicode_str = "Hello \u4e16\u754c \u0391\u03b1 \U0001f600"
         assert decrypt_string(encrypt_string(unicode_str)) == unicode_str
 
 

@@ -94,11 +94,14 @@ export default function AdminOrganizationsPage() {
   useEffect(() => {
     const fetchDefaults = async () => {
       try {
-        // TODO: Fetch from API
-        // const response = await api.admin.organizations.getPricingDefaults();
-        // setPricingDefaults(response);
+        const response = (await api.get(
+          '/api/admin/organizations/pricing-defaults'
+        )) as typeof pricingDefaults;
+        if (response) {
+          setPricingDefaults(response);
+        }
       } catch {
-        // Use defaults
+        // Use defaults on error
       }
     };
     fetchDefaults();
@@ -197,9 +200,10 @@ export default function AdminOrganizationsPage() {
   const handleSaveDefaults = async () => {
     setActionLoading(true);
     try {
-      // TODO: Implement pricing defaults API endpoint
-      // await api.patch('/api/admin/organizations/pricing-defaults', pricingDefaults);
+      await api.patch('/api/admin/organizations/pricing-defaults', pricingDefaults);
       setShowDefaultsModal(false);
+    } catch (error) {
+      console.error('Failed to save pricing defaults:', error);
     } finally {
       setActionLoading(false);
     }

@@ -24,6 +24,7 @@ import { useAttentionStore } from '@/stores/attention';
 import { useVoiceCommands } from '@/hooks/useVoiceCommands';
 import { cn } from '@/lib/utils';
 import { GitPanel } from './GitPanel';
+import { GridConfigDropdown } from './GridConfigDropdown';
 import { PresencePanel, usePresenceStore } from './PresencePanel';
 import { CreditWarningIndicator } from './CreditWarningIndicator';
 import { Logo } from '@/components/ui/Logo';
@@ -259,54 +260,59 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
         </div>
       </div>
 
-      {/* Center section - View mode toggle */}
-      <div
-        className="flex items-center gap-1 rounded-lg border border-border-default bg-elevated p-1"
-        role="tablist"
-        aria-label="Workspace view mode"
-      >
-        <button
-          onClick={() => setViewMode(sessionId, 'grid')}
-          role="tab"
-          aria-selected={viewMode === 'grid'}
-          aria-label="Grid view - show agents in a grid layout"
-          className={`flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors ${
-            viewMode === 'grid'
-              ? 'bg-accent-primary text-text-inverse shadow-sm hover:bg-accent-primary/90'
-              : 'bg-overlay text-text-secondary hover:text-text-primary'
-          }`}
+      {/* Center section - View mode toggle and grid config */}
+      <div className="flex items-center gap-2">
+        <div
+          className="flex items-center gap-1 rounded-lg border border-border-default bg-elevated p-1"
+          role="tablist"
+          aria-label="Workspace view mode"
         >
-          <Grid3X3 className="h-4 w-4" aria-hidden="true" />
-          Grid
-        </button>
-        <button
-          onClick={() => setViewMode(sessionId, 'focus')}
-          role="tab"
-          aria-selected={viewMode === 'focus'}
-          aria-label="Focus view - show one agent at a time"
-          className={`flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors ${
-            viewMode === 'focus'
-              ? 'bg-accent-primary text-text-inverse shadow-sm hover:bg-accent-primary/90'
-              : 'bg-overlay text-text-secondary hover:text-text-primary'
-          }`}
-        >
-          <Layout className="h-4 w-4" aria-hidden="true" />
-          Focus
-        </button>
-        <button
-          onClick={() => setViewMode(sessionId, 'freeform')}
-          role="tab"
-          aria-selected={viewMode === 'freeform'}
-          aria-label="Freeform view - freely position agents"
-          className={`flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors ${
-            viewMode === 'freeform'
-              ? 'bg-accent-primary text-text-inverse shadow-sm hover:bg-accent-primary/90'
-              : 'bg-overlay text-text-secondary hover:text-text-primary'
-          }`}
-        >
-          <Move className="h-4 w-4" aria-hidden="true" />
-          Freeform
-        </button>
+          <button
+            onClick={() => setViewMode(sessionId, 'grid')}
+            role="tab"
+            aria-selected={viewMode === 'grid'}
+            aria-label="Grid view - show agents in a grid layout"
+            className={`flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors ${
+              viewMode === 'grid'
+                ? 'bg-accent-primary text-text-inverse shadow-sm hover:bg-accent-primary/90'
+                : 'bg-overlay text-text-secondary hover:text-text-primary'
+            }`}
+          >
+            <Grid3X3 className="h-4 w-4" aria-hidden="true" />
+            Grid
+          </button>
+          <button
+            onClick={() => setViewMode(sessionId, 'focus')}
+            role="tab"
+            aria-selected={viewMode === 'focus'}
+            aria-label="Focus view - show one agent at a time"
+            className={`flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors ${
+              viewMode === 'focus'
+                ? 'bg-accent-primary text-text-inverse shadow-sm hover:bg-accent-primary/90'
+                : 'bg-overlay text-text-secondary hover:text-text-primary'
+            }`}
+          >
+            <Layout className="h-4 w-4" aria-hidden="true" />
+            Focus
+          </button>
+          <button
+            onClick={() => setViewMode(sessionId, 'freeform')}
+            role="tab"
+            aria-selected={viewMode === 'freeform'}
+            aria-label="Freeform view - freely position agents"
+            className={`flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors ${
+              viewMode === 'freeform'
+                ? 'bg-accent-primary text-text-inverse shadow-sm hover:bg-accent-primary/90'
+                : 'bg-overlay text-text-secondary hover:text-text-primary'
+            }`}
+          >
+            <Move className="h-4 w-4" aria-hidden="true" />
+            Freeform
+          </button>
+        </div>
+
+        {/* Grid configuration button - only show in grid mode */}
+        {viewMode === 'grid' && <GridConfigDropdown />}
       </div>
 
       {/* Right section */}

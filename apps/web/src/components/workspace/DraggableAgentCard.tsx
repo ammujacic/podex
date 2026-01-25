@@ -6,17 +6,13 @@ import { GripVertical, Maximize2, Minimize2 } from 'lucide-react';
 import { type Agent, type AgentPosition, useSessionStore } from '@/stores/session';
 import { AgentCard } from './AgentCard';
 import { cn } from '@/lib/utils';
+import { useCardDimensions } from '@/hooks/useCardDimensions';
 
 interface DraggableAgentCardProps {
   agent: Agent;
   sessionId: string;
   containerRef: React.RefObject<HTMLDivElement | null>;
 }
-
-const MIN_WIDTH = 350;
-const MIN_HEIGHT = 300;
-const DEFAULT_WIDTH = 450;
-const DEFAULT_HEIGHT = 500;
 
 export function DraggableAgentCard({ agent, sessionId, containerRef }: DraggableAgentCardProps) {
   const { updateAgentPosition, bringAgentToFront } = useSessionStore();
@@ -26,6 +22,13 @@ export function DraggableAgentCard({ agent, sessionId, containerRef }: Draggable
   const [resizeStart, setResizeStart] = useState({ x: 0, y: 0, width: 0, height: 0 });
   const [isMaximized, setIsMaximized] = useState(false);
   const [preMaximizePosition, setPreMaximizePosition] = useState<AgentPosition | null>(null);
+
+  // Get dimensions from ConfigStore (config is guaranteed to be loaded by ConfigGate)
+  const cardDimensions = useCardDimensions('agent');
+  const MIN_WIDTH = cardDimensions.minWidth;
+  const MIN_HEIGHT = cardDimensions.minHeight;
+  const DEFAULT_WIDTH = cardDimensions.width;
+  const DEFAULT_HEIGHT = cardDimensions.height;
 
   // Store initial random offset in ref to keep it stable
   const initialOffsetRef = useRef({
@@ -44,7 +47,7 @@ export function DraggableAgentCard({ agent, sessionId, containerRef }: Draggable
         zIndex: 1,
       }
     );
-  }, [agent.position]);
+  }, [agent.position, DEFAULT_WIDTH, DEFAULT_HEIGHT]);
 
   // Use motion values for smooth dragging
   const x = useMotionValue(position.x);
@@ -129,7 +132,7 @@ export function DraggableAgentCard({ agent, sessionId, containerRef }: Draggable
 
       updateAgentPosition(sessionId, agent.id, { width: newWidth, height: newHeight });
     },
-    [isResizing, resizeStart, sessionId, agent.id, updateAgentPosition]
+    [isResizing, resizeStart, sessionId, agent.id, updateAgentPosition, MIN_HEIGHT, MIN_WIDTH]
   );
 
   const handleMouseUp = useCallback(() => {

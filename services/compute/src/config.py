@@ -59,6 +59,19 @@ class Settings(BaseSettings):
     gcs_prefix: str = "workspaces"
     gcs_sync_interval: int = 30  # Seconds between background syncs
 
+    # Local storage for Docker development (per-user bucket emulation)
+    # Each user gets a directory: {local_storage_path}/{user_id}/
+    local_storage_path: str = "/tmp/podex-storage"  # noqa: S108
+
+    # GCS emulator endpoint (for local development)
+    gcs_emulator_host: str | None = None
+
+    # Workspace communication security
+    # When enabled, workspace containers are accessed via HTTPS with token auth
+    workspace_tls_enabled: bool = False  # Enable HTTPS for workspace connections
+    workspace_auth_enabled: bool = True  # Require token auth for workspace API
+    workspace_token_header: str = "X-Workspace-Token"  # Header name for auth token  # noqa: S105
+
     # Workspace tiers (vCPU, memory in MB)
     # ALPHA: All tiers use minimum resources - scale up when needed
     # These are overridden by COMPUTE_TIER_* env vars in production

@@ -54,9 +54,7 @@ class TestAdminUserManagement:
         response = client.get("/api/admin/users")
         assert response.status_code in [401, 403, 404]
 
-    def test_list_users_non_admin(
-        self, client: TestClient, auth_headers: dict[str, str]
-    ) -> None:
+    def test_list_users_non_admin(self, client: TestClient, auth_headers: dict[str, str]) -> None:
         """Test listing users as non-admin."""
         response = client.get("/api/admin/users", headers=auth_headers)
         assert response.status_code in [401, 403, 404]

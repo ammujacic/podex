@@ -1,6 +1,5 @@
 """Comprehensive tests for TTS summary generation."""
 
-
 from podex_shared.tts_summary import (
     MAX_DIRECT_TTS_LENGTH,
     SummaryResult,

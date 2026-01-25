@@ -8,7 +8,6 @@ Tests cover:
 - OAuth callback handling
 """
 
-
 from fastapi.testclient import TestClient
 
 # ============================================================================
@@ -75,9 +74,7 @@ class TestGoogleOAuth:
 
     def test_google_callback_with_error(self, client: TestClient) -> None:
         """Test Google callback with error parameter."""
-        response = client.get(
-            "/api/oauth/google/callback?error=access_denied"
-        )
+        response = client.get("/api/oauth/google/callback?error=access_denied")
         assert response.status_code in [302, 400]
 
 
@@ -91,16 +88,12 @@ class TestOAuthStateValidation:
 
     def test_github_callback_invalid_state(self, client: TestClient) -> None:
         """Test GitHub callback with invalid state."""
-        response = client.get(
-            "/api/oauth/github/callback?code=test-code&state=invalid-state"
-        )
+        response = client.get("/api/oauth/github/callback?code=test-code&state=invalid-state")
         # State validation may fail
         assert response.status_code in [200, 302, 400, 401]
 
     def test_google_callback_invalid_state(self, client: TestClient) -> None:
         """Test Google callback with invalid state."""
-        response = client.get(
-            "/api/oauth/google/callback?code=test-code&state=invalid-state"
-        )
+        response = client.get("/api/oauth/google/callback?code=test-code&state=invalid-state")
         # State validation may fail
         assert response.status_code in [200, 302, 400, 401]

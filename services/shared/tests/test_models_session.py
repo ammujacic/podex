@@ -390,9 +390,7 @@ class TestSyncBroadcast:
         """Test SyncBroadcast with patch."""
         broadcast = SyncBroadcast(
             type="state_patch",
-            patch=[
-                {"op": "replace", "path": "/layout/view_mode", "value": "focus"}
-            ],
+            patch=[{"op": "replace", "path": "/layout/view_mode", "value": "focus"}],
             server_seq=50,
         )
         assert broadcast.type == "state_patch"

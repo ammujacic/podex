@@ -1,13 +1,27 @@
-"""Platform configuration models: PlatformSetting, LLMModel."""
+"""Platform configuration models: PlatformSetting, LLMModel, PlatformInvitation."""
 
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, _generate_uuid
+
+if TYPE_CHECKING:
+    from .billing import SubscriptionPlan
+    from .core import User
 
 
 class PlatformSetting(Base):
@@ -493,6 +507,93 @@ class ProductivityMetric(Base):
     )
 
 
+class HealthCheck(Base):
+    """Custom health check configuration for project health analysis.
+
+    Users can define custom checks per category (code_quality, test_coverage,
+    security, documentation, dependencies). Each check specifies a command
+    to run and rules for parsing output into a score.
+
+    Built-in checks have user_id=None and is_builtin=True.
+    """
+
+    __tablename__ = "health_checks"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
+
+    # Owner (NULL for built-in defaults)
+    user_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+    )
+
+    # Session-specific or user-wide (NULL for user-wide or built-in)
+    session_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        index=True,
+    )
+
+    # Check category: code_quality, test_coverage, security, documentation, dependencies
+    category: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+
+    # Display name (e.g., "ESLint", "Custom Linter")
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # Description of what this check does
+    description: Mapped[str | None] = mapped_column(Text)
+
+    # Command to execute (e.g., "npx eslint . --format=json")
+    command: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # Working directory for command execution (relative to workspace root)
+    # NULL or "." means workspace root
+    working_directory: Mapped[str | None] = mapped_column(String(500))
+
+    # Command timeout in seconds
+    timeout: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
+
+    # Parse mode: exit_code, json, regex, line_count
+    parse_mode: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    # Mode-specific parsing configuration (JSONB)
+    # exit_code: {"success_codes": [0], "score_on_success": 100, "score_on_failure": 0}  # noqa: ERA001, E501
+    # json: {"score_path": "summary.score", "error_path": "length", "penalty_per_error": 5}  # noqa: ERA001, E501
+    # regex: {"pattern": "error:", "score_formula": "100 - (matches * 5)"}  # noqa: ERA001
+    # line_count: {"target": 0, "penalty_per_line": 5, "base_score": 100}  # noqa: ERA001
+    parse_config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+    # Weight for this check within the category (default 1.0)
+    weight: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+
+    # Whether check is enabled
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Whether this is a built-in check (immutable by users)
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Project types this check applies to (e.g., ["nodejs", "typescript"])
+    # NULL means applies to all project types
+    project_types: Mapped[list[str] | None] = mapped_column(JSONB)
+
+    # Auto-fix command (optional)
+    fix_command: Mapped[str | None] = mapped_column(Text)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class ProjectHealthScore(Base):
     """Project health score tracking for workspaces/sessions.
 
@@ -568,4 +669,84 @@ class ProjectHealthScore(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class PlatformInvitation(Base):
+    """Platform-level invitations for user registration.
+
+    Allows admins to invite users by email, optionally gifting subscription months.
+    Invitations work even when registration is disabled, providing controlled access.
+    """
+
+    __tablename__ = "platform_invitations"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
+
+    # Invitation target
+    email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+
+    # Invitation token (64 char random string for secure URL)
+    token: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+
+    # Who sent the invitation
+    invited_by_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="SET NULL"),
+    )
+
+    # Status: "pending", "accepted", "expired", "revoked"
+    status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False, index=True)
+
+    # Optional message for the invitation email
+    message: Mapped[str | None] = mapped_column(Text)
+
+    # Subscription gift settings
+    gift_plan_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("subscription_plans.id", ondelete="SET NULL"),
+    )
+    gift_months: Mapped[int | None] = mapped_column(Integer)  # Number of months to gift (1-24)
+
+    # Expiration
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Track which user accepted (for audit)
+    accepted_by_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="SET NULL"),
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    # Relationships
+    invited_by: Mapped["User | None"] = relationship(
+        "User",
+        foreign_keys=[invited_by_id],
+        lazy="selectin",
+    )
+    accepted_by: Mapped["User | None"] = relationship(
+        "User",
+        foreign_keys=[accepted_by_id],
+        lazy="selectin",
+    )
+    gift_plan: Mapped["SubscriptionPlan | None"] = relationship(
+        "SubscriptionPlan",
+        lazy="selectin",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'accepted', 'expired', 'revoked')",
+            name="ck_platform_invitation_status",
+        ),
+        CheckConstraint(
+            "gift_months IS NULL OR (gift_months >= 1 AND gift_months <= 24)",
+            name="ck_platform_invitation_gift_months",
+        ),
     )

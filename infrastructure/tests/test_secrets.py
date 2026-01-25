@@ -22,8 +22,10 @@ class TestSecretsConfiguration:
     @patch("pulumi_gcp.secretmanager.Secret")
     @patch("pulumi_gcp.secretmanager.SecretVersion")
     @patch("pulumi_random.RandomPassword")
+    @patch("pulumi.Config")
     def test_create_secrets_creates_expected_secrets(
         self,
+        mock_config: Any,
         mock_random_password: Any,
         mock_secret_version: Any,
         mock_secret: Any,
@@ -31,6 +33,11 @@ class TestSecretsConfiguration:
         env: str,
     ) -> None:
         """Test that create_secrets creates the expected number of secrets."""
+        # Mock Pulumi config
+        mock_config_instance = MagicMock()
+        mock_config_instance.get.return_value = None
+        mock_config.return_value = mock_config_instance
+
         # Mock the random password results
         mock_password_instance = MagicMock()
         mock_password_instance.result = "test-password-123"
@@ -63,14 +70,14 @@ class TestSecretsConfiguration:
         for secret_key in expected_secrets:
             assert secret_key in result, f"Secret {secret_key} not found in result"
 
-        # Verify RandomPassword was called for the required secrets (4 times)
-        assert mock_random_password.call_count == 4
+        # Verify RandomPassword was called for the required secrets (5 times)
+        assert mock_random_password.call_count == 5
 
-        # Verify Secret was called for all secrets (28 times: 4 generated + 2 admin + 22 optional)
-        assert mock_secret.call_count == 28
+        # Verify Secret was called for all secrets (29 times: 4 generated + 1 admin email + 1 admin pass + 23 optional)
+        assert mock_secret.call_count == 29
 
-        # Verify SecretVersion was called for all secrets (28 times)
-        assert mock_secret_version.call_count == 28
+        # Verify SecretVersion was called for all secrets (29 times)
+        assert mock_secret_version.call_count == 29
 
     def test_secret_ids_follow_naming_convention(self, project_id: str, env: str) -> None:
         """Test that secret IDs follow the expected naming convention."""

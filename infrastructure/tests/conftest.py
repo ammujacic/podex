@@ -30,6 +30,10 @@ class MockPulumi:
         def all(*args: Any, **kwargs: Any) -> "MockOutput":
             return MockOutput()
 
+        def __class_getitem__(cls, item: Any) -> type["MockOutput"]:
+            """Support type subscripting like Output[str]."""
+            return MockOutput
+
 
 class MockConfig:
     def get(self, key: str, default: Any = None) -> Any:
@@ -46,6 +50,10 @@ class MockOutput:
     @staticmethod
     def all(*args: Any, **kwargs: Any) -> "MockOutput":
         return MockOutput()
+
+    def __class_getitem__(cls, item: Any) -> Any:
+        """Support type subscripting like Output[str]."""
+        return cls
 
 
 class MockRandomPassword:
@@ -135,6 +143,15 @@ class MockGCP:
             def __init__(self, *args: Any, **kwargs: Any) -> None:
                 self.name = kwargs.get("name", "mock-subnet")
 
+        class ManagedSslCertificate:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+        class ManagedSslCertificateManagedArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
         class SubnetworkSecondaryIpRangeArgs:
             def __init__(self, *args: Any, **kwargs: Any) -> None:
                 for k, v in kwargs.items():
@@ -197,6 +214,26 @@ class MockGCP:
         class Bucket:
             def __init__(self, *args: Any, **kwargs: Any) -> None:
                 self.name = kwargs.get("name", "mock-bucket")
+
+        class BucketLifecycleRuleArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        class BucketLifecycleRuleActionArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        class BucketLifecycleRuleConditionArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        class BucketCorArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
 
     class serviceaccount:
         class Account:
@@ -357,16 +394,155 @@ class MockGCP:
                 self.location = kwargs.get("location", "us-east1")
                 self.name = kwargs.get("name", "mock-repo")
 
+        class RepositoryCleanupPolicyArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        class RepositoryCleanupPolicyConditionArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+    class dns:
+        class ManagedZone:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                self.name = kwargs.get("name", "mock-zone")
+
+        class RecordSet:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+    class cloudrun:
+        class DomainMapping:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+        class DomainMappingMetadataArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        class DomainMappingSpecArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+    class monitoring:
+        class NotificationChannel:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                self.id = "mock-channel-id"
+
+        class UptimeCheckConfig:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+        class UptimeCheckConfigMonitoredResourceArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        class UptimeCheckConfigHttpCheckArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        class AlertPolicy:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+        class AlertPolicyConditionArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        class AlertPolicyConditionConditionThresholdArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        class AlertPolicyConditionConditionThresholdAggregationArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        class AlertPolicyConditionConditionThresholdTriggerArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        class AlertPolicyAlertStrategyArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        class Dashboard:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+    class logging:
+        class Metric:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+        class MetricMetricDescriptorArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        class MetricMetricDescriptorLabelArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        class ProjectSink:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                self.writer_identity = "mock-writer-identity"
+
+    class bigquery:
+        class Dataset:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                from unittest.mock import MagicMock as MM
+
+                self.id = MM()
+                self.id.apply = lambda func: func("mock-dataset-id")
+                self.dataset_id = kwargs.get("dataset_id", "mock-dataset")
+
+        class DatasetIamMember:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
 
 class MockRandom:
     RandomPassword = MockRandomPassword
+
+
+class MockDocker:
+    class Image:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.repo_digest = "sha256:mock-digest"
+
+    class DockerBuildArgs:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+    class CacheFromArgs:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+    class RegistryArgs:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            for k, v in kwargs.items():
+                setattr(self, k, v)
 
 
 # Monkey patch to avoid import errors
 sys.modules["pulumi"] = MockPulumi()  # type: ignore[assignment]
 sys.modules["pulumi_gcp"] = MockGCP()  # type: ignore[assignment]
 sys.modules["pulumi_random"] = MockRandom()  # type: ignore[assignment]
-sys.modules["pulumi_docker"] = type("MockDocker", (), {})()
+sys.modules["pulumi_docker"] = MockDocker()  # type: ignore[assignment]
 
 
 @pytest.fixture(scope="session")

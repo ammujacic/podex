@@ -183,8 +183,16 @@ const typescriptSnippets: SnippetCollection = {
   trycatch: {
     prefix: 'trycatch',
     name: 'Try-Catch',
-    description: 'Create a try-catch block',
-    body: ['try {', '  $1', '} catch (error) {', '  console.error(error);', '  $0', '}'],
+    description: 'Create a try-catch block with proper error handling',
+    body: [
+      'try {',
+      '  $1',
+      '} catch (error) {',
+      '  const message = error instanceof Error ? error.message : "Unknown error";',
+      '  ${2:throw new Error(`Operation failed: ${message}`);}',
+      '  $0',
+      '}',
+    ],
   },
 
   // Classes and types

@@ -14,8 +14,7 @@ from src.cache import cache_delete, cache_get, cache_set, user_config_key
 from src.config import settings
 from src.database.connection import get_db
 from src.database.models import User, UserConfig
-from src.middleware.rate_limit import RATE_LIMIT_SENSITIVE, RATE_LIMIT_STANDARD, limiter
-from src.storage.gcs import get_storage
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
 logger = structlog.get_logger()
 
@@ -67,10 +66,6 @@ DOTFILES_PATH_PATTERN = re.compile(r"^\.?[a-zA-Z0-9][a-zA-Z0-9._/-]*$")
 
 # Maximum tour ID length
 MAX_TOUR_ID_LENGTH = 50
-
-# SECURITY: Dotfiles upload limits
-MAX_DOTFILE_SIZE_BYTES = 1024 * 1024  # 1 MB per file
-MAX_DOTFILES_PER_UPLOAD = 20  # Maximum files per upload request
 
 # SECURITY: LLM API key patterns for validation by provider
 # These patterns help ensure API keys are in the expected format
@@ -151,11 +146,11 @@ DEFAULT_DOTFILES = [
     ".config/starship.toml",
     ".ssh/config",  # Only the config, not keys
     # CLI agent config directories
-    ".claude/",
+    ".claude",
     ".claude.json",
-    ".codex/",
-    ".gemini/",
-    ".opencode/",
+    ".codex",
+    ".gemini",
+    ".opencode",
 ]
 
 
@@ -201,38 +196,6 @@ class UpdateUserConfigRequest(BaseModel):
     ui_preferences: dict[str, Any] | None = None
     voice_preferences: dict[str, Any] | None = None
     agent_preferences: dict[str, Any] | None = None
-
-
-class DotfileContent(BaseModel):
-    """Dotfile content."""
-
-    path: str
-    content: str
-
-
-class DotfilesUploadRequest(BaseModel):
-    """Request to upload dotfiles."""
-
-    files: list[DotfileContent]
-
-    @property
-    def validated_files(self) -> list[DotfileContent]:
-        """Validate and return files with security checks."""
-
-        class TooManyFilesError(ValueError):
-            def __init__(self, max_files: int) -> None:
-                super().__init__(f"Too many files (max {max_files})")
-
-        class FileTooLargeError(ValueError):
-            def __init__(self, path: str, max_size_kb: int) -> None:
-                super().__init__(f"File {path} too large (max {max_size_kb}KB)")
-
-        if len(self.files) > MAX_DOTFILES_PER_UPLOAD:
-            raise TooManyFilesError(MAX_DOTFILES_PER_UPLOAD)
-        for f in self.files:
-            if len(f.content.encode("utf-8")) > MAX_DOTFILE_SIZE_BYTES:
-                raise FileTooLargeError(f.path, MAX_DOTFILE_SIZE_BYTES // 1024)
-        return self.files
 
 
 @router.get("", response_model=UserConfigResponse)
@@ -378,237 +341,6 @@ async def update_user_config(
     await cache_set(user_config_key(user_id), config_response, ttl=settings.CACHE_TTL_USER_CONFIG)
 
     return config_response
-
-
-@router.get("/dotfiles", response_model=list[DotfileContent])
-@limiter.limit(RATE_LIMIT_STANDARD)
-async def get_dotfiles(
-    request: Request,
-    response: Response,  # noqa: ARG001
-    db: DbSession,
-) -> list[DotfileContent]:
-    """Get user's synced dotfiles content."""
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-
-    storage = get_storage()
-
-    # Get user config to find S3 path
-    result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
-    config = result.scalar_one_or_none()
-
-    if not config or not config.dotfiles_paths:
-        return []
-
-    dotfiles = []
-    for path in config.dotfiles_paths:
-        try:
-            # Read from S3 user dotfiles prefix
-            content = await storage.get_file_text(
-                f"user-{user_id}",  # Use user ID as workspace ID for dotfiles
-                path,
-            )
-            dotfiles.append(DotfileContent(path=path, content=content))
-        except FileNotFoundError:
-            # File doesn't exist yet, skip
-            logger.debug("Dotfile not found, skipping", path=path, user_id=user_id)
-            continue
-        except Exception:
-            # Other errors, skip with logging
-            logger.warning("Failed to read dotfile, skipping", path=path, user_id=user_id)
-            continue
-
-    return dotfiles
-
-
-@router.post("/dotfiles")
-@limiter.limit(RATE_LIMIT_SENSITIVE)  # Stricter rate limit for upload operations
-async def upload_dotfiles(
-    request_data: DotfilesUploadRequest,
-    request: Request,
-    response: Response,  # noqa: ARG001
-    _db: DbSession,
-) -> dict[str, Any]:
-    """Upload/sync user's dotfiles to S3."""
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-
-    # SECURITY: Validate file count and sizes before processing
-    try:
-        validated_files = request_data.validated_files
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-    # Validate all paths (security check for path traversal, forbidden paths)
-    validate_dotfiles_paths([f.path for f in validated_files])
-
-    storage = get_storage()
-
-    uploaded = 0
-    errors = []
-
-    for file in validated_files:
-        try:
-            await storage.put_file(
-                f"user-{user_id}",  # Use user ID as workspace ID for dotfiles
-                file.path,
-                file.content,
-            )
-            uploaded += 1
-        except Exception:
-            # Log the actual error but don't expose internals to client
-            logger.exception("Failed to upload dotfile", path=file.path, user_id=user_id)
-            errors.append({"path": file.path, "error": "Failed to upload file"})
-
-    return {
-        "uploaded": uploaded,
-        "errors": errors,
-    }
-
-
-@router.delete("/dotfiles/{path:path}")
-@limiter.limit(RATE_LIMIT_STANDARD)
-async def delete_dotfile(
-    path: str,
-    request: Request,
-    response: Response,  # noqa: ARG001
-    _db: DbSession,
-) -> dict[str, Any]:
-    """Delete a specific dotfile from S3."""
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-
-    # Validate path to prevent path traversal
-    validate_dotfiles_paths([path])
-
-    storage = get_storage()
-
-    try:
-        await storage.delete_file(f"user-{user_id}", path)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail="File not found") from e
-    except Exception:
-        # Log the actual error but don't expose internals to client
-        logger.exception("Failed to delete dotfile", path=path, user_id=user_id)
-        raise HTTPException(status_code=500, detail="Failed to delete file") from None
-    return {"deleted": path}
-
-
-@router.post("/dotfiles/sync-from-repo")
-@limiter.limit("5/hour")  # SECURITY: Very strict rate limit - this clones git repos
-async def sync_dotfiles_from_repo(
-    request: Request,
-    response: Response,  # noqa: ARG001
-    db: DbSession,
-) -> dict[str, Any]:
-    """Sync dotfiles from user's dotfiles git repository."""
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Authentication required")
-
-    result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
-    config = result.scalar_one_or_none()
-
-    if not config or not config.dotfiles_repo:
-        raise HTTPException(status_code=400, detail="No dotfiles repository configured")
-
-    import asyncio
-    import shutil
-    import tempfile
-    from pathlib import Path
-
-    # Get dotfiles configuration
-    dotfiles_repo = config.dotfiles_repo
-    dotfiles_branch = config.dotfiles_branch or "main"
-    dotfiles_files = config.dotfiles_files or [".bashrc", ".zshrc", ".gitconfig", ".vimrc"]
-
-    temp_dir = None
-    synced_files: list[str] = []
-    errors: list[str] = []
-
-    try:
-        # Create temp directory for cloning
-        temp_dir = tempfile.mkdtemp(prefix="podex-dotfiles-")
-        clone_path = Path(temp_dir) / "repo"
-
-        # Clone the repository (shallow clone for speed)
-        clone_cmd = [
-            "git",
-            "clone",
-            "--depth",
-            "1",
-            "--branch",
-            dotfiles_branch,
-            dotfiles_repo,
-            str(clone_path),
-        ]
-        process = await asyncio.create_subprocess_exec(
-            *clone_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
-
-        if process.returncode != 0:
-            error_msg = stderr.decode() if stderr else "Unknown git error"
-            raise HTTPException(  # noqa: TRY301
-                status_code=400, detail=f"Clone failed: {error_msg}"
-            )
-
-        # Upload specified files to GCS
-        from google.cloud import storage  # type: ignore[attr-defined,import-untyped]
-
-        gcs_client = storage.Client(project=settings.GCP_PROJECT_ID)
-        bucket = gcs_client.bucket(settings.GCS_BUCKET)
-
-        for dotfile in dotfiles_files:
-            file_path = clone_path / dotfile.lstrip("/").lstrip("~").lstrip("./")
-            if file_path.exists() and file_path.is_file():
-                try:
-                    gcs_key = f"dotfiles/{user_id}/{dotfile.lstrip('./')}"
-                    blob = bucket.blob(gcs_key)
-                    blob.upload_from_filename(str(file_path))
-                    synced_files.append(dotfile)
-                    logger.info("Synced dotfile to GCS", user_id=user_id, file=dotfile)
-                except Exception as e:
-                    errors.append(f"{dotfile}: {e!s}")
-                    logger.warning(
-                        "Failed to sync dotfile", user_id=user_id, file=dotfile, error=str(e)
-                    )
-            else:
-                errors.append(f"{dotfile}: File not found in repository")
-
-        # Update config with last sync time
-        config.dotfiles_last_sync = datetime.now(UTC)
-        await db.commit()
-
-    except TimeoutError:
-        raise HTTPException(status_code=504, detail="Timeout cloning dotfiles repository") from None
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Error syncing dotfiles", user_id=user_id)
-        raise HTTPException(status_code=500, detail=f"Error syncing dotfiles: {e!s}") from None
-    finally:
-        # Clean up temp directory
-        if temp_dir:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-
-    return {
-        "status": "success"
-        if synced_files and not errors
-        else "partial"
-        if synced_files
-        else "error",
-        "message": f"Synced {len(synced_files)} files"
-        + (f", {len(errors)} errors" if errors else ""),
-        "repo": dotfiles_repo,
-        "synced_files": synced_files,
-        "errors": errors if errors else None,
-    }
 
 
 # Tour completion endpoints for cross-device persistence

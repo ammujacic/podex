@@ -22,6 +22,7 @@ import { QuickOpen } from './QuickOpen';
 import { NotificationCenter } from './NotificationCenter';
 import { MobileWorkspaceLayout } from './MobileWorkspaceLayout';
 import { WorkspaceStatusOverlay } from './WorkspaceStatusOverlay';
+import { WorkspaceErrorBanner } from './WorkspaceErrorBanner';
 
 interface WorkspaceLayoutProps {
   sessionId: string;
@@ -65,6 +66,7 @@ export function WorkspaceLayout({ sessionId, children }: WorkspaceLayoutProps) {
   if (isMobile) {
     return (
       <LayoutSyncProvider sessionId={sessionId}>
+        <WorkspaceErrorBanner sessionId={sessionId} onRetry={() => window.location.reload()} />
         <MobileWorkspaceLayout sessionId={sessionId} />
         {/* Keep modal layer for dialogs */}
         <ModalLayer sessionId={sessionId} />
@@ -85,6 +87,9 @@ export function WorkspaceLayout({ sessionId, children }: WorkspaceLayoutProps) {
       <div className="flex h-screen flex-col bg-void">
         {/* Header */}
         <WorkspaceHeader sessionId={sessionId} />
+
+        {/* Workspace error banner */}
+        <WorkspaceErrorBanner sessionId={sessionId} onRetry={() => window.location.reload()} />
 
         {/* Main content area */}
         <div className="flex flex-1 overflow-hidden">

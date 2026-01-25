@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ClipboardList,
   Copy,
+  Globe,
   ImageOff,
   KeyRound,
   Loader2,
@@ -91,6 +92,12 @@ interface AgentCardHeaderProps {
   // Claude Code specific callbacks (optional - only used for claude-code agents)
   onOpenSlashCommands?: () => void;
   onReauthenticate?: () => void;
+  // Browser context (for forwarding preview data to agent)
+  browserCaptureEnabled?: boolean;
+  browserAutoInclude?: boolean;
+  hasPendingBrowserContext?: boolean;
+  onToggleBrowserCapture?: () => void;
+  onOpenBrowserContextDialog?: () => void;
 }
 
 /**
@@ -126,6 +133,11 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
   onDelete,
   onOpenSlashCommands,
   onReauthenticate,
+  browserCaptureEnabled,
+  browserAutoInclude,
+  hasPendingBrowserContext,
+  onToggleBrowserCapture,
+  onOpenBrowserContextDialog: _onOpenBrowserContextDialog,
 }) {
   // CLI agent type checks
   const isClaudeCodeAgent = agent.role === 'claude-code';
@@ -284,6 +296,34 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                 <Brain className="h-3 w-3" />
                 Soon
               </span>
+            )}
+
+            {/* Browser context capture toggle */}
+            {onToggleBrowserCapture && (
+              <button
+                onClick={onToggleBrowserCapture}
+                className={cn(
+                  'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-colors cursor-pointer',
+                  browserCaptureEnabled || browserAutoInclude
+                    ? 'bg-emerald-500/30 text-emerald-400 ring-1 ring-emerald-400/50 hover:bg-emerald-500/40'
+                    : 'bg-elevated text-text-muted hover:bg-overlay hover:text-text-primary'
+                )}
+                title={
+                  browserCaptureEnabled
+                    ? 'Browser capture enabled - click to configure'
+                    : 'Capture browser context (console, network, errors) for debugging'
+                }
+              >
+                <Globe className="h-3 w-3" />
+                <span>Browser</span>
+                {(browserCaptureEnabled || hasPendingBrowserContext) && (
+                  <span
+                    className="ml-0.5 h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"
+                    aria-hidden="true"
+                  />
+                )}
+                {browserAutoInclude && <span className="text-emerald-300 text-[10px]">Auto</span>}
+              </button>
             )}
 
             {/* Undo/Checkpoint dropdown */}

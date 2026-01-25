@@ -1,5 +1,6 @@
 """Comprehensive tests for compute service configuration."""
 
+import pytest
 
 from src.config import Settings
 
@@ -39,8 +40,10 @@ class TestSettingsDefaults:
         assert settings.gke_cluster_name == "podex-workspaces"
         assert settings.gke_namespace == "workspaces"
 
-    def test_redis_settings_default(self) -> None:
+    def test_redis_settings_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test default Redis settings."""
+        # Clear env var that may override the default
+        monkeypatch.delenv("COMPUTE_REDIS_URL", raising=False)
         settings = Settings()
         assert settings.redis_url == "redis://localhost:6379"
 

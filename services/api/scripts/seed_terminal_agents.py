@@ -23,8 +23,7 @@ async def seed_terminal_agents(database_url: str | None = None) -> None:
     """
     # Get database URL from parameter, environment, or default
     db_url = database_url or os.environ.get(
-        "DATABASE_URL",
-        "postgresql+asyncpg://podex:podex@localhost:5432/podex"
+        "DATABASE_URL", "postgresql+asyncpg://podex:podex@localhost:5432/podex"
     )
 
     engine = create_async_engine(db_url, echo=False)
