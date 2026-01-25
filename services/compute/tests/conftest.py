@@ -349,7 +349,7 @@ def test_internal_api_key(monkeypatch: pytest.MonkeyPatch) -> str:
 
     Sets a non-empty API key so authentication checks are actually enforced.
     """
-    test_key = "test-api-key-12345"
+    test_key = "test-api-key-12345"  # gitleaks:allow
     # Set the key in settings so auth checks work
     monkeypatch.setattr(settings, "internal_api_key", test_key)
     return test_key
