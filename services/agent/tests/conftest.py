@@ -92,14 +92,6 @@ def create_test_app() -> FastAPI:
 app = create_test_app()
 
 
-@pytest.fixture(scope="session")
-def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
-    """Create an instance of the default event loop for each test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
-
 @pytest.fixture
 def mock_redis() -> MagicMock:
     """Mock Redis client."""
@@ -451,14 +443,14 @@ async def test_db_engine() -> AsyncGenerator[Any, None]:
             )
         """))
 
-        # Create memories table
+        # Create memories table (without VECTOR type for CI compatibility)
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS memories (
                 id TEXT PRIMARY KEY,
                 agent_id TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 content TEXT NOT NULL,
-                embedding VECTOR(1536),
+                embedding BYTEA,
                 metadata JSONB,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )

@@ -55,14 +55,17 @@ class TestStreamSubscriber:
     async def test_disconnect(self):
         """Test disconnecting from Redis."""
         subscriber = StreamSubscriber()
-        subscriber._redis = AsyncMock()
-        subscriber._pubsub = AsyncMock()
+        mock_redis = AsyncMock()
+        mock_pubsub = AsyncMock()
+        subscriber._redis = mock_redis
+        subscriber._pubsub = mock_pubsub
         subscriber._subscribed_sessions = {"session-1", "session-2"}
 
         await subscriber.disconnect()
 
-        subscriber._pubsub.close.assert_called_once()
-        subscriber._redis.close.assert_called_once()
+        # Assert on captured mocks (subscriber._pubsub is None after disconnect)
+        mock_pubsub.close.assert_called_once()
+        mock_redis.close.assert_called_once()
         assert subscriber._redis is None
         assert subscriber._pubsub is None
         assert len(subscriber._subscribed_sessions) == 0
