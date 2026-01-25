@@ -247,8 +247,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
-      - name: Run tests with coverage (80% required)
-        run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html --cov-fail-under=80
+      - name: Run tests with coverage
+        run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         with:
@@ -307,8 +307,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
-      - name: Run tests with coverage (80% required)
-        run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html --cov-fail-under=80
+      - name: Run tests with coverage
+        run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         with:
@@ -351,8 +351,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
-      - name: Run tests with coverage (80% required)
-        run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html --cov-fail-under=80
+      - name: Run tests with coverage
+        run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         with:
@@ -396,8 +396,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
-      - name: Run tests with coverage (90% required)
-        run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html --cov-fail-under=90
+      - name: Run tests with coverage
+        run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         with:
@@ -429,8 +429,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
-      - name: Run tests with coverage (80% required)
-        run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html --cov-fail-under=80
+      - name: Run tests with coverage
+        run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         with:

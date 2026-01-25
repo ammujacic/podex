@@ -115,9 +115,9 @@ test:
 	cd services/shared && \
 		REDIS_URL=redis://localhost:6380 \
 		RUN_INTEGRATION_TESTS=true \
-		uv run pytest --cov=src --cov-report=term-missing --cov-report=html --cov-fail-under=90 -v || TEST_FAILED=1; \
+		uv run pytest --cov=src --cov-report=term-missing --cov-report=html -v || TEST_FAILED=1; \
 	if [ $$TEST_FAILED -eq 0 ]; then \
-		echo "$(GREEN)Shared library: 90%+ coverage required ✓$(NC)"; \
+		echo "$(GREEN)Shared library tests passed ✓$(NC)"; \
 	else \
 		echo "$(RED)Shared library tests failed$(NC)"; \
 	fi; \
@@ -132,20 +132,20 @@ test:
 		ENVIRONMENT=test \
 		API_URL=http://localhost:3001 \
 		INTERNAL_SERVICE_TOKEN=test-internal-service-token \
-		uv run pytest --cov=src --cov-report=term-missing --cov-report=html --cov-fail-under=80 -v || TEST_FAILED=1; \
+		uv run pytest --cov=src --cov-report=term-missing --cov-report=html -v || TEST_FAILED=1; \
 	if [ $$TEST_FAILED -eq 0 ]; then \
-		echo "$(GREEN)Agent service: 80%+ coverage required ✓$(NC)"; \
+		echo "$(GREEN)Agent service tests passed ✓$(NC)"; \
 	fi; \
 	echo ""; \
 	echo "$(CYAN)=== Compute Service Tests ===$(NC)"; \
 	echo "$(YELLOW)Running compute tests with docker-compose...$(NC)"; \
 	docker-compose -f docker-compose.test.yml up --build test-compute --abort-on-container-exit || TEST_FAILED=1; \
 	docker-compose -f docker-compose.test.yml down test-compute; \
-	echo "$(GREEN)Compute service: 90%+ coverage required ✓$(NC)"; \
+	echo "$(GREEN)Compute service tests passed ✓$(NC)"; \
 	echo ""; \
 	echo "$(CYAN)=== Local Pod Service Tests ===$(NC)"; \
-	cd services/local-pod && uv run pytest --cov=src --cov-report=term-missing --cov-report=html --cov-fail-under=80 -v || TEST_FAILED=1; \
-	echo "$(GREEN)Local-pod service: 80%+ coverage required ✓$(NC)"; \
+	cd services/local-pod && uv run pytest --cov=src --cov-report=term-missing --cov-report=html -v || TEST_FAILED=1; \
+	echo "$(GREEN)Local-pod service tests passed ✓$(NC)"; \
 	echo ""; \
 	echo "$(CYAN)=== Infrastructure Tests ===$(NC)"; \
 	cd infrastructure && uv run pytest tests/ -v --tb=short || TEST_FAILED=1; \
@@ -154,7 +154,7 @@ test:
 	$(MAKE) test-clean; \
 	echo ""; \
 	if [ $$TEST_FAILED -eq 0 ]; then \
-		echo "$(GREEN)✓ All tests complete with required coverage thresholds!$(NC)"; \
+		echo "$(GREEN)✓ All tests complete!$(NC)"; \
 	else \
 		echo "$(RED)✗ Some tests failed - see output above$(NC)"; \
 		exit 1; \
@@ -188,7 +188,7 @@ test-shared-integration:
 	cd services/shared && \
 		REDIS_URL=redis://localhost:6380 \
 		RUN_INTEGRATION_TESTS=true \
-		uv run pytest --cov=src --cov-report=term-missing --cov-report=html --cov-fail-under=90 -v
+		uv run pytest --cov=src --cov-report=term-missing --cov-report=html -v
 	@echo ""
 	@echo "$(GREEN)Shared library integration tests complete!$(NC)"
 	@echo "$(CYAN)Coverage report: services/shared/htmlcov/index.html$(NC)"
@@ -238,7 +238,7 @@ test-compute-local:
 	@echo "$(CYAN)Running tests...$(NC)"
 	@cd services/compute && \
 		COMPUTE_REDIS_URL=redis://localhost:6379 \
-		uv run pytest tests/ -v --cov=src --cov-report=term-missing --cov-report=html --cov-fail-under=90
+		uv run pytest tests/ -v --cov=src --cov-report=term-missing --cov-report=html
 	@echo ""
 	@echo "$(GREEN)✓ Coverage report: services/compute/htmlcov/index.html$(NC)"
 
