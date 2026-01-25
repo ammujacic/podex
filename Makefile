@@ -1,4 +1,4 @@
-.PHONY: build test check run stop logs clean help desktop desktop-package
+.PHONY: build test check run stop logs clean help desktop desktop-package sync-venvs
 
 # Colors for output
 CYAN := \033[0;36m
@@ -314,6 +314,27 @@ test-ui:
 	cd packages/ui && pnpm test:coverage
 
 # ============================================
+# SYNC
+# ============================================
+
+## Sync all Python service venvs to match CI exactly (run this before pre-commit)
+sync-venvs:
+	@echo "$(CYAN)Syncing Python venvs to match CI...$(NC)"
+	@echo "$(CYAN)  services/shared$(NC)"
+	@cd services/shared && uv sync --extra dev --quiet
+	@echo "$(CYAN)  services/api$(NC)"
+	@cd services/api && uv sync --extra dev --quiet
+	@echo "$(CYAN)  services/agent$(NC)"
+	@cd services/agent && uv sync --extra dev --quiet
+	@echo "$(CYAN)  services/compute$(NC)"
+	@cd services/compute && uv sync --extra dev --quiet
+	@echo "$(CYAN)  services/local-pod$(NC)"
+	@cd services/local-pod && uv sync --extra dev --quiet
+	@echo "$(CYAN)  infrastructure$(NC)"
+	@cd infrastructure && uv sync --extra dev --quiet
+	@echo "$(GREEN)All venvs synced! Pre-commit will now match CI.$(NC)"
+
+# ============================================
 # CHECK
 # ============================================
 
@@ -545,6 +566,7 @@ help:
 	@echo "  $(GREEN)make test-agent$(NC)        Run comprehensive agent integration tests (local only)"
 	@echo ""
 	@echo "$(YELLOW)Code Quality:$(NC)"
+	@echo "  $(GREEN)make sync-venvs$(NC)        Sync all Python venvs to match CI exactly"
 	@echo "  $(GREEN)make check$(NC)             Run pre-commit hooks (installs hooks if needed)"
 	@echo ""
 	@echo "$(YELLOW)Help:$(NC)"

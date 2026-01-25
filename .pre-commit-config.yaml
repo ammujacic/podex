@@ -124,7 +124,7 @@ repos:
         types: [python]
         pass_filenames: false
 
-      # mypy type checks
+      # mypy type checks (uses service-local venvs to match CI)
       - id: mypy-api
         name: mypy (api)
         entry: bash -c 'cd services/api && uv run mypy src/'

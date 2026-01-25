@@ -211,6 +211,10 @@ export function MobileAgentView({
 
     setIsSubmitting(true);
     setInput('');
+    // Reset textarea height when clearing input
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto';
+    }
 
     // Add optimistic user message to store (with temp ID that will be updated by WebSocket)
     const userMessage: AgentMessage = {
@@ -255,6 +259,10 @@ export function MobileAgentView({
   const handleVoiceCancel = useCallback(() => {
     cancelRecording();
     setInput('');
+    // Reset textarea height when clearing input
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto';
+    }
   }, [cancelRecording]);
 
   // Handle voice send - stop recording and submit the transcript
@@ -281,6 +289,10 @@ export function MobileAgentView({
 
       setIsSubmitting(true);
       setInput('');
+      // Reset textarea height when clearing input
+      if (inputRef.current) {
+        inputRef.current.style.height = 'auto';
+      }
 
       // Add optimistic user message to store
       const userMessage: AgentMessage = {

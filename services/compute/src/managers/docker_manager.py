@@ -1701,11 +1701,7 @@ fi
             # Try a simple command to verify container runtime is working
             try:
                 exec_result = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        container.exec_run,
-                        cmd=["echo", "health"],
-                        timeout=5,
-                    ),
+                    asyncio.to_thread(lambda: container.exec_run(cmd=["echo", "health"])),
                     timeout=10.0,
                 )
                 if exec_result.exit_code != 0:

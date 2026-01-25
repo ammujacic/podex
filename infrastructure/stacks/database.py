@@ -65,7 +65,7 @@ def create_cloud_sql(
                 private_network=vpc["network"].id,
                 enable_private_path_for_google_cloud_services=True,
                 # Require SSL for all connections
-                require_ssl=True,
+                ssl_mode="ENCRYPTED_ONLY",
                 # No authorized networks - VPC-only access
                 authorized_networks=[],
             ),
