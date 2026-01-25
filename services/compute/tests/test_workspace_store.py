@@ -359,7 +359,13 @@ async def test_heartbeat_extends_ttl(workspace_store: WorkspaceStore, workspace_
 async def test_cleanup_stale_removes_old_workspaces(
     workspace_store: WorkspaceStore, workspace_factory
 ):
-    """Test that cleanup_stale removes old workspaces."""
+    """Test that cleanup_stale removes old workspaces.
+
+    Note: cleanup_stale uses the 'updated_at' field (when record was last modified),
+    not 'last_activity'. We need to manually set an old updated_at in Redis.
+    """
+    import json
+
     old_time = datetime.now(UTC) - timedelta(hours=50)
     recent_time = datetime.now(UTC) - timedelta(minutes=10)
 
@@ -372,6 +378,13 @@ async def test_cleanup_stale_removes_old_workspaces(
 
     await workspace_store.save(ws_old)
     await workspace_store.save(ws_recent)
+
+    # Manually set updated_at to an old time for ws-old
+    client = await workspace_store._get_client()
+    data_json = await client.hget("workspace:ws-old", "data")
+    data = json.loads(data_json)
+    data["updated_at"] = old_time.isoformat()
+    await client.hset("workspace:ws-old", "data", json.dumps(data))
 
     # Cleanup workspaces older than 48 hours
     removed = await workspace_store.cleanup_stale(max_age_seconds=48 * 60 * 60)
@@ -388,7 +401,13 @@ async def test_cleanup_stale_removes_old_workspaces(
 async def test_cleanup_stale_respects_threshold(
     workspace_store: WorkspaceStore, workspace_factory
 ):
-    """Test that cleanup_stale respects max_age_seconds threshold."""
+    """Test that cleanup_stale respects max_age_seconds threshold.
+
+    Note: cleanup_stale uses the 'updated_at' field (when record was last modified),
+    not 'last_activity'. We need to manually set updated_at in Redis.
+    """
+    import json
+
     time_30min = datetime.now(UTC) - timedelta(minutes=30)
     time_90min = datetime.now(UTC) - timedelta(minutes=90)
 
@@ -402,6 +421,21 @@ async def test_cleanup_stale_respects_threshold(
     await workspace_store.save(ws1)
     await workspace_store.save(ws2)
 
+    # Manually set updated_at to appropriate times
+    client = await workspace_store._get_client()
+
+    # ws-1: 30 min ago (should not be removed with 1 hour threshold)
+    data_json = await client.hget("workspace:ws-1", "data")
+    data = json.loads(data_json)
+    data["updated_at"] = time_30min.isoformat()
+    await client.hset("workspace:ws-1", "data", json.dumps(data))
+
+    # ws-2: 90 min ago (should be removed with 1 hour threshold)
+    data_json = await client.hget("workspace:ws-2", "data")
+    data = json.loads(data_json)
+    data["updated_at"] = time_90min.isoformat()
+    await client.hset("workspace:ws-2", "data", json.dumps(data))
+
     # Cleanup workspaces older than 1 hour
     removed = await workspace_store.cleanup_stale(max_age_seconds=60 * 60)
 
@@ -413,7 +447,13 @@ async def test_cleanup_stale_respects_threshold(
 async def test_cleanup_stale_returns_removed_ids(
     workspace_store: WorkspaceStore, workspace_factory
 ):
-    """Test that cleanup_stale returns list of removed workspace IDs."""
+    """Test that cleanup_stale returns list of removed workspace IDs.
+
+    Note: cleanup_stale uses the 'updated_at' field (when record was last modified),
+    not 'last_activity'. We need to manually set updated_at in Redis.
+    """
+    import json
+
     old_time = datetime.now(UTC) - timedelta(hours=50)
 
     ws1 = workspace_factory.create_info(
@@ -425,6 +465,15 @@ async def test_cleanup_stale_returns_removed_ids(
 
     await workspace_store.save(ws1)
     await workspace_store.save(ws2)
+
+    # Manually set updated_at to old time for both workspaces
+    client = await workspace_store._get_client()
+
+    for ws_id in ["ws-1", "ws-2"]:
+        data_json = await client.hget(f"workspace:{ws_id}", "data")
+        data = json.loads(data_json)
+        data["updated_at"] = old_time.isoformat()
+        await client.hset(f"workspace:{ws_id}", "data", json.dumps(data))
 
     removed = await workspace_store.cleanup_stale(max_age_seconds=48 * 60 * 60)
 

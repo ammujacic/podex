@@ -104,20 +104,18 @@ class TestDockerIntegration:
             config={"tier": "starter"},
         )
 
-        # Write file
-        write_result = await manager.write_file(
+        # Write file - write_file returns None on success, raises on error
+        await manager.write_file(
             "ws_integration_test_4", "/tmp/test.txt", "integration test content"
         )
-        assert write_result["exit_code"] == 0
 
-        # Read file back
-        read_result = await manager.read_file("ws_integration_test_4", "/tmp/test.txt")
-        assert read_result["exit_code"] == 0
-        assert "integration test content" in read_result.get("content", "")
+        # Read file back - read_file returns file content directly
+        content = await manager.read_file("ws_integration_test_4", "/tmp/test.txt")
+        assert "integration test content" in content
 
-        # List files
-        list_result = await manager.list_files("ws_integration_test_4", "/tmp")
-        assert list_result["exit_code"] == 0
+        # List files - list_files returns a list of file entries directly
+        files = await manager.list_files("ws_integration_test_4", "/tmp")
+        assert isinstance(files, list)
 
         # Cleanup
         await manager.delete_workspace("ws_integration_test_4")
@@ -139,10 +137,11 @@ class TestDockerIntegration:
         )
 
         # Get active ports (may be empty in Alpine)
+        # get_active_ports returns a list of port dicts directly
         result = await manager.get_active_ports("ws_integration_test_5")
 
-        assert "ports" in result
-        assert isinstance(result["ports"], list)
+        assert isinstance(result, list)
+        # Each port entry is a dict with port info (may be empty if no ports listening)
 
         # Cleanup
         await manager.delete_workspace("ws_integration_test_5")
@@ -190,9 +189,9 @@ class TestDockerIntegration:
         assert ws1["status"] == "running"
         assert ws2["status"] == "running"
 
-        # Verify both exist
+        # Verify both exist - list_workspaces returns a list directly
         workspaces = await manager.list_workspaces()
-        assert len(workspaces["workspaces"]) >= 2
+        assert len(workspaces) >= 2
 
         # Cleanup
         await manager.delete_workspace("ws_multi_1")

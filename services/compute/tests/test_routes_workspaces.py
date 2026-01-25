@@ -22,23 +22,31 @@ from src.models.workspace import (
 # ============================================
 
 
-def test_missing_user_id_header(fastapi_client: TestClient):
-    """Test that missing X-User-ID header returns 403."""
-    # Remove X-User-ID header
-    headers = dict(fastapi_client.headers)
-    del headers["X-User-ID"]
+def test_missing_user_id_header(test_internal_api_key: str, docker_manager, mock_api_calls):
+    """Test that missing X-User-ID header returns 401."""
+    from src.main import app
 
-    response = fastapi_client.get("/workspaces/test-ws-1", headers=headers)
-    assert response.status_code == status.HTTP_403_FORBIDDEN
+    # Create a fresh client without default headers
+    with TestClient(app) as client:
+        # Request with only X-Internal-API-Key, missing X-User-ID
+        response = client.get(
+            "/workspaces/test-ws-1",
+            headers={"X-Internal-API-Key": test_internal_api_key},
+        )
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
 
-def test_missing_internal_api_key(fastapi_client: TestClient):
+def test_missing_internal_api_key(test_user_id: str, test_internal_api_key: str, docker_manager, mock_api_calls):
     """Test that missing X-Internal-API-Key header returns 401."""
-    # Remove X-Internal-API-Key header
-    headers = dict(fastapi_client.headers)
-    del headers["X-Internal-API-Key"]
+    from src.main import app
 
-    response = fastapi_client.get("/workspaces/test-ws-1", headers=headers)
+    # Create a fresh client without default headers
+    with TestClient(app) as client:
+        # Request with only X-User-ID, missing X-Internal-API-Key
+        response = client.get(
+            "/workspaces/test-ws-1",
+            headers={"X-User-ID": test_user_id},
+        )
     assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
 
@@ -69,13 +77,13 @@ async def test_verify_workspace_ownership_blocks_wrong_user(
 
 @pytest.mark.asyncio
 async def test_create_workspace_success(
-    fastapi_client: TestClient, workspace_store, test_user_id
+    fastapi_client: TestClient, workspace_store, test_user_id, workspace_factory
 ):
     """Test successful workspace creation."""
     request_data = {
         "session_id": "session-1",
         "config": {
-            "tier": "STARTER",
+            "tier": "starter",  # lowercase enum value
             "git_email": "test@example.com",
             "git_name": "Test User",
             "repos": [],
@@ -86,15 +94,13 @@ async def test_create_workspace_success(
         "src.managers.docker_manager.DockerComputeManager.create_workspace",
         new_callable=AsyncMock,
     ) as mock_create:
-        # Mock successful creation
-        from src.models.workspace import WorkspaceInfo
-
-        mock_workspace = WorkspaceInfo(
-            id="ws-created",
+        # Use workspace_factory to create a properly configured mock workspace
+        mock_workspace = workspace_factory.create_info(
+            workspace_id="ws-created",
             user_id=test_user_id,
             session_id="session-1",
             status=WorkspaceStatus.RUNNING,
-            config=WorkspaceConfig(tier=WorkspaceTier.STARTER),
+            tier=WorkspaceTier.STARTER,
         )
         mock_create.return_value = mock_workspace
 
@@ -108,12 +114,12 @@ async def test_create_workspace_success(
 
 
 @pytest.mark.asyncio
-async def test_create_workspace_with_repos(fastapi_client: TestClient, test_user_id):
+async def test_create_workspace_with_repos(fastapi_client: TestClient, test_user_id, workspace_factory):
     """Test workspace creation with git repos."""
     request_data = {
         "session_id": "session-1",
         "config": {
-            "tier": "PRO",
+            "tier": "pro",  # lowercase enum value
             "git_email": "test@example.com",
             "git_name": "Test User",
             "github_token": "ghp_test123",
@@ -125,17 +131,14 @@ async def test_create_workspace_with_repos(fastapi_client: TestClient, test_user
         "src.managers.docker_manager.DockerComputeManager.create_workspace",
         new_callable=AsyncMock,
     ) as mock_create:
-        from src.models.workspace import WorkspaceInfo
-
-        mock_workspace = WorkspaceInfo(
-            id="ws-with-repos",
+        # Use workspace_factory to create a properly configured mock workspace
+        mock_workspace = workspace_factory.create_info(
+            workspace_id="ws-with-repos",
             user_id=test_user_id,
             session_id="session-1",
             status=WorkspaceStatus.RUNNING,
-            config=WorkspaceConfig(
-                tier=WorkspaceTier.PRO,
-                repos=["https://github.com/test/repo1", "https://github.com/test/repo2"],
-            ),
+            tier=WorkspaceTier.PRO,
+            repos=["https://github.com/test/repo1", "https://github.com/test/repo2"],
         )
         mock_create.return_value = mock_workspace
 
@@ -143,7 +146,7 @@ async def test_create_workspace_with_repos(fastapi_client: TestClient, test_user
 
         assert response.status_code == status.HTTP_201_CREATED
         data = response.json()
-        assert len(data["config"]["repos"]) == 2
+        assert len(data["repos"]) == 2
 
 
 @pytest.mark.asyncio
@@ -165,7 +168,7 @@ async def test_create_workspace_max_limit_reached(fastapi_client: TestClient):
     """Test workspace creation when max limit is reached."""
     request_data = {
         "session_id": "session-1",
-        "config": {"tier": "STARTER"},
+        "config": {"tier": "starter"},  # lowercase enum value
     }
 
     with patch(

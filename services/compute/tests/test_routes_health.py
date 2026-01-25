@@ -28,10 +28,10 @@ def test_readiness_endpoint(fastapi_client: TestClient):
 
 def test_root_endpoint(fastapi_client: TestClient):
     """Test GET / returns service info."""
-    # Root endpoint doesn't require authentication
-    response = fastapi_client.get("/", headers={})
+    # Root endpoint requires authentication
+    response = fastapi_client.get("/")
 
     assert response.status_code == status.HTTP_200_OK
     data = response.json()
     assert "service" in data
-    assert data["service"] == "compute"
+    assert data["service"] == "podex-compute"

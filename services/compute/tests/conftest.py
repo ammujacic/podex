@@ -86,6 +86,10 @@ class MockWorkspaceStore:
         self._workspaces: dict[str, Any] = {}
         self._client = None
 
+    async def _get_client(self) -> Any:
+        """Mock method for compatibility with init_compute_manager."""
+        return self  # Return self since no real Redis client is needed
+
     async def save(self, workspace: Any) -> None:
         """Save workspace to in-memory store."""
         self._workspaces[workspace.id] = workspace
@@ -141,8 +145,8 @@ async def workspace_store(redis_url: str) -> AsyncGenerator[WorkspaceStore, None
 
     yield store
 
-    # Clean up after test
-    if store._client is not None:
+    # Clean up after test - check if client is still connected
+    if store._client is not None and store._client._client is not None:
         await _flush_test_keys(store._client)
         await store._client.disconnect()
         store._client = None
@@ -332,9 +336,15 @@ def test_user_id() -> str:
 
 
 @pytest.fixture
-def test_internal_api_key() -> str:
-    """Test internal API key for authentication."""
-    return settings.internal_api_key
+def test_internal_api_key(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Test internal API key for authentication.
+
+    Sets a non-empty API key so authentication checks are actually enforced.
+    """
+    test_key = "test-api-key-12345"
+    # Set the key in settings so auth checks work
+    monkeypatch.setattr(settings, "internal_api_key", test_key)
+    return test_key
 
 
 @pytest.fixture
@@ -344,13 +354,19 @@ async def fastapi_client(
     test_internal_api_key: str,
     mock_api_calls: respx.MockRouter,
 ) -> AsyncGenerator[TestClient, None]:
-    """FastAPI TestClient with real routes and dependencies."""
-    from src.deps import ComputeManagerSingleton, init_compute_manager
+    """FastAPI TestClient with real routes and dependencies.
+
+    Uses mocked workspace store to avoid Redis connection issues in tests.
+    """
+    from src.deps import ComputeManagerSingleton
     from src.main import app
 
-    # Initialize compute manager singleton
-    ComputeManagerSingleton.manager = docker_manager
-    await init_compute_manager()
+    # Initialize compute manager singleton with mock store
+    # Setting _workspace_store prevents init_compute_manager from creating a real Redis connection
+    ComputeManagerSingleton._instance = docker_manager
+    # Use the mock workspace store from docker_manager fixture
+    # docker_manager uses mock_workspace_store which doesn't need Redis
+    ComputeManagerSingleton._workspace_store = docker_manager._workspace_store
 
     # Create test client
     with TestClient(app) as client:
@@ -360,6 +376,10 @@ async def fastapi_client(
             "X-Internal-API-Key": test_internal_api_key,
         })
         yield client
+
+    # Clean up singleton state
+    ComputeManagerSingleton._instance = None
+    ComputeManagerSingleton._workspace_store = None
 
 
 # ============================================
