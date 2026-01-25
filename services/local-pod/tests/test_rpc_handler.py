@@ -15,7 +15,7 @@ class TestRPCHandlerInit:
         mock_docker = MagicMock()
         handler = RPCHandler(mock_docker)
 
-        assert handler.docker is mock_docker
+        assert handler.manager is mock_docker
         assert len(handler._handlers) > 0
 
     def test_handlers_registered(self) -> None:

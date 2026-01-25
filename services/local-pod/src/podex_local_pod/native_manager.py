@@ -41,9 +41,11 @@ class NativeManager:
         self._workspaces: dict[str, dict[str, Any]] = {}
 
         # Create path validator from config
+        # Include workspace_dir as always-allowed (for default workspace creation)
         self._validator = PathValidator(
             mounts=config.get_mounts_as_dicts(),
             security=config.native.security,
+            workspace_dir=config.native.workspace_dir,
         )
 
     @property
@@ -279,19 +281,30 @@ class NativeManager:
                 }
 
         try:
-            # Run command
-            process = await asyncio.wait_for(
-                asyncio.create_subprocess_shell(
-                    command,
-                    cwd=cwd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    env={**os.environ, "WORKSPACE_ID": workspace_id},
-                ),
-                timeout=timeout,
+            # Create subprocess
+            process = await asyncio.create_subprocess_shell(
+                command,
+                cwd=cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={**os.environ, "WORKSPACE_ID": workspace_id},
             )
 
-            stdout, stderr = await process.communicate()
+            # Wait for completion with timeout
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=timeout,
+                )
+            except TimeoutError:
+                # Kill the process on timeout
+                process.kill()
+                await process.wait()
+                return {
+                    "exit_code": 124,
+                    "stdout": "",
+                    "stderr": f"Command timed out after {timeout} seconds",
+                }
 
             # Update activity
             workspace["last_activity"] = datetime.now(UTC).isoformat()
@@ -302,12 +315,6 @@ class NativeManager:
                 "stderr": stderr.decode("utf-8", errors="replace"),
             }
 
-        except TimeoutError:
-            return {
-                "exit_code": 124,
-                "stdout": "",
-                "stderr": f"Command timed out after {timeout} seconds",
-            }
         except Exception as e:
             logger.error("Error executing command", error=str(e))
             return {

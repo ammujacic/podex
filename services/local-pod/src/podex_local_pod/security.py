@@ -26,18 +26,27 @@ class PathValidator:
         self,
         mounts: list[dict[str, Any]],
         security: str = "allowlist",
+        workspace_dir: str | None = None,
     ) -> None:
         """Initialize the path validator.
 
         Args:
             mounts: List of allowed mount configurations.
             security: Security mode - "allowlist" or "unrestricted".
+            workspace_dir: Default workspace directory (always allowed in allowlist mode).
         """
         self.mounts = mounts
         self.security = security
+        self.workspace_dir = workspace_dir
 
         # Pre-resolve all mount paths for efficient checking
         self._allowed_paths: list[tuple[str, str]] = []
+
+        # Always allow the workspace directory (where workspaces are created)
+        if workspace_dir:
+            resolved_workspace = str(Path(workspace_dir).resolve())
+            self._allowed_paths.append((resolved_workspace, "rw"))
+
         for mount in mounts:
             resolved = str(Path(mount["path"]).resolve())
             mode = mount.get("mode", "rw")
@@ -210,5 +219,7 @@ def create_validator(config: dict[str, Any]) -> PathValidator:
         Configured PathValidator instance.
     """
     mounts = config.get("mounts", [])
-    security = config.get("native", {}).get("security", "allowlist")
-    return PathValidator(mounts=mounts, security=security)
+    native_config = config.get("native", {})
+    security = native_config.get("security", "allowlist")
+    workspace_dir = native_config.get("workspace_dir")
+    return PathValidator(mounts=mounts, security=security, workspace_dir=workspace_dir)

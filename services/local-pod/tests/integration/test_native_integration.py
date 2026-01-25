@@ -105,8 +105,9 @@ class TestNativeIntegration:
         )
 
         assert workspace["status"] == "running"
-        assert workspace["working_dir"] == temp_mount_dir
-        assert workspace["mount_path"] == temp_mount_dir
+        # Use Path.resolve() to handle macOS /private symlink
+        assert Path(workspace["working_dir"]).resolve() == Path(temp_mount_dir).resolve()
+        assert Path(workspace["mount_path"]).resolve() == Path(temp_mount_dir).resolve()
 
         # Cleanup - should NOT delete mounted directory
         await manager.delete_workspace("ws_native_test_2", preserve_files=True)
@@ -246,7 +247,8 @@ class TestNativeIntegration:
         )
 
         # Should be able to read system files in unrestricted mode
-        content = await manager.read_file("ws_native_test_7", "/etc/hostname")
+        # Use /etc/shells which exists on both Linux and macOS
+        content = await manager.read_file("ws_native_test_7", "/etc/shells")
         assert len(content) > 0
 
         # Cleanup

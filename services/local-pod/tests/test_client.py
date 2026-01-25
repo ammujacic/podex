@@ -20,7 +20,7 @@ class TestLocalPodClientInit:
 
         assert client.config is config
         assert client.sio is not None
-        assert client.docker_manager is not None
+        assert client.manager is not None
         assert client.rpc_handler is not None
         assert client._running is False
         assert client._connected is False
@@ -58,9 +58,14 @@ class TestLocalPodClientCapabilities:
         client.sio.emit.assert_called_once()
         call_args = client.sio.emit.call_args
         assert call_args.args[0] == "capabilities"
-        capabilities = call_args.args[1]
+        data = call_args.args[1]
+        # Capabilities are now nested under "capabilities" key
+        capabilities = data["capabilities"]
         assert capabilities["max_workspaces"] == 5
         assert capabilities["docker_version"] == "24.0.0"
+        # Config is also included
+        assert "config" in data
+        assert data["config"]["mode"] == "docker"
 
     @pytest.mark.asyncio
     async def test_send_capabilities_docker_unavailable(self) -> None:
@@ -73,7 +78,9 @@ class TestLocalPodClientCapabilities:
             await client._send_capabilities()
 
         call_args = client.sio.emit.call_args
-        capabilities = call_args.args[1]
+        data = call_args.args[1]
+        # Capabilities are now nested under "capabilities" key
+        capabilities = data["capabilities"]
         assert capabilities["docker_version"] == "unavailable"
 
 
@@ -88,7 +95,7 @@ class TestLocalPodClientHeartbeat:
         client.sio.emit = AsyncMock()
         client._running = True
         client._connected = True
-        client.docker_manager._workspaces = {"ws_1": {}}
+        client.manager._workspaces = {"ws_1": {}}
 
         # Run heartbeat for a short time
         heartbeat_task = asyncio.create_task(client._heartbeat_loop())
@@ -119,7 +126,7 @@ class TestLocalPodClientRun:
             pod_token="pdx_pod_test",
         )
         client = LocalPodClient(config)
-        client.docker_manager.initialize = AsyncMock()
+        client.manager.initialize = AsyncMock()
         client.sio.connect = AsyncMock()
         client.sio.connected = False
 
@@ -140,7 +147,7 @@ class TestLocalPodClientRun:
             pod_token="pdx_pod_test",
         )
         client = LocalPodClient(config)
-        client.docker_manager.initialize = AsyncMock()
+        client.manager.initialize = AsyncMock()
         client.sio.connect = AsyncMock()
 
         shutdown_event = asyncio.Event()
@@ -156,7 +163,7 @@ class TestLocalPodClientRun:
         """Test auth token is passed to connect."""
         config = LocalPodConfig(pod_token="pdx_pod_secret123")
         client = LocalPodClient(config)
-        client.docker_manager.initialize = AsyncMock()
+        client.manager.initialize = AsyncMock()
         client.sio.connect = AsyncMock()
 
         shutdown_event = asyncio.Event()
@@ -177,14 +184,14 @@ class TestLocalPodClientShutdown:
         config = LocalPodConfig()
         client = LocalPodClient(config)
         client._running = True
-        client.docker_manager.shutdown = AsyncMock()
+        client.manager.shutdown = AsyncMock()
         client.sio.connected = True
         client.sio.disconnect = AsyncMock()
 
         await client.shutdown()
 
         assert client._running is False
-        client.docker_manager.shutdown.assert_called_once()
+        client.manager.shutdown.assert_called_once()
         client.sio.disconnect.assert_called_once()
 
     @pytest.mark.asyncio
@@ -193,7 +200,7 @@ class TestLocalPodClientShutdown:
         config = LocalPodConfig()
         client = LocalPodClient(config)
         client._running = True
-        client.docker_manager.shutdown = AsyncMock()
+        client.manager.shutdown = AsyncMock()
         client.sio.connected = False
 
         # Create a mock heartbeat task
@@ -211,7 +218,7 @@ class TestLocalPodClientShutdown:
         """Test shutdown when not connected."""
         config = LocalPodConfig()
         client = LocalPodClient(config)
-        client.docker_manager.shutdown = AsyncMock()
+        client.manager.shutdown = AsyncMock()
         client.sio.connected = False
         client.sio.disconnect = AsyncMock()
 
@@ -351,12 +358,12 @@ class TestSocketEventHandlers:
         """Test on_terminal_input forwards data to docker manager."""
         config = LocalPodConfig()
         client = LocalPodClient(config)
-        client.docker_manager.terminal_write = AsyncMock()
+        client.manager.terminal_write = AsyncMock()
 
         handlers = {name: handler for name, handler in client.sio.handlers.get("/local-pod", {}).items()}
         if "terminal_input" in handlers:
             await handlers["terminal_input"]({"workspace_id": "ws_123", "data": "echo hello\n"})
-            client.docker_manager.terminal_write.assert_called_once_with("ws_123", "echo hello\n")
+            client.manager.terminal_write.assert_called_once_with("ws_123", "echo hello\n")
 
 
 class TestConnectionErrorRecovery:
@@ -367,7 +374,7 @@ class TestConnectionErrorRecovery:
         """Test run raises connection refused error after logging."""
         config = LocalPodConfig(cloud_url="http://localhost:9999")
         client = LocalPodClient(config)
-        client.docker_manager.initialize = AsyncMock()
+        client.manager.initialize = AsyncMock()
         client.sio.connect = AsyncMock(side_effect=ConnectionRefusedError)
 
         shutdown_event = asyncio.Event()
@@ -382,7 +389,7 @@ class TestConnectionErrorRecovery:
         """Test run raises timeout error after logging."""
         config = LocalPodConfig()
         client = LocalPodClient(config)
-        client.docker_manager.initialize = AsyncMock()
+        client.manager.initialize = AsyncMock()
         client.sio.connect = AsyncMock(side_effect=TimeoutError)
 
         shutdown_event = asyncio.Event()
@@ -397,7 +404,7 @@ class TestConnectionErrorRecovery:
         """Test run waits for shutdown event."""
         config = LocalPodConfig()
         client = LocalPodClient(config)
-        client.docker_manager.initialize = AsyncMock()
+        client.manager.initialize = AsyncMock()
         client.sio.connect = AsyncMock()
         client.sio.connected = True
 
