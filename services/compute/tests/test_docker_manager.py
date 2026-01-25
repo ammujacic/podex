@@ -9,13 +9,16 @@ via docker_manager._mock_container to customize behavior.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any, AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import docker
 import pytest
 from docker.models.containers import Container
 
+from src.managers.docker_manager import DockerComputeManager
 from src.models.workspace import (
     WorkspaceConfig,
     WorkspaceExecResponse,
@@ -23,6 +26,46 @@ from src.models.workspace import (
     WorkspaceStatus,
     WorkspaceTier,
 )
+
+if TYPE_CHECKING:
+    from src.storage.workspace_store import WorkspaceStore
+
+
+@asynccontextmanager
+async def create_mock_docker_manager(
+    workspace_store: WorkspaceStore,
+    mock_container: MagicMock | None = None,
+) -> AsyncGenerator[tuple[DockerComputeManager, MagicMock], None]:
+    """Create a DockerComputeManager with mocked Docker client.
+
+    Args:
+        workspace_store: The workspace store to use
+        mock_container: Optional pre-configured mock container
+
+    Yields:
+        Tuple of (manager, mock_docker_client)
+    """
+    if mock_container is None:
+        mock_container = create_mock_container()
+
+    mock_docker_client = MagicMock()
+    mock_docker_client.containers.run.return_value = mock_container
+    mock_docker_client.containers.get.side_effect = [
+        docker.errors.NotFound("not found"),
+        mock_container,
+    ]
+    mock_docker_client.containers.list.return_value = []
+
+    with patch("docker.from_env", return_value=mock_docker_client):
+        manager = DockerComputeManager(workspace_store=workspace_store)
+        manager._mock_docker_client = mock_docker_client
+        manager._mock_container = mock_container
+
+        yield manager, mock_docker_client
+
+        # Cleanup
+        if manager._http_client and not manager._http_client.is_closed:
+            await manager._http_client.aclose()
 
 
 # Local helper to match conftest.create_mock_container
@@ -157,7 +200,7 @@ async def test_create_workspace_max_limit_reached(workspace_store, test_user_id,
             session_id="session-1",
             status=WorkspaceStatus.RUNNING,
         )
-        await workspace_store.save(workspace)
+        await docker_manager._workspace_store.save(workspace)
 
     config = WorkspaceConfig(tier=WorkspaceTier.STARTER)
 
@@ -180,7 +223,7 @@ async def test_stop_workspace(workspace_store, workspace_factory, test_user_id):
         container_id="container123",
         tier=WorkspaceTier.STARTER,
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     mock_container = create_mock_container(container_id="container123")
     mock_container.stop = MagicMock()
@@ -209,7 +252,7 @@ async def test_stop_workspace_already_stopped(workspace_store, workspace_factory
         status=WorkspaceStatus.STOPPED,
         container_id="container123",
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     mock_container = create_mock_container(container_id="container123", status="exited")
 
@@ -230,7 +273,7 @@ async def test_restart_workspace(workspace_store, workspace_factory, test_user_i
         status=WorkspaceStatus.STOPPED,
         container_id="container123",
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     mock_container = create_mock_container(container_id="container123", status="exited")
     mock_container.start = MagicMock()
@@ -256,7 +299,7 @@ async def test_delete_workspace(workspace_store, workspace_factory, test_user_id
         user_id=test_user_id,
         container_id="container123",
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     mock_container = create_mock_container(container_id="container123")
     mock_container.stop = MagicMock()
@@ -290,7 +333,7 @@ async def test_exec_command_success(workspace_store, workspace_factory, test_use
         status=WorkspaceStatus.RUNNING,
         container_id="container123",
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     mock_container = create_mock_container(container_id="container123")
     mock_exec_result = MagicMock()
@@ -310,7 +353,7 @@ async def test_exec_command_success(workspace_store, workspace_factory, test_use
 
 
 @pytest.mark.asyncio
-async def test_exec_command_with_timeout(docker_manager, workspace_store, workspace_factory, test_user_id):
+async def test_exec_command_with_timeout(docker_manager, workspace_factory, test_user_id):
     """Test command execution with timeout."""
     workspace = workspace_factory.create_info(
         workspace_id="test-ws-1",
@@ -318,7 +361,7 @@ async def test_exec_command_with_timeout(docker_manager, workspace_store, worksp
         status=WorkspaceStatus.RUNNING,
         container_id="container123",
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     mock_container = MagicMock(spec=Container)
     mock_container.status = "running"
@@ -335,7 +378,7 @@ async def test_exec_command_with_timeout(docker_manager, workspace_store, worksp
 
 @pytest.mark.asyncio
 async def test_exec_command_auto_restart(
-    docker_manager, workspace_store, workspace_factory, test_user_id
+    docker_manager, workspace_factory, test_user_id
 ):
     """Test command execution auto-restarts stopped container."""
     workspace = workspace_factory.create_info(
@@ -344,7 +387,7 @@ async def test_exec_command_auto_restart(
         status=WorkspaceStatus.STOPPED,
         container_id="container123",
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     mock_container = MagicMock(spec=Container)
     mock_container.status = "exited"
@@ -363,7 +406,7 @@ async def test_exec_command_auto_restart(
 
 
 @pytest.mark.asyncio
-async def test_exec_command_stream(docker_manager, workspace_store, workspace_factory, test_user_id):
+async def test_exec_command_stream(docker_manager, workspace_factory, test_user_id):
     """Test streaming command execution."""
     workspace = workspace_factory.create_info(
         workspace_id="test-ws-1",
@@ -371,7 +414,7 @@ async def test_exec_command_stream(docker_manager, workspace_store, workspace_fa
         status=WorkspaceStatus.RUNNING,
         container_id="container123",
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     mock_container = MagicMock(spec=Container)
     mock_container.status = "running"
@@ -396,7 +439,7 @@ async def test_exec_command_stream(docker_manager, workspace_store, workspace_fa
 
 
 @pytest.mark.asyncio
-async def test_read_file(docker_manager, workspace_store, workspace_factory, test_user_id):
+async def test_read_file(docker_manager, workspace_factory, test_user_id):
     """Test reading file from workspace."""
     workspace = workspace_factory.create_info(
         workspace_id="test-ws-1",
@@ -404,7 +447,7 @@ async def test_read_file(docker_manager, workspace_store, workspace_factory, tes
         status=WorkspaceStatus.RUNNING,
         container_id="container123",
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     mock_container = MagicMock(spec=Container)
     mock_container.status = "running"
@@ -420,7 +463,7 @@ async def test_read_file(docker_manager, workspace_store, workspace_factory, tes
 
 
 @pytest.mark.asyncio
-async def test_write_file(docker_manager, workspace_store, workspace_factory, test_user_id):
+async def test_write_file(docker_manager, workspace_factory, test_user_id):
     """Test writing file to workspace."""
     workspace = workspace_factory.create_info(
         workspace_id="test-ws-1",
@@ -428,7 +471,7 @@ async def test_write_file(docker_manager, workspace_store, workspace_factory, te
         status=WorkspaceStatus.RUNNING,
         container_id="container123",
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     mock_container = MagicMock(spec=Container)
     mock_container.status = "running"
@@ -444,7 +487,7 @@ async def test_write_file(docker_manager, workspace_store, workspace_factory, te
 
 
 @pytest.mark.asyncio
-async def test_list_files(docker_manager, workspace_store, workspace_factory, test_user_id):
+async def test_list_files(docker_manager, workspace_factory, test_user_id):
     """Test listing files in workspace directory."""
     workspace = workspace_factory.create_info(
         workspace_id="test-ws-1",
@@ -452,7 +495,7 @@ async def test_list_files(docker_manager, workspace_store, workspace_factory, te
         status=WorkspaceStatus.RUNNING,
         container_id="container123",
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     mock_container = MagicMock(spec=Container)
     mock_container.status = "running"
@@ -474,7 +517,7 @@ async def test_list_files(docker_manager, workspace_store, workspace_factory, te
 
 
 @pytest.mark.asyncio
-async def test_discover_existing_workspaces(docker_manager, workspace_store):
+async def test_discover_existing_workspaces(docker_manager):
     """Test discovering existing workspaces from Docker."""
     mock_container1 = MagicMock(spec=Container)
     mock_container1.id = "container1"
@@ -494,9 +537,9 @@ async def test_discover_existing_workspaces(docker_manager, workspace_store):
         with patch("src.managers.docker_manager.sync_workspace_status_to_api", new_callable=AsyncMock):
             await docker_manager.discover_existing_workspaces()
 
-            # Verify workspaces were added to store
-            ws1 = await workspace_store.get("ws-1")
-            ws2 = await workspace_store.get("ws-2")
+            # Verify workspaces were added to manager's store (mock store)
+            ws1 = await docker_manager._workspace_store.get("ws-1")
+            ws2 = await docker_manager._workspace_store.get("ws-2")
 
             assert ws1 is not None
             assert ws1.status == WorkspaceStatus.RUNNING
@@ -507,7 +550,7 @@ async def test_discover_existing_workspaces(docker_manager, workspace_store):
 
 @pytest.mark.asyncio
 async def test_check_workspace_health(
-    docker_manager, workspace_store, workspace_factory, test_user_id
+    docker_manager, workspace_factory, test_user_id
 ):
     """Test checking workspace health."""
     workspace = workspace_factory.create_info(
@@ -516,7 +559,7 @@ async def test_check_workspace_health(
         status=WorkspaceStatus.RUNNING,
         container_id="container123",
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     mock_container = MagicMock(spec=Container)
     mock_container.status = "running"
@@ -532,7 +575,7 @@ async def test_check_workspace_health(
 
 @pytest.mark.asyncio
 async def test_check_workspace_health_unhealthy(
-    docker_manager, workspace_store, workspace_factory, test_user_id
+    docker_manager, workspace_factory, test_user_id
 ):
     """Test checking unhealthy workspace."""
     workspace = workspace_factory.create_info(
@@ -541,7 +584,7 @@ async def test_check_workspace_health_unhealthy(
         status=WorkspaceStatus.RUNNING,
         container_id="container123",
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     mock_container = MagicMock(spec=Container)
     mock_container.status = "exited"
@@ -558,7 +601,7 @@ async def test_check_workspace_health_unhealthy(
 
 
 @pytest.mark.asyncio
-async def test_track_running_workspaces_usage(docker_manager, workspace_store, workspace_factory):
+async def test_track_running_workspaces_usage(docker_manager, workspace_factory):
     """Test tracking usage for running workspaces."""
     # Create running workspaces
     ws1 = workspace_factory.create_info(
@@ -614,7 +657,7 @@ async def test_billing_lock_prevents_concurrent_tracking(docker_manager):
 
 
 @pytest.mark.asyncio
-async def test_get_active_ports(docker_manager, workspace_store, workspace_factory, test_user_id):
+async def test_get_active_ports(docker_manager, workspace_factory, test_user_id):
     """Test getting active ports from workspace."""
     workspace = workspace_factory.create_info(
         workspace_id="test-ws-1",
@@ -622,7 +665,7 @@ async def test_get_active_ports(docker_manager, workspace_store, workspace_facto
         status=WorkspaceStatus.RUNNING,
         container_id="container123",
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     mock_container = MagicMock(spec=Container)
     mock_container.status = "running"
@@ -645,7 +688,7 @@ async def test_get_active_ports(docker_manager, workspace_store, workspace_facto
 
 @pytest.mark.asyncio
 async def test_scale_workspace_tier_upgrade(
-    docker_manager, workspace_store, workspace_factory, test_user_id
+    docker_manager, workspace_factory, test_user_id
 ):
     """Test scaling workspace to higher tier."""
     workspace = workspace_factory.create_info(
@@ -655,7 +698,7 @@ async def test_scale_workspace_tier_upgrade(
         tier=WorkspaceTier.STARTER,
         container_id="container123",
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     mock_old_container = MagicMock(spec=Container)
     mock_old_container.stop = MagicMock()
@@ -686,14 +729,14 @@ async def test_scale_workspace_tier_upgrade(
 
 
 @pytest.mark.asyncio
-async def test_proxy_request_get(docker_manager, workspace_store, workspace_factory, test_user_id):
+async def test_proxy_request_get(docker_manager, workspace_factory, test_user_id):
     """Test proxying GET request to workspace."""
     workspace = workspace_factory.create_info(
         workspace_id="test-ws-1",
         user_id=test_user_id,
         status=WorkspaceStatus.RUNNING,
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     from src.managers.base import ProxyRequest
 
