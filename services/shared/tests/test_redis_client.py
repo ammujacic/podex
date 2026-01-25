@@ -73,14 +73,14 @@ class TestRedisClientConnect:
     async def test_disconnect_cleans_up(self) -> None:
         """Test that disconnect cleans up resources."""
         mock_redis_client = MagicMock()
-        mock_redis_client.close = AsyncMock()
+        mock_redis_client.aclose = AsyncMock()
 
         client = RedisClient("redis://localhost:6379")
         client._client = mock_redis_client
 
         await client.disconnect()
 
-        mock_redis_client.close.assert_called_once()
+        mock_redis_client.aclose.assert_called_once()
         assert client._client is None
 
     @pytest.mark.asyncio
@@ -89,7 +89,7 @@ class TestRedisClientConnect:
         client = RedisClient("redis://localhost:6379")
         client._running = True
         client._client = MagicMock()
-        client._client.close = AsyncMock()
+        client._client.aclose = AsyncMock()
 
         # Create a mock task
         async def dummy_task() -> None:
