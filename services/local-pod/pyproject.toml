@@ -91,6 +91,9 @@ disallow_untyped_decorators = false
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: marks tests that require Docker (deselect with '-m \"not integration\"')",
+]
 
 [tool.coverage.run]
 source = ["src"]

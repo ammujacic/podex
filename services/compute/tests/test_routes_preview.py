@@ -13,7 +13,7 @@ from src.models.workspace import WorkspaceStatus
 
 @pytest.mark.asyncio
 async def test_get_preview_info(
-    fastapi_client: TestClient, workspace_store, workspace_factory, test_user_id
+    fastapi_client: TestClient, docker_manager, workspace_factory, test_user_id
 ):
     """Test getting preview info for a workspace."""
     workspace = workspace_factory.create_info(
@@ -21,7 +21,7 @@ async def test_get_preview_info(
         user_id=test_user_id,
         status=WorkspaceStatus.RUNNING,
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     with patch(
         "src.managers.docker_manager.DockerComputeManager.get_active_ports",
@@ -37,7 +37,8 @@ async def test_get_preview_info(
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
         assert data["workspace_id"] == "test-ws-1"
-        assert data["status"] == "RUNNING"
+        # Enum serializes to lowercase value
+        assert data["status"].lower() == "running"
         assert len(data["active_ports"]) == 2
         assert data["active_ports"][0]["port"] == 3000
         assert data["preview_base_url"] == "/preview/test-ws-1/proxy"
@@ -52,14 +53,14 @@ async def test_get_preview_info_workspace_not_found(fastapi_client: TestClient):
 
 @pytest.mark.asyncio
 async def test_get_active_ports(
-    fastapi_client: TestClient, workspace_store, workspace_factory, test_user_id
+    fastapi_client: TestClient, docker_manager, workspace_factory, test_user_id
 ):
     """Test getting list of active ports."""
     workspace = workspace_factory.create_info(
         workspace_id="test-ws-1",
         user_id=test_user_id,
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     with patch(
         "src.managers.docker_manager.DockerComputeManager.get_active_ports",
@@ -80,14 +81,14 @@ async def test_get_active_ports(
 
 @pytest.mark.asyncio
 async def test_proxy_get_request(
-    fastapi_client: TestClient, workspace_store, workspace_factory, test_user_id
+    fastapi_client: TestClient, docker_manager, workspace_factory, test_user_id
 ):
     """Test proxying GET request to workspace."""
     workspace = workspace_factory.create_info(
         workspace_id="test-ws-1",
         user_id=test_user_id,
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     with patch(
         "src.managers.docker_manager.DockerComputeManager.proxy_request",
@@ -108,14 +109,14 @@ async def test_proxy_get_request(
 
 @pytest.mark.asyncio
 async def test_proxy_post_request(
-    fastapi_client: TestClient, workspace_store, workspace_factory, test_user_id
+    fastapi_client: TestClient, docker_manager, workspace_factory, test_user_id
 ):
     """Test proxying POST request to workspace."""
     workspace = workspace_factory.create_info(
         workspace_id="test-ws-1",
         user_id=test_user_id,
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     with patch(
         "src.managers.docker_manager.DockerComputeManager.proxy_request",
@@ -138,14 +139,14 @@ async def test_proxy_post_request(
 
 @pytest.mark.asyncio
 async def test_proxy_workspace_not_found(
-    fastapi_client: TestClient, workspace_store, workspace_factory, test_user_id
+    fastapi_client: TestClient, docker_manager, workspace_factory, test_user_id
 ):
     """Test proxy request to non-existent workspace returns 404."""
     workspace = workspace_factory.create_info(
         workspace_id="test-ws-1",
         user_id=test_user_id,
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     with patch(
         "src.managers.docker_manager.DockerComputeManager.proxy_request",
@@ -160,14 +161,14 @@ async def test_proxy_workspace_not_found(
 
 @pytest.mark.asyncio
 async def test_proxy_workspace_not_running(
-    fastapi_client: TestClient, workspace_store, workspace_factory, test_user_id
+    fastapi_client: TestClient, docker_manager, workspace_factory, test_user_id
 ):
     """Test proxy request when workspace is not running returns 503."""
     workspace = workspace_factory.create_info(
         workspace_id="test-ws-1",
         user_id=test_user_id,
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     with patch(
         "src.managers.docker_manager.DockerComputeManager.proxy_request",
@@ -182,14 +183,14 @@ async def test_proxy_workspace_not_running(
 
 @pytest.mark.asyncio
 async def test_proxy_connection_error(
-    fastapi_client: TestClient, workspace_store, workspace_factory, test_user_id
+    fastapi_client: TestClient, docker_manager, workspace_factory, test_user_id
 ):
     """Test proxy request when connection fails returns 502."""
     workspace = workspace_factory.create_info(
         workspace_id="test-ws-1",
         user_id=test_user_id,
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     with patch(
         "src.managers.docker_manager.DockerComputeManager.proxy_request",
@@ -204,14 +205,14 @@ async def test_proxy_connection_error(
 
 @pytest.mark.asyncio
 async def test_proxy_timeout(
-    fastapi_client: TestClient, workspace_store, workspace_factory, test_user_id
+    fastapi_client: TestClient, docker_manager, workspace_factory, test_user_id
 ):
     """Test proxy request timeout returns 504."""
     workspace = workspace_factory.create_info(
         workspace_id="test-ws-1",
         user_id=test_user_id,
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     with patch(
         "src.managers.docker_manager.DockerComputeManager.proxy_request",
@@ -226,14 +227,14 @@ async def test_proxy_timeout(
 
 @pytest.mark.asyncio
 async def test_proxy_default_port(
-    fastapi_client: TestClient, workspace_store, workspace_factory, test_user_id
+    fastapi_client: TestClient, docker_manager, workspace_factory, test_user_id
 ):
     """Test proxying to default port 3000."""
     workspace = workspace_factory.create_info(
         workspace_id="test-ws-1",
         user_id=test_user_id,
     )
-    await workspace_store.save(workspace)
+    await docker_manager._workspace_store.save(workspace)
 
     with patch(
         "src.managers.docker_manager.DockerComputeManager.proxy_request",

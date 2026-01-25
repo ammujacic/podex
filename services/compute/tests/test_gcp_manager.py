@@ -92,14 +92,14 @@ async def test_gcs_bucket_creation(gcp_manager, mock_gcp_storage_client):
 
 
 @pytest.mark.asyncio
-async def test_exec_command_via_http(gcp_manager, workspace_store, workspace_factory, test_user_id):
+async def test_exec_command_via_http(gcp_manager, workspace_factory, test_user_id):
     """Test executing command via HTTP to Cloud Run job."""
     workspace = workspace_factory.create_info(
         workspace_id="test-ws-1",
         user_id=test_user_id,
         status=WorkspaceStatus.RUNNING,
     )
-    await workspace_store.save(workspace)
+    await gcp_manager._workspace_store.save(workspace)
 
     with pytest.raises((NotImplementedError, ValueError)):
         # GCP exec is done via HTTP to the running job

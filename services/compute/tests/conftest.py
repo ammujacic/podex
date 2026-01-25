@@ -280,14 +280,22 @@ def mock_gcp_storage_client() -> MagicMock:
 
 @pytest.fixture
 async def gcp_manager(
-    workspace_store: WorkspaceStore,
+    mock_workspace_store: MockWorkspaceStore,
     mock_gcp_run_client: MagicMock,
     mock_gcp_executions_client: MagicMock,
     mock_gcp_storage_client: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncGenerator[GCPComputeManager, None]:
-    """GCPComputeManager with mocked GCP SDK."""
-    from src.managers.gcp_manager import GCPComputeManager
+    """GCPComputeManager with mocked GCP SDK.
+
+    Uses MockWorkspaceStore to avoid Redis dependency.
+    Skips tests if GCP SDK is not installed.
+    """
+    from src.managers.gcp_manager import GCPComputeManager, run_v2
+
+    # Skip if GCP SDK not installed
+    if run_v2 is None:
+        pytest.skip("GCP SDK (google-cloud-run) not installed")
 
     # Mock GCP clients
     monkeypatch.setattr("src.managers.gcp_manager.run_v2.JobsAsyncClient", lambda: mock_gcp_run_client)
@@ -296,7 +304,7 @@ async def gcp_manager(
     )
     monkeypatch.setattr("src.managers.gcp_manager.storage.Client", lambda: mock_gcp_storage_client)
 
-    manager = GCPComputeManager(workspace_store=workspace_store)
+    manager = GCPComputeManager(workspace_store=mock_workspace_store)
     yield manager
 
     # Close HTTP client if it exists

@@ -72,7 +72,7 @@ class TestVerifyWorkspaceOwnership:
 
     @pytest.mark.asyncio
     async def test_verify_ownership_wrong_user(
-        self, _sample_workspace: WorkspaceInfo, mock_compute_manager: MagicMock
+        self, sample_workspace: WorkspaceInfo, mock_compute_manager: MagicMock
     ) -> None:
         """Test 403 when user doesn't own workspace."""
         with pytest.raises(HTTPException) as exc:

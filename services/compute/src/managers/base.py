@@ -239,18 +239,22 @@ class ComputeManager(ABC):
         user_id: str | None = None,
         session_id: str | None = None,
     ) -> list[WorkspaceInfo]:
-        """List workspaces, optionally filtered by user or session.
+        """List workspaces, optionally filtered by user and/or session.
 
         Args:
             user_id: Filter by user ID
-            session_id: Filter by session ID
+            session_id: Filter by session ID (applied after user_id filter)
 
         Returns:
             List of workspace info
         """
         if self._workspace_store:
             if user_id:
-                return await self._workspace_store.list_by_user(user_id)
+                workspaces = await self._workspace_store.list_by_user(user_id)
+                # Apply session_id filter on top of user_id filter if both provided
+                if session_id:
+                    workspaces = [w for w in workspaces if w.session_id == session_id]
+                return workspaces
             if session_id:
                 return await self._workspace_store.list_by_session(session_id)
             return await self._workspace_store.list_all()
