@@ -100,13 +100,6 @@ jobs:
       - name: Run tests with coverage (90% required)
         run: pnpm --filter @podex/${{ matrix.package }} test:coverage
 
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./packages/${{ matrix.package }}/coverage/coverage-final.json
-          flags: frontend-${{ matrix.package }}
-          fail_ci_if_error: false
-
   # Frontend unit tests with coverage
   frontend-test:
     name: Frontend App Tests
@@ -128,13 +121,6 @@ jobs:
       - name: Run unit tests with coverage
         run: pnpm test:coverage
         working-directory: apps/web
-
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./apps/web/coverage/coverage-final.json
-          flags: frontend-unit
-          fail_ci_if_error: false
 
   # ==========================================
   # Backend Lint & Type Check (runs first)
@@ -249,12 +235,6 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./services/api/coverage.xml
-          flags: backend-api
-          fail_ci_if_error: false
 
   # Backend Agent service tests
   backend-agent-test:
@@ -309,12 +289,6 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./services/agent/coverage.xml
-          flags: backend-agent
-          fail_ci_if_error: false
 
   # Backend Compute service tests
   backend-compute-test:
@@ -353,12 +327,6 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./services/compute/coverage.xml
-          flags: backend-compute
-          fail_ci_if_error: false
 
   # Backend Shared library tests (with integration tests)
   backend-shared-test:
@@ -398,12 +366,6 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./services/shared/coverage.xml
-          flags: backend-shared
-          fail_ci_if_error: false
 
   # Backend Local-Pod service tests
   backend-local-pod-test:
@@ -431,12 +393,6 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./services/local-pod/coverage.xml
-          flags: backend-local-pod
-          fail_ci_if_error: false
 
   # ==========================================
   # E2E Tests (Playwright)
