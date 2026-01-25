@@ -1,4 +1,10 @@
-"""Tests for DockerComputeManager - comprehensive manager testing."""
+"""Tests for DockerComputeManager - comprehensive manager testing.
+
+The docker_manager fixture in conftest.py provides a properly mocked
+DockerComputeManager with a mock Docker client. Tests can access the
+mock client via docker_manager._mock_docker_client and the mock container
+via docker_manager._mock_container to customize behavior.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +25,39 @@ from src.models.workspace import (
 )
 
 
+# Local helper to match conftest.create_mock_container
+def create_mock_container(
+    container_id: str = "container123",
+    name: str = "podex-workspace-test",
+    status: str = "running",
+    ip_address: str = "172.17.0.2",
+) -> MagicMock:
+    """Create a properly configured mock Docker container."""
+    mock_container = MagicMock()
+    mock_container.id = container_id
+    mock_container.name = name
+    mock_container.status = status
+    mock_container.attrs = {
+        "NetworkSettings": {
+            "Networks": {
+                "podex-network": {"IPAddress": ip_address}
+            }
+        }
+    }
+    mock_container.reload = MagicMock()
+    mock_container.start = MagicMock()
+    mock_container.stop = MagicMock()
+    mock_container.remove = MagicMock()
+
+    # Mock exec_run for commands - returns (stdout, stderr) tuple
+    mock_exec_result = MagicMock()
+    mock_exec_result.exit_code = 0
+    mock_exec_result.output = (b"ready\n", b"")
+    mock_container.exec_run.return_value = mock_exec_result
+
+    return mock_container
+
+
 # ============================================
 # Workspace Lifecycle Tests
 # ============================================
@@ -26,174 +65,214 @@ from src.models.workspace import (
 
 @pytest.mark.asyncio
 async def test_create_workspace_basic(docker_manager, test_user_id):
-    """Test basic workspace creation."""
+    """Test basic workspace creation with mocked Docker client."""
     config = WorkspaceConfig(
         tier=WorkspaceTier.STARTER,
         git_email="test@example.com",
         git_name="Test User",
     )
 
-    with patch.object(docker_manager.client.containers, "run") as mock_run:
-        mock_container = MagicMock(spec=Container)
-        mock_container.id = "container123"
-        mock_container.status = "running"
-        mock_run.return_value = mock_container
+    # Configure mock for create - first get raises NotFound (no existing container)
+    docker_manager._mock_docker_client.containers.get.side_effect = [
+        docker.errors.NotFound("not found"),
+        docker_manager._mock_container,
+        docker_manager._mock_container,
+        docker_manager._mock_container,
+    ]
 
-        workspace = await docker_manager.create_workspace(
-            user_id=test_user_id,
-            session_id="session-1",
-            config=config,
-        )
+    workspace = await docker_manager.create_workspace(
+        user_id=test_user_id,
+        session_id="session-1",
+        config=config,
+    )
 
-        assert workspace.user_id == test_user_id
-        assert workspace.session_id == "session-1"
-        assert workspace.status == WorkspaceStatus.RUNNING
-        assert workspace.config.tier == WorkspaceTier.STARTER
-        assert workspace.docker_container_id == "container123"
-        mock_run.assert_called_once()
+    assert workspace.user_id == test_user_id
+    assert workspace.session_id == "session-1"
+    assert workspace.status == WorkspaceStatus.RUNNING
+    assert workspace.tier == WorkspaceTier.STARTER
+    assert workspace.container_id == "container123"
+    docker_manager._mock_docker_client.containers.run.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_create_workspace_with_tier_resources(docker_manager, test_user_id):
+async def test_create_workspace_with_tier_resources(workspace_store, test_user_id):
     """Test workspace creation with different tier resources."""
+    from src.managers.docker_manager import DockerComputeManager
+
     config = WorkspaceConfig(tier=WorkspaceTier.PRO)
 
-    with patch.object(docker_manager.client.containers, "run") as mock_run:
-        mock_container = MagicMock(spec=Container)
-        mock_container.id = "container123"
-        mock_container.status = "running"
-        mock_run.return_value = mock_container
+    mock_docker_client = MagicMock()
+    mock_container = MagicMock()  # Don't use spec=Container to allow attrs
+    mock_container.id = "container123"
+    mock_container.name = "podex-workspace-test"
+    mock_container.status = "running"
+    mock_container.attrs = {
+        "NetworkSettings": {
+            "Networks": {
+                "podex-network": {"IPAddress": "172.17.0.2"}
+            }
+        }
+    }
+    mock_container.reload = MagicMock()
+    mock_exec_result = MagicMock()
+    mock_exec_result.exit_code = 0
+    mock_exec_result.output = (b"ready\n", b"")
+    mock_container.exec_run.return_value = mock_exec_result
 
-        await docker_manager.create_workspace(
+    mock_docker_client.containers.run.return_value = mock_container
+    mock_docker_client.containers.get.side_effect = [
+        docker.errors.NotFound("not found"),
+        mock_container,
+        mock_container,
+        mock_container,
+    ]
+
+    with patch("docker.from_env", return_value=mock_docker_client):
+        manager = DockerComputeManager(workspace_store=workspace_store)
+
+        await manager.create_workspace(
             user_id=test_user_id,
             session_id="session-1",
             config=config,
         )
 
         # Verify resource limits were set for PRO tier
-        call_kwargs = mock_run.call_args.kwargs
+        call_kwargs = mock_docker_client.containers.run.call_args.kwargs
         assert "cpu_count" in call_kwargs or "nano_cpus" in call_kwargs
         assert "mem_limit" in call_kwargs
 
 
 @pytest.mark.asyncio
-async def test_create_workspace_max_limit_reached(docker_manager, test_user_id, workspace_store):
+async def test_create_workspace_max_limit_reached(workspace_store, test_user_id, monkeypatch):
     """Test workspace creation when max limit is reached."""
-    # Create max workspaces for user
-    for i in range(10):  # Assume max is 10
-        workspace = MagicMock()
-        workspace.id = f"ws-{i}"
-        workspace.user_id = test_user_id
-        workspace.session_id = "session-1"
-        workspace.status = WorkspaceStatus.RUNNING
-        workspace.config = WorkspaceConfig(tier=WorkspaceTier.STARTER)
+    # Set a low max_workspaces limit for testing
+    monkeypatch.setattr("src.config.settings.max_workspaces", 2)
+
+    # Create max workspaces to hit the limit
+    from conftest import WorkspaceFactory
+    for i in range(2):
+        workspace = WorkspaceFactory.create_info(
+            workspace_id=f"ws-limit-{i}",
+            user_id=test_user_id,
+            session_id="session-1",
+            status=WorkspaceStatus.RUNNING,
+        )
         await workspace_store.save(workspace)
 
     config = WorkspaceConfig(tier=WorkspaceTier.STARTER)
 
-    with pytest.raises(RuntimeError, match="Maximum workspace limit"):
-        await docker_manager.create_workspace(
-            user_id=test_user_id,
-            session_id="session-1",
-            config=config,
-        )
+    async with create_mock_docker_manager(workspace_store) as (manager, mock_client):
+        with pytest.raises(RuntimeError, match="Maximum workspaces"):
+            await manager.create_workspace(
+                user_id=test_user_id,
+                session_id="session-2",
+                config=config,
+            )
 
 
 @pytest.mark.asyncio
-async def test_stop_workspace(docker_manager, workspace_store, workspace_factory, test_user_id):
+async def test_stop_workspace(workspace_store, workspace_factory, test_user_id):
     """Test stopping a running workspace."""
     workspace = workspace_factory.create_info(
-        workspace_id="test-ws-1",
+        workspace_id="test-ws-stop",
         user_id=test_user_id,
         status=WorkspaceStatus.RUNNING,
-        docker_container_id="container123",
+        container_id="container123",
         tier=WorkspaceTier.STARTER,
     )
     await workspace_store.save(workspace)
 
-    mock_container = MagicMock(spec=Container)
+    mock_container = create_mock_container(container_id="container123")
     mock_container.stop = MagicMock()
 
-    with patch.object(docker_manager.client.containers, "get", return_value=mock_container):
+    async with create_mock_docker_manager(workspace_store, mock_container) as (manager, mock_client):
+        # Reset side_effect so get always returns the container
+        mock_client.containers.get.side_effect = None
+        mock_client.containers.get.return_value = mock_container
+
         with patch("src.managers.docker_manager.sync_workspace_status_to_api", new_callable=AsyncMock):
-            await docker_manager.stop_workspace("test-ws-1")
+            await manager.stop_workspace("test-ws-stop")
 
             mock_container.stop.assert_called_once()
 
             # Verify workspace status updated
-            updated = await workspace_store.get("test-ws-1")
+            updated = await workspace_store.get("test-ws-stop")
             assert updated.status == WorkspaceStatus.STOPPED
 
 
 @pytest.mark.asyncio
-async def test_stop_workspace_already_stopped(
-    docker_manager, workspace_store, workspace_factory, test_user_id
-):
+async def test_stop_workspace_already_stopped(workspace_store, workspace_factory, test_user_id):
     """Test stopping an already stopped workspace."""
     workspace = workspace_factory.create_info(
-        workspace_id="test-ws-1",
+        workspace_id="test-ws-already-stopped",
         user_id=test_user_id,
         status=WorkspaceStatus.STOPPED,
-        docker_container_id="container123",
+        container_id="container123",
     )
     await workspace_store.save(workspace)
 
-    mock_container = MagicMock(spec=Container)
-    mock_container.status = "exited"
+    mock_container = create_mock_container(container_id="container123", status="exited")
 
-    with patch.object(docker_manager.client.containers, "get", return_value=mock_container):
+    async with create_mock_docker_manager(workspace_store, mock_container) as (manager, mock_client):
+        mock_client.containers.get.side_effect = None
+        mock_client.containers.get.return_value = mock_container
+
         # Should not raise error
-        await docker_manager.stop_workspace("test-ws-1")
+        await manager.stop_workspace("test-ws-already-stopped")
 
 
 @pytest.mark.asyncio
-async def test_restart_workspace(docker_manager, workspace_store, workspace_factory, test_user_id):
+async def test_restart_workspace(workspace_store, workspace_factory, test_user_id):
     """Test restarting a stopped workspace."""
     workspace = workspace_factory.create_info(
-        workspace_id="test-ws-1",
+        workspace_id="test-ws-restart",
         user_id=test_user_id,
         status=WorkspaceStatus.STOPPED,
-        docker_container_id="container123",
+        container_id="container123",
     )
     await workspace_store.save(workspace)
 
-    mock_container = MagicMock(spec=Container)
+    mock_container = create_mock_container(container_id="container123", status="exited")
     mock_container.start = MagicMock()
-    mock_container.status = "running"
-    mock_container.reload = MagicMock()
 
-    with patch.object(docker_manager.client.containers, "get", return_value=mock_container):
-        await docker_manager.restart_workspace("test-ws-1")
+    async with create_mock_docker_manager(workspace_store, mock_container) as (manager, mock_client):
+        mock_client.containers.get.side_effect = None
+        mock_client.containers.get.return_value = mock_container
+
+        await manager.restart_workspace("test-ws-restart")
 
         mock_container.start.assert_called_once()
 
         # Verify workspace status updated
-        updated = await workspace_store.get("test-ws-1")
+        updated = await workspace_store.get("test-ws-restart")
         assert updated.status == WorkspaceStatus.RUNNING
 
 
 @pytest.mark.asyncio
-async def test_delete_workspace(docker_manager, workspace_store, workspace_factory, test_user_id):
+async def test_delete_workspace(workspace_store, workspace_factory, test_user_id):
     """Test deleting a workspace."""
     workspace = workspace_factory.create_info(
-        workspace_id="test-ws-1",
+        workspace_id="test-ws-delete",
         user_id=test_user_id,
-        docker_container_id="container123",
+        container_id="container123",
     )
     await workspace_store.save(workspace)
 
-    mock_container = MagicMock(spec=Container)
+    mock_container = create_mock_container(container_id="container123")
     mock_container.stop = MagicMock()
     mock_container.remove = MagicMock()
 
-    with patch.object(docker_manager.client.containers, "get", return_value=mock_container):
-        await docker_manager.delete_workspace("test-ws-1", preserve_files=False)
+    async with create_mock_docker_manager(workspace_store, mock_container) as (manager, mock_client):
+        mock_client.containers.get.side_effect = None
+        mock_client.containers.get.return_value = mock_container
+
+        await manager.delete_workspace("test-ws-delete", preserve_files=False)
 
         mock_container.stop.assert_called_once()
         mock_container.remove.assert_called_once()
 
         # Verify workspace removed from store
-        deleted = await workspace_store.get("test-ws-1")
+        deleted = await workspace_store.get("test-ws-delete")
         assert deleted is None
 
 
@@ -203,25 +282,27 @@ async def test_delete_workspace(docker_manager, workspace_store, workspace_facto
 
 
 @pytest.mark.asyncio
-async def test_exec_command_success(docker_manager, workspace_store, workspace_factory, test_user_id):
+async def test_exec_command_success(workspace_store, workspace_factory, test_user_id):
     """Test successful command execution."""
     workspace = workspace_factory.create_info(
-        workspace_id="test-ws-1",
+        workspace_id="test-ws-exec",
         user_id=test_user_id,
         status=WorkspaceStatus.RUNNING,
-        docker_container_id="container123",
+        container_id="container123",
     )
     await workspace_store.save(workspace)
 
-    mock_container = MagicMock(spec=Container)
-    mock_container.status = "running"
+    mock_container = create_mock_container(container_id="container123")
     mock_exec_result = MagicMock()
-    mock_exec_result.output = b"Hello World\n"
+    mock_exec_result.output = (b"Hello World\n", b"")  # (stdout, stderr) tuple
     mock_exec_result.exit_code = 0
-    mock_container.exec_run = MagicMock(return_value=mock_exec_result)
+    mock_container.exec_run.return_value = mock_exec_result
 
-    with patch.object(docker_manager.client.containers, "get", return_value=mock_container):
-        result = await docker_manager.exec_command("test-ws-1", "echo 'Hello World'")
+    async with create_mock_docker_manager(workspace_store, mock_container) as (manager, mock_client):
+        mock_client.containers.get.side_effect = None
+        mock_client.containers.get.return_value = mock_container
+
+        result = await manager.exec_command("test-ws-exec", "echo 'Hello World'")
 
         assert result.exit_code == 0
         assert "Hello World" in result.stdout
@@ -235,7 +316,7 @@ async def test_exec_command_with_timeout(docker_manager, workspace_store, worksp
         workspace_id="test-ws-1",
         user_id=test_user_id,
         status=WorkspaceStatus.RUNNING,
-        docker_container_id="container123",
+        container_id="container123",
     )
     await workspace_store.save(workspace)
 
@@ -261,7 +342,7 @@ async def test_exec_command_auto_restart(
         workspace_id="test-ws-1",
         user_id=test_user_id,
         status=WorkspaceStatus.STOPPED,
-        docker_container_id="container123",
+        container_id="container123",
     )
     await workspace_store.save(workspace)
 
@@ -288,7 +369,7 @@ async def test_exec_command_stream(docker_manager, workspace_store, workspace_fa
         workspace_id="test-ws-1",
         user_id=test_user_id,
         status=WorkspaceStatus.RUNNING,
-        docker_container_id="container123",
+        container_id="container123",
     )
     await workspace_store.save(workspace)
 
@@ -321,7 +402,7 @@ async def test_read_file(docker_manager, workspace_store, workspace_factory, tes
         workspace_id="test-ws-1",
         user_id=test_user_id,
         status=WorkspaceStatus.RUNNING,
-        docker_container_id="container123",
+        container_id="container123",
     )
     await workspace_store.save(workspace)
 
@@ -345,7 +426,7 @@ async def test_write_file(docker_manager, workspace_store, workspace_factory, te
         workspace_id="test-ws-1",
         user_id=test_user_id,
         status=WorkspaceStatus.RUNNING,
-        docker_container_id="container123",
+        container_id="container123",
     )
     await workspace_store.save(workspace)
 
@@ -369,7 +450,7 @@ async def test_list_files(docker_manager, workspace_store, workspace_factory, te
         workspace_id="test-ws-1",
         user_id=test_user_id,
         status=WorkspaceStatus.RUNNING,
-        docker_container_id="container123",
+        container_id="container123",
     )
     await workspace_store.save(workspace)
 
@@ -433,7 +514,7 @@ async def test_check_workspace_health(
         workspace_id="test-ws-1",
         user_id=test_user_id,
         status=WorkspaceStatus.RUNNING,
-        docker_container_id="container123",
+        container_id="container123",
     )
     await workspace_store.save(workspace)
 
@@ -458,7 +539,7 @@ async def test_check_workspace_health_unhealthy(
         workspace_id="test-ws-1",
         user_id=test_user_id,
         status=WorkspaceStatus.RUNNING,
-        docker_container_id="container123",
+        container_id="container123",
     )
     await workspace_store.save(workspace)
 
@@ -539,7 +620,7 @@ async def test_get_active_ports(docker_manager, workspace_store, workspace_facto
         workspace_id="test-ws-1",
         user_id=test_user_id,
         status=WorkspaceStatus.RUNNING,
-        docker_container_id="container123",
+        container_id="container123",
     )
     await workspace_store.save(workspace)
 
@@ -572,7 +653,7 @@ async def test_scale_workspace_tier_upgrade(
         user_id=test_user_id,
         status=WorkspaceStatus.RUNNING,
         tier=WorkspaceTier.STARTER,
-        docker_container_id="container123",
+        container_id="container123",
     )
     await workspace_store.save(workspace)
 
@@ -596,7 +677,7 @@ async def test_scale_workspace_tier_upgrade(
             # Verify workspace updated in store
             updated = await workspace_store.get("test-ws-1")
             assert updated.tier == WorkspaceTier.PRO
-            assert updated.docker_container_id == "container456"
+            assert updated.container_id == "container456"
 
 
 # ============================================

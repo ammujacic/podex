@@ -81,14 +81,63 @@ async def _flush_test_keys(client: RedisClient) -> None:
 # ============================================
 
 
+class MockWorkspaceStore:
+    """In-memory mock workspace store for unit tests without Redis."""
+
+    def __init__(self) -> None:
+        self._workspaces: dict[str, Any] = {}
+        self._client = None
+
+    async def save(self, workspace: Any) -> None:
+        """Save workspace to in-memory store."""
+        self._workspaces[workspace.id] = workspace
+
+    async def get(self, workspace_id: str) -> Any | None:
+        """Get workspace from in-memory store."""
+        return self._workspaces.get(workspace_id)
+
+    async def delete(self, workspace_id: str) -> None:
+        """Delete workspace from in-memory store."""
+        self._workspaces.pop(workspace_id, None)
+
+    async def list_running(self) -> list[Any]:
+        """List running workspaces."""
+        from src.models.workspace import WorkspaceStatus
+        return [w for w in self._workspaces.values()
+                if hasattr(w, 'status') and w.status == WorkspaceStatus.RUNNING]
+
+    async def list_by_user(self, user_id: str) -> list[Any]:
+        """List workspaces for a user."""
+        return [w for w in self._workspaces.values()
+                if hasattr(w, 'user_id') and w.user_id == user_id]
+
+    async def list_by_session(self, session_id: str) -> list[Any]:
+        """List workspaces for a session."""
+        return [w for w in self._workspaces.values()
+                if hasattr(w, 'session_id') and w.session_id == session_id]
+
+    async def list_all(self) -> list[Any]:
+        """List all workspaces."""
+        return list(self._workspaces.values())
+
+
+@pytest.fixture
+def mock_workspace_store() -> MockWorkspaceStore:
+    """Mock workspace store for unit tests without Redis."""
+    return MockWorkspaceStore()
+
+
 @pytest.fixture
 async def workspace_store(redis_url: str) -> AsyncGenerator[WorkspaceStore, None]:
-    """Fresh WorkspaceStore instance per test."""
+    """Fresh WorkspaceStore instance per test (requires Redis)."""
     from src.storage.workspace_store import WorkspaceStore
 
     store = WorkspaceStore(redis_url=redis_url)
     yield store
-    # Cleanup is handled by redis_client fixture
+    # Disconnect Redis client to avoid event loop issues between tests
+    if store._client is not None:
+        await store._client.disconnect()
+        store._client = None
 
 
 # ============================================
@@ -115,33 +164,75 @@ def docker_client(docker_client_session: docker.DockerClient) -> docker.DockerCl
 # ============================================
 
 
+def create_mock_container(
+    container_id: str = "container123",
+    name: str = "podex-workspace-test",
+    status: str = "running",
+    ip_address: str = "172.17.0.2",
+) -> MagicMock:
+    """Create a properly configured mock Docker container."""
+    mock_container = MagicMock()
+    mock_container.id = container_id
+    mock_container.name = name
+    mock_container.status = status
+    mock_container.attrs = {
+        "NetworkSettings": {
+            "Networks": {
+                "podex-network": {"IPAddress": ip_address}
+            }
+        }
+    }
+    mock_container.reload = MagicMock()
+    mock_container.start = MagicMock()
+    mock_container.stop = MagicMock()
+    mock_container.remove = MagicMock()
+
+    # Mock exec_run for commands - returns (stdout, stderr) tuple
+    mock_exec_result = MagicMock()
+    mock_exec_result.exit_code = 0
+    mock_exec_result.output = (b"ready\n", b"")
+    mock_container.exec_run.return_value = mock_exec_result
+
+    return mock_container
+
+
+@pytest.fixture
+def mock_container() -> MagicMock:
+    """Create a mock Docker container for testing."""
+    return create_mock_container()
+
+
 @pytest.fixture
 async def docker_manager(
-    workspace_store: WorkspaceStore, docker_client: docker.DockerClient
+    mock_workspace_store: MockWorkspaceStore, mock_container: MagicMock
 ) -> AsyncGenerator[DockerComputeManager, None]:
-    """DockerComputeManager with real Docker for integration tests."""
+    """DockerComputeManager with mocked Docker client for unit tests.
+
+    This fixture patches docker.from_env BEFORE instantiating the manager,
+    which is required because DockerComputeManager uses asyncio.to_thread()
+    that captures method references at call time.
+
+    Uses MockWorkspaceStore to avoid Redis dependency.
+    """
+    from unittest.mock import patch
     from src.managers.docker_manager import DockerComputeManager
 
-    manager = DockerComputeManager(workspace_store=workspace_store)
-    yield manager
+    mock_docker_client = MagicMock()
+    mock_docker_client.containers.run.return_value = mock_container
+    # First get raises NotFound (no existing container), subsequent calls return the container
+    mock_docker_client.containers.get.return_value = mock_container
+    mock_docker_client.containers.list.return_value = []
 
-    # Cleanup: stop and remove any test containers
-    try:
-        containers = docker_client.containers.list(
-            all=True, filters={"label": "podex.test=true"}
-        )
-        for container in containers:
-            try:
-                container.stop(timeout=1)
-                container.remove(force=True)
-            except Exception:
-                pass
-    except Exception:
-        pass
+    with patch("docker.from_env", return_value=mock_docker_client):
+        manager = DockerComputeManager(workspace_store=mock_workspace_store)
+        # Store the mock client for tests that need to customize behavior
+        manager._mock_docker_client = mock_docker_client
+        manager._mock_container = mock_container
+        yield manager
 
-    # Close HTTP client if it exists
-    if manager._http_client and not manager._http_client.is_closed:
-        await manager._http_client.aclose()
+        # Close HTTP client if it exists
+        if manager._http_client and not manager._http_client.is_closed:
+            await manager._http_client.aclose()
 
 
 @pytest.fixture

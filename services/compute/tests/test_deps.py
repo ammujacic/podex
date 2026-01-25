@@ -28,7 +28,14 @@ class TestInternalAuth:
             verify_internal_api_key(None)
 
     def test_internal_auth_no_key_configured_prod(self) -> None:
-        """Test no API key configured in production."""
+        """Test no API key configured in production returns 401.
+
+        In production mode, authentication is required via:
+        - GCP IAM (Authorization: Bearer token) - primary
+        - API key (X-Internal-API-Key) - fallback
+
+        When neither is provided, it's an auth failure (401), not server error.
+        """
         mock_settings = MagicMock()
         mock_settings.internal_api_key = ""
         mock_settings.environment = "production"
@@ -36,7 +43,7 @@ class TestInternalAuth:
         with patch("src.deps.settings", mock_settings):
             with pytest.raises(HTTPException) as exc:
                 verify_internal_api_key(None)
-            assert exc.value.status_code == 500
+            assert exc.value.status_code == 401
 
     def test_internal_auth_missing_key(self) -> None:
         """Test missing API key when configured."""
