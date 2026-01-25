@@ -3,7 +3,7 @@
  * Tests document visibility, window focus state, and focus return callbacks
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, act, waitFor } from '@testing-library/react';
+import { renderHook, act } from '@testing-library/react';
 import {
   useVisibilityTracking,
   useOnFocusReturn,
@@ -141,15 +141,15 @@ describe('useVisibilityStore', () => {
 
       // Lose focus
       store._setFocused(false);
-      const blurTime = useVisibilityStore.getState().lastBlurredAt;
 
-      // Wait a bit
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // Wait a bit (use 60ms to account for timer precision variance)
+      await new Promise((resolve) => setTimeout(resolve, 60));
 
       // Regain focus
       store._setFocused(true);
       const { unfocusedDuration } = useVisibilityStore.getState();
 
+      // Allow small tolerance for timing precision (setTimeout is not exact)
       expect(unfocusedDuration).toBeGreaterThanOrEqual(50);
     });
 
