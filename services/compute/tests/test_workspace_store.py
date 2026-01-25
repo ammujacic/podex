@@ -42,7 +42,7 @@ async def test_save_and_get_workspace(workspace_store: WorkspaceStore, workspace
     assert retrieved.user_id == workspace.user_id
     assert retrieved.session_id == workspace.session_id
     assert retrieved.status == workspace.status
-    assert retrieved.config.tier == workspace.config.tier
+    assert retrieved.tier == workspace.tier
 
 
 @pytest.mark.asyncio

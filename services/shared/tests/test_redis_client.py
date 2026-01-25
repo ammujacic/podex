@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,6 +12,9 @@ from podex_shared.redis_client import (
     clear_redis_clients,
     get_redis_client,
 )
+
+# Use same REDIS_URL as conftest.py
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
 
 class TestRedisClientInit:
@@ -423,7 +427,7 @@ class TestRedisClientSubscribeIntegration:
         real_redis_client: "redis.Redis",  # type: ignore[name-defined]
     ) -> None:
         """Test subscribing to a channel and receiving messages."""
-        client = RedisClient("redis://localhost:6380")
+        client = RedisClient(REDIS_URL)
         await client.connect()
 
         messages = []
@@ -459,8 +463,8 @@ class TestRedisClientSubscribeIntegration:
         real_redis_client: "redis.Redis",  # type: ignore[name-defined]
     ) -> None:
         """Test subscribing to multiple channels."""
-        client1 = RedisClient("redis://localhost:6380")
-        client2 = RedisClient("redis://localhost:6380")
+        client1 = RedisClient(REDIS_URL)
+        client2 = RedisClient(REDIS_URL)
         await client1.connect()
         await client2.connect()
 
@@ -503,7 +507,7 @@ class TestRedisClientSubscribeIntegration:
         real_redis_client: "redis.Redis",  # type: ignore[name-defined]
     ) -> None:
         """Test unsubscribing stops message reception."""
-        client = RedisClient("redis://localhost:6380")
+        client = RedisClient(REDIS_URL)
         await client.connect()
 
         messages = []
@@ -541,8 +545,8 @@ class TestRedisClientSubscribeIntegration:
         real_redis_client: "redis.Redis",  # type: ignore[name-defined]
     ) -> None:
         """Test publishing and subscribing work together."""
-        client1 = RedisClient("redis://localhost:6380")
-        client2 = RedisClient("redis://localhost:6380")
+        client1 = RedisClient(REDIS_URL)
+        client2 = RedisClient(REDIS_URL)
 
         await client1.connect()
         await client2.connect()
@@ -575,7 +579,7 @@ class TestRedisClientSubscribeIntegration:
         real_redis_client: "redis.Redis",  # type: ignore[name-defined]
     ) -> None:
         """Test that invalid JSON messages don't crash the subscriber."""
-        client = RedisClient("redis://localhost:6380")
+        client = RedisClient(REDIS_URL)
         await client.connect()
 
         messages = []
@@ -611,7 +615,7 @@ class TestRedisClientSubscribeIntegration:
         real_redis_client: "redis.Redis",  # type: ignore[name-defined]
     ) -> None:
         """Test client can reconnect after disconnect."""
-        client = RedisClient("redis://localhost:6380")
+        client = RedisClient(REDIS_URL)
 
         # First connection
         await client.connect()

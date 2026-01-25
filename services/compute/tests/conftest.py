@@ -10,10 +10,11 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import docker
+import httpx
 import pytest
 import respx
 from fastapi.testclient import TestClient
-from httpx import AsyncClient
+from httpx import AsyncClient, Response
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Generator
@@ -211,11 +212,11 @@ def mock_api_calls() -> Generator[respx.MockRouter, None, None]:
     with respx.mock:
         # Mock sync_workspace_status_to_api
         respx.post(f"{settings.api_base_url}/internal/workspaces/status").mock(
-            return_value=respx.Response(200, json={"success": True})
+            return_value=Response(200, json={"success": True})
         )
         # Mock usage tracking
         respx.post(f"{settings.api_base_url}/internal/usage/track").mock(
-            return_value=respx.Response(200, json={"success": True})
+            return_value=Response(200, json={"success": True})
         )
         yield respx
 
@@ -283,25 +284,21 @@ class WorkspaceFactory:
         session_id: str = "test-session-456",
         status: WorkspaceStatus = WorkspaceStatus.RUNNING,
         tier: WorkspaceTier = WorkspaceTier.STARTER,
+        host: str = "127.0.0.1",
+        port: int = 3000,
         **kwargs: Any,
     ) -> WorkspaceInfo:
         """Create a WorkspaceInfo instance for testing."""
         workspace_id = workspace_id or f"ws-{uuid.uuid4().hex[:8]}"
-        config = WorkspaceConfig(
-            tier=tier,
-            base_image=kwargs.pop("base_image", None),
-            git_email=kwargs.pop("git_email", None),
-            git_name=kwargs.pop("git_name", None),
-            github_token=kwargs.pop("github_token", None),
-            repos=kwargs.pop("repos", []),
-            post_init_commands=kwargs.pop("post_init_commands", []),
-        )
         return WorkspaceInfo(
             id=workspace_id,
             user_id=user_id,
             session_id=session_id,
             status=status,
-            config=config,
+            tier=tier,
+            host=host,
+            port=port,
+            repos=kwargs.pop("repos", []),
             created_at=kwargs.pop("created_at", datetime.now(UTC)),
             last_activity=kwargs.pop("last_activity", datetime.now(UTC)),
             **kwargs,
