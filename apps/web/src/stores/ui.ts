@@ -2,8 +2,24 @@ import { create, type StateCreator } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 import { getUserConfig, updateUserConfig } from '@/lib/api/user-config';
 import { useAuthStore } from '@/stores/auth';
+import { useConfigStore } from '@/stores/config';
 
 export type Theme = 'dark' | 'light' | 'system';
+
+// Grid configuration
+export interface GridConfig {
+  columns: number; // Number of columns in grid (1-6, default 2)
+  rowHeight: number; // Height of each row in pixels (default 300)
+  maxRows: number; // Maximum rows per card (0 = unlimited, default 0)
+  maxCols: number; // Maximum columns per card (0 = match grid columns, default 0)
+}
+
+const DEFAULT_GRID_CONFIG: GridConfig = {
+  columns: 2,
+  rowHeight: 300,
+  maxRows: 0, // unlimited
+  maxCols: 0, // match grid columns
+};
 
 // Panel layout types
 export type PanelId =
@@ -137,9 +153,12 @@ interface UIState {
   // Terminal
   terminalVisible: boolean;
   terminalHeight: number;
+  pendingTerminalCommand: string | null;
   toggleTerminal: () => void;
   setTerminalVisible: (visible: boolean) => void;
   setTerminalHeight: (height: number) => void;
+  sendTerminalCommand: (command: string) => void;
+  clearPendingTerminalCommand: () => void;
 
   // Bottom panel (output, problems, etc.)
   panelVisible: boolean;
@@ -191,6 +210,11 @@ interface UIState {
   // Explorer settings
   showHiddenFiles: boolean;
   setShowHiddenFiles: (show: boolean) => void;
+
+  // Grid configuration
+  gridConfig: GridConfig;
+  setGridConfig: (config: Partial<GridConfig>) => void;
+  resetGridConfig: () => void;
 }
 
 // Helper to get system theme preference
@@ -287,6 +311,14 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
         updates.showHiddenFiles = serverPrefs.showHiddenFiles;
       }
 
+      if (serverPrefs.gridConfig) {
+        const configDefaults = useConfigStore.getState().getGridConfigDefaults();
+        updates.gridConfig = {
+          ...(configDefaults ?? DEFAULT_GRID_CONFIG),
+          ...serverPrefs.gridConfig,
+        };
+      }
+
       set(updates);
     } catch (error) {
       console.error('Failed to load UI preferences from server:', error);
@@ -316,6 +348,7 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
       prefersReducedMotion: state.prefersReducedMotion,
       focusMode: state.focusMode,
       showHiddenFiles: state.showHiddenFiles,
+      gridConfig: state.gridConfig,
     };
 
     try {
@@ -589,7 +622,29 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
   },
 
   resetSidebarLayout: () => {
-    set({ sidebarLayout: DEFAULT_SIDEBAR_LAYOUT });
+    // Get defaults from ConfigStore, fall back to hardcoded if not available
+    const configDefaults = useConfigStore.getState().getSidebarLayoutDefaults();
+    const defaults = configDefaults
+      ? {
+          left: {
+            collapsed: configDefaults.left.collapsed,
+            width: configDefaults.left.width,
+            panels: configDefaults.left.panels.map((p) => ({
+              panelId: p.panelId as PanelId,
+              height: p.height,
+            })),
+          },
+          right: {
+            collapsed: configDefaults.right.collapsed,
+            width: configDefaults.right.width,
+            panels: configDefaults.right.panels.map((p) => ({
+              panelId: p.panelId as PanelId,
+              height: p.height,
+            })),
+          },
+        }
+      : DEFAULT_SIDEBAR_LAYOUT;
+    set({ sidebarLayout: defaults });
     get().announce('Sidebar layout reset to default');
     debouncedSync(get());
   },
@@ -597,6 +652,7 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
   // Terminal
   terminalVisible: false,
   terminalHeight: 300,
+  pendingTerminalCommand: null,
   toggleTerminal: () => {
     const newState = !get().terminalVisible;
     set({ terminalVisible: newState });
@@ -607,6 +663,10 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
     set({ terminalHeight: Math.max(100, Math.min(600, height)) });
     debouncedSync(get());
   },
+  sendTerminalCommand: (command) => {
+    set({ pendingTerminalCommand: command, terminalVisible: true });
+  },
+  clearPendingTerminalCommand: () => set({ pendingTerminalCommand: null }),
 
   // Bottom panel
   panelVisible: false,
@@ -674,6 +734,21 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
     set({ showHiddenFiles: show });
     debouncedSync(get());
   },
+
+  // Grid configuration
+  gridConfig: DEFAULT_GRID_CONFIG,
+  setGridConfig: (config) => {
+    set((state) => ({
+      gridConfig: { ...state.gridConfig, ...config },
+    }));
+    debouncedSync(get());
+  },
+  resetGridConfig: () => {
+    // Get defaults from ConfigStore, fall back to hardcoded if not available
+    const configDefaults = useConfigStore.getState().getGridConfigDefaults();
+    set({ gridConfig: configDefaults ?? DEFAULT_GRID_CONFIG });
+    debouncedSync(get());
+  },
 });
 
 const persistedUIStore = persist(uiStoreCreator, {
@@ -693,6 +768,7 @@ const persistedUIStore = persist(uiStoreCreator, {
     prefersReducedMotion: state.prefersReducedMotion,
     focusMode: state.focusMode,
     showHiddenFiles: state.showHiddenFiles,
+    gridConfig: state.gridConfig,
   }),
   onRehydrateStorage: () => (state) => {
     state?.setHasHydrated(true);

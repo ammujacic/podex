@@ -7,7 +7,6 @@ Tests cover:
 - Speech-to-text operations
 """
 
-
 from fastapi.testclient import TestClient
 
 # ============================================================================

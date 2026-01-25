@@ -349,6 +349,6 @@ class TestEdgeCases:
             password = f"Passw0rd{char}"
             result = validate_password(password)
             # Each should satisfy special char requirement
-            assert not any(
-                "special character" in err for err in result.errors
-            ), f"Failed for char: {char}"
+            assert not any("special character" in err for err in result.errors), (
+                f"Failed for char: {char}"
+            )

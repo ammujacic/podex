@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
+import { useConfigStore } from '@/stores/config';
 
 // ============================================================================
 // Types
@@ -61,8 +62,12 @@ export interface EditorState {
   paneOrder: string[]; // For layout rendering
   activePaneId: string | null;
 
-  // Global editor state
-  settings: EditorSettings;
+  // Global editor state (null until initialized from ConfigStore)
+  settings: EditorSettings | null;
+
+  // Initialization
+  initializeSettings: () => void;
+  isSettingsInitialized: () => boolean;
 
   /**
    * Reset editor layout state when switching sessions.
@@ -123,26 +128,34 @@ export interface EditorState {
 // Default Values
 // ============================================================================
 
-const DEFAULT_SETTINGS: EditorSettings = {
-  keyMode: 'default',
-  fontSize: 13,
-  tabSize: 2,
-  wordWrap: 'off',
-  minimap: false,
-  lineNumbers: 'on',
-  renderWhitespace: 'selection',
-  cursorBlinking: 'smooth',
-  bracketPairColorization: true,
-  formatOnSave: false,
-  formatOnPaste: true,
-  autoSave: 'off',
-  autoSaveDelay: 1000,
-  // AI Completions - enabled by default
-  completionsEnabled: true,
-  completionsDebounceMs: 300,
-  // AI Action Model - null means use the default model
-  aiActionModel: null,
-};
+// Helper to load settings from ConfigStore (called after config is loaded)
+function getSettingsFromConfig(): EditorSettings {
+  const editorDefaults = useConfigStore.getState().getEditorDefaults();
+  const aiConfig = useConfigStore.getState().getEditorAIConfig();
+
+  if (!editorDefaults) {
+    throw new Error('ConfigStore not initialized - editor_defaults not available');
+  }
+
+  return {
+    keyMode: (editorDefaults.key_mode as KeyMode) ?? 'default',
+    fontSize: editorDefaults.font_size ?? 13,
+    tabSize: editorDefaults.tab_size ?? 2,
+    wordWrap: (editorDefaults.word_wrap as EditorSettings['wordWrap']) ?? 'off',
+    minimap: editorDefaults.minimap ?? false,
+    lineNumbers: editorDefaults.line_numbers ? 'on' : 'off',
+    renderWhitespace: 'selection',
+    cursorBlinking: 'smooth',
+    bracketPairColorization: editorDefaults.bracket_pair_colorization ?? true,
+    formatOnSave: false,
+    formatOnPaste: true,
+    autoSave: 'off',
+    autoSaveDelay: 1000,
+    completionsEnabled: aiConfig?.completionsEnabled ?? true,
+    completionsDebounceMs: aiConfig?.completionsDebounceMs ?? 300,
+    aiActionModel: aiConfig?.defaultModel ?? null,
+  };
+}
 
 const DEFAULT_PANE_ID = 'main';
 
@@ -172,15 +185,24 @@ export const useEditorStore = create<EditorState>()(
   devtools(
     persist(
       (set, get) => ({
-        // Initial state
+        // Initial state (settings is null until initializeSettings is called)
         tabs: {},
         tabOrder: [],
         splitLayout: 'single',
         panes: { [DEFAULT_PANE_ID]: createDefaultPane() },
         paneOrder: [DEFAULT_PANE_ID],
         activePaneId: DEFAULT_PANE_ID,
-        settings: DEFAULT_SETTINGS,
+        settings: null,
         recentlyClosed: [],
+
+        // Initialize settings from ConfigStore (must be called after config is loaded)
+        initializeSettings: () => {
+          // Skip if already initialized
+          if (get().settings !== null) return;
+          set({ settings: getSettingsFromConfig() });
+        },
+
+        isSettingsInitialized: () => get().settings !== null,
 
         // ========================================================================
         // Session/Layout Reset
@@ -494,10 +516,15 @@ export const useEditorStore = create<EditorState>()(
 
           // Determine new active tab for source pane
           const tabIndex = sourcePane.tabs.indexOf(tabId);
-          let newSourceActiveTabId: string | null = null;
-          if (sourcePane.activeTabId === tabId && sourcePane.tabs.length > 1) {
-            newSourceActiveTabId =
-              sourcePane.tabs[tabIndex + 1] || sourcePane.tabs[tabIndex - 1] || null;
+          let newSourceActiveTabId: string | null = sourcePane.activeTabId;
+          if (sourcePane.activeTabId === tabId) {
+            // If we're moving the active tab, find a new one to activate
+            if (sourcePane.tabs.length > 1) {
+              newSourceActiveTabId =
+                sourcePane.tabs[tabIndex + 1] || sourcePane.tabs[tabIndex - 1] || null;
+            } else {
+              newSourceActiveTabId = null;
+            }
           }
 
           set((s) => ({
@@ -718,15 +745,17 @@ export const useEditorStore = create<EditorState>()(
         // ========================================================================
 
         updateSettings: (newSettings) => {
-          set((s) => ({
-            settings: { ...s.settings, ...newSettings },
-          }));
+          set((s) => {
+            if (!s.settings) return s; // Settings not initialized yet
+            return { settings: { ...s.settings, ...newSettings } };
+          });
         },
 
         setKeyMode: (mode) => {
-          set((s) => ({
-            settings: { ...s.settings, keyMode: mode },
-          }));
+          set((s) => {
+            if (!s.settings) return s; // Settings not initialized yet
+            return { settings: { ...s.settings, keyMode: mode } };
+          });
         },
 
         // ========================================================================
@@ -779,6 +808,8 @@ export const useEditorStore = create<EditorState>()(
 
 export const useActiveTab = () => useEditorStore((s) => s.getActiveTab());
 export const useEditorSettings = () => useEditorStore((s) => s.settings);
-export const useKeyMode = () => useEditorStore((s) => s.settings.keyMode);
+export const useKeyMode = () => useEditorStore((s) => s.settings?.keyMode ?? 'default');
 export const useSplitLayout = () => useEditorStore((s) => s.splitLayout);
 export const useHasUnsavedChanges = () => useEditorStore((s) => s.hasUnsavedChanges());
+export const useIsEditorSettingsInitialized = () =>
+  useEditorStore((s) => s.isSettingsInitialized());

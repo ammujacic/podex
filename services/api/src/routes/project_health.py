@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import random
-import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -97,6 +94,15 @@ class AnalysisStartResponse(BaseModel):
     message: str
 
 
+class AnalysisStartRequest(BaseModel):
+    """Request to start health analysis."""
+
+    working_directory: str | None = None
+    """Optional: Run all checks in this directory (relative to workspace root).
+    Similar to folder selector in git widget. If not provided, each check
+    uses its own configured working directory."""
+
+
 # ============================================================================
 # Helper Functions
 # ============================================================================
@@ -116,22 +122,33 @@ def calculate_grade(score: int) -> str:
 
 
 async def run_health_analysis(
-    _session_id: str,
+    session_id: str,
     health_score_id: str,
     db_url: str,
+    workspace_id: str,
+    user_id: str,
+    working_directory: str | None = None,
 ) -> None:
     """Background task to run project health analysis.
 
-    This is a simplified simulation. In production, this would:
-    - Connect to the compute node
-    - Run linting tools (eslint, pylint, etc.)
-    - Run test coverage analysis
-    - Scan for security vulnerabilities
-    - Check documentation coverage
-    - Analyze dependencies
+    Runs configured health checks in the workspace container and
+    aggregates results into scores and recommendations.
+
+    Args:
+        session_id: Session ID
+        health_score_id: Health score record ID
+        db_url: Database URL for creating session
+        workspace_id: Workspace container ID
+        user_id: User ID
+        working_directory: Optional directory to run all checks in
     """
+    import structlog
     from sqlalchemy.ext.asyncio import AsyncSession as AS
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from src.health.analyzer import HealthAnalyzer
+
+    logger = structlog.get_logger()
 
     engine = create_async_engine(db_url)
     async_session = async_sessionmaker(engine, class_=AS, expire_on_commit=False)
@@ -151,194 +168,97 @@ async def run_health_analysis(
             health.analysis_status = "running"
             await db.commit()
 
-            start_time = datetime.now(UTC)
+            logger.info(
+                "Starting health analysis",
+                session_id=session_id,
+                workspace_id=workspace_id,
+            )
 
-            # Simulate analysis delay (in production, actual analysis happens here)
-            await asyncio.sleep(2)
+            # Run the actual analysis
+            analyzer = HealthAnalyzer(
+                db=db,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                session_id=session_id,
+            )
 
-            # Simulate analysis results
-            # In production, these would come from actual tool runs
-            code_quality_score = random.randint(65, 98)
-            test_coverage_score = random.randint(40, 95)
-            security_score = random.randint(70, 100)
-            documentation_score = random.randint(30, 90)
-            dependency_score = random.randint(60, 95)
-
-            # Calculate weighted overall score
-            overall_score = int(
-                code_quality_score * 0.25
-                + test_coverage_score * 0.25
-                + security_score * 0.20
-                + documentation_score * 0.15
-                + dependency_score * 0.15
+            analysis_result = await analyzer.run_analysis(
+                working_directory_override=working_directory
             )
 
             # Track previous score for trend
             if health.overall_score > 0:
                 health.previous_overall_score = health.overall_score
-                health.score_change = overall_score - health.overall_score
+                health.score_change = analysis_result.overall_score - health.overall_score
 
-            # Update scores
-            health.overall_score = overall_score
-            health.grade = calculate_grade(overall_score)
-            health.code_quality_score = code_quality_score
-            health.test_coverage_score = test_coverage_score
-            health.security_score = security_score
-            health.documentation_score = documentation_score
-            health.dependency_score = dependency_score
+            # Update scores from analysis result
+            health.overall_score = analysis_result.overall_score
+            health.grade = analysis_result.grade
 
-            # Generate detailed metrics
-            health.code_quality_details = {
-                "linting_errors": random.randint(0, 15),
-                "complexity_issues": random.randint(0, 8),
-                "duplication_percent": round(random.uniform(0, 10), 1),
-                "maintainability_index": random.randint(60, 100),
-            }
-            health.test_coverage_details = {
-                "line_coverage": round(random.uniform(50, 95), 1),
-                "branch_coverage": round(random.uniform(40, 90), 1),
-                "function_coverage": round(random.uniform(60, 100), 1),
-                "test_count": random.randint(10, 200),
-                "passing_tests": random.randint(10, 200),
-            }
-            health.security_details = {
-                "vulnerabilities_critical": random.randint(0, 2),
-                "vulnerabilities_high": random.randint(0, 5),
-                "vulnerabilities_medium": random.randint(0, 10),
-                "vulnerabilities_low": random.randint(0, 15),
-                "secrets_found": random.randint(0, 3),
-            }
-            health.documentation_details = {
-                "has_readme": True,
-                "readme_quality_score": random.randint(50, 100),
-                "api_docs_coverage": round(random.uniform(20, 90), 1),
-                "inline_comment_ratio": round(random.uniform(5, 25), 1),
-            }
-            health.dependency_details = {
-                "total_dependencies": random.randint(20, 100),
-                "outdated_count": random.randint(0, 15),
-                "deprecated_count": random.randint(0, 3),
-                "vulnerable_count": random.randint(0, 5),
-            }
+            # Update individual category scores
+            categories = analysis_result.categories
 
-            # Generate recommendations
-            recommendations = []
+            if "code_quality" in categories:
+                health.code_quality_score = int(categories["code_quality"].score)
+                health.code_quality_details = categories["code_quality"].details
+            else:
+                health.code_quality_score = 0
+                health.code_quality_details = {"no_checks": True}
 
-            if health.code_quality_details["linting_errors"] > 5:
-                recommendations.append(
-                    {
-                        "id": str(uuid.uuid4()),
-                        "type": "code_quality",
-                        "title": "Fix linting errors",
-                        "description": (
-                            f"Found {health.code_quality_details['linting_errors']} "
-                            "linting errors that should be addressed."
-                        ),
-                        "priority": "medium",
-                        "effort": "low",
-                        "impact": "medium",
-                        "auto_fixable": True,
-                    }
-                )
+            if "test_coverage" in categories:
+                health.test_coverage_score = int(categories["test_coverage"].score)
+                health.test_coverage_details = categories["test_coverage"].details
+            else:
+                health.test_coverage_score = 0
+                health.test_coverage_details = {"no_checks": True}
 
-            if health.test_coverage_details["line_coverage"] < 70:
-                recommendations.append(
-                    {
-                        "id": str(uuid.uuid4()),
-                        "type": "test_coverage",
-                        "title": "Improve test coverage",
-                        "description": (
-                            f"Line coverage is {health.test_coverage_details['line_coverage']}%. "
-                            "Aim for at least 70%."
-                        ),
-                        "priority": "high",
-                        "effort": "high",
-                        "impact": "high",
-                        "auto_fixable": False,
-                    }
-                )
+            if "security" in categories:
+                health.security_score = int(categories["security"].score)
+                health.security_details = categories["security"].details
+            else:
+                health.security_score = 0
+                health.security_details = {"no_checks": True}
 
-            if health.security_details["vulnerabilities_critical"] > 0:
-                recommendations.append(
-                    {
-                        "id": str(uuid.uuid4()),
-                        "type": "security",
-                        "title": "Fix critical vulnerabilities",
-                        "description": (
-                            f"Found {health.security_details['vulnerabilities_critical']} "
-                            "critical security vulnerabilities."
-                        ),
-                        "priority": "high",
-                        "effort": "medium",
-                        "impact": "high",
-                        "auto_fixable": False,
-                    }
-                )
+            if "documentation" in categories:
+                health.documentation_score = int(categories["documentation"].score)
+                health.documentation_details = categories["documentation"].details
+            else:
+                health.documentation_score = 0
+                health.documentation_details = {"no_checks": True}
 
-            if health.security_details["secrets_found"] > 0:
-                recommendations.append(
-                    {
-                        "id": str(uuid.uuid4()),
-                        "type": "security",
-                        "title": "Remove exposed secrets",
-                        "description": (
-                            f"Found {health.security_details['secrets_found']} "
-                            "potential secrets in code."
-                        ),
-                        "priority": "high",
-                        "effort": "low",
-                        "impact": "high",
-                        "auto_fixable": False,
-                    }
-                )
+            if "dependencies" in categories:
+                health.dependency_score = int(categories["dependencies"].score)
+                health.dependency_details = categories["dependencies"].details
+            else:
+                health.dependency_score = 0
+                health.dependency_details = {"no_checks": True}
 
-            if health.documentation_details["api_docs_coverage"] < 50:
-                recommendations.append(
-                    {
-                        "id": str(uuid.uuid4()),
-                        "type": "documentation",
-                        "title": "Improve API documentation",
-                        "description": (
-                            f"API documentation coverage is only "
-                            f"{health.documentation_details['api_docs_coverage']}%."
-                        ),
-                        "priority": "low",
-                        "effort": "medium",
-                        "impact": "medium",
-                        "auto_fixable": False,
-                    }
-                )
-
-            if health.dependency_details["outdated_count"] > 5:
-                recommendations.append(
-                    {
-                        "id": str(uuid.uuid4()),
-                        "type": "dependencies",
-                        "title": "Update outdated dependencies",
-                        "description": (
-                            f"{health.dependency_details['outdated_count']} "
-                            "dependencies are outdated."
-                        ),
-                        "priority": "medium",
-                        "effort": "low",
-                        "impact": "medium",
-                        "auto_fixable": True,
-                    }
-                )
-
-            health.recommendations = recommendations
+            # Store recommendations
+            health.recommendations = analysis_result.recommendations
 
             # Update metadata
-            end_time = datetime.now(UTC)
-            health.analyzed_files_count = random.randint(50, 500)
-            health.analysis_duration_seconds = (end_time - start_time).total_seconds()
+            health.analyzed_files_count = analysis_result.analyzed_files_count
+            health.analysis_duration_seconds = analysis_result.analysis_duration_seconds
             health.analysis_status = "completed"
-            health.analyzed_at = end_time
+            health.analyzed_at = datetime.now(UTC)
             health.analysis_error = None
 
             await db.commit()
 
+            logger.info(
+                "Health analysis completed",
+                session_id=session_id,
+                overall_score=analysis_result.overall_score,
+                grade=analysis_result.grade,
+                checks_run=len(analysis_result.check_results),
+            )
+
         except Exception as e:
+            logger.exception(
+                "Health analysis failed",
+                session_id=session_id,
+                error=str(e),
+            )
             health.analysis_status = "failed"
             health.analysis_error = str(e)
             await db.commit()
@@ -444,11 +364,20 @@ async def get_health_score(
 async def start_health_analysis(
     session_id: str,
     background_tasks: BackgroundTasks,
+    request: AnalysisStartRequest | None = None,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> AnalysisStartResponse:
-    """Start a new health analysis for a session."""
-    user_id = user["id"]
+    """Start a new health analysis for a session.
+
+    Optionally specify a working_directory to run all checks in a specific folder
+    (similar to the folder selector in the git widget).
+    """
+    user_id_raw = user["id"]
+    if not user_id_raw:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found")
+    user_id: str = user_id_raw
+    working_directory = request.working_directory if request else None
 
     # Verify session ownership
     session_result = await db.execute(
@@ -460,6 +389,13 @@ async def start_health_analysis(
     session = session_result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    # Check if workspace exists
+    if not session.workspace_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Session has no workspace. Start the workspace first.",
+        )
 
     # Check if analysis is already running
     result = await db.execute(
@@ -491,12 +427,15 @@ async def start_health_analysis(
 
     db_url = settings.DATABASE_URL
 
-    # Start background analysis
+    # Start background analysis with workspace info
     background_tasks.add_task(
         run_health_analysis,
         session_id,
         health_score.id,
         db_url,
+        session.workspace_id,
+        user_id,
+        working_directory,
     )
 
     return AnalysisStartResponse(
@@ -561,19 +500,34 @@ async def get_recommendations(
     )
 
 
-@router.post("/fix/{recommendation_id}", response_model=dict[str, str])
+class FixResponse(BaseModel):
+    """Response for auto-fix operation."""
+
+    status: str
+    message: str
+    recommendation_id: str
+    output: str | None = None
+    error: str | None = None
+
+
+@router.post("/fix/{recommendation_id}", response_model=FixResponse)
 async def auto_fix_recommendation(
     session_id: str,
     recommendation_id: str,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
-) -> dict[str, str]:
-    """Attempt to auto-fix a recommendation via agent.
+) -> FixResponse:
+    """Apply an auto-fix for a recommendation.
 
-    This would trigger the agent to apply the fix automatically
-    for recommendations that support auto-fixing.
+    Executes the fix command in the workspace container.
     """
-    user_id = user["id"]
+    from src.compute_client import compute_client
+    from src.database.models import HealthCheck
+
+    user_id_raw = user["id"]
+    if not user_id_raw:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found")
+    user_id: str = user_id_raw
 
     # Verify session ownership
     session_result = await db.execute(
@@ -585,6 +539,12 @@ async def auto_fix_recommendation(
     session = session_result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    if not session.workspace_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Session has no workspace",
+        )
 
     # Get latest health score
     result = await db.execute(
@@ -620,13 +580,58 @@ async def auto_fix_recommendation(
             detail="This recommendation cannot be auto-fixed",
         )
 
-    # In production, this would trigger the agent to apply the fix
-    # For now, return a success message
-    return {
-        "status": "initiated",
-        "message": f"Auto-fix initiated for: {recommendation.get('title')}",
-        "recommendation_id": recommendation_id,
-    }
+    fix_command = recommendation.get("fix_command")
+
+    # If no fix_command in recommendation, try to get it from the check
+    if not fix_command and recommendation.get("check_id"):
+        check_result = await db.execute(
+            select(HealthCheck).where(HealthCheck.id == recommendation.get("check_id"))
+        )
+        check = check_result.scalar_one_or_none()
+        if check:
+            fix_command = check.fix_command
+
+    if not fix_command:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No fix command available for this recommendation",
+        )
+
+    # Execute the fix command
+    try:
+        exec_result = await compute_client.exec_command(
+            workspace_id=session.workspace_id,
+            user_id=user_id,
+            command=fix_command,
+            exec_timeout=120,  # 2 minute timeout for fixes
+        )
+
+        exit_code = exec_result.get("exit_code", 1)
+        stdout = exec_result.get("stdout", "")
+        stderr = exec_result.get("stderr", "")
+
+        if exit_code == 0:
+            return FixResponse(
+                status="success",
+                message=f"Successfully applied fix: {recommendation.get('title')}",
+                recommendation_id=recommendation_id,
+                output=stdout[:2000] if stdout else None,
+            )
+        return FixResponse(
+            status="failed",
+            message=f"Fix command failed with exit code {exit_code}",
+            recommendation_id=recommendation_id,
+            output=stdout[:1000] if stdout else None,
+            error=stderr[:1000] if stderr else None,
+        )
+
+    except Exception as e:
+        return FixResponse(
+            status="error",
+            message=f"Error executing fix: {e!s}",
+            recommendation_id=recommendation_id,
+            error=str(e),
+        )
 
 
 @router.get("/history", response_model=list[HealthHistoryItem])

@@ -9,13 +9,16 @@ import {
   ChevronDown,
   Code,
   FileCode,
+  Folder,
   Loader2,
   Package,
   Play,
   RefreshCw,
+  Settings,
   Shield,
   Sparkles,
   TestTube,
+  X,
   Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -25,6 +28,7 @@ import {
   analyzeSessionHealth,
   applyHealthFix,
 } from '@/lib/api';
+import { HealthCheckConfig } from './HealthCheckConfig';
 
 // Types matching the backend API
 interface MetricScore {
@@ -162,11 +166,15 @@ function MetricBar({
   score,
   icon: Icon,
   details,
+  category,
+  onConfigure,
 }: {
   label: string;
   score: number;
   icon: React.ElementType;
   details?: Record<string, unknown>;
+  category: string;
+  onConfigure?: (category: string) => void;
 }) {
   const [showDetails, setShowDetails] = useState(false);
 
@@ -178,35 +186,45 @@ function MetricBar({
 
   return (
     <div>
-      <button
-        onClick={() => details && setShowDetails(!showDetails)}
-        className="w-full text-left group"
-        disabled={!details}
-      >
-        <div className="flex items-center justify-between mb-1.5">
-          <div className="flex items-center gap-2 text-sm">
-            <Icon className="w-3.5 h-3.5 text-text-muted" />
-            <span className="text-text-secondary">{label}</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-text-primary">{score}</span>
-            {details && (
-              <ChevronDown
-                className={cn(
-                  'w-3.5 h-3.5 text-text-muted transition-transform',
-                  showDetails && 'rotate-180'
-                )}
-              />
-            )}
-          </div>
+      <div className="flex items-center justify-between mb-1.5">
+        <button
+          onClick={() => details && setShowDetails(!showDetails)}
+          className="flex-1 flex items-center gap-2 text-sm text-left group"
+          disabled={!details}
+        >
+          <Icon className="w-3.5 h-3.5 text-text-muted" />
+          <span className="text-text-secondary">{label}</span>
+          {details && (
+            <ChevronDown
+              className={cn(
+                'w-3 h-3 text-text-muted transition-transform opacity-0 group-hover:opacity-100',
+                showDetails && 'rotate-180 opacity-100'
+              )}
+            />
+          )}
+        </button>
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-text-primary">{score}</span>
+          {onConfigure && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onConfigure(category);
+              }}
+              className="p-1 text-text-muted hover:text-text-primary hover:bg-overlay rounded transition-colors opacity-0 group-hover:opacity-100"
+              title="Configure checks"
+            >
+              <Settings className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
-        <div className="h-1.5 bg-overlay rounded-full overflow-hidden">
-          <div
-            className={cn('h-full rounded-full transition-all duration-500', getColor())}
-            style={{ width: `${score}%` }}
-          />
-        </div>
-      </button>
+      </div>
+      <div className="h-1.5 bg-overlay rounded-full overflow-hidden">
+        <div
+          className={cn('h-full rounded-full transition-all duration-500', getColor())}
+          style={{ width: `${score}%` }}
+        />
+      </div>
 
       {showDetails && details && (
         <div className="mt-2 p-2 bg-overlay/50 rounded text-xs space-y-1">
@@ -279,6 +297,8 @@ export default function ProjectHealth({
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [configCategory, setConfigCategory] = useState<string | null>(null);
+  const [workingDirectory, setWorkingDirectory] = useState<string>('');
 
   const fetchHealth = async () => {
     try {
@@ -328,7 +348,7 @@ export default function ProjectHealth({
       setAnalyzing(true);
       setError(null);
 
-      await analyzeSessionHealth(sessionId);
+      await analyzeSessionHealth(sessionId, workingDirectory || undefined);
     } catch (err) {
       setError('Failed to start analysis');
       setAnalyzing(false);
@@ -384,6 +404,32 @@ export default function ProjectHealth({
           <p className="text-xs text-text-muted mb-4">
             Analyze your project to get insights on code quality, security, and more
           </p>
+
+          {/* Folder selector */}
+          <div className="mb-4 max-w-xs mx-auto">
+            <div className="relative">
+              <Folder className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
+              <input
+                type="text"
+                value={workingDirectory}
+                onChange={(e) => setWorkingDirectory(e.target.value)}
+                placeholder="/ (project root)"
+                className="w-full pl-9 pr-8 py-2 bg-overlay border border-border-subtle rounded-lg text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-primary"
+              />
+              {workingDirectory && (
+                <button
+                  onClick={() => setWorkingDirectory('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-text-muted hover:text-text-primary"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            <p className="mt-1 text-[10px] text-text-muted">
+              Optional: Specify a subfolder to analyze
+            </p>
+          </div>
+
           <button
             onClick={handleAnalyze}
             disabled={analyzing}
@@ -435,51 +481,74 @@ export default function ProjectHealth({
               </div>
             </div>
 
-            <button
-              onClick={handleAnalyze}
-              disabled={analyzing}
-              className="p-2 text-text-muted hover:text-text-primary hover:bg-overlay rounded-lg transition-colors disabled:opacity-50"
-              title="Re-analyze"
-            >
-              {analyzing ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <RefreshCw className="w-4 h-4" />
-              )}
-            </button>
+            <div className="flex items-center gap-1">
+              {/* Folder input for re-analyze */}
+              <div className="relative">
+                <input
+                  type="text"
+                  value={workingDirectory}
+                  onChange={(e) => setWorkingDirectory(e.target.value)}
+                  placeholder="/"
+                  title="Working directory (leave empty for project root)"
+                  className="w-20 px-2 py-1.5 bg-overlay border border-border-subtle rounded text-xs text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-primary"
+                />
+              </div>
+              <button
+                onClick={handleAnalyze}
+                disabled={analyzing}
+                className="p-2 text-text-muted hover:text-text-primary hover:bg-overlay rounded-lg transition-colors disabled:opacity-50"
+                title={workingDirectory ? `Re-analyze in ${workingDirectory}` : 'Re-analyze'}
+              >
+                {analyzing ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-4 h-4" />
+                )}
+              </button>
+            </div>
           </div>
 
           {/* Metric Bars */}
-          <div className="px-4 pb-4 space-y-3">
+          <div className="px-4 pb-4 space-y-3 group">
             <MetricBar
               label="Code Quality"
               score={health.code_quality.score}
               icon={Code}
               details={health.code_quality.details as Record<string, unknown>}
+              category="code_quality"
+              onConfigure={setConfigCategory}
             />
             <MetricBar
               label="Test Coverage"
               score={health.test_coverage.score}
               icon={TestTube}
               details={health.test_coverage.details as Record<string, unknown>}
+              category="test_coverage"
+              onConfigure={setConfigCategory}
             />
             <MetricBar
               label="Security"
               score={health.security.score}
               icon={Shield}
               details={health.security.details as Record<string, unknown>}
+              category="security"
+              onConfigure={setConfigCategory}
             />
             <MetricBar
               label="Documentation"
               score={health.documentation.score}
               icon={Book}
               details={health.documentation.details as Record<string, unknown>}
+              category="documentation"
+              onConfigure={setConfigCategory}
             />
             <MetricBar
               label="Dependencies"
               score={health.dependencies.score}
               icon={Package}
               details={health.dependencies.details as Record<string, unknown>}
+              category="dependencies"
+              onConfigure={setConfigCategory}
             />
           </div>
 
@@ -526,6 +595,17 @@ export default function ProjectHealth({
           </div>
         </div>
       )}
+
+      {/* Health Check Config Modal */}
+      <HealthCheckConfig
+        sessionId={sessionId}
+        open={configCategory !== null}
+        onOpenChange={(open) => !open && setConfigCategory(null)}
+        category={configCategory || undefined}
+        onSave={() => {
+          // Optionally re-analyze after config changes
+        }}
+      />
     </div>
   );
 }

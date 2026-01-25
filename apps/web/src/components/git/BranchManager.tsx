@@ -17,6 +17,7 @@ import {
   GitCompare,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { api } from '@/lib/api';
 
 // ============================================================================
 // Types
@@ -386,7 +387,7 @@ function BranchItem({ branch, onSwitch, onDelete, onMerge, onCompare }: BranchIt
 // ============================================================================
 
 export function BranchManager({
-  sessionId: _sessionId,
+  sessionId,
   onBranchSwitch,
   onMerge,
   className,
@@ -397,6 +398,7 @@ export function BranchManager({
   const [showLocal, setShowLocal] = useState(true);
   const [showRemote, setShowRemote] = useState(false);
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [deleteModalBranch, setDeleteModalBranch] = useState<string | null>(null);
   const [mergeModalBranch, setMergeModalBranch] = useState<string | null>(null);
 
@@ -404,63 +406,15 @@ export function BranchManager({
   const loadBranches = useCallback(async () => {
     setLoading(true);
     try {
-      // In real implementation, fetch from API
-      // const data = await api.get(`/api/sessions/${sessionId}/git/branches`);
-
-      // Mock data
-      const mockBranches: Branch[] = [
-        {
-          name: 'main',
-          isCurrent: true,
-          isRemote: false,
-          lastCommit: 'Initial project setup',
-          lastCommitDate: '2 hours ago',
-          lastCommitAuthor: 'John Doe',
-          ahead: 0,
-          behind: 0,
-          upstream: 'origin/main',
-        },
-        {
-          name: 'feature/auth',
-          isCurrent: false,
-          isRemote: false,
-          lastCommit: 'Add login page',
-          lastCommitDate: '30 minutes ago',
-          ahead: 3,
-          behind: 0,
-        },
-        {
-          name: 'feature/dashboard',
-          isCurrent: false,
-          isRemote: false,
-          lastCommit: 'WIP dashboard components',
-          lastCommitDate: '1 day ago',
-          ahead: 5,
-          behind: 2,
-        },
-        {
-          name: 'origin/main',
-          isCurrent: false,
-          isRemote: true,
-          lastCommit: 'Initial project setup',
-          lastCommitDate: '2 hours ago',
-        },
-        {
-          name: 'origin/develop',
-          isCurrent: false,
-          isRemote: true,
-          lastCommit: 'Merge feature branches',
-          lastCommitDate: '1 day ago',
-        },
-      ];
-
-      setBranches(mockBranches);
-    } catch (error) {
-      console.error('Failed to load branches:', error);
+      const data = await api.get<Branch[]>(`/api/sessions/${sessionId}/git/branches`);
+      setBranches(data);
+    } catch {
+      // Set empty branches array on error - workspace may not have git initialized
+      setBranches([]);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [sessionId]);
 
   useEffect(() => {
     loadBranches();
@@ -478,64 +432,69 @@ export function BranchManager({
   const remoteBranches = filteredBranches.filter((b) => b.isRemote);
 
   // Handlers
-  const handleCreateBranch = async (_name: string, _checkout: boolean) => {
+  const handleCreateBranch = async (name: string, checkout: boolean) => {
+    setError(null);
     try {
-      // TODO: Implement API call for branch creation
-      // await api.post(`/api/sessions/${sessionId}/git/branches`, { name: _name, checkout: _checkout });
-      console.warn('Creating branch:', { name: _name, checkout: _checkout });
+      await api.post(`/api/sessions/${sessionId}/git/branches`, { name, checkout });
       setCreateModalOpen(false);
       await loadBranches();
-    } catch (error) {
-      console.error('Failed to create branch:', error);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to create branch';
+      setError(message);
     }
   };
 
-  const handleDeleteBranch = async (_force: boolean) => {
+  const handleDeleteBranch = async (force: boolean) => {
     if (!deleteModalBranch) return;
+    setError(null);
     try {
-      // TODO: Implement API call for branch deletion
-      // await api.delete(`/api/sessions/${sessionId}/git/branches/${deleteModalBranch}`);
-      console.warn('Deleting branch:', { branch: deleteModalBranch, force: _force });
+      await api.delete(
+        `/api/sessions/${sessionId}/git/branches/${encodeURIComponent(deleteModalBranch)}?force=${force}`
+      );
       setDeleteModalBranch(null);
       await loadBranches();
-    } catch (error) {
-      console.error('Failed to delete branch:', error);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to delete branch';
+      setError(message);
     }
   };
 
-  const handleMergeBranch = async (_noFastForward: boolean) => {
+  const handleMergeBranch = async (noFastForward: boolean) => {
     if (!mergeModalBranch || !currentBranch) return;
+    setError(null);
     try {
-      // TODO: Implement API call for branch merge
-      // await api.post(`/api/sessions/${sessionId}/git/merge`, { source: mergeModalBranch, noFastForward: _noFastForward });
-      console.warn('Merging branch:', {
+      await api.post(`/api/sessions/${sessionId}/git/merge`, {
         source: mergeModalBranch,
-        target: currentBranch.name,
-        noFastForward: _noFastForward,
+        noFastForward,
       });
       onMerge?.(mergeModalBranch, currentBranch.name);
       setMergeModalBranch(null);
       await loadBranches();
-    } catch (error) {
-      console.error('Failed to merge branch:', error);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to merge branch';
+      setError(message);
     }
   };
 
   const handleSwitchBranch = async (branch: string) => {
+    setError(null);
     try {
-      // TODO: Implement API call for branch switch
-      // await api.post(`/api/sessions/${sessionId}/git/checkout`, { branch });
-      console.warn('Switching to branch:', branch);
+      await api.post(`/api/sessions/${sessionId}/git/checkout`, { branch });
       onBranchSwitch?.(branch);
       await loadBranches();
-    } catch (error) {
-      console.error('Failed to switch branch:', error);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to switch branch';
+      setError(message);
     }
   };
 
-  const handleCompare = (_branch: string) => {
-    // TODO: Open diff view between branches
-    console.warn('Comparing with branch:', _branch);
+  const handleCompare = (branch: string) => {
+    // Open diff view in a new tab or trigger a diff modal
+    // For now, navigate to a diff view URL
+    window.open(
+      `/sessions/${sessionId}/diff?base=${currentBranch?.name || 'main'}&compare=${branch}`,
+      '_blank'
+    );
   };
 
   return (
@@ -563,6 +522,13 @@ export function BranchManager({
           </button>
         </div>
       </div>
+
+      {/* Error message */}
+      {error && (
+        <div className="px-4 py-2 border-b border-border-subtle bg-red-500/10 text-red-400 text-sm">
+          {error}
+        </div>
+      )}
 
       {/* Search & Filter */}
       <div className="px-4 py-2 border-b border-border-subtle space-y-2">

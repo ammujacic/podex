@@ -1,0 +1,37 @@
+{
+  "name": "@podex/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Podex Desktop Application",
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "tsc && electron .",
+    "build": "tsc",
+    "postinstall": "electron-rebuild || echo 'Warning: electron-rebuild failed, continuing anyway'",
+    "package": "electron-builder",
+    "package:mac": "electron-builder --mac",
+    "package:win": "electron-builder --win",
+    "package:linux": "electron-builder --linux"
+  },
+  "dependencies": {
+    "@sentry/electron": "^7.6.0",
+    "better-sqlite3": "^12.6.0",
+    "electron-log": "^5.2.0",
+    "electron-squirrel-startup": "^1.0.1",
+    "electron-store": "^8.2.0",
+    "electron-updater": "^6.7.3",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
+    "@electron/rebuild": "^3.6.1",
+    "electron": "^40.0.0",
+    "electron-builder": "^26.5.0",
+    "typescript": "^5.7.0"
+  },
+  "build": {
+    "extends": "electron-builder.yml"
+  }
+}

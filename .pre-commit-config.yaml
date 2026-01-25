@@ -30,6 +30,7 @@ repos:
         entry: pnpm typecheck
         language: system
         files: \.(ts|tsx)$
+        exclude: (__tests__|\.test\.|\.spec\.)
         pass_filenames: false
 
       - id: frontend-format

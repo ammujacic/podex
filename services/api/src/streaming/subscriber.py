@@ -32,6 +32,7 @@ class StreamSubscriber:
 
     def __init__(self) -> None:
         """Initialize subscriber."""
+        # Use Any type since this class creates its own Redis client with decode_responses=True
         self._redis: redis.Redis[Any] | None = None
         self._pubsub: redis.client.PubSub | None = None
         self._listen_task: asyncio.Task[None] | None = None

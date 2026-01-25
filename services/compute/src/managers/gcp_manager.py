@@ -3,7 +3,9 @@
 Uses Cloud Run for serverless CPU workspaces and GKE for GPU workloads.
 """
 
-import base64
+import asyncio
+import re
+import secrets
 import shlex
 import uuid
 from collections.abc import AsyncGenerator
@@ -19,9 +21,12 @@ try:
         Container,
         EnvVar,
         ExecutionTemplate,
+        GCSVolumeSource,
         Job,
         ResourceRequirements,
         TaskTemplate,
+        Volume,
+        VolumeMount,
     )
 
     GOOGLE_CLOUD_AVAILABLE = True
@@ -31,9 +36,12 @@ except ImportError:
     Container = type("Container", (), {})
     EnvVar = type("EnvVar", (), {})
     ExecutionTemplate = type("ExecutionTemplate", (), {})
+    GCSVolumeSource = type("GCSVolumeSource", (), {})
     Job = type("Job", (), {})
     ResourceRequirements = type("ResourceRequirements", (), {})
     TaskTemplate = type("TaskTemplate", (), {})
+    Volume = type("Volume", (), {})
+    VolumeMount = type("VolumeMount", (), {})
     GOOGLE_CLOUD_AVAILABLE = False
 
 from podex_shared import ComputeUsageParams, get_usage_tracker
@@ -49,6 +57,7 @@ from podex_shared.models.workspace import (
 from src.api_client import sync_workspace_status_to_api
 from src.config import settings
 from src.managers.base import ComputeManager, ProxyRequest
+from src.middleware.script_injector import inject_devtools_script
 from src.models.workspace import (
     WorkspaceConfig,
     WorkspaceExecResponse,
@@ -57,19 +66,10 @@ from src.models.workspace import (
     WorkspaceStatus,
     WorkspaceTier,
 )
+from src.storage.user_bucket_service import UserBucketService
 from src.storage.workspace_store import WorkspaceStore
 
 logger = structlog.get_logger()
-
-# Constants for parsing command output
-MIN_LS_PARTS = 9
-MIN_SS_PARTS = 4
-SS_LOCAL_ADDR_INDEX = 3
-SS_ALT_LOCAL_ADDR_INDEX = 2
-SS_PROCESS_INFO_MIN_PARTS = 6
-MIN_SYSTEM_PORT = 1024
-PROCESS_NAME_START_OFFSET = 3
-MIN_PROCESS_NAME_START = 2
 
 # Constants for billing and HTTP status
 MINIMUM_BILLING_DURATION_SECONDS = 600  # 10 minutes minimum
@@ -104,7 +104,19 @@ class GCPComputeManager(ComputeManager):
         self._jobs_client = run_v2.JobsAsyncClient()
         self._executions_client = run_v2.ExecutionsAsyncClient()
         self._workspace_store = workspace_store
-        # FileSync is set via set_file_sync() during initialization
+        # Lock for billing operations to prevent race conditions
+        self._billing_lock = asyncio.Lock()
+        # Lock for workspace setup operations to prevent concurrent setup
+        self._setup_locks: dict[str, asyncio.Lock] = {}
+        # Shared HTTP client for connection pooling
+        self._http_client: httpx.AsyncClient | None = None
+
+        # User bucket service for managing per-user GCS buckets
+        self._bucket_service = UserBucketService(
+            project_id=settings.gcp_project_id or "podex-dev",
+            region=settings.gcp_region,
+            env=settings.environment,
+        )
 
         logger.info(
             "GCPComputeManager initialized",
@@ -113,25 +125,28 @@ class GCPComputeManager(ComputeManager):
             has_workspace_store=workspace_store is not None,
         )
 
-    async def _get_workspace(self, workspace_id: str) -> WorkspaceInfo | None:
-        """Get workspace from Redis store.
+    def _get_setup_lock(self, workspace_id: str) -> asyncio.Lock:
+        """Get or create a lock for workspace setup operations."""
+        if workspace_id not in self._setup_locks:
+            self._setup_locks[workspace_id] = asyncio.Lock()
+        return self._setup_locks[workspace_id]
 
-        Always reads from Redis to ensure consistency across instances.
-        No local caching - Redis is the single source of truth.
-        """
-        if self._workspace_store:
-            return await self._workspace_store.get(workspace_id)
-        return None
+    async def _get_http_client(self) -> httpx.AsyncClient:
+        """Get shared HTTP client with connection pooling."""
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(
+                timeout=30.0,
+                limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+            )
+        return self._http_client
 
-    async def _save_workspace(self, workspace: WorkspaceInfo) -> None:
-        """Save workspace to Redis store."""
-        if self._workspace_store:
-            await self._workspace_store.save(workspace)
+    async def close(self) -> None:
+        """Close shared resources."""
+        if self._http_client and not self._http_client.is_closed:
+            await self._http_client.aclose()
+            self._http_client = None
 
-    async def _delete_workspace(self, workspace_id: str) -> None:
-        """Delete workspace from Redis store."""
-        if self._workspace_store:
-            await self._workspace_store.delete(workspace_id)
+    # Note: _get_workspace, _save_workspace, _delete_workspace are inherited from base class
 
     def _is_gpu_tier(self, tier: WorkspaceTier) -> bool:
         """Check if the tier requires GPU compute.
@@ -224,7 +239,7 @@ class GCPComputeManager(ComputeManager):
         """Get the full resource name for a Cloud Run job."""
         return f"{self._get_job_parent()}/jobs/ws-{workspace_id}"
 
-    async def create_workspace(
+    async def create_workspace(  # noqa: PLR0915
         self,
         user_id: str,
         session_id: str,
@@ -257,6 +272,18 @@ class GCPComputeManager(ComputeManager):
         resource_config = self._get_resource_config(config.tier)
         container_image = self._get_container_image(config, requires_gke=False)
 
+        # Ensure user bucket exists (lazy creation)
+        bucket_name = await self._bucket_service.ensure_bucket_exists(user_id)
+        await self._bucket_service.initialize_structure(user_id)
+        await self._bucket_service.ensure_workspace_directory(user_id, workspace_id)
+
+        logger.info(
+            "User bucket ready for workspace",
+            workspace_id=workspace_id,
+            user_id=user_id,
+            bucket_name=bucket_name,
+        )
+
         # Build environment variables
         env_vars = [
             EnvVar(name="WORKSPACE_ID", value=workspace_id),
@@ -272,9 +299,26 @@ class GCPComputeManager(ComputeManager):
         if config.git_email:
             env_vars.append(EnvVar(name="GIT_AUTHOR_EMAIL", value=config.git_email))
             env_vars.append(EnvVar(name="GIT_COMMITTER_EMAIL", value=config.git_email))
+        # Add dotfiles settings for entrypoint script
+        env_vars.append(
+            EnvVar(name="SYNC_DOTFILES", value="true" if config.sync_dotfiles else "false")
+        )
+        if config.dotfiles_paths:
+            env_vars.append(EnvVar(name="DOTFILES_PATHS", value=",".join(config.dotfiles_paths)))
         env_vars.extend(EnvVar(name=k, value=v) for k, v in config.environment.items())
 
-        # Create Cloud Run job
+        # GCS volume mount for per-user bucket
+        volumes = [
+            Volume(
+                name="user-storage",
+                gcs=GCSVolumeSource(
+                    bucket=bucket_name,
+                    read_only=False,
+                ),
+            ),
+        ]
+
+        # Create Cloud Run job with volume mount
         container = Container(
             image=container_image,
             env=env_vars,
@@ -284,10 +328,17 @@ class GCPComputeManager(ComputeManager):
                     "memory": resource_config["memory"],
                 }
             ),
+            volume_mounts=[
+                VolumeMount(
+                    name="user-storage",
+                    mount_path="/mnt/gcs",
+                ),
+            ],
         )
 
         task_template = TaskTemplate(
             containers=[container],
+            volumes=volumes,
             max_retries=0,
         )
 
@@ -307,6 +358,7 @@ class GCPComputeManager(ComputeManager):
 
         job_name = f"ws-{workspace_id}"
 
+        created_job = None
         try:
             request = run_v2.CreateJobRequest(
                 parent=self._get_job_parent(),
@@ -317,11 +369,32 @@ class GCPComputeManager(ComputeManager):
             created_job = await operation.result()
 
             # Start an execution
-            exec_request = run_v2.RunJobRequest(name=created_job.name)
-            exec_operation = await self._jobs_client.run_job(request=exec_request)
-            execution = await exec_operation.result()
+            try:
+                exec_request = run_v2.RunJobRequest(name=created_job.name)
+                exec_operation = await self._jobs_client.run_job(request=exec_request)
+                execution = await exec_operation.result()
+            except Exception as exec_error:
+                # Clean up the job if execution fails
+                logger.warning(
+                    "Job execution failed, cleaning up job",
+                    workspace_id=workspace_id,
+                    job_name=created_job.name,
+                    error=str(exec_error),
+                )
+                try:
+                    delete_request = run_v2.DeleteJobRequest(name=created_job.name)
+                    await self._jobs_client.delete_job(request=delete_request)
+                except Exception as cleanup_error:
+                    logger.error(
+                        "Failed to cleanup job after execution failure",
+                        workspace_id=workspace_id,
+                        error=str(cleanup_error),
+                    )
+                raise
 
             now = datetime.now(UTC)
+            # Generate a secure auth token for workspace API authentication
+            auth_token = secrets.token_urlsafe(32) if settings.workspace_auth_enabled else None
             workspace_info = WorkspaceInfo(
                 id=workspace_id,
                 user_id=user_id,
@@ -334,11 +407,15 @@ class GCPComputeManager(ComputeManager):
                 repos=config.repos,
                 created_at=now,
                 last_activity=now,
+                auth_token=auth_token,
                 metadata={
                     "job_name": created_job.name,
                     "execution_name": execution.name,
                     "last_billing_timestamp": now.isoformat(),
-                    # Store dotfiles config for sync on stop
+                    # Storage mode - volume mount means files are directly available via GCS
+                    "storage_mode": "volume_mount",
+                    "bucket_name": bucket_name,
+                    # User preferences (from API)
                     "sync_dotfiles": config.sync_dotfiles,
                     "dotfiles_paths": config.dotfiles_paths,
                     # Store git config for setup when workspace is ready
@@ -346,6 +423,10 @@ class GCPComputeManager(ComputeManager):
                     "git_email": config.git_email,
                     # Flag to indicate if GitHub token auth needs setup
                     "has_github_token": bool(config.environment.get("GITHUB_TOKEN")),
+                    # Store repo cloning config for when workspace becomes ready
+                    "git_credentials": config.git_credentials,
+                    "git_branch": config.git_branch,
+                    "post_init_commands": config.post_init_commands,
                 },
             )
 
@@ -361,6 +442,19 @@ class GCPComputeManager(ComputeManager):
 
         except Exception as e:
             logger.exception("Failed to create GCP workspace", error=str(e))
+            # Clean up GCS workspace directory on failure
+            try:
+                await self._bucket_service.delete_workspace_directory(user_id, workspace_id)
+                logger.info(
+                    "Cleaned up GCS workspace directory after creation failure",
+                    workspace_id=workspace_id,
+                )
+            except Exception as cleanup_error:
+                logger.warning(
+                    "Failed to cleanup GCS directory after workspace creation failure",
+                    workspace_id=workspace_id,
+                    error=str(cleanup_error),
+                )
             raise
 
     async def _create_gke_workspace(
@@ -372,18 +466,36 @@ class GCPComputeManager(ComputeManager):
     ) -> WorkspaceInfo:
         """Create a workspace on GKE for GPU workloads.
 
+        Uses GCS FUSE CSI driver for mounting user bucket.
+
+        Pod spec would include:
+        - annotations: {"gke-gcsfuse/volumes": "true"}
+        - volumes with CSI driver: gcsfuse.csi.storage.gke.io
+        - volumeAttributes: {bucketName, mountOptions}
+
         This is a placeholder for GKE-based GPU workloads.
-        Would use kubernetes client to create pods on GPU node pools.
+        Full implementation would use kubernetes client to create pods.
         """
         logger.warning(
-            "GKE GPU workloads not yet implemented, falling back to Cloud Run",
+            "GKE GPU workloads not yet implemented, creating placeholder",
             workspace_id=workspace_id,
             tier=config.tier,
         )
 
-        # For now, create a Cloud Run job (without GPU)
-        # In production, this would use kubernetes client
+        # Ensure user bucket exists (same as Cloud Run)
+        bucket_name = await self._bucket_service.ensure_bucket_exists(user_id)
+        await self._bucket_service.initialize_structure(user_id)
+        await self._bucket_service.ensure_workspace_directory(user_id, workspace_id)
+
+        # GKE pod spec documentation (example structure):
+        # Metadata includes gke-gcsfuse/volumes annotation
+        # Spec defines a CSI volume using gcsfuse.csi.storage.gke.io driver
+        # with bucketName and mountOptions configured
+        # Container volumeMounts attach the user-storage volume to /mnt/gcs
+
         now = datetime.now(UTC)
+        # Generate a secure auth token for workspace API authentication
+        auth_token = secrets.token_urlsafe(32) if settings.workspace_auth_enabled else None
         workspace_info = WorkspaceInfo(
             id=workspace_id,
             user_id=user_id,
@@ -396,10 +508,14 @@ class GCPComputeManager(ComputeManager):
             repos=config.repos,
             created_at=now,
             last_activity=now,
+            auth_token=auth_token,
             metadata={
                 "requires_gke": True,
                 "last_billing_timestamp": now.isoformat(),
-                # Store dotfiles config for sync on stop
+                # Storage mode - volume mount via GCS FUSE CSI
+                "storage_mode": "volume_mount",
+                "bucket_name": bucket_name,
+                # User preferences (from API)
                 "sync_dotfiles": config.sync_dotfiles,
                 "dotfiles_paths": config.dotfiles_paths,
             },
@@ -410,36 +526,144 @@ class GCPComputeManager(ComputeManager):
             await self._workspace_store.save(workspace_info)
         return workspace_info
 
+    async def _clone_repos(  # noqa: PLR0912, PLR0915
+        self,
+        workspace_id: str,
+        repos: list[str],
+        git_credentials: str | None,
+        git_branch: str | None = None,
+    ) -> None:
+        """Clone repositories into the workspace.
+
+        Args:
+            workspace_id: The workspace ID
+            repos: List of repository URLs to clone
+            git_credentials: Git credentials (username:token format)
+            git_branch: Optional branch to checkout after cloning
+        """
+        # Validate git URL format to prevent injection
+        git_url_pattern = re.compile(
+            r"^https?://[a-zA-Z0-9][-a-zA-Z0-9]*(\.[a-zA-Z0-9][-a-zA-Z0-9]*)+/[\w./-]+$",
+        )
+
+        # Validate git credentials format if provided (expect username:token format)
+        validated_credentials: tuple[str, str] | None = None
+        if git_credentials:
+            if ":" not in git_credentials:
+                logger.warning("Invalid git_credentials format, expected 'username:token'")
+            else:
+                parts = git_credentials.split(":", 1)
+                # Validate username and token don't contain shell-dangerous characters
+                username = parts[0]
+                token = parts[1]
+                if re.match(r"^[\w.-]+$", username) and re.match(r"^[\w.-]+$", token):
+                    validated_credentials = (username, token)
+                else:
+                    logger.warning("Git credentials contain invalid characters, ignoring")
+
+        for repo_url in repos:
+            # Validate URL format
+            if not git_url_pattern.match(repo_url):
+                logger.warning("Invalid git URL format, skipping", repo=repo_url)
+                continue
+
+            # Extract repo name from URL (alphanumeric, dash, underscore only)
+            repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
+            repo_name = re.sub(r"[^a-zA-Z0-9_-]", "", repo_name)
+            if not repo_name:
+                logger.warning("Could not extract valid repo name", repo=repo_url)
+                continue
+
+            # Clone command with properly escaped arguments
+            # Clone into projects subdirectory to keep workspace organized
+            safe_dest = shlex.quote(f"/home/dev/projects/{repo_name}")
+
+            if validated_credentials:
+                # Set up git credential helper using a script that reads from env
+                # This avoids storing credentials in files
+                username, token = validated_credentials
+                # Create a credential helper script that outputs credentials
+                # This is more secure than storing in ~/.git-credentials
+                helper_script = f"""#!/bin/sh
+echo "protocol=https"
+echo "host=github.com"
+echo "username={shlex.quote(username)}"
+echo "password={shlex.quote(token)}"
+"""
+                setup_cmd = (
+                    f"mkdir -p ~/.local/bin && "
+                    f"cat > ~/.local/bin/git-cred-helper << 'HELPER'\n{helper_script}HELPER\n"
+                    f"chmod 700 ~/.local/bin/git-cred-helper && "
+                    f"git config --global credential.helper '!~/.local/bin/git-cred-helper'"
+                )
+                try:
+                    await self.exec_command(workspace_id, setup_cmd, timeout=10)
+                except Exception:
+                    logger.warning("Failed to set up git credentials", workspace_id=workspace_id)
+
+            clone_cmd = f"git clone {shlex.quote(repo_url)} {safe_dest}"
+
+            try:
+                await self.exec_command(workspace_id, clone_cmd, timeout=120)
+                logger.info("Cloned repository", workspace_id=workspace_id, repo=repo_name)
+
+                # Checkout specific branch if specified (and not main/master)
+                if git_branch and git_branch not in ("main", "master"):
+                    safe_branch = shlex.quote(git_branch)
+                    checkout_cmd = f"cd {safe_dest} && git checkout {safe_branch}"
+                    try:
+                        result = await self.exec_command(workspace_id, checkout_cmd, timeout=30)
+                        if result.exit_code == 0:
+                            logger.info(
+                                "Checked out branch",
+                                workspace_id=workspace_id,
+                                repo=repo_name,
+                                branch=git_branch,
+                            )
+                        else:
+                            logger.warning(
+                                "Failed to checkout branch",
+                                workspace_id=workspace_id,
+                                repo=repo_name,
+                                branch=git_branch,
+                                stderr=result.stderr[:200] if result.stderr else "",
+                            )
+                    except Exception:
+                        logger.warning(
+                            "Failed to checkout branch",
+                            workspace_id=workspace_id,
+                            repo=repo_name,
+                            branch=git_branch,
+                            exc_info=True,
+                        )
+            except Exception:
+                logger.exception("Failed to clone repository", repo=repo_url)
+            finally:
+                # Clean up git credentials after cloning to prevent credential leakage
+                if validated_credentials:
+                    try:
+                        cleanup_cmd = (
+                            "rm -f ~/.local/bin/git-cred-helper && "
+                            "git config --global --unset credential.helper 2>/dev/null || true"
+                        )
+                        await self.exec_command(workspace_id, cleanup_cmd, timeout=10)
+                        logger.debug("Cleaned up git credentials", workspace_id=workspace_id)
+                    except Exception:
+                        logger.warning(
+                            "Failed to clean up git credentials", workspace_id=workspace_id
+                        )
+
     async def stop_workspace(self, workspace_id: str) -> None:
         """Stop a Cloud Run job workspace."""
         workspace = await self._get_workspace(workspace_id)
         if not workspace:
             return
 
-        # Save user dotfiles before stopping
-        sync_dotfiles = workspace.metadata.get("sync_dotfiles", True)
-        if sync_dotfiles:
-            try:
-                dotfiles_paths = workspace.metadata.get("dotfiles_paths")
-                await self._file_sync.save_user_dotfiles(
-                    workspace_id=workspace_id,
-                    user_id=workspace.user_id,
-                    dotfiles_paths=dotfiles_paths,
-                )
-                workspace.metadata["dotfiles_sync_status"] = "success"
-                logger.info(
-                    "Saved user dotfiles before workspace stop",
-                    workspace_id=workspace_id,
-                    user_id=workspace.user_id,
-                )
-            except Exception as e:
-                logger.exception(
-                    "Failed to save user dotfiles before stop",
-                    workspace_id=workspace_id,
-                    user_id=workspace.user_id,
-                )
-                workspace.metadata["dotfiles_sync_status"] = "error"
-                workspace.metadata["dotfiles_sync_error"] = str(e)
+        # With volume mounts, dotfiles are automatically persisted - no sync needed
+        logger.debug(
+            "Volume mount mode - dotfiles already persisted",
+            workspace_id=workspace_id,
+        )
 
         try:
             execution_name = workspace.metadata.get("execution_name")
@@ -517,50 +741,85 @@ class GCPComputeManager(ComputeManager):
             logger.exception("Failed to track compute usage")
 
     async def track_running_workspaces_usage(self) -> None:
-        """Track compute usage for all running workspaces."""
-        now = datetime.now(UTC)
+        """Track compute usage for all running workspaces (called periodically).
 
-        # Get all running workspaces from store
-        workspaces: list[WorkspaceInfo] = []
-        if self._workspace_store:
-            workspaces = await self._workspace_store.list_running()
-        else:
-            # Fallback: return empty list if store not available
-            workspaces = []
+        Uses a lock to prevent race conditions where concurrent calls could
+        read the same timestamp and double-bill.
+        """
+        async with self._billing_lock:
+            now = datetime.now(UTC)
 
-        for workspace in workspaces:
-            if workspace.status != WorkspaceStatus.RUNNING:
-                continue
+            # Get all running workspaces from store
+            workspaces: list[WorkspaceInfo] = []
+            if self._workspace_store:
+                workspaces = await self._workspace_store.list_running()
 
-            try:
-                last_billing_str = workspace.metadata.get("last_billing_timestamp")
-                if not last_billing_str:
-                    workspace.metadata["last_billing_timestamp"] = now.isoformat()
-                    await self._save_workspace(workspace)
-                    logger.warning(
-                        "Missing last_billing_timestamp, skipping billing tick",
-                        workspace_id=workspace.id,
-                    )
+            for workspace in workspaces:
+                if workspace.status != WorkspaceStatus.RUNNING:
                     continue
-                else:
+
+                try:
+                    last_billing_str = workspace.metadata.get("last_billing_timestamp")
+                    if not last_billing_str:
+                        workspace.metadata["last_billing_timestamp"] = now.isoformat()
+                        await self._save_workspace(workspace)
+                        logger.warning(
+                            "Missing last_billing_timestamp, skipping billing tick",
+                            workspace_id=workspace.id,
+                        )
+                        continue
+
+                    # Parse last billing timestamp
                     last_billing = datetime.fromisoformat(last_billing_str)
 
-                if last_billing.tzinfo is None:
-                    last_billing = last_billing.replace(tzinfo=UTC)
+                    # Ensure last_billing is timezone-aware
+                    if last_billing.tzinfo is None:
+                        last_billing = last_billing.replace(tzinfo=UTC)
 
-                duration = (now - last_billing).total_seconds()
+                    # Calculate duration since last billing
+                    duration = (now - last_billing).total_seconds()
+                    if duration <= 0:
+                        workspace.metadata["last_billing_timestamp"] = now.isoformat()
+                        await self._save_workspace(workspace)
+                        logger.warning(
+                            "Non-positive billing duration, resetting timestamp",
+                            workspace_id=workspace.id,
+                        )
+                        continue
 
-                if duration >= MINIMUM_BILLING_DURATION_SECONDS:
-                    duration_seconds = int(duration)
-                    await self._track_compute_usage(workspace, duration_seconds)
-                    workspace.metadata["last_billing_timestamp"] = now.isoformat()
-                    await self._save_workspace(workspace)
+                    if duration >= MINIMUM_BILLING_DURATION_SECONDS:
+                        duration_seconds = int(duration)
 
-            except Exception:
-                logger.exception(
-                    "Failed to track periodic usage",
-                    workspace_id=workspace.id,
-                )
+                        # Update timestamp BEFORE tracking to prevent double-billing
+                        # even if _track_compute_usage fails and retries
+                        old_timestamp = workspace.metadata.get("last_billing_timestamp")
+                        workspace.metadata["last_billing_timestamp"] = now.isoformat()
+
+                        try:
+                            # Track the usage
+                            await self._track_compute_usage(workspace, duration_seconds)
+
+                            # Save workspace after updating billing timestamp
+                            await self._save_workspace(workspace)
+
+                            logger.debug(
+                                "Tracked periodic compute usage",
+                                workspace_id=workspace.id,
+                                duration_seconds=duration_seconds,
+                            )
+                        except Exception:
+                            # Restore old timestamp on failure so we retry next time
+                            if old_timestamp:
+                                workspace.metadata["last_billing_timestamp"] = old_timestamp
+                            else:
+                                workspace.metadata.pop("last_billing_timestamp", None)
+                            await self._save_workspace(workspace)
+                            raise
+                except Exception:
+                    logger.exception(
+                        "Failed to track periodic usage for workspace",
+                        workspace_id=workspace.id,
+                    )
 
     async def delete_workspace(self, workspace_id: str, preserve_files: bool = True) -> None:
         """Delete a workspace."""
@@ -580,7 +839,10 @@ class GCPComputeManager(ComputeManager):
             # Clean up GCS files if requested
             if not preserve_files:
                 try:
-                    await self._file_sync.delete_workspace_files(workspace_id)
+                    # Delete from user bucket
+                    await self._bucket_service.delete_workspace_directory(
+                        workspace.user_id, workspace_id
+                    )
                     logger.info("Deleted GCS files for workspace", workspace_id=workspace_id)
                 except Exception as e:
                     logger.warning("Failed to delete GCS files", error=str(e))
@@ -593,7 +855,7 @@ class GCPComputeManager(ComputeManager):
             files_preserved=preserve_files,
         )
 
-    async def get_workspace(self, workspace_id: str) -> WorkspaceInfo | None:  # noqa: PLR0912
+    async def get_workspace(self, workspace_id: str) -> WorkspaceInfo | None:  # noqa: PLR0912, PLR0915
         """Get workspace information."""
         workspace = await self._get_workspace(workspace_id)
         if not workspace:
@@ -613,53 +875,156 @@ class GCPComputeManager(ComputeManager):
                     workspace.status = WorkspaceStatus.STOPPED
                 elif execution.running_count > 0:
                     workspace.status = WorkspaceStatus.RUNNING
+                else:
+                    # Unknown state - log and preserve current status
+                    logger.warning(
+                        "Unknown execution state, preserving current status",
+                        workspace_id=workspace_id,
+                        reconciling=execution.reconciling,
+                        failed_count=execution.failed_count,
+                        succeeded_count=execution.succeeded_count,
+                        running_count=execution.running_count,
+                        current_status=workspace.status.value,
+                    )
+                    # Don't change status if we can't determine the state
 
                 await self._save_workspace(workspace)
 
-                # If status changed to RUNNING, set up git configuration and MCP gateway
+                # If status changed to RUNNING, set up workspace (git, repos, post-init, MCP)
+                # Use setup lock to prevent concurrent setup from multiple get_workspace calls
                 if (
                     old_status != WorkspaceStatus.RUNNING
                     and workspace.status == WorkspaceStatus.RUNNING
                 ):
-                    # Set up git configuration
-                    if not workspace.metadata.get("git_setup_done"):
-                        try:
-                            await self.setup_workspace_git(workspace_id)
-                            workspace.metadata["git_setup_done"] = True
-                            await self._save_workspace(workspace)
-                        except Exception as e:
-                            logger.warning(
-                                "Failed to setup git on workspace ready",
-                                workspace_id=workspace_id,
-                                error=str(e),
-                            )
+                    # Try to acquire setup lock - if already locked, another call is doing setup
+                    setup_lock = self._get_setup_lock(workspace_id)
+                    if setup_lock.locked():
+                        logger.debug(
+                            "Setup already in progress, skipping",
+                            workspace_id=workspace_id,
+                        )
+                    else:
+                        async with setup_lock:
+                            # Re-check metadata flags after acquiring lock
+                            workspace = await self._get_workspace(workspace_id)
+                            if not workspace:
+                                return None
 
-                    # Start MCP gateway for agent access to filesystem/git
-                    if not workspace.metadata.get("mcp_gateway_started"):
-                        try:
-                            result = await self.exec_command(
-                                workspace_id,
-                                "/home/dev/.local/bin/start-mcp-gateway.sh",
-                            )
-                            if result.exit_code == 0:
-                                workspace.metadata["mcp_gateway_started"] = True
-                                await self._save_workspace(workspace)
-                                logger.info(
-                                    "MCP gateway started",
-                                    workspace_id=workspace_id,
+                            # Wait for entrypoint to complete before doing any setup
+                            # The entrypoint creates /home/dev/projects as a symlink to
+                            # /mnt/gcs/workspaces/...
+                            # We need to wait to avoid race conditions where we clone into
+                            # a temporary directory that gets replaced by the symlink
+                            entrypoint_ready = False
+                            for _ in range(30):  # Wait up to 30 seconds
+                                result = await self.exec_command(
+                                    workspace_id,
+                                    "test -L /home/dev/projects && echo 'ready'",
+                                    timeout=5,
                                 )
-                            else:
+                                if result.stdout.strip() == "ready":
+                                    entrypoint_ready = True
+                                    break
+                                await asyncio.sleep(1)
+
+                            if not entrypoint_ready:
                                 logger.warning(
-                                    "MCP gateway startup failed",
+                                    "Entrypoint may not have completed",
                                     workspace_id=workspace_id,
-                                    exit_code=result.exit_code,
+                                    hint="projects symlink not detected",
                                 )
-                        except Exception as e:
-                            logger.warning(
-                                "Failed to start MCP gateway",
-                                workspace_id=workspace_id,
-                                error=str(e),
-                            )
+                                # Fall back to creating projects directory manually
+                                await self.exec_command(
+                                    workspace_id, "mkdir -p /home/dev/projects", timeout=10
+                                )
+
+                            # Set up git configuration
+                            if not workspace.metadata.get("git_setup_done"):
+                                try:
+                                    await self.setup_workspace_git(workspace_id)
+                                    workspace.metadata["git_setup_done"] = True
+                                    await self._save_workspace(workspace)
+                                except Exception as e:
+                                    logger.warning(
+                                        "Failed to setup git on workspace ready",
+                                        workspace_id=workspace_id,
+                                        error=str(e),
+                                    )
+
+                            # Clone repositories if specified
+                            if not workspace.metadata.get("repos_cloned") and workspace.repos:
+                                try:
+                                    git_credentials = workspace.metadata.get("git_credentials")
+                                    git_branch = workspace.metadata.get("git_branch")
+                                    await self._clone_repos(
+                                        workspace_id, workspace.repos, git_credentials, git_branch
+                                    )
+                                    workspace.metadata["repos_cloned"] = True
+                                    await self._save_workspace(workspace)
+                                except Exception as e:
+                                    logger.warning(
+                                        "Failed to clone repos on workspace ready",
+                                        workspace_id=workspace_id,
+                                        error=str(e),
+                                    )
+
+                            # Execute post-init commands
+                            post_init_commands = workspace.metadata.get("post_init_commands", [])
+                            if not workspace.metadata.get("post_init_done") and post_init_commands:
+                                logger.info(
+                                    "Executing post-init commands",
+                                    workspace_id=workspace_id,
+                                    command_count=len(post_init_commands),
+                                )
+                                for cmd in post_init_commands:
+                                    try:
+                                        # Use longer timeout for setup commands
+                                        result = await self.exec_command(
+                                            workspace_id, cmd, timeout=300
+                                        )
+                                        if result.exit_code != 0:
+                                            logger.warning(
+                                                "Post-init command failed",
+                                                workspace_id=workspace_id,
+                                                command=cmd[:100],
+                                                exit_code=result.exit_code,
+                                                stderr=result.stderr[:500] if result.stderr else "",
+                                            )
+                                    except Exception:
+                                        logger.exception(
+                                            "Failed to execute post-init command",
+                                            workspace_id=workspace_id,
+                                            command=cmd[:100],
+                                        )
+                                workspace.metadata["post_init_done"] = True
+                                await self._save_workspace(workspace)
+
+                            # Start MCP gateway for agent access to filesystem/git
+                            if not workspace.metadata.get("mcp_gateway_started"):
+                                try:
+                                    result = await self.exec_command(
+                                        workspace_id,
+                                        "/home/dev/.local/bin/start-mcp-gateway.sh",
+                                    )
+                                    if result.exit_code == 0:
+                                        workspace.metadata["mcp_gateway_started"] = True
+                                        await self._save_workspace(workspace)
+                                        logger.info(
+                                            "MCP gateway started",
+                                            workspace_id=workspace_id,
+                                        )
+                                    else:
+                                        logger.warning(
+                                            "MCP gateway startup failed",
+                                            workspace_id=workspace_id,
+                                            exit_code=result.exit_code,
+                                        )
+                                except Exception as e:
+                                    logger.warning(
+                                        "Failed to start MCP gateway",
+                                        workspace_id=workspace_id,
+                                        error=str(e),
+                                    )
 
                 # If status changed, sync to API
                 if old_status != workspace.status:
@@ -670,30 +1035,45 @@ class GCPComputeManager(ComputeManager):
                     )
 
             except Exception as e:
-                logger.warning("Failed to get execution status", error=str(e))
+                # workspace is guaranteed non-None (checked above)
+                assert workspace is not None  # noqa: S101
+
+                # Classify the error for better handling
+                error_str = str(e)
+                if "NotFound" in error_str or "404" in error_str:
+                    logger.warning(
+                        "Execution not found - workspace may have been deleted",
+                        workspace_id=workspace_id,
+                        execution_name=execution_name,
+                    )
+                    workspace.status = WorkspaceStatus.STOPPED
+                    await self._save_workspace(workspace)
+                elif "PermissionDenied" in error_str or "403" in error_str:
+                    logger.error(
+                        "Permission denied accessing execution - check IAM roles",
+                        workspace_id=workspace_id,
+                        error=error_str[:200],
+                    )
+                    workspace.status = WorkspaceStatus.ERROR
+                    await self._save_workspace(workspace)
+                elif "Unauthenticated" in error_str or "401" in error_str:
+                    logger.error(
+                        "Authentication failed - check service account credentials",
+                        workspace_id=workspace_id,
+                        error=error_str[:200],
+                    )
+                    workspace.status = WorkspaceStatus.ERROR
+                    await self._save_workspace(workspace)
+                else:
+                    logger.warning(
+                        "Failed to get execution status",
+                        workspace_id=workspace_id,
+                        error=error_str[:200],
+                    )
 
         return workspace
 
-    async def list_workspaces(
-        self,
-        user_id: str | None = None,
-        session_id: str | None = None,
-    ) -> list[WorkspaceInfo]:
-        """List workspaces filtered by user or session."""
-        if self._workspace_store:
-            if user_id:
-                return await self._workspace_store.list_by_user(user_id)
-            if session_id:
-                return await self._workspace_store.list_by_session(session_id)
-            return await self._workspace_store.list_all()
-
-        # Fallback: return empty list if store not available
-        workspaces: list[WorkspaceInfo] = []
-        if user_id:
-            workspaces = [w for w in workspaces if w.user_id == user_id]
-        if session_id:
-            workspaces = [w for w in workspaces if w.session_id == session_id]
-        return workspaces
+    # Note: list_workspaces is inherited from base class
 
     async def exec_command(
         self,
@@ -705,6 +1085,7 @@ class GCPComputeManager(ComputeManager):
         """Execute a command in the workspace.
 
         For Cloud Run jobs, we use the workspace's HTTP API endpoint.
+        Includes audit logging for security tracking.
         """
         workspace = await self._get_workspace(workspace_id)
         if not workspace:
@@ -713,34 +1094,82 @@ class GCPComputeManager(ComputeManager):
 
         safe_working_dir = shlex.quote(working_dir) if working_dir else "/home/dev"
 
+        # Audit log the command execution (truncate for safety)
+        # This helps with security auditing and debugging
+        command_preview = command[:100] + "..." if len(command) > 100 else command  # noqa: PLR2004
+        logger.info(
+            "Executing workspace command",
+            workspace_id=workspace_id,
+            user_id=workspace.user_id,
+            command_preview=command_preview,
+            working_dir=safe_working_dir,
+        )
+
         try:
             # Cloud Run exposes an HTTP endpoint on the workspace
             # The workspace container runs a small API server for command execution
-            workspace_url = f"http://{workspace.host}:{workspace.port}"
+            # Use HTTPS when TLS is enabled, HTTP for development
+            protocol = "https" if settings.workspace_tls_enabled else "http"
+            workspace_url = f"{protocol}://{workspace.host}:{workspace.port}"
 
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(
-                    f"{workspace_url}/exec",
-                    json={
-                        "command": command,
-                        "working_dir": safe_working_dir,
-                    },
+            # Build request headers with optional token auth
+            headers: dict[str, str] = {}
+            if settings.workspace_auth_enabled and workspace.auth_token:
+                headers[settings.workspace_token_header] = workspace.auth_token
+
+            # Use shared HTTP client with connection pooling
+            client = await self._get_http_client()
+            response = await client.post(
+                f"{workspace_url}/exec",
+                json={
+                    "command": command,
+                    "working_dir": safe_working_dir,
+                },
+                headers=headers,
+                timeout=float(timeout),  # Override default timeout for this request
+            )
+
+            if response.status_code == HTTP_OK_STATUS_CODE:
+                data = response.json()
+                return WorkspaceExecResponse(
+                    exit_code=data.get("exit_code", 0),
+                    stdout=data.get("stdout", ""),
+                    stderr=data.get("stderr", ""),
+                )
+            else:
+                logger.warning(
+                    "Workspace exec returned non-200 status",
+                    workspace_id=workspace_id,
+                    status_code=response.status_code,
+                )
+                return WorkspaceExecResponse(
+                    exit_code=-1,
+                    stdout="",
+                    stderr=f"HTTP {response.status_code}: {response.text}",
                 )
 
-                if response.status_code == HTTP_OK_STATUS_CODE:
-                    data = response.json()
-                    return WorkspaceExecResponse(
-                        exit_code=data.get("exit_code", 0),
-                        stdout=data.get("stdout", ""),
-                        stderr=data.get("stderr", ""),
-                    )
-                else:
-                    return WorkspaceExecResponse(
-                        exit_code=-1,
-                        stdout="",
-                        stderr=f"HTTP {response.status_code}: {response.text}",
-                    )
-
+        except httpx.TimeoutException:
+            logger.warning(
+                "Workspace exec timed out",
+                workspace_id=workspace_id,
+                timeout=timeout,
+            )
+            return WorkspaceExecResponse(
+                exit_code=-1,
+                stdout="",
+                stderr=f"Command timed out after {timeout} seconds",
+            )
+        except httpx.ConnectError as e:
+            logger.warning(
+                "Failed to connect to workspace",
+                workspace_id=workspace_id,
+                error=str(e)[:100],
+            )
+            return WorkspaceExecResponse(
+                exit_code=-1,
+                stdout="",
+                stderr=f"Connection failed: {e}",
+            )
         except Exception as e:
             logger.exception("Failed to execute command", workspace_id=workspace_id)
             return WorkspaceExecResponse(
@@ -748,22 +1177,6 @@ class GCPComputeManager(ComputeManager):
                 stdout="",
                 stderr=str(e),
             )
-
-    def set_file_sync(self, file_sync: Any) -> None:
-        """Set the file sync service for workspace file synchronization.
-
-        This MUST be called during initialization. FileSync is required
-        for proper workspace operation.
-
-        Args:
-            file_sync: The file sync service instance
-
-        Raises:
-            ValueError: If file_sync is None
-        """
-        if file_sync is None:
-            raise ValueError("FileSync is required and cannot be None")
-        self._file_sync = file_sync
 
     async def setup_workspace_git(self, workspace_id: str) -> None:
         """Set up git configuration in the workspace.
@@ -1046,114 +1459,66 @@ fi
             logger.exception("Failed to stream command", workspace_id=workspace_id)
             yield f"Error: {e}"
 
-    async def read_file(self, workspace_id: str, path: str) -> str:
-        """Read a file from the workspace via exec."""
-        safe_path = shlex.quote(path)
-        result = await self.exec_command(workspace_id, f"cat {safe_path}")
-        if result.exit_code != 0:
-            msg = f"Failed to read file: {result.stderr}"
-            raise ValueError(msg)
-        return result.stdout
+    # Note: read_file, write_file, list_files, heartbeat, and cleanup_idle_workspaces
+    # are inherited from base class
 
-    async def write_file(self, workspace_id: str, path: str, content: str) -> None:
-        """Write a file to the workspace via exec."""
-        safe_path = shlex.quote(path)
-        encoded_content = base64.b64encode(content.encode("utf-8")).decode("ascii")
-        cmd = (
-            f"mkdir -p $(dirname {safe_path}) && "
-            f"echo {shlex.quote(encoded_content)} | base64 -d > {safe_path}"
-        )
-        result = await self.exec_command(workspace_id, cmd)
-        if result.exit_code != 0:
-            msg = f"Failed to write file: {result.stderr}"
-            raise ValueError(msg)
+    async def check_workspace_health(self, workspace_id: str) -> bool:
+        """Check if a GKE workspace pod is healthy and can execute commands.
 
-    async def list_files(
-        self,
-        workspace_id: str,
-        path: str = ".",
-    ) -> list[dict[str, str]]:
-        """List files in a workspace directory."""
-        safe_path = shlex.quote(path)
-        result = await self.exec_command(
-            workspace_id,
-            f"ls -la {safe_path} | tail -n +2",
-        )
-        if result.exit_code != 0:
-            return []
+        Returns True if the pod is running and can execute commands.
+        Updates workspace status if the pod is in a bad state.
+        """
+        workspace = await self._get_workspace(workspace_id)
+        if not workspace:
+            return False
 
-        files = []
-        for line in result.stdout.strip().split("\n"):
-            if not line:
-                continue
-            parts = line.split()
-            if len(parts) >= MIN_LS_PARTS:
-                file_type = "directory" if parts[0].startswith("d") else "file"
-                files.append(
-                    {
-                        "name": " ".join(parts[8:]),
-                        "type": file_type,
-                        "size": parts[4],
-                    }
-                )
+        if not workspace.host or workspace.host == "pending":
+            return False
 
-        return files
+        try:
+            # Try a simple command to verify the pod is responding
+            result = await self.exec_command(workspace_id, "echo health", timeout=10)
+            if result.exit_code == 0:
+                return True
 
-    async def heartbeat(self, workspace_id: str) -> None:
-        """Update workspace last activity timestamp."""
-        if self._workspace_store:
-            await self._workspace_store.update_heartbeat(workspace_id)
-        # No fallback needed - heartbeat is best-effort
+            logger.warning(
+                "Workspace health check failed",
+                workspace_id=workspace_id,
+                exit_code=result.exit_code,
+            )
+            return False
+        except Exception as e:
+            logger.warning(
+                "Workspace health check error",
+                workspace_id=workspace_id,
+                error=str(e)[:100],
+            )
+            workspace.status = WorkspaceStatus.ERROR
+            await self._save_workspace(workspace)
+            return False
 
-    async def cleanup_idle_workspaces(self, timeout_seconds: int) -> list[str]:
-        """Clean up workspaces that have been idle too long."""
-        now = datetime.now(UTC)
-        cleaned_up = []
+    async def check_all_workspaces_health(self) -> dict[str, bool]:
+        """Check health of all running workspaces.
 
-        # Get all workspaces from store
+        Returns a dict mapping workspace_id to health status.
+        """
+        results: dict[str, bool] = {}
+
         workspaces: list[WorkspaceInfo] = []
         if self._workspace_store:
             workspaces = await self._workspace_store.list_all()
-        # No fallback - store is required for cleanup
 
-        # Filter workspaces that need cleanup
-        workspaces_to_cleanup = []
         for workspace in workspaces:
-            idle_time = (now - workspace.last_activity).total_seconds()
-            if idle_time > timeout_seconds:
-                workspaces_to_cleanup.append((workspace, idle_time))
+            if workspace.status == WorkspaceStatus.RUNNING:
+                is_healthy = await self.check_workspace_health(workspace.id)
+                results[workspace.id] = is_healthy
+                if not is_healthy:
+                    logger.warning(
+                        "Unhealthy workspace detected",
+                        workspace_id=workspace.id,
+                    )
 
-        if workspaces_to_cleanup:
-            logger.info(
-                "Starting GCP workspace cleanup",
-                total_to_cleanup=len(workspaces_to_cleanup),
-                timeout_seconds=timeout_seconds,
-            )
-
-        for i, (workspace, idle_time) in enumerate(workspaces_to_cleanup, 1):
-            logger.info(
-                "Cleaning up GCP workspace",
-                progress=f"{i}/{len(workspaces_to_cleanup)}",
-                workspace_id=workspace.id[:12],
-                idle_seconds=int(idle_time),
-            )
-            try:
-                await self.delete_workspace(workspace.id)
-                cleaned_up.append(workspace.id)
-            except Exception:
-                logger.exception(
-                    "Failed to cleanup GCP workspace, continuing with others",
-                    workspace_id=workspace.id,
-                )
-
-        if workspaces_to_cleanup:
-            logger.info(
-                "GCP workspace cleanup completed",
-                cleaned_up_count=len(cleaned_up),
-                total_attempted=len(workspaces_to_cleanup),
-            )
-
-        return cleaned_up
+        return results
 
     async def get_preview_url(self, workspace_id: str, port: int) -> str | None:
         """Get the URL to access a dev server running in the workspace."""
@@ -1212,22 +1577,31 @@ fi
         )
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.request(
-                    method=request.method,
-                    url=target_url,
-                    headers=filtered_headers,
-                    content=request.body,
-                    follow_redirects=False,
-                )
+            # Use shared HTTP client with connection pooling
+            client = await self._get_http_client()
+            response = await client.request(
+                method=request.method,
+                url=target_url,
+                headers=filtered_headers,
+                content=request.body,
+                follow_redirects=False,
+            )
 
-                response_headers = {
-                    k: v
-                    for k, v in response.headers.items()
-                    if k.lower() not in ("content-encoding", "transfer-encoding", "connection")
-                }
+            response_headers = {
+                k: v
+                for k, v in response.headers.items()
+                if k.lower() not in ("content-encoding", "transfer-encoding", "connection")
+            }
 
-                return response.status_code, response_headers, response.content
+            # Inject DevTools bridge script into HTML responses
+            content_type = response_headers.get("content-type", "")
+            response_body = inject_devtools_script(response.content, content_type)
+
+            # Update content-length if script was injected
+            if len(response_body) != len(response.content):
+                response_headers["content-length"] = str(len(response_body))
+
+            return response.status_code, response_headers, response_body
 
         except httpx.ConnectError as e:
             logger.warning(
@@ -1248,89 +1622,10 @@ fi
             )
             raise ValueError("Request timed out") from e
 
-    def _extract_process_name(self, process_info: str) -> str:
-        """Extract process name from ss output format."""
-        if "users:" not in process_info:
-            return ""
-        start = process_info.find('(("') + PROCESS_NAME_START_OFFSET
-        end = process_info.find('",', start)
-        if start > MIN_PROCESS_NAME_START and end > start:
-            return process_info[start:end]
-        return ""
+    # Note: _extract_process_name, _parse_port_line, and get_active_ports
+    # are inherited from base class
 
-    def _parse_port_line(self, parts: list[str]) -> dict[str, Any] | None:
-        """Parse a single line from ss output and return port info if valid."""
-        if len(parts) < MIN_SS_PARTS:
-            return None
-
-        local_addr = (
-            parts[SS_LOCAL_ADDR_INDEX]
-            if len(parts) > SS_LOCAL_ADDR_INDEX
-            else parts[SS_ALT_LOCAL_ADDR_INDEX]
-        )
-        if ":" not in local_addr:
-            return None
-
-        port_str = local_addr.split(":")[-1]
-        try:
-            port = int(port_str)
-        except ValueError:
-            return None
-
-        if port <= MIN_SYSTEM_PORT:
-            return None
-
-        process_info = parts[-1] if len(parts) > SS_PROCESS_INFO_MIN_PARTS else ""
-        process_name = self._extract_process_name(process_info)
-
-        return {
-            "port": port,
-            "process_name": process_name or "unknown",
-            "state": "LISTEN",
-        }
-
-    async def get_active_ports(self, workspace_id: str) -> list[dict[str, Any]]:
-        """Get list of ports with active services in the workspace."""
-        workspace = await self._get_workspace(workspace_id)
-        if not workspace:
-            return []
-
-        try:
-            result = await self.exec_command(
-                workspace_id,
-                "ss -tlnp 2>/dev/null | tail -n +2",
-            )
-
-            if result.exit_code != 0:
-                return []
-
-            ports = []
-            for line in result.stdout.strip().split("\n"):
-                if not line:
-                    continue
-                parts = line.split()
-                port_info = self._parse_port_line(parts)
-                if port_info:
-                    ports.append(port_info)
-
-            # Deduplicate
-            seen: set[int] = set()
-            unique = []
-            for p in ports:
-                if p["port"] not in seen:
-                    seen.add(p["port"])
-                    unique.append(p)
-
-            return unique
-
-        except Exception:
-            logger.exception(
-                "Failed to get active ports in GCP workspace",
-                workspace_id=workspace_id,
-            )
-            return []
-
-    async def scale_workspace(  # noqa: PLR0912
+    async def scale_workspace(
         self,
         workspace_id: str,
         new_tier: WorkspaceTier,
@@ -1380,28 +1675,9 @@ fi
         )
 
         try:
-            # Step 1: Save dotfiles before scaling
-            if workspace.metadata.get("sync_dotfiles", True):
-                try:
-                    dotfiles_paths = workspace.metadata.get("dotfiles_paths")
-                    await self._file_sync.save_user_dotfiles(
-                        workspace_id=workspace_id,
-                        user_id=workspace.user_id,
-                        dotfiles_paths=dotfiles_paths,
-                    )
-                    logger.info(
-                        "Saved dotfiles before scaling",
-                        workspace_id=workspace_id,
-                        user_id=workspace.user_id,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to save dotfiles before scaling",
-                        workspace_id=workspace_id,
-                        error=str(e),
-                    )
+            # With volume mounts, dotfiles are already persisted - no sync needed
 
-            # Step 2: Stop the current workspace
+            # Step 1: Stop the current workspace
             await self.stop_workspace(workspace_id)
 
             # Step 3: Create new workspace config with the new tier

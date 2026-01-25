@@ -1,17 +1,20 @@
 'use client';
 
 import { useRef, Component, type ReactNode } from 'react';
-import { Plus, AlertTriangle, RefreshCw, FileCode, X } from 'lucide-react';
+import { Plus, AlertTriangle, RefreshCw, FileCode, X, Globe } from 'lucide-react';
 import { useSessionStore, type Agent } from '@/stores/session';
 import { AgentCard } from './AgentCard';
 import { DraggableAgentCard } from './DraggableAgentCard';
 import { DraggableTerminalCard } from './DraggableTerminalCard';
 import { DraggableEditorCard } from './DraggableEditorCard';
+import { DraggablePreviewCard } from './DraggablePreviewCard';
 import { ResizableGridCard } from './ResizableGridCard';
 import { ResizableTerminalCard } from './ResizableTerminalCard';
 import { TerminalAgentCell } from './TerminalAgentCell';
 import { DockedFilePreviewCard } from './DockedFilePreviewCard';
 import { EditorGridCard } from './EditorGridCard';
+import { PreviewGridCard } from './PreviewGridCard';
+import { PreviewPanel } from './PreviewPanel';
 import { GridProvider } from './GridContext';
 import { useUIStore } from '@/stores/ui';
 import { CodeEditor } from './CodeEditor';
@@ -179,7 +182,7 @@ const demoAgents: Agent[] = [
 
 export function AgentGrid({ sessionId }: AgentGridProps) {
   const { sessions, setActiveAgent, closeFilePreview } = useSessionStore();
-  const { openModal } = useUIStore();
+  const { openModal, gridConfig } = useUIStore();
   const containerRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
 
@@ -205,6 +208,7 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
   const filePreviews = session?.filePreviews ?? [];
   const dockedPreviews = filePreviews.filter((p) => p.docked);
   const editorGridCardId = session?.editorGridCardId;
+  const previewGridCardId = session?.previewGridCardId;
 
   const handleAddAgent = () => {
     openModal('create-agent');
@@ -281,6 +285,15 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
           <DraggableEditorCard sessionId={sessionId} paneId="main" containerRef={containerRef} />
         )}
 
+        {/* Draggable preview card in freeform mode */}
+        {previewGridCardId && workspaceId && (
+          <DraggablePreviewCard
+            sessionId={sessionId}
+            workspaceId={workspaceId}
+            containerRef={containerRef}
+          />
+        )}
+
         {/* Floating add agent button */}
         <button
           onClick={handleAddAgent}
@@ -294,10 +307,10 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
   }
 
   // Focus mode: show only the active agent (or first agent if none selected)
-  // Also supports showing file previews and editor as tabs
+  // Also supports showing file previews, editor, and live preview as tabs
   if (
     viewMode === 'focus' &&
-    (agents.length > 0 || dockedPreviews.length > 0 || editorGridCardId)
+    (agents.length > 0 || dockedPreviews.length > 0 || editorGridCardId || previewGridCardId)
   ) {
     const focusedAgent =
       agents.length > 0
@@ -313,8 +326,23 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
     const isEditorFocused =
       activeAgentId === 'editor' ||
       (!activeAgentId && !focusedAgent && !focusedFilePreview && !!editorGridCardId);
+    // Check if activeAgentId is the live preview
+    const isPreviewFocused =
+      activeAgentId === 'preview' ||
+      (!activeAgentId &&
+        !focusedAgent &&
+        !focusedFilePreview &&
+        !isEditorFocused &&
+        !!previewGridCardId);
 
-    if (focusedAgent || focusedFilePreview || isEditorFocused || editorGridCardId) {
+    if (
+      focusedAgent ||
+      focusedFilePreview ||
+      isEditorFocused ||
+      isPreviewFocused ||
+      editorGridCardId ||
+      previewGridCardId
+    ) {
       return (
         <div className="h-full flex flex-col" data-tour="agent-grid">
           {/* Agent and file preview tabs in focus mode */}
@@ -382,6 +410,24 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
               </>
             )}
 
+            {/* Live Preview tab */}
+            {previewGridCardId && (
+              <>
+                <div className="h-4 w-px bg-border-subtle mx-1" />
+                <button
+                  onClick={() => setActiveAgent(sessionId, 'preview')}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm whitespace-nowrap transition-colors cursor-pointer ${
+                    isPreviewFocused
+                      ? 'bg-overlay text-text-primary'
+                      : 'text-text-secondary hover:text-text-primary hover:bg-overlay/50'
+                  }`}
+                >
+                  <Globe className="h-3.5 w-3.5 text-accent-secondary" />
+                  Preview
+                </button>
+              </>
+            )}
+
             <button
               onClick={handleAddAgent}
               className="flex items-center gap-1 px-3 py-1.5 rounded-md text-sm text-text-muted hover:text-text-primary hover:bg-overlay/50 cursor-pointer"
@@ -394,7 +440,12 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
           {/* Focused content view */}
           <div className="flex-1 p-4 overflow-auto">
             <div className="h-full max-w-4xl mx-auto">
-              {isEditorFocused ? (
+              {isPreviewFocused && workspaceId ? (
+                // Render live preview
+                <div className="h-full rounded-lg border border-border-default bg-surface overflow-hidden flex flex-col">
+                  <PreviewPanel workspaceId={workspaceId} />
+                </div>
+              ) : isEditorFocused ? (
                 // Render editor
                 <div className="h-full rounded-lg border border-border-default bg-surface overflow-hidden flex flex-col">
                   <EnhancedCodeEditor paneId="main" className="h-full" />
@@ -455,10 +506,20 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
   }
 
   // Grid mode (default)
+  // Calculate dynamic maxCols: 0 means match grid columns
+  const dynamicMaxCols = gridConfig.maxCols === 0 ? gridConfig.columns : gridConfig.maxCols;
+
   return (
     <GridProvider gridRef={gridRef}>
       <div className="h-full p-4 overflow-auto" data-tour="agent-grid">
-        <div ref={gridRef} className="grid gap-4 grid-cols-1 md:grid-cols-2 auto-rows-[300px]">
+        <div
+          ref={gridRef}
+          className="grid gap-4"
+          style={{
+            gridTemplateColumns: `repeat(${gridConfig.columns}, minmax(0, 1fr))`,
+            gridAutoRows: `${gridConfig.rowHeight}px`,
+          }}
+        >
           {agents.map((agent) => {
             // Check if this is a terminal agent
             if (agent.terminalSessionId) {
@@ -472,7 +533,7 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
                     agent={agent}
                     sessionId={sessionId}
                     workspaceId={workspaceId}
-                    maxCols={2}
+                    maxCols={dynamicMaxCols}
                     onRemove={() => handleRemoveTerminalAgent(agent)}
                   />
                 </AgentCardErrorBoundary>
@@ -486,7 +547,7 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
                 agentName={agent.name}
                 onRemove={() => handleRemoveAgent(agent)}
               >
-                <ResizableGridCard agent={agent} sessionId={sessionId} maxCols={2} />
+                <ResizableGridCard agent={agent} sessionId={sessionId} maxCols={dynamicMaxCols} />
               </AgentCardErrorBoundary>
             );
           })}
@@ -497,7 +558,7 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
               key={preview.id}
               preview={preview}
               sessionId={sessionId}
-              maxCols={2}
+              maxCols={dynamicMaxCols}
             />
           ))}
 
@@ -507,14 +568,25 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
               key={editorGridCardId}
               sessionId={sessionId}
               paneId="main"
-              maxCols={2}
+              maxCols={dynamicMaxCols}
+            />
+          )}
+
+          {/* Live preview grid card */}
+          {previewGridCardId && workspaceId && (
+            <PreviewGridCard
+              key={previewGridCardId}
+              sessionId={sessionId}
+              workspaceId={workspaceId}
+              maxCols={dynamicMaxCols}
             />
           )}
 
           {/* Add agent button */}
           <button
             onClick={handleAddAgent}
-            className="flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-border-default bg-surface/50 p-8 text-text-muted transition-colors hover:border-border-strong hover:text-text-secondary min-h-[300px] cursor-pointer"
+            className="flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-border-default bg-surface/50 p-8 text-text-muted transition-colors hover:border-border-strong hover:text-text-secondary cursor-pointer"
+            style={{ minHeight: `${gridConfig.rowHeight}px` }}
           >
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-elevated">
               <Plus className="h-6 w-6" />

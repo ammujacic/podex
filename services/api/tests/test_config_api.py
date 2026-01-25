@@ -49,8 +49,16 @@ class TestSettingsDefaults:
 
     def test_redis_url_default(self) -> None:
         """Test default Redis URL."""
-        settings = Settings()
-        assert settings.REDIS_URL == "redis://localhost:6379"
+        import os
+
+        # Clear env var to test default, then restore
+        original = os.environ.pop("REDIS_URL", None)
+        try:
+            settings = Settings()
+            assert settings.REDIS_URL == "redis://localhost:6379"
+        finally:
+            if original:
+                os.environ["REDIS_URL"] = original
 
     def test_gcp_region_default(self) -> None:
         """Test default GCP region."""
@@ -279,7 +287,11 @@ class TestJWTSecretValidation:
 
         with patch.dict(
             os.environ,
-            {"ENVIRONMENT": "production", "COMPUTE_INTERNAL_API_KEY": "test-key", "INTERNAL_SERVICE_TOKEN": "test-token"},
+            {
+                "ENVIRONMENT": "production",
+                "COMPUTE_INTERNAL_API_KEY": "test-key",
+                "INTERNAL_SERVICE_TOKEN": "test-token",
+            },
             clear=False,
         ):
             with pytest.raises(PydanticValidationError) as exc:
@@ -293,7 +305,11 @@ class TestJWTSecretValidation:
 
         with patch.dict(
             os.environ,
-            {"ENVIRONMENT": "production", "COMPUTE_INTERNAL_API_KEY": "test-key", "INTERNAL_SERVICE_TOKEN": "test-token"},
+            {
+                "ENVIRONMENT": "production",
+                "COMPUTE_INTERNAL_API_KEY": "test-key",
+                "INTERNAL_SERVICE_TOKEN": "test-token",
+            },
             clear=False,
         ):
             with pytest.raises(PydanticValidationError) as exc:
@@ -306,7 +322,12 @@ class TestJWTSecretValidation:
         long_secret = "x" * MIN_JWT_SECRET_LENGTH
         with patch.dict(
             os.environ,
-            {"ENVIRONMENT": "production", "JWT_SECRET_KEY": long_secret, "COMPUTE_INTERNAL_API_KEY": "test-key", "INTERNAL_SERVICE_TOKEN": "test-token"},
+            {
+                "ENVIRONMENT": "production",
+                "JWT_SECRET_KEY": long_secret,
+                "COMPUTE_INTERNAL_API_KEY": "test-key",
+                "INTERNAL_SERVICE_TOKEN": "test-token",
+            },
             clear=False,
         ):
             settings = Settings()

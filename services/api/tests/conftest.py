@@ -24,7 +24,9 @@ from src.config import settings
 from src.middleware.auth import AuthMiddleware
 
 # Suppress JWT secret warning in tests
-warnings.filterwarnings("ignore", message="JWT_SECRET_KEY not set - using auto-generated secret", category=UserWarning)
+warnings.filterwarnings(
+    "ignore", message="JWT_SECRET_KEY not set - using auto-generated secret", category=UserWarning
+)
 
 
 def _add_health_endpoints(app: FastAPI) -> None:
@@ -78,7 +80,7 @@ def _add_auth_endpoints(app: FastAPI) -> None:
     async def github_callback(
         code: str | None = None,
         error: str | None = None,
-        error_description: str | None = None,  # noqa: ARG001
+        error_description: str | None = None,
     ) -> dict[str, Any]:
         if error:
             raise HTTPException(status_code=400, detail=f"OAuth error: {error}")
@@ -106,19 +108,19 @@ def _add_session_endpoints(app: FastAPI) -> None:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     @app.post("/api/sessions")
-    async def create_session(request_body: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
+    async def create_session(request_body: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     @app.get("/api/sessions/{session_id}")
-    async def get_session(session_id: str) -> dict[str, Any]:  # noqa: ARG001
+    async def get_session(session_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     @app.delete("/api/sessions/{session_id}")
-    async def delete_session(session_id: str) -> dict[str, str]:  # noqa: ARG001
+    async def delete_session(session_id: str) -> dict[str, str]:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     @app.patch("/api/sessions/{session_id}")
-    async def update_session(session_id: str, request_body: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
+    async def update_session(session_id: str, request_body: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
 
@@ -166,7 +168,7 @@ def _add_template_endpoints(app: FastAPI) -> None:
         return {"id": "architect", "name": "Architect"}
 
     @app.post("/api/agent-templates")
-    async def create_agent_template(request_body: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
+    async def create_agent_template(request_body: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
 
@@ -174,24 +176,24 @@ def _add_agent_endpoints(app: FastAPI) -> None:
     """Add agent endpoints to the app."""
 
     @app.get("/api/sessions/{session_id}/agents")
-    async def list_agents(session_id: str) -> list[dict[str, Any]]:  # noqa: ARG001
+    async def list_agents(session_id: str) -> list[dict[str, Any]]:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     @app.post("/api/sessions/{session_id}/agents")
-    async def create_agent(session_id: str, request_body: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
+    async def create_agent(session_id: str, request_body: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     @app.get("/api/sessions/{session_id}/agents/{agent_id}")
-    async def get_agent(session_id: str, agent_id: str) -> dict[str, Any]:  # noqa: ARG001
+    async def get_agent(session_id: str, agent_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     @app.delete("/api/sessions/{session_id}/agents/{agent_id}")
-    async def delete_agent(session_id: str, agent_id: str) -> dict[str, str]:  # noqa: ARG001
+    async def delete_agent(session_id: str, agent_id: str) -> dict[str, str]:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     # Attention endpoints
     @app.get("/api/sessions/{session_id}/attention")
-    async def get_attention(session_id: str) -> list[dict[str, Any]]:  # noqa: ARG001
+    async def get_attention(session_id: str) -> list[dict[str, Any]]:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
 
@@ -297,7 +299,7 @@ def auth_headers(
     def _fake_async_session_factory() -> _FakeSession:
         return _FakeSession()
 
-    async def _fake_is_token_revoked(jti: str) -> bool:  # noqa: ARG001
+    async def _fake_is_token_revoked(jti: str) -> bool:
         return False
 
     monkeypatch.setattr(auth_middleware, "async_session_factory", _fake_async_session_factory)

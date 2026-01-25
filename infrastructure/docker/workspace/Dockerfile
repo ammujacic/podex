@@ -139,8 +139,18 @@ ENV PATH="/home/dev/.npm-global/bin:/home/dev/.local/bin:${PATH}"
 # Create projects directory with proper ownership (WORKDIR creates as root)
 RUN mkdir -p /home/dev/projects
 
+# Copy and set up workspace entrypoint script
+# This script handles GCS mount setup, dotfile symlinks, and git config
+COPY workspace-entrypoint.sh /usr/local/bin/workspace-entrypoint.sh
+USER root
+RUN chmod +x /usr/local/bin/workspace-entrypoint.sh
+USER dev
+
 # Default working directory for projects
 WORKDIR /home/dev/projects
 
-# Default command
+# Entrypoint handles workspace initialization
+ENTRYPOINT ["/usr/local/bin/workspace-entrypoint.sh"]
+
+# Default command (can be overridden)
 CMD ["/bin/zsh"]

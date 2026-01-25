@@ -26,6 +26,8 @@ import {
   Store,
   Cloud,
   Plug,
+  BookOpen,
+  ExternalLink,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUser, useAuthLoading } from '@/stores/auth';
@@ -67,6 +69,13 @@ const adminNavItems = [
     items: [
       { href: '/admin/audit', label: 'Audit Logs', icon: FileSearch },
       { href: '/admin/compliance', label: 'Compliance', icon: ShieldCheck },
+    ],
+  },
+  {
+    section: 'Developer',
+    items: [
+      { href: '/admin/api/docs', label: 'API Documentation', icon: BookOpen, external: true },
+      { href: '/admin/api/redoc', label: 'API Reference', icon: ExternalLink, external: true },
     ],
   },
 ];
@@ -131,6 +140,26 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                   const Icon = item.icon;
                   // Use exact matching - all nav items are explicit routes
                   const isActive = pathname === item.href;
+                  const isExternal = 'external' in item && item.external;
+
+                  // External links (API docs) - use anchor tag to API server
+                  if (isExternal) {
+                    const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || '';
+                    return (
+                      <li key={item.href}>
+                        <a
+                          href={`${apiBaseUrl}${item.href}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors text-text-secondary hover:text-text-primary hover:bg-overlay"
+                        >
+                          <Icon className="h-4 w-4 flex-shrink-0" />
+                          <span className="flex-1">{item.label}</span>
+                          <ExternalLink className="h-3 w-3 text-text-muted" />
+                        </a>
+                      </li>
+                    );
+                  }
 
                   return (
                     <li key={item.href}>

@@ -11,6 +11,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.cache import cache_get, cache_set
+from src.config import settings
 from src.database import UserExtension, Workspace, WorkspaceExtension, get_db
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 from src.websocket.hub import (
@@ -28,7 +29,7 @@ router = APIRouter()
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 # Open VSX configuration
-OPENVSX_BASE_URL = "https://open-vsx.org/api"
+OPENVSX_BASE_URL = settings.OPENVSX_API_URL
 OPENVSX_SEARCH_CACHE_TTL = 300  # 5 minutes for search results
 OPENVSX_DETAIL_CACHE_TTL = 3600  # 1 hour for extension details
 

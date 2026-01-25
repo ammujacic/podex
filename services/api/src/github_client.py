@@ -9,9 +9,11 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 
+from src.config import settings
+
 logger = logging.getLogger(__name__)
 
-GITHUB_API_BASE = "https://api.github.com"
+GITHUB_API_BASE = settings.GITHUB_API_URL
 
 
 # ============================================================================
@@ -205,9 +207,9 @@ class GitHubClient:
             headers={
                 "Authorization": f"Bearer {self.access_token}",
                 "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
+                "X-GitHub-Api-Version": settings.GITHUB_API_VERSION,
             },
-            timeout=30.0,
+            timeout=settings.HTTP_TIMEOUT_GITHUB,
         )
         return self
 

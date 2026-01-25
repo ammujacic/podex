@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal, cast
 from uuid import uuid4
 
+from dateutil.relativedelta import relativedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from jose import JWTError, jwt
 from passlib.hash import bcrypt
@@ -16,6 +17,7 @@ from src.auth_constants import COOKIE_ACCESS_TOKEN, COOKIE_REFRESH_TOKEN
 from src.config import settings
 from src.database.connection import get_db
 from src.database.models import (
+    PlatformInvitation,
     PlatformSetting,
     SubscriptionPlan,
     User,
@@ -109,6 +111,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
     name: str
+    invitation_token: str | None = None  # Optional token from platform invitation
 
 
 class TokenResponse(BaseModel):
@@ -375,6 +378,49 @@ async def login(
     )
 
 
+class InvitationValidationResponse(BaseModel):
+    """Response for invitation validation."""
+
+    valid: bool
+    email: str | None = None
+    gift_plan_name: str | None = None
+    gift_months: int | None = None
+    expires_at: datetime | None = None
+    message: str | None = None
+    inviter_name: str | None = None
+
+
+@router.get("/invitation/{token}", response_model=InvitationValidationResponse)
+@limiter.limit(RATE_LIMIT_AUTH)
+async def validate_invitation(
+    token: str,
+    request: Request,
+    response: Response,
+    db: DbSession,
+) -> InvitationValidationResponse:
+    """Validate an invitation token (public endpoint for registration page)."""
+    result = await db.execute(
+        select(PlatformInvitation)
+        .where(PlatformInvitation.token == token)
+        .where(PlatformInvitation.status == "pending")
+        .where(PlatformInvitation.expires_at > datetime.now(UTC))
+    )
+    invitation = result.scalar_one_or_none()
+
+    if not invitation:
+        return InvitationValidationResponse(valid=False)
+
+    return InvitationValidationResponse(
+        valid=True,
+        email=invitation.email,
+        gift_plan_name=invitation.gift_plan.name if invitation.gift_plan else None,
+        gift_months=invitation.gift_months,
+        expires_at=invitation.expires_at,
+        message=invitation.message,
+        inviter_name=invitation.invited_by.name if invitation.invited_by else None,
+    )
+
+
 @router.post("/register", response_model=AuthResponse)
 @limiter.limit(RATE_LIMIT_AUTH)
 async def register(
@@ -389,14 +435,41 @@ async def register(
         select(PlatformSetting).where(PlatformSetting.key == "feature_flags")
     )
     feature_flags = feature_flags_result.scalar_one_or_none()
-    if (
-        feature_flags
-        and isinstance(feature_flags.value, dict)
-        and not feature_flags.value.get("registration_enabled", True)
-    ):
+    registration_enabled = (
+        not feature_flags
+        or not isinstance(feature_flags.value, dict)
+        or feature_flags.value.get("registration_enabled", True)
+    )
+
+    # Validate invitation if registration is disabled or token is provided
+    invitation: PlatformInvitation | None = None
+    if body.invitation_token:
+        invitation_result = await db.execute(
+            select(PlatformInvitation)
+            .where(PlatformInvitation.token == body.invitation_token)
+            .where(PlatformInvitation.status == "pending")
+            .where(PlatformInvitation.expires_at > datetime.now(UTC))
+        )
+        invitation = invitation_result.scalar_one_or_none()
+
+        if not invitation:
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid or expired invitation token.",
+            )
+
+        # Verify email matches invitation
+        if invitation.email.lower() != body.email.lower():
+            raise HTTPException(
+                status_code=403,
+                detail="Email does not match the invitation.",
+            )
+
+    # If registration is disabled and no valid invitation, reject
+    if not registration_enabled and not invitation:
         raise HTTPException(
             status_code=403,
-            detail="Registration is currently disabled. Please contact an administrator.",
+            detail="Registration is currently disabled. You need an invitation to register.",
         )
 
     # Validate password complexity
@@ -427,32 +500,72 @@ async def register(
     await db.commit()
     await db.refresh(user)
 
-    # Auto-assign Free plan subscription
-    free_plan_result = await db.execute(
-        select(SubscriptionPlan).where(SubscriptionPlan.slug == "free")
-    )
-    free_plan = free_plan_result.scalar_one_or_none()
+    # Determine which plan to assign
+    now = datetime.now(UTC)
 
-    if free_plan:
-        # Create subscription for this user
-        now = datetime.now(UTC)
-        period_end = now + timedelta(days=30)
-        subscription = UserSubscription(
-            user_id=user.id,
-            plan_id=free_plan.id,
-            status="active",
-            billing_cycle="monthly",
-            current_period_start=now,
-            current_period_end=period_end,
-            last_credit_grant=now,  # Mark credits as granted for initial period
+    # Check if invitation has gift subscription
+    if invitation and invitation.gift_plan_id and invitation.gift_months:
+        # Use gifted plan from invitation
+        plan_result = await db.execute(
+            select(SubscriptionPlan).where(SubscriptionPlan.id == invitation.gift_plan_id)
         )
-        db.add(subscription)
-        await db.flush()
+        plan = plan_result.scalar_one_or_none()
 
-        # Create quotas using centralized function (single source of truth)
+        if plan:
+            # Create sponsored subscription with gifted months
+            period_end = now + relativedelta(months=invitation.gift_months)
+            subscription = UserSubscription(
+                user_id=user.id,
+                plan_id=plan.id,
+                status="active",
+                billing_cycle="monthly",
+                current_period_start=now,
+                current_period_end=period_end,
+                is_sponsored=True,
+                sponsored_by_id=invitation.invited_by_id,
+                sponsored_at=now,
+                sponsor_reason=f"Platform invitation - {invitation.gift_months} month gift",
+                last_credit_grant=now,
+            )
+            db.add(subscription)
+            await db.flush()
+            await sync_quotas_from_plan(db, user.id, plan, subscription)
+        else:
+            # Fallback to free plan if gifted plan not found
+            plan = None
 
-        await sync_quotas_from_plan(db, user.id, free_plan, subscription)
-        await db.commit()
+    else:
+        plan = None
+
+    # If no gifted plan, assign Free plan
+    if not plan:
+        free_plan_result = await db.execute(
+            select(SubscriptionPlan).where(SubscriptionPlan.slug == "free")
+        )
+        free_plan = free_plan_result.scalar_one_or_none()
+
+        if free_plan:
+            period_end = now + timedelta(days=30)
+            subscription = UserSubscription(
+                user_id=user.id,
+                plan_id=free_plan.id,
+                status="active",
+                billing_cycle="monthly",
+                current_period_start=now,
+                current_period_end=period_end,
+                last_credit_grant=now,
+            )
+            db.add(subscription)
+            await db.flush()
+            await sync_quotas_from_plan(db, user.id, free_plan, subscription)
+
+    # Mark invitation as accepted if used
+    if invitation:
+        invitation.status = "accepted"
+        invitation.accepted_at = now
+        invitation.accepted_by_id = user.id
+
+    await db.commit()
 
     # Get user role (will be "member" for new users)
     user_role = getattr(user, "role", "member") or "member"

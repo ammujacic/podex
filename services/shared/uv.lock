@@ -783,6 +783,7 @@ dev = [
 dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
+    { name = "types-google-cloud-ndb" },
 ]
 
 [package.metadata]
@@ -806,6 +807,7 @@ provides-extras = ["dev"]
 dev = [
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "pytest-cov", specifier = ">=7.0.0" },
+    { name = "types-google-cloud-ndb", specifier = ">=2.4.0.20251217" },
 ]
 
 [[package]]
@@ -1161,6 +1163,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ef/52/9ba0f43b686e7f3ddfeaa78ac3af750292662284b3661e91ad5494f21dbc/structlog-25.5.0.tar.gz", hash = "sha256:098522a3bebed9153d4570c6d0288abf80a031dfdb2048d59a49e9dc2190fc98", size = 1460830, upload-time = "2025-10-27T08:28:23.028Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a8/45/a132b9074aa18e799b891b91ad72133c98d8042c70f6240e4c5f9dabee2f/structlog-25.5.0-py3-none-any.whl", hash = "sha256:a8453e9b9e636ec59bd9e79bbd4a72f025981b3ba0f5837aebf48f02f37a7f9f", size = 72510, upload-time = "2025-10-27T08:28:21.535Z" },
+]
+
+[[package]]
+name = "types-google-cloud-ndb"
+version = "2.4.0.20251217"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0e/8b/5e85d267c7c8ecf1cb1ab196be37848b2652682864342bd42f0d4448ab50/types_google_cloud_ndb-2.4.0.20251217.tar.gz", hash = "sha256:858e20991a00084ce04b7a3e0e8750c9d91b052b7050fa0ea5bbe19b33fc98b6", size = 19551, upload-time = "2025-12-17T03:12:24.034Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d2/e4/95aa4ca7a4500a828f8c8e109d42be9d923ccf37a769d253757aadb8be50/types_google_cloud_ndb-2.4.0.20251217-py3-none-any.whl", hash = "sha256:85ca4bb544f41f863c6696fd8b2bdda49fe6827872a1cf90b49a96f24ada761b", size = 22736, upload-time = "2025-12-17T03:12:22.856Z" },
 ]
 
 [[package]]

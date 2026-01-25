@@ -7,7 +7,9 @@
 
 import type { User, AuthTokens } from '@/stores/auth';
 import { useAuthStore } from '@/stores/auth';
+import { useSessionStore } from '@/stores/session';
 import type { ThinkingConfig, AttachmentFile, HardwareSpec } from '@podex/shared';
+import type { BrowserContextData } from '@/stores/browserContext';
 
 // Re-export from @podex/api-client for backward compatibility
 export { ApiRequestError, isAbortError, isQuotaError } from '@podex/api-client';
@@ -53,6 +55,64 @@ export function handleBillingError(error: unknown): boolean {
   return false;
 }
 
+/**
+ * Check if an error is a workspace unavailable error (503, 500, 404, or network error).
+ */
+export function isWorkspaceError(error: unknown): boolean {
+  if (error instanceof ApiError) {
+    // 503 Service Unavailable - workspace container not responding
+    // 500 Internal Server Error - often indicates container issues
+    // 404 Not Found - container doesn't exist
+    return error.status === 503 || error.status === 500 || error.status === 404;
+  }
+  // Network errors (fetch failed)
+  if (error instanceof TypeError && error.message.includes('fetch')) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Handle workspace unavailable errors by setting the workspace error in the session store.
+ * Call this in catch blocks for workspace-related API calls.
+ * @param error The error from the API call
+ * @param sessionId The session ID to associate the error with
+ * @returns true if the error was handled as a workspace error
+ */
+export function handleWorkspaceError(error: unknown, sessionId: string): boolean {
+  if (isWorkspaceError(error)) {
+    const store = useSessionStore.getState();
+    let message = 'The workspace container is not responding. It may need to be restarted.';
+
+    if (error instanceof ApiError) {
+      if (error.status === 404) {
+        message = 'Workspace container not found. Click "Recreate" to create a new container.';
+      } else if (error.status === 503) {
+        message = 'Workspace unavailable. The container may have stopped or crashed.';
+      } else if (error.status === 500) {
+        message = 'Workspace error. The container encountered an internal error.';
+      }
+    } else if (error instanceof TypeError) {
+      message = 'Unable to connect to the workspace. Check your network connection.';
+    }
+
+    store.setWorkspaceError(sessionId, message);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Clear any workspace error for a session.
+ * Call this when a workspace operation succeeds.
+ */
+export function clearWorkspaceError(sessionId: string): void {
+  const store = useSessionStore.getState();
+  if (store.sessions[sessionId]?.workspaceError) {
+    store.setWorkspaceError(sessionId, null);
+  }
+}
+
 // Import adapters and client
 import {
   FetchHttpAdapter,
@@ -60,8 +120,10 @@ import {
   SentryErrorReporter,
   ZustandAuthProvider,
 } from '@/lib/api-adapters';
+import { getApiBaseUrl, getApiBaseUrlSync } from '@/lib/api-url';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+// Initialize with sync URL (will be updated if in Electron)
+const API_BASE_URL = getApiBaseUrlSync();
 
 // Create and export the API client singleton
 export const api = new PodexApiClient({
@@ -70,6 +132,21 @@ export const api = new PodexApiClient({
   authProvider: new ZustandAuthProvider(),
   errorReporter: new SentryErrorReporter(),
 });
+
+// Update API URL from Electron if available (async, non-blocking)
+if (typeof window !== 'undefined') {
+  getApiBaseUrl()
+    .then((url) => {
+      if (url !== API_BASE_URL) {
+        // Update the baseUrl on the client instance
+        api.setBaseUrl(url);
+        // API URL updated from Electron settings - silent in production
+      }
+    })
+    .catch((error) => {
+      console.warn('Failed to update API URL from Electron:', error);
+    });
+}
 
 // Export the request cache for direct access
 export const requestCache = api.getCache();
@@ -94,13 +171,23 @@ export async function login(email: string, password: string): Promise<User> {
   }
 }
 
-export async function register(email: string, password: string, name: string): Promise<User> {
+export async function register(
+  email: string,
+  password: string,
+  name: string,
+  invitationToken?: string
+): Promise<User> {
   const store = useAuthStore.getState();
   store.setLoading(true);
   store.clearError();
 
   try {
-    const { user, tokens } = await api.register({ email, password, name });
+    const { user, tokens } = await api.register({
+      email,
+      password,
+      name,
+      invitation_token: invitationToken,
+    });
     store.setUser(user);
     store.setTokens(tokens);
     return user;
@@ -111,6 +198,109 @@ export async function register(email: string, password: string, name: string): P
   } finally {
     store.setLoading(false);
   }
+}
+
+// ==================== Invitation API ====================
+
+export interface InvitationValidation {
+  valid: boolean;
+  email?: string;
+  gift_plan_name?: string;
+  gift_months?: number;
+  expires_at?: string;
+  message?: string;
+  inviter_name?: string;
+}
+
+export interface PlatformInvitation {
+  id: string;
+  email: string;
+  status: 'pending' | 'accepted' | 'expired' | 'revoked';
+  message: string | null;
+  gift_plan_id: string | null;
+  gift_plan_name: string | null;
+  gift_months: number | null;
+  expires_at: string;
+  invited_by_id: string | null;
+  invited_by_name: string | null;
+  invited_by_email: string | null;
+  accepted_at: string | null;
+  accepted_by_id: string | null;
+  created_at: string;
+}
+
+export interface CreateInvitationRequest {
+  email: string;
+  message?: string;
+  gift_plan_id?: string;
+  gift_months?: number;
+  expires_in_days?: number;
+}
+
+export interface InvitationsListResponse {
+  items: PlatformInvitation[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_more: boolean;
+}
+
+/**
+ * Validate an invitation token (public endpoint).
+ */
+export async function validateInvitation(token: string): Promise<InvitationValidation> {
+  return api.get(`/api/auth/invitation/${token}`, false);
+}
+
+/**
+ * List platform invitations (admin only).
+ */
+export async function listPlatformInvitations(
+  page = 1,
+  pageSize = 50,
+  status?: string,
+  search?: string
+): Promise<InvitationsListResponse> {
+  const params = new URLSearchParams({
+    page: String(page),
+    page_size: String(pageSize),
+  });
+  if (status) params.append('status', status);
+  if (search) params.append('search', search);
+  return api.get(`/api/admin/invitations?${params}`);
+}
+
+/**
+ * Create a platform invitation (admin only).
+ */
+export async function createPlatformInvitation(
+  data: CreateInvitationRequest
+): Promise<PlatformInvitation> {
+  return api.post('/api/admin/invitations', data);
+}
+
+/**
+ * Resend a platform invitation (admin only).
+ */
+export async function resendPlatformInvitation(
+  id: string,
+  extendDays = 7
+): Promise<{ message: string }> {
+  return api.post(`/api/admin/invitations/${id}/resend?extend_days=${extendDays}`, {});
+}
+
+/**
+ * Revoke a platform invitation (admin only).
+ */
+export async function revokePlatformInvitation(id: string): Promise<{ message: string }> {
+  return api.post(`/api/admin/invitations/${id}/revoke`, {});
+}
+
+/**
+ * Delete a platform invitation (admin only).
+ */
+export async function deletePlatformInvitation(id: string): Promise<{ message: string }> {
+  return api.delete(`/api/admin/invitations/${id}`);
 }
 
 export async function refreshAuth(): Promise<boolean> {
@@ -737,6 +927,7 @@ export async function deleteAgentMessage(
 export interface SendMessageOptions {
   attachments?: AttachmentFile[];
   thinkingConfig?: ThinkingConfig;
+  browserContext?: BrowserContextData;
 }
 
 export async function sendAgentMessage(
@@ -745,7 +936,7 @@ export async function sendAgentMessage(
   content: string,
   options?: SendMessageOptions
 ): Promise<MessageResponse> {
-  const { attachments, thinkingConfig } = options ?? {};
+  const { attachments, thinkingConfig, browserContext } = options ?? {};
 
   // Use multipart form data when attachments are present
   if (attachments && attachments.length > 0) {
@@ -756,6 +947,11 @@ export async function sendAgentMessage(
     if (thinkingConfig) {
       formData.append('thinking_enabled', String(thinkingConfig.enabled));
       formData.append('thinking_budget', String(thinkingConfig.budgetTokens));
+    }
+
+    // Add browser context if provided
+    if (browserContext) {
+      formData.append('browser_context', JSON.stringify(browserContext));
     }
 
     // Add all attachments
@@ -814,6 +1010,7 @@ export async function sendAgentMessage(
       {
         content,
         thinking_config: thinkingConfig,
+        browser_context: browserContext,
       }
     );
   } catch (error) {
@@ -1199,31 +1396,12 @@ export interface UpdateUserConfigRequest {
   editor_theme?: string;
 }
 
-export interface DotfileContent {
-  path: string;
-  content: string;
-}
-
 export async function getUserConfig(): Promise<UserConfig> {
   return api.get<UserConfig>('/api/user/config');
 }
 
 export async function updateUserConfig(data: UpdateUserConfigRequest): Promise<UserConfig> {
   return api.patch<UserConfig>('/api/user/config', data);
-}
-
-export async function getDotfiles(): Promise<DotfileContent[]> {
-  return api.get<DotfileContent[]>('/api/user/config/dotfiles');
-}
-
-export async function uploadDotfiles(
-  files: DotfileContent[]
-): Promise<{ uploaded: number; errors: Array<{ path: string; error: string }> }> {
-  return api.post('/api/user/config/dotfiles', { files });
-}
-
-export async function deleteDotfile(path: string): Promise<void> {
-  await api.delete(`/api/user/config/dotfiles/${encodeURIComponent(path)}`);
 }
 
 // ==================== Onboarding Tours ====================
@@ -1652,6 +1830,89 @@ export async function moveFile(
       dest_path: destPath,
     }
   );
+}
+
+/**
+ * Download a single file from the session workspace.
+ * Triggers a browser download via a temporary anchor element.
+ */
+export async function downloadFile(sessionId: string, path: string): Promise<void> {
+  const url = `${API_BASE_URL}/api/sessions/${sessionId}/files/download?path=${encodeURIComponent(path)}`;
+
+  // Get current auth token
+  const { tokens } = useAuthStore.getState();
+  const accessToken = tokens?.accessToken;
+
+  // Fetch with auth header (include credentials for httpOnly cookie auth)
+  const response = await fetch(url, {
+    credentials: 'include',
+    headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(errorText || `Download failed: ${response.status}`);
+  }
+
+  // Get the blob and create download link
+  const blob = await response.blob();
+  const filename = path.split('/').pop() || 'download';
+
+  // Create temporary download link
+  const downloadUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = downloadUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(downloadUrl);
+}
+
+/**
+ * Download a folder as a ZIP file from the session workspace.
+ * Triggers a browser download via a temporary anchor element.
+ */
+export async function downloadFolder(sessionId: string, path: string): Promise<void> {
+  const url = `${API_BASE_URL}/api/sessions/${sessionId}/files/download-folder`;
+
+  // Get current auth token
+  const { tokens } = useAuthStore.getState();
+  const accessToken = tokens?.accessToken;
+
+  // Build headers - always include Content-Type, optionally include auth
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (accessToken) {
+    headers['Authorization'] = `Bearer ${accessToken}`;
+  }
+
+  // POST request with path in body (include credentials for httpOnly cookie auth)
+  const response = await fetch(url, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: JSON.stringify({ path }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(errorText || `Download failed: ${response.status}`);
+  }
+
+  // Get the blob and create download link
+  const blob = await response.blob();
+  const folderName = path === '.' ? 'workspace' : path.split('/').pop() || 'folder';
+  const filename = `${folderName}.zip`;
+
+  // Create temporary download link
+  const downloadUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = downloadUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(downloadUrl);
 }
 
 // ==================== Session Layout ====================
@@ -2998,6 +3259,30 @@ export async function getLocalPodWorkspaces(
 export async function getOnlineLocalPods(): Promise<LocalPod[]> {
   const pods = await listLocalPods();
   return pods.filter((p) => p.status === 'online');
+}
+
+// Local Pod Pricing (from platform settings)
+export interface LocalPodPricing {
+  hourly_rate_cents: number;
+  description: string;
+  billing_enabled: boolean;
+}
+
+/**
+ * Get local pod pricing configuration from platform settings.
+ * Returns default free pricing if setting is not found.
+ */
+export async function getLocalPodPricing(): Promise<LocalPodPricing> {
+  try {
+    return await getPlatformSetting<LocalPodPricing>('local_pod_pricing');
+  } catch {
+    // Return default free pricing if setting doesn't exist
+    return {
+      hourly_rate_cents: 0,
+      description: 'Your local machine',
+      billing_enabled: false,
+    };
+  }
 }
 
 // ==================== Session Sharing ====================
@@ -4806,6 +5091,139 @@ export interface VoiceLanguage {
   name: string;
 }
 
+// ============================================================================
+// Additional Platform Settings Types
+// ============================================================================
+
+export interface SidebarPanelConfig {
+  panelId: string;
+  height: number;
+}
+
+export interface SidebarSideConfig {
+  collapsed: boolean;
+  width: number;
+  panels: SidebarPanelConfig[];
+}
+
+export interface SidebarLayoutDefaults {
+  left: SidebarSideConfig;
+  right: SidebarSideConfig;
+}
+
+export interface GridConfigDefaults {
+  columns: number;
+  rowHeight: number;
+  maxRows: number;
+  maxCols: number;
+}
+
+export interface CardDimensionConfig {
+  width: number;
+  height: number;
+  minWidth: number;
+  minHeight: number;
+}
+
+export interface CardDimensions {
+  terminal: CardDimensionConfig;
+  editor: CardDimensionConfig;
+  agent: CardDimensionConfig;
+  preview: CardDimensionConfig;
+}
+
+export interface ContextCompactionDefaults {
+  autoCompactEnabled: boolean;
+  autoCompactThresholdPercent: number;
+  customCompactionInstructions: string | null;
+  preserveRecentMessages: number;
+}
+
+export interface ContextUsageDefaults {
+  tokensUsed: number;
+  tokensMax: number;
+  percentage: number;
+}
+
+export interface AICompletionConfig {
+  debounceMs: number;
+  maxPrefixLines: number;
+  maxSuffixLines: number;
+  minTriggerLength: number;
+  enabled: boolean;
+}
+
+export interface CodeGeneratorConfig {
+  enabled: boolean;
+  patterns: string[];
+}
+
+export interface BugDetectorConfig {
+  debounceMs: number;
+  enabled: boolean;
+  minCodeLength: number;
+  autoAnalyze: boolean;
+}
+
+export interface EditorAIConfig {
+  defaultModel: string | null;
+  completionsEnabled: boolean;
+  completionsDebounceMs: number;
+}
+
+export interface TimeRangeOption {
+  label: string;
+  value: string;
+  days: number;
+}
+
+export interface StorageQuotaDefaults {
+  defaultQuotaBytes: number;
+  warningThreshold: number;
+  criticalThreshold: number;
+}
+
+export interface EditorDefaults {
+  key_mode: string;
+  font_size: number;
+  tab_size: number;
+  word_wrap: string;
+  minimap: boolean;
+  line_numbers: boolean;
+  bracket_pair_colorization: boolean;
+}
+
+export interface VoiceDefaults {
+  tts_enabled: boolean;
+  auto_play: boolean;
+  voice_id: string | null;
+  speed: number;
+  language: string;
+}
+
+export interface FeatureFlags {
+  registration_enabled: boolean;
+  voice_enabled: boolean;
+  collaboration_enabled: boolean;
+  custom_agents_enabled: boolean;
+  git_integration_enabled: boolean;
+  planning_mode_enabled: boolean;
+  vision_enabled: boolean;
+}
+
+export interface PlatformLimits {
+  max_concurrent_agents: number;
+  max_sessions_per_user: number;
+  max_file_size_mb: number;
+  max_upload_size_mb: number;
+}
+
+export interface PreviewPortConfig {
+  port: number;
+  label: string;
+  protocol: string;
+}
+
 /**
  * Get all public platform settings.
  */
@@ -5302,9 +5720,16 @@ export async function getSessionHealthRecommendations(
 
 /**
  * Start health analysis for a session.
+ * @param sessionId - Session ID
+ * @param workingDirectory - Optional directory to run all checks in (relative to workspace root)
  */
-export async function analyzeSessionHealth(sessionId: string): Promise<{ status: string }> {
-  return api.post<{ status: string }>(`/api/v1/sessions/${sessionId}/health/analyze`, {});
+export async function analyzeSessionHealth(
+  sessionId: string,
+  workingDirectory?: string
+): Promise<{ status: string }> {
+  return api.post<{ status: string }>(`/api/v1/sessions/${sessionId}/health/analyze`, {
+    working_directory: workingDirectory || null,
+  });
 }
 
 /**
@@ -5318,6 +5743,170 @@ export async function applyHealthFix(
     `/api/v1/sessions/${sessionId}/health/fix/${recommendationId}`,
     {}
   );
+}
+
+// ============================================================================
+// Health Checks (Custom Check Configuration)
+// ============================================================================
+
+export interface HealthCheck {
+  id: string;
+  user_id: string | null;
+  session_id: string | null;
+  category: string;
+  name: string;
+  description: string | null;
+  command: string;
+  working_directory: string | null;
+  timeout: number;
+  parse_mode: string;
+  parse_config: Record<string, unknown>;
+  weight: number;
+  enabled: boolean;
+  is_builtin: boolean;
+  project_types: string[] | null;
+  fix_command: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HealthChecksListResponse {
+  checks: HealthCheck[];
+  total: number;
+}
+
+export interface CreateHealthCheckRequest {
+  category: string;
+  name: string;
+  description?: string;
+  command: string;
+  working_directory?: string;
+  timeout?: number;
+  parse_mode: string;
+  parse_config: Record<string, unknown>;
+  weight?: number;
+  enabled?: boolean;
+  project_types?: string[];
+  fix_command?: string;
+  session_id?: string;
+}
+
+export interface UpdateHealthCheckRequest {
+  name?: string;
+  description?: string;
+  command?: string;
+  working_directory?: string;
+  timeout?: number;
+  parse_mode?: string;
+  parse_config?: Record<string, unknown>;
+  weight?: number;
+  enabled?: boolean;
+  project_types?: string[];
+  fix_command?: string;
+}
+
+export interface TestHealthCheckRequest {
+  command?: string;
+  working_directory?: string;
+  timeout?: number;
+  parse_mode?: string;
+  parse_config?: Record<string, unknown>;
+}
+
+export interface TestHealthCheckResponse {
+  success: boolean;
+  score: number;
+  raw_output: string;
+  parsed_details: Record<string, unknown>;
+  execution_time: number;
+  error?: string;
+}
+
+/**
+ * List all health checks (built-in and custom).
+ */
+export async function getHealthChecks(
+  category?: string,
+  sessionId?: string
+): Promise<HealthChecksListResponse> {
+  const params = new URLSearchParams();
+  if (category) params.append('category', category);
+  if (sessionId) params.append('session_id', sessionId);
+
+  const query = params.toString();
+  return api.get<HealthChecksListResponse>(`/api/v1/health/checks${query ? `?${query}` : ''}`);
+}
+
+/**
+ * List only built-in default health checks.
+ */
+export async function getDefaultHealthChecks(category?: string): Promise<HealthChecksListResponse> {
+  const params = new URLSearchParams();
+  if (category) params.append('category', category);
+
+  const query = params.toString();
+  return api.get<HealthChecksListResponse>(
+    `/api/v1/health/checks/defaults${query ? `?${query}` : ''}`
+  );
+}
+
+/**
+ * Create a new custom health check.
+ */
+export async function createHealthCheck(data: CreateHealthCheckRequest): Promise<HealthCheck> {
+  return api.post<HealthCheck>('/api/v1/health/checks', data);
+}
+
+/**
+ * Update an existing health check.
+ */
+export async function updateHealthCheck(
+  checkId: string,
+  data: UpdateHealthCheckRequest
+): Promise<HealthCheck> {
+  return api.put<HealthCheck>(`/api/v1/health/checks/${checkId}`, data);
+}
+
+/**
+ * Delete a health check.
+ */
+export async function deleteHealthCheck(checkId: string): Promise<void> {
+  return api.delete(`/api/v1/health/checks/${checkId}`);
+}
+
+/**
+ * Test run a saved health check.
+ */
+export async function testHealthCheck(
+  checkId: string,
+  sessionId: string,
+  options?: TestHealthCheckRequest
+): Promise<TestHealthCheckResponse> {
+  return api.post<TestHealthCheckResponse>(`/api/v1/health/checks/${checkId}/test`, {
+    session_id: sessionId,
+    ...options,
+  });
+}
+
+/**
+ * Test run a health check command without saving.
+ */
+export async function testHealthCommand(
+  sessionId: string,
+  command: string,
+  parseMode: string,
+  parseConfig: Record<string, unknown>,
+  workingDirectory?: string,
+  timeout?: number
+): Promise<TestHealthCheckResponse> {
+  return api.post<TestHealthCheckResponse>('/api/v1/health/checks/test-command', {
+    session_id: sessionId,
+    command,
+    parse_mode: parseMode,
+    parse_config: parseConfig,
+    working_directory: workingDirectory,
+    timeout,
+  });
 }
 
 // ============================================================================
@@ -5415,4 +6004,59 @@ export async function performEditorAIAction(
     file_path: request.filePath,
     model: request.model,
   });
+}
+
+// ============================================================================
+// Productivity Tracking
+// ============================================================================
+
+export interface ProductivitySummary {
+  period_start: string;
+  period_end: string;
+  total_days: number;
+  active_days: number;
+  total_lines_written: number;
+  total_lines_deleted: number;
+  net_lines: number;
+  total_files_modified: number;
+  total_commits: number;
+  total_agent_messages: number;
+  total_suggestions_accepted: number;
+  total_suggestions_rejected: number;
+  acceptance_rate: number;
+  total_tasks_completed: number;
+  total_active_minutes: number;
+  total_coding_minutes: number;
+  total_time_saved_minutes: number;
+  time_saved_hours: number;
+  avg_lines_per_day: number;
+  avg_coding_minutes_per_day: number;
+  avg_agent_messages_per_day: number;
+  current_streak: number;
+  longest_streak: number;
+  top_languages: Record<string, number>;
+  top_agent_usage: Record<string, number>;
+}
+
+export interface ProductivityTrends {
+  dates: string[];
+  lines_written: number[];
+  coding_minutes: number[];
+  agent_messages: number[];
+  time_saved: number[];
+  commits: number[];
+}
+
+/**
+ * Get productivity summary for the specified period.
+ */
+export async function getProductivitySummary(days: number = 30): Promise<ProductivitySummary> {
+  return api.get<ProductivitySummary>(`/api/productivity/summary?days=${days}`);
+}
+
+/**
+ * Get productivity trends for the specified period.
+ */
+export async function getProductivityTrends(days: number = 30): Promise<ProductivityTrends> {
+  return api.get<ProductivityTrends>(`/api/productivity/trends?days=${days}`);
 }

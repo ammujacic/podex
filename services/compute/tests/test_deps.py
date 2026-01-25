@@ -25,8 +25,7 @@ class TestInternalAuth:
 
         with patch("src.deps.settings", mock_settings):
             # Should not raise in development
-            result = verify_internal_api_key(None)
-            assert result is None
+            verify_internal_api_key(None)
 
     def test_internal_auth_no_key_configured_prod(self) -> None:
         """Test no API key configured in production."""
@@ -67,8 +66,7 @@ class TestInternalAuth:
         mock_settings.internal_api_key = "test-api-key-123"
 
         with patch("src.deps.settings", mock_settings):
-            result = verify_internal_api_key("test-api-key-123")
-            assert result is None
+            verify_internal_api_key("test-api-key-123")
 
 
 class TestUserIdExtraction:

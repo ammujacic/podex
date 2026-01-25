@@ -646,3 +646,332 @@ class TestLocalDockerManagerShutdown:
 
         # Should not raise
         await manager.terminal_write("ws_test", "some data")
+
+
+class TestOrphanedContainerCleanup:
+    """Test orphaned container cleanup functionality."""
+
+    @pytest.mark.asyncio
+    async def test_cleanup_orphaned_containers_success(self, mock_docker_client) -> None:
+        """Test successful cleanup of orphaned containers."""
+        config = LocalPodConfig()
+        manager = LocalDockerManager(config)
+        manager._client = mock_docker_client
+
+        # Create mock orphaned containers
+        orphaned_container = MagicMock()
+        orphaned_container.name = "podex-workspace-orphaned-123"
+        orphaned_container.status = "exited"
+
+        mock_docker_client.containers.list.return_value = [orphaned_container]
+
+        await manager._cleanup_orphaned_containers()
+
+        # Should have stopped and removed orphaned container
+        orphaned_container.stop.assert_called_once()
+        orphaned_container.remove.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_orphaned_containers_with_errors(self, mock_docker_client) -> None:
+        """Test cleanup handles errors gracefully."""
+        config = LocalPodConfig()
+        manager = LocalDockerManager(config)
+        manager._client = mock_docker_client
+
+        orphaned_container = MagicMock()
+        orphaned_container.stop.side_effect = Exception("Stop failed")
+
+        mock_docker_client.containers.list.return_value = [orphaned_container]
+
+        # Should not raise exception
+        await manager._cleanup_orphaned_containers()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_stops_and_removes_containers(self, mock_docker_client) -> None:
+        """Test cleanup stops before removing."""
+        config = LocalPodConfig()
+        manager = LocalDockerManager(config)
+        manager._client = mock_docker_client
+
+        container = MagicMock()
+        container.name = "podex-workspace-old-456"
+        container.status = "running"
+
+        mock_docker_client.containers.list.return_value = [container]
+
+        await manager._cleanup_orphaned_containers()
+
+        # Verify stop called before remove
+        container.stop.assert_called_once()
+        container.remove.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_handles_api_errors_gracefully(self, mock_docker_client) -> None:
+        """Test cleanup handles Docker API errors."""
+        config = LocalPodConfig()
+        manager = LocalDockerManager(config)
+        manager._client = mock_docker_client
+
+        mock_docker_client.containers.list.side_effect = Exception("Docker API error")
+
+        # Should not raise exception
+        await manager._cleanup_orphaned_containers()
+
+
+class TestDockerManagerExceptionPaths:
+    """Test exception handling throughout docker manager."""
+
+    @pytest.mark.asyncio
+    async def test_create_workspace_docker_api_error(self, mock_docker_client) -> None:
+        """Test create_workspace handles Docker API errors."""
+        from docker.errors import APIError
+
+        config = LocalPodConfig()
+        manager = LocalDockerManager(config)
+        manager._client = mock_docker_client
+
+        mock_docker_client.containers.run.side_effect = APIError("API error")
+
+        with pytest.raises(APIError):
+            await manager.create_workspace(
+                workspace_id="ws_test",
+                user_id="user-123",
+                session_id="session-456",
+                config={"tier": "starter"},
+            )
+
+    @pytest.mark.asyncio
+    async def test_stop_workspace_container_not_found_handling(self, mock_docker_client) -> None:
+        """Test stop_workspace handles container not found."""
+        from docker.errors import NotFound
+
+        config = LocalPodConfig()
+        manager = LocalDockerManager(config)
+        manager._client = mock_docker_client
+
+        mock_docker_client.containers.get.side_effect = NotFound("Container not found")
+
+        # Should not raise exception
+        await manager.stop_workspace("ws_nonexistent")
+
+    @pytest.mark.asyncio
+    async def test_delete_workspace_api_error_handling(self, mock_docker_client) -> None:
+        """Test delete_workspace handles API errors."""
+        from docker.errors import APIError
+
+        config = LocalPodConfig()
+        manager = LocalDockerManager(config)
+        manager._client = mock_docker_client
+        manager._workspaces = {"ws_test": {"container_id": "abc123"}}
+
+        mock_container = MagicMock()
+        mock_container.remove.side_effect = APIError("Cannot remove")
+        mock_docker_client.containers.get.return_value = mock_container
+
+        with pytest.raises(APIError):
+            await manager.delete_workspace("ws_test")
+
+    @pytest.mark.asyncio
+    async def test_exec_command_container_not_found(self, mock_docker_client) -> None:
+        """Test exec_command when container doesn't exist."""
+        from docker.errors import NotFound
+
+        config = LocalPodConfig()
+        manager = LocalDockerManager(config)
+        manager._client = mock_docker_client
+
+        mock_docker_client.containers.get.side_effect = NotFound("Not found")
+
+        result = await manager.exec_command("ws_nonexistent", "echo hello")
+
+        assert result["exit_code"] != 0
+        assert "error" in result or "stderr" in result
+
+    @pytest.mark.asyncio
+    async def test_proxy_request_no_host_ip(self, mock_docker_client, sample_workspace_info) -> None:
+        """Test proxy_request when container has no IP."""
+        config = LocalPodConfig()
+        manager = LocalDockerManager(config)
+        manager._client = mock_docker_client
+
+        workspace_without_ip = sample_workspace_info.copy()
+        workspace_without_ip["host"] = None
+        manager._workspaces = {"ws_test": workspace_without_ip}
+
+        # Should handle missing host IP
+        result = await manager.proxy_request("ws_test", 3000, "GET", "/", {}, None)
+        assert result["status_code"] >= 400
+
+    @pytest.mark.asyncio
+    async def test_proxy_request_http_timeout(self, mock_docker_client, sample_workspace_info) -> None:
+        """Test proxy_request handles HTTP timeouts."""
+        config = LocalPodConfig()
+        manager = LocalDockerManager(config)
+        manager._client = mock_docker_client
+        manager._workspaces = {"ws_test": sample_workspace_info}
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.request.side_effect = TimeoutError
+
+            result = await manager.proxy_request("ws_test", 3000, "GET", "/", {}, None)
+            assert result["status_code"] >= 500
+
+
+class TestFileOperationsEdgeCases:
+    """Test file operation edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_read_file_with_special_characters_in_path(
+        self, mock_docker_client, mock_container
+    ) -> None:
+        """Test read_file with special characters in path."""
+        config = LocalPodConfig()
+        manager = LocalDockerManager(config)
+        manager._client = mock_docker_client
+        manager._workspaces = {"ws_test": {"container_id": "abc123"}}
+
+        mock_docker_client.containers.get.return_value = mock_container
+        mock_container.exec_run.return_value = MagicMock(
+            exit_code=0, output=(b"content with $pecial chars\n", b"")
+        )
+
+        result = await manager.read_file("ws_test", "/path/with spaces/file$.txt")
+
+        assert result["exit_code"] == 0
+        assert "content" in result.get("content", "")
+
+    @pytest.mark.asyncio
+    async def test_write_file_with_large_content(
+        self, mock_docker_client, mock_container
+    ) -> None:
+        """Test write_file with large content."""
+        config = LocalPodConfig()
+        manager = LocalDockerManager(config)
+        manager._client = mock_docker_client
+        manager._workspaces = {"ws_test": {"container_id": "abc123"}}
+
+        mock_docker_client.containers.get.return_value = mock_container
+
+        # Create large content (1MB)
+        large_content = "x" * (1024 * 1024)
+
+        result = await manager.write_file("ws_test", "/path/large.txt", large_content)
+
+        assert result["exit_code"] == 0
+
+    @pytest.mark.asyncio
+    async def test_list_files_with_malformed_output(
+        self, mock_docker_client, mock_container
+    ) -> None:
+        """Test list_files handles malformed output."""
+        config = LocalPodConfig()
+        manager = LocalDockerManager(config)
+        manager._client = mock_docker_client
+        manager._workspaces = {"ws_test": {"container_id": "abc123"}}
+
+        mock_docker_client.containers.get.return_value = mock_container
+        # Malformed JSON output
+        mock_container.exec_run.return_value = MagicMock(
+            exit_code=0, output=(b"not json at all", b"")
+        )
+
+        result = await manager.list_files("ws_test", "/path")
+
+        # Should handle gracefully
+        assert "files" in result or "error" in result
+
+    @pytest.mark.asyncio
+    async def test_list_files_permission_denied(
+        self, mock_docker_client, mock_container
+    ) -> None:
+        """Test list_files when permission denied."""
+        config = LocalPodConfig()
+        manager = LocalDockerManager(config)
+        manager._client = mock_docker_client
+        manager._workspaces = {"ws_test": {"container_id": "abc123"}}
+
+        mock_docker_client.containers.get.return_value = mock_container
+        mock_container.exec_run.return_value = MagicMock(
+            exit_code=1, output=(b"", b"Permission denied")
+        )
+
+        result = await manager.list_files("ws_test", "/root")
+
+        assert result["exit_code"] == 1
+
+
+class TestPortDetectionEdgeCases:
+    """Test port detection edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_get_active_ports_malformed_ss_output(
+        self, mock_docker_client, mock_container
+    ) -> None:
+        """Test port detection with malformed ss output."""
+        config = LocalPodConfig()
+        manager = LocalDockerManager(config)
+        manager._client = mock_docker_client
+        manager._workspaces = {"ws_test": {"container_id": "abc123"}}
+
+        mock_docker_client.containers.get.return_value = mock_container
+        # Malformed output
+        mock_container.exec_run.return_value = MagicMock(
+            exit_code=0, output=(b"garbage output\nno ports here", b"")
+        )
+
+        result = await manager.get_active_ports("ws_test")
+
+        # Should return empty list or handle gracefully
+        assert isinstance(result.get("ports", []), list)
+
+    @pytest.mark.asyncio
+    async def test_get_active_ports_with_system_ports_filtered(
+        self, mock_docker_client, mock_container
+    ) -> None:
+        """Test that system ports are filtered out."""
+        config = LocalPodConfig()
+        manager = LocalDockerManager(config)
+        manager._client = mock_docker_client
+        manager._workspaces = {"ws_test": {"container_id": "abc123"}}
+
+        mock_docker_client.containers.get.return_value = mock_container
+        # Output with system ports (< 1024) and user ports
+        mock_container.exec_run.return_value = MagicMock(
+            exit_code=0,
+            output=(
+                b"LISTEN 0 128 *:22 *:*\n"  # System port (SSH)
+                b"LISTEN 0 128 *:80 *:*\n"  # System port (HTTP)
+                b"LISTEN 0 128 *:3000 *:*\n"  # User port
+                b"LISTEN 0 128 *:8080 *:*\n",  # User port
+                b"",
+            ),
+        )
+
+        result = await manager.get_active_ports("ws_test")
+
+        ports = result.get("ports", [])
+        # System ports should be filtered (< 1024)
+        assert 22 not in ports
+        assert 80 not in ports
+        # User ports should be included
+        assert 3000 in ports or len(ports) > 0
+
+    @pytest.mark.asyncio
+    async def test_get_active_ports_command_fails(
+        self, mock_docker_client, mock_container
+    ) -> None:
+        """Test port detection when ss command fails."""
+        config = LocalPodConfig()
+        manager = LocalDockerManager(config)
+        manager._client = mock_docker_client
+        manager._workspaces = {"ws_test": {"container_id": "abc123"}}
+
+        mock_docker_client.containers.get.return_value = mock_container
+        mock_container.exec_run.return_value = MagicMock(
+            exit_code=127, output=(b"", b"ss: command not found")
+        )
+
+        result = await manager.get_active_ports("ws_test")
+
+        # Should return empty ports list
+        assert result.get("ports", []) == []

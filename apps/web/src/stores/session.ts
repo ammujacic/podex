@@ -51,6 +51,8 @@ interface SessionState {
   createSession: (session: Session) => void;
   deleteSession: (sessionId: string) => void;
   setCurrentSession: (sessionId: string) => void;
+  // Sync sessions with backend - removes orphaned sessions from localStorage
+  syncSessionsWithBackend: (validSessionIds: Set<string>) => void;
 
   // Agent actions
   addAgent: (sessionId: string, agent: Agent) => void;
@@ -82,6 +84,12 @@ interface SessionState {
   updateEditorGridSpan: (sessionId: string, gridSpan: GridSpan) => void;
   updateEditorFreeformPosition: (sessionId: string, position: Partial<AgentPosition>) => void;
 
+  // Preview grid card actions (live preview in grid)
+  createPreviewGridCard: (sessionId: string) => string;
+  removePreviewGridCard: (sessionId: string) => void;
+  updatePreviewGridSpan: (sessionId: string, gridSpan: GridSpan) => void;
+  updatePreviewFreeformPosition: (sessionId: string, position: Partial<AgentPosition>) => void;
+
   // Recent files
   addRecentFile: (path: string) => void;
   clearRecentFiles: () => void;
@@ -96,6 +104,7 @@ interface SessionState {
     standbyAt?: string | null
   ) => void;
   setWorkspaceStatusChecking: (sessionId: string, checking: boolean) => void;
+  setWorkspaceError: (sessionId: string, error: string | null) => void;
   setStandbySettings: (sessionId: string, settings: StandbySettings | null) => void;
   // Update session workspace ID (for syncing from API when stale in localStorage)
   updateSessionWorkspaceId: (sessionId: string, workspaceId: string) => void;
@@ -120,9 +129,8 @@ interface SessionState {
     thinkingConfig: Agent['thinkingConfig']
   ) => void;
 
-  // Streaming message actions (delegated to streaming store for new code)
-  // Kept for backward compatibility
-  streamingMessages: Record<string, StreamingMessage>;
+  // Streaming message actions (fully delegated to streaming store)
+  // These methods are kept for backward compatibility but now delegate entirely
   startStreamingMessage: (sessionId: string, agentId: string, messageId: string) => void;
   appendStreamingToken: (messageId: string, token: string) => void;
   appendThinkingToken: (messageId: string, thinking: string) => void;
@@ -138,11 +146,10 @@ interface SessionState {
 // Store Implementation
 // ============================================================================
 
-const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
+const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
   sessions: {},
   currentSessionId: null,
   recentFiles: [],
-  streamingMessages: {},
 
   // ========================================================================
   // Session Actions
@@ -164,6 +171,48 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
     }),
 
   setCurrentSession: (sessionId) => set({ currentSessionId: sessionId }),
+
+  // Sync sessions with backend - removes orphaned sessions from localStorage
+  // This is called on app startup to clean up sessions that were deleted on other devices
+  // or directly from the backend
+  syncSessionsWithBackend: (validSessionIds: Set<string>) =>
+    set((state) => {
+      const currentSessions = state.sessions;
+      const sessionIdsToRemove: string[] = [];
+
+      // Find sessions in localStorage that don't exist on the backend
+      for (const sessionId of Object.keys(currentSessions)) {
+        if (!validSessionIds.has(sessionId)) {
+          sessionIdsToRemove.push(sessionId);
+        }
+      }
+
+      // If no sessions to remove, return unchanged state
+      if (sessionIdsToRemove.length === 0) {
+        return state;
+      }
+
+      // Remove orphaned sessions
+      const updatedSessions = { ...currentSessions };
+      for (const sessionId of sessionIdsToRemove) {
+        delete updatedSessions[sessionId];
+      }
+
+      // Reset currentSessionId if it was removed
+      const newCurrentSessionId =
+        state.currentSessionId && sessionIdsToRemove.includes(state.currentSessionId)
+          ? null
+          : state.currentSessionId;
+
+      console.warn(
+        `[SessionSync] Removed ${sessionIdsToRemove.length} orphaned session(s) from localStorage`
+      );
+
+      return {
+        sessions: updatedSessions,
+        currentSessionId: newCurrentSessionId,
+      };
+    }),
 
   // ========================================================================
   // Agent Actions
@@ -278,11 +327,16 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
                 }
               }
 
-              // Deduplication: for assistant messages, check by content
+              // Deduplication: for assistant messages, check by content within a time window
+              // Only consider duplicates if content matches AND message is recent (within 10 seconds)
               if (message.role === 'assistant') {
-                const existingByContent = a.messages.find(
-                  (m) => m.role === 'assistant' && m.content === message.content
-                );
+                const now = message.timestamp?.getTime() ?? Date.now();
+                const timeWindow = 10000; // 10 seconds
+                const existingByContent = a.messages.find((m) => {
+                  if (m.role !== 'assistant' || m.content !== message.content) return false;
+                  const msgTime = m.timestamp?.getTime() ?? 0;
+                  return Math.abs(now - msgTime) < timeWindow;
+                });
                 if (existingByContent) {
                   // Update the ID to the real one if different
                   if (existingByContent.id !== message.id) {
@@ -614,6 +668,82 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
     }),
 
   // ========================================================================
+  // Preview Grid Card Actions
+  // ========================================================================
+
+  createPreviewGridCard: (sessionId) => {
+    const id = `preview-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            previewGridCardId: id,
+            previewGridSpan: { colSpan: 2, rowSpan: 2 },
+          },
+        },
+      };
+    });
+    return id;
+  },
+
+  removePreviewGridCard: (sessionId) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            previewGridCardId: null,
+            previewGridSpan: undefined,
+          },
+        },
+      };
+    }),
+
+  updatePreviewGridSpan: (sessionId, gridSpan) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            previewGridSpan: gridSpan,
+          },
+        },
+      };
+    }),
+
+  updatePreviewFreeformPosition: (sessionId, position) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      const currentPosition = session.previewFreeformPosition ?? {
+        x: 150,
+        y: 150,
+        width: 500,
+        height: 400,
+        zIndex: 1,
+      };
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            previewFreeformPosition: { ...currentPosition, ...position },
+          },
+        },
+      };
+    }),
+
+  // ========================================================================
   // Recent Files Actions
   // ========================================================================
 
@@ -672,6 +802,21 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
           [sessionId]: {
             ...session,
             workspaceStatusChecking: checking,
+          },
+        },
+      };
+    }),
+
+  setWorkspaceError: (sessionId, error) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            workspaceError: error,
           },
         },
       };
@@ -774,116 +919,67 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, get) => ({
 
   // ========================================================================
   // Streaming Message Actions
-  // Delegated to streaming store but kept here for backward compatibility
+  // Fully delegated to streaming store
   // ========================================================================
 
   startStreamingMessage: (sessionId, agentId, messageId) => {
-    // Delegate to streaming store
     useStreamingStore.getState().startStreamingMessage(sessionId, agentId, messageId);
-    // Update local state for backward compat
-    set((state) => ({
-      streamingMessages: {
-        ...state.streamingMessages,
-        [messageId]: {
-          messageId,
-          agentId,
-          sessionId,
-          content: '',
-          thinkingContent: '',
-          isStreaming: true,
-          startedAt: new Date(),
-        },
-      },
-    }));
   },
 
   appendStreamingToken: (messageId, token) => {
-    // Delegate to streaming store
     useStreamingStore.getState().appendStreamingToken(messageId, token);
-    // Update local state for backward compat
-    set((state) => {
-      const existing = state.streamingMessages[messageId];
-      if (!existing) return state;
-      return {
-        streamingMessages: {
-          ...state.streamingMessages,
-          [messageId]: {
-            ...existing,
-            content: existing.content + token,
-          },
-        },
-      };
-    });
   },
 
   appendThinkingToken: (messageId, thinking) => {
-    // Delegate to streaming store
     useStreamingStore.getState().appendThinkingToken(messageId, thinking);
-    // Update local state for backward compat
+  },
+
+  finalizeStreamingMessage: (messageId, fullContent, toolCalls) => {
+    // Get streaming data from streaming store before completing
+    const streaming = useStreamingStore.getState().getStreamingMessage(messageId);
+
+    // Complete in streaming store (removes from streaming messages)
+    useStreamingStore.getState().completeStreaming(messageId, fullContent, toolCalls);
+
+    // If no streaming data found, nothing to finalize
+    if (!streaming) return;
+
+    // Add the finalized message to the agent's messages
     set((state) => {
-      const existing = state.streamingMessages[messageId];
-      if (!existing) return state;
+      const session = state.sessions[streaming.sessionId];
+      if (!session) return state;
+
+      const newMessage: AgentMessage = {
+        id: messageId,
+        role: 'assistant',
+        content: fullContent,
+        thinking: streaming.thinkingContent || undefined,
+        timestamp: new Date(),
+        toolCalls: toolCalls,
+      };
+
       return {
-        streamingMessages: {
-          ...state.streamingMessages,
-          [messageId]: {
-            ...existing,
-            thinkingContent: existing.thinkingContent + thinking,
+        sessions: {
+          ...state.sessions,
+          [streaming.sessionId]: {
+            ...session,
+            agents: session.agents.map((a) => {
+              if (a.id !== streaming.agentId) return a;
+              // Add message and enforce limit
+              const newMessages = [...a.messages, newMessage];
+              const limitedMessages =
+                newMessages.length > MAX_MESSAGES_PER_AGENT
+                  ? newMessages.slice(-MAX_MESSAGES_PER_AGENT)
+                  : newMessages;
+              return { ...a, messages: limitedMessages };
+            }),
           },
         },
       };
     });
   },
 
-  finalizeStreamingMessage: (messageId, fullContent, toolCalls) => {
-    const state = get();
-    const streaming = state.streamingMessages[messageId];
-    if (!streaming) return;
-
-    // Complete in streaming store
-    useStreamingStore.getState().completeStreaming(messageId, fullContent, toolCalls);
-
-    // Remove from streaming messages
-    const { [messageId]: _removed, ...remainingStreaming } = state.streamingMessages;
-
-    // Add as a completed message to the agent
-    const session = state.sessions[streaming.sessionId];
-    if (!session) {
-      set({ streamingMessages: remainingStreaming });
-      return;
-    }
-
-    const newMessage: AgentMessage = {
-      id: messageId,
-      role: 'assistant',
-      content: fullContent,
-      thinking: streaming.thinkingContent || undefined,
-      timestamp: new Date(),
-      toolCalls: toolCalls,
-    };
-
-    set({
-      streamingMessages: remainingStreaming,
-      sessions: {
-        ...state.sessions,
-        [streaming.sessionId]: {
-          ...session,
-          agents: session.agents.map((a) => {
-            if (a.id !== streaming.agentId) return a;
-            // Add message and enforce limit
-            const newMessages = [...a.messages, newMessage];
-            const limitedMessages =
-              newMessages.length > MAX_MESSAGES_PER_AGENT
-                ? newMessages.slice(-MAX_MESSAGES_PER_AGENT)
-                : newMessages;
-            return { ...a, messages: limitedMessages };
-          }),
-        },
-      },
-    });
-  },
-
-  getStreamingMessage: (messageId) => get().streamingMessages[messageId],
+  getStreamingMessage: (messageId) => useStreamingStore.getState().getStreamingMessage(messageId),
 });
 
 // ============================================================================

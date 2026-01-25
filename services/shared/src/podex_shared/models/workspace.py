@@ -157,6 +157,7 @@ class WorkspaceConfig(BaseModel):
 
     # Git repositories
     repos: list[str] = Field(default_factory=list, description="GitHub URLs to clone")
+    git_branch: str | None = Field(default=None, description="Branch to checkout after cloning")
     git_credentials: str | None = Field(default=None, description="Git credentials for private")
 
     # Environment variables
@@ -480,6 +481,7 @@ class WorkspaceInfo(BaseModel):
     created_at: datetime
     last_activity: datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
+    auth_token: str | None = None  # Token for authenticating requests to workspace API
 
     model_config = {"from_attributes": True}
 

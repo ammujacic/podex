@@ -1,12 +1,15 @@
 'use client';
 
-import { Suspense, useEffect, useState, useRef } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Loader2, CheckCircle } from 'lucide-react';
 import { handleOAuthCallback, handleGitHubLinkCallback } from '@/lib/api';
 import { toast } from 'sonner';
 
 type CallbackState = 'loading' | 'processing' | 'success' | 'link-success' | 'error';
+
+// Session storage key for tracking callback attempts
+const CALLBACK_ATTEMPT_KEY = 'github_oauth_callback_attempted';
 
 function GitHubCallbackContent() {
   const router = useRouter();
@@ -16,16 +19,20 @@ function GitHubCallbackContent() {
   const [linkMessage, setLinkMessage] = useState<string | null>(null);
   const [isLinkFlow, setIsLinkFlow] = useState(false);
 
-  // Use ref to prevent double execution in React strict mode
-  const hasStarted = useRef(false);
-
   useEffect(() => {
-    // Prevent double execution
-    if (hasStarted.current) return;
-    hasStarted.current = true;
-
     const code = searchParams.get('code');
     const stateParam = searchParams.get('state');
+
+    // Use sessionStorage to prevent double execution across Suspense remounts
+    // Key includes the state param to allow retries with different OAuth attempts
+    const attemptKey = `${CALLBACK_ATTEMPT_KEY}:${stateParam}`;
+    if (typeof window !== 'undefined' && sessionStorage.getItem(attemptKey)) {
+      // Already attempted this callback, skip to avoid consuming state twice
+      return;
+    }
+    if (typeof window !== 'undefined' && stateParam) {
+      sessionStorage.setItem(attemptKey, 'true');
+    }
     const errorParam = searchParams.get('error');
 
     // Check for OAuth error from GitHub
@@ -82,12 +89,20 @@ function GitHubCallbackContent() {
     }
   }, [searchParams, router]);
 
-  // Clear stored state on error
+  // Clear stored states on completion (success or error)
   useEffect(() => {
-    if (state === 'error' && typeof window !== 'undefined') {
+    if (
+      (state === 'error' || state === 'success' || state === 'link-success') &&
+      typeof window !== 'undefined'
+    ) {
       sessionStorage.removeItem('github_link_state');
+      // Clean up callback attempt markers for this state param
+      const stateParam = searchParams.get('state');
+      if (stateParam) {
+        sessionStorage.removeItem(`${CALLBACK_ATTEMPT_KEY}:${stateParam}`);
+      }
     }
-  }, [state]);
+  }, [state, searchParams]);
 
   // Loading state - show while initializing
   if (state === 'loading' || state === 'processing') {

@@ -418,90 +418,119 @@ async def get_usage_history(
         current_date += timedelta(days=1)
 
     # Get per-pod token usage aggregates
+    # Use LEFT JOIN and COALESCE to handle deleted sessions (fall back to snapshot name)
     pod_usage_result = await db.execute(
         select(
             func.date(UsageRecord.created_at).label("date"),
             UsageRecord.session_id,
-            Session.name.label("session_name"),
+            func.coalesce(Session.name, UsageRecord.session_name).label("session_name"),
             func.coalesce(func.sum(UsageRecord.quantity), 0).label("tokens"),
             func.count(UsageRecord.id).label("calls"),
             func.coalesce(func.sum(UsageRecord.total_cost_cents), 0).label("cost_cents"),
         )
-        .join(Session, UsageRecord.session_id == Session.id, isouter=False)
+        .join(Session, UsageRecord.session_id == Session.id, isouter=True)
         .where(
             UsageRecord.user_id == user_id,
             UsageRecord.created_at >= period_start,
             UsageRecord.created_at <= period_end,
-            UsageRecord.session_id.isnot(None),
+            # Include records with session_id OR snapshot session_name
+            (UsageRecord.session_id.isnot(None)) | (UsageRecord.session_name.isnot(None)),
             UsageRecord.usage_type.in_(["tokens_input", "tokens_output"]),
         )
-        .group_by(func.date(UsageRecord.created_at), UsageRecord.session_id, Session.name)
+        .group_by(
+            func.date(UsageRecord.created_at),
+            UsageRecord.session_id,
+            func.coalesce(Session.name, UsageRecord.session_name),
+        )
         .order_by(func.date(UsageRecord.created_at), UsageRecord.session_id)
     )
     pod_usage_rows = pod_usage_result.all()
 
     # Get per-pod compute usage aggregates
+    # Use LEFT JOIN and COALESCE to handle deleted sessions (fall back to snapshot name)
     compute_usage_result = await db.execute(
         select(
             func.date(UsageRecord.created_at).label("date"),
             UsageRecord.session_id,
-            Session.name.label("session_name"),
+            func.coalesce(Session.name, UsageRecord.session_name).label("session_name"),
             func.coalesce(func.sum(UsageRecord.quantity), 0).label("compute_seconds"),
         )
-        .join(Session, UsageRecord.session_id == Session.id, isouter=False)
+        .join(Session, UsageRecord.session_id == Session.id, isouter=True)
         .where(
             UsageRecord.user_id == user_id,
             UsageRecord.created_at >= period_start,
             UsageRecord.created_at <= period_end,
-            UsageRecord.session_id.isnot(None),
+            # Include records with session_id OR snapshot session_name
+            (UsageRecord.session_id.isnot(None)) | (UsageRecord.session_name.isnot(None)),
             UsageRecord.usage_type == "compute_seconds",
         )
-        .group_by(func.date(UsageRecord.created_at), UsageRecord.session_id, Session.name)
+        .group_by(
+            func.date(UsageRecord.created_at),
+            UsageRecord.session_id,
+            func.coalesce(Session.name, UsageRecord.session_name),
+        )
         .order_by(func.date(UsageRecord.created_at), UsageRecord.session_id)
     )
     compute_usage_rows = compute_usage_result.all()
 
     # Organize by pod
+    # Use session_id as key, or generate a synthetic key for deleted sessions
     pods_data: dict[str, dict[str, Any]] = {}
+
+    def get_pod_key(session_id: str | None, session_name: str | None) -> str:
+        """Generate a unique key for pod data grouping."""
+        if session_id:
+            return session_id
+        # Deleted session - use name-based key
+        return f"deleted:{session_name or 'unknown'}"
+
+    def get_display_name(session_id: str | None, session_name: str | None) -> str:
+        """Get display name, marking deleted sessions."""
+        if session_id:
+            return session_name or "Unnamed Pod"
+        # Deleted session - mark it clearly
+        return f"{session_name or 'Unknown'} (Deleted)"
 
     # Add token usage data
     for row in pod_usage_rows:
-        if row.session_id not in pods_data:
-            pods_data[row.session_id] = {
-                "session_id": row.session_id,
-                "session_name": row.session_name or "Unnamed Pod",
+        pod_key = get_pod_key(row.session_id, row.session_name)
+        if pod_key not in pods_data:
+            pods_data[pod_key] = {
+                "session_id": row.session_id or pod_key,
+                "session_name": get_display_name(row.session_id, row.session_name),
                 "data_map": {},
             }
         date_str = row.date.isoformat()
-        if date_str not in pods_data[row.session_id]["data_map"]:
-            pods_data[row.session_id]["data_map"][date_str] = {
+        if date_str not in pods_data[pod_key]["data_map"]:
+            pods_data[pod_key]["data_map"][date_str] = {
                 "tokens": 0,
                 "api_calls": 0,
                 "cost": 0.0,
                 "compute_minutes": 0.0,
             }
-        pods_data[row.session_id]["data_map"][date_str]["tokens"] = int(row.tokens)
-        pods_data[row.session_id]["data_map"][date_str]["api_calls"] = int(row.calls)
-        pods_data[row.session_id]["data_map"][date_str]["cost"] = float(row.cost_cents) / 100.0
+        pods_data[pod_key]["data_map"][date_str]["tokens"] = int(row.tokens)
+        pods_data[pod_key]["data_map"][date_str]["api_calls"] = int(row.calls)
+        pods_data[pod_key]["data_map"][date_str]["cost"] = float(row.cost_cents) / 100.0
 
     # Add compute usage data
     for row in compute_usage_rows:
-        if row.session_id not in pods_data:
-            pods_data[row.session_id] = {
-                "session_id": row.session_id,
-                "session_name": row.session_name or "Unnamed Pod",
+        pod_key = get_pod_key(row.session_id, row.session_name)
+        if pod_key not in pods_data:
+            pods_data[pod_key] = {
+                "session_id": row.session_id or pod_key,
+                "session_name": get_display_name(row.session_id, row.session_name),
                 "data_map": {},
             }
         date_str = row.date.isoformat()
-        if date_str not in pods_data[row.session_id]["data_map"]:
-            pods_data[row.session_id]["data_map"][date_str] = {
+        if date_str not in pods_data[pod_key]["data_map"]:
+            pods_data[pod_key]["data_map"][date_str] = {
                 "tokens": 0,
                 "api_calls": 0,
                 "cost": 0.0,
                 "compute_minutes": 0.0,
             }
         # Convert seconds to minutes
-        pods_data[row.session_id]["data_map"][date_str]["compute_minutes"] = round(
+        pods_data[pod_key]["data_map"][date_str]["compute_minutes"] = round(
             float(row.compute_seconds) / 60.0, 1
         )
 
@@ -521,7 +550,7 @@ async def get_usage_history(
 
     # Build per-pod series with complete date range
     by_pod: list[PodUsageSeries] = []
-    for idx, (session_id, pod_info) in enumerate(pods_data.items()):
+    for idx, (_pod_key, pod_info) in enumerate(pods_data.items()):
         data_map = pod_info["data_map"]
         pod_data: list[PodUsageDataPoint] = []
 
@@ -553,7 +582,7 @@ async def get_usage_history(
 
         by_pod.append(
             PodUsageSeries(
-                session_id=session_id,
+                session_id=pod_info["session_id"],
                 session_name=pod_info["session_name"],
                 data=pod_data,
                 color=color_palette[idx % len(color_palette)],

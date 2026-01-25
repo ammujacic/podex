@@ -22,6 +22,7 @@ import {
 import { cn } from '@/lib/utils';
 import { EmptyState, SearchEmptyState } from '@/components/ui/EmptyState';
 import { create } from 'zustand';
+import { api } from '@/lib/api';
 
 // ============================================================================
 // Types
@@ -214,7 +215,7 @@ interface SearchPanelProps {
   onNavigate?: (filePath: string, line: number, column: number) => void;
 }
 
-export function SearchPanel({ sessionId: _sessionId, onNavigate }: SearchPanelProps) {
+export function SearchPanel({ sessionId, onNavigate }: SearchPanelProps) {
   const {
     query,
     replaceText,
@@ -258,95 +259,17 @@ export function SearchPanel({ sessionId: _sessionId, onNavigate }: SearchPanelPr
     setIsSearching(true);
 
     try {
-      // In real implementation, call API
-      // const response = await api.post(`/api/workspaces/${workspaceId}/search`, {
-      //   query,
-      //   options,
-      // });
-
-      // Mock results for demonstration
-      await new Promise((resolve) => setTimeout(resolve, 300));
-
-      const mockResults: FileSearchResult[] =
-        query.length > 0
-          ? [
-              {
-                filePath: 'src/components/Button.tsx',
-                fileName: 'Button.tsx',
-                matches: [
-                  {
-                    line: 12,
-                    column: 8,
-                    length: query.length,
-                    lineContent: `  const ${query} = useCallback(() => {`,
-                    previewStart: 0,
-                    previewEnd: 50,
-                  },
-                  {
-                    line: 25,
-                    column: 15,
-                    length: query.length,
-                    lineContent: `    return <button className="${query}">`,
-                    previewStart: 0,
-                    previewEnd: 50,
-                  },
-                ],
-              },
-              {
-                filePath: 'src/lib/utils.ts',
-                fileName: 'utils.ts',
-                matches: [
-                  {
-                    line: 5,
-                    column: 10,
-                    length: query.length,
-                    lineContent: `export function ${query}(value: string) {`,
-                    previewStart: 0,
-                    previewEnd: 50,
-                  },
-                ],
-              },
-              {
-                filePath: 'src/hooks/useSearch.ts',
-                fileName: 'useSearch.ts',
-                matches: [
-                  {
-                    line: 18,
-                    column: 5,
-                    length: query.length,
-                    lineContent: `  ${query}: string;`,
-                    previewStart: 0,
-                    previewEnd: 30,
-                  },
-                  {
-                    line: 42,
-                    column: 12,
-                    length: query.length,
-                    lineContent: `    const ${query}Result = await fetch();`,
-                    previewStart: 0,
-                    previewEnd: 50,
-                  },
-                  {
-                    line: 67,
-                    column: 8,
-                    length: query.length,
-                    lineContent: `  if (${query}) {`,
-                    previewStart: 0,
-                    previewEnd: 30,
-                  },
-                ],
-              },
-            ]
-          : [];
-
-      setResults(mockResults);
-    } catch (error) {
-      console.error('Search failed:', error);
+      const response = await api.get<{ results: FileSearchResult[] }>(
+        `/api/sessions/${sessionId}/search?query=${encodeURIComponent(query)}&caseSensitive=${options.caseSensitive}&wholeWord=${options.wholeWord}&useRegex=${options.useRegex}&include=${encodeURIComponent(options.includePattern)}&exclude=${encodeURIComponent(options.excludePattern)}`
+      );
+      setResults(response.results || []);
+    } catch {
+      // Search may fail if workspace is not available
       setResults([]);
     } finally {
       setIsSearching(false);
     }
-  }, [query, setIsSearching, setResults, clearResults]);
+  }, [query, options, sessionId, setIsSearching, setResults, clearResults]);
 
   // Handle query change with debounce
   const handleQueryChange = useCallback(
@@ -374,8 +297,11 @@ export function SearchPanel({ sessionId: _sessionId, onNavigate }: SearchPanelPr
 
     setReplaceStatus('replacing');
     try {
-      // In real implementation, call API to replace
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await api.post(`/api/sessions/${sessionId}/search/replace`, {
+        query,
+        replaceText,
+        options,
+      });
       setReplaceStatus('done');
       // Re-search to update results
       setTimeout(() => {
@@ -386,7 +312,7 @@ export function SearchPanel({ sessionId: _sessionId, onNavigate }: SearchPanelPr
       setReplaceStatus('error');
       setTimeout(() => setReplaceStatus('idle'), 2000);
     }
-  }, [query, replaceText, performSearch]);
+  }, [query, replaceText, options, sessionId, performSearch]);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">

@@ -2,6 +2,7 @@
 
 import { useRef, useCallback } from 'react';
 import { type Agent, type GridSpan, useSessionStore } from '@/stores/session';
+import { useUIStore } from '@/stores/ui';
 import { AgentCard } from './AgentCard';
 import { useOptionalGridContext } from './GridContext';
 import { useGridResize } from '@/hooks/useGridResize';
@@ -15,10 +16,17 @@ interface ResizableGridCardProps {
 
 export function ResizableGridCard({ agent, sessionId, maxCols = 3 }: ResizableGridCardProps) {
   const { updateAgentGridSpan } = useSessionStore();
+  const gridConfig = useUIStore((state) => state.gridConfig);
   const cardRef = useRef<HTMLDivElement>(null);
   const gridContext = useOptionalGridContext();
 
   const gridSpan = agent.gridSpan ?? { colSpan: 1, rowSpan: 2 };
+
+  // Calculate dynamic heights based on rowSpan
+  const gap = 16; // matches gap-4 in Tailwind
+  const calculateHeight = (rowSpan: number) => {
+    return rowSpan * gridConfig.rowHeight + (rowSpan - 1) * gap;
+  };
 
   const handleResize = useCallback(
     (newSpan: GridSpan) => {
@@ -59,9 +67,9 @@ export function ResizableGridCard({ agent, sessionId, maxCols = 3 }: ResizableGr
           ? `${displaySpan.colStart} / span ${displaySpan.colSpan}`
           : `span ${displaySpan.colSpan}`,
         gridRow: `span ${displaySpan.rowSpan}`,
-        minHeight: displaySpan.rowSpan === 1 ? '300px' : '616px',
-        maxHeight: displaySpan.rowSpan === 1 ? '300px' : '616px',
-        height: displaySpan.rowSpan === 1 ? '300px' : '616px',
+        minHeight: `${calculateHeight(displaySpan.rowSpan)}px`,
+        maxHeight: `${calculateHeight(displaySpan.rowSpan)}px`,
+        height: `${calculateHeight(displaySpan.rowSpan)}px`,
       }}
     >
       {/* Size indicator during resize */}

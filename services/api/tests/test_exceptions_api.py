@@ -1,6 +1,5 @@
 """Comprehensive tests for custom exceptions."""
 
-
 from src.exceptions import (
     AgentClientError,
     AgentServiceConnectionError,

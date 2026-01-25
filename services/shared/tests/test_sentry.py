@@ -98,9 +98,7 @@ class TestInitSentry:
 
     @patch("podex_shared.sentry.sentry_sdk.init")
     @patch("podex_shared.sentry.sentry_sdk.set_tag")
-    def test_init_with_env_dsn(
-        self, mock_set_tag: MagicMock, mock_init: MagicMock
-    ) -> None:
+    def test_init_with_env_dsn(self, mock_set_tag: MagicMock, mock_init: MagicMock) -> None:
         """Test that init reads DSN from environment."""
         with patch.dict(os.environ, {"SENTRY_DSN": "https://env@sentry.io/456"}):
             result = init_sentry("test-service")
@@ -142,9 +140,7 @@ class TestInitSentry:
 
     @patch("podex_shared.sentry.sentry_sdk.init")
     @patch("podex_shared.sentry.sentry_sdk.set_tag")
-    def test_init_custom_sample_rates(
-        self, mock_set_tag: MagicMock, mock_init: MagicMock
-    ) -> None:
+    def test_init_custom_sample_rates(self, mock_set_tag: MagicMock, mock_init: MagicMock) -> None:
         """Test custom sample rates."""
         config = SentryConfig(
             service_name="test-service",
@@ -167,9 +163,7 @@ class TestSetUserContext:
         """Test setting minimal user context."""
         set_user_context("user-123")
 
-        mock_set_user.assert_called_once_with(
-            {"id": "user-123", "email": None, "username": None}
-        )
+        mock_set_user.assert_called_once_with({"id": "user-123", "email": None, "username": None})
 
     @patch("podex_shared.sentry.sentry_sdk.set_user")
     def test_set_user_context_full(self, mock_set_user: MagicMock) -> None:

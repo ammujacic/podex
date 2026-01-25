@@ -29,6 +29,7 @@ from src.database.models import (
     OrganizationMember,
     OrganizationSubscription,
     OrganizationUsageRecord,
+    PlatformSetting,
     User,
 )
 from src.middleware.organization import (
@@ -1083,6 +1084,15 @@ async def send_invitation(
             detail="An invitation for this email is already pending",
         )
 
+    # Get expiration days from platform settings
+    invitation_settings_result = await db.execute(
+        select(PlatformSetting).where(PlatformSetting.key == "invitation_defaults")
+    )
+    invitation_settings = invitation_settings_result.scalar_one_or_none()
+    expiration_days = 7  # Default fallback
+    if invitation_settings and isinstance(invitation_settings.value, dict):
+        expiration_days = invitation_settings.value.get("org_expiration_days", 7)
+
     # Create invitation
     invitation = OrganizationInvitation(
         organization_id=org_id,
@@ -1095,7 +1105,7 @@ async def send_invitation(
         allocated_credits_cents=data.allocated_credits_cents,
         allowed_models=data.allowed_models,
         allowed_instance_types=data.allowed_instance_types,
-        expires_at=datetime.now(UTC) + timedelta(days=7),
+        expires_at=datetime.now(UTC) + timedelta(days=expiration_days),
     )
     db.add(invitation)
     await db.commit()

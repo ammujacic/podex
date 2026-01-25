@@ -316,10 +316,15 @@ export const VSCodeEditor = forwardRef<VSCodeEditorRef, VSCodeEditorProps>(funct
     }
   }, [language]);
 
-  // Update theme when it changes
+  // Update theme when it changes (only after services are initialized)
   useEffect(() => {
-    monaco.editor.setTheme(theme);
-  }, [theme]);
+    if (!isInitialized) return;
+    try {
+      monaco.editor.setTheme(theme);
+    } catch (err) {
+      console.warn('[VSCodeEditor] Failed to set theme:', err);
+    }
+  }, [theme, isInitialized]);
 
   // Update read-only state
   useEffect(() => {

@@ -7,17 +7,13 @@ import { type AgentPosition, useSessionStore } from '@/stores/session';
 import { useEditorStore } from '@/stores/editor';
 import { EnhancedCodeEditor } from '@/components/editor/EnhancedCodeEditor';
 import { cn } from '@/lib/utils';
+import { useCardDimensions } from '@/hooks/useCardDimensions';
 
 interface DraggableEditorCardProps {
   sessionId: string;
   paneId?: string;
   containerRef: React.RefObject<HTMLDivElement | null>;
 }
-
-const MIN_WIDTH = 400;
-const MIN_HEIGHT = 300;
-const DEFAULT_WIDTH = 600;
-const DEFAULT_HEIGHT = 500;
 
 export function DraggableEditorCard({
   sessionId,
@@ -36,6 +32,13 @@ export function DraggableEditorCard({
   const [preMaximizePosition, setPreMaximizePosition] = useState<AgentPosition | null>(null);
   const [localZIndex, setLocalZIndex] = useState(100);
 
+  // Get dimensions from ConfigStore (config is guaranteed to be loaded by ConfigGate)
+  const cardDimensions = useCardDimensions('editor');
+  const MIN_WIDTH = cardDimensions.minWidth;
+  const MIN_HEIGHT = cardDimensions.minHeight;
+  const DEFAULT_WIDTH = cardDimensions.width;
+  const DEFAULT_HEIGHT = cardDimensions.height;
+
   const session = sessions[sessionId];
   const hasTabs = pane && pane.tabs.length > 0;
   const tabCount = pane?.tabs.length ?? 0;
@@ -51,7 +54,7 @@ export function DraggableEditorCard({
         zIndex: 100,
       }
     );
-  }, [session?.editorFreeformPosition]);
+  }, [session?.editorFreeformPosition, DEFAULT_WIDTH, DEFAULT_HEIGHT]);
 
   // Use motion values for smooth dragging
   const x = useMotionValue(position.x);
@@ -144,7 +147,7 @@ export function DraggableEditorCard({
 
       updateEditorFreeformPosition(sessionId, { width: newWidth, height: newHeight });
     },
-    [isResizing, resizeStart, sessionId, updateEditorFreeformPosition]
+    [isResizing, resizeStart, sessionId, updateEditorFreeformPosition, MIN_HEIGHT, MIN_WIDTH]
   );
 
   const handleMouseUp = useCallback(() => {

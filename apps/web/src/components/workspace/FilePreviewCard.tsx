@@ -6,6 +6,7 @@ import { X, Pin, PinOff, Maximize2, Copy, Check, LayoutGrid } from 'lucide-react
 import { CodeEditor, getLanguageFromPath } from './CodeEditor';
 import type { FilePreview } from '@/stores/session';
 import { cn } from '@/lib/utils';
+import { useCardDimensions } from '@/hooks/useCardDimensions';
 
 interface FilePreviewCardProps {
   preview: FilePreview;
@@ -15,11 +16,6 @@ interface FilePreviewCardProps {
   onUpdate: (updates: Partial<FilePreview>) => void;
   onDock?: () => void;
 }
-
-const MIN_WIDTH = 400;
-const MIN_HEIGHT = 250;
-const DEFAULT_WIDTH = 500;
-const DEFAULT_HEIGHT = 350;
 
 export function FilePreviewCard({
   preview,
@@ -32,6 +28,13 @@ export function FilePreviewCard({
   const [copied, setCopied] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [resizeStart, setResizeStart] = useState({ x: 0, y: 0, width: 0, height: 0 });
+
+  // Get dimensions from ConfigStore (config is guaranteed to be loaded by ConfigGate)
+  const cardDimensions = useCardDimensions('preview');
+  const MIN_WIDTH = cardDimensions.minWidth;
+  const MIN_HEIGHT = cardDimensions.minHeight;
+  const DEFAULT_WIDTH = cardDimensions.width;
+  const DEFAULT_HEIGHT = cardDimensions.height;
 
   // Use motion values for smooth dragging
   const x = useMotionValue(preview.position.x);
@@ -98,7 +101,7 @@ export function FilePreviewCard({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isResizing, resizeStart, preview.position, onUpdate]);
+  }, [isResizing, resizeStart, preview.position, onUpdate, MIN_HEIGHT, MIN_WIDTH]);
 
   const handleCopy = useCallback(async () => {
     try {

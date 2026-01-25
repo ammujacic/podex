@@ -1,6 +1,8 @@
 """HTTP client for compute service communication."""
 
+import asyncio
 import contextlib
+import random
 import time
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -11,6 +13,7 @@ import httpx
 import structlog
 from sqlalchemy import select, update
 
+from podex_shared.auth import ServiceAuthClient
 from src.config import settings
 from src.database.connection import get_db_context
 from src.database.models import Session as SessionModel
@@ -30,6 +33,21 @@ MIN_DIFF_PARTS = 3
 
 logger = structlog.get_logger()
 
+# Service auth client for compute service (singleton)
+_service_auth: ServiceAuthClient | None = None
+
+
+def _get_service_auth() -> ServiceAuthClient:
+    """Get or create the service auth client for compute service."""
+    global _service_auth
+    if _service_auth is None:
+        _service_auth = ServiceAuthClient(
+            target_url=settings.COMPUTE_SERVICE_URL,
+            api_key=settings.COMPUTE_INTERNAL_API_KEY,
+            environment=settings.ENVIRONMENT,
+        )
+    return _service_auth
+
 
 class _HttpClientManager:
     """Manager for shared HTTP client with lazy initialization."""
@@ -38,17 +56,15 @@ class _HttpClientManager:
 
     @classmethod
     def get(cls) -> httpx.AsyncClient:
-        """Get or create the shared HTTP client."""
-        if cls._instance is None:
-            # Build headers with internal API key for service-to-service auth
-            headers = {}
-            if settings.COMPUTE_INTERNAL_API_KEY:
-                headers["X-Internal-API-Key"] = settings.COMPUTE_INTERNAL_API_KEY
+        """Get or create the shared HTTP client.
 
+        Note: Auth headers are added per-request via _get_auth_headers()
+        to support both API key (development) and GCP ID token (production).
+        """
+        if cls._instance is None:
             cls._instance = httpx.AsyncClient(
                 base_url=settings.COMPUTE_SERVICE_URL,
-                timeout=httpx.Timeout(30.0, connect=10.0),
-                headers=headers,
+                timeout=httpx.Timeout(settings.HTTP_TIMEOUT_DEFAULT, connect=10.0),
             )
         return cls._instance
 
@@ -70,6 +86,17 @@ async def close_http_client() -> None:
     await _HttpClientManager.close()
 
 
+async def _get_auth_headers() -> dict[str, str]:
+    """Get authentication headers for compute service requests.
+
+    In production (GCP): Uses ID token from metadata server
+    In development (Docker): Uses API key header
+    """
+    # Cast needed because podex_shared types are not visible to mypy
+    result: dict[str, str] = await _get_service_auth().get_auth_headers()
+    return result
+
+
 class ComputeClient:
     """Client for interacting with the compute service."""
 
@@ -81,57 +108,116 @@ class ComputeClient:
         method: str,
         path: str,
         user_id: str | None = None,
+        max_retries: int | None = None,
+        retry_on_timeout: bool = True,
         **kwargs: Any,
     ) -> Any:
-        """Make an HTTP request to the compute service.
+        """Make an HTTP request to the compute service with retry logic.
+
+        HIGH FIX: Added exponential backoff retry for transient failures
+        and timeout errors to improve resilience.
 
         Args:
             method: HTTP method.
             path: Request path.
             user_id: User ID to pass in X-User-ID header for authorization.
+            max_retries: Maximum number of retry attempts (from config by default).
+            retry_on_timeout: Whether to retry on timeout errors.
             **kwargs: Additional arguments to pass to httpx.
         """
+        if max_retries is None:
+            max_retries = settings.HTTP_RETRY_MAX_ATTEMPTS
+
+        # Get auth headers (GCP ID token in production, API key in development)
+        headers = kwargs.get("headers", {})
+        auth_headers = await _get_auth_headers()
+        headers.update(auth_headers)
+
         # Add user ID header if provided
         if user_id:
-            headers = kwargs.get("headers", {})
             headers["X-User-ID"] = user_id
-            kwargs["headers"] = headers
+        kwargs["headers"] = headers
 
-        try:
-            response = await self.client.request(method, path, **kwargs)
-            response.raise_for_status()
+        last_error: Exception | None = None
+        retry_delay = settings.HTTP_RETRY_INITIAL_DELAY
 
-            # Return None for 204 No Content
-            if response.status_code == HTTPStatus.NO_CONTENT:
-                return None
+        for attempt in range(max_retries + 1):
+            try:
+                response = await self.client.request(method, path, **kwargs)
+                response.raise_for_status()
 
-            return response.json()
-        except httpx.HTTPStatusError as e:
-            # Log 404s at debug level since they're expected for existence checks
-            if e.response.status_code == HTTPStatus.NOT_FOUND:
-                logger.debug(
-                    "Compute service resource not found",
+                # Return None for 204 No Content
+                if response.status_code == HTTPStatus.NO_CONTENT:
+                    return None
+
+                return response.json()
+            except httpx.TimeoutException as e:
+                last_error = e
+                if not retry_on_timeout or attempt >= max_retries:
+                    logger.exception(
+                        "Compute service timeout after retries",
+                        path=path,
+                        attempts=attempt + 1,
+                    )
+                    raise ComputeServiceConnectionError(
+                        f"Timeout after {attempt + 1} attempts: {e}"
+                    ) from e
+                # Retry with backoff
+                jitter = random.uniform(0, retry_delay * 0.5)
+                logger.warning(
+                    "Compute service timeout, retrying",
                     path=path,
-                    status_code=e.response.status_code,
+                    attempt=attempt + 1,
+                    retry_in=retry_delay + jitter,
                 )
-            else:
-                logger.exception(
-                    "Compute service HTTP error",
+                await asyncio.sleep(retry_delay + jitter)
+                retry_delay = min(retry_delay * 2, settings.HTTP_RETRY_MAX_DELAY)  # Cap at 10s
+            except httpx.HTTPStatusError as e:
+                # Don't retry on HTTP errors (4xx, 5xx) - they're intentional responses
+                # Log 404s at debug level since they're expected for existence checks
+                if e.response.status_code == HTTPStatus.NOT_FOUND:
+                    logger.debug(
+                        "Compute service resource not found",
+                        path=path,
+                        status_code=e.response.status_code,
+                    )
+                else:
+                    logger.exception(
+                        "Compute service HTTP error",
+                        path=path,
+                        status_code=e.response.status_code,
+                        detail=e.response.text,
+                    )
+                raise ComputeServiceHTTPError(
+                    e.response.status_code,
+                    e.response.text,
+                ) from e
+            except httpx.RequestError as e:
+                last_error = e
+                if attempt >= max_retries:
+                    logger.exception(
+                        "Compute service request error after retries",
+                        path=path,
+                        attempts=attempt + 1,
+                        error=str(e),
+                    )
+                    raise ComputeServiceConnectionError(str(e)) from e
+                # Retry connection errors with backoff
+                jitter = random.uniform(0, retry_delay * 0.5)
+                logger.warning(
+                    "Compute service connection error, retrying",
                     path=path,
-                    status_code=e.response.status_code,
-                    detail=e.response.text,
+                    attempt=attempt + 1,
+                    retry_in=retry_delay + jitter,
+                    error=str(e),
                 )
-            raise ComputeServiceHTTPError(
-                e.response.status_code,
-                e.response.text,
-            ) from e
-        except httpx.RequestError as e:
-            logger.exception(
-                "Compute service request error",
-                path=path,
-                error=str(e),
-            )
-            raise ComputeServiceConnectionError(str(e)) from e
+                await asyncio.sleep(retry_delay + jitter)
+                retry_delay = min(retry_delay * 2, settings.HTTP_RETRY_MAX_DELAY)
+
+        # Should not reach here, but just in case
+        raise ComputeServiceConnectionError(
+            f"Request failed after {max_retries + 1} attempts"
+        ) from last_error
 
     # ==================== Workspace Operations ====================
 
@@ -149,24 +235,23 @@ class ComputeClient:
         # - Repo cloning
         # - Post-init commands (up to 300s each)
         # Use a much longer timeout for workspace creation
-        workspace_creation_timeout = 600  # 10 minutes
 
         logger.debug(
             "Creating workspace with extended timeout",
             workspace_id=workspace_id,
-            timeout_seconds=workspace_creation_timeout,
+            timeout_seconds=settings.WORKSPACE_CREATION_TIMEOUT,
         )
 
         try:
+            # Get auth headers (GCP ID token in production, API key in development)
+            auth_headers = await _get_auth_headers()
+
             # Create a custom client with appropriate timeout for workspace creation
             async with httpx.AsyncClient(
                 base_url=settings.COMPUTE_SERVICE_URL,
-                timeout=httpx.Timeout(float(workspace_creation_timeout), connect=10.0),
-                headers={"X-Internal-API-Key": settings.COMPUTE_INTERNAL_API_KEY}
-                if settings.COMPUTE_INTERNAL_API_KEY
-                else {},
+                timeout=httpx.Timeout(float(settings.WORKSPACE_CREATION_TIMEOUT), connect=10.0),
             ) as client:
-                headers = {"X-User-ID": user_id}
+                headers = {**auth_headers, "X-User-ID": user_id}
                 response = await client.post(
                     "/workspaces",
                     headers=headers,
@@ -183,10 +268,10 @@ class ComputeClient:
             logger.exception(
                 "Workspace creation timed out",
                 workspace_id=workspace_id,
-                timeout_seconds=workspace_creation_timeout,
+                timeout_seconds=settings.WORKSPACE_CREATION_TIMEOUT,
             )
             raise ComputeServiceConnectionError(
-                f"Workspace creation timed out after {workspace_creation_timeout} seconds"
+                f"Workspace creation timed out after {settings.WORKSPACE_CREATION_TIMEOUT} seconds"
             ) from None
         except httpx.HTTPStatusError as e:
             logger.exception(
@@ -499,15 +584,15 @@ class ComputeClient:
         )
 
         try:
+            # Get auth headers (GCP ID token in production, API key in development)
+            auth_headers = await _get_auth_headers()
+
             # Create a custom client with appropriate timeout for this request
             async with httpx.AsyncClient(
                 base_url=settings.COMPUTE_SERVICE_URL,
                 timeout=httpx.Timeout(float(http_timeout), connect=10.0),
-                headers={"X-Internal-API-Key": settings.COMPUTE_INTERNAL_API_KEY}
-                if settings.COMPUTE_INTERNAL_API_KEY
-                else {},
             ) as client:
-                headers = {"X-User-ID": user_id}
+                headers = {**auth_headers, "X-User-ID": user_id}
                 response = await client.post(
                     f"/workspaces/{workspace_id}/exec",
                     headers=headers,
@@ -594,14 +679,14 @@ class ComputeClient:
         )
 
         try:
+            # Get auth headers (GCP ID token in production, API key in development)
+            auth_headers = await _get_auth_headers()
+
             async with httpx.AsyncClient(
                 base_url=settings.COMPUTE_SERVICE_URL,
                 timeout=httpx.Timeout(float(http_timeout), connect=10.0),
-                headers={"X-Internal-API-Key": settings.COMPUTE_INTERNAL_API_KEY}
-                if settings.COMPUTE_INTERNAL_API_KEY
-                else {},
             ) as client:
-                headers = {"X-User-ID": user_id}
+                headers = {**auth_headers, "X-User-ID": user_id}
                 async with client.stream(
                     "POST",
                     f"/workspaces/{workspace_id}/exec-stream",

@@ -11,6 +11,7 @@ Secrets are organized into:
 
 from typing import Any
 
+import pulumi
 import pulumi_gcp as gcp
 import pulumi_random as random
 
@@ -113,7 +114,13 @@ def create_secrets(project_id: str, env: str) -> dict[str, Any]:
     secrets["internal_api_key_value"] = internal_api_key.result
     # =========================================
     # Admin credentials (required for first login)
+    # Auto-generated secure password - update via GCP Console/CLI after deployment
     # =========================================
+
+    # Get admin email from Pulumi config or use a placeholder that must be changed
+    config = pulumi.Config()
+    admin_email_value = config.get("admin_email")
+
     admin_email_secret = gcp.secretmanager.Secret(
         f"admin-email-{env}",
         secret_id=f"podex-admin-email-{env}",
@@ -124,9 +131,18 @@ def create_secrets(project_id: str, env: str) -> dict[str, Any]:
     gcp.secretmanager.SecretVersion(
         f"admin-email-version-{env}",
         secret=admin_email_secret.id,
-        secret_data="admin@example.com",  # Change after deployment
+        # Use configured email or placeholder - must be set via `pulumi config set admin_email <email>`
+        secret_data=admin_email_value or "CHANGE_ME@example.com",
     )
     secrets["admin_email"] = admin_email_secret
+
+    # Generate a secure random password for admin account
+    admin_password_value = random.RandomPassword(
+        f"admin-password-value-{env}",
+        length=32,
+        special=True,
+        override_special="!@#$%^&*",
+    )
 
     admin_password_secret = gcp.secretmanager.Secret(
         f"admin-password-{env}",
@@ -138,9 +154,10 @@ def create_secrets(project_id: str, env: str) -> dict[str, Any]:
     gcp.secretmanager.SecretVersion(
         f"admin-password-version-{env}",
         secret=admin_password_secret.id,
-        secret_data="ChangeThisPassword123!",  # Change after deployment
+        secret_data=admin_password_value.result,
     )
     secrets["admin_password"] = admin_password_secret
+    secrets["admin_password_value"] = admin_password_value.result
 
     # =========================================
     # Optional external service secrets
@@ -152,6 +169,7 @@ def create_secrets(project_id: str, env: str) -> dict[str, Any]:
         "sentry-dsn-agent",
         "sentry-dsn-compute",
         "sentry-dsn-web",
+        "sentry-dsn-desktop",
         # Sentry build-time (for source maps upload)
         "sentry-auth-token",
         "sentry-org",

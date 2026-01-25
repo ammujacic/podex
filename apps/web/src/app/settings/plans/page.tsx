@@ -82,38 +82,6 @@ export default function PlansPage() {
   const { subscription, plans, loading, error, refetch, handlePlanChange } = useBillingData();
   const [changingPlan, setChangingPlan] = useState<string | null>(null);
 
-  // Debug logging - check what data we're getting from the API
-  console.warn('=== PLANS PAGE DEBUG ===');
-  console.warn('Loading:', loading);
-  console.warn('Error:', error);
-  console.warn('Number of plans:', plans.length);
-  console.warn('Has subscription:', !!subscription);
-  console.warn('Has subscription.plan:', !!subscription?.plan);
-
-  if (subscription) {
-    console.warn('Subscription data:', {
-      id: subscription.id,
-      status: subscription.status,
-      billing_cycle: subscription.billing_cycle,
-      plan_name: subscription.plan?.name,
-      plan_slug: subscription.plan?.slug,
-    });
-  } else {
-    console.warn('NO SUBSCRIPTION DATA - User may not have an active subscription');
-  }
-
-  if (plans.length > 0) {
-    console.warn('Plans summary:');
-    plans.forEach((plan) => {
-      console.warn(
-        `  - ${plan.name}: $${plan.price_monthly.toFixed(2)}/mo, ${formatNumber(plan.tokens_included)} tokens`
-      );
-    });
-  } else {
-    console.warn('NO PLANS DATA - Check API response');
-  }
-  console.warn('======================');
-
   const handleSelectPlan = async (planSlug: string) => {
     if (changingPlan) return;
 

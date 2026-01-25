@@ -15,10 +15,15 @@ vi.mock('@/stores/session', async () => {
       removeAgent: vi.fn(),
       updateAgent: vi.fn(),
       addAgentMessage: vi.fn(),
-      streamingMessages: {},
     }),
   };
 });
+
+vi.mock('@/stores/streaming', () => ({
+  useStreamingStore: () => ({
+    streamingMessages: {},
+  }),
+}));
 
 vi.mock('@/stores/attention', () => ({
   useAttentionStore: () => ({

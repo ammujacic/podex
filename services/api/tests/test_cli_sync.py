@@ -43,9 +43,7 @@ def sample_skill() -> dict[str, Any]:
             {"description": "Provide feedback", "tool": "write_file"},
         ],
         "system_prompt": "You are a code review assistant. Analyze the code for bugs, style issues, and improvements.",
-        "examples": [
-            {"user": "Review this function", "assistant": "I'll analyze the function..."}
-        ],
+        "examples": [{"user": "Review this function", "assistant": "I'll analyze the function..."}],
     }
 
 
@@ -265,9 +263,7 @@ class TestCodexTranslator:
         assert "description" in result.cli_format
         assert result.cli_format["description"] == "Performs a code review on the current file"
 
-    def test_translate_mcp(
-        self, translator: CodexTranslator, sample_mcp: dict[str, Any]
-    ) -> None:
+    def test_translate_mcp(self, translator: CodexTranslator, sample_mcp: dict[str, Any]) -> None:
         """Test MCP translation to Codex TOML format."""
         result = translator.translate_mcp(sample_mcp)
 

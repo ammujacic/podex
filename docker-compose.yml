@@ -1,40 +1,4 @@
 services:
-  # === LOCAL GCP SERVICES ===
-  fake-gcs:
-    image: fsouza/fake-gcs-server:latest
-    command:
-      - -scheme
-      - http
-      - -port
-      - "4443"
-      - -external-url
-      - http://fake-gcs:4443
-      - -log-level
-      - error
-      - -backend
-      - filesystem
-      - -filesystem-root
-      - /data
-    ports:
-      - "4443:4443"
-    volumes:
-      - gcs_data:/data
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:4443/storage/v1/b"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  gcs-init:
-    image: alpine:latest
-    command: sh -c "apk add --no-cache curl && sh /scripts/init-gcs.sh"
-    volumes:
-      - ./scripts/init-gcs.sh:/scripts/init-gcs.sh:ro
-    depends_on:
-      fake-gcs:
-        condition: service_healthy
-    restart: "no"
-
   # === DATABASE ===
   postgres:
     image: postgres:16-alpine
@@ -111,9 +75,6 @@ services:
       GCP_PROJECT_ID: ${GCP_PROJECT_ID:-podex-dev}
       GCP_REGION: ${GCP_REGION:-us-east1}
       GOOGLE_APPLICATION_CREDENTIALS: /app/service-account.json
-      # GCS Storage
-      GCS_BUCKET: podex-workspaces-dev
-      STORAGE_EMULATOR_HOST: http://fake-gcs:4443
       # LLM Provider: vertex (GCP), anthropic (API), ollama (local)
       LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
@@ -168,8 +129,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      fake-gcs:
-        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   # === AGENT SERVICE ===
   agent:
@@ -195,9 +160,6 @@ services:
       GCP_PROJECT_ID: ${GCP_PROJECT_ID:-podex-dev}
       GCP_REGION: ${GCP_REGION:-us-east1}
       GOOGLE_APPLICATION_CREDENTIALS: /app/service-account.json
-      # GCS Storage
-      GCS_BUCKET: podex-workspaces-dev
-      STORAGE_EMULATOR_HOST: http://fake-gcs:4443
       # LLM Provider: vertex (GCP), anthropic (API), ollama (local)
       LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
@@ -219,14 +181,10 @@ services:
       - ./services/shared/src:/app/services/shared/src
       - ./service-account.json:/app/service-account.json:ro
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
-      fake-gcs:
-        condition: service_healthy
       api:
-        condition: service_started
+        condition: service_healthy
 
   # === COMPUTE SERVICE ===
   compute:
@@ -256,11 +214,8 @@ services:
       # GCP Configuration
       GCP_PROJECT_ID: ${GCP_PROJECT_ID:-podex-dev}
       GCP_REGION: ${GCP_REGION:-us-east1}
-      # GCS Storage
-      COMPUTE_GCS_BUCKET: podex-workspaces-dev
-      STORAGE_EMULATOR_HOST: http://fake-gcs:4443
-      COMPUTE_GCS_PREFIX: workspaces
-      COMPUTE_GCS_SYNC_INTERVAL: 30
+      # Local storage for workspaces (mounted to containers as volumes)
+      # GCS is only used in production via Cloud Run volume mounts
       # Internal API key (for secure inter-service communication)
       COMPUTE_INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
       # CORS
@@ -276,10 +231,10 @@ services:
       - ./services/compute/src:/app/services/compute/src
       - ./services/shared/src:/app/services/shared/src
       - /var/run/docker.sock:/var/run/docker.sock
+      # Shared storage for workspace volume mounts (compute creates dirs, workspaces mount them)
+      - /tmp/podex-storage:/tmp/podex-storage
     depends_on:
       redis:
-        condition: service_healthy
-      fake-gcs:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
@@ -328,7 +283,6 @@ services:
       - api
 
 volumes:
-  gcs_data:
   postgres_data:
   redis_data:
   ollama_data:

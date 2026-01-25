@@ -17,8 +17,6 @@ from src.services.cli_sync_service import CLISyncService
 if TYPE_CHECKING:
     from uuid import UUID
 
-    from src.services.dotfiles_sync import DotfilesSync
-
 logger = structlog.get_logger()
 
 
@@ -240,7 +238,6 @@ class CLISyncTriggers:
         _db: AsyncSession,
         user_id: UUID,
         workspace_id: str,
-        dotfiles_sync: DotfilesSync | None = None,
     ) -> None:
         """Trigger sync when a workspace session starts.
 
@@ -253,16 +250,7 @@ class CLISyncTriggers:
             workspace_id=workspace_id,
         )
 
-        if dotfiles_sync:
-            try:
-                # Sync CLI config directories to workspace
-                await dotfiles_sync.sync_to_workspace(
-                    user_id=user_id,
-                    workspace_path=f"/workspaces/{workspace_id}",
-                    paths=[".claude/", ".codex/", ".gemini/"],
-                )
-            except Exception as e:
-                logger.exception("Failed to sync CLI configs to workspace", error=str(e))
+        # Note: Dotfiles sync functionality has been removed
 
     @staticmethod
     async def on_workspace_file_change(

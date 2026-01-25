@@ -15,6 +15,7 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { api } from '@/lib/api';
 
 // Types matching the backend API
 interface CostSummary {
@@ -284,13 +285,22 @@ export default function CostInsights() {
     loadInsights();
   }, []);
 
-  const handleApplySuggestion = async (_id: string) => {
-    // In production, this would call an API to apply the optimization
-    // TODO: Implement suggestion application - would require backend support for plan changes, quota adjustments, etc.
-    // For now, just show a success message
-    console.warn('Applying suggestion:', _id);
-    // Could call something like:
-    // await api.post('/api/cost-insights/apply-suggestion', { suggestion_id: _id });
+  const handleApplySuggestion = async (suggestionId: string) => {
+    try {
+      await api.post('/api/billing/apply-suggestion', { suggestion_id: suggestionId });
+      // Refresh insights after applying suggestion
+      const newInsights = (await api.get('/api/billing/cost-insights')) as {
+        summary: CostSummary;
+        suggestions: CostSuggestion[];
+      };
+      if (newInsights) {
+        setSummary(newInsights.summary);
+        setSuggestions(newInsights.suggestions);
+      }
+    } catch (error) {
+      console.error('Failed to apply suggestion:', error);
+      // Some suggestions may require manual intervention
+    }
   };
 
   if (loading) {

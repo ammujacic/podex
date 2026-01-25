@@ -8,7 +8,6 @@ Tests cover:
 - Pull request operations
 """
 
-
 from fastapi.testclient import TestClient
 
 # ============================================================================

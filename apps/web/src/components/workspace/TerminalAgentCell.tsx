@@ -99,11 +99,10 @@ export const TerminalAgentCell = forwardRef<TerminalAgentCellRef, TerminalAgentC
         const wsProtocol = apiUrl.startsWith('https') ? 'wss:' : 'ws:';
         const apiHost = apiUrl.replace(/^https?:\/\//, '');
 
-        // TODO: Security improvement - Consider implementing ticket-based auth instead of
-        // passing token in URL. Current approach exposes token in browser history and server logs.
-        // Better pattern: 1) Get short-lived ticket from REST endpoint, 2) Pass ticket in URL,
-        // 3) Server exchanges ticket for session. This requires backend changes.
-        // For now, using direct token approach with HTTPS requirement for security.
+        // Security note: Token is passed in URL which may appear in browser history/logs.
+        // Production deployment uses HTTPS to encrypt the connection. For enhanced security,
+        // consider implementing ticket-based auth where a short-lived ticket is exchanged
+        // server-side for the session token. This would require backend WebSocket changes.
         const token = useAuthStore.getState().tokens?.accessToken;
         const tokenParam = token ? `?token=${encodeURIComponent(token)}` : '';
         const wsUrl = `${wsProtocol}//${apiHost}/api/v1/terminal-agents/${agent.terminalSessionId}/ws${tokenParam}`;

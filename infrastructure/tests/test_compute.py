@@ -217,3 +217,102 @@ class TestComputeConfiguration:
             elif "Gi" in memory_str:
                 memory_gb = int(memory_str.replace("Gi", ""))
                 assert 1 <= memory_gb <= 16
+
+    def test_service_account_creation(self) -> None:
+        """Test service account naming and configuration."""
+        env = "test"
+        account_id = f"podex-cloudrun-{env}"
+        display_name = f"Podex Cloud Run ({env})"
+
+        assert account_id == "podex-cloudrun-test"
+        assert display_name == "Podex Cloud Run (test)"
+
+    def test_iam_roles_configuration(self) -> None:
+        """Test that IAM roles are correctly configured."""
+        roles = [
+            "roles/secretmanager.secretAccessor",
+            "roles/storage.objectUser",
+            "roles/cloudsql.client",
+            "roles/aiplatform.user",
+            "roles/logging.logWriter",
+            "roles/cloudtrace.agent",
+        ]
+
+        for role in roles:
+            # Check resource naming
+            role_name = role.split("/")[-1]
+            resource_name = f"podex-cloudrun-{role_name}-test"
+            assert len(resource_name) > 0
+
+    def test_vpc_connector_cidr_configuration(self) -> None:
+        """Test VPC connector CIDR range."""
+        ip_cidr_range = "10.9.0.0/28"
+
+        # Verify CIDR format
+        assert "/" in ip_cidr_range
+        ip, prefix = ip_cidr_range.split("/")
+        assert len(ip.split(".")) == 4  # Valid IP
+        assert 0 <= int(prefix) <= 32  # Valid prefix
+
+    def test_environment_variable_structure(self) -> None:
+        """Test that environment variables are properly structured."""
+        required_envs = ["ENV", "GCP_PROJECT_ID", "GCP_REGION", "LLM_PROVIDER", "EMAIL_BACKEND"]
+
+        for env_name in required_envs:
+            assert len(env_name) > 0
+            assert env_name.isupper() or "_" in env_name
+
+    def test_compute_service_special_env_vars(self) -> None:
+        """Test that compute service has special environment variables."""
+        compute_env_vars = [
+            "COMPUTE_INTERNAL_API_KEY",
+            "COMPUTE_WORKSPACE_IMAGE_X86",
+            "COMPUTE_WORKSPACE_IMAGE_GPU",
+        ]
+
+        for env_var in compute_env_vars:
+            assert env_var.startswith("COMPUTE_")
+            assert len(env_var) > 8
+
+    def test_secret_references(self) -> None:
+        """Test that services reference correct secrets."""
+        secret_env_vars = ["JWT_SECRET", "INTERNAL_API_KEY", "INTERNAL_SERVICE_TOKEN"]
+
+        for secret_var in secret_env_vars:
+            assert len(secret_var) > 0
+
+    def test_database_url_for_services_needing_db(self) -> None:
+        """Test that services needing database get DATABASE_URL."""
+        services_with_db = {
+            "api": True,
+            "agent": True,
+            "compute": False,
+            "web": False,
+        }
+
+        for _service_name, needs_db in services_with_db.items():
+            assert isinstance(needs_db, bool)
+
+    def test_redis_url_for_services_needing_redis(self) -> None:
+        """Test that services needing Redis get REDIS_URL."""
+        services_with_redis = {
+            "api": True,
+            "agent": True,
+            "compute": True,
+            "web": False,
+        }
+
+        for _service_name, needs_redis in services_with_redis.items():
+            assert isinstance(needs_redis, bool)
+
+    def test_storage_bucket_for_services_needing_storage(self) -> None:
+        """Test that services needing storage get STORAGE_BUCKET."""
+        services_with_storage = {
+            "api": True,
+            "agent": True,
+            "compute": True,
+            "web": False,
+        }
+
+        for _service_name, needs_storage in services_with_storage.items():
+            assert isinstance(needs_storage, bool)

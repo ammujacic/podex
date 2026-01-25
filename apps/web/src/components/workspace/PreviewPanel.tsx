@@ -9,13 +9,21 @@ import {
   Monitor,
   X,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Globe,
   Loader2,
   AlertCircle,
   Play,
+  PanelBottom,
+  PanelBottomClose,
 } from 'lucide-react';
 import { Button } from '@podex/ui';
+import { cn } from '@/lib/utils';
 import { getSocket } from '@/lib/collaboration';
+import { useDevToolsStore } from '@/stores/devtools';
+import { usePreviewDevTools } from '@/hooks/usePreviewDevTools';
+import { DevToolsPanel } from './DevToolsPanel';
 
 interface PreviewPanelProps {
   workspaceId: string;
@@ -86,6 +94,38 @@ export function PreviewPanel({
   );
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
+  // DevTools state
+  const devToolsOpen = useDevToolsStore((s) => s.isOpen);
+  const toggleDevTools = useDevToolsStore((s) => s.toggleDevTools);
+  const panelHeight = useDevToolsStore((s) => s.panelHeight);
+  const history = useDevToolsStore((s) => s.history);
+  const historyIndex = useDevToolsStore((s) => s.historyIndex);
+  const goBack = useDevToolsStore((s) => s.goBack);
+  const goForward = useDevToolsStore((s) => s.goForward);
+  const currentUrl = useDevToolsStore((s) => s.currentUrl);
+  const consoleEntries = useDevToolsStore((s) => s.consoleEntries);
+  const errors = useDevToolsStore((s) => s.errors);
+
+  // DevTools hook for iframe communication
+  const {
+    requestDOMSnapshot,
+    requestHTML,
+    evalCode,
+    reload: _reloadIframe,
+  } = usePreviewDevTools({
+    iframeRef,
+    workspaceId,
+    enabled: true,
+  });
+
+  // Calculate navigation state
+  const canGoBack = historyIndex > 0;
+  const canGoForward = historyIndex < history.length - 1;
+
+  // Error/warning count for DevTools badge
+  const errorCount = errors.length;
+  const warningCount = consoleEntries.filter((e) => e.level === 'warn').length;
+
   // Available ports for preview (would come from workspace config in production)
   const availablePorts = [
     { port: 3000, label: 'Dev Server', protocol: 'http' },
@@ -141,6 +181,35 @@ export function PreviewPanel({
     [navigateToUrl]
   );
 
+  // Handle back navigation
+  const handleBack = useCallback(() => {
+    const entry = goBack();
+    if (entry) {
+      setUrl(entry.url);
+      setInputUrl(entry.url);
+      setIsLoading(true);
+      setError(null);
+    }
+  }, [goBack]);
+
+  // Handle forward navigation
+  const handleForward = useCallback(() => {
+    const entry = goForward();
+    if (entry) {
+      setUrl(entry.url);
+      setInputUrl(entry.url);
+      setIsLoading(true);
+      setError(null);
+    }
+  }, [goForward]);
+
+  // Sync URL input with DevTools history when navigation happens inside iframe
+  useEffect(() => {
+    if (currentUrl && currentUrl !== inputUrl && isValidPreviewUrl(currentUrl, workspaceId)) {
+      setInputUrl(currentUrl);
+    }
+  }, [currentUrl, inputUrl, workspaceId]);
+
   // Start dev server in the pod
   const startDevServer = useCallback(() => {
     if (isStartingServer) return;
@@ -152,7 +221,7 @@ export function PreviewPanel({
     const socket = getSocket();
 
     // Extract port from current URL
-    const portMatch = url.match(/:(\d+)/);
+    const portMatch = url.match(/\/proxy\/(\d+)\//);
     const port = portMatch?.[1] ? parseInt(portMatch[1], 10) : defaultPort;
 
     // Send command to start dev server
@@ -228,28 +297,85 @@ export function PreviewPanel({
 
   return (
     <div className="flex flex-col h-full bg-surface border-l border-border-default">
-      {/* Header */}
+      {/* Header with navigation */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border-subtle bg-elevated">
+        {/* Navigation buttons */}
+        <div className="flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleBack}
+            disabled={!canGoBack}
+            title="Go back"
+            className="h-7 w-7"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleForward}
+            disabled={!canGoForward}
+            title="Go forward"
+            className="h-7 w-7"
+          >
+            <ChevronRight className="w-4 h-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={refresh}
+            disabled={isLoading}
+            title="Refresh"
+            className="h-7 w-7"
+          >
+            <RefreshCw className={cn('w-4 h-4', isLoading && 'animate-spin')} />
+          </Button>
+        </div>
+
         {/* URL Input */}
         <div className="flex-1 flex items-center gap-2 bg-void rounded-md px-2 py-1 border border-border-default">
-          <Globe className="w-4 h-4 text-text-muted" />
+          <Globe className="w-4 h-4 text-text-muted shrink-0" />
           <input
             type="text"
             value={inputUrl}
             onChange={(e) => setInputUrl(e.target.value)}
             onKeyDown={handleKeyDown}
-            className="flex-1 bg-transparent text-sm text-text-primary outline-none"
+            className="flex-1 bg-transparent text-sm text-text-primary outline-none min-w-0"
             placeholder="Enter URL..."
           />
         </div>
 
         {/* Action buttons */}
-        <Button variant="ghost" size="icon" onClick={refresh} disabled={isLoading} title="Refresh">
-          <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={openExternal}
+          title="Open in new tab"
+          className="h-7 w-7"
+        >
+          <ExternalLink className="w-4 h-4" />
         </Button>
 
-        <Button variant="ghost" size="icon" onClick={openExternal} title="Open in new tab">
-          <ExternalLink className="w-4 h-4" />
+        {/* DevTools toggle */}
+        <Button
+          variant={devToolsOpen ? 'secondary' : 'ghost'}
+          size="icon"
+          onClick={toggleDevTools}
+          title={devToolsOpen ? 'Close DevTools' : 'Open DevTools'}
+          className={cn('h-7 w-7 relative', devToolsOpen && 'bg-accent-primary/10')}
+        >
+          {devToolsOpen ? (
+            <PanelBottomClose className="w-4 h-4" />
+          ) : (
+            <PanelBottom className="w-4 h-4" />
+          )}
+          {/* Error badge */}
+          {!devToolsOpen && errorCount > 0 && (
+            <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-accent-error text-[10px] font-medium text-white flex items-center justify-center">
+              {errorCount > 9 ? '9+' : errorCount}
+            </span>
+          )}
         </Button>
 
         {/* Device selector */}
@@ -258,7 +384,7 @@ export function PreviewPanel({
             variant="ghost"
             size="sm"
             onClick={() => setShowDeviceMenu(!showDeviceMenu)}
-            className="gap-1"
+            className="gap-1 h-7"
           >
             {deviceType === 'mobile' && <Smartphone className="w-4 h-4" />}
             {deviceType === 'tablet' && <Tablet className="w-4 h-4" />}
@@ -292,14 +418,20 @@ export function PreviewPanel({
         </div>
 
         {onClose && (
-          <Button variant="ghost" size="icon" onClick={onClose} title="Close preview">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onClose}
+            title="Close preview"
+            className="h-7 w-7"
+          >
             <X className="w-4 h-4" />
           </Button>
         )}
       </div>
 
       {/* Port selector bar */}
-      <div className="flex items-center gap-2 px-3 py-1 border-b border-border-subtle text-xs">
+      <div className="flex items-center gap-2 px-3 py-1 border-b border-border-subtle text-xs shrink-0">
         <span className="text-text-muted">Ports:</span>
         {availablePorts.map((p) => (
           <button
@@ -335,89 +467,121 @@ export function PreviewPanel({
         )}
       </div>
 
-      {/* Preview content */}
-      <div className="flex-1 flex items-center justify-center bg-void overflow-auto p-4 relative">
-        {/* Loading state */}
-        {isLoading && !error && (
-          <div className="absolute inset-0 flex items-center justify-center bg-void/80 z-10">
-            <div className="flex flex-col items-center gap-2">
-              <Loader2 className="w-8 h-8 animate-spin text-accent-primary" />
-              <span className="text-text-secondary text-sm">Loading preview...</span>
-            </div>
-          </div>
-        )}
-
-        {/* Error state */}
-        {error && (
-          <div className="flex flex-col items-center gap-4 text-center max-w-md">
-            <div className="w-16 h-16 rounded-full bg-accent-error/10 flex items-center justify-center">
-              <AlertCircle className="w-8 h-8 text-accent-error" />
-            </div>
-            <div>
-              <h3 className="text-lg font-medium text-text-primary mb-2">Preview Unavailable</h3>
-              <p className="text-text-secondary text-sm">{error}</p>
-            </div>
-            <div className="flex gap-2">
-              <Button variant="secondary" size="sm" onClick={refresh}>
-                <RefreshCw className="w-4 h-4 mr-1" />
-                Retry
-              </Button>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={startDevServer}
-                disabled={isStartingServer}
-              >
-                {isStartingServer ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                    Starting...
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-4 h-4 mr-1" />
-                    Start Server
-                  </>
-                )}
-              </Button>
-            </div>
-            {isStartingServer && (
-              <p className="text-xs text-text-muted">
-                Running <code className="bg-overlay px-1 rounded">{devServerCommands.default}</code>
-                ...
-              </p>
-            )}
-          </div>
-        )}
-
-        {/* Iframe container */}
+      {/* Main content area with DevTools */}
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+        {/* Preview content */}
         <div
-          className={`bg-white rounded-lg overflow-hidden shadow-lg transition-all duration-300 ${
-            error ? 'hidden' : ''
-          }`}
+          className="flex items-center justify-center bg-void overflow-auto p-4 relative"
           style={{
-            width: deviceSize.width,
-            height: deviceSize.height,
-            maxWidth: '100%',
-            maxHeight: '100%',
+            height: devToolsOpen ? `calc(100% - ${panelHeight}px)` : '100%',
           }}
         >
-          <iframe
-            ref={iframeRef}
-            src={url}
-            className="w-full h-full border-0"
-            onLoad={handleLoad}
-            onError={handleError}
-            sandbox="allow-scripts allow-forms allow-popups allow-modals"
-            title="Preview"
-          />
+          {/* Loading state */}
+          {isLoading && !error && (
+            <div className="absolute inset-0 flex items-center justify-center bg-void/80 z-10">
+              <div className="flex flex-col items-center gap-2">
+                <Loader2 className="w-8 h-8 animate-spin text-accent-primary" />
+                <span className="text-text-secondary text-sm">Loading preview...</span>
+              </div>
+            </div>
+          )}
+
+          {/* Error state */}
+          {error && (
+            <div className="flex flex-col items-center gap-4 text-center max-w-md">
+              <div className="w-16 h-16 rounded-full bg-accent-error/10 flex items-center justify-center">
+                <AlertCircle className="w-8 h-8 text-accent-error" />
+              </div>
+              <div>
+                <h3 className="text-lg font-medium text-text-primary mb-2">Preview Unavailable</h3>
+                <p className="text-text-secondary text-sm">{error}</p>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="secondary" size="sm" onClick={refresh}>
+                  <RefreshCw className="w-4 h-4 mr-1" />
+                  Retry
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={startDevServer}
+                  disabled={isStartingServer}
+                >
+                  {isStartingServer ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                      Starting...
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-4 h-4 mr-1" />
+                      Start Server
+                    </>
+                  )}
+                </Button>
+              </div>
+              {isStartingServer && (
+                <p className="text-xs text-text-muted">
+                  Running{' '}
+                  <code className="bg-overlay px-1 rounded">{devServerCommands.default}</code>
+                  ...
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Iframe container */}
+          <div
+            className={cn(
+              'bg-white rounded-lg overflow-hidden shadow-lg transition-all duration-300',
+              error && 'hidden'
+            )}
+            style={{
+              width: deviceSize.width,
+              height: deviceSize.height,
+              maxWidth: '100%',
+              maxHeight: '100%',
+            }}
+          >
+            <iframe
+              ref={iframeRef}
+              src={url}
+              className="w-full h-full border-0"
+              onLoad={handleLoad}
+              onError={handleError}
+              sandbox="allow-scripts allow-forms allow-popups allow-modals"
+              title="Preview"
+            />
+          </div>
         </div>
+
+        {/* DevTools Panel */}
+        {devToolsOpen && (
+          <DevToolsPanel
+            onRequestDOMSnapshot={requestDOMSnapshot}
+            onRequestHTML={requestHTML}
+            onEvalCode={evalCode}
+          />
+        )}
       </div>
 
       {/* Status bar */}
-      <div className="flex items-center justify-between px-3 py-1 border-t border-border-subtle text-xs text-text-muted">
+      <div className="flex items-center justify-between px-3 py-1 border-t border-border-subtle text-xs text-text-muted shrink-0">
         <span>{deviceSize.label}</span>
-        <span>{url}</span>
+        <div className="flex items-center gap-3">
+          {errorCount > 0 && (
+            <span className="flex items-center gap-1 text-accent-error">
+              <AlertCircle className="w-3 h-3" />
+              {errorCount} {errorCount === 1 ? 'error' : 'errors'}
+            </span>
+          )}
+          {warningCount > 0 && (
+            <span className="flex items-center gap-1 text-accent-warning">
+              {warningCount} {warningCount === 1 ? 'warning' : 'warnings'}
+            </span>
+          )}
+          <span className="truncate max-w-[300px]">{currentUrl || url}</span>
+        </div>
       </div>
     </div>
   );

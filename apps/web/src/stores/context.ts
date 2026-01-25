@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
+import { useConfigStore } from '@/stores/config';
 
 export interface ContextUsage {
   tokensUsed: number;
@@ -59,19 +60,32 @@ interface ContextState {
   shouldAutoCompact: (agentId: string, sessionId: string) => boolean;
 }
 
-const DEFAULT_SETTINGS: CompactionSettings = {
-  autoCompactEnabled: true,
-  autoCompactThresholdPercent: 80,
-  customCompactionInstructions: null,
-  preserveRecentMessages: 15,
-};
+// Helper to get defaults from ConfigStore (config is guaranteed to be loaded by ConfigGate)
+function getDefaultSettings(): CompactionSettings {
+  const configDefaults = useConfigStore.getState().getContextCompactionDefaults();
+  if (!configDefaults) {
+    throw new Error('ConfigStore not initialized - context_compaction_defaults not available');
+  }
+  return {
+    autoCompactEnabled: configDefaults.autoCompactEnabled,
+    autoCompactThresholdPercent: configDefaults.autoCompactThresholdPercent,
+    customCompactionInstructions: configDefaults.customCompactionInstructions,
+    preserveRecentMessages: configDefaults.preserveRecentMessages,
+  };
+}
 
-const DEFAULT_USAGE: ContextUsage = {
-  tokensUsed: 0,
-  tokensMax: 200000,
-  percentage: 0,
-  lastUpdated: new Date(),
-};
+function getDefaultUsage(): ContextUsage {
+  const configDefaults = useConfigStore.getState().getContextUsageDefaults();
+  if (!configDefaults) {
+    throw new Error('ConfigStore not initialized - context_usage_defaults not available');
+  }
+  return {
+    tokensUsed: configDefaults.tokensUsed,
+    tokensMax: configDefaults.tokensMax,
+    percentage: configDefaults.percentage,
+    lastUpdated: new Date(),
+  };
+}
 
 export const useContextStore = create<ContextState>()(
   devtools(
@@ -84,7 +98,7 @@ export const useContextStore = create<ContextState>()(
 
         updateAgentUsage: (agentId, usage) =>
           set((state) => {
-            const current = state.agentUsage[agentId] || DEFAULT_USAGE;
+            const current = state.agentUsage[agentId] || getDefaultUsage();
             const updated = {
               ...current,
               ...usage,
@@ -122,7 +136,7 @@ export const useContextStore = create<ContextState>()(
             sessionSettings: {
               ...state.sessionSettings,
               [sessionId]: {
-                ...DEFAULT_SETTINGS,
+                ...getDefaultSettings(),
                 ...state.sessionSettings[sessionId],
                 ...settings,
               },
@@ -131,7 +145,7 @@ export const useContextStore = create<ContextState>()(
 
         getSessionSettings: (sessionId) => {
           const state = get();
-          return state.sessionSettings[sessionId] || DEFAULT_SETTINGS;
+          return state.sessionSettings[sessionId] || getDefaultSettings();
         },
 
         addCompactionLog: (sessionId, log) =>
@@ -178,7 +192,7 @@ export const useContextStore = create<ContextState>()(
         shouldAutoCompact: (agentId, sessionId) => {
           const state = get();
           const usage = state.agentUsage[agentId];
-          const settings = state.sessionSettings[sessionId] || DEFAULT_SETTINGS;
+          const settings = state.sessionSettings[sessionId] || getDefaultSettings();
 
           if (!usage || !settings.autoCompactEnabled) return false;
           return usage.percentage >= settings.autoCompactThresholdPercent;

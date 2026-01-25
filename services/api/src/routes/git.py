@@ -13,12 +13,12 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.compute_client import compute_client
 from src.database import Session as SessionModel
 from src.exceptions import ComputeClientError
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 from src.routes.dependencies import DbSession, get_current_user_id
 from src.routes.sessions import ensure_workspace_provisioned
+from src.services.workspace_router import workspace_router
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -223,7 +223,7 @@ async def get_git_status(
     workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
 
     try:
-        result = await compute_client.git_status(workspace_id, user_id, working_dir=working_dir)
+        result = await workspace_router.git_status(workspace_id, user_id, working_dir=working_dir)
     except ComputeClientError as e:
         logger.exception(
             "Failed to get git status from compute service",
@@ -247,7 +247,7 @@ async def get_branches(
     workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
 
     try:
-        result = await compute_client.git_branches(workspace_id, user_id, working_dir=working_dir)
+        result = await workspace_router.git_branches(workspace_id, user_id, working_dir=working_dir)
     except ComputeClientError as e:
         logger.exception(
             "Failed to get git branches from compute service",
@@ -272,7 +272,7 @@ async def get_log(
     workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
 
     try:
-        result = await compute_client.git_log(
+        result = await workspace_router.git_log(
             workspace_id, user_id, limit=limit, working_dir=working_dir
         )
     except ComputeClientError as e:
@@ -300,7 +300,7 @@ async def get_diff(
     workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
 
     try:
-        result = await compute_client.git_diff(
+        result = await workspace_router.git_diff(
             workspace_id, user_id, staged=staged, working_dir=working_dir
         )
     except ComputeClientError as e:
@@ -326,7 +326,7 @@ async def stage_files(
     workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
 
     try:
-        await compute_client.git_stage(
+        await workspace_router.git_stage(
             workspace_id, user_id, data.files, working_dir=data.working_dir
         )
     except ComputeClientError as e:
@@ -352,7 +352,7 @@ async def unstage_files(
     workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
 
     try:
-        await compute_client.git_unstage(
+        await workspace_router.git_unstage(
             workspace_id, user_id, data.files, working_dir=data.working_dir
         )
     except ComputeClientError as e:
@@ -380,13 +380,35 @@ async def commit_changes(
     try:
         # If specific files provided, stage them first
         if data.files:
-            await compute_client.git_stage(
+            await workspace_router.git_stage(
                 workspace_id, user_id, data.files, working_dir=data.working_dir
             )
 
-        result = await compute_client.git_commit(
+        # Get diff stats BEFORE commit for productivity tracking
+        diff_files: list[dict[str, Any]] = []
+        try:
+            diff_files = await workspace_router.git_diff(
+                workspace_id, user_id, staged=True, working_dir=data.working_dir
+            )
+        except Exception:
+            logger.warning("Failed to get diff for productivity tracking")
+
+        result = await workspace_router.git_commit(
             workspace_id, user_id, data.message, working_dir=data.working_dir
         )
+
+        # Track productivity metrics after successful commit
+        if diff_files:
+            try:
+                from src.services.productivity_tracking_service import (  # noqa: PLC0415
+                    ProductivityTrackingService,
+                )
+
+                tracker = ProductivityTrackingService(db)
+                await tracker.track_commit(user_id=user_id, files_changed=diff_files)
+            except Exception as e:
+                logger.warning("Failed to track commit productivity", error=str(e))
+
     except ComputeClientError as e:
         logger.exception(
             "Failed to commit changes",
@@ -413,7 +435,7 @@ async def push_changes(
     safe_branch = validate_branch_name(data.branch)
 
     try:
-        result = await compute_client.git_push(
+        result = await workspace_router.git_push(
             workspace_id,
             user_id,
             remote=data.remote,
@@ -447,7 +469,7 @@ async def pull_changes(
     safe_branch = validate_branch_name(data.branch)
 
     try:
-        result = await compute_client.git_pull(
+        result = await workspace_router.git_pull(
             workspace_id,
             user_id,
             remote=data.remote,
@@ -483,7 +505,7 @@ async def checkout_branch(
         raise HTTPException(status_code=400, detail="Branch name is required for checkout")
 
     try:
-        result = await compute_client.git_checkout(
+        result = await workspace_router.git_checkout(
             workspace_id,
             user_id,
             branch=safe_branch,
@@ -577,7 +599,7 @@ async def compare_branches(
         raise HTTPException(status_code=400, detail="Both branch/ref names are required")
 
     try:
-        result = await compute_client.git_compare(
+        result = await workspace_router.git_compare(
             workspace_id,
             user_id,
             base=safe_base,
@@ -650,7 +672,7 @@ async def preview_merge(
         raise HTTPException(status_code=400, detail="Both branch names are required")
 
     try:
-        result = await compute_client.git_merge_preview(
+        result = await workspace_router.git_merge_preview(
             workspace_id,
             user_id,
             source_branch=safe_source,

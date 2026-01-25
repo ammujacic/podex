@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   ChevronRight,
   ChevronDown,
+  Download,
   File,
   Folder,
   FolderOpen,
@@ -23,11 +24,22 @@ import {
 import { useSessionStore } from '@/stores/session';
 import { useEditorStore } from '@/stores/editor';
 import { useUIStore } from '@/stores/ui';
+import { useConfigStore } from '@/stores/config';
 import { cn } from '@/lib/utils';
 import { NoFilesEmptyState, ErrorEmptyState } from '@/components/ui/EmptyState';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { getLanguageFromPath } from './CodeEditor';
-import { listFiles, getFileContent, deleteFile, moveFile, type FileNode } from '@/lib/api';
+import {
+  listFiles,
+  getFileContent,
+  deleteFile,
+  moveFile,
+  downloadFile,
+  downloadFolder,
+  handleWorkspaceError,
+  clearWorkspaceError,
+  type FileNode,
+} from '@/lib/api';
 import { getUserConfig, updateUserConfig } from '@/lib/api/user-config';
 import { MobileFileItem } from './MobileFileItem';
 import { MobileFileActionsSheet } from './MobileFileActionsSheet';
@@ -72,23 +84,6 @@ const NON_SYNCED_SEGMENTS = [
 
 // Paths that are always synced regardless of user settings
 const SYNCED_PREFIXES = ['projects/', 'projects'];
-
-// Default dotfiles (used when user config not available)
-const DEFAULT_DOTFILES = [
-  '.bashrc',
-  '.zshrc',
-  '.gitconfig',
-  '.npmrc',
-  '.vimrc',
-  '.profile',
-  '.config/starship.toml',
-  '.ssh/config',
-  '.claude/',
-  '.claude.json',
-  '.codex/',
-  '.gemini/',
-  '.opencode/',
-];
 
 /**
  * Create a sync info function based on user's dotfiles_paths
@@ -302,6 +297,17 @@ function FileTreeNode({
             >
               New Folder...
             </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onClick={() => {
+                downloadFolder(sessionId, item.path).catch((err) => {
+                  console.error('Failed to download folder:', err);
+                });
+              }}
+            >
+              <Download className="mr-2 h-4 w-4" />
+              Download as ZIP
+            </DropdownMenuItem>
             {onToggleSync && (
               <>
                 <DropdownMenuSeparator />
@@ -420,6 +426,17 @@ function FileTreeNode({
           }}
         >
           Delete
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onClick={() => {
+            downloadFile(sessionId, item.path).catch((err) => {
+              console.error('Failed to download file:', err);
+            });
+          }}
+        >
+          <Download className="mr-2 h-4 w-4" />
+          Download
         </DropdownMenuItem>
         {onToggleSync && (
           <>
@@ -562,8 +579,11 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
   const [rootMenuPosition, setRootMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const rootContainerRef = useRef<HTMLDivElement | null>(null);
 
+  // Get default dotfiles from ConfigStore (config is guaranteed to be loaded by ConfigGate)
+  const defaultDotfiles = useConfigStore((state) => state.getDefaultDotfiles())!;
+
   // User's dotfiles sync configuration
-  const [userDotfilesPaths, setUserDotfilesPaths] = useState<string[]>(DEFAULT_DOTFILES);
+  const [userDotfilesPaths, setUserDotfilesPaths] = useState<string[]>(defaultDotfiles);
 
   // Fetch user config on mount
   useEffect(() => {
@@ -587,8 +607,15 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
     try {
       const fileTree = await listFiles(sessionId, '.');
       setRootFiles(fileTree);
+      // Clear any previous workspace error on success
+      clearWorkspaceError(sessionId);
     } catch (err) {
-      setFilesError(err instanceof Error ? err.message : 'Failed to load files');
+      // Check if this is a workspace unavailability error (503/500)
+      if (handleWorkspaceError(err, sessionId)) {
+        setFilesError('Workspace unavailable');
+      } else {
+        setFilesError(err instanceof Error ? err.message : 'Failed to load files');
+      }
     } finally {
       setFilesLoading(false);
       setHasLoaded(true);
@@ -955,6 +982,17 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
             }}
           >
             Refresh
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={() => {
+              setRootMenuOpen(false);
+              downloadFolder(sessionId, '.').catch((err) => {
+                console.error('Failed to download workspace:', err);
+              });
+            }}
+          >
+            <Download className="mr-2 h-4 w-4" />
+            Download Workspace
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

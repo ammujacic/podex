@@ -20,6 +20,7 @@ import {
   BarChart3,
   Terminal,
   Globe,
+  Activity,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUIStore } from '@/stores/ui';
@@ -65,6 +66,11 @@ export function MobileMenu({ isOpen, onClose }: MobileMenuProps) {
       href: '/dashboard',
       label: 'Dashboard',
       icon: <Home className="h-5 w-5" />,
+    },
+    {
+      href: '/dashboard/productivity',
+      label: 'Productivity',
+      icon: <Activity className="h-5 w-5" />,
     },
     {
       href: '/session/new',

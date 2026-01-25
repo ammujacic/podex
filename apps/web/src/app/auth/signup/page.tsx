@@ -1,15 +1,16 @@
 'use client';
 
 import type { FormEvent } from 'react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Button, Input } from '@podex/ui';
-import { register, getOAuthURL } from '@/lib/api';
+import { register, getOAuthURL, validateInvitation, type InvitationValidation } from '@/lib/api';
 import { useAuthError, useAuthLoading } from '@/stores/auth';
 import { toast } from 'sonner';
-import { Loader2, Github, Check } from 'lucide-react';
+import { Loader2, Github, Check, Sparkles, Gift, Clock, User } from 'lucide-react';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
+import { cn } from '@/lib/utils';
 
 // Google icon component
 function GoogleIcon({ className }: { className?: string }) {
@@ -38,12 +39,46 @@ function GoogleIcon({ className }: { className?: string }) {
 export default function SignupPage() {
   useDocumentTitle('Sign Up', { showNotifications: false });
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   const [oauthLoading, setOauthLoading] = useState<'github' | 'google' | null>(null);
   const isLoading = useAuthLoading();
   const error = useAuthError();
+
+  // Invitation state
+  const [invitationToken, setInvitationToken] = useState<string | null>(null);
+  const [invitation, setInvitation] = useState<InvitationValidation | null>(null);
+  const [invitationLoading, setInvitationLoading] = useState(false);
+  const [invitationError, setInvitationError] = useState<string | null>(null);
+
+  // Check for invitation token in URL
+  useEffect(() => {
+    const token = searchParams.get('invitation');
+    if (token) {
+      setInvitationToken(token);
+      setInvitationLoading(true);
+      validateInvitation(token)
+        .then((result) => {
+          if (result.valid) {
+            setInvitation(result);
+            // Pre-fill email from invitation
+            if (result.email) {
+              setEmail(result.email);
+            }
+          } else {
+            setInvitationError('This invitation is invalid or has expired.');
+          }
+        })
+        .catch(() => {
+          setInvitationError('Failed to validate invitation.');
+        })
+        .finally(() => {
+          setInvitationLoading(false);
+        });
+    }
+  }, [searchParams]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -54,7 +89,7 @@ export default function SignupPage() {
     }
 
     try {
-      await register(email, password, name);
+      await register(email, password, name, invitationToken ?? undefined);
       toast.success('Account created successfully!');
       router.push('/session/new');
     } catch (err) {
@@ -66,6 +101,7 @@ export default function SignupPage() {
   const handleOAuth = async (provider: 'github' | 'google') => {
     try {
       setOauthLoading(provider);
+      // For OAuth with invitation, the backend will match by email
       const url = await getOAuthURL(provider);
       window.location.href = url;
     } catch {
@@ -74,7 +110,8 @@ export default function SignupPage() {
     }
   };
 
-  const isDisabled = isLoading || oauthLoading !== null;
+  const isDisabled = isLoading || oauthLoading !== null || invitationLoading;
+  const hasValidInvitation = invitation?.valid;
 
   const passwordRequirements = [
     { met: password.length >= 8, text: 'At least 8 characters' },
@@ -83,13 +120,114 @@ export default function SignupPage() {
     { met: /\d/.test(password), text: 'One number' },
   ];
 
+  // Loading state for invitation validation
+  if (invitationLoading) {
+    return (
+      <div className="w-full max-w-md">
+        <div className="bg-surface rounded-lg border border-border-default p-12 text-center">
+          <Loader2 className="w-8 h-8 animate-spin text-accent-primary mx-auto" />
+          <p className="mt-4 text-text-secondary">Validating your invitation...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Invalid invitation error
+  if (invitationToken && invitationError) {
+    return (
+      <div className="w-full max-w-md">
+        <div className="bg-surface rounded-lg border border-red-500/20 p-8 text-center">
+          <div className="w-16 h-16 mx-auto rounded-full bg-red-500/10 flex items-center justify-center mb-4">
+            <Clock className="w-8 h-8 text-red-400" />
+          </div>
+          <h1 className="text-xl font-bold text-text-primary mb-2">Invitation Expired</h1>
+          <p className="text-text-secondary mb-6">{invitationError}</p>
+          <Link href="/auth/signup">
+            <Button variant="secondary">Sign Up Without Invitation</Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="w-full max-w-md">
-      <div className="bg-surface rounded-lg border border-border-default p-8">
+      {/* Exclusive Invitation Banner */}
+      {hasValidInvitation && (
+        <div className="mb-6 p-6 rounded-xl bg-gradient-to-br from-accent-primary/10 via-purple-500/10 to-accent-secondary/10 border border-accent-primary/20 relative overflow-hidden">
+          {/* Background sparkles */}
+          <div className="absolute top-2 right-2">
+            <Sparkles className="w-6 h-6 text-accent-primary/30" />
+          </div>
+          <div className="absolute bottom-2 left-2">
+            <Sparkles className="w-4 h-4 text-purple-400/30" />
+          </div>
+
+          <div className="relative">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-12 h-12 rounded-full bg-accent-primary/20 flex items-center justify-center">
+                <Sparkles className="w-6 h-6 text-accent-primary" />
+              </div>
+              <div>
+                <p className="text-sm text-accent-primary font-medium">Exclusive Invitation</p>
+                <h2 className="text-lg font-bold text-text-primary">You&apos;re Invited!</h2>
+              </div>
+            </div>
+
+            {invitation?.inviter_name && (
+              <div className="flex items-center gap-2 mb-3 text-sm text-text-secondary">
+                <User className="w-4 h-4 text-text-muted" />
+                <span>
+                  <strong className="text-text-primary">{invitation.inviter_name}</strong> invited
+                  you to join Podex
+                </span>
+              </div>
+            )}
+
+            {invitation?.message && (
+              <div className="mb-4 p-3 bg-surface/50 rounded-lg border border-border-subtle">
+                <p className="text-sm text-text-secondary italic">
+                  &ldquo;{invitation.message}&rdquo;
+                </p>
+              </div>
+            )}
+
+            {invitation?.gift_plan_name && invitation?.gift_months && (
+              <div className="p-4 bg-purple-500/10 rounded-lg border border-purple-500/20">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-purple-500/20 flex items-center justify-center">
+                    <Gift className="w-5 h-5 text-purple-400" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-purple-300">Your Gift</p>
+                    <p className="text-lg font-bold text-purple-400">
+                      {invitation.gift_months} month{invitation.gift_months > 1 ? 's' : ''} of{' '}
+                      {invitation.gift_plan_name}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div
+        className={cn(
+          'bg-surface rounded-lg border p-8',
+          hasValidInvitation ? 'border-accent-primary/30' : 'border-border-default'
+        )}
+      >
         {/* Header */}
         <div className="text-center mb-8">
-          <h1 className="text-2xl font-bold text-text-primary mb-2">Create your account</h1>
-          <p className="text-text-secondary">Start building with AI-powered development</p>
+          <h1 className="text-2xl font-bold text-text-primary mb-2">
+            {hasValidInvitation ? 'Accept Your Invitation' : 'Create your account'}
+          </h1>
+          <p className="text-text-secondary">
+            {hasValidInvitation
+              ? 'Complete your registration to get started'
+              : 'Start building with AI-powered development'}
+          </p>
         </div>
 
         {/* Error message */}
@@ -129,8 +267,11 @@ export default function SignupPage() {
               onChange={(e) => setEmail(e.target.value)}
               required
               autoComplete="email"
-              disabled={isDisabled}
+              disabled={isDisabled || hasValidInvitation}
             />
+            {hasValidInvitation && (
+              <p className="text-xs text-text-muted">Email is set from your invitation</p>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -165,11 +306,24 @@ export default function SignupPage() {
             )}
           </div>
 
-          <Button type="submit" className="w-full" disabled={isDisabled}>
+          <Button
+            type="submit"
+            className={cn(
+              'w-full',
+              hasValidInvitation &&
+                'bg-gradient-to-r from-accent-primary to-accent-secondary hover:shadow-lg hover:shadow-accent-primary/25'
+            )}
+            disabled={isDisabled}
+          >
             {isLoading ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
                 Creating account...
+              </>
+            ) : hasValidInvitation ? (
+              <>
+                <Sparkles className="w-4 h-4" />
+                Accept Invitation
               </>
             ) : (
               'Create account'

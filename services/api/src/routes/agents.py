@@ -471,12 +471,106 @@ class ThinkingConfigRequest(BaseModel):
         return v
 
 
+class BrowserConsoleLog(BaseModel):
+    """Browser console log entry for context."""
+
+    level: str  # 'log', 'warn', 'error', 'info', 'debug'
+    message: str
+    timestamp: str
+    source: str | None = None
+
+
+class BrowserNetworkLog(BaseModel):
+    """Browser network request entry for context."""
+
+    url: str
+    method: str
+    status: int
+    status_text: str | None = None
+    duration: int | None = None  # milliseconds
+    error: str | None = None
+    type: str = "fetch"  # 'fetch' or 'xhr'
+
+
+class BrowserErrorLog(BaseModel):
+    """Browser error entry for context."""
+
+    type: str  # 'js_error', 'unhandled_rejection', 'network_error'
+    message: str
+    stack: str | None = None
+    timestamp: str
+
+
+class BrowserContextMetadata(BaseModel):
+    """Browser context metadata."""
+
+    user_agent: str | None = None
+    viewport_size: dict[str, int] | None = None  # { width, height }
+
+
+class BrowserContext(BaseModel):
+    """Browser context data for debugging assistance.
+
+    Contains console logs, network requests, errors, and optional HTML snapshot
+    from the preview iframe to help agents debug frontend issues.
+    """
+
+    url: str
+    title: str | None = None
+    timestamp: str
+    console_logs: list[BrowserConsoleLog] | None = None
+    network_requests: list[BrowserNetworkLog] | None = None
+    errors: list[BrowserErrorLog] | None = None
+    html_snapshot: str | None = None
+    metadata: BrowserContextMetadata | None = None
+
+    @field_validator("html_snapshot")
+    @classmethod
+    def validate_html_snapshot(cls, v: str | None) -> str | None:
+        """Truncate HTML snapshot if too large (max 50KB)."""
+        if v is None:
+            return v
+        max_size = 50 * 1024  # 50KB
+        if len(v.encode("utf-8")) > max_size:
+            return v[:max_size] + "\n<!-- truncated -->"
+        return v
+
+    @field_validator("console_logs")
+    @classmethod
+    def validate_console_logs(
+        cls, v: list[BrowserConsoleLog] | None
+    ) -> list[BrowserConsoleLog] | None:
+        """Limit console logs to last 50 entries."""
+        if v is None:
+            return v
+        return v[-50:]
+
+    @field_validator("network_requests")
+    @classmethod
+    def validate_network_requests(
+        cls, v: list[BrowserNetworkLog] | None
+    ) -> list[BrowserNetworkLog] | None:
+        """Limit network requests to last 30 entries."""
+        if v is None:
+            return v
+        return v[-30:]
+
+    @field_validator("errors")
+    @classmethod
+    def validate_errors(cls, v: list[BrowserErrorLog] | None) -> list[BrowserErrorLog] | None:
+        """Limit errors to last 20 entries."""
+        if v is None:
+            return v
+        return v[-20:]
+
+
 class MessageCreate(BaseModel):
     """Create message request."""
 
     content: str
     images: list[ImageAttachment] | None = None  # Optional image attachments
     thinking_config: ThinkingConfigRequest | None = None  # Extended thinking config
+    browser_context: BrowserContext | None = None  # Browser debugging context
 
     @field_validator("content")
     @classmethod
@@ -814,8 +908,8 @@ CLI_AGENT_CONFIG = {
         "run_command": "claude",
         "executor_module": "src.routes.claude_code",
         "executor_function": "execute_claude_code_message",
-        # Streaming disabled - SSE newline escaping conflicts with JSON \n escape sequences
-        # TODO: Implement proper JSON streaming parser for real-time display
+        # Note: Streaming uses null byte (\x00) as line separator to avoid SSE newline
+        # conflicts with JSON escape sequences. See execute_claude_code_message_streaming.
     },
     "openai-codex": {
         "name": "OpenAI Codex",
@@ -982,7 +1076,7 @@ async def _process_cli_agent_message(
                 workspace_id=workspace_id,
                 user_id=user_id,
                 command=cli_config["check_command"],
-                exec_timeout=10,
+                exec_timeout=settings.WORKSPACE_EXEC_TIMEOUT_DEFAULT,
             )
             cli_installed = check_result.get("exit_code", 1) == 0
             logger.info(
@@ -1017,7 +1111,7 @@ async def _process_cli_agent_message(
                     workspace_id=workspace_id,
                     user_id=user_id,
                     command="which npm && npm --version",
-                    exec_timeout=10,
+                    exec_timeout=settings.WORKSPACE_EXEC_TIMEOUT_DEFAULT,
                 )
                 logger.info(
                     "npm check result",
@@ -1078,7 +1172,7 @@ async def _process_cli_agent_message(
                     workspace_id=workspace_id,
                     user_id=user_id,
                     command=install_cmd,
-                    exec_timeout=300,  # 5 min timeout for installation
+                    exec_timeout=settings.WORKSPACE_EXEC_TIMEOUT_INSTALL,
                 )
 
                 logger.info(
@@ -1177,10 +1271,11 @@ async def _process_cli_agent_message(
                 workspace_id=workspace_id,
                 user_id=user_id,
                 command=cli_config["credentials_check"],
-                exec_timeout=10,
+                exec_timeout=settings.WORKSPACE_EXEC_TIMEOUT_DEFAULT,
             )
             authenticated = "authenticated" in auth_check.get("stdout", "")
-        except Exception:
+        except Exception as e:
+            logger.debug("CLI authentication check failed", error=str(e))
             authenticated = False
 
         if not authenticated:
@@ -1486,10 +1581,11 @@ async def _process_claude_code_message(
                 workspace_id=workspace_id,
                 user_id=user_id,
                 command="which claude",
-                exec_timeout=10,
+                exec_timeout=settings.WORKSPACE_EXEC_TIMEOUT_DEFAULT,
             )
             claude_installed = check_result.get("exit_code", 1) == 0
-        except Exception:
+        except Exception as e:
+            logger.debug("Claude installation check failed", error=str(e))
             claude_installed = False
 
         if not claude_installed:
@@ -1523,10 +1619,11 @@ async def _process_claude_code_message(
                 workspace_id=workspace_id,
                 user_id=user_id,
                 command="test -f /home/dev/.claude/.credentials.json && echo 'authenticated'",
-                exec_timeout=10,
+                exec_timeout=settings.WORKSPACE_EXEC_TIMEOUT_DEFAULT,
             )
             authenticated = "authenticated" in auth_check.get("stdout", "")
-        except Exception:
+        except Exception as e:
+            logger.debug("CLI authentication check failed", error=str(e))
             authenticated = False
 
         if not authenticated:
@@ -1711,6 +1808,8 @@ class AgentMessageContext:
     llm_api_keys: dict[str, str] | None = None
     # Workspace ID for workspace-based MCP servers
     workspace_id: str | None = None
+    # Browser context for debugging assistance
+    browser_context: dict[str, Any] | None = None
 
 
 def _build_agent_service_context(
@@ -1746,6 +1845,9 @@ def _build_agent_service_context(
     # Include workspace_id for remote tool execution on workspace container
     if ctx.workspace_id:
         agent_context["workspace_id"] = ctx.workspace_id
+    # Include browser context for debugging assistance
+    if ctx.browser_context:
+        agent_context["browser_context"] = ctx.browser_context
     # Include message_id to enable streaming via Redis Pub/Sub
     if message_id:
         agent_context["message_id"] = message_id
@@ -1881,6 +1983,20 @@ async def _process_and_emit_response(
             tool_calls=tool_calls,
         )
     await _notify_agent_status(ctx.session_id, ctx.agent_id, "idle")
+
+    # Track productivity metrics (non-blocking, failures logged but don't affect response)
+    if ctx.user_id:
+        try:
+            from src.services.productivity_tracking_service import ProductivityTrackingService
+
+            tracker = ProductivityTrackingService(db)
+            await tracker.track_agent_message(
+                user_id=ctx.user_id,
+                agent_role=ctx.agent_role,
+                tokens_used=processing_ctx.tokens_used,
+            )
+        except Exception as e:
+            logger.warning("Failed to track productivity metrics", error=str(e))
 
     # Emit token usage update if tokens were used
     if processing_ctx.tokens_used > 0:

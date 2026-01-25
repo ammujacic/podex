@@ -7,18 +7,35 @@
     "peerDependencyRules": {
       "allowedVersions": {
         "react": "19",
-        "react-dom": "19"
+        "react-dom": "19",
+        "electron-builder-squirrel-windows": "26.5.0"
       },
       "allowAny": [
         "monaco-editor"
       ]
     },
     "onlyBuiltDependencies": [
-      "@sentry/cli"
+      "@sentry/cli",
+      "better-sqlite3",
+      "electron",
+      "electron-winstaller",
+      "esbuild",
+      "sharp"
     ],
     "overrides": {
       "esbuild@<=0.24.2": ">=0.25.0",
-      "monaco-editor": "npm:@codingame/monaco-vscode-editor-api@^25.0.0"
+      "monaco-editor": "npm:@codingame/monaco-vscode-editor-api@^25.0.0",
+      "glob": "^10.4.5",
+      "rimraf": "^5.0.5",
+      "tar": "^7.4.3",
+      "source-map": "^0.7.4",
+      "cacache": "^20.0.3",
+      "electron-builder-squirrel-windows": "26.5.0",
+      "app-builder-lib": "26.5.0",
+      "dmg-builder": "26.5.0",
+      "are-we-there-yet": "^4.0.2",
+      "boolean": "npm:extra-boolean@^1.11.1",
+      "lodash.isequal": "npm:fast-is-equal@^1.2.3"
     }
   },
   "scripts": {

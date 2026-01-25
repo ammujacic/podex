@@ -14,6 +14,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { api } from '@/lib/api';
 
 // ============================================================================
 // Types
@@ -256,60 +257,11 @@ export function ChangeHistory({ sessionId, className }: ChangeHistoryProps) {
     async function loadSnapshots() {
       setLoading(true);
       try {
-        // In real implementation, fetch from API
-        // const data = await api.get(`/api/sessions/${sessionId}/history`);
-
-        // Mock data
-        const mockSnapshots: ChangeSnapshot[] = [
-          {
-            id: '1',
-            timestamp: new Date(Date.now() - 300000),
-            agentId: 'coder-1',
-            agentName: 'Coder',
-            description: 'Add Button component with variants',
-            commitHash: 'abc1234',
-            canRevert: true,
-            reverted: false,
-            files: [
-              { path: 'src/components/Button.tsx', type: 'add', additions: 85, deletions: 0 },
-              { path: 'src/components/index.ts', type: 'modify', additions: 1, deletions: 0 },
-            ],
-          },
-          {
-            id: '2',
-            timestamp: new Date(Date.now() - 600000),
-            agentId: 'coder-1',
-            agentName: 'Coder',
-            description: 'Refactor authentication flow',
-            commitHash: 'def5678',
-            canRevert: true,
-            reverted: false,
-            files: [
-              { path: 'src/lib/auth.ts', type: 'modify', additions: 45, deletions: 30 },
-              { path: 'src/hooks/useAuth.ts', type: 'modify', additions: 20, deletions: 15 },
-              { path: 'src/middleware.ts', type: 'modify', additions: 10, deletions: 5 },
-            ],
-          },
-          {
-            id: '3',
-            timestamp: new Date(Date.now() - 900000),
-            agentId: 'architect-1',
-            agentName: 'Architect',
-            description: 'Initial project setup',
-            commitHash: 'ghi9012',
-            canRevert: false,
-            reverted: false,
-            files: [
-              { path: 'package.json', type: 'add', additions: 50, deletions: 0 },
-              { path: 'tsconfig.json', type: 'add', additions: 25, deletions: 0 },
-              { path: 'src/index.ts', type: 'add', additions: 10, deletions: 0 },
-            ],
-          },
-        ];
-
-        setSnapshots(mockSnapshots);
-      } catch (error) {
-        console.error('Failed to load history:', error);
+        const data = await api.get<ChangeSnapshot[]>(`/api/sessions/${sessionId}/files/history`);
+        setSnapshots(data);
+      } catch {
+        // History may not be available, set empty array
+        setSnapshots([]);
       } finally {
         setLoading(false);
       }
@@ -342,24 +294,26 @@ export function ChangeHistory({ sessionId, className }: ChangeHistoryProps) {
     [snapshots]
   );
 
+  const [_error, _setError] = useState<string | null>(null);
+
   // Confirm revert
   const confirmRevert = useCallback(async () => {
     if (!revertingSnapshot) return;
+    _setError(null);
 
     try {
-      // In real implementation, call API to revert
-      // await api.post(`/api/sessions/${sessionId}/history/${revertingSnapshot.id}/revert`);
-
-      // Mark as reverted
+      await api.post(`/api/sessions/${sessionId}/files/history/${revertingSnapshot.id}/revert`, {});
+      // Mark as reverted in local state
       setSnapshots((prev) =>
         prev.map((s) => (s.id === revertingSnapshot.id ? { ...s, reverted: true } : s))
       );
-    } catch (error) {
-      console.error('Failed to revert:', error);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to revert changes';
+      _setError(message);
     } finally {
       setRevertingSnapshot(null);
     }
-  }, [revertingSnapshot]);
+  }, [revertingSnapshot, sessionId]);
 
   // Stats
   const stats = useMemo(() => {

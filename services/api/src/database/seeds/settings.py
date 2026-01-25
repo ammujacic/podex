@@ -202,4 +202,390 @@ DEFAULT_SETTINGS = [
         "category": "limits",
         "is_public": True,
     },
+    # ===================
+    # LOCAL POD SETTINGS
+    # ===================
+    {
+        "key": "local_pod_pricing",
+        "value": {
+            "hourly_rate_cents": 0,  # Cost per hour for local pod usage (0 = free)
+            "description": "Your local machine",
+            "billing_enabled": False,  # Whether to track billing for local pods
+        },
+        "description": (
+            "Pricing configuration for local pod compute. "
+            "Set hourly_rate_cents to 0 for free usage."
+        ),
+        "category": "billing",
+        "is_public": True,  # Frontend needs to display pricing
+    },
+    # ===================
+    # UI DEFAULTS
+    # ===================
+    {
+        "key": "sidebar_layout_defaults",
+        "value": {
+            "left": {
+                "collapsed": False,
+                "width": 280,
+                "panels": [
+                    {"panelId": "files", "height": 50},
+                    {"panelId": "git", "height": 50},
+                ],
+            },
+            "right": {
+                "collapsed": False,
+                "width": 360,
+                "panels": [
+                    {"panelId": "agents", "height": 60},
+                    {"panelId": "mcp", "height": 40},
+                ],
+            },
+        },
+        "description": "Default sidebar layout configuration for new users",
+        "category": "ui_defaults",
+        "is_public": True,
+    },
+    {
+        "key": "grid_config_defaults",
+        "value": {
+            "columns": 2,
+            "rowHeight": 300,
+            "maxRows": 0,
+            "maxCols": 0,
+        },
+        "description": "Default grid layout configuration for workspace",
+        "category": "ui_defaults",
+        "is_public": True,
+    },
+    {
+        "key": "card_dimensions",
+        "value": {
+            "terminal": {"width": 500, "height": 400, "minWidth": 400, "minHeight": 300},
+            "editor": {"width": 600, "height": 500, "minWidth": 400, "minHeight": 300},
+            "agent": {"width": 450, "height": 500, "minWidth": 350, "minHeight": 300},
+            "preview": {"width": 500, "height": 350, "minWidth": 400, "minHeight": 250},
+        },
+        "description": "Default dimensions for draggable cards in freeform mode",
+        "category": "ui_defaults",
+        "is_public": True,
+    },
+    # ===================
+    # CONTEXT MANAGEMENT
+    # ===================
+    {
+        "key": "context_compaction_defaults",
+        "value": {
+            "autoCompactEnabled": True,
+            "autoCompactThresholdPercent": 80,
+            "customCompactionInstructions": None,
+            "preserveRecentMessages": 15,
+        },
+        "description": "Default context compaction settings for sessions",
+        "category": "context",
+        "is_public": True,
+    },
+    {
+        "key": "context_usage_defaults",
+        "value": {
+            "tokensUsed": 0,
+            "tokensMax": 200000,
+            "percentage": 0,
+        },
+        "description": "Default context usage configuration",
+        "category": "context",
+        "is_public": True,
+    },
+    {
+        "key": "context_limits",
+        "value": {
+            "maxContextTokens": 100000,
+            "outputReservation": 4096,
+            "safetyBuffer": 2000,
+            "messageThreshold": 40,
+            "summarizationThreshold": 80000,
+            "tokenThreshold": 50000,
+        },
+        "description": "Backend context window limits and thresholds",
+        "category": "context",
+        "is_public": False,
+    },
+    # ===================
+    # DOTFILES SYNC
+    # ===================
+    {
+        "key": "default_dotfiles",
+        "value": [
+            ".bashrc",
+            ".zshrc",
+            ".gitconfig",
+            ".npmrc",
+            ".vimrc",
+            ".profile",
+            ".config/starship.toml",
+            ".ssh/config",
+            ".claude/",
+            ".claude.json",
+            ".codex/",
+            ".gemini/",
+            ".opencode/",
+        ],
+        "description": "Default dotfiles to sync for new users",
+        "category": "dotfiles",
+        "is_public": True,
+    },
+    # ===================
+    # AI FEATURES
+    # ===================
+    {
+        "key": "ai_completion_config",
+        "value": {
+            "debounceMs": 300,
+            "maxPrefixLines": 50,
+            "maxSuffixLines": 10,
+            "minTriggerLength": 3,
+            "enabled": True,
+        },
+        "description": "Configuration for AI code completions",
+        "category": "ai_features",
+        "is_public": True,
+    },
+    {
+        "key": "code_generator_config",
+        "value": {
+            "enabled": True,
+            "patterns": [
+                "//\\s*TODO:\\s*(.+)$",
+                "//\\s*GENERATE:\\s*(.+)$",
+                "//\\s*IMPLEMENT:\\s*(.+)$",
+                "#\\s*TODO:\\s*(.+)$",
+                "#\\s*GENERATE:\\s*(.+)$",
+                "/\\*\\s*TODO:\\s*(.+?)\\s*\\*/",
+                "/\\*\\s*GENERATE:\\s*(.+?)\\s*\\*/",
+            ],
+        },
+        "description": "Configuration for TODO/GENERATE comment detection",
+        "category": "ai_features",
+        "is_public": True,
+    },
+    {
+        "key": "bug_detector_config",
+        "value": {
+            "debounceMs": 5000,
+            "enabled": True,
+            "minCodeLength": 50,
+            "autoAnalyze": True,
+        },
+        "description": "Configuration for AI bug detection",
+        "category": "ai_features",
+        "is_public": True,
+    },
+    {
+        "key": "editor_ai_config",
+        "value": {
+            "defaultModel": None,
+            "completionsEnabled": True,
+            "completionsDebounceMs": 300,
+        },
+        "description": "Editor AI feature configuration including default model",
+        "category": "ai_features",
+        "is_public": True,
+    },
+    # ===================
+    # DASHBOARD
+    # ===================
+    {
+        "key": "time_range_options",
+        "value": [
+            {"label": "Last 24 Hours", "value": "1d", "days": 1},
+            {"label": "Last 7 Days", "value": "7d", "days": 7},
+            {"label": "Last 30 Days", "value": "30d", "days": 30},
+            {"label": "Last Year", "value": "1y", "days": 365},
+            {"label": "All Time", "value": "all", "days": 9999},
+        ],
+        "description": "Time range options for dashboard analytics",
+        "category": "dashboard",
+        "is_public": True,
+    },
+    # ===================
+    # STORAGE
+    # ===================
+    {
+        "key": "storage_quota_defaults",
+        "value": {
+            "defaultQuotaBytes": 5242880,
+            "warningThreshold": 0.8,
+            "criticalThreshold": 0.95,
+        },
+        "description": "localStorage quota monitoring configuration",
+        "category": "storage",
+        "is_public": True,
+    },
+    # ===================
+    # THINKING BUDGET
+    # ===================
+    {
+        "key": "thinking_budget_config",
+        "value": {
+            "default": 8000,
+            "min": 1024,
+            "max": 32000,
+        },
+        "description": "Thinking budget token limits",
+        "category": "agents",
+        "is_public": False,
+    },
+    # ===================
+    # MONITORING
+    # ===================
+    {
+        "key": "sentry_config",
+        "value": {
+            "tracesSampleRate": 0.2,
+            "profilesSampleRate": 0.1,
+            "errorSampleRate": 1.0,
+        },
+        "description": "Sentry monitoring sample rates",
+        "category": "monitoring",
+        "is_public": False,
+    },
+    # ===================
+    # PREVIEW PORTS
+    # ===================
+    {
+        "key": "default_preview_ports",
+        "value": [
+            {"port": 3000, "label": "Dev Server", "protocol": "http"},
+            {"port": 5173, "label": "Vite", "protocol": "http"},
+            {"port": 8080, "label": "Backend API", "protocol": "http"},
+            {"port": 4000, "label": "GraphQL", "protocol": "http"},
+        ],
+        "description": "Default preview ports for workspace",
+        "category": "workspace",
+        "is_public": True,
+    },
+    # ===================
+    # INVITATIONS
+    # ===================
+    {
+        "key": "invitation_defaults",
+        "value": {
+            "platform_expiration_days": 7,  # Default expiration for platform invites (1-30)
+            "org_expiration_days": 7,  # Default expiration for org invites (1-30)
+            "max_expiration_days": 30,  # Maximum allowed expiration days
+            "allow_resend": True,  # Whether admins can resend expired invitations
+        },
+        "description": "Default settings for platform and organization invitations",
+        "category": "invitations",
+        "is_public": False,
+    },
+    # ===================
+    # ORGANIZATION
+    # ===================
+    {
+        "key": "blocked_email_domains",
+        "value": [
+            "gmail.com",
+            "yahoo.com",
+            "hotmail.com",
+            "outlook.com",
+            "aol.com",
+            "icloud.com",
+            "live.com",
+            "msn.com",
+            "protonmail.com",
+            "proton.me",
+            "zoho.com",
+            "yandex.com",
+            "mail.com",
+            "gmx.com",
+            "fastmail.com",
+        ],
+        "description": "Email domains blocked from organization auto-join",
+        "category": "organization",
+        "is_public": False,
+    },
+    # ===================
+    # INFRASTRUCTURE
+    # ===================
+    {
+        "key": "rpc_config",
+        "value": {
+            "defaultTimeout": 30.0,
+            "maxRetries": 3,
+            "retryBackoffMs": 1000,
+        },
+        "description": "RPC configuration for pod communication",
+        "category": "infrastructure",
+        "is_public": False,
+    },
+    {
+        "key": "background_task_config",
+        "value": {
+            "db_operation_timeout": 60,  # Max seconds for DB operation in background tasks
+            "quota_reset_interval": 300,  # Quota reset check interval (5 min)
+            "billing_interval": 300,  # Billing maintenance interval (5 min)
+            "workspace_delete_timeout": 120,  # Workspace deletion timeout
+            "standby_cleanup_interval": 3600,  # Standby cleanup interval (1 hour)
+        },
+        "description": (
+            "Timeouts and intervals for background tasks (prevents connection pool exhaustion)"
+        ),
+        "category": "infrastructure",
+        "is_public": False,
+    },
+    {
+        "key": "session_quota_config",
+        "value": {
+            "max_retries": 3,  # Max retries on lock contention
+            "retry_delay": 0.1,  # Initial retry delay in seconds
+            "retry_backoff": 2.0,  # Exponential backoff multiplier
+        },
+        "description": "Session quota check retry settings (prevents race condition rejections)",
+        "category": "infrastructure",
+        "is_public": False,
+    },
+    {
+        "key": "default_pricing",
+        "value": {
+            "inputPerMillion": "5.00",
+            "outputPerMillion": "15.00",
+        },
+        "description": "Default model pricing when not found in database",
+        "category": "billing",
+        "is_public": False,
+    },
+    # ===================
+    # PARALLEL PLANNING
+    # ===================
+    {
+        "key": "parallel_planning_config",
+        "value": {
+            "maxParallelPlans": 5,
+            "defaultModels": [
+                "claude-sonnet-4-20250514",
+                "gpt-4o",
+                "claude-opus-4-20250514",
+            ],
+        },
+        "description": "Configuration for parallel plan generation",
+        "category": "agents",
+        "is_public": False,
+    },
+    # ===================
+    # VOICE/TTS BACKEND
+    # ===================
+    {
+        "key": "tts_backend_config",
+        "value": {
+            "defaultVoiceId": "en-US-Neural2-F",
+            "defaultLanguage": "en-US",
+            "pollyVoiceId": "Joanna",
+            "pollyEngine": "neural",
+            "transcribeLanguage": "en-US",
+        },
+        "description": "Backend TTS and speech configuration",
+        "category": "voice",
+        "is_public": False,
+    },
 ]

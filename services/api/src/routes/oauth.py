@@ -2,12 +2,14 @@
 
 import secrets
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from typing import Annotated, Any
 from urllib.parse import urlencode
 
 import httpx
 import structlog
+from dateutil.relativedelta import relativedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -20,6 +22,8 @@ from src.config import settings
 from src.database.connection import get_db
 from src.database.models import (
     GitHubIntegration,
+    PlatformInvitation,
+    PlatformSetting,
     Session,
     SubscriptionPlan,
     User,
@@ -300,10 +304,42 @@ async def _find_or_create_oauth_user(db: AsyncSession, user_info: OAuthUserInfo)
 
 async def _link_or_create_user(db: AsyncSession, user_info: OAuthUserInfo) -> User:
     """Link OAuth to existing user or create new user."""
+    from src.routes.billing import sync_quotas_from_plan
+
     result = await db.execute(select(User).where(User.email == user_info.email))
     existing_user = result.scalar_one_or_none()
 
     is_new_user = existing_user is None
+    invitation: PlatformInvitation | None = None
+
+    # If new user, check if registration is enabled
+    if is_new_user:
+        # Check if registration is enabled
+        feature_flags_result = await db.execute(
+            select(PlatformSetting).where(PlatformSetting.key == "feature_flags")
+        )
+        feature_flags = feature_flags_result.scalar_one_or_none()
+        registration_enabled = (
+            not feature_flags
+            or not isinstance(feature_flags.value, dict)
+            or feature_flags.value.get("registration_enabled", True)
+        )
+
+        # Check for valid invitation by email (for OAuth, we match by email)
+        invitation_result = await db.execute(
+            select(PlatformInvitation)
+            .where(PlatformInvitation.email == user_info.email)
+            .where(PlatformInvitation.status == "pending")
+            .where(PlatformInvitation.expires_at > datetime.now(UTC))
+        )
+        invitation = invitation_result.scalar_one_or_none()
+
+        # If registration is disabled and no valid invitation, reject
+        if not registration_enabled and not invitation:
+            raise HTTPException(
+                status_code=403,
+                detail="Registration is disabled. You need an invitation to create an account.",
+            )
 
     if existing_user:
         existing_user.oauth_provider = user_info.provider
@@ -335,35 +371,68 @@ async def _link_or_create_user(db: AsyncSession, user_info: OAuthUserInfo) -> Us
         user = found_user
         is_new_user = False
 
-    # Auto-assign Free plan subscription for new users
+    # Handle subscription for new users
     if is_new_user:
-        free_plan_result = await db.execute(
-            select(SubscriptionPlan).where(SubscriptionPlan.slug == "free")
-        )
-        free_plan = free_plan_result.scalar_one_or_none()
+        now = datetime.now(UTC)
+        plan_assigned = False
 
-        if free_plan:
-            from datetime import UTC, datetime, timedelta
-
-            from src.routes.billing import sync_quotas_from_plan
-
-            now = datetime.now(UTC)
-            period_end = now + timedelta(days=30)
-            subscription = UserSubscription(
-                user_id=user.id,
-                plan_id=free_plan.id,
-                status="active",
-                billing_cycle="monthly",
-                current_period_start=now,
-                current_period_end=period_end,
-                last_credit_grant=now,  # Mark credits as granted for initial period
+        # Check if invitation has gift subscription
+        if invitation and invitation.gift_plan_id and invitation.gift_months:
+            plan_result = await db.execute(
+                select(SubscriptionPlan).where(SubscriptionPlan.id == invitation.gift_plan_id)
             )
-            db.add(subscription)
-            await db.flush()
+            gift_plan = plan_result.scalar_one_or_none()
 
-            # Create quotas using centralized function (single source of truth)
-            await sync_quotas_from_plan(db, user.id, free_plan, subscription)
-            await db.commit()
+            if gift_plan:
+                # Create sponsored subscription with gifted months
+                period_end = now + relativedelta(months=invitation.gift_months)
+                subscription = UserSubscription(
+                    user_id=user.id,
+                    plan_id=gift_plan.id,
+                    status="active",
+                    billing_cycle="monthly",
+                    current_period_start=now,
+                    current_period_end=period_end,
+                    is_sponsored=True,
+                    sponsored_by_id=invitation.invited_by_id,
+                    sponsored_at=now,
+                    sponsor_reason=f"Platform invitation - {invitation.gift_months} month gift",
+                    last_credit_grant=now,
+                )
+                db.add(subscription)
+                await db.flush()
+                await sync_quotas_from_plan(db, user.id, gift_plan, subscription)
+                plan_assigned = True
+
+        # Fall back to free plan if no gift
+        if not plan_assigned:
+            free_plan_result = await db.execute(
+                select(SubscriptionPlan).where(SubscriptionPlan.slug == "free")
+            )
+            free_plan = free_plan_result.scalar_one_or_none()
+
+            if free_plan:
+                period_end = now + timedelta(days=30)
+                subscription = UserSubscription(
+                    user_id=user.id,
+                    plan_id=free_plan.id,
+                    status="active",
+                    billing_cycle="monthly",
+                    current_period_start=now,
+                    current_period_end=period_end,
+                    last_credit_grant=now,
+                )
+                db.add(subscription)
+                await db.flush()
+                await sync_quotas_from_plan(db, user.id, free_plan, subscription)
+
+        # Mark invitation as accepted if used
+        if invitation:
+            invitation.status = "accepted"
+            invitation.accepted_at = now
+            invitation.accepted_by_id = user.id
+
+        await db.commit()
 
     return user
 

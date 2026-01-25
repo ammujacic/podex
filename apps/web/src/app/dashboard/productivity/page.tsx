@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import Link from 'next/link';
 import {
   Activity,
   Clock,
@@ -16,45 +17,18 @@ import {
   CheckCircle,
   XCircle,
   ChevronDown,
+  Server,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-
-interface ProductivitySummary {
-  period_start: string;
-  period_end: string;
-  total_days: number;
-  active_days: number;
-  total_lines_written: number;
-  total_lines_deleted: number;
-  net_lines: number;
-  total_files_modified: number;
-  total_commits: number;
-  total_agent_messages: number;
-  total_suggestions_accepted: number;
-  total_suggestions_rejected: number;
-  acceptance_rate: number;
-  total_tasks_completed: number;
-  total_active_minutes: number;
-  total_coding_minutes: number;
-  total_time_saved_minutes: number;
-  time_saved_hours: number;
-  avg_lines_per_day: number;
-  avg_coding_minutes_per_day: number;
-  avg_agent_messages_per_day: number;
-  current_streak: number;
-  longest_streak: number;
-  top_languages: Record<string, number>;
-  top_agent_usage: Record<string, number>;
-}
-
-interface ProductivityTrends {
-  dates: string[];
-  lines_written: number[];
-  coding_minutes: number[];
-  agent_messages: number[];
-  time_saved: number[];
-  commits: number[];
-}
+import {
+  getProductivitySummary,
+  getProductivityTrends,
+  type ProductivitySummary,
+  type ProductivityTrends,
+} from '@/lib/api';
+import { Button } from '@podex/ui';
+import { Logo } from '@/components/ui/Logo';
+import { MobileHeader } from '@/components/ui/MobileHeader';
 
 function formatDuration(minutes: number): string {
   if (minutes < 60) return `${minutes}m`;
@@ -230,17 +204,12 @@ export default function ProductivityDashboard() {
     setLoading(true);
     setError(null);
     try {
-      const [summaryRes, trendsRes] = await Promise.all([
-        fetch(`/api/productivity/summary?days=${days}`, { credentials: 'include' }),
-        fetch(`/api/productivity/trends?days=${days}`, { credentials: 'include' }),
+      const [summaryData, trendsData] = await Promise.all([
+        getProductivitySummary(days),
+        getProductivityTrends(days),
       ]);
-
-      if (!summaryRes.ok || !trendsRes.ok) {
-        throw new Error('Failed to fetch productivity data');
-      }
-
-      setSummary(await summaryRes.json());
-      setTrends(await trendsRes.json());
+      setSummary(summaryData);
+      setTrends(trendsData);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -252,18 +221,61 @@ export default function ProductivityDashboard() {
     fetchData();
   }, [fetchData]);
 
+  // Shared header component
+  const PageHeader = () => (
+    <>
+      {/* Mobile Header */}
+      <MobileHeader />
+
+      {/* Desktop Header */}
+      <header className="hidden md:block bg-void/80 backdrop-blur-lg border-b border-border-subtle sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-6 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-6">
+              <Logo href="/dashboard" />
+              <nav className="flex items-center gap-1 bg-elevated rounded-lg p-1">
+                <Link href="/dashboard">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-text-secondary hover:text-text-primary"
+                  >
+                    <Server className="w-4 h-4 mr-2" />
+                    Dashboard
+                  </Button>
+                </Link>
+                <Link href="/dashboard/productivity">
+                  <Button variant="ghost" size="sm" className="bg-surface text-text-primary">
+                    <Activity className="w-4 h-4 mr-2" />
+                    Productivity
+                  </Button>
+                </Link>
+              </nav>
+            </div>
+          </div>
+        </div>
+      </header>
+    </>
+  );
+
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <RefreshCw className="h-8 w-8 animate-spin text-text-muted" />
+      <div className="min-h-screen bg-void">
+        <PageHeader />
+        <div className="flex items-center justify-center h-64">
+          <RefreshCw className="h-8 w-8 animate-spin text-text-muted" />
+        </div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="max-w-4xl mx-auto p-6">
-        <div className="bg-red-500/10 text-red-500 p-4 rounded-lg">{error}</div>
+      <div className="min-h-screen bg-void">
+        <PageHeader />
+        <div className="max-w-4xl mx-auto p-6">
+          <div className="bg-red-500/10 text-red-500 p-4 rounded-lg">{error}</div>
+        </div>
       </div>
     );
   }
@@ -271,257 +283,261 @@ export default function ProductivityDashboard() {
   if (!summary || !trends) return null;
 
   return (
-    <div className="max-w-6xl mx-auto p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold text-text-primary flex items-center gap-3">
-            <Activity className="h-7 w-7 text-accent-primary" />
-            Productivity Dashboard
-          </h1>
-          <p className="text-text-muted mt-1">Track your coding activity and AI assistant usage</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="relative">
-            <select
-              value={days}
-              onChange={(e) => setDays(parseInt(e.target.value))}
-              className="appearance-none pl-3 pr-8 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary text-sm cursor-pointer"
-            >
-              <option value={7}>Last 7 days</option>
-              <option value={14}>Last 14 days</option>
-              <option value={30}>Last 30 days</option>
-              <option value={90}>Last 90 days</option>
-            </select>
-            <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-text-muted pointer-events-none" />
+    <div className="min-h-screen bg-void">
+      <PageHeader />
+      <main className="max-w-6xl mx-auto p-6 space-y-6">
+        {/* Page Title */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-text-primary">Productivity</h1>
+            <p className="text-text-muted mt-1">
+              Track your coding activity and AI assistant usage
+            </p>
           </div>
-          <button
-            onClick={fetchData}
-            className="p-2 rounded-lg bg-elevated border border-border-subtle text-text-muted hover:text-text-primary"
-          >
-            <RefreshCw className="h-4 w-4" />
-          </button>
-        </div>
-      </div>
-
-      {/* Main Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard
-          title="Time Saved"
-          value={`${summary.time_saved_hours}h`}
-          subtitle="By using AI"
-          icon={Zap}
-          color="bg-yellow-500/20 text-yellow-400"
-        />
-        <StatCard
-          title="Lines Written"
-          value={summary.total_lines_written.toLocaleString()}
-          subtitle={`${summary.avg_lines_per_day.toFixed(0)} per day`}
-          icon={Code}
-          color="bg-blue-500/20 text-blue-400"
-        />
-        <StatCard
-          title="Coding Time"
-          value={formatDuration(summary.total_coding_minutes)}
-          subtitle={`${summary.active_days} active days`}
-          icon={Clock}
-          color="bg-green-500/20 text-green-400"
-        />
-        <StatCard
-          title="Agent Messages"
-          value={summary.total_agent_messages.toLocaleString()}
-          subtitle={`${summary.avg_agent_messages_per_day.toFixed(0)} per day`}
-          icon={MessageSquare}
-          color="bg-purple-500/20 text-purple-400"
-        />
-      </div>
-
-      {/* Second Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Streak Card */}
-        <StreakDisplay current={summary.current_streak} longest={summary.longest_streak} />
-
-        {/* Agent Acceptance Card */}
-        <div className="bg-surface rounded-xl border border-border-subtle p-5">
-          <h3 className="text-text-primary font-medium mb-4">AI Suggestions</h3>
-          <div className="flex items-center gap-6">
-            <AcceptanceRing rate={summary.acceptance_rate} />
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <CheckCircle className="h-4 w-4 text-green-500" />
-                <span className="text-text-secondary text-sm">
-                  {summary.total_suggestions_accepted} accepted
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <XCircle className="h-4 w-4 text-red-500" />
-                <span className="text-text-secondary text-sm">
-                  {summary.total_suggestions_rejected} rejected
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <FileCode className="h-4 w-4 text-blue-500" />
-                <span className="text-text-secondary text-sm">
-                  {summary.total_tasks_completed} tasks completed
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Git Activity */}
-        <div className="bg-surface rounded-xl border border-border-subtle p-5">
-          <h3 className="text-text-primary font-medium mb-4">Git Activity</h3>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <GitCommit className="h-4 w-4 text-text-muted" />
-                <span className="text-text-secondary text-sm">Commits</span>
-              </div>
-              <span className="text-text-primary font-medium">{summary.total_commits}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <FileCode className="h-4 w-4 text-text-muted" />
-                <span className="text-text-secondary text-sm">Files Modified</span>
-              </div>
-              <span className="text-text-primary font-medium">{summary.total_files_modified}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Code className="h-4 w-4 text-green-500" />
-                <span className="text-text-secondary text-sm">Net Lines</span>
-              </div>
-              <span
-                className={cn(
-                  'font-medium',
-                  summary.net_lines >= 0 ? 'text-green-500' : 'text-red-500'
-                )}
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <select
+                value={days}
+                onChange={(e) => setDays(parseInt(e.target.value))}
+                className="appearance-none pl-3 pr-8 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary text-sm cursor-pointer"
               >
-                {summary.net_lines >= 0 ? '+' : ''}
-                {summary.net_lines.toLocaleString()}
-              </span>
+                <option value={7}>Last 7 days</option>
+                <option value={14}>Last 14 days</option>
+                <option value={30}>Last 30 days</option>
+                <option value={90}>Last 90 days</option>
+              </select>
+              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-text-muted pointer-events-none" />
             </div>
-            <MiniChart data={trends.commits} color="bg-accent-primary" />
-          </div>
-        </div>
-      </div>
-
-      {/* Charts Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Coding Activity Chart */}
-        <div className="bg-surface rounded-xl border border-border-subtle p-5">
-          <h3 className="text-text-primary font-medium mb-4">Coding Activity</h3>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-text-muted">Lines of code over time</span>
-              <span className="text-text-secondary">
-                {summary.total_lines_written.toLocaleString()} total
-              </span>
-            </div>
-            <div className="h-32 flex items-end gap-1">
-              {trends.lines_written.map((value, i) => {
-                const max = Math.max(...trends.lines_written, 1);
-                return (
-                  <div
-                    key={i}
-                    className="flex-1 bg-blue-500/50 hover:bg-blue-500 rounded-t transition-colors cursor-pointer"
-                    style={{
-                      height: `${(value / max) * 100}%`,
-                      minHeight: value > 0 ? '2px' : '0px',
-                    }}
-                    title={`${trends.dates[i]}: ${value} lines`}
-                  />
-                );
-              })}
-            </div>
-            <div className="flex justify-between text-xs text-text-muted">
-              <span>{trends.dates[0]?.split('-').slice(1).join('/')}</span>
-              <span>{trends.dates[trends.dates.length - 1]?.split('-').slice(1).join('/')}</span>
-            </div>
+            <button
+              onClick={fetchData}
+              className="p-2 rounded-lg bg-elevated border border-border-subtle text-text-muted hover:text-text-primary"
+            >
+              <RefreshCw className="h-4 w-4" />
+            </button>
           </div>
         </div>
 
-        {/* Time Saved Chart */}
-        <div className="bg-surface rounded-xl border border-border-subtle p-5">
-          <h3 className="text-text-primary font-medium mb-4">Time Saved by AI</h3>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-text-muted">Minutes saved each day</span>
-              <span className="text-text-secondary">{summary.time_saved_hours} hours total</span>
+        {/* Main Stats Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <StatCard
+            title="Time Saved"
+            value={`${summary.time_saved_hours}h`}
+            subtitle="By using AI"
+            icon={Zap}
+            color="bg-yellow-500/20 text-yellow-400"
+          />
+          <StatCard
+            title="Lines Written"
+            value={summary.total_lines_written.toLocaleString()}
+            subtitle={`${summary.avg_lines_per_day.toFixed(0)} per day`}
+            icon={Code}
+            color="bg-blue-500/20 text-blue-400"
+          />
+          <StatCard
+            title="Coding Time"
+            value={formatDuration(summary.total_coding_minutes)}
+            subtitle={`${summary.active_days} active days`}
+            icon={Clock}
+            color="bg-green-500/20 text-green-400"
+          />
+          <StatCard
+            title="Agent Messages"
+            value={summary.total_agent_messages.toLocaleString()}
+            subtitle={`${summary.avg_agent_messages_per_day.toFixed(0)} per day`}
+            icon={MessageSquare}
+            color="bg-purple-500/20 text-purple-400"
+          />
+        </div>
+
+        {/* Second Row */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {/* Streak Card */}
+          <StreakDisplay current={summary.current_streak} longest={summary.longest_streak} />
+
+          {/* Agent Acceptance Card */}
+          <div className="bg-surface rounded-xl border border-border-subtle p-5">
+            <h3 className="text-text-primary font-medium mb-4">AI Suggestions</h3>
+            <div className="flex items-center gap-6">
+              <AcceptanceRing rate={summary.acceptance_rate} />
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <CheckCircle className="h-4 w-4 text-green-500" />
+                  <span className="text-text-secondary text-sm">
+                    {summary.total_suggestions_accepted} accepted
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <XCircle className="h-4 w-4 text-red-500" />
+                  <span className="text-text-secondary text-sm">
+                    {summary.total_suggestions_rejected} rejected
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <FileCode className="h-4 w-4 text-blue-500" />
+                  <span className="text-text-secondary text-sm">
+                    {summary.total_tasks_completed} tasks completed
+                  </span>
+                </div>
+              </div>
             </div>
-            <div className="h-32 flex items-end gap-1">
-              {trends.time_saved.map((value, i) => {
-                const max = Math.max(...trends.time_saved, 1);
-                return (
-                  <div
-                    key={i}
-                    className="flex-1 bg-yellow-500/50 hover:bg-yellow-500 rounded-t transition-colors cursor-pointer"
-                    style={{
-                      height: `${(value / max) * 100}%`,
-                      minHeight: value > 0 ? '2px' : '0px',
-                    }}
-                    title={`${trends.dates[i]}: ${value} min`}
-                  />
-                );
-              })}
-            </div>
-            <div className="flex justify-between text-xs text-text-muted">
-              <span>{trends.dates[0]?.split('-').slice(1).join('/')}</span>
-              <span>{trends.dates[trends.dates.length - 1]?.split('-').slice(1).join('/')}</span>
+          </div>
+
+          {/* Git Activity */}
+          <div className="bg-surface rounded-xl border border-border-subtle p-5">
+            <h3 className="text-text-primary font-medium mb-4">Git Activity</h3>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <GitCommit className="h-4 w-4 text-text-muted" />
+                  <span className="text-text-secondary text-sm">Commits</span>
+                </div>
+                <span className="text-text-primary font-medium">{summary.total_commits}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <FileCode className="h-4 w-4 text-text-muted" />
+                  <span className="text-text-secondary text-sm">Files Modified</span>
+                </div>
+                <span className="text-text-primary font-medium">
+                  {summary.total_files_modified}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Code className="h-4 w-4 text-green-500" />
+                  <span className="text-text-secondary text-sm">Net Lines</span>
+                </div>
+                <span
+                  className={cn(
+                    'font-medium',
+                    summary.net_lines >= 0 ? 'text-green-500' : 'text-red-500'
+                  )}
+                >
+                  {summary.net_lines >= 0 ? '+' : ''}
+                  {summary.net_lines.toLocaleString()}
+                </span>
+              </div>
+              <MiniChart data={trends.commits} color="bg-accent-primary" />
             </div>
           </div>
         </div>
-      </div>
 
-      {/* Bottom Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Language Breakdown */}
-        <div className="bg-surface rounded-xl border border-border-subtle p-5">
-          <h3 className="text-text-primary font-medium mb-4">Language Breakdown</h3>
-          {Object.keys(summary.top_languages).length > 0 ? (
-            <LanguageBar languages={summary.top_languages} />
-          ) : (
-            <p className="text-text-muted text-sm">No language data available yet</p>
-          )}
+        {/* Charts Row */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Coding Activity Chart */}
+          <div className="bg-surface rounded-xl border border-border-subtle p-5">
+            <h3 className="text-text-primary font-medium mb-4">Coding Activity</h3>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-text-muted">Lines of code over time</span>
+                <span className="text-text-secondary">
+                  {summary.total_lines_written.toLocaleString()} total
+                </span>
+              </div>
+              <div className="h-32 flex items-end gap-1">
+                {trends.lines_written.map((value, i) => {
+                  const max = Math.max(...trends.lines_written, 1);
+                  return (
+                    <div
+                      key={i}
+                      className="flex-1 bg-blue-500/50 hover:bg-blue-500 rounded-t transition-colors cursor-pointer"
+                      style={{
+                        height: `${(value / max) * 100}%`,
+                        minHeight: value > 0 ? '2px' : '0px',
+                      }}
+                      title={`${trends.dates[i]}: ${value} lines`}
+                    />
+                  );
+                })}
+              </div>
+              <div className="flex justify-between text-xs text-text-muted">
+                <span>{trends.dates[0]?.split('-').slice(1).join('/')}</span>
+                <span>{trends.dates[trends.dates.length - 1]?.split('-').slice(1).join('/')}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Time Saved Chart */}
+          <div className="bg-surface rounded-xl border border-border-subtle p-5">
+            <h3 className="text-text-primary font-medium mb-4">Time Saved by AI</h3>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-text-muted">Minutes saved each day</span>
+                <span className="text-text-secondary">{summary.time_saved_hours} hours total</span>
+              </div>
+              <div className="h-32 flex items-end gap-1">
+                {trends.time_saved.map((value, i) => {
+                  const max = Math.max(...trends.time_saved, 1);
+                  return (
+                    <div
+                      key={i}
+                      className="flex-1 bg-yellow-500/50 hover:bg-yellow-500 rounded-t transition-colors cursor-pointer"
+                      style={{
+                        height: `${(value / max) * 100}%`,
+                        minHeight: value > 0 ? '2px' : '0px',
+                      }}
+                      title={`${trends.dates[i]}: ${value} min`}
+                    />
+                  );
+                })}
+              </div>
+              <div className="flex justify-between text-xs text-text-muted">
+                <span>{trends.dates[0]?.split('-').slice(1).join('/')}</span>
+                <span>{trends.dates[trends.dates.length - 1]?.split('-').slice(1).join('/')}</span>
+              </div>
+            </div>
+          </div>
         </div>
 
-        {/* Agent Usage Breakdown */}
-        <div className="bg-surface rounded-xl border border-border-subtle p-5">
-          <h3 className="text-text-primary font-medium mb-4">Agent Usage</h3>
-          {Object.keys(summary.top_agent_usage).length > 0 ? (
-            <div className="space-y-3">
-              {Object.entries(summary.top_agent_usage).map(([agent, count]) => {
-                const max = Math.max(...Object.values(summary.top_agent_usage));
-                return (
-                  <div key={agent} className="space-y-1">
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-text-secondary capitalize">
-                        {agent.replace('_', ' ')}
-                      </span>
-                      <span className="text-text-muted">{count}</span>
+        {/* Bottom Row */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Language Breakdown */}
+          <div className="bg-surface rounded-xl border border-border-subtle p-5">
+            <h3 className="text-text-primary font-medium mb-4">Language Breakdown</h3>
+            {Object.keys(summary.top_languages).length > 0 ? (
+              <LanguageBar languages={summary.top_languages} />
+            ) : (
+              <p className="text-text-muted text-sm">No language data available yet</p>
+            )}
+          </div>
+
+          {/* Agent Usage Breakdown */}
+          <div className="bg-surface rounded-xl border border-border-subtle p-5">
+            <h3 className="text-text-primary font-medium mb-4">Agent Usage</h3>
+            {Object.keys(summary.top_agent_usage).length > 0 ? (
+              <div className="space-y-3">
+                {Object.entries(summary.top_agent_usage).map(([agent, count]) => {
+                  const max = Math.max(...Object.values(summary.top_agent_usage));
+                  return (
+                    <div key={agent} className="space-y-1">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-text-secondary capitalize">
+                          {agent.replace('_', ' ')}
+                        </span>
+                        <span className="text-text-muted">{count}</span>
+                      </div>
+                      <div className="h-2 bg-elevated rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-purple-500 rounded-full transition-all"
+                          style={{ width: `${(count / max) * 100}%` }}
+                        />
+                      </div>
                     </div>
-                    <div className="h-2 bg-elevated rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-purple-500 rounded-full transition-all"
-                        style={{ width: `${(count / max) * 100}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <p className="text-text-muted text-sm">No agent usage data available yet</p>
-          )}
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="text-text-muted text-sm">No agent usage data available yet</p>
+            )}
+          </div>
         </div>
-      </div>
 
-      {/* Activity Calendar hint */}
-      <div className="bg-elevated rounded-xl border border-border-subtle p-4 text-center">
-        <Calendar className="h-5 w-5 mx-auto text-text-muted mb-2" />
-        <p className="text-text-muted text-sm">Activity heatmap coming soon</p>
-      </div>
+        {/* Activity Calendar hint */}
+        <div className="bg-elevated rounded-xl border border-border-subtle p-4 text-center">
+          <Calendar className="h-5 w-5 mx-auto text-text-muted mb-2" />
+          <p className="text-text-muted text-sm">Activity heatmap coming soon</p>
+        </div>
+      </main>
     </div>
   );
 }

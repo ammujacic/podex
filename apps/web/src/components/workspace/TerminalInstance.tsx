@@ -3,6 +3,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { useAuthStore } from '@/stores/auth';
+import { useUIStore } from '@/stores/ui';
 
 export interface TerminalInstanceProps {
   workspaceId: string;
@@ -243,6 +244,22 @@ export function TerminalInstance({
       termRef.current.focus();
     }
   }, [isActive]);
+
+  // Handle pending terminal commands from voice or other sources
+  const pendingCommand = useUIStore((state) => state.pendingTerminalCommand);
+  const clearPendingCommand = useUIStore((state) => state.clearPendingTerminalCommand);
+
+  useEffect(() => {
+    if (pendingCommand && terminalReadyRef.current && socketRef.current?.connected && isActive) {
+      // Send the command to the terminal (with newline to execute)
+      socketRef.current.emit('terminal_input', {
+        workspace_id: workspaceId,
+        terminal_id: tabId,
+        data: pendingCommand + '\n',
+      });
+      clearPendingCommand();
+    }
+  }, [pendingCommand, workspaceId, tabId, isActive, clearPendingCommand]);
 
   // Expose methods for external control
   const reconnect = useCallback(() => {

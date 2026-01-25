@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState, useRef } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Loader2, CheckCircle } from 'lucide-react';
 import { handleOAuthCallback } from '@/lib/api';
@@ -8,23 +8,30 @@ import { toast } from 'sonner';
 
 type CallbackState = 'loading' | 'processing' | 'success' | 'error';
 
+// Session storage key for tracking callback attempts
+const CALLBACK_ATTEMPT_KEY = 'google_oauth_callback_attempted';
+
 function GoogleCallbackContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [state, setState] = useState<CallbackState>('loading');
   const [error, setError] = useState<string | null>(null);
 
-  // Use ref to prevent double execution in React strict mode
-  const hasStarted = useRef(false);
-
   useEffect(() => {
-    // Prevent double execution
-    if (hasStarted.current) return;
-    hasStarted.current = true;
-
     const code = searchParams.get('code');
     const stateParam = searchParams.get('state');
     const errorParam = searchParams.get('error');
+
+    // Use sessionStorage to prevent double execution across Suspense remounts
+    // Key includes the state param to allow retries with different OAuth attempts
+    const attemptKey = `${CALLBACK_ATTEMPT_KEY}:${stateParam}`;
+    if (typeof window !== 'undefined' && sessionStorage.getItem(attemptKey)) {
+      // Already attempted this callback, skip to avoid consuming state twice
+      return;
+    }
+    if (typeof window !== 'undefined' && stateParam) {
+      sessionStorage.setItem(attemptKey, 'true');
+    }
 
     // Check for OAuth error from Google
     if (errorParam) {
@@ -54,6 +61,16 @@ function GoogleCallbackContent() {
         setState('error');
       });
   }, [searchParams, router]);
+
+  // Clear callback attempt marker on completion
+  useEffect(() => {
+    if ((state === 'error' || state === 'success') && typeof window !== 'undefined') {
+      const stateParam = searchParams.get('state');
+      if (stateParam) {
+        sessionStorage.removeItem(`${CALLBACK_ATTEMPT_KEY}:${stateParam}`);
+      }
+    }
+  }, [state, searchParams]);
 
   // Loading state
   if (state === 'loading' || state === 'processing') {

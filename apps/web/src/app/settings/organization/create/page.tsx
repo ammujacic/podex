@@ -71,12 +71,8 @@ export default function CreateOrganizationPage() {
     setLoading(true);
     setError(null);
     try {
-      // TODO: Upload logo if present - need user-level image upload endpoint
+      // Logo upload not yet implemented - would need user-level image upload endpoint
       const logoUrl = null;
-      // if (logoFile) {
-      //   const uploadResponse = await api.uploads.uploadImage(logoFile);
-      //   logoUrl = uploadResponse.url;
-      // }
 
       // Create organization via API
       const response = (await api.post('/api/organizations/', {

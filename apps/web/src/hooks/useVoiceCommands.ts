@@ -43,10 +43,9 @@ export function useVoiceCommands({
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
-  const { sessions, addAgent } = useSessionStore();
-  const session = sessions[sessionId];
-  const { openFilePreview } = useSessionStore();
-  const { toggleSidebar, setTerminalVisible, setPanelVisible, openQuickOpen } = useUIStore();
+  const { addAgent, openFilePreview } = useSessionStore();
+  const { toggleSidebar, setTerminalVisible, setPanelVisible, openQuickOpen, sendTerminalCommand } =
+    useUIStore();
   const {
     openPanel: openNotificationPanel,
     dismissAllForSession,
@@ -82,13 +81,21 @@ export function useVoiceCommands({
       mediaRecorderRef.current = mediaRecorder;
       chunksRef.current = [];
 
-      // Notify backend of stream start
+      // Notify backend of stream start with error handling
       const socket = getSocket();
-      socket.emit('voice_stream_start', {
-        session_id: sessionId,
-        agent_id: 'voice_commands', // Special ID for voice commands
-        language: 'en-US',
-      });
+      socket.emit(
+        'voice_stream_start',
+        {
+          session_id: sessionId,
+          agent_id: 'voice_commands', // Special ID for voice commands
+          language: 'en-US',
+        },
+        (ack: { success?: boolean; error?: string } | undefined) => {
+          if (ack && !ack.success) {
+            console.warn('Voice stream start failed:', ack.error);
+          }
+        }
+      );
 
       // Handle audio chunks
       mediaRecorder.ondataavailable = async (event) => {
@@ -178,21 +185,26 @@ export function useVoiceCommands({
             break;
 
           case 'talk_to_agent':
-            if (command.target && command.message && session) {
-              // Find the agent by role/name
-              const targetLower = command.target.toLowerCase();
-              const agent = session.agents.find(
-                (a) =>
-                  a.role.toLowerCase() === targetLower || a.name.toLowerCase().includes(targetLower)
-              );
+            if (command.target && command.message) {
+              // Get fresh session state to avoid stale closure
+              const currentSession = useSessionStore.getState().sessions[sessionId];
+              if (currentSession) {
+                // Find the agent by role/name
+                const targetLower = command.target.toLowerCase();
+                const agent = currentSession.agents.find(
+                  (a) =>
+                    a.role.toLowerCase() === targetLower ||
+                    a.name.toLowerCase().includes(targetLower)
+                );
 
-              if (agent) {
-                await sendAgentMessage(sessionId, agent.id, command.message);
-              } else {
-                setState((s) => ({
-                  ...s,
-                  error: `Agent "${command.target}" not found`,
-                }));
+                if (agent) {
+                  await sendAgentMessage(sessionId, agent.id, command.message);
+                } else {
+                  setState((s) => ({
+                    ...s,
+                    error: `Agent "${command.target}" not found`,
+                  }));
+                }
               }
             }
             break;
@@ -215,12 +227,9 @@ export function useVoiceCommands({
             break;
 
           case 'run_command':
-            // Show terminal and could send command
+            // Send command to terminal for execution
             if (command.message) {
-              setTerminalVisible(true);
-              // TODO: Implement terminal integration for command execution
-              // Could integrate with terminal to execute the command
-              console.warn('Voice command to run:', command.message);
+              sendTerminalCommand(command.message);
             }
             break;
 
@@ -243,6 +252,10 @@ export function useVoiceCommands({
                   role: agentRole,
                 });
 
+                // Get fresh session state for accurate agent count
+                const currentSession = useSessionStore.getState().sessions[sessionId];
+                const agentCount = currentSession?.agents.length ?? 0;
+
                 // Add to local store
                 addAgent(sessionId, {
                   id: agentResponse.id,
@@ -250,7 +263,7 @@ export function useVoiceCommands({
                   role: agentRole,
                   model: agentResponse.model,
                   status: 'idle',
-                  color: `agent-${((session?.agents.length ?? 0) % 6) + 1}`,
+                  color: `agent-${(agentCount % 6) + 1}`,
                   messages: [],
                   mode: 'auto',
                 });
@@ -277,9 +290,11 @@ export function useVoiceCommands({
             ) {
               dismissAllForSession(sessionId);
             } else if (text.includes('approve') && command.target) {
+              // Get fresh session state
+              const currentSession = useSessionStore.getState().sessions[sessionId];
               // Find agent by name and dismiss their approval notifications
               const targetLower = command.target.toLowerCase();
-              const agent = session?.agents.find(
+              const agent = currentSession?.agents.find(
                 (a) =>
                   a.role.toLowerCase() === targetLower || a.name.toLowerCase().includes(targetLower)
               );
@@ -308,12 +323,12 @@ export function useVoiceCommands({
     },
     [
       sessionId,
-      session,
       openFilePreview,
       setTerminalVisible,
       setPanelVisible,
       toggleSidebar,
       openQuickOpen,
+      sendTerminalCommand,
       addAgent,
       openNotificationPanel,
       dismissAllForSession,
@@ -372,12 +387,25 @@ export function useVoiceCommands({
     };
   }, [sessionId, executeCommand]);
 
-  // Cleanup on unmount
+  // Cleanup on unmount - stop both MediaRecorder and stream
   useEffect(() => {
     return () => {
+      // Stop MediaRecorder if still recording
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        try {
+          mediaRecorderRef.current.stop();
+        } catch {
+          // Ignore errors during cleanup
+        }
+      }
+      mediaRecorderRef.current = null;
+
+      // Stop all media tracks
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
       }
+      streamRef.current = null;
+      chunksRef.current = [];
     };
   }, []);
 

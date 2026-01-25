@@ -72,10 +72,6 @@ export default function BillingPage() {
           listInvoices(1, 10).catch(() => []),
         ]);
 
-        console.warn('BillingPage - Subscription data:', subData);
-        console.warn('BillingPage - Has plan?:', !!subData?.plan);
-        console.warn('BillingPage - Plan name:', subData?.plan?.name);
-
         setSubscription(subData);
         setCredits(creditsData);
         setInvoices(invoicesData);

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Bell,
   Mail,
@@ -14,6 +14,7 @@ import {
 import { Button } from '@podex/ui';
 import { cn } from '@/lib/utils';
 import { PushNotificationSettings } from '@/components/settings/PushNotificationSettings';
+import { api } from '@/lib/api';
 
 interface NotificationSetting {
   id: string;
@@ -98,6 +99,35 @@ export default function NotificationsPage() {
   const [saving, setSaving] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [desktopEnabled, setDesktopEnabled] = useState(true);
+  const [loading, setLoading] = useState(true);
+
+  // Load saved preferences on mount
+  useEffect(() => {
+    const loadPreferences = async () => {
+      try {
+        const config = (await api.get('/api/user/config')) as {
+          ui_preferences?: {
+            notifications?: {
+              settings?: NotificationSetting[];
+              soundEnabled?: boolean;
+              desktopEnabled?: boolean;
+            };
+          };
+        };
+        if (config?.ui_preferences?.notifications) {
+          const prefs = config.ui_preferences.notifications;
+          if (prefs.settings) setSettings(prefs.settings);
+          if (prefs.soundEnabled !== undefined) setSoundEnabled(prefs.soundEnabled);
+          if (prefs.desktopEnabled !== undefined) setDesktopEnabled(prefs.desktopEnabled);
+        }
+      } catch (error) {
+        console.error('Failed to load notification preferences:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadPreferences();
+  }, []);
 
   const updateSetting = (id: string, field: 'email' | 'push' | 'inApp', value: boolean) => {
     setSettings((prev) => prev.map((s) => (s.id === id ? { ...s, [field]: value } : s)));
@@ -106,18 +136,29 @@ export default function NotificationsPage() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      // TODO: Implement notification preferences API endpoint
-      // await api.patch('/api/user/config/notifications', {
-      //   settings,
-      //   desktopEnabled,
-      // });
-      await new Promise((resolve) => setTimeout(resolve, 1000)); // Simulate API call
+      await api.patch('/api/user/config', {
+        ui_preferences: {
+          notifications: {
+            settings,
+            soundEnabled,
+            desktopEnabled,
+          },
+        },
+      });
     } catch (error) {
       console.error('Failed to save notification settings:', error);
     } finally {
       setSaving(false);
     }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-accent-primary" />
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-3xl mx-auto px-8 py-8">

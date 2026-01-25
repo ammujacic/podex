@@ -412,6 +412,12 @@ class OrganizationUsageRecord(Base):
     tier: Mapped[str | None] = mapped_column(String(50))
     session_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), index=True)
 
+    # Snapshot fields - preserve entity names at time of recording for historical accuracy
+    # These are populated when the record is created and never updated (even on rename)
+    user_name: Mapped[str | None] = mapped_column(String(255))
+    user_email: Mapped[str | None] = mapped_column(String(255))
+    session_name: Mapped[str | None] = mapped_column(String(255))
+
     # Billing period
     billing_period_start: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), index=True

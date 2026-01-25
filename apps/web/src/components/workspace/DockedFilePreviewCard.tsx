@@ -3,6 +3,7 @@
 import { useRef, useCallback } from 'react';
 import { X, ExternalLink } from 'lucide-react';
 import { type FilePreview, type GridSpan, useSessionStore } from '@/stores/session';
+import { useUIStore } from '@/stores/ui';
 import { CodeEditor } from './CodeEditor';
 import { useOptionalGridContext } from './GridContext';
 import { useGridResize } from '@/hooks/useGridResize';
@@ -20,11 +21,18 @@ export function DockedFilePreviewCard({
   maxCols = 3,
 }: DockedFilePreviewCardProps) {
   const { updateFilePreviewGridSpan, dockFilePreview, closeFilePreview } = useSessionStore();
+  const gridConfig = useUIStore((state) => state.gridConfig);
   const cardRef = useRef<HTMLDivElement>(null);
   const gridContext = useOptionalGridContext();
 
   const gridSpan = preview.gridSpan ?? { colSpan: 1, rowSpan: 1 };
   const fileName = preview.path.split('/').pop() || preview.path;
+
+  // Calculate dynamic heights based on rowSpan
+  const gap = 16; // matches gap-4 in Tailwind
+  const calculateHeight = (rowSpan: number) => {
+    return rowSpan * gridConfig.rowHeight + (rowSpan - 1) * gap;
+  };
 
   const handleResize = useCallback(
     (newSpan: GridSpan) => {
@@ -73,9 +81,9 @@ export function DockedFilePreviewCard({
           ? `${displaySpan.colStart} / span ${displaySpan.colSpan}`
           : `span ${displaySpan.colSpan}`,
         gridRow: `span ${displaySpan.rowSpan}`,
-        minHeight: displaySpan.rowSpan === 1 ? '300px' : '616px',
-        maxHeight: displaySpan.rowSpan === 1 ? '300px' : '616px',
-        height: displaySpan.rowSpan === 1 ? '300px' : '616px',
+        minHeight: `${calculateHeight(displaySpan.rowSpan)}px`,
+        maxHeight: `${calculateHeight(displaySpan.rowSpan)}px`,
+        height: `${calculateHeight(displaySpan.rowSpan)}px`,
       }}
     >
       {/* Size indicator during resize */}

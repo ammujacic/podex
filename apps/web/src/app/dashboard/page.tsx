@@ -70,6 +70,7 @@ import {
   type PodUsageSeries,
 } from '@/lib/api';
 import { useUser, useAuthStore } from '@/stores/auth';
+import { useConfigStore } from '@/stores/config';
 import { DashboardSkeleton } from '@/components/ui/Skeleton';
 import { TimeRangeSelector, getDaysFromValue } from '@/components/dashboard/TimeRangeSelector';
 import { ConfirmDialog, useConfirmDialog } from '@/components/dashboard/ConfirmDialog';
@@ -206,6 +207,7 @@ export default function DashboardPage() {
   const router = useRouter();
   const user = useUser();
   const isInitialized = useAuthStore((s) => s.isInitialized);
+  const configIsInitialized = useConfigStore((s) => s.isInitialized);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [templates, setTemplates] = useState<PodTemplate[]>([]);
   const [stats, setStats] = useState<DashboardStats | null>(null);
@@ -318,8 +320,9 @@ export default function DashboardPage() {
   }, [user, router, isInitialized]);
 
   // Load usage history when period changes
+  // Gate on configIsInitialized to ensure getDaysFromValue has access to time range options
   useEffect(() => {
-    if (!user) return;
+    if (!user || !configIsInitialized) return;
 
     async function loadUsageData() {
       try {
@@ -353,7 +356,7 @@ export default function DashboardPage() {
     }
 
     loadUsageData();
-  }, [selectedPeriod, user]);
+  }, [selectedPeriod, user, configIsInitialized]);
 
   const getTemplateForSession = (session: Session): PodTemplate | undefined => {
     if (!session.template_id) return undefined;
@@ -614,7 +617,27 @@ export default function DashboardPage() {
       <header className="hidden md:block bg-void/80 backdrop-blur-lg border-b border-border-subtle sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
-            <Logo href="/dashboard" />
+            <div className="flex items-center gap-6">
+              <Logo href="/dashboard" />
+              <nav className="flex items-center gap-1 bg-elevated rounded-lg p-1">
+                <Link href="/dashboard">
+                  <Button variant="ghost" size="sm" className="bg-surface text-text-primary">
+                    <Server className="w-4 h-4 mr-2" />
+                    Dashboard
+                  </Button>
+                </Link>
+                <Link href="/dashboard/productivity">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-text-secondary hover:text-text-primary"
+                  >
+                    <Activity className="w-4 h-4 mr-2" />
+                    Productivity
+                  </Button>
+                </Link>
+              </nav>
+            </div>
             <div className="flex items-center gap-2">
               {/* Keyboard Shortcuts */}
               <Button

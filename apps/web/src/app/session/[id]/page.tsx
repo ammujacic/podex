@@ -234,6 +234,7 @@ export default function SessionPage() {
             standbyAt: null,
             standbySettings: null,
             editorGridCardId: null,
+            previewGridCardId: null,
           });
         } else {
           // Session exists (likely from localStorage) - sync from API

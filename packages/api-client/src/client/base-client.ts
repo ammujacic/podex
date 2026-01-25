@@ -37,6 +37,13 @@ export class BaseApiClient {
   }
 
   /**
+   * Update the base URL (useful for Electron apps that need to configure it at runtime).
+   */
+  setBaseUrl(url: string): void {
+    this.baseUrl = url.replace(/\/$/, ''); // Remove trailing slash
+  }
+
+  /**
    * Build headers for a request.
    */
   protected getHeaders(includeAuth = true): Record<string, string> {

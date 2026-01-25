@@ -185,6 +185,10 @@ MAX_TERMINAL_INPUT_BYTES = 8192
 # SECURITY: Bounded by MAX_CLIENTS to prevent memory exhaustion if disconnect events are missed
 MAX_CLIENTS = 50000  # Safety limit - should match max concurrent WebSocket connections
 _client_info: dict[str, dict[str, Any]] = {}
+# Track last cleanup time for periodic maintenance
+_last_client_cleanup: datetime = datetime.now(UTC)
+# Cleanup interval in seconds
+CLIENT_CLEANUP_INTERVAL = 300  # 5 minutes
 
 # Maximum updates to store before forcing merge (prevents memory bloat)
 MAX_YJS_UPDATES_PER_DOC = 100
@@ -194,6 +198,10 @@ MAX_YJS_BYTES_PER_SESSION = 10 * 1024 * 1024  # 10MB
 MAX_YJS_SESSIONS = 1000
 # Maximum number of documents per Yjs session
 MAX_YJS_DOCS_PER_SESSION = 100
+# MEDIUM FIX: Maximum total Yjs bytes across all sessions to prevent memory exhaustion
+MAX_YJS_TOTAL_BYTES = MAX_YJS_BYTES_PER_SESSION * MAX_YJS_SESSIONS  # ~10GB theoretical max
+# Practical limit - 1GB total
+MAX_YJS_TOTAL_BYTES_LIMIT = 1024 * 1024 * 1024  # 1GB
 
 # In-memory Yjs state (used for fast access, Redis is source of truth)
 _yjs_updates: dict[str, dict[str, list[bytes]]] = {}
@@ -221,19 +229,27 @@ class YjsStorage:
 
     Redis is required for Yjs collaborative editing - no in-memory fallback.
     This ensures consistency across API instances and prevents data loss.
+
+    CRITICAL FIX: Redis is initialized at startup (init_redis) rather than lazily
+    to ensure deterministic failure if Redis is unavailable.
     """
 
     def __init__(self) -> None:
         self._redis: Any = None
+        self._initialized: bool = False
 
-    async def _get_redis(self) -> Any:
-        """Get Redis client, initializing if needed.
+    async def init_redis(self) -> None:
+        """Initialize Redis connection at startup.
+
+        CRITICAL FIX: Called during app startup instead of lazy initialization.
+        This ensures Redis availability is verified at startup, providing
+        deterministic failure rather than non-deterministic failures later.
 
         Raises:
             YjsStorageError: If Redis is not configured or unavailable.
         """
-        if self._redis is not None:
-            return self._redis
+        if self._initialized:
+            return
 
         if not settings.REDIS_URL:
             raise YjsStorageError(YJS_REDIS_URL_ERROR)
@@ -246,14 +262,38 @@ class YjsStorage:
                 encoding="utf-8",
                 decode_responses=False,  # Keep bytes for Yjs data
             )
-            # Test connection
+            # Test connection with ping
             await self._redis.ping()
+            self._initialized = True
             logger.info("Yjs storage connected to Redis")
         except Exception as e:
             self._redis = None
+            self._initialized = False
             raise YjsStorageError(f"{YJS_REDIS_CONNECTION_ERROR}: {e}") from e  # noqa: TRY003
-        else:
-            return self._redis
+
+    async def _get_redis(self) -> Any:
+        """Get Redis client.
+
+        Raises:
+            YjsStorageError: If Redis is not initialized.
+        """
+        if not self._initialized or self._redis is None:
+            # Attempt to initialize if not done (fallback for edge cases)
+            await self.init_redis()
+
+        return self._redis
+
+    async def close(self) -> None:
+        """Close Redis connection during shutdown."""
+        if self._redis is not None:
+            try:
+                await self._redis.close()
+                logger.info("Yjs storage Redis connection closed")
+            except Exception as e:
+                logger.warning("Error closing Yjs Redis connection", error=str(e))
+            finally:
+                self._redis = None
+                self._initialized = False
 
     async def get_doc(self, session_id: str, doc_name: str) -> bytes | None:
         """Get document state vector from Redis."""
@@ -373,6 +413,58 @@ async def connect(sid: str, _environ: dict[str, Any]) -> None:
     logger.info("Client connected", sid=sid)
 
 
+async def _cleanup_stale_clients() -> None:
+    """HIGH FIX: Periodic cleanup of stale client entries to prevent memory leak.
+
+    This function removes client info entries that are no longer connected.
+    Called periodically during connect/disconnect events.
+    """
+    global _last_client_cleanup
+
+    now = datetime.now(UTC)
+    if (now - _last_client_cleanup).total_seconds() < CLIENT_CLEANUP_INTERVAL:
+        return
+
+    _last_client_cleanup = now
+
+    # Get all currently connected sids from socket.io
+    try:
+        connected_sids = set()
+        rooms = sio.manager.rooms.get("/", {})
+        for room_sids in rooms.values():
+            connected_sids.update(room_sids)
+
+        # Find stale entries (in _client_info but not connected)
+        stale_sids = [sid for sid in _client_info if sid not in connected_sids]
+
+        if stale_sids:
+            for sid in stale_sids:
+                _client_info.pop(sid, None)
+            logger.info("Cleaned up stale client entries", count=len(stale_sids))
+    except Exception as e:
+        logger.warning("Failed to cleanup stale clients", error=str(e))
+
+
+async def _cleanup_yjs_memory() -> None:
+    """MEDIUM FIX: Enforce global Yjs memory limit to prevent exhaustion."""
+    total_bytes = 0
+    for docs in _yjs_updates.values():
+        for updates in docs.values():
+            total_bytes += sum(len(u) for u in updates)
+
+    if total_bytes > MAX_YJS_TOTAL_BYTES_LIMIT:
+        # Evict oldest sessions until under limit
+        sessions_to_evict = list(_yjs_updates.keys())[: len(_yjs_updates) // 2]
+        for session_id in sessions_to_evict:
+            del _yjs_updates[session_id]
+            _yjs_docs.pop(session_id, None)
+        logger.warning(
+            "Evicted Yjs sessions due to memory pressure",
+            evicted_count=len(sessions_to_evict),
+            total_bytes_before=total_bytes,
+        )
+
+
 @sio.event
 async def disconnect(sid: str) -> None:
     """Handle client disconnection."""
@@ -386,6 +478,9 @@ async def disconnect(sid: str) -> None:
             user_id=client.get("user_id", "unknown"),
             device_id=client.get("device_id", sid),
         )
+
+    # Periodic cleanup of stale entries
+    await _cleanup_stale_clients()
 
 
 @sio.event
@@ -429,6 +524,7 @@ async def session_join(sid: str, data: dict[str, str]) -> None:
         "user_id": user_id,
         "device_id": device_id,
         "username": username,
+        "session_join_time": datetime.now(UTC),  # For productivity tracking
     }
 
     # Join the session room
@@ -466,6 +562,29 @@ async def session_leave(sid: str, data: dict[str, str]) -> None:
 
     if not session_id:
         return
+
+    # Track session activity for productivity metrics before removing client info
+    client = _client_info.get(sid)
+    if client and client.get("user_id") and client.get("session_join_time"):
+        try:
+            join_time = client["session_join_time"]
+            leave_time = datetime.now(UTC)
+            active_minutes = int((leave_time - join_time).total_seconds() / 60)
+
+            if active_minutes > 0:
+                from src.database.connection import async_session_factory
+                from src.services.productivity_tracking_service import (
+                    ProductivityTrackingService,
+                )
+
+                async with async_session_factory() as db:
+                    tracker = ProductivityTrackingService(db)
+                    await tracker.track_session_activity(
+                        user_id=client["user_id"],
+                        active_minutes=active_minutes,
+                    )
+        except Exception as e:
+            logger.warning("Failed to track session activity", error=str(e))
 
     # Remove from client tracking
     _client_info.pop(sid, None)
@@ -1194,6 +1313,9 @@ async def yjs_update(sid: str, data: dict[str, Any]) -> None:
             for doc in _yjs_updates.get(session_id, {}):
                 _yjs_updates[session_id][doc] = _yjs_updates[session_id][doc][-10:]
 
+        # MEDIUM FIX: Check global memory limit periodically
+        await _cleanup_yjs_memory()
+
         # Broadcast to other subscribers
         room_name = f"yjs:{session_id}:{doc_name}"
         await sio.emit(
@@ -1383,13 +1505,28 @@ async def broadcast_to_room(room: str, event: str, data: dict[str, Any]) -> None
 
 
 async def init_session_sync() -> None:
-    """Initialize session sync manager with broadcast callback."""
+    """Initialize session sync manager with broadcast callback.
+
+    CRITICAL FIX: Also initializes Yjs Redis storage at startup to ensure
+    deterministic failure if Redis is unavailable.
+    """
+    # Initialize Yjs storage Redis connection at startup (not lazily)
+    try:
+        await yjs_storage.init_redis()
+    except YjsStorageError as e:
+        logger.warning(
+            "Yjs storage Redis initialization failed - collaborative editing may not work",
+            error=str(e),
+        )
+        # Don't fail startup, but log prominently
+
     await session_sync_manager.start(broadcast_to_room)
 
 
 async def cleanup_session_sync() -> None:
-    """Cleanup session sync manager."""
+    """Cleanup session sync manager and Yjs storage."""
     await session_sync_manager.stop()
+    await yjs_storage.close()
 
 
 # ============== Voice/Audio Events ==============
@@ -2222,6 +2359,22 @@ async def native_approval_response(sid: str, data: dict[str, Any]) -> None:
                 .values(status=status)
             )
             await db.commit()
+
+            # Track productivity metrics for suggestion response
+            user_id = client.get("user_id") if client else None
+            if user_id:
+                try:
+                    from src.services.productivity_tracking_service import (
+                        ProductivityTrackingService,
+                    )
+
+                    tracker = ProductivityTrackingService(db)
+                    await tracker.track_suggestion_response(
+                        user_id=user_id,
+                        accepted=approved,
+                    )
+                except Exception as track_err:
+                    logger.warning("Failed to track approval productivity", error=str(track_err))
     except Exception as e:
         logger.exception("Failed to update approval status in DB", error=str(e))
 

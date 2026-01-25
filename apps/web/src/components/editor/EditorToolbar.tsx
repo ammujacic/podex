@@ -126,24 +126,28 @@ export function EditorToolbar({
 
   // Toggle minimap
   const handleToggleMinimap = useCallback(() => {
+    if (!settings) return;
     updateSettings({ minimap: !settings.minimap });
-  }, [settings.minimap, updateSettings]);
+  }, [settings, updateSettings]);
 
   // Toggle word wrap
   const handleToggleWordWrap = useCallback(() => {
+    if (!settings) return;
     updateSettings({ wordWrap: settings.wordWrap === 'on' ? 'off' : 'on' });
-  }, [settings.wordWrap, updateSettings]);
+  }, [settings, updateSettings]);
 
   // Toggle whitespace rendering
   const handleToggleWhitespace = useCallback(() => {
+    if (!settings) return;
     const next = settings.renderWhitespace === 'none' ? 'selection' : 'none';
     updateSettings({ renderWhitespace: next });
-  }, [settings.renderWhitespace, updateSettings]);
+  }, [settings, updateSettings]);
 
   // Toggle AI completions
   const handleToggleCompletions = useCallback(() => {
+    if (!settings) return;
     updateSettings({ completionsEnabled: !settings.completionsEnabled });
-  }, [settings.completionsEnabled, updateSettings]);
+  }, [settings, updateSettings]);
 
   // Change language
   const handleLanguageChange = useCallback(
@@ -237,6 +241,20 @@ export function EditorToolbar({
       isMounted = false;
     };
   }, []);
+
+  // Wait for settings to be initialized (after all hooks)
+  if (!settings) {
+    return (
+      <div
+        className={cn(
+          'flex h-8 items-center justify-between border-b border-border-subtle bg-elevated px-2',
+          className
+        )}
+      >
+        <span className="text-xs text-text-muted">Loading settings...</span>
+      </div>
+    );
+  }
 
   return (
     <div

@@ -21,6 +21,7 @@ import {
   FileText,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { api } from '@/lib/api';
 
 // ============================================================================
 // Types
@@ -373,49 +374,11 @@ export function AgentMemory({ sessionId, className }: AgentMemoryProps) {
     async function loadMemories() {
       setLoading(true);
       try {
-        // In real implementation, fetch from API
-        // const data = await api.get<Memory[]>(`/api/sessions/${sessionId}/memories`);
-        // setMemories(data);
-
-        // Mock data for now
-        setMemories([
-          {
-            id: '1',
-            type: 'preference',
-            scope: 'user',
-            content: 'Prefers TypeScript over JavaScript for type safety',
-            tags: ['language', 'typescript'],
-            importance: 0.8,
-            accessCount: 15,
-            createdAt: new Date('2024-01-01'),
-            updatedAt: new Date('2024-01-15'),
-          },
-          {
-            id: '2',
-            type: 'code_pattern',
-            scope: 'project',
-            content: 'Uses Zustand for state management with devtools middleware',
-            tags: ['state', 'zustand'],
-            importance: 0.7,
-            accessCount: 8,
-            createdAt: new Date('2024-01-05'),
-            updatedAt: new Date('2024-01-10'),
-          },
-          {
-            id: '3',
-            type: 'error_solution',
-            scope: 'session',
-            content:
-              'Fixed hydration error by wrapping component in dynamic import with ssr: false',
-            tags: ['nextjs', 'hydration', 'error'],
-            importance: 0.9,
-            accessCount: 3,
-            createdAt: new Date('2024-01-14'),
-            updatedAt: new Date('2024-01-14'),
-          },
-        ]);
-      } catch (error) {
-        console.error('Failed to load memories:', error);
+        const data = await api.get<Memory[]>(`/api/sessions/${sessionId}/memories`);
+        setMemories(data);
+      } catch {
+        // Memories may not be available, set empty array
+        setMemories([]);
       } finally {
         setLoading(false);
       }
@@ -449,39 +412,48 @@ export function AgentMemory({ sessionId, className }: AgentMemoryProps) {
   };
 
   const handleDelete = async (memoryId: string) => {
-    // In real implementation, delete via API
-    setMemories((prev) => prev.filter((m) => m.id !== memoryId));
+    try {
+      await api.delete(`/api/sessions/${sessionId}/memories/${memoryId}`);
+      setMemories((prev) => prev.filter((m) => m.id !== memoryId));
+    } catch {
+      // Failed to delete, keep in list
+    }
   };
 
   const handleUpdateImportance = async (memoryId: string, importance: number) => {
-    setMemories((prev) => prev.map((m) => (m.id === memoryId ? { ...m, importance } : m)));
+    try {
+      await api.patch(`/api/sessions/${sessionId}/memories/${memoryId}`, { importance });
+      setMemories((prev) => prev.map((m) => (m.id === memoryId ? { ...m, importance } : m)));
+    } catch {
+      // Failed to update, ignore
+    }
   };
 
   const handleSave = async (memoryData: Partial<Memory>) => {
-    if (memoryData.id) {
-      // Update existing
-      setMemories((prev) =>
-        prev.map((m) =>
-          m.id === memoryData.id ? { ...m, ...memoryData, updatedAt: new Date() } : m
-        )
-      );
-    } else {
-      // Create new
-      const newMemory: Memory = {
-        id: `new-${Date.now()}`,
-        type: memoryData.type || 'fact',
-        scope: memoryData.scope || 'session',
-        content: memoryData.content || '',
-        tags: memoryData.tags || [],
-        importance: memoryData.importance || 0.5,
-        accessCount: 0,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-      setMemories((prev) => [newMemory, ...prev]);
+    try {
+      if (memoryData.id) {
+        // Update existing
+        const updated = await api.patch<Memory>(
+          `/api/sessions/${sessionId}/memories/${memoryData.id}`,
+          memoryData
+        );
+        setMemories((prev) => prev.map((m) => (m.id === memoryData.id ? updated : m)));
+      } else {
+        // Create new
+        const newMemory = await api.post<Memory>(`/api/sessions/${sessionId}/memories`, {
+          type: memoryData.type || 'fact',
+          scope: memoryData.scope || 'session',
+          content: memoryData.content || '',
+          tags: memoryData.tags || [],
+          importance: memoryData.importance || 0.5,
+        });
+        setMemories((prev) => [newMemory, ...prev]);
+      }
+      setEditorOpen(false);
+      setEditingMemory(undefined);
+    } catch {
+      // Failed to save
     }
-    setEditorOpen(false);
-    setEditingMemory(undefined);
   };
 
   return (

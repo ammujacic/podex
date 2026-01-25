@@ -10,11 +10,13 @@ from fastapi import FastAPI
 from podex_shared import SentryConfig, init_sentry, init_usage_tracker, shutdown_usage_tracker
 from podex_shared.redis_client import get_redis_client
 from src.config import refresh_model_capabilities, settings
-from src.context.manager import ContextWindowManager, set_context_manager
+from src.context.manager import create_context_manager_with_settings, set_context_manager
 from src.providers.llm import LLMProvider
 from src.queue.task_queue import TaskQueue
 from src.queue.worker import TaskWorker, set_task_worker
 from src.routes import agents, health, mcp_skills
+from src.skills.loader import Skill
+from src.skills.registry import SkillRegistry
 from src.tools.skill_tools import SkillRegistryHolder
 
 
@@ -75,22 +77,58 @@ class ServiceManager:
         await cls._task_worker.start()
         logger.info("Task worker started")
 
-        # Initialize context manager
+        # Initialize context manager with settings from Redis cache
         llm_provider = LLMProvider()
-        cls._context_manager = ContextWindowManager(
+        cls._context_manager = await create_context_manager_with_settings(
             llm_provider=llm_provider,
-            max_context_tokens=settings.MAX_CONTEXT_TOKENS,
         )
         set_context_manager(cls._context_manager)
         logger.info("Context manager initialized")
 
-        # Initialize skill registry and load skills from API
+        # Initialize skill registry and load skills from API (with retry)
         skill_registry = SkillRegistryHolder.get()
-        try:
-            skills = await skill_registry.load_skills()
-            logger.info("Skill registry initialized", skill_count=len(skills))
-        except Exception as e:
-            logger.warning("Failed to load skills from API", error=str(e))
+        skills = await cls._load_skills_with_retry(skill_registry)
+        logger.info("Skill registry initialized", skill_count=len(skills))
+
+    @classmethod
+    async def _load_skills_with_retry(
+        cls,
+        skill_registry: SkillRegistry,
+        max_retries: int = 30,
+        initial_delay: float = 1.0,
+    ) -> list[Skill]:
+        """Load skills from API with exponential backoff retry."""
+        import asyncio
+
+        delay = initial_delay
+        for attempt in range(max_retries):
+            try:
+                skills = await skill_registry.load_skills()
+                if (
+                    skills or attempt > 5
+                ):  # Accept empty after a few tries (API might have no skills)
+                    return skills
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logger.error(
+                        "Failed to load skills after max retries, starting without skills",
+                        attempts=max_retries,
+                        error=str(e),
+                    )
+                    return []
+                logger.info(
+                    "Waiting for API to load skills",
+                    attempt=attempt + 1,
+                    max_retries=max_retries,
+                    retry_in=delay,
+                )
+            # MEDIUM FIX: Add jitter and increase max delay to prevent API spam
+            import random
+
+            jitter = random.uniform(0, delay * 0.5)  # noqa: S311
+            await asyncio.sleep(delay + jitter)
+            delay = min(delay * 1.5, 60.0)  # Cap at 60 seconds (was 10s)
+        return []
 
     @classmethod
     async def shutdown_services(cls) -> None:
@@ -109,6 +147,41 @@ class ServiceManager:
             logger.info("Redis disconnected")
 
 
+async def _load_model_capabilities_with_retry(
+    max_retries: int = 30,
+    initial_delay: float = 1.0,
+) -> None:
+    """Load model capabilities from API with exponential backoff retry."""
+    import asyncio
+
+    delay = initial_delay
+    for attempt in range(max_retries):
+        try:
+            await refresh_model_capabilities(force=True)
+            logger.info("Model capabilities loaded from API")
+            return
+        except Exception as e:
+            if attempt == max_retries - 1:
+                logger.error(
+                    "Failed to load model capabilities after max retries, using fallback",
+                    attempts=max_retries,
+                    error=str(e),
+                )
+                return
+            logger.info(
+                "Waiting for API to load model capabilities",
+                attempt=attempt + 1,
+                max_retries=max_retries,
+                retry_in=delay,
+            )
+        # MEDIUM FIX: Add jitter and increase max delay to prevent API spam
+        import random
+
+        jitter = random.uniform(0, delay * 0.5)  # noqa: S311
+        await asyncio.sleep(delay + jitter)
+        delay = min(delay * 1.5, 60.0)  # Cap at 60 seconds (was 10s)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager."""
@@ -117,11 +190,8 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize services
     await ServiceManager.init_services()
 
-    # Load model capabilities from API (async)
-    try:
-        await refresh_model_capabilities(force=True)
-    except Exception as e:
-        logger.warning("Failed to load model capabilities on startup, using fallback", error=str(e))
+    # Load model capabilities from API (with retry)
+    await _load_model_capabilities_with_retry()
 
     yield
 

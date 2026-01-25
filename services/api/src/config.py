@@ -184,7 +184,7 @@ class Settings(BaseSettings):
     STRIPE_PUBLISHABLE_KEY: str | None = None
 
     # Email configuration
-    EMAIL_BACKEND: str = "console"  # console, smtp
+    EMAIL_BACKEND: str = "console"  # console, smtp, sendgrid
     EMAIL_FROM_ADDRESS: str = "noreply@podex.dev"
     EMAIL_FROM_NAME: str = "Podex"
     EMAIL_REPLY_TO: str = "support@podex.dev"
@@ -195,6 +195,9 @@ class Settings(BaseSettings):
     SMTP_USER: str | None = None
     SMTP_PASSWORD: str | None = None
     SMTP_USE_TLS: bool = True
+
+    # SendGrid settings (when EMAIL_BACKEND=sendgrid) - RECOMMENDED FOR PRODUCTION
+    SENDGRID_API_KEY: str | None = None
 
     # Push Notifications (Web Push / VAPID)
     VAPID_PUBLIC_KEY: str | None = None
@@ -239,6 +242,18 @@ class Settings(BaseSettings):
     STANDBY_MAX_HOURS_MIN: int = 24  # Minimum 24 hours
     STANDBY_MAX_HOURS_MAX: int = 720  # Maximum 30 days
 
+    # ============== Background Task Timeouts ==============
+    # Prevents connection pool exhaustion from hung operations
+    BG_TASK_DB_TIMEOUT: int = 60  # Max seconds for DB operation in background tasks
+    BG_TASK_QUOTA_RESET_INTERVAL: int = 300  # Quota reset check interval (5 min)
+    BG_TASK_BILLING_INTERVAL: int = 300  # Billing maintenance interval (5 min)
+    BG_TASK_WORKSPACE_DELETE_TIMEOUT: int = 120  # Workspace deletion timeout
+
+    # ============== Session Quota Retry Settings ==============
+    SESSION_QUOTA_MAX_RETRIES: int = 3  # Max retries on lock contention
+    SESSION_QUOTA_RETRY_DELAY: float = 0.1  # Initial retry delay in seconds
+    SESSION_QUOTA_RETRY_BACKOFF: float = 2.0  # Exponential backoff multiplier
+
     # ============== Usage Calculation Security ==============
     # Maximum quantities per usage event (prevents integer overflow)
     MAX_QUANTITY_TOKENS: int = 100_000_000  # 100M tokens max per event
@@ -263,6 +278,28 @@ class Settings(BaseSettings):
     MCP_SLACK_BOT_TOKEN: str | None = None
     MCP_SLACK_TEAM_ID: str | None = None
     MCP_POSTGRES_CONNECTION_STRING: str | None = None
+
+    # ============== External Service URLs ==============
+    # These can be overridden for testing or self-hosted instances
+    GITHUB_API_URL: str = "https://api.github.com"
+    GITHUB_API_VERSION: str = "2022-11-28"
+    SENDGRID_API_URL: str = "https://api.sendgrid.com/v3/mail/send"
+    OPENVSX_API_URL: str = "https://open-vsx.org/api"
+
+    # ============== HTTP Client Timeouts ==============
+    HTTP_TIMEOUT_DEFAULT: float = 30.0  # Default HTTP request timeout in seconds
+    HTTP_TIMEOUT_GITHUB: float = 30.0  # GitHub API timeout
+    HTTP_TIMEOUT_SENDGRID: float = 30.0  # SendGrid API timeout
+
+    # ============== Workspace Operation Timeouts ==============
+    WORKSPACE_CREATION_TIMEOUT: int = 600  # 10 minutes for workspace creation
+    WORKSPACE_EXEC_TIMEOUT_DEFAULT: int = 10  # Default command execution timeout
+    WORKSPACE_EXEC_TIMEOUT_INSTALL: int = 300  # 5 minutes for installations
+
+    # ============== Retry Configuration ==============
+    HTTP_RETRY_MAX_ATTEMPTS: int = 3
+    HTTP_RETRY_INITIAL_DELAY: float = 0.5  # seconds
+    HTTP_RETRY_MAX_DELAY: float = 10.0  # seconds
 
     @property
     def enabled_mcp_servers(self) -> list[str]:

@@ -30,12 +30,14 @@ import {
   getUserConfig,
   listHardwareSpecs,
   listLocalPods,
+  getLocalPodPricing,
   getGitHubLinkURL,
   getGitHubBranches,
   type PodTemplate,
   type UserConfig,
   type HardwareSpecResponse,
   type LocalPod,
+  type LocalPodPricing,
 } from '@/lib/api';
 import { useUser } from '@/stores/auth';
 import { HardwareSelector } from '@/components/billing/HardwareSelector';
@@ -147,6 +149,7 @@ export default function NewSessionPage() {
   const [templates, setTemplates] = useState<PodTemplate[]>([]);
   const [hardwareSpecs, setHardwareSpecs] = useState<HardwareSpecResponse[]>([]);
   const [localPods, setLocalPods] = useState<LocalPod[]>([]);
+  const [localPodPricing, setLocalPodPricing] = useState<LocalPodPricing | null>(null);
   const [_userConfig, setUserConfig] = useState<UserConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [_creating, setCreating] = useState(false);
@@ -188,16 +191,23 @@ export default function NewSessionPage() {
 
     async function loadData() {
       try {
-        const [templatesData, configData, hardwareData, localPodsData] = await Promise.all([
-          listTemplates(true),
-          getUserConfig().catch(() => null),
-          listHardwareSpecs().catch(() => []),
-          listLocalPods().catch(() => []),
-        ]);
+        const [templatesData, configData, hardwareData, localPodsData, localPodPricingData] =
+          await Promise.all([
+            listTemplates(true),
+            getUserConfig().catch(() => null),
+            listHardwareSpecs().catch(() => []),
+            listLocalPods().catch(() => []),
+            getLocalPodPricing().catch(() => ({
+              hourly_rate_cents: 0,
+              description: 'Your local machine',
+              billing_enabled: false,
+            })),
+          ]);
         setTemplates(templatesData);
         setUserConfig(configData);
         setHardwareSpecs(hardwareData);
         setLocalPods(localPodsData);
+        setLocalPodPricing(localPodPricingData);
 
         // Pre-select default template if set
         if (configData?.default_template_id) {
@@ -720,9 +730,18 @@ export default function NewSessionPage() {
                                   </span>
                                 )}
                               </div>
-                              <p className="text-xs text-text-muted mt-1">
-                                {pod.current_workspaces}/{pod.max_workspaces} workspaces
-                              </p>
+                              <div className="flex items-center justify-between mt-1">
+                                <p className="text-xs text-text-muted">
+                                  {pod.current_workspaces}/{pod.max_workspaces} workspaces
+                                </p>
+                                {localPodPricing && (
+                                  <span className="text-xs font-medium text-success">
+                                    {localPodPricing.hourly_rate_cents === 0
+                                      ? 'Free'
+                                      : `$${(localPodPricing.hourly_rate_cents / 100).toFixed(2)}/hr`}
+                                  </span>
+                                )}
+                              </div>
                             </div>
                             {computeTarget === pod.id && (
                               <div className="w-5 h-5 rounded-full bg-success flex items-center justify-center">
@@ -752,9 +771,18 @@ export default function NewSessionPage() {
                                   Offline
                                 </span>
                               </div>
-                              <p className="text-xs text-text-muted mt-1">
-                                Start the agent to use this pod
-                              </p>
+                              <div className="flex items-center justify-between mt-1">
+                                <p className="text-xs text-text-muted">
+                                  Start the agent to use this pod
+                                </p>
+                                {localPodPricing && (
+                                  <span className="text-xs text-text-muted">
+                                    {localPodPricing.hourly_rate_cents === 0
+                                      ? 'Free'
+                                      : `$${(localPodPricing.hourly_rate_cents / 100).toFixed(2)}/hr`}
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           </div>
                         </div>

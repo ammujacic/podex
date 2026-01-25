@@ -415,12 +415,20 @@ def cents_to_dollars(cents: int) -> float:
 
 
 async def log_billing_event(db: AsyncSession, ctx: BillingEventContext) -> None:
-    """Log a billing event for audit."""
+    """Log a billing event for audit.
+
+    HIGH FIX: Added defensive null checks for request.client to prevent AttributeError.
+    """
+    # HIGH FIX: Defensive null check - client can be None even if request exists
+    ip_address = None
+    if ctx.request is not None and ctx.request.client is not None:
+        ip_address = ctx.request.client.host
+
     event = BillingEvent(
         user_id=ctx.user_id,
         event_type=ctx.event_type,
         event_data=ctx.event_data,
-        ip_address=ctx.request.client.host if ctx.request and ctx.request.client else None,
+        ip_address=ip_address,
         user_agent=ctx.request.headers.get("user-agent") if ctx.request else None,
         request_id=ctx.request.headers.get("x-request-id") if ctx.request else None,
         subscription_id=ctx.subscription_id,
@@ -437,9 +445,12 @@ async def get_or_create_credit_balance(
 ) -> CreditBalance:
     """Get or create credit balance for user.
 
-    SECURITY: Uses proper locking and retry to prevent race conditions
-    where concurrent requests could create duplicate balances or
-    overdraw the balance.
+    SECURITY: Uses proper locking to prevent race conditions where
+    concurrent requests could create duplicate balances or overdraw.
+
+    HIGH FIX: Uses INSERT ... ON CONFLICT DO NOTHING pattern instead of
+    try/except IntegrityError to avoid losing transaction state on rollback.
+    This ensures the lock remains valid throughout the operation.
 
     Args:
         db: Database session
@@ -449,40 +460,25 @@ async def get_or_create_credit_balance(
     Returns:
         CreditBalance instance
     """
-    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+    # First, try to insert (does nothing if exists due to ON CONFLICT)
+    # This is atomic and won't cause IntegrityError that needs rollback
+    insert_stmt = (
+        pg_insert(CreditBalance)
+        .values(user_id=user_id, balance_cents=0, total_purchased_cents=0, total_used_cents=0)
+        .on_conflict_do_nothing(index_elements=["user_id"])
+    )
+    await db.execute(insert_stmt)
+    await db.flush()  # Ensure insert is persisted before select
+
+    # Now select (guaranteed to exist) with optional lock
     query = select(CreditBalance).where(CreditBalance.user_id == user_id)
     if for_update:
         query = query.with_for_update()
 
     result = await db.execute(query)
-    balance = result.scalar_one_or_none()
-
-    if not balance:
-        # Race condition handling: if two requests try to create simultaneously,
-        # one will fail with IntegrityError (unique constraint on user_id)
-        try:
-            balance = CreditBalance(user_id=user_id)
-            db.add(balance)
-            await db.flush()
-        except IntegrityError:
-            # Another request created the balance - rollback and re-fetch
-            await db.rollback()
-            # SECURITY: Re-apply lock after rollback to prevent race conditions
-            retry_query = select(CreditBalance).where(CreditBalance.user_id == user_id)
-            if for_update:
-                retry_query = retry_query.with_for_update()
-            result = await db.execute(retry_query)
-            balance = result.scalar_one()
-        else:
-            # Re-fetch with lock if needed to ensure consistent state
-            if for_update:
-                result = await db.execute(
-                    select(CreditBalance).where(CreditBalance.user_id == user_id).with_for_update()
-                )
-                balance = result.scalar_one()
-
-    return balance
+    return result.scalar_one()
 
 
 async def get_or_create_stripe_customer(db: AsyncSession, user: User) -> str:
@@ -3513,6 +3509,37 @@ def _calculate_cost_split_decimal(
     return input_base, input_total, output_base, output_total
 
 
+async def _fetch_entity_names(
+    db: AsyncSession,
+    session_id: str | None,
+    workspace_id: str | None,
+    agent_id: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    """Fetch entity names for snapshot fields in usage records.
+
+    Returns (session_name, workspace_name, agent_name) tuple.
+    These are captured at record creation time for historical accuracy.
+    """
+    session_name = None
+    workspace_name = None
+    agent_name = None
+
+    # Batch fetch to minimize DB round trips
+    if session_id:
+        result = await db.execute(select(Session.name).where(Session.id == session_id))
+        session_name = result.scalar_one_or_none()
+
+    if workspace_id:
+        # Workspaces don't have names, use the ID
+        workspace_name = workspace_id
+
+    if agent_id:
+        result = await db.execute(select(Agent.name).where(Agent.id == agent_id))
+        agent_name = result.scalar_one_or_none()
+
+    return session_name, workspace_name, agent_name
+
+
 async def _record_single_event(
     db: AsyncSession,
     event: UsageEventInput,
@@ -3598,6 +3625,11 @@ async def _record_single_event(
         # Only "included" usage counts towards quota and incurs cost
         usage_source = getattr(event, "usage_source", "included") or "included"
         is_billable = usage_source == "included"
+
+        # Fetch entity names for snapshot fields (preserves names even after deletion)
+        session_name, workspace_name, agent_name = await _fetch_entity_names(
+            db, event.session_id, event.workspace_id, event.agent_id
+        )
 
         # Determine usage type for database
         if event.usage_type in (
@@ -3742,6 +3774,9 @@ async def _record_single_event(
                         session_id=event.session_id,
                         workspace_id=event.workspace_id,
                         agent_id=event.agent_id,
+                        session_name=session_name,
+                        workspace_name=workspace_name,
+                        agent_name=agent_name,
                         usage_type="tokens_input",
                         quantity=event.input_tokens,
                         unit="tokens",
@@ -3762,6 +3797,9 @@ async def _record_single_event(
                         session_id=event.session_id,
                         workspace_id=event.workspace_id,
                         agent_id=event.agent_id,
+                        session_name=session_name,
+                        workspace_name=workspace_name,
+                        agent_name=agent_name,
                         usage_type="tokens_output",
                         quantity=event.output_tokens,
                         unit="tokens",
@@ -3837,6 +3875,8 @@ async def _record_single_event(
                 user_id=event.user_id,
                 session_id=event.session_id,
                 workspace_id=event.workspace_id,
+                session_name=session_name,
+                workspace_name=workspace_name,
                 usage_type="compute_seconds",
                 quantity=event.duration_seconds or event.quantity,
                 unit="seconds",
@@ -3892,6 +3932,8 @@ async def _record_single_event(
                 user_id=event.user_id,
                 session_id=event.session_id,
                 workspace_id=event.workspace_id,
+                session_name=session_name,
+                workspace_name=workspace_name,
                 usage_type="storage_gb",
                 quantity=event.quantity,
                 unit="bytes",
@@ -3912,6 +3954,7 @@ async def _record_single_event(
                 idempotency_key=idempotency_key,
                 user_id=event.user_id,
                 session_id=event.session_id,
+                session_name=session_name,
                 usage_type="api_calls",
                 quantity=event.quantity,
                 unit="calls",

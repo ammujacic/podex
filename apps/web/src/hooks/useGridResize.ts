@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import type { GridSpan } from '@/stores/session';
+import { useUIStore } from '@/stores/ui';
 
 export type ResizeDirection = 'right' | 'left' | 'bottom-right' | 'bottom-left';
 
@@ -29,6 +30,15 @@ export function useGridResize({
   onResize,
   gridRef,
 }: UseGridResizeOptions) {
+  // Get grid configuration from UI store
+  const gridConfig = useUIStore((state) => state.gridConfig);
+
+  // Use gridConfig values if set (0 means use defaults)
+  // For maxCols: 0 means match grid columns (will be computed dynamically)
+  // For maxRows: 0 means unlimited
+  const effectiveMaxCols = gridConfig.maxCols || maxCols;
+  const effectiveMaxRows = gridConfig.maxRows || maxRows;
+
   const [resizeState, setResizeState] = useState<ResizeState>({
     isResizing: false,
     previewSpan: initialSpan,
@@ -58,9 +68,8 @@ export function useGridResize({
       const cols = gridStyle.gridTemplateColumns.split(' ').length;
       const cellWidth = (gridRect.width - gap * (cols - 1)) / cols;
 
-      // Get row height from grid auto-rows style (e.g., "300px" from auto-rows-[300px])
-      const autoRows = gridStyle.gridAutoRows;
-      const cellHeight = parseFloat(autoRows) || 300;
+      // Use configured row height from gridConfig
+      const cellHeight = gridConfig.rowHeight;
 
       // Calculate current column position of the card (1-based)
       if (cardElement) {
@@ -73,7 +82,7 @@ export function useGridResize({
 
       return { cellWidth, cellHeight, gap, cols, gridLeft: gridRect.left };
     },
-    [gridRef]
+    [gridRef, gridConfig.rowHeight]
   );
 
   const handleResizeStart = useCallback(
@@ -116,7 +125,7 @@ export function useGridResize({
       const newHeight = cardRectRef.current.height + deltaY;
       const rowSpan = Math.max(
         MIN_ROWS,
-        Math.min(maxRows, Math.round((newHeight + gap / 2) / (cellHeight + gap)))
+        Math.min(effectiveMaxRows, Math.round((newHeight + gap / 2) / (cellHeight + gap)))
       );
 
       const currentColStart = resizeState.previewSpan.colStart ?? initialColStartRef.current;
@@ -136,16 +145,22 @@ export function useGridResize({
         // Calculate the right edge position (should stay fixed)
         const originalRightCol = currentColStart + currentColSpan - 1;
 
+        // Determine effective max based on config (0 means match grid columns)
+        const actualMaxCols = gridConfig.maxCols === 0 ? cols : effectiveMaxCols;
+
         // New span is from newColStart to the original right edge
-        newColSpan = Math.max(MIN_COLS, Math.min(maxCols, originalRightCol - newColStart + 1));
+        newColSpan = Math.max(
+          MIN_COLS,
+          Math.min(actualMaxCols, originalRightCol - newColStart + 1)
+        );
 
         // Ensure colStart doesn't go below 1
         if (newColStart < 1) {
           newColStart = 1;
-          newColSpan = Math.min(maxCols, originalRightCol);
+          newColSpan = Math.min(actualMaxCols, originalRightCol);
         }
 
-        // Ensure we don't exceed maxCols total
+        // Ensure we don't exceed grid bounds
         if (newColStart + newColSpan - 1 > cols) {
           newColSpan = cols - newColStart + 1;
         }
@@ -153,9 +168,13 @@ export function useGridResize({
         // Right resize: colStart stays the same, only colSpan changes
         newColStart = currentColStart;
         const newWidth = cardRectRef.current.width + deltaX;
+
+        // Determine effective max based on config (0 means match grid columns)
+        const actualMaxCols = gridConfig.maxCols === 0 ? cols : effectiveMaxCols;
+
         newColSpan = Math.max(
           MIN_COLS,
-          Math.min(maxCols, Math.round((newWidth + gap / 2) / (cellWidth + gap)))
+          Math.min(actualMaxCols, Math.round((newWidth + gap / 2) / (cellWidth + gap)))
         );
 
         // Ensure we don't exceed grid bounds
@@ -174,8 +193,9 @@ export function useGridResize({
       resizeState.direction,
       resizeState.previewSpan.colStart,
       initialSpan.colSpan,
-      maxCols,
-      maxRows,
+      effectiveMaxCols,
+      effectiveMaxRows,
+      gridConfig.maxCols,
     ]
   );
 

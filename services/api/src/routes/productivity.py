@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -155,6 +155,20 @@ async def get_productivity_summary(
 ) -> ProductivitySummary:
     """Get productivity summary for the specified period."""
     user_id = user["id"]
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User ID not found")
+
+    # Update streaks before fetching metrics to ensure they're current
+    try:
+        from src.services.productivity_tracking_service import (  # noqa: PLC0415
+            ProductivityTrackingService,
+        )
+
+        tracker = ProductivityTrackingService(db)
+        await tracker.update_streaks(user_id)
+    except Exception:
+        pass  # Non-critical, continue with potentially stale streak data
+
     end_date = datetime.now(UTC)
     start_date = end_date - timedelta(days=days)
 

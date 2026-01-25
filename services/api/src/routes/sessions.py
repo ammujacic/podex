@@ -1,6 +1,8 @@
 """Session management routes."""
 
+import io
 import os
+import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from http import HTTPStatus
@@ -10,6 +12,7 @@ from urllib.parse import urlparse
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,6 +48,7 @@ from src.middleware.rate_limit import (
     limiter,
 )
 from src.routes.dependencies import DbSession, get_current_user_id
+from src.services.workspace_router import workspace_router
 
 logger = structlog.get_logger()
 
@@ -121,6 +125,7 @@ class SessionCreate(BaseModel):
     branch: str = "main"
     template_id: str | None = None
     tier: str | None = None  # Hardware tier (starter, pro, etc.)
+    local_pod_id: str | None = None  # If set, use local pod instead of cloud compute
 
 
 class SessionResponse(BaseModel):
@@ -135,6 +140,7 @@ class SessionResponse(BaseModel):
     workspace_status: str | None = None  # running, standby, stopped, pending, error
     template_id: str | None = None
     git_url: str | None = None
+    local_pod_id: str | None = None  # ID of local pod hosting this session (null = cloud)
     archived_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
@@ -161,34 +167,54 @@ async def check_session_quota(db: AsyncSession, user_id: str) -> None:
     race conditions where concurrent requests could exceed the quota. The lock
     serializes all concurrent session creation requests for the same user.
 
+    CRITICAL FIX: Added retry with exponential backoff instead of failing immediately
+    on lock contention. This prevents legitimate concurrent requests from being rejected.
+
     Args:
         db: Database session
         user_id: User ID to check
 
     Raises:
-        HTTPException: If user has exceeded their session quota or lock acquisition fails
+        HTTPException: If user has exceeded their session quota or max retries exceeded
     """
+    import asyncio
+    import random
+
     from sqlalchemy.exc import OperationalError
 
-    try:
-        # Lock the user's subscription row with NOWAIT to fail fast on contention
-        # This prevents race conditions where multiple requests could exceed the quota
-        sub_query = (
-            select(UserSubscription)
-            .where(UserSubscription.user_id == user_id)
-            .where(UserSubscription.status.in_(["active", "trialing"]))
-            .order_by(UserSubscription.created_at.desc())
-            .limit(1)
-            .with_for_update(nowait=True)
-        )
-        sub_result = await db.execute(sub_query)
-        subscription = sub_result.scalar_one_or_none()
-    except OperationalError:
-        # Lock acquisition failed - another request is creating a session
-        raise HTTPException(
-            status_code=409,
-            detail="Another session creation is in progress. Please try again.",
-        ) from None
+    max_retries = settings.SESSION_QUOTA_MAX_RETRIES
+    retry_delay = settings.SESSION_QUOTA_RETRY_DELAY
+    backoff_multiplier = settings.SESSION_QUOTA_RETRY_BACKOFF
+
+    subscription = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            # Lock the user's subscription row with NOWAIT to fail fast on contention
+            # This prevents race conditions where multiple requests could exceed the quota
+            sub_query = (
+                select(UserSubscription)
+                .where(UserSubscription.user_id == user_id)
+                .where(UserSubscription.status.in_(["active", "trialing"]))
+                .order_by(UserSubscription.created_at.desc())
+                .limit(1)
+                .with_for_update(nowait=True)
+            )
+            sub_result = await db.execute(sub_query)
+            subscription = sub_result.scalar_one_or_none()
+            break  # Success - exit retry loop
+        except OperationalError:
+            if attempt < max_retries:
+                # Add jitter to prevent thundering herd
+                jitter = random.uniform(0, retry_delay * 0.5)
+                await asyncio.sleep(retry_delay + jitter)
+                retry_delay *= backoff_multiplier
+            else:
+                # Max retries exceeded
+                raise HTTPException(
+                    status_code=409,
+                    detail="Session creation is temporarily busy. Please try again in a moment.",
+                ) from None
 
     if not subscription:
         # No active subscription - use free tier limits (3 sessions)
@@ -227,6 +253,7 @@ async def build_workspace_config(
     git_url: str | None,
     tier: str | None = None,
     user_id: str | None = None,
+    git_branch: str | None = None,
 ) -> dict[str, Any]:
     """Build workspace configuration from template and git URL.
 
@@ -236,6 +263,7 @@ async def build_workspace_config(
         git_url: Optional git URL to clone
         tier: Optional hardware tier (defaults to "starter")
         user_id: Optional user ID to fetch git config from
+        git_branch: Optional git branch to checkout after cloning
 
     Returns:
         Workspace configuration dict for the compute service
@@ -257,6 +285,10 @@ async def build_workspace_config(
         "repos": [git_url] if git_url else [],
         "tier": tier or "starter",  # Default to starter tier if not specified
     }
+
+    # Add git branch if specified (and not "main" which is the default)
+    if git_branch and git_branch != "main":
+        config["git_branch"] = git_branch
 
     # Fetch user's configuration if user_id provided
     if user_id:
@@ -364,8 +396,44 @@ async def create_session(
             ),
         )
 
-    # Create workspace first
-    workspace = WorkspaceModel(status="pending")
+    # Validate local_pod_id if provided
+    local_pod = None
+    if data.local_pod_id:
+        from src.database.models import LocalPod
+        from src.websocket.local_pod_hub import is_pod_online
+
+        result = await db.execute(
+            select(LocalPod).where(
+                LocalPod.id == data.local_pod_id,
+                LocalPod.user_id == user_id,
+            )
+        )
+        local_pod = result.scalar_one_or_none()
+
+        if not local_pod:
+            raise HTTPException(
+                status_code=404,
+                detail="Local pod not found or you don't have access to it",
+            )
+
+        if not is_pod_online(data.local_pod_id):
+            raise HTTPException(
+                status_code=400,
+                detail="Local pod is not online. Please start the pod agent first.",
+            )
+
+        # Check workspace capacity
+        if local_pod.current_workspaces >= local_pod.max_workspaces:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Local pod has reached its workspace limit ({local_pod.max_workspaces})",
+            )
+
+    # Create workspace first (with local_pod_id if using local pod)
+    workspace = WorkspaceModel(
+        status="pending",
+        local_pod_id=data.local_pod_id if data.local_pod_id else None,
+    )
     db.add(workspace)
     await db.flush()
 
@@ -374,6 +442,8 @@ async def create_session(
         settings = {}
         if data.tier:
             settings["tier"] = data.tier
+        if data.local_pod_id:
+            settings["local_pod_id"] = data.local_pod_id
 
         session = SessionModel(
             name=data.name,
@@ -396,28 +466,81 @@ async def create_session(
 
     # Build workspace config from template (includes user's git config)
     workspace_config = await build_workspace_config(
-        db, data.template_id, data.git_url, data.tier, user_id
+        db, data.template_id, data.git_url, data.tier, user_id, data.branch
     )
 
-    # Provision workspace in compute service
-    try:
-        workspace_info = await compute_client.create_workspace(
-            session_id=str(session.id),
-            user_id=user_id,
-            workspace_id=str(workspace.id),
-            config=workspace_config,
-        )
-        # Update workspace status from compute service response
-        workspace.status = workspace_info.get("status", "running")
-        await db.commit()
-    except ComputeClientError as e:
-        logger.warning(
-            "Failed to provision workspace in compute service",
-            workspace_id=str(workspace.id),
-            session_id=str(session.id),
-            error=str(e),
-        )
-        # Session still usable, compute will be provisioned on first access
+    # Provision workspace - either on local pod or cloud compute
+    if data.local_pod_id:
+        # Use local pod via RPC
+        from src.websocket.local_pod_hub import PodNotConnectedError, call_pod
+
+        try:
+            workspace_info = await call_pod(
+                data.local_pod_id,
+                "workspace.create",
+                {
+                    "workspace_id": str(workspace.id),
+                    "session_id": str(session.id),
+                    "user_id": user_id,
+                    "config": workspace_config,
+                },
+            )
+            # Update workspace status from pod response
+            if isinstance(workspace_info, dict):
+                workspace.status = workspace_info.get("status", "running")
+            else:
+                workspace.status = "running"
+            await db.commit()
+            logger.info(
+                "Workspace created on local pod",
+                workspace_id=str(workspace.id),
+                pod_id=data.local_pod_id,
+            )
+        except PodNotConnectedError:
+            logger.warning(
+                "Local pod disconnected during workspace creation",
+                workspace_id=str(workspace.id),
+                pod_id=data.local_pod_id,
+            )
+            workspace.status = "error"
+            await db.commit()
+        except TimeoutError:
+            logger.warning(
+                "Local pod workspace creation timed out",
+                workspace_id=str(workspace.id),
+                pod_id=data.local_pod_id,
+            )
+            workspace.status = "pending"
+            await db.commit()
+        except Exception as e:
+            logger.warning(
+                "Failed to provision workspace on local pod",
+                workspace_id=str(workspace.id),
+                pod_id=data.local_pod_id,
+                error=str(e),
+            )
+            workspace.status = "error"
+            await db.commit()
+    else:
+        # Use cloud compute service
+        try:
+            workspace_info = await compute_client.create_workspace(
+                session_id=str(session.id),
+                user_id=user_id,
+                workspace_id=str(workspace.id),
+                config=workspace_config,
+            )
+            # Update workspace status from compute service response
+            workspace.status = workspace_info.get("status", "running")
+            await db.commit()
+        except ComputeClientError as e:
+            logger.warning(
+                "Failed to provision workspace in compute service",
+                workspace_id=str(workspace.id),
+                session_id=str(session.id),
+                error=str(e),
+            )
+            # Session still usable, compute will be provisioned on first access
 
     # Invalidate user's sessions list cache (O(1) version increment)
     await invalidate_user_sessions(user_id)
@@ -472,6 +595,7 @@ async def create_session(
         workspace_status=workspace_status,
         template_id=session.template_id,
         git_url=session.git_url,
+        local_pod_id=workspace.local_pod_id if workspace else None,
         created_at=session.created_at,
         updated_at=session.updated_at,
     )
@@ -551,6 +675,7 @@ async def list_sessions(
             archived_at=s.archived_at,
             created_at=s.created_at,
             updated_at=s.updated_at,
+            local_pod_id=s.workspace.local_pod_id if s.workspace else None,
         )
         for s in sessions
     ]
@@ -626,6 +751,7 @@ async def get_session(
         archived_at=session.archived_at,
         created_at=session.created_at,
         updated_at=session.updated_at,
+        local_pod_id=session.workspace.local_pod_id if session.workspace else None,
     )
 
     # Cache the result (note: workspace_status may become stale in cache)
@@ -683,6 +809,7 @@ async def archive_session(
         archived_at=session.archived_at,
         created_at=session.created_at,
         updated_at=session.updated_at,
+        local_pod_id=session.workspace.local_pod_id if session.workspace else None,
     )
 
 
@@ -735,6 +862,7 @@ async def unarchive_session(
         archived_at=session.archived_at,
         created_at=session.created_at,
         updated_at=session.updated_at,
+        local_pod_id=session.workspace.local_pod_id if session.workspace else None,
     )
 
 
@@ -1533,18 +1661,23 @@ async def ensure_workspace_provisioned(
     if db and session.template_id:
         tier = session.settings.get("tier") if session.settings else None
         workspace_config = await build_workspace_config(
-            db, session.template_id, session.git_url, tier, user_id
+            db, session.template_id, session.git_url, tier, user_id, session.branch
         )
     elif db:
         # No template but we have db - still fetch git config
         tier = session.settings.get("tier", "starter") if session.settings else "starter"
-        workspace_config = await build_workspace_config(db, None, session.git_url, tier, user_id)
+        workspace_config = await build_workspace_config(
+            db, None, session.git_url, tier, user_id, session.branch
+        )
     else:
         tier = session.settings.get("tier", "starter") if session.settings else "starter"
         workspace_config = {
             "repos": [session.git_url] if session.git_url else [],
             "tier": tier,
         }
+        # Add git branch if specified (and not "main" which is the default)
+        if session.branch and session.branch != "main":
+            workspace_config["git_branch"] = session.branch
 
     # Workspace doesn't exist, acquire lock before provisioning
     # This prevents multiple concurrent requests from trying to create
@@ -1681,7 +1814,7 @@ async def list_files(
         try:
             # Ensure workspace is provisioned before accessing
             await ensure_workspace_provisioned(session, user_id, db)
-            files = await compute_client.list_files(session.workspace_id, user_id, path)
+            files = await workspace_router.list_files(session.workspace_id, user_id, path)
             # Update activity timestamp and handle standby->running sync
             await update_workspace_activity(session, db)
             # Transform compute service response to FileNode format
@@ -1751,7 +1884,7 @@ async def get_file_content(
         try:
             # Ensure workspace is provisioned before accessing
             await ensure_workspace_provisioned(session, user_id, db)
-            result = await compute_client.read_file(session.workspace_id, user_id, safe_path)
+            result = await workspace_router.read_file(session.workspace_id, user_id, safe_path)
             # Update activity timestamp and handle standby->running sync
             await update_workspace_activity(session, db)
             return FileContent(
@@ -1804,7 +1937,9 @@ async def create_file(
         try:
             # Ensure workspace is provisioned before accessing
             await ensure_workspace_provisioned(session, user_id, db)
-            await compute_client.write_file(session.workspace_id, user_id, safe_path, data.content)
+            await workspace_router.write_file(
+                session.workspace_id, user_id, safe_path, data.content
+            )
             # Update activity timestamp and handle standby->running sync
             await update_workspace_activity(session, db)
             return FileContent(
@@ -1852,7 +1987,9 @@ async def update_file_content(
         try:
             # Ensure workspace is provisioned before accessing
             await ensure_workspace_provisioned(session, user_id, db)
-            await compute_client.write_file(session.workspace_id, user_id, safe_path, data.content)
+            await workspace_router.write_file(
+                session.workspace_id, user_id, safe_path, data.content
+            )
             # Update activity timestamp and handle standby->running sync
             await update_workspace_activity(session, db)
             return FileContent(
@@ -1899,7 +2036,7 @@ async def delete_file(
         try:
             # Ensure workspace is provisioned before accessing
             await ensure_workspace_provisioned(session, user_id, db)
-            await compute_client.delete_file(session.workspace_id, user_id, safe_path)
+            await workspace_router.delete_file(session.workspace_id, user_id, safe_path)
             # Update activity timestamp and handle standby->running sync
             await update_workspace_activity(session, db)
         except ComputeClientError as e:
@@ -1940,18 +2077,18 @@ async def move_file(
             # Ensure workspace is provisioned before accessing
             await ensure_workspace_provisioned(session, user_id, db)
             # Read the source file
-            source_content = await compute_client.read_file(
+            source_content = await workspace_router.read_file(
                 session.workspace_id, user_id, safe_source
             )
             # Write to destination
-            await compute_client.write_file(
+            await workspace_router.write_file(
                 session.workspace_id,
                 user_id,
                 safe_dest,
                 source_content.get("content", ""),
             )
             # Delete the source
-            await compute_client.delete_file(session.workspace_id, user_id, safe_source)
+            await workspace_router.delete_file(session.workspace_id, user_id, safe_source)
             # Update activity timestamp and handle standby->running sync
             await update_workspace_activity(session, db)
         except ComputeClientError as e:
@@ -2043,7 +2180,7 @@ async def bulk_delete_files(
         for path in data.paths:
             try:
                 safe_path = validate_file_path(path)
-                await compute_client.delete_file(session.workspace_id, user_id, safe_path)
+                await workspace_router.delete_file(session.workspace_id, user_id, safe_path)
                 deleted.append(safe_path)
 
                 # Record file change
@@ -2130,16 +2267,16 @@ async def bulk_move_files(
                 safe_dest = validate_file_path(dest)
 
                 # Read source, write to dest, delete source
-                source_content = await compute_client.read_file(
+                source_content = await workspace_router.read_file(
                     session.workspace_id, user_id, safe_source
                 )
-                await compute_client.write_file(
+                await workspace_router.write_file(
                     session.workspace_id,
                     user_id,
                     safe_dest,
                     source_content.get("content", ""),
                 )
-                await compute_client.delete_file(session.workspace_id, user_id, safe_source)
+                await workspace_router.delete_file(session.workspace_id, user_id, safe_source)
 
                 moved.append({"source": safe_source, "dest": safe_dest})
 
@@ -2183,6 +2320,206 @@ async def bulk_move_files(
     )
 
     return BulkMoveResponse(moved=moved, failed=failed)
+
+
+# ==================== File Downloads ====================
+
+
+@router.get("/{session_id}/files/download")
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def download_file(
+    session_id: str,
+    request: Request,
+    response: Response,
+    path: str,
+    db: DbSession,
+) -> StreamingResponse:
+    """Download a single file.
+
+    Returns the file as a streaming response with Content-Disposition header
+    set to attachment for browser download.
+    """
+    session = await get_session_or_404(session_id, request, db)
+    user_id = get_current_user_id(request)
+
+    # Validate path to prevent traversal attacks
+    safe_path = validate_file_path(path)
+
+    if not session.workspace_id:
+        raise HTTPException(status_code=400, detail="Session has no workspace")
+
+    try:
+        # Ensure workspace is provisioned before accessing
+        await ensure_workspace_provisioned(session, user_id, db)
+        result = await workspace_router.read_file(session.workspace_id, user_id, safe_path)
+        # Update activity timestamp
+        await update_workspace_activity(session, db)
+
+        content = result.get("content", "")
+        # Convert string content to bytes
+        content_bytes = content.encode("utf-8")
+
+        # Get filename from path
+        filename = PurePath(safe_path).name
+
+        return StreamingResponse(
+            iter([content_bytes]),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(len(content_bytes)),
+            },
+        )
+    except ComputeClientError as e:
+        if e.status_code == HTTPStatus.NOT_FOUND:
+            raise HTTPException(status_code=404, detail="File not found") from e
+        logger.warning(
+            "Failed to download file from compute service",
+            workspace_id=session.workspace_id,
+            path=safe_path,
+            error=str(e),
+        )
+        raise HTTPException(status_code=503, detail="Compute service unavailable") from e
+
+
+class FolderDownloadRequest(BaseModel):
+    """Request for folder download."""
+
+    path: str
+
+
+async def _collect_files_recursive(
+    workspace_id: str,
+    user_id: str,
+    base_path: str,
+    current_path: str,
+) -> list[str]:
+    """Recursively collect all file paths in a directory."""
+    files: list[str] = []
+
+    try:
+        items = await workspace_router.list_files(workspace_id, user_id, current_path)
+        for item in items:
+            name = item.get("name", "")
+            if not name or name in (".", ".."):
+                continue
+
+            item_path = f"{current_path}/{name}" if current_path != "." else name
+
+            if item.get("type") == "directory":
+                # Recursively collect files from subdirectory
+                subfiles = await _collect_files_recursive(
+                    workspace_id, user_id, base_path, item_path
+                )
+                files.extend(subfiles)
+            else:
+                files.append(item_path)
+    except ComputeClientError:
+        # Skip directories we can't read
+        pass
+
+    return files
+
+
+@router.post("/{session_id}/files/download-folder")
+@limiter.limit(RATE_LIMIT_UPLOAD)  # Use upload rate limit as this is resource-intensive
+async def download_folder(
+    session_id: str,
+    request: Request,
+    response: Response,
+    data: FolderDownloadRequest,
+    db: DbSession,
+) -> StreamingResponse:
+    """Download a folder as a ZIP file.
+
+    Recursively collects all files in the folder and streams them as a ZIP archive.
+    """
+    session = await get_session_or_404(session_id, request, db)
+    user_id = get_current_user_id(request)
+
+    # Validate path to prevent traversal attacks
+    safe_path = validate_file_path(data.path)
+
+    if not session.workspace_id:
+        raise HTTPException(status_code=400, detail="Session has no workspace")
+
+    try:
+        # Ensure workspace is provisioned before accessing
+        await ensure_workspace_provisioned(session, user_id, db)
+
+        # Collect all files recursively
+        file_paths = await _collect_files_recursive(
+            session.workspace_id, user_id, safe_path, safe_path
+        )
+
+        if not file_paths:
+            raise HTTPException(status_code=404, detail="Folder is empty or not found")  # noqa: TRY301
+
+        # Limit the number of files to prevent abuse
+        max_files = 500
+        if len(file_paths) > max_files:
+            raise HTTPException(  # noqa: TRY301
+                status_code=400,
+                detail=f"Folder contains too many files ({len(file_paths)}). "
+                f"Maximum is {max_files}.",
+            )
+
+        # Create ZIP in memory
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for file_path in file_paths:
+                try:
+                    result = await workspace_router.read_file(
+                        session.workspace_id, user_id, file_path
+                    )
+                    content = result.get("content", "")
+
+                    # Calculate relative path within the ZIP
+                    if safe_path == ".":
+                        relative_path = file_path
+                    else:
+                        # Remove the base path prefix to get relative path
+                        relative_path = file_path[len(safe_path) :].lstrip("/")
+                        if not relative_path:
+                            relative_path = PurePath(file_path).name
+
+                    zf.writestr(relative_path, content.encode("utf-8"))
+                except ComputeClientError:
+                    # Skip files we can't read
+                    logger.warning(
+                        "Skipping file in ZIP download",
+                        file_path=file_path,
+                        workspace_id=session.workspace_id,
+                    )
+                    continue
+
+        # Update activity timestamp
+        await update_workspace_activity(session, db)
+
+        zip_buffer.seek(0)
+
+        # Get folder name for the ZIP filename
+        folder_name = PurePath(safe_path).name if safe_path != "." else "workspace"
+
+        return StreamingResponse(
+            zip_buffer,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{folder_name}.zip"',
+                "Content-Length": str(zip_buffer.getbuffer().nbytes),
+            },
+        )
+
+    except HTTPException:
+        raise
+    except ComputeClientError as e:
+        logger.warning(
+            "Failed to download folder from compute service",
+            workspace_id=session.workspace_id,
+            path=safe_path,
+            error=str(e),
+        )
+        raise HTTPException(status_code=503, detail="Compute service unavailable") from e
 
 
 # ==================== File Version History ====================

@@ -21,6 +21,7 @@ export interface RegisterRequest {
   email: string;
   password: string;
   name: string;
+  invitation_token?: string;
 }
 
 /**

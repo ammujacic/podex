@@ -10,9 +10,11 @@ import { initializeAuth } from '@/lib/api';
 import { OnboardingTourProvider } from '@/components/ui/OnboardingTour';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { useSettingsSync } from '@/hooks/useSettingsSync';
+import { useSessionSync } from '@/hooks/useSessionSync';
 import { usePWAInit } from '@/hooks/usePWAInit';
 import { IOSInstallModal, OfflineIndicator } from '@/components/pwa';
 import { useInitializeConfig } from '@/stores/config';
+import { useEditorStore } from '@/stores/editor';
 import { GlobalCreditExhaustedModal } from '@/components/billing/GlobalCreditExhaustedModal';
 
 interface ProvidersProps {
@@ -63,6 +65,10 @@ function AuthInitializer({ children }: { children: ReactNode }) {
   // Load all user settings from server after auth
   useSettingsSync();
 
+  // Sync localStorage sessions with backend to remove orphaned sessions
+  // This fixes the mobile menu showing stale sessions issue
+  useSessionSync();
+
   // Show nothing until hydrated to prevent hydration mismatch
   if (!hydrated) {
     return null;
@@ -89,9 +95,59 @@ function PWAInitializer({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-// Config initializer - loads platform config, providers, and agent roles
-function ConfigInitializer({ children }: { children: ReactNode }) {
-  useInitializeConfig();
+// Config gate - loads platform config and blocks rendering until loaded (for authenticated users)
+function ConfigGate({ children }: { children: ReactNode }) {
+  const { isInitialized, isLoading, error, retry } = useInitializeConfig();
+  const user = useAuthStore((state) => state.user);
+  const authInitialized = useAuthStore((state) => state.isInitialized);
+  const initializeEditorSettings = useEditorStore((state) => state.initializeSettings);
+
+  // Initialize editor settings once config is loaded
+  useEffect(() => {
+    if (isInitialized && !isLoading && !error) {
+      initializeEditorSettings();
+    }
+  }, [isInitialized, isLoading, error, initializeEditorSettings]);
+
+  // For unauthenticated users, don't gate - config isn't needed
+  if (!user || !authInitialized) {
+    return <>{children}</>;
+  }
+
+  // Show loading state while config is loading
+  if (isLoading || !isInitialized) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-void">
+        <div className="flex flex-col items-center gap-4">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-accent-primary border-t-transparent" />
+          <p className="text-sm text-text-muted">Loading configuration...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show error state if config failed to load
+  if (error) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-void p-4">
+        <div className="max-w-md rounded-lg border border-accent-error/30 bg-surface p-6 text-center">
+          <div className="mb-4 text-4xl">⚠️</div>
+          <h2 className="mb-2 text-lg font-semibold text-text-primary">Configuration Error</h2>
+          <p className="mb-4 text-sm text-text-secondary">
+            Failed to load platform configuration. Please check your connection and try again.
+          </p>
+          <p className="mb-4 text-xs text-text-muted font-mono bg-elevated p-2 rounded">{error}</p>
+          <button
+            onClick={retry}
+            className="rounded-lg bg-accent-primary px-4 py-2 text-sm font-medium text-white hover:bg-accent-primary/90 transition-colors"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return <>{children}</>;
 }
 
@@ -149,7 +205,7 @@ export function Providers({ children }: ProvidersProps) {
     >
       <QueryClientProvider client={queryClient}>
         <AuthInitializer>
-          <ConfigInitializer>
+          <ConfigGate>
             <ThemeInitializer>
               <PWAInitializer>
                 <OnboardingTourProvider>
@@ -167,7 +223,7 @@ export function Providers({ children }: ProvidersProps) {
                 </OnboardingTourProvider>
               </PWAInitializer>
             </ThemeInitializer>
-          </ConfigInitializer>
+          </ConfigGate>
         </AuthInitializer>
 
         {/* Toast notifications with theme awareness */}

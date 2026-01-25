@@ -5,6 +5,7 @@ import { Send, Mic, Paperclip, Loader2, StopCircle, X, LogIn } from 'lucide-reac
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { useSessionStore, type AgentMessage } from '@/stores/session';
+import { useStreamingStore } from '@/stores/streaming';
 import { sendAgentMessage, abortAgent, isQuotaError } from '@/lib/api';
 import { useSwipeGesture } from '@/hooks/useGestures';
 import { useVoiceCapture } from '@/hooks/useVoiceCapture';
@@ -45,7 +46,7 @@ export function MobileAgentView({
   const isUserAtBottomRef = useRef(true);
 
   const session = useSessionStore((state) => state.sessions[sessionId]);
-  const streamingMessages = useSessionStore((state) => state.streamingMessages);
+  const streamingMessages = useStreamingStore((state) => state.streamingMessages);
   const agent = session?.agents?.find((a) => a.id === agentId);
 
   // Get finalized messages with deduplication (safety net for race conditions and stale localStorage)

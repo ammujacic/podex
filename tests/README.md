@@ -2,19 +2,6 @@
 
 Comprehensive integration tests for the Podex agent platform, testing all agent types, modes, and UI integration with real Ollama models running locally.
 
-## Overview
-
-These tests verify:
-
-- ✅ All 10 built-in agent types (architect, coder, reviewer, tester, etc.)
-- ✅ All 4 agent modes (plan, ask, auto, sovereign)
-- ✅ Custom agent creation and templates
-- ✅ Agent lifecycle operations (create, duplicate, delete)
-- ✅ Multi-agent workflows and orchestration
-- ✅ UI integration with Playwright
-- ✅ Real-time messaging and streaming
-- ✅ Error handling and edge cases
-
 ## Running Tests
 
 ### Quick Start
