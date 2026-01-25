@@ -52,6 +52,7 @@ import { HardwareSelector } from '@/components/billing/HardwareSelector';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { cn } from '@/lib/utils';
 import { getGitHubStatus, getGitHubRepos } from '@/lib/api';
+import { MountPicker } from '@/components/workspace/MountPicker';
 
 // Template icon configuration with CDN URLs (Simple Icons)
 const templateIconConfig: Record<string, { url: string }> = {
@@ -459,6 +460,7 @@ export default function NewSessionPage() {
   // Compute target (cloud or local pod)
   const [computeTarget, setComputeTarget] = useState<ComputeTarget>('cloud');
   const [showAddPodModal, setShowAddPodModal] = useState(false);
+  const [selectedMountPath, setSelectedMountPath] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user) {
@@ -675,6 +677,8 @@ export default function NewSessionPage() {
         os_version: selectedOsVersion,
         // Local pod (if selected)
         local_pod_id: computeTarget !== 'cloud' ? computeTarget : undefined,
+        // Mount path for local pod workspace
+        mount_path: computeTarget !== 'cloud' ? (selectedMountPath ?? undefined) : undefined,
       });
 
       clearInterval(progressInterval);
@@ -924,7 +928,10 @@ export default function NewSessionPage() {
                 <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                   {/* Cloud option */}
                   <button
-                    onClick={() => setComputeTarget('cloud')}
+                    onClick={() => {
+                      setComputeTarget('cloud');
+                      setSelectedMountPath(null);
+                    }}
                     className={`p-4 rounded-xl border-2 text-left transition-all ${
                       computeTarget === 'cloud'
                         ? 'border-accent-primary bg-accent-primary/5 shadow-lg shadow-accent-primary/10'
@@ -966,7 +973,10 @@ export default function NewSessionPage() {
                     .map((pod) => (
                       <button
                         key={pod.id}
-                        onClick={() => setComputeTarget(pod.id)}
+                        onClick={() => {
+                          setComputeTarget(pod.id);
+                          setSelectedMountPath(null);
+                        }}
                         className={`p-4 rounded-xl border-2 text-left transition-all ${
                           computeTarget === pod.id
                             ? 'border-success bg-success/5 shadow-lg shadow-success/10'
@@ -1084,6 +1094,27 @@ export default function NewSessionPage() {
                   </button>
                 </div>
               </div>
+
+              {/* Mount Selection for Local Pods */}
+              {computeTarget !== 'cloud' &&
+                (() => {
+                  const selectedPod = localPods.find((p) => p.id === computeTarget);
+                  if (selectedPod && selectedPod.mounts && selectedPod.mounts.length > 0) {
+                    return (
+                      <div className="mb-8">
+                        <h2 className="text-sm font-medium text-text-muted uppercase tracking-wider mb-4">
+                          Workspace Mount
+                        </h2>
+                        <MountPicker
+                          pod={selectedPod}
+                          selectedPath={selectedMountPath}
+                          onSelect={setSelectedMountPath}
+                        />
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
 
               {/* Hardware Tier Selection */}
               <div className="mb-8">
@@ -1289,6 +1320,14 @@ export default function NewSessionPage() {
                           ? 'Podex Cloud'
                           : localPods.find((p) => p.id === computeTarget)?.name || 'Local Pod'}
                       </p>
+                      {computeTarget !== 'cloud' && selectedMountPath && (
+                        <p
+                          className="text-xs text-text-muted truncate max-w-[150px]"
+                          title={selectedMountPath}
+                        >
+                          Mount: {selectedMountPath.split('/').pop()}
+                        </p>
+                      )}
                     </div>
                   </div>
 

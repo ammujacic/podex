@@ -3,11 +3,12 @@
 Handles workspace management commands from Podex cloud.
 """
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
-from .docker_manager import LocalDockerManager
+if TYPE_CHECKING:
+    from .client import WorkspaceManager
 
 logger = structlog.get_logger()
 
@@ -15,13 +16,13 @@ logger = structlog.get_logger()
 class RPCHandler:
     """Handles RPC requests from Podex cloud."""
 
-    def __init__(self, docker_manager: LocalDockerManager) -> None:
+    def __init__(self, manager: "WorkspaceManager") -> None:
         """Initialize the handler.
 
         Args:
-            docker_manager: Docker manager for workspace operations
+            manager: Workspace manager (Docker or Native) for workspace operations
         """
-        self.docker = docker_manager
+        self.manager = manager
 
         # Method dispatch table
         self._handlers: dict[str, Any] = {
@@ -67,7 +68,7 @@ class RPCHandler:
 
     async def _create_workspace(self, params: dict[str, Any]) -> dict[str, Any]:
         """Create a new workspace."""
-        workspace = await self.docker.create_workspace(
+        workspace = await self.manager.create_workspace(
             workspace_id=params.get("workspace_id"),
             user_id=params["user_id"],
             session_id=params["session_id"],
@@ -77,23 +78,23 @@ class RPCHandler:
 
     async def _stop_workspace(self, params: dict[str, Any]) -> None:
         """Stop a workspace."""
-        await self.docker.stop_workspace(params["workspace_id"])
+        await self.manager.stop_workspace(params["workspace_id"])
 
     async def _delete_workspace(self, params: dict[str, Any]) -> None:
         """Delete a workspace."""
-        await self.docker.delete_workspace(
+        await self.manager.delete_workspace(
             params["workspace_id"],
             preserve_files=params.get("preserve_files", True),
         )
 
     async def _get_workspace(self, params: dict[str, Any]) -> dict[str, Any] | None:
         """Get workspace info."""
-        workspace = await self.docker.get_workspace(params["workspace_id"])
+        workspace = await self.manager.get_workspace(params["workspace_id"])
         return workspace
 
     async def _list_workspaces(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         """List all workspaces."""
-        workspaces = await self.docker.list_workspaces(
+        workspaces = await self.manager.list_workspaces(
             user_id=params.get("user_id"),
             session_id=params.get("session_id"),
         )
@@ -101,11 +102,11 @@ class RPCHandler:
 
     async def _workspace_heartbeat(self, params: dict[str, Any]) -> None:
         """Update workspace activity timestamp."""
-        await self.docker.heartbeat(params["workspace_id"])
+        await self.manager.heartbeat(params["workspace_id"])
 
     async def _exec_command(self, params: dict[str, Any]) -> dict[str, Any]:
         """Execute command in workspace."""
-        result = await self.docker.exec_command(
+        result = await self.manager.exec_command(
             workspace_id=params["workspace_id"],
             command=params["command"],
             working_dir=params.get("working_dir"),
@@ -115,7 +116,7 @@ class RPCHandler:
 
     async def _read_file(self, params: dict[str, Any]) -> str:
         """Read file from workspace."""
-        content = await self.docker.read_file(
+        content = await self.manager.read_file(
             params["workspace_id"],
             params["path"],
         )
@@ -123,7 +124,7 @@ class RPCHandler:
 
     async def _write_file(self, params: dict[str, Any]) -> None:
         """Write file to workspace."""
-        await self.docker.write_file(
+        await self.manager.write_file(
             params["workspace_id"],
             params["path"],
             params["content"],
@@ -131,7 +132,7 @@ class RPCHandler:
 
     async def _list_files(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         """List files in workspace directory."""
-        files = await self.docker.list_files(
+        files = await self.manager.list_files(
             params["workspace_id"],
             params.get("path", "."),
         )
@@ -139,12 +140,12 @@ class RPCHandler:
 
     async def _get_active_ports(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         """Get active ports in workspace."""
-        ports = await self.docker.get_active_ports(params["workspace_id"])
+        ports = await self.manager.get_active_ports(params["workspace_id"])
         return ports
 
     async def _proxy_request(self, params: dict[str, Any]) -> dict[str, Any]:
         """Proxy HTTP request to workspace."""
-        result = await self.docker.proxy_request(
+        result = await self.manager.proxy_request(
             workspace_id=params["workspace_id"],
             port=params["port"],
             method=params["method"],
@@ -159,5 +160,5 @@ class RPCHandler:
         """Health check."""
         return {
             "status": "healthy",
-            "workspaces": len(self.docker.workspaces),
+            "workspaces": len(self.manager.workspaces),
         }

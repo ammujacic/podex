@@ -48,6 +48,14 @@ class LocalPodUpdate(BaseModel):
     max_workspaces: int | None = Field(None, ge=1, le=MAX_WORKSPACES_PER_POD)
 
 
+class MountConfig(BaseModel):
+    """Mount configuration for local pod."""
+
+    path: str
+    mode: str = "rw"  # "rw" or "ro"
+    label: str | None = None
+
+
 class LocalPodResponse(BaseModel):
     """Local pod response (without token)."""
 
@@ -66,6 +74,11 @@ class LocalPodResponse(BaseModel):
     max_workspaces: int
     current_workspaces: int
     labels: dict[str, Any] | None
+    # New fields for mode and mounts
+    mode: str  # "docker" or "native"
+    native_security: str | None  # "allowlist" or "unrestricted"
+    native_workspace_dir: str | None
+    mounts: list[MountConfig] | None
     created_at: str
     updated_at: str
 
@@ -135,6 +148,11 @@ def _generate_pod_token() -> tuple[str, str, str]:
 
 def _pod_to_response(pod: LocalPod) -> LocalPodResponse:
     """Convert pod model to response."""
+    # Convert mounts from JSONB to MountConfig list
+    mounts = None
+    if pod.mounts:
+        mounts = [MountConfig(**m) for m in pod.mounts]
+
     return LocalPodResponse(
         id=pod.id,
         user_id=pod.user_id,
@@ -151,6 +169,10 @@ def _pod_to_response(pod: LocalPod) -> LocalPodResponse:
         max_workspaces=pod.max_workspaces,
         current_workspaces=pod.current_workspaces,
         labels=pod.labels,
+        mode=pod.mode,
+        native_security=pod.native_security,
+        native_workspace_dir=pod.native_workspace_dir,
+        mounts=mounts,
         created_at=pod.created_at.isoformat(),
         updated_at=pod.updated_at.isoformat(),
     )
@@ -485,19 +507,38 @@ async def update_pod_capabilities(
     db: AsyncSession,
     pod_id: str,
     capabilities: dict[str, Any],
+    config: dict[str, Any] | None = None,
 ) -> None:
-    """Update pod capabilities. Called when pod reports its system info."""
+    """Update pod capabilities and config. Called when pod reports its system info.
+
+    Args:
+        db: Database session.
+        pod_id: Pod ID to update.
+        capabilities: System capabilities (os_info, architecture, etc.).
+        config: Pod configuration (mode, mounts, native settings).
+    """
+    values: dict[str, Any] = {
+        "os_info": capabilities.get("os_info"),
+        "architecture": capabilities.get("architecture"),
+        "docker_version": capabilities.get("docker_version"),
+        "total_memory_mb": capabilities.get("total_memory_mb"),
+        "total_cpu_cores": capabilities.get("cpu_cores"),
+        "updated_at": datetime.now(UTC),
+    }
+
+    # Update config fields if provided
+    if config:
+        if "mode" in config:
+            values["mode"] = config["mode"]
+        if "mounts" in config:
+            values["mounts"] = config["mounts"]
+        if "native_security" in config:
+            values["native_security"] = config["native_security"]
+        if "native_workspace_dir" in config:
+            values["native_workspace_dir"] = config["native_workspace_dir"]
+
     await db.execute(
-        update(LocalPod)
-        .where(LocalPod.id == pod_id)
-        .values(
-            os_info=capabilities.get("os_info"),
-            architecture=capabilities.get("architecture"),
-            docker_version=capabilities.get("docker_version"),
-            total_memory_mb=capabilities.get("total_memory_mb"),
-            total_cpu_cores=capabilities.get("cpu_cores"),
-            updated_at=datetime.now(UTC),
-        ),
+        update(LocalPod).where(LocalPod.id == pod_id).values(**values),
     )
     await db.commit()
 

@@ -107,6 +107,42 @@ class LocalDockerManager:
         except Exception as e:
             logger.warning("Error cleaning up orphaned containers", error=str(e))
 
+    def _build_volumes(self, mount_path: str | None) -> dict[str, dict[str, str]]:
+        """Build Docker volumes dict from mount configuration.
+
+        Args:
+            mount_path: Optional specific path to mount (must be in allowlist).
+
+        Returns:
+            Docker volumes dict mapping host paths to container bind configs.
+        """
+        volumes: dict[str, dict[str, str]] = {}
+
+        if mount_path:
+            # Mount only the specific requested path
+            # Find the matching mount config to get the mode
+            mount_mode = "rw"
+            for mount in self.config.mounts:
+                if mount_path.startswith(mount.path):
+                    mount_mode = mount.mode
+                    break
+
+            volumes[mount_path] = {
+                "bind": "/workspace",
+                "mode": mount_mode,
+            }
+        else:
+            # No specific mount requested - mount all configured mounts
+            for i, mount in enumerate(self.config.mounts):
+                # Mount each allowed path to /mnt/<label or index>
+                mount_point = f"/mnt/{mount.label or f'mount{i}'}"
+                volumes[mount.path] = {
+                    "bind": mount_point,
+                    "mode": mount.mode,
+                }
+
+        return volumes
+
     async def create_workspace(
         self,
         workspace_id: str | None,
@@ -120,7 +156,7 @@ class LocalDockerManager:
             workspace_id: Optional workspace ID (generated if not provided)
             user_id: Owner user ID
             session_id: Session ID
-            config: Workspace configuration
+            config: Workspace configuration (may include mount_path)
 
         Returns:
             Workspace info dict
@@ -135,11 +171,24 @@ class LocalDockerManager:
         workspace_id = workspace_id or _generate_workspace_id()
         container_name = f"podex-workspace-{workspace_id}"
 
+        # Get mount path if specified
+        mount_path = config.get("mount_path")
+
+        # Validate mount path is in allowlist
+        if mount_path:
+            allowed = any(mount_path.startswith(m.path) for m in self.config.mounts)
+            if not allowed:
+                raise RuntimeError(
+                    f"Mount path not in allowlist: {mount_path}. "
+                    f"Allowed: {[m.path for m in self.config.mounts]}"
+                )
+
         logger.info(
             "Creating workspace",
             workspace_id=workspace_id,
             user_id=user_id,
             session_id=session_id,
+            mount_path=mount_path,
         )
 
         # Build environment variables
@@ -154,6 +203,12 @@ class LocalDockerManager:
         tier = config.get("tier", "starter")
         cpu_count, mem_limit = self._get_tier_resources(tier)
 
+        # Build volumes
+        volumes = self._build_volumes(mount_path)
+
+        # Determine working directory
+        working_dir = "/workspace" if mount_path else "/home/dev"
+
         try:
             # Create container
             container = self._client.containers.run(
@@ -164,14 +219,16 @@ class LocalDockerManager:
                 cpu_count=cpu_count,
                 mem_limit=mem_limit,
                 environment=env,
+                volumes=volumes if volumes else None,
                 labels={
                     "podex.workspace_id": workspace_id,
                     "podex.user_id": user_id,
                     "podex.session_id": session_id,
                     "podex.tier": tier,
                     "podex.local_pod": "true",
+                    "podex.mount_path": mount_path or "",
                 },
-                working_dir="/home/dev",
+                working_dir=working_dir,
                 tty=True,
                 stdin_open=True,
             )
@@ -192,6 +249,8 @@ class LocalDockerManager:
                 "port": 3000,
                 "container_id": container.id,
                 "container_name": container_name,
+                "mount_path": mount_path,
+                "working_dir": working_dir,
                 "created_at": datetime.now(UTC).isoformat(),
                 "last_activity": datetime.now(UTC).isoformat(),
             }

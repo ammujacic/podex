@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import platform
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 import psutil
 import socketio
@@ -12,9 +12,67 @@ import structlog
 
 from .config import LocalPodConfig
 from .docker_manager import LocalDockerManager
+from .native_manager import NativeManager
 from .rpc_handler import RPCHandler
 
 logger = structlog.get_logger()
+
+
+class WorkspaceManager(Protocol):
+    """Protocol for workspace managers (Docker or Native)."""
+
+    @property
+    def workspaces(self) -> dict[str, dict[str, Any]]: ...
+
+    # Lifecycle methods
+    async def initialize(self) -> None: ...
+    async def shutdown(self) -> None: ...
+    async def create_workspace(
+        self,
+        workspace_id: str | None,
+        user_id: str,
+        session_id: str,
+        config: dict[str, Any],
+    ) -> dict[str, Any]: ...
+    async def stop_workspace(self, workspace_id: str) -> None: ...
+    async def delete_workspace(self, workspace_id: str, preserve_files: bool = True) -> None: ...
+    async def get_workspace(self, workspace_id: str) -> dict[str, Any] | None: ...
+    async def list_workspaces(
+        self, user_id: str | None = None, session_id: str | None = None
+    ) -> list[dict[str, Any]]: ...
+    async def heartbeat(self, workspace_id: str) -> None: ...
+
+    # Command execution
+    async def exec_command(
+        self,
+        workspace_id: str,
+        command: str,
+        working_dir: str | None = None,
+        timeout: int = 30,
+    ) -> dict[str, Any]: ...
+
+    # File operations
+    async def read_file(self, workspace_id: str, path: str) -> str: ...
+    async def write_file(self, workspace_id: str, path: str, content: str) -> None: ...
+    async def list_files(self, workspace_id: str, path: str = ".") -> list[dict[str, Any]]: ...
+
+    # Ports
+    async def get_active_ports(self, workspace_id: str) -> list[dict[str, Any]]: ...
+
+    # Proxy
+    async def proxy_request(
+        self,
+        workspace_id: str,
+        port: int,
+        method: str,
+        path: str,
+        headers: dict[str, str],
+        body: bytes | None,
+        query_string: str | None,
+    ) -> dict[str, Any]: ...
+
+    # Terminal
+    async def terminal_write(self, workspace_id: str, data: str) -> None: ...
 
 
 class LocalPodClient:
@@ -39,8 +97,16 @@ class LocalPodClient:
             logger=False,
             engineio_logger=False,
         )
-        self.docker_manager = LocalDockerManager(config)
-        self.rpc_handler = RPCHandler(self.docker_manager)
+
+        # Initialize appropriate manager based on mode
+        if config.is_native_mode():
+            self.manager: WorkspaceManager = NativeManager(config)
+            logger.info("Using native execution mode")
+        else:
+            self.manager = LocalDockerManager(config)
+            logger.info("Using Docker execution mode")
+
+        self.rpc_handler = RPCHandler(self.manager)
         self._running = False
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._connected = False
@@ -115,18 +181,21 @@ class LocalPodClient:
             workspace_id = data.get("workspace_id")
             input_data = data.get("data")
             if workspace_id and input_data:
-                await self.docker_manager.terminal_write(workspace_id, input_data)
+                await self.manager.terminal_write(workspace_id, input_data)
 
     async def _send_capabilities(self) -> None:
-        """Send system capabilities to cloud."""
-        try:
-            import docker
+        """Send system capabilities and configuration to cloud."""
+        # Get Docker version if in Docker mode
+        docker_version: str | None = None
+        if self.config.is_docker_mode():
+            try:
+                import docker
 
-            docker_client = docker.from_env()
-            docker_info = docker_client.info()
-            docker_version = docker_info.get("ServerVersion", "unknown")
-        except Exception:
-            docker_version = "unavailable"
+                docker_client = docker.from_env()
+                docker_info = docker_client.info()
+                docker_version = docker_info.get("ServerVersion", "unknown")
+            except Exception:
+                docker_version = "unavailable"
 
         capabilities = {
             "os_info": f"{platform.system()} {platform.release()}",
@@ -138,15 +207,34 @@ class LocalPodClient:
             "pod_version": "0.1.0",
         }
 
-        await self.sio.emit("capabilities", capabilities, namespace="/local-pod")
-        logger.info("Capabilities sent", capabilities=capabilities)
+        # Include mode and mount configuration
+        pod_config: dict[str, Any] = {
+            "mode": self.config.mode,
+            "mounts": self.config.get_mounts_as_dicts(),
+        }
+
+        # Include native settings if in native mode
+        if self.config.is_native_mode():
+            pod_config["native_security"] = self.config.native.security
+            pod_config["native_workspace_dir"] = self.config.native.workspace_dir
+
+        await self.sio.emit(
+            "capabilities",
+            {"capabilities": capabilities, "config": pod_config},
+            namespace="/local-pod",
+        )
+        logger.info(
+            "Capabilities sent",
+            mode=self.config.mode,
+            mounts=len(self.config.mounts),
+        )
 
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats to cloud."""
         while self._running and self._connected:
             try:
                 # Get current workspace count
-                active_workspaces = len(self.docker_manager.workspaces)
+                active_workspaces = len(self.manager.workspaces)
 
                 # Send heartbeat
                 await self.sio.emit(
@@ -176,8 +264,8 @@ class LocalPodClient:
         """
         self._running = True
 
-        # Initialize Docker manager
-        await self.docker_manager.initialize()
+        # Initialize workspace manager
+        await self.manager.initialize()
 
         # Build WebSocket URL
         ws_url = self.config.cloud_url.replace("https://", "wss://").replace("http://", "ws://")
@@ -217,7 +305,7 @@ class LocalPodClient:
                 await self._heartbeat_task
 
         # Stop all workspaces gracefully
-        await self.docker_manager.shutdown()
+        await self.manager.shutdown()
 
         # Disconnect from cloud
         if self.sio.connected:

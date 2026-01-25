@@ -126,6 +126,7 @@ class SessionCreate(BaseModel):
     template_id: str | None = None
     tier: str | None = None  # Hardware tier (starter, pro, etc.)
     local_pod_id: str | None = None  # If set, use local pod instead of cloud compute
+    mount_path: str | None = None  # Optional mount path for local pod workspace
 
 
 class SessionResponse(BaseModel):
@@ -468,6 +469,10 @@ async def create_session(
     workspace_config = await build_workspace_config(
         db, data.template_id, data.git_url, data.tier, user_id, data.branch
     )
+
+    # Add mount_path to config if provided (for local pods)
+    if data.mount_path and data.local_pod_id:
+        workspace_config["mount_path"] = data.mount_path
 
     # Provision workspace - either on local pod or cloud compute
     if data.local_pod_id:

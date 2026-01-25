@@ -102,6 +102,18 @@ class LocalPod(Base):
     max_workspaces: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     current_workspaces: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
+    # Execution mode: "docker" or "native"
+    mode: Mapped[str] = mapped_column(String(20), default="docker", nullable=False)
+
+    # Native mode settings (only used when mode="native")
+    native_security: Mapped[str | None] = mapped_column(String(20))  # "allowlist" or "unrestricted"
+    native_workspace_dir: Mapped[str | None] = mapped_column(
+        String(500)
+    )  # Default workspace directory
+
+    # Allowed mounts - list of {"path": str, "mode": "rw"|"ro", "label": str}
+    mounts: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
+
     # Labels for workspace routing (e.g., {"gpu": true, "region": "home"})
     labels: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 

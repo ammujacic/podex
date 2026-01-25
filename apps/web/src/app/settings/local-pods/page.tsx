@@ -26,6 +26,12 @@ import {
   Zap,
   Info,
   Key,
+  Container,
+  MonitorSmartphone,
+  Folder,
+  Lock,
+  Shield,
+  ShieldOff,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useLocalPodsStore, selectIsDeleting, selectIsRegenerating } from '@/stores/localPods';
@@ -219,6 +225,26 @@ function AddPodModal({ onSubmit, onClose, isLoading }: AddPodModalProps) {
             </p>
           </div>
 
+          {/* Mount Configuration Info */}
+          <div className="p-3 rounded-lg bg-info/10 border border-info/30">
+            <div className="flex items-start gap-2">
+              <Folder className="h-4 w-4 text-info mt-0.5" />
+              <div>
+                <p className="text-xs font-medium text-info">Configure Workspace Mounts</p>
+                <p className="text-xs text-info/80 mt-1">
+                  After creating your pod, configure which folders workspaces can access:
+                </p>
+                <code className="text-[11px] text-info/80 font-mono block mt-2 p-2 rounded bg-void">
+                  podex-local-pod mounts add ~/projects
+                </code>
+                <p className="text-xs text-info/80 mt-2">
+                  When creating a workspace, you&apos;ll be able to select which of your allowed
+                  folders to mount as the workspace directory.
+                </p>
+              </div>
+            </div>
+          </div>
+
           {/* Footer */}
           <div className="flex items-center justify-end gap-2 pt-2">
             <button
@@ -341,6 +367,42 @@ function PodCard({ pod, isExpanded, onToggleExpand, onDelete, onRegenerateToken 
               )}
             </div>
 
+            {/* Mode badge */}
+            <div className="flex items-center gap-2 mt-2">
+              <span
+                className={cn(
+                  'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium',
+                  pod.mode === 'native'
+                    ? 'bg-info/20 text-info'
+                    : 'bg-accent-primary/20 text-accent-primary'
+                )}
+              >
+                {pod.mode === 'native' ? (
+                  <MonitorSmartphone className="h-3 w-3" />
+                ) : (
+                  <Container className="h-3 w-3" />
+                )}
+                {pod.mode === 'native' ? 'Native' : 'Docker'} Mode
+              </span>
+              {pod.mode === 'native' && pod.native_security && (
+                <span
+                  className={cn(
+                    'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium',
+                    pod.native_security === 'allowlist'
+                      ? 'bg-success/20 text-success'
+                      : 'bg-warning/20 text-warning'
+                  )}
+                >
+                  {pod.native_security === 'allowlist' ? (
+                    <Shield className="h-3 w-3" />
+                  ) : (
+                    <ShieldOff className="h-3 w-3" />
+                  )}
+                  {pod.native_security === 'allowlist' ? 'Allowlist' : 'Unrestricted'}
+                </span>
+              )}
+            </div>
+
             {/* Workspaces */}
             <div className="flex items-center gap-2 mt-2">
               <span className="text-xs text-text-muted">
@@ -396,7 +458,7 @@ function PodCard({ pod, isExpanded, onToggleExpand, onDelete, onRegenerateToken 
               </div>
               <div>
                 <span className="text-text-muted">Docker Version</span>
-                <p className="text-text-primary font-medium">{pod.docker_version || 'Unknown'}</p>
+                <p className="text-text-primary font-medium">{pod.docker_version || 'N/A'}</p>
               </div>
               <div>
                 <span className="text-text-muted">Token Prefix</span>
@@ -417,6 +479,75 @@ function PodCard({ pod, isExpanded, onToggleExpand, onDelete, onRegenerateToken 
                 <p className="text-text-primary font-medium">{formatDate(pod.updated_at)}</p>
               </div>
             </div>
+
+            {/* Native mode workspace dir */}
+            {pod.mode === 'native' && pod.native_workspace_dir && (
+              <div className="text-xs">
+                <span className="text-text-muted">Workspace Directory</span>
+                <p className="text-text-primary font-mono">{pod.native_workspace_dir}</p>
+              </div>
+            )}
+
+            {/* Allowed Mounts */}
+            {pod.mounts && pod.mounts.length > 0 && (
+              <div className="pt-2 border-t border-border-subtle">
+                <div className="flex items-center gap-2 mb-2">
+                  <Folder className="h-4 w-4 text-text-muted" />
+                  <span className="text-xs font-medium text-text-primary">
+                    Allowed Mounts ({pod.mounts.length})
+                  </span>
+                </div>
+                <div className="space-y-1">
+                  {pod.mounts.map((mount, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-center justify-between px-2 py-1.5 rounded bg-overlay text-xs"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Folder className="h-3 w-3 text-text-muted" />
+                        <span className="font-medium text-text-primary">
+                          {mount.label || mount.path.split('/').pop()}
+                        </span>
+                        <span className="text-text-muted truncate max-w-48">{mount.path}</span>
+                      </div>
+                      <span
+                        className={cn(
+                          'px-1.5 py-0.5 rounded text-[10px] font-medium',
+                          mount.mode === 'rw'
+                            ? 'bg-success/20 text-success'
+                            : 'bg-warning/20 text-warning'
+                        )}
+                      >
+                        {mount.mode === 'rw' ? (
+                          'rw'
+                        ) : (
+                          <span className="flex items-center gap-0.5">
+                            <Lock className="h-2.5 w-2.5" />
+                            ro
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* No mounts message */}
+            {(!pod.mounts || pod.mounts.length === 0) && (
+              <div className="pt-2 border-t border-border-subtle">
+                <div className="flex items-start gap-2 p-2 rounded bg-warning/10 border border-warning/20">
+                  <AlertCircle className="h-4 w-4 text-warning mt-0.5" />
+                  <div className="text-xs">
+                    <p className="text-warning font-medium">No mounts configured</p>
+                    <p className="text-warning/80 mt-0.5">
+                      Add mounts with:{' '}
+                      <code className="font-mono">podex-local-pod mounts add ~/projects</code>
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Actions */}
             <div className="flex items-center gap-2 pt-2 border-t border-border-subtle">
@@ -704,9 +835,9 @@ export default function LocalPodsSettingsPage() {
                       2
                     </span>
                     <div>
-                      <p className="text-sm text-text-primary font-medium">Start the pod</p>
+                      <p className="text-sm text-text-primary font-medium">Configure your pod</p>
                       <code className="text-xs text-text-muted font-mono block mt-1 p-2 rounded bg-void">
-                        podex-local-pod start --token pdx_pod_...
+                        podex-local-pod config init
                       </code>
                     </div>
                   </div>
@@ -715,10 +846,62 @@ export default function LocalPodsSettingsPage() {
                       3
                     </span>
                     <div>
-                      <p className="text-sm text-text-primary font-medium">Create a workspace</p>
+                      <p className="text-sm text-text-primary font-medium">Add allowed mounts</p>
+                      <code className="text-xs text-text-muted font-mono block mt-1 p-2 rounded bg-void">
+                        podex-local-pod mounts add ~/projects --label &quot;Projects&quot;
+                      </code>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <span className="flex items-center justify-center w-6 h-6 rounded-full bg-accent-primary/20 text-accent-primary text-xs font-bold">
+                      4
+                    </span>
+                    <div>
+                      <p className="text-sm text-text-primary font-medium">Start the pod</p>
+                      <code className="text-xs text-text-muted font-mono block mt-1 p-2 rounded bg-void">
+                        podex-local-pod start --token pdx_pod_...
+                      </code>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Execution Modes explanation */}
+            {pods.length > 0 && (
+              <div className="border border-border-subtle rounded-lg overflow-hidden">
+                <div className="px-4 py-3 bg-elevated border-b border-border-subtle">
+                  <h3 className="text-sm font-medium text-text-primary flex items-center gap-2">
+                    <Info className="h-4 w-4" />
+                    Execution Modes
+                  </h3>
+                </div>
+                <div className="p-4 space-y-4">
+                  <div className="flex items-start gap-3">
+                    <div className="p-2 rounded-lg bg-accent-primary/10">
+                      <Container className="h-4 w-4 text-accent-primary" />
+                    </div>
+                    <div>
+                      <p className="text-sm text-text-primary font-medium">Docker Mode (Default)</p>
                       <p className="text-xs text-text-muted mt-1">
-                        Select your local pod when creating a new workspace in Podex
+                        Workspaces run in isolated containers. Allowed mounts are attached as
+                        volumes. Best for untrusted code and multi-tenant scenarios.
                       </p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <div className="p-2 rounded-lg bg-info/10">
+                      <MonitorSmartphone className="h-4 w-4 text-info" />
+                    </div>
+                    <div>
+                      <p className="text-sm text-text-primary font-medium">Native Mode</p>
+                      <p className="text-xs text-text-muted mt-1">
+                        Workspaces run directly on your machine. Faster performance and full access
+                        to local tools. Best for personal development.
+                      </p>
+                      <code className="text-xs text-text-muted font-mono block mt-2 p-2 rounded bg-void">
+                        podex-local-pod mode native --workspace-dir ~/workspaces
+                      </code>
                     </div>
                   </div>
                 </div>

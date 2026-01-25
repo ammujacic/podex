@@ -1468,6 +1468,8 @@ export interface CreateSessionRequest {
   os_version?: string;
   // Local pod (for self-hosted compute)
   local_pod_id?: string;
+  // Mount path for local pod workspace (optional)
+  mount_path?: string;
 }
 
 export async function createSession(data: CreateSessionRequest): Promise<Session> {
@@ -3162,6 +3164,14 @@ export async function toggleAdminMCPServer(serverId: string): Promise<AdminDefau
 // ==================== Local Pods (Self-Hosted Compute) ====================
 
 export type LocalPodStatus = 'offline' | 'online' | 'busy' | 'error';
+export type LocalPodMode = 'docker' | 'native';
+export type LocalPodSecurity = 'allowlist' | 'unrestricted';
+
+export interface MountConfig {
+  path: string;
+  mode: 'rw' | 'ro';
+  label: string | null;
+}
 
 export interface LocalPod {
   id: string;
@@ -3179,6 +3189,11 @@ export interface LocalPod {
   max_workspaces: number;
   current_workspaces: number;
   labels: Record<string, string> | null;
+  // Execution mode and mount configuration
+  mode: LocalPodMode;
+  native_security: LocalPodSecurity | null;
+  native_workspace_dir: string | null;
+  mounts: MountConfig[] | null;
   created_at: string;
   updated_at: string;
 }

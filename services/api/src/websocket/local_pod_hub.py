@@ -71,20 +71,41 @@ async def _update_pod_status(
         await db.commit()
 
 
-async def _update_pod_capabilities(pod_id: str, capabilities: dict[str, Any]) -> None:
-    """Update pod capabilities in database."""
+async def _update_pod_capabilities(
+    pod_id: str,
+    capabilities: dict[str, Any],
+    config: dict[str, Any] | None = None,
+) -> None:
+    """Update pod capabilities and configuration in database.
+
+    Args:
+        pod_id: Pod ID to update.
+        capabilities: System capabilities (os_info, architecture, etc.).
+        config: Pod configuration (mode, mounts, native settings).
+    """
+    values: dict[str, Any] = {
+        "os_info": capabilities.get("os_info"),
+        "architecture": capabilities.get("architecture"),
+        "docker_version": capabilities.get("docker_version"),
+        "total_memory_mb": capabilities.get("total_memory_mb"),
+        "total_cpu_cores": capabilities.get("cpu_cores"),
+        "updated_at": datetime.now(UTC),
+    }
+
+    # Update config fields if provided
+    if config:
+        if "mode" in config:
+            values["mode"] = config["mode"]
+        if "mounts" in config:
+            values["mounts"] = config["mounts"]
+        if "native_security" in config:
+            values["native_security"] = config["native_security"]
+        if "native_workspace_dir" in config:
+            values["native_workspace_dir"] = config["native_workspace_dir"]
+
     async with async_session_factory() as db:
         await db.execute(
-            update(LocalPod)
-            .where(LocalPod.id == pod_id)
-            .values(
-                os_info=capabilities.get("os_info"),
-                architecture=capabilities.get("architecture"),
-                docker_version=capabilities.get("docker_version"),
-                total_memory_mb=capabilities.get("total_memory_mb"),
-                total_cpu_cores=capabilities.get("cpu_cores"),
-                updated_at=datetime.now(UTC),
-            ),
+            update(LocalPod).where(LocalPod.id == pod_id).values(**values),
         )
         await db.commit()
 
@@ -196,14 +217,33 @@ class LocalPodNamespace(socketio.AsyncNamespace):
     async def on_capabilities(self, sid: str, data: dict[str, Any]) -> None:
         """Handle pod capabilities report (sent on connect).
 
-        Pods send their system capabilities after connecting.
+        Pods send their system capabilities and configuration after connecting.
+        Data format:
+        {
+            "capabilities": {"os_info": ..., "architecture": ..., ...},
+            "config": {"mode": "native", "mounts": [...], ...}
+        }
         """
         pod_id = _sid_to_pod.get(sid)
         if not pod_id:
             return
 
-        await _update_pod_capabilities(pod_id, data)
-        logger.info("Local pod capabilities received", pod_id=pod_id, data=data)
+        # Handle both old format (flat capabilities) and new format (nested)
+        if "capabilities" in data:
+            capabilities = data["capabilities"]
+            config = data.get("config")
+        else:
+            # Legacy format: flat capabilities dict
+            capabilities = data
+            config = None
+
+        await _update_pod_capabilities(pod_id, capabilities, config)
+        logger.info(
+            "Local pod capabilities received",
+            pod_id=pod_id,
+            mode=config.get("mode") if config else None,
+            mounts_count=len(config.get("mounts", [])) if config else 0,
+        )
 
     async def on_heartbeat(self, sid: str, data: dict[str, Any]) -> None:
         """Handle pod heartbeat with system stats.
