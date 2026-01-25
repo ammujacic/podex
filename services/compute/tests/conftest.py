@@ -44,23 +44,21 @@ def redis_url() -> str:
     return os.getenv("COMPUTE_REDIS_URL", "redis://localhost:6379")
 
 
-@pytest.fixture(scope="session")
-async def redis_client_session(redis_url: str) -> AsyncGenerator[RedisClient, None]:
-    """Session-scoped Redis client - reused across all tests."""
+@pytest.fixture
+async def redis_client(redis_url: str) -> AsyncGenerator[RedisClient, None]:
+    """Function-scoped Redis client with automatic cleanup.
+
+    Each test gets its own Redis client to avoid event loop conflicts
+    with pytest-asyncio's function-scoped event loops.
+    """
     client = get_redis_client(redis_url)
     await client.connect()
-    yield client
-    await client.disconnect()
-
-
-@pytest.fixture
-async def redis_client(redis_client_session: RedisClient) -> AsyncGenerator[RedisClient, None]:
-    """Function-scoped Redis client with automatic cleanup."""
     # Flush test keys before test
-    await _flush_test_keys(redis_client_session)
-    yield redis_client_session
+    await _flush_test_keys(client)
+    yield client
     # Flush test keys after test
-    await _flush_test_keys(redis_client_session)
+    await _flush_test_keys(client)
+    await client.disconnect()
 
 
 async def _flush_test_keys(client: RedisClient) -> None:
@@ -129,13 +127,23 @@ def mock_workspace_store() -> MockWorkspaceStore:
 
 @pytest.fixture
 async def workspace_store(redis_url: str) -> AsyncGenerator[WorkspaceStore, None]:
-    """Fresh WorkspaceStore instance per test (requires Redis)."""
+    """Fresh WorkspaceStore instance per test (requires Redis).
+
+    Cleans up all workspace keys before and after each test to ensure
+    test isolation.
+    """
     from src.storage.workspace_store import WorkspaceStore
 
     store = WorkspaceStore(redis_url=redis_url)
+    # Get client and clean up before test
+    client = await store._get_client()
+    await _flush_test_keys(client)
+
     yield store
-    # Disconnect Redis client to avoid event loop issues between tests
+
+    # Clean up after test
     if store._client is not None:
+        await _flush_test_keys(store._client)
         await store._client.disconnect()
         store._client = None
 
