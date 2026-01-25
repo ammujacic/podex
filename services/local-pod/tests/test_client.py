@@ -364,7 +364,7 @@ class TestConnectionErrorRecovery:
 
     @pytest.mark.asyncio
     async def test_run_connection_refused_error(self) -> None:
-        """Test run handles connection refused gracefully."""
+        """Test run raises connection refused error after logging."""
         config = LocalPodConfig(cloud_url="http://localhost:9999")
         client = LocalPodClient(config)
         client.docker_manager.initialize = AsyncMock()
@@ -373,12 +373,13 @@ class TestConnectionErrorRecovery:
         shutdown_event = asyncio.Event()
         shutdown_event.set()
 
-        # Should not raise exception
-        await client.run(shutdown_event)
+        # The run method re-raises connection errors after logging
+        with pytest.raises(ConnectionRefusedError):
+            await client.run(shutdown_event)
 
     @pytest.mark.asyncio
     async def test_run_socket_timeout_error(self) -> None:
-        """Test run handles timeout gracefully."""
+        """Test run raises timeout error after logging."""
         config = LocalPodConfig()
         client = LocalPodClient(config)
         client.docker_manager.initialize = AsyncMock()
@@ -387,8 +388,9 @@ class TestConnectionErrorRecovery:
         shutdown_event = asyncio.Event()
         shutdown_event.set()
 
-        # Should not raise exception
-        await client.run(shutdown_event)
+        # The run method re-raises timeout errors after logging
+        with pytest.raises(TimeoutError):
+            await client.run(shutdown_event)
 
     @pytest.mark.asyncio
     async def test_run_waits_for_shutdown_event(self) -> None:
