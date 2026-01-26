@@ -177,6 +177,21 @@ def start(
     click.echo(f"  Name: {config.pod_name}")
     click.echo(f"  Cloud: {config.cloud_url}")
     click.echo(f"  Max workspaces: {config.max_workspaces}")
+    click.echo(f"  Mode: {config.mode}")
+
+    # Check tmux availability for native mode (required for terminal agents)
+    if config.is_native_mode():
+        import shutil
+
+        if not shutil.which("tmux"):
+            click.echo()
+            click.echo(
+                click.style("Warning: ", fg="yellow", bold=True)
+                + "tmux is not installed. Terminal agents (Claude, Codex, Gemini CLI) "
+                "will not work properly without tmux.\n"
+                "Install it with: brew install tmux (macOS) or apt install tmux (Linux)"
+            )
+
     click.echo()
 
     # Create client
@@ -253,6 +268,32 @@ def check() -> None:
     except Exception as e:
         click.echo(click.style("  Resources: ", bold=True) + f"Error: {e}")
         all_ok = False
+
+    # Check tmux (required for terminal agent integration)
+    import shutil
+
+    tmux_path = shutil.which("tmux")
+    if tmux_path:
+        import subprocess
+
+        try:
+            result = subprocess.run(["tmux", "-V"], capture_output=True, text=True, timeout=5)
+            version = result.stdout.strip() if result.returncode == 0 else "unknown"
+            click.echo(
+                click.style("  tmux: ", bold=True) + click.style("OK", fg="green") + f" ({version})"
+            )
+        except Exception:
+            click.echo(
+                click.style("  tmux: ", bold=True)
+                + click.style("OK", fg="green")
+                + f" (found at {tmux_path})"
+            )
+    else:
+        click.echo(
+            click.style("  tmux: ", bold=True)
+            + click.style("NOT FOUND", fg="yellow")
+            + " (optional, required for terminal agents)"
+        )
 
     # Platform info
     click.echo(click.style("  Platform: ", bold=True) + f"{platform.system()} {platform.release()}")

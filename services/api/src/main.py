@@ -47,6 +47,7 @@ from src.routes import (
     changes,
     checkpoints,
     claude_code,
+    claude_sessions,
     cli_sync,
     commands,
     completion,
@@ -1809,6 +1810,7 @@ api_v1.include_router(skill_repositories.router, tags=["skill-repositories"])
 api_v1.include_router(marketplace.router, tags=["marketplace"])
 api_v1.include_router(llm_providers.router, tags=["llm-providers"])
 api_v1.include_router(local_pods.router)  # Already has prefix
+api_v1.include_router(claude_sessions.router)  # Already has prefix
 api_v1.include_router(llm_bridge.router, tags=["llm-bridge"])
 api_v1.include_router(voice.router, prefix="/voice", tags=["voice"])
 api_v1.include_router(uploads.router, prefix="/sessions", tags=["uploads"])

@@ -156,18 +156,6 @@ function parseDiffOutput(diffText: string): FileDiff[] {
 }
 
 // ============================================================================
-// Line Number Component
-// ============================================================================
-
-function LineNumber({ num, className }: { num?: number; className?: string }) {
-  return (
-    <span className={cn('w-12 text-right pr-2 select-none text-text-muted text-xs', className)}>
-      {num ?? ''}
-    </span>
-  );
-}
-
-// ============================================================================
 // Unified Diff View
 // ============================================================================
 
@@ -185,44 +173,52 @@ function UnifiedDiffView({ hunk, showLineNumbers }: UnifiedDiffViewProps) {
         {hunk.header && <span className="ml-2 text-text-muted">{hunk.header}</span>}
       </div>
 
-      {/* Lines */}
-      {hunk.lines.map((line, i) => (
-        <div
-          key={i}
-          className={cn(
-            'flex leading-5',
-            line.type === 'add' && 'bg-green-500/10',
-            line.type === 'remove' && 'bg-red-500/10'
-          )}
-        >
-          {showLineNumbers && (
-            <>
-              <LineNumber num={line.oldLineNumber} className="border-r border-border-subtle" />
-              <LineNumber num={line.newLineNumber} className="border-r border-border-subtle" />
-            </>
-          )}
-          <span
-            className={cn(
-              'w-6 text-center select-none',
-              line.type === 'add' && 'text-green-400 bg-green-500/20',
-              line.type === 'remove' && 'text-red-400 bg-red-500/20',
-              line.type === 'context' && 'text-text-muted'
-            )}
-          >
-            {line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' '}
-          </span>
-          <pre
-            className={cn(
-              'flex-1 px-2 whitespace-pre overflow-x-auto',
-              line.type === 'add' && 'text-green-300',
-              line.type === 'remove' && 'text-red-300',
-              line.type === 'context' && 'text-text-secondary'
-            )}
-          >
-            {line.content}
-          </pre>
+      {/* Lines - entire view scrolls horizontally as a unit */}
+      <div className="overflow-x-auto">
+        <div className="min-w-max">
+          {hunk.lines.map((line, i) => (
+            <div
+              key={i}
+              className={cn(
+                'flex h-5',
+                line.type === 'add' && 'bg-green-500/10',
+                line.type === 'remove' && 'bg-red-500/10'
+              )}
+            >
+              {showLineNumbers && (
+                <>
+                  <span className="w-12 text-right pr-2 select-none text-text-muted border-r border-border-subtle flex-shrink-0">
+                    {line.oldLineNumber ?? ''}
+                  </span>
+                  <span className="w-12 text-right pr-2 select-none text-text-muted border-r border-border-subtle flex-shrink-0">
+                    {line.newLineNumber ?? ''}
+                  </span>
+                </>
+              )}
+              <span
+                className={cn(
+                  'w-6 text-center select-none flex-shrink-0',
+                  line.type === 'add' && 'text-green-400 bg-green-500/20',
+                  line.type === 'remove' && 'text-red-400 bg-red-500/20',
+                  line.type === 'context' && 'text-text-muted'
+                )}
+              >
+                {line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' '}
+              </span>
+              <pre
+                className={cn(
+                  'px-2 whitespace-pre',
+                  line.type === 'add' && 'text-green-300',
+                  line.type === 'remove' && 'text-red-300',
+                  line.type === 'context' && 'text-text-secondary'
+                )}
+              >
+                {line.content}
+              </pre>
+            </div>
+          ))}
         </div>
-      ))}
+      </div>
     </div>
   );
 }
@@ -238,9 +234,8 @@ interface SplitDiffViewProps {
 
 function SplitDiffView({ hunk, showLineNumbers }: SplitDiffViewProps) {
   // Build parallel lines for left (old) and right (new) sides
-  const { leftLines, rightLines } = useMemo(() => {
-    const left: (DiffLine | null)[] = [];
-    const right: (DiffLine | null)[] = [];
+  const rows = useMemo(() => {
+    const result: { left: DiffLine | null; right: DiffLine | null }[] = [];
 
     let i = 0;
     while (i < hunk.lines.length) {
@@ -251,8 +246,7 @@ function SplitDiffView({ hunk, showLineNumbers }: SplitDiffViewProps) {
       }
 
       if (line.type === 'context') {
-        left.push(line);
-        right.push(line);
+        result.push({ left: line, right: line });
         i++;
       } else if (line.type === 'remove') {
         // Collect consecutive removes
@@ -272,18 +266,19 @@ function SplitDiffView({ hunk, showLineNumbers }: SplitDiffViewProps) {
         // Pair them up
         const maxLen = Math.max(removes.length, adds.length);
         for (let j = 0; j < maxLen; j++) {
-          left.push(removes[j] ?? null);
-          right.push(adds[j] ?? null);
+          result.push({ left: removes[j] ?? null, right: adds[j] ?? null });
         }
       } else if (line.type === 'add') {
-        left.push(null);
-        right.push(line);
+        result.push({ left: null, right: line });
         i++;
       }
     }
 
-    return { leftLines: left, rightLines: right };
+    return result;
   }, [hunk.lines]);
+
+  // Fixed row height for alignment between panes
+  const rowHeight = 'h-5';
 
   return (
     <div className="font-mono text-xs">
@@ -293,76 +288,88 @@ function SplitDiffView({ hunk, showLineNumbers }: SplitDiffViewProps) {
         {hunk.header && <span className="ml-2 text-text-muted">{hunk.header}</span>}
       </div>
 
-      {/* Split view */}
+      {/* Split view with two independently scrollable panes */}
       <div className="flex">
-        {/* Left side (old) */}
-        <div className="flex-1 border-r border-border-default">
-          {leftLines.map((line, i) => (
-            <div
-              key={i}
-              className={cn(
-                'flex leading-5 min-h-[20px]',
-                line?.type === 'remove' && 'bg-red-500/10'
-              )}
-            >
-              {showLineNumbers && (
-                <LineNumber num={line?.oldLineNumber} className="border-r border-border-subtle" />
-              )}
-              <span
+        {/* Left pane (old) - scrolls horizontally as a unit */}
+        <div className="flex-1 overflow-x-auto border-r border-border-default">
+          <div className="min-w-max">
+            {rows.map((row, i) => (
+              <div
+                key={i}
                 className={cn(
-                  'w-6 text-center select-none',
-                  line?.type === 'remove' && 'text-red-400 bg-red-500/20',
-                  line?.type === 'context' && 'text-text-muted'
+                  'flex',
+                  rowHeight,
+                  row.left?.type === 'remove' && 'bg-red-500/10',
+                  !row.left && 'bg-neutral-500/5'
                 )}
               >
-                {line?.type === 'remove' ? '-' : line?.type === 'context' ? ' ' : ''}
-              </span>
-              <pre
-                className={cn(
-                  'flex-1 px-2 whitespace-pre overflow-x-auto',
-                  line?.type === 'remove' && 'text-red-300',
-                  line?.type === 'context' && 'text-text-secondary'
+                {showLineNumbers && (
+                  <span className="w-12 text-right pr-2 select-none text-text-muted border-r border-border-subtle flex-shrink-0">
+                    {row.left?.oldLineNumber ?? ''}
+                  </span>
                 )}
-              >
-                {line?.content ?? ''}
-              </pre>
-            </div>
-          ))}
+                <span
+                  className={cn(
+                    'w-6 text-center select-none flex-shrink-0',
+                    row.left?.type === 'remove' && 'text-red-400 bg-red-500/20',
+                    row.left?.type === 'context' && 'text-text-muted'
+                  )}
+                >
+                  {row.left?.type === 'remove' ? '-' : row.left?.type === 'context' ? ' ' : ''}
+                </span>
+                <pre
+                  className={cn(
+                    'px-2 whitespace-pre',
+                    row.left?.type === 'remove' && 'text-red-300',
+                    row.left?.type === 'context' && 'text-text-secondary'
+                  )}
+                >
+                  {row.left?.content ?? ''}
+                </pre>
+              </div>
+            ))}
+          </div>
         </div>
 
-        {/* Right side (new) */}
-        <div className="flex-1">
-          {rightLines.map((line, i) => (
-            <div
-              key={i}
-              className={cn(
-                'flex leading-5 min-h-[20px]',
-                line?.type === 'add' && 'bg-green-500/10'
-              )}
-            >
-              {showLineNumbers && (
-                <LineNumber num={line?.newLineNumber} className="border-r border-border-subtle" />
-              )}
-              <span
+        {/* Right pane (new) - scrolls horizontally as a unit */}
+        <div className="flex-1 overflow-x-auto">
+          <div className="min-w-max">
+            {rows.map((row, i) => (
+              <div
+                key={i}
                 className={cn(
-                  'w-6 text-center select-none',
-                  line?.type === 'add' && 'text-green-400 bg-green-500/20',
-                  line?.type === 'context' && 'text-text-muted'
+                  'flex',
+                  rowHeight,
+                  row.right?.type === 'add' && 'bg-green-500/10',
+                  !row.right && 'bg-neutral-500/5'
                 )}
               >
-                {line?.type === 'add' ? '+' : line?.type === 'context' ? ' ' : ''}
-              </span>
-              <pre
-                className={cn(
-                  'flex-1 px-2 whitespace-pre overflow-x-auto',
-                  line?.type === 'add' && 'text-green-300',
-                  line?.type === 'context' && 'text-text-secondary'
+                {showLineNumbers && (
+                  <span className="w-12 text-right pr-2 select-none text-text-muted border-r border-border-subtle flex-shrink-0">
+                    {row.right?.newLineNumber ?? ''}
+                  </span>
                 )}
-              >
-                {line?.content ?? ''}
-              </pre>
-            </div>
-          ))}
+                <span
+                  className={cn(
+                    'w-6 text-center select-none flex-shrink-0',
+                    row.right?.type === 'add' && 'text-green-400 bg-green-500/20',
+                    row.right?.type === 'context' && 'text-text-muted'
+                  )}
+                >
+                  {row.right?.type === 'add' ? '+' : row.right?.type === 'context' ? ' ' : ''}
+                </span>
+                <pre
+                  className={cn(
+                    'px-2 whitespace-pre',
+                    row.right?.type === 'add' && 'text-green-300',
+                    row.right?.type === 'context' && 'text-text-secondary'
+                  )}
+                >
+                  {row.right?.content ?? ''}
+                </pre>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </div>

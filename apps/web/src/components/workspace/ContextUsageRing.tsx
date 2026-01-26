@@ -6,13 +6,14 @@ import { useContextStore } from '@/stores/context';
 
 interface ContextUsageRingProps {
   agentId: string;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'xs' | 'sm' | 'md' | 'lg';
   showLabel?: boolean;
   onClick?: () => void;
   className?: string;
 }
 
 const sizeConfig = {
+  xs: { diameter: 22, strokeWidth: 2, fontSize: 'text-[8px]' },
   sm: { diameter: 32, strokeWidth: 3, fontSize: 'text-[10px]' },
   md: { diameter: 40, strokeWidth: 4, fontSize: 'text-xs' },
   lg: { diameter: 56, strokeWidth: 5, fontSize: 'text-sm' },
@@ -103,7 +104,7 @@ export function ContextUsageRing({
       {/* Center percentage */}
       <span
         className={cn(
-          'absolute inset-0 flex items-center justify-center font-mono font-semibold',
+          'absolute top-0 left-0 flex items-center justify-center font-mono font-semibold',
           config.fontSize,
           level === 'critical' && 'text-red-400',
           level === 'warning' && 'text-yellow-400',
@@ -121,11 +122,6 @@ export function ContextUsageRing({
           <span className="text-[10px] text-text-muted">tokens</span>
         </div>
       )}
-
-      {/* Hover tooltip indicator */}
-      <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
-        <div className="w-1 h-1 rounded-full bg-accent-primary" />
-      </div>
     </div>
   );
 }

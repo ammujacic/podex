@@ -105,45 +105,18 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
         return;
       }
 
-      // Check by ID first
+      // Check by ID first - skip if exact ID already exists
       const existingById = agent.messages.find((m) => m.id === data.id);
       if (existingById) {
         return; // Skip duplicate
       }
 
-      // Use store-level idempotent check via message ID
-      // The store's addAgentMessage handles deduplication internally
-
-      // For user messages, also check by content (optimistic messages have temp-xxx IDs)
-      if (data.role === 'user') {
-        const existingByContent = agent.messages.find(
-          (m) => m.role === 'user' && m.content === data.content && m.id.startsWith('temp-')
-        );
-        if (existingByContent) {
-          // Replace temp message with real one (update ID)
-          const { updateMessageId } = useSessionStore.getState();
-          if (updateMessageId) {
-            updateMessageId(sessionId, data.agent_id, existingByContent.id, data.id);
-          }
-          return; // Don't add duplicate
-        }
-      }
-
-      // For assistant messages, check by content (streaming messages might have different IDs)
-      // This fixes the "Message not found" error when trying to play audio
-      if (data.role === 'assistant') {
-        const existingByContent = agent.messages.find(
-          (m) => m.role === 'assistant' && m.content === data.content && m.id !== data.id
-        );
-        if (existingByContent) {
-          // Replace streaming message ID with real database ID
-          const { updateMessageId } = useSessionStore.getState();
-          if (updateMessageId) {
-            updateMessageId(sessionId, data.agent_id, existingByContent.id, data.id);
-          }
-          return; // Don't add duplicate
-        }
-      }
+      // IMPORTANT: All other deduplication is handled atomically by addAgentMessage.
+      // Previously we had manual deduplication here that caused race conditions when
+      // two messages with the same content were sent quickly - both handlers would
+      // find the same temp message, both would return early, and one real message
+      // would be lost. The store's addAgentMessage uses Zustand's set() which receives
+      // current state at execution time, avoiding stale snapshot issues.
 
       const message: AgentMessage = {
         id: data.id,
@@ -282,7 +255,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       }
     );
 
-    // Handle workspace status changes (standby, running, error, etc.)
+    // Handle workspace status changes (standby, running, error, offline, etc.)
     const unsubWorkspaceStatus = onSocketEvent('workspace_status', (data: WorkspaceStatusEvent) => {
       // Update the session's workspace status in the store
       callbacksRef.current.setWorkspaceStatus(sessionId, data.status, data.standby_at || null);
@@ -291,6 +264,11 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       if (data.status === 'standby') {
         toast.info('Workspace moved to standby', {
           description: 'Your workspace was paused due to inactivity. Click Resume to continue.',
+        });
+      } else if (data.status === 'offline') {
+        toast.warning('Local pod disconnected', {
+          description:
+            'Your local pod has gone offline. The workspace will reconnect automatically when the pod comes back online.',
         });
       } else if (data.status === 'error' && data.error) {
         toast.error('Workspace error', {

@@ -32,11 +32,10 @@ export type StatusFilter = 'unresolved' | 'resolved' | 'ignored' | 'all';
 export type ValidationStatus = 'idle' | 'checking' | 'valid' | 'invalid';
 
 // Sentry region options
-// NOTE: Regional tokens (DE/EU) need SENTRY_HOST set to their region's domain.
-// The MCP uses the host to call /users/me/regions/ which must work with the token.
+// NOTE: Currently only the main Sentry Cloud region is supported via the MCP server.
+// Self-hosted instances can use the custom option with their hostname.
 export const SENTRY_REGIONS = [
-  { value: '', label: 'Sentry Cloud (US)', host: '' },
-  { value: 'de.sentry.io', label: 'Sentry Cloud (EU/DE)', host: 'de.sentry.io' },
+  { value: '', label: 'Sentry Cloud', host: '' },
   { value: 'custom', label: 'Self-hosted', host: '' },
 ] as const;
 
@@ -167,8 +166,9 @@ export const useSentryStore = create<SentryState>()(
             });
 
             // If configured, load organizations first (which will then load projects)
+            // IMPORTANT: Await to ensure orgs/projects are loaded before UI renders
             if (isConfigured) {
-              get().loadOrganizations();
+              await get().loadOrganizations();
             }
           } catch (err) {
             set({
@@ -293,7 +293,8 @@ export const useSentryStore = create<SentryState>()(
               });
 
               // Load organizations after successful connection (which will then load projects)
-              get().loadOrganizations();
+              // IMPORTANT: Await to ensure orgs/projects are loaded before returning
+              await get().loadOrganizations();
               return true;
             } else {
               set({
@@ -537,11 +538,14 @@ export const useSentryStore = create<SentryState>()(
       }),
       {
         name: 'sentry-store-persist',
-        // Only persist user selections, not transient data
+        // Persist user selections and org/project data for immediate UI rendering
         partialize: (state) => ({
           selectedOrganizationSlug: state.selectedOrganizationSlug,
           selectedProjectSlug: state.selectedProjectSlug,
           statusFilter: state.statusFilter,
+          // Also persist orgs/projects so dropdowns render immediately on reload
+          organizations: state.organizations,
+          projects: state.projects,
         }),
       }
     ),

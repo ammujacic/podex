@@ -382,7 +382,8 @@ async def _deferred_terminal_cleanup(workspace_id: str) -> None:
         # Double-check room is still empty after grace period
         room = sio.manager.rooms.get("/", {}).get(f"terminal:{workspace_id}", set())
         if not room:
-            await terminal_manager.close_session(workspace_id)
+            # kill_tmux=True ensures local pod tmux sessions are properly cleaned up
+            await terminal_manager.close_session(workspace_id, kill_tmux=True)
             logger.info("Terminal session closed (no clients)", workspace_id=workspace_id)
     except asyncio.CancelledError:
         # Cleanup was cancelled because someone attached
@@ -393,11 +394,13 @@ async def _deferred_terminal_cleanup(workspace_id: str) -> None:
 
 # Create Socket.IO server
 # CORS is configured via settings.CORS_ORIGINS environment variable
+# max_http_buffer_size increased from default 1MB to 50MB to handle large session responses
 sio = socketio.AsyncServer(
     async_mode="asgi",
     cors_allowed_origins=settings.CORS_ORIGINS if settings.CORS_ORIGINS else "*",
     logger=False,
     engineio_logger=False,
+    max_http_buffer_size=50 * 1024 * 1024,  # 50MB for large session data
 )
 
 # Register local pod namespace for self-hosted runner connections
@@ -760,12 +763,18 @@ async def terminal_attach(sid: str, data: dict[str, str]) -> None:
             sid=sid,
             workspace_id=workspace_id,
             shell=shell,
+            is_local_pod=_session.is_local_pod if _session else False,
         )
 
-        # Send welcome message - terminal runs in workspace container at /home/dev
+        # Get working directory - use session's working_dir for local pods, /home/dev for cloud
+        cwd = "/home/dev"
+        if _session and _session.is_local_pod and _session.working_dir:
+            cwd = _session.working_dir
+
+        # Send welcome message
         await sio.emit(
             "terminal_ready",
-            {"workspace_id": workspace_id, "cwd": "/home/dev", "shell": shell},
+            {"workspace_id": workspace_id, "cwd": cwd, "shell": shell},
             to=sid,
         )
     except Exception as e:
@@ -860,7 +869,18 @@ async def terminal_resize(sid: str, data: dict[str, Any]) -> None:
 
 async def emit_to_session(session_id: str, event: str, data: dict[str, Any]) -> None:
     """Emit event to all users in a session."""
-    await sio.emit(event, data, room=f"session:{session_id}")
+    room_name = f"session:{session_id}"
+    # Check how many clients are in the room
+    room = sio.manager.rooms.get("/", {}).get(room_name, set())
+    logger.info(
+        "emit_to_session DEBUG",
+        room_name=room_name,
+        event_name=event,
+        room_client_count=len(room),
+        room_sids=list(room)[:5],  # First 5 SIDs
+        podex_sid_last4=session_id[-4:] if session_id else "None",
+    )
+    await sio.emit(event, data, room=room_name)
 
 
 # ============== Agent Streaming & Tool Visibility ==============

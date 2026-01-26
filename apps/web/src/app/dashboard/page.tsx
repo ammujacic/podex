@@ -43,6 +43,7 @@ import {
   FolderGit2,
   RefreshCw,
   LogOut,
+  WifiOff,
 } from 'lucide-react';
 import { Button } from '@podex/ui';
 import { Logo } from '@/components/ui/Logo';
@@ -120,6 +121,12 @@ const statusConfig: Record<
     bg: 'bg-accent-error/10',
     label: 'Error',
     icon: <AlertCircle className="w-3 h-3" />,
+  },
+  offline: {
+    color: 'text-red-400',
+    bg: 'bg-red-500/10',
+    label: 'Offline',
+    icon: <WifiOff className="w-3 h-3" />,
   },
 };
 
@@ -1033,6 +1040,26 @@ export default function DashboardPage() {
                             </div>
                           ) : null;
                         })()}
+                        {/* Local pod info */}
+                        {session.local_pod_id && (
+                          <div className="flex items-center gap-2 text-xs text-text-muted">
+                            <Server className="w-3 h-3 text-accent-secondary" />
+                            <span className="truncate">
+                              {session.local_pod_name || 'Local Pod'}
+                            </span>
+                            {session.mount_path && (
+                              <>
+                                <span className="text-text-muted/50">·</span>
+                                <span
+                                  className="font-mono truncate max-w-[100px]"
+                                  title={session.mount_path}
+                                >
+                                  {session.mount_path.split('/').pop()}
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
                     <button
@@ -1160,6 +1187,26 @@ export default function DashboardPage() {
                               </div>
                             ) : null;
                           })()}
+                          {/* Local pod info */}
+                          {session.local_pod_id && (
+                            <div className="flex items-center gap-2 text-xs text-text-muted">
+                              <Server className="w-3 h-3 text-accent-secondary" />
+                              <span className="truncate">
+                                {session.local_pod_name || 'Local Pod'}
+                              </span>
+                              {session.mount_path && (
+                                <>
+                                  <span className="text-text-muted/50">·</span>
+                                  <span
+                                    className="font-mono truncate max-w-[100px]"
+                                    title={session.mount_path}
+                                  >
+                                    {session.mount_path.split('/').pop()}
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </motion.div>
@@ -1377,6 +1424,26 @@ export default function DashboardPage() {
                                   </div>
                                 ) : null;
                               })()}
+                              {/* Local pod info */}
+                              {session.local_pod_id && (
+                                <div className="flex items-center gap-2 text-xs text-text-muted">
+                                  <Server className="w-3 h-3 text-accent-secondary" />
+                                  <span className="truncate">
+                                    {session.local_pod_name || 'Local Pod'}
+                                  </span>
+                                  {session.mount_path && (
+                                    <>
+                                      <span className="text-text-muted/50">·</span>
+                                      <span
+                                        className="font-mono truncate max-w-[100px]"
+                                        title={session.mount_path}
+                                      >
+                                        {session.mount_path.split('/').pop()}
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           </div>
                         </motion.div>
@@ -1462,6 +1529,24 @@ export default function DashboardPage() {
                                       </div>
                                     ) : null;
                                   })()}
+                                  {/* Local pod info */}
+                                  {session.local_pod_id && (
+                                    <div className="flex items-center gap-2 text-xs text-text-muted mt-0.5">
+                                      <Server className="w-3 h-3 text-accent-secondary" />
+                                      <span>{session.local_pod_name || 'Local Pod'}</span>
+                                      {session.mount_path && (
+                                        <>
+                                          <span className="text-text-muted/50">·</span>
+                                          <span
+                                            className="font-mono truncate max-w-[150px]"
+                                            title={session.mount_path}
+                                          >
+                                            {session.mount_path}
+                                          </span>
+                                        </>
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
                               </div>
                             </td>

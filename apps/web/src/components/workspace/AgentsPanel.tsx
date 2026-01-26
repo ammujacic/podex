@@ -3,6 +3,7 @@
 import { Bot } from 'lucide-react';
 import { useSessionStore } from '@/stores/session';
 import { cn } from '@/lib/utils';
+import { ClaudeIcon } from '@/components/icons/ClaudeIcon';
 
 interface AgentsPanelProps {
   sessionId: string;
@@ -24,33 +25,70 @@ export function AgentsPanel({ sessionId }: AgentsPanelProps) {
           </p>
         </div>
       ) : (
-        <div className="p-2 space-y-1">
-          {agents.map((agent) => (
-            <button
-              key={agent.id}
-              onClick={() => setActiveAgent(sessionId, agent.id)}
-              className={cn(
-                'w-full flex items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-overlay',
-                session?.activeAgentId === agent.id && 'bg-overlay'
-              )}
-            >
-              <div className="h-3 w-3 rounded-full" style={{ backgroundColor: agent.color }} />
-              <div className="flex-1 truncate">
-                <div className="font-medium text-text-primary">{agent.name}</div>
-                <div className="text-xs text-text-muted capitalize">{agent.role}</div>
-              </div>
-              <div
+        <div className="p-3 space-y-2">
+          {agents.map((agent) => {
+            const isActive = session?.activeAgentId === agent.id;
+            const isClaudeAgent = agent.role === 'claude-code' || !!agent.claudeSessionInfo;
+            return (
+              <button
+                key={agent.id}
+                onClick={() => setActiveAgent(sessionId, agent.id)}
                 className={cn(
-                  'h-2 w-2 rounded-full',
-                  agent.status === 'active'
-                    ? 'bg-accent-success animate-pulse'
-                    : agent.status === 'error'
-                      ? 'bg-accent-error'
-                      : 'bg-text-muted'
+                  'w-full flex items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors',
+                  isActive ? 'bg-accent-primary text-text-inverse' : 'bg-elevated hover:bg-overlay'
                 )}
-              />
-            </button>
-          ))}
+              >
+                {isClaudeAgent ? (
+                  <ClaudeIcon
+                    size={16}
+                    className={cn(
+                      'shrink-0 ml-0.5',
+                      isActive ? 'text-text-inverse' : 'text-[#D97757]'
+                    )}
+                  />
+                ) : (
+                  <div
+                    className="h-3.5 w-3.5 rounded-full shrink-0 ml-0.5"
+                    style={{ backgroundColor: agent.color }}
+                  />
+                )}
+                <div className="flex-1 truncate">
+                  <div
+                    className={cn(
+                      'font-medium',
+                      isActive ? 'text-text-inverse' : 'text-text-primary'
+                    )}
+                  >
+                    {agent.name}
+                  </div>
+                  <div
+                    className={cn(
+                      'text-xs capitalize',
+                      isActive ? 'text-text-inverse/70' : 'text-text-muted'
+                    )}
+                  >
+                    {agent.role === 'claude-code' ? 'Claude Code' : agent.role}
+                  </div>
+                </div>
+                <div
+                  className={cn(
+                    'h-2 w-2 rounded-full',
+                    agent.status === 'active'
+                      ? isActive
+                        ? 'bg-text-inverse animate-pulse'
+                        : 'bg-accent-success animate-pulse'
+                      : agent.status === 'error'
+                        ? isActive
+                          ? 'bg-text-inverse'
+                          : 'bg-accent-error'
+                        : isActive
+                          ? 'bg-text-inverse/50'
+                          : 'bg-text-muted'
+                  )}
+                />
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

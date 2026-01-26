@@ -29,7 +29,6 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.auth_constants import COOKIE_ACCESS_TOKEN
-from src.compute_client import ComputeClient
 from src.config import settings
 from src.database import (
     ExternalAgentEnvProfile,
@@ -41,6 +40,7 @@ from src.database import (
 from src.middleware.admin import require_admin
 from src.middleware.auth import get_current_user
 from src.services.token_blacklist import is_token_revoked
+from src.services.workspace_router import workspace_router
 from src.terminal.manager import terminal_manager
 
 logger = structlog.get_logger()
@@ -183,6 +183,10 @@ class TerminalAgentSessionResponse(BaseModel):
     status: str
     created_at: str
     last_heartbeat_at: str
+    # Claude Code session info (for resumed sessions, enables cross-device sync)
+    claude_session_id: str | None = None
+    claude_project_path: str | None = None
+    claude_first_prompt: str | None = None
 
 
 class CreateTerminalAgentRequest(BaseModel):
@@ -289,20 +293,15 @@ class TerminalAgentSessionManager:
             )
 
             try:
-                # Create terminal session via terminal_manager (proxies to compute service)
-                # Pass session_id so each terminal agent gets its own tmux session
-                await terminal_manager.create_session(
-                    workspace_id=workspace_id,
-                    on_output=on_output,
-                    session_id=session_id,  # Unique session for this terminal agent
-                )
-
-                # Build the startup command
+                # Build the startup command FIRST (before creating terminal)
                 # SECURITY: Validate and sanitize working directory
-                work_dir = working_directory or "/home/dev"
+                # For local pods, get the actual workspace working directory
+                default_work_dir = await workspace_router.get_workspace_working_dir(
+                    workspace_id, user_id
+                )
+                work_dir = working_directory or default_work_dir
 
                 # SECURITY: Prevent directory traversal attacks
-                # Only allow absolute paths starting with /home/ or relative paths within workspace
                 def _raise_path_traversal_error() -> None:
                     raise InvalidWorkDirError(  # noqa: TRY003, TRY301
                         "Invalid working directory: path traversal not allowed"
@@ -315,10 +314,20 @@ class TerminalAgentSessionManager:
 
                 if ".." in work_dir:
                     _raise_path_traversal_error()
+
                 # Normalize path and verify it's safe
                 normalized = os.path.normpath(work_dir)
-                # Only allow paths under /home or relative paths that don't escape
-                if normalized.startswith("/") and not normalized.startswith("/home"):
+
+                # Check if this is a local pod workspace
+                is_local_pod = await workspace_router.is_local_pod_workspace(workspace_id)
+
+                # For cloud workspaces: only allow paths under /home
+                # For local pods: allow any absolute path (user has local access anyway)
+                if (
+                    not is_local_pod
+                    and normalized.startswith("/")
+                    and not normalized.startswith("/home")
+                ):
                     _raise_invalid_home_path_error()
 
                 safe_work_dir = shlex.quote(normalized)
@@ -356,15 +365,16 @@ class TerminalAgentSessionManager:
                         env_setup += f"export {key}={safe_value} && "
 
                 # Build full startup command: cd to directory, set env, run agent
-                startup_cmd = f"cd {safe_work_dir} && {env_setup}{run_cmd}\n"
+                startup_cmd = f"cd {safe_work_dir} && {env_setup}{run_cmd}"
 
-                # Give the terminal a moment to initialize
-                await asyncio.sleep(0.5)
-
-                # Send the startup command to launch the agent (use session_id as key)
-                success = await terminal_manager.write_input(session_id, startup_cmd)
-                if not success:
-                    raise RuntimeError("Failed to send startup command")  # noqa: TRY003, TRY301
+                # Create terminal session with the agent command directly
+                # This starts tmux running the command, no interactive shell noise
+                await terminal_manager.create_session(
+                    workspace_id=workspace_id,
+                    on_output=on_output,
+                    session_id=session_id,
+                    command=startup_cmd,  # Start tmux with this command directly
+                )
 
                 session_data = {
                     "session_id": session_id,
@@ -390,9 +400,9 @@ class TerminalAgentSessionManager:
                 return session_data
 
             except Exception as e:
-                # Clean up on failure
+                # Clean up on failure (kill_tmux=True for local pod cleanup)
                 self._output_queues.pop(session_id, None)
-                await terminal_manager.close_session(session_id)
+                await terminal_manager.close_session(session_id, kill_tmux=True)
                 logger.exception(
                     "Failed to create terminal agent session",
                     session_id=session_id,
@@ -458,12 +468,17 @@ class TerminalAgentSessionManager:
                 # NOTE: We do NOT send the startup command here since the agent
                 # is already running in the existing tmux session
 
+                # Get the actual working directory for this workspace
+                reattach_work_dir = await workspace_router.get_workspace_working_dir(
+                    workspace_id, user_id
+                )
+
                 session_data = {
                     "session_id": session_id,
                     "workspace_id": workspace_id,
                     "agent_type": agent_type,
                     "env_profile": env_profile,
-                    "working_directory": "/home/dev",  # Default, not stored in DB
+                    "working_directory": reattach_work_dir,
                     "status": "running",
                     "created_at": time.time(),
                     "last_heartbeat": time.time(),
@@ -482,9 +497,9 @@ class TerminalAgentSessionManager:
                 return session_data
 
             except Exception as e:
-                # Clean up on failure
+                # Clean up on failure (kill_tmux=True for local pod cleanup)
                 self._output_queues.pop(session_id, None)
-                await terminal_manager.close_session(session_id)
+                await terminal_manager.close_session(session_id, kill_tmux=True)
                 logger.exception(
                     "Failed to reattach terminal agent session",
                     session_id=session_id,
@@ -501,7 +516,8 @@ class TerminalAgentSessionManager:
 
             try:
                 # Close the terminal session in compute service (use session_id as key)
-                await terminal_manager.close_session(session_id)
+                # kill_tmux=True ensures local pod tmux sessions are properly cleaned up
+                await terminal_manager.close_session(session_id, kill_tmux=True)
 
                 # Clean up output queue
                 self._output_queues.pop(session_id, None)
@@ -545,6 +561,85 @@ class TerminalAgentSessionManager:
 
         # Use session_id as key for terminal_manager
         return await terminal_manager.resize(session_id, rows, cols)
+
+    async def register_external_session(
+        self,
+        session_id: str,
+        workspace_id: str,
+        working_dir: str | None = None,
+    ) -> dict[str, Any]:
+        """Register an external terminal session for output routing.
+
+        Used for sessions created outside the normal TerminalAgentSessionManager flow,
+        such as Claude Code session resume. The tmux session already exists on the
+        local pod, so this just sets up the output routing infrastructure.
+
+        Args:
+            session_id: Unique session ID (matches tmux session on local pod).
+            workspace_id: The workspace/pod ID.
+            working_dir: Working directory of the session.
+
+        Returns:
+            Session data dict.
+        """
+        async with self._lock:
+            # If session already exists, update output callback and return
+            if session_id in self.sessions:
+                logger.info(
+                    "External session already registered",
+                    session_id=session_id,
+                    workspace_id=workspace_id,
+                )
+                return self.sessions[session_id]
+
+            # Create output queue for this session
+            output_queue: asyncio.Queue[str] = asyncio.Queue()
+            self._output_queues[session_id] = output_queue
+
+            # Create callback to capture terminal output
+            async def on_output(_ws_id: str, output: str) -> None:
+                """Store output in queue for WebSocket clients."""
+                if session_id in self._output_queues:
+                    await self._output_queues[session_id].put(output)
+
+            logger.info(
+                "Registering external terminal session",
+                session_id=session_id,
+                workspace_id=workspace_id,
+                working_dir=working_dir,
+            )
+
+            # Register with terminal_manager for output routing
+            # The tmux session already exists, this just sets up the callback
+            await terminal_manager.register_local_pod_session(
+                workspace_id=workspace_id,
+                session_id=session_id,
+                working_dir=working_dir,
+                on_output=on_output,
+            )
+
+            session_data = {
+                "session_id": session_id,
+                "workspace_id": workspace_id,
+                "agent_type": None,  # External session, no agent type
+                "env_profile": None,
+                "working_directory": working_dir,
+                "status": "running",
+                "created_at": time.time(),
+                "last_heartbeat": time.time(),
+                "user_id": "",  # External session
+                "external": True,  # Flag for external sessions
+            }
+
+            self.sessions[session_id] = session_data
+
+            logger.info(
+                "External terminal session registered",
+                session_id=session_id,
+                workspace_id=workspace_id,
+            )
+
+            return session_data
 
 
 # Global session manager
@@ -610,14 +705,9 @@ async def create_terminal_agent_session(
             raise HTTPException(status_code=404, detail="Environment profile not found")
 
     # Check if agent is installed in the workspace, install if needed
-    compute_client = ComputeClient()
-    is_installed = await _check_installation_in_workspace(
-        compute_client, request.workspace_id, user_id, agent_type
-    )
+    is_installed = await _check_installation_in_workspace(request.workspace_id, user_id, agent_type)
     if not is_installed:
-        success = await _install_agent_in_workspace(
-            compute_client, request.workspace_id, user_id, agent_type
-        )
+        success = await _install_agent_in_workspace(request.workspace_id, user_id, agent_type)
         if not success:
             # SECURITY: Log agent name internally but give generic message to client
             logger.error("Failed to install terminal agent", agent_type=agent_type.name)
@@ -950,6 +1040,10 @@ async def get_terminal_agent_session(
         status=db_session.status,
         created_at=db_session.created_at.isoformat(),
         last_heartbeat_at=db_session.last_heartbeat_at.isoformat(),
+        # Claude Code session info (for cross-device sync)
+        claude_session_id=db_session.claude_session_id,
+        claude_project_path=db_session.claude_project_path,
+        claude_first_prompt=db_session.claude_first_prompt,
     )
 
 
@@ -1166,12 +1260,14 @@ def _build_shell_command(cmd_parts: list[str]) -> str:
 
 
 async def _check_installation_in_workspace(
-    compute_client: ComputeClient,
     workspace_id: str,
     user_id: str,
     agent_type: TerminalIntegratedAgentType,
 ) -> bool:
-    """Check if the agent is installed in the workspace container."""
+    """Check if the agent is installed in the workspace.
+
+    Uses workspace_router to route to either cloud compute or local pod.
+    """
     if not agent_type.check_installed_command:
         return True  # Assume installed if no check command
 
@@ -1183,7 +1279,7 @@ async def _check_installation_in_workspace(
             agent=agent_type.slug,
             command=command,
         )
-        result = await compute_client.exec_command(workspace_id, user_id, command)
+        result = await workspace_router.exec_command(workspace_id, user_id, command)
         exit_code = int(result.get("exit_code", 1))
         is_installed = exit_code == 0
         logger.info(
@@ -1207,12 +1303,14 @@ async def _check_installation_in_workspace(
 
 
 async def _install_agent_in_workspace(
-    compute_client: ComputeClient,
     workspace_id: str,
     user_id: str,
     agent_type: TerminalIntegratedAgentType,
 ) -> bool:
-    """Install the agent in the workspace container."""
+    """Install the agent in the workspace.
+
+    Uses workspace_router to route to either cloud compute or local pod.
+    """
     if not agent_type.install_command:
         logger.warning(
             "No install command for agent",
@@ -1229,7 +1327,7 @@ async def _install_agent_in_workspace(
             agent=agent_type.slug,
             command=command,
         )
-        result = await compute_client.exec_command(
+        result = await workspace_router.exec_command(
             workspace_id,
             user_id,
             command,

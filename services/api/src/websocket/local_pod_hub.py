@@ -125,6 +125,60 @@ async def _update_pod_heartbeat(pod_id: str, current_workspaces: int) -> None:
         await db.commit()
 
 
+async def _update_local_pod_workspaces_status(pod_id: str, status: str) -> None:
+    """Update status of all workspaces on a local pod and emit events to connected clients.
+
+    Local workspaces should never go to standby - they reflect the pod connection status:
+    - 'running' when pod is connected
+    - 'offline' when pod is disconnected
+
+    Args:
+        pod_id: The local pod ID.
+        status: The new status to set ('running' or 'offline').
+    """
+    from src.database.models import Session, Workspace
+    from src.websocket.hub import emit_to_session
+
+    async with async_session_factory() as db:
+        # Find all workspaces on this pod with their sessions
+        result = await db.execute(
+            select(Workspace, Session)
+            .join(Session, Session.workspace_id == Workspace.id)
+            .where(Workspace.local_pod_id == pod_id)
+        )
+        workspace_sessions = result.all()
+
+        for workspace, session in workspace_sessions:
+            old_status = workspace.status
+            # Don't update if already in the target status or if stopped/error
+            if old_status == status or old_status in ("stopped", "error"):
+                continue
+
+            workspace.status = status
+            workspace.updated_at = datetime.now(UTC)
+
+            logger.info(
+                "Local pod workspace status changed",
+                workspace_id=workspace.id,
+                session_id=session.id,
+                old_status=old_status,
+                new_status=status,
+                pod_id=pod_id,
+            )
+
+            # Emit workspace status event to connected clients
+            await emit_to_session(
+                session.id,
+                "workspace_status",
+                {
+                    "workspace_id": workspace.id,
+                    "status": status,
+                },
+            )
+
+        await db.commit()
+
+
 class LocalPodNamespace(socketio.AsyncNamespace):
     """Socket.IO namespace for local pod connections."""
 
@@ -182,6 +236,10 @@ class LocalPodNamespace(socketio.AsyncNamespace):
         # Update pod status in database
         await _update_pod_status(pod.id, "online")
 
+        # Update all workspaces on this pod to 'running' status
+        # (they may have been 'offline' if pod was disconnected)
+        await _update_local_pod_workspaces_status(pod.id, "running")
+
         # Store pod_id in session for later use
         await self.save_session(sid, {"pod_id": pod.id, "user_id": pod.user_id})
 
@@ -197,6 +255,9 @@ class LocalPodNamespace(socketio.AsyncNamespace):
 
             # Update pod status in database
             await _update_pod_status(pod_id, "offline")
+
+            # Update all workspaces on this pod to 'offline' status
+            await _update_local_pod_workspaces_status(pod_id, "offline")
 
             # Cancel any pending RPC calls to this pod
             for call_id, pending in list(_pending_calls.items()):
@@ -333,6 +394,304 @@ class LocalPodNamespace(socketio.AsyncNamespace):
                         event_type=event_type,
                     )
 
+    async def on_claude_session_sync(self, sid: str, data: dict[str, Any]) -> None:
+        """Handle Claude session sync event from local pod.
+
+        When the file watcher detects new messages in a Claude session file,
+        it sends this event with the new messages. We forward it to all
+        clients viewing the session.
+
+        Data format:
+        {
+            "podex_session_id": str,
+            "podex_agent_id": str,
+            "claude_session_id": str,
+            "project_path": str,
+            "messages": [{uuid, role, content, timestamp, ...}, ...],
+            "sync_type": "incremental" | "full"
+        }
+        """
+        pod_id = _sid_to_pod.get(sid)
+        if not pod_id:
+            logger.warning("claude:session:sync from unknown pod", sid=sid)
+            return
+
+        podex_session_id = data.get("podex_session_id")
+        podex_agent_id = data.get("podex_agent_id")
+        claude_session_id = data.get("claude_session_id")
+        messages = data.get("messages", [])
+        sync_type = data.get("sync_type", "incremental")
+
+        if not podex_session_id or not podex_agent_id:
+            logger.warning(
+                "claude:session:sync missing required fields",
+                pod_id=pod_id,
+                has_session_id=bool(podex_session_id),
+                has_agent_id=bool(podex_agent_id),
+            )
+            return
+
+        logger.info(
+            "Received Claude session sync from pod",
+            pod_id=pod_id,
+            podex_session_id=podex_session_id,
+            podex_agent_id=podex_agent_id,
+            claude_session_id=claude_session_id,
+            message_count=len(messages),
+            sync_type=sync_type,
+        )
+
+        # Forward to all clients viewing this session
+        from src.websocket.hub import emit_to_session
+
+        await emit_to_session(
+            podex_session_id,
+            "claude:session:sync",
+            {
+                "session_id": podex_session_id,
+                "agent_id": podex_agent_id,
+                "claude_session_id": claude_session_id,
+                "new_messages": messages,
+                "sync_type": sync_type,
+                "total_count": len(messages),
+            },
+        )
+
+        logger.debug(
+            "Forwarded Claude session sync to clients",
+            session_id=podex_session_id,
+            agent_id=podex_agent_id,
+            message_count=len(messages),
+        )
+
+    async def on_claude_lookup_watchers(self, sid: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Look up which Podex agents are watching a given Claude session.
+
+        This allows the local pod to query the backend for watchers instead of
+        relying on in-memory registration state (which is lost on restart).
+
+        Data format:
+        {
+            "project_path": str,  # Original project path (e.g., /Users/foo/myproject)
+            "claude_session_id": str  # Claude Code session UUID
+        }
+
+        Returns:
+        {
+            "watchers": [
+                {"podex_session_id": str, "podex_agent_id": str},
+                ...
+            ]
+        }
+        """
+        # IMPORTANT: Extract values BEFORE any logging!
+        # structlog's redaction processor mutates dicts in place, so logging data=data
+        # would change data["claude_session_id"] to "***REDACTED***" before we can use it
+        project_path = data.get("project_path")
+        claude_session_id = data.get("claude_session_id")
+
+        logger.info("on_claude_lookup_watchers HANDLER CALLED", sid=sid, data=data)
+        try:
+            pod_id = _sid_to_pod.get(sid)
+            if not pod_id:
+                logger.warning("claude:lookup_watchers from unknown pod", sid=sid)
+                return {"watchers": []}
+
+            if not project_path or not claude_session_id:
+                logger.warning(
+                    "claude:lookup_watchers missing required fields",
+                    pod_id=pod_id,
+                    has_project_path=bool(project_path),
+                    has_session_id=bool(claude_session_id),
+                )
+                return {"watchers": []}
+
+            # Get the pod's user_id to scope the query
+            pod_info = _connected_pods.get(pod_id)
+            if not pod_info:
+                logger.warning("claude:lookup_watchers - pod not in connected_pods", pod_id=pod_id)
+                return {"watchers": []}
+            user_id = pod_info.get("user_id")
+
+            logger.info(
+                "claude:lookup_watchers request",
+                pod_id=pod_id,
+                user_id=user_id,
+                project_path=project_path,
+                claude_session_id=claude_session_id,
+            )
+
+            # Query database for agents with matching Claude session info
+            from src.database.models import Agent as AgentModel
+            from src.database.models import Session as SessionModel
+
+            watchers: list[dict[str, str]] = []
+
+            async with async_session_factory() as db:
+                # Use Python iteration to find watchers (more reliable than JSONB queries)
+                # This approach survives edge cases with JSONB query syntax
+                all_agents_result = await db.execute(
+                    select(AgentModel, SessionModel)
+                    .join(SessionModel, SessionModel.id == AgentModel.session_id)
+                    .where(SessionModel.owner_id == user_id)
+                )
+                all_agents = all_agents_result.all()
+
+                for agent, session in all_agents:
+                    config = agent.config or {}
+                    config_sid = config.get("claude_session_id")
+                    config_path = config.get("claude_project_path")
+
+                    # Skip agents without claude config
+                    if not config_sid and not config_path:
+                        continue
+
+                    # Check for match
+                    sid_matches = config_sid == claude_session_id
+                    path_matches = config_path == project_path
+
+                    # Detailed debug: print repr to catch whitespace/encoding issues
+                    logger.info(
+                        "DEBUG DETAILED: Comparing session IDs",
+                        stored_repr=repr(config_sid),
+                        query_repr=repr(claude_session_id),
+                        stored_type=type(config_sid).__name__,
+                        query_type=type(claude_session_id).__name__,
+                        stored_len=len(config_sid) if config_sid else 0,
+                        query_len=len(claude_session_id) if claude_session_id else 0,
+                        are_equal=sid_matches,
+                    )
+
+                    # Log for debugging (use field names that won't trigger redaction)
+                    logger.info(
+                        "DEBUG: Checking agent config",
+                        agent_uuid=str(agent.id),
+                        podex_sess=str(session.id)[-8:],
+                        stored_csid_last4=config_sid[-4:] if config_sid else "None",
+                        query_csid_last4=claude_session_id[-4:] if claude_session_id else "None",
+                        stored_path=config_path,
+                        query_path=project_path,
+                        csid_match="MATCH" if sid_matches else "NO_MATCH",
+                        path_match="MATCH" if path_matches else "NO_MATCH",
+                    )
+
+                    # Add to watchers if both match
+                    if sid_matches and path_matches:
+                        watchers.append(
+                            {
+                                "podex_session_id": str(session.id),
+                                "podex_agent_id": str(agent.id),
+                            }
+                        )
+                        logger.info(
+                            "Found matching watcher",
+                            agent_uuid=str(agent.id),
+                            podex_sess=str(session.id)[-8:],
+                        )
+
+            logger.info(
+                "Claude session watcher lookup RETURNING",
+                pod_id=pod_id,
+                project_path=project_path,
+                claude_session_id=claude_session_id,
+                watcher_count=len(watchers),
+                watchers=watchers,
+            )
+        except Exception as e:
+            logger.exception(
+                "on_claude_lookup_watchers EXCEPTION",
+                sid=sid,
+                data=data,
+                error=str(e),
+            )
+            return {"watchers": [], "error": str(e)}
+        else:
+            return {"watchers": watchers}
+
+    async def on_ping(self, sid: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Simple ping handler to test call() mechanism."""
+        logger.info("ping received", sid=sid, data=data)
+        return {"pong": True, "received": data}
+
+    async def on_terminal_output(self, sid: str, data: dict[str, Any]) -> None:
+        """Handle terminal output from pod.
+
+        Pods stream terminal output for local pod terminals.
+        Forward to the terminal manager which will send to connected clients.
+        """
+        pod_id = _sid_to_pod.get(sid)
+        if not pod_id:
+            logger.warning("terminal_output from unknown pod", sid=sid)
+            return
+
+        session_id = data.get("session_id")
+        workspace_id = data.get("workspace_id")
+        output_data = data.get("data", "")
+        output_type = data.get("type")  # "incremental" or "full"
+
+        logger.info(
+            "Received terminal_output from pod",
+            pod_id=pod_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            output_type=output_type,
+            data_length=len(output_data) if output_data else 0,
+        )
+
+        if not output_data:
+            return
+
+        # Forward to terminal manager which handles client connections
+        from src.terminal.manager import terminal_manager
+
+        # Log available sessions for debugging
+        logger.debug(
+            "Looking up terminal session",
+            session_id=session_id,
+            workspace_id=workspace_id,
+            available_sessions=list(terminal_manager.sessions.keys()),
+        )
+
+        # Try to find session by session_id first, then by workspace_id
+        session = terminal_manager.sessions.get(session_id) if session_id else None
+        if not session and workspace_id:
+            session = terminal_manager.sessions.get(workspace_id)
+
+        if session and session.on_output:
+            try:
+                # Call the output callback (handles both sync and async)
+                # The callback expects workspace_id as first param (for room targeting)
+                import inspect
+
+                # Use workspace_id for the callback (it's used to target the room)
+                callback_id = workspace_id or session.workspace_id
+
+                if inspect.iscoroutinefunction(session.on_output):
+                    await session.on_output(callback_id, output_data)
+                else:
+                    session.on_output(callback_id, output_data)
+
+                logger.info(
+                    "Terminal output forwarded to client",
+                    session_id=session_id,
+                    workspace_id=workspace_id,
+                    output_type=output_type,
+                    data_length=len(output_data),
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to forward terminal output",
+                    session_id=session_id,
+                    error=str(e),
+                )
+        else:
+            logger.warning(
+                "No active terminal session for output",
+                session_id=session_id,
+                workspace_id=workspace_id,
+                available_sessions=list(terminal_manager.sessions.keys()),
+            )
+
 
 # Create namespace instance
 local_pod_namespace = LocalPodNamespace()
@@ -445,6 +804,7 @@ class RPCMethods:
     WORKSPACE_STOP = "workspace.stop"
     WORKSPACE_DELETE = "workspace.delete"
     WORKSPACE_GET = "workspace.get"
+    WORKSPACE_UPDATE = "workspace.update"
     WORKSPACE_LIST = "workspace.list"
     WORKSPACE_HEARTBEAT = "workspace.heartbeat"
 
@@ -468,3 +828,16 @@ class RPCMethods:
 
     # Health
     HEALTH_CHECK = "health.check"
+
+    # Host filesystem browsing
+    HOST_BROWSE = "host.browse"
+
+    # Claude Code sessions
+    CLAUDE_LIST_PROJECTS = "claude.list_projects"
+    CLAUDE_LIST_SESSIONS = "claude.list_sessions"
+    CLAUDE_GET_SESSION = "claude.get_session"
+    CLAUDE_GET_MESSAGES = "claude.get_messages"
+    CLAUDE_SYNC_SESSION = "claude.sync_session"
+    CLAUDE_RESUME_SESSION = "claude.resume_session"
+    CLAUDE_WATCH_SESSION = "claude.watch_session"
+    CLAUDE_UNWATCH_SESSION = "claude.unwatch_session"

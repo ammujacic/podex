@@ -108,6 +108,8 @@ type MobileView = 'overview' | 'agent';
 export function MobileWorkspaceLayout({ sessionId }: MobileWorkspaceLayoutProps) {
   const session = useSessionStore((state) => state.sessions[sessionId]);
   const agents = useMemo(() => session?.agents ?? [], [session?.agents]);
+  const localPodId = session?.localPodId;
+  const mountPath = session?.mount_path;
 
   // View state - start with overview
   const [currentView, setCurrentView] = useState<MobileView>('overview');
@@ -160,13 +162,15 @@ export function MobileWorkspaceLayout({ sessionId }: MobileWorkspaceLayoutProps)
       title: 'Files',
       icon: <FolderTree className="h-5 w-5" />,
       height: 'full',
-      component: <FilesPanel sessionId={sessionId} />,
+      component: (
+        <FilesPanel sessionId={sessionId} localPodId={localPodId} workingDir={mountPath} />
+      ),
     },
     git: {
       title: 'Git',
       icon: <GitBranch className="h-5 w-5" />,
       height: 'full',
-      component: <GitPanel sessionId={sessionId} />,
+      component: <GitPanel sessionId={sessionId} localPodId={localPodId} mountPath={mountPath} />,
     },
     github: {
       title: 'GitHub',
@@ -254,6 +258,7 @@ export function MobileWorkspaceLayout({ sessionId }: MobileWorkspaceLayoutProps)
         showBackButton={currentView === 'agent'}
         onBack={handleBackToOverview}
         subtitle={currentView === 'agent' && currentAgent ? currentAgent.name : undefined}
+        agentRole={currentView === 'agent' && currentAgent ? currentAgent.role : undefined}
       />
 
       {/* Main content */}

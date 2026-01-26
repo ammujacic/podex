@@ -38,6 +38,8 @@ export function WorkspaceLayout({ sessionId, children }: WorkspaceLayoutProps) {
   const isMobile = useIsMobile();
   const workspaceStatus = session?.workspaceStatus;
   const workspaceStatusChecking = session?.workspaceStatusChecking ?? false;
+  const localPodId = session?.localPodId;
+  const mountPath = session?.mount_path;
 
   // Initialize keyboard shortcuts (desktop only)
   useKeybindings();
@@ -94,7 +96,12 @@ export function WorkspaceLayout({ sessionId, children }: WorkspaceLayoutProps) {
         {/* Main content area */}
         <div className="flex flex-1 overflow-hidden">
           {/* Left Sidebar */}
-          <SidebarContainer side="left" sessionId={sessionId} />
+          <SidebarContainer
+            side="left"
+            sessionId={sessionId}
+            localPodId={localPodId}
+            mountPath={mountPath}
+          />
 
           {/* Main workspace */}
           <div className="flex flex-1 flex-col overflow-hidden">
@@ -117,7 +124,12 @@ export function WorkspaceLayout({ sessionId, children }: WorkspaceLayoutProps) {
           </div>
 
           {/* Right Sidebar */}
-          <SidebarContainer side="right" sessionId={sessionId} />
+          <SidebarContainer
+            side="right"
+            sessionId={sessionId}
+            localPodId={localPodId}
+            mountPath={mountPath}
+          />
         </div>
 
         {/* Floating file previews */}

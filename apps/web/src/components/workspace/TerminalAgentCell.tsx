@@ -6,11 +6,17 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
-import type { Agent } from '@/stores/session';
+import type { Agent, ClaudeSessionInfo } from '@/stores/session';
 import { useSessionStore } from '@/stores/session';
 import { useAuthStore } from '@/stores/auth';
 import { cn } from '@/lib/utils';
-import { deleteTerminalAgent, createTerminalAgent } from '@/lib/api';
+import {
+  deleteTerminalAgent,
+  createTerminalAgent,
+  getTerminalAgentSession,
+  type ClaudeSessionDetail,
+} from '@/lib/api';
+import { ClaudeSessionDropdown } from './ClaudeSessionDropdown';
 import '@xterm/xterm/css/xterm.css';
 
 // Type for WebSocket messages from terminal backend
@@ -94,6 +100,31 @@ export const TerminalAgentCell = forwardRef<TerminalAgentCellRef, TerminalAgentC
       setError(null);
 
       try {
+        // First verify the session exists and sync Claude session info
+        const sessionData = await getTerminalAgentSession(agent.terminalSessionId);
+
+        if (!sessionData) {
+          // Session doesn't exist anymore - clear the agent's session state
+          updateAgent(sessionId, agent.id, {
+            terminalSessionId: undefined,
+            claudeSessionInfo: undefined,
+          });
+          setError('Session expired. Please start a new session.');
+          setIsConnecting(false);
+          return;
+        }
+
+        // Sync Claude session info from backend if available (cross-device sync)
+        if (sessionData.claude_session_id && !agent.claudeSessionInfo) {
+          updateAgent(sessionId, agent.id, {
+            claudeSessionInfo: {
+              claudeSessionId: sessionData.claude_session_id,
+              projectPath: sessionData.claude_project_path || '',
+              firstPrompt: sessionData.claude_first_prompt,
+            },
+          });
+        }
+
         // Connect directly to API server (same as Socket.IO does)
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
         const wsProtocol = apiUrl.startsWith('https') ? 'wss:' : 'ws:';
@@ -135,11 +166,12 @@ export const TerminalAgentCell = forwardRef<TerminalAgentCellRef, TerminalAgentC
           setError('Connection failed');
           setIsConnecting(false);
         };
-      } catch {
+      } catch (err) {
+        console.error('Failed to connect to terminal:', err);
         setError('Failed to connect to terminal');
         setIsConnecting(false);
       }
-    }, [agent.terminalSessionId]);
+    }, [agent.terminalSessionId, agent.claudeSessionInfo, agent.id, sessionId, updateAgent]);
 
     // Store in ref
     connectToTerminalRef.current = connectToTerminal;
@@ -184,6 +216,35 @@ export const TerminalAgentCell = forwardRef<TerminalAgentCellRef, TerminalAgentC
       disconnectFromTerminal,
       updateAgent,
     ]);
+
+    // Handle when a Claude session is loaded - sync messages to the agent
+    const handleClaudeSessionLoaded = useCallback(
+      (sessionDetail: ClaudeSessionDetail, sessionInfo: ClaudeSessionInfo) => {
+        // Convert Claude messages to AgentMessage format
+        const agentMessages = sessionDetail.messages.map((msg) => ({
+          id: msg.uuid || crypto.randomUUID(),
+          role: msg.role === 'user' ? ('user' as const) : ('assistant' as const),
+          content: msg.content,
+          timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
+          toolCalls: msg.tool_calls?.map((tc) => ({
+            id: tc.id,
+            name: tc.name,
+            args: (tc.input as Record<string, unknown>) || {},
+            status: 'completed' as const,
+          })),
+        }));
+
+        // Update agent with Claude session info and loaded messages
+        updateAgent(sessionId, agent.id, {
+          claudeSessionInfo: sessionInfo,
+          messages: agentMessages,
+        });
+      },
+      [updateAgent, sessionId, agent.id]
+    );
+
+    // Check if this is a Claude Code agent
+    const isClaudeCodeAgent = agent.role === 'claude-code';
 
     // Initialize terminal only once on mount
     useEffect(() => {
@@ -325,12 +386,12 @@ export const TerminalAgentCell = forwardRef<TerminalAgentCellRef, TerminalAgentC
         {/* Header - can be hidden when wrapped by a parent with its own header */}
         {!hideHeader && (
           <div className="flex items-center justify-between p-3 border-b border-border-subtle shrink-0">
-            <div className="flex items-center gap-2">
-              <TerminalIcon className="h-4 w-4 text-text-muted" />
-              <span className="font-medium text-text-primary">{agent.name}</span>
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <TerminalIcon className="h-4 w-4 text-text-muted shrink-0" />
+              <span className="font-medium text-text-primary truncate">{agent.name}</span>
               <div
                 className={cn(
-                  'flex items-center gap-1 text-xs px-2 py-0.5 rounded-full',
+                  'flex items-center gap-1 text-xs px-2 py-0.5 rounded-full shrink-0',
                   isConnected
                     ? 'bg-green-500/10 text-green-400'
                     : error
@@ -352,14 +413,24 @@ export const TerminalAgentCell = forwardRef<TerminalAgentCellRef, TerminalAgentC
                           : 'bg-gray-400'
                   )}
                 />
-                {isConnected
-                  ? 'Connected'
-                  : error
-                    ? 'Error'
-                    : isConnecting
-                      ? 'Connecting...'
-                      : 'Disconnected'}
+                <span className="hidden sm:inline">
+                  {isConnected
+                    ? 'Connected'
+                    : error
+                      ? 'Error'
+                      : isConnecting
+                        ? 'Connecting...'
+                        : 'Disconnected'}
+                </span>
               </div>
+              {/* Claude Code session picker dropdown */}
+              {isClaudeCodeAgent && (
+                <ClaudeSessionDropdown
+                  initialSessionInfo={agent.claudeSessionInfo}
+                  onSessionLoaded={handleClaudeSessionLoaded}
+                  className="shrink-0"
+                />
+              )}
             </div>
 
             <div className="flex items-center gap-1">

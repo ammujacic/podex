@@ -7,12 +7,15 @@ import { useSessionStore } from '@/stores/session';
 import { useAttentionStore } from '@/stores/attention';
 import { MobileMenu, useMobileMenu } from '@/components/ui/MobileNav';
 import { getWorkspaceStatusColor, getWorkspaceStatusText } from '@/lib/ui-utils';
+import { ClaudeIcon, GeminiIcon, OpenAIIcon } from '@/components/icons';
 
 interface MobileWorkspaceHeaderProps {
   sessionId: string;
   showBackButton?: boolean;
   onBack?: () => void;
   subtitle?: string;
+  /** Agent role for showing CLI agent indicators */
+  agentRole?: string;
 }
 
 export function MobileWorkspaceHeader({
@@ -20,7 +23,13 @@ export function MobileWorkspaceHeader({
   showBackButton = false,
   onBack,
   subtitle,
+  agentRole,
 }: MobileWorkspaceHeaderProps) {
+  // CLI agent detection
+  const isClaudeCodeAgent = agentRole === 'claude-code';
+  const isOpenAICodexAgent = agentRole === 'openai-codex';
+  const isGeminiCliAgent = agentRole === 'gemini-cli';
+  const isCliAgent = isClaudeCodeAgent || isOpenAICodexAgent || isGeminiCliAgent;
   const router = useRouter();
   const { isOpen, open, close } = useMobileMenu();
   const session = useSessionStore((state) => state.sessions[sessionId]);
@@ -73,6 +82,28 @@ export function MobileWorkspaceHeader({
         {/* Session info */}
         <div className="flex-1 min-w-0 flex flex-col justify-center">
           <div className="flex items-center gap-2">
+            {/* CLI agent icon */}
+            {isCliAgent && (
+              <div
+                className={cn(
+                  'flex items-center justify-center w-6 h-6 rounded flex-shrink-0',
+                  isClaudeCodeAgent && 'bg-[#D97757]/20',
+                  isOpenAICodexAgent && 'bg-[#10A37F]/20',
+                  isGeminiCliAgent && 'bg-[#4285F4]/20'
+                )}
+                aria-label={
+                  isClaudeCodeAgent
+                    ? 'Claude Code agent'
+                    : isOpenAICodexAgent
+                      ? 'OpenAI Codex agent'
+                      : 'Gemini CLI agent'
+                }
+              >
+                {isClaudeCodeAgent && <ClaudeIcon className="w-4 h-4" />}
+                {isOpenAICodexAgent && <OpenAIIcon className="w-4 h-4" />}
+                {isGeminiCliAgent && <GeminiIcon className="w-4 h-4" />}
+              </div>
+            )}
             <h1 className="text-base font-semibold text-text-primary truncate">
               {subtitle || sessionName}
             </h1>

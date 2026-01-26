@@ -25,6 +25,10 @@ import { listFiles, getFileContent, type FileNode } from '@/lib/api';
 interface WorkspaceSidebarProps {
   collapsed: boolean;
   sessionId: string;
+  /** If set, this is a local pod workspace */
+  localPodId?: string | null;
+  /** Mount path for local pods */
+  mountPath?: string | null;
 }
 
 const sidebarItems = [
@@ -117,7 +121,12 @@ function FileTreeNode({ item, depth, onFileClick }: FileTreeNodeProps) {
   );
 }
 
-export function WorkspaceSidebar({ collapsed, sessionId }: WorkspaceSidebarProps) {
+export function WorkspaceSidebar({
+  collapsed,
+  sessionId,
+  localPodId,
+  mountPath,
+}: WorkspaceSidebarProps) {
   const { toggleTerminal, toggleSidebar, terminalVisible } = useUIStore();
   const { openFilePreview, sessions, setActiveAgent } = useSessionStore();
   const [activePanel, setActivePanel] = useState<string | null>(null);
@@ -329,7 +338,7 @@ export function WorkspaceSidebar({ collapsed, sessionId }: WorkspaceSidebarProps
             <h2 className="text-sm font-medium text-text-primary">Source Control</h2>
           </div>
           <div className="flex-1 min-h-0 overflow-hidden">
-            <GitPanel sessionId={sessionId} />
+            <GitPanel sessionId={sessionId} localPodId={localPodId} mountPath={mountPath} />
           </div>
         </div>
       )}

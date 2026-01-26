@@ -132,22 +132,6 @@ function SentrySetupWizard() {
           </p>
         </div>
 
-        {/* Benefits */}
-        <div className="space-y-2 bg-surface rounded-lg p-3">
-          <div className="flex items-center gap-2 text-sm text-text-secondary">
-            <Check className="h-4 w-4 text-success shrink-0" />
-            <span>View issues across all projects</span>
-          </div>
-          <div className="flex items-center gap-2 text-sm text-text-secondary">
-            <Check className="h-4 w-4 text-success shrink-0" />
-            <span>Track error trends &amp; impact</span>
-          </div>
-          <div className="flex items-center gap-2 text-sm text-text-secondary">
-            <Check className="h-4 w-4 text-success shrink-0" />
-            <span>Jump to errors in your code</span>
-          </div>
-        </div>
-
         {/* Instructions (collapsible) */}
         <div className="border border-border-subtle rounded-lg overflow-hidden">
           <button
@@ -219,6 +203,9 @@ function SentrySetupWizard() {
               value={setupToken}
               onChange={(e) => setSetupToken(e.target.value)}
               placeholder="sntrys_..."
+              autoComplete="off"
+              data-1p-ignore
+              data-lpignore="true"
               className={cn(
                 'w-full px-3 py-2 pr-20 bg-surface border rounded-md text-sm text-text-primary placeholder:text-text-muted',
                 'focus:outline-none focus:ring-2 focus:ring-accent-primary/50',
@@ -275,7 +262,7 @@ function SentrySetupWizard() {
               </option>
             ))}
           </select>
-          <p className="text-xs text-text-muted">
+          <p className="text-xs text-text-secondary">
             Select the region where your Sentry organization is hosted
           </p>
         </div>
@@ -289,9 +276,12 @@ function SentrySetupWizard() {
               value={setupCustomHost}
               onChange={(e) => setSetupCustomHost(e.target.value)}
               placeholder="sentry.example.com"
+              autoComplete="off"
+              data-1p-ignore
+              data-lpignore="true"
               className="w-full px-3 py-2 bg-surface border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
             />
-            <p className="text-xs text-text-muted">
+            <p className="text-xs text-text-secondary">
               Enter your self-hosted Sentry hostname (without https://)
             </p>
           </div>
@@ -300,16 +290,19 @@ function SentrySetupWizard() {
         {/* OpenAI API Key Input (optional, for AI-powered issue search) */}
         <div className="space-y-2">
           <label className="text-sm font-medium text-text-primary">
-            OpenAI API Key <span className="text-text-muted font-normal">(optional)</span>
+            OpenAI API Key <span className="text-text-secondary font-normal">(optional)</span>
           </label>
           <input
             type="password"
             value={setupOpenAIKey}
             onChange={(e) => setSetupOpenAIKey(e.target.value)}
             placeholder="sk-..."
+            autoComplete="off"
+            data-1p-ignore
+            data-lpignore="true"
             className="w-full px-3 py-2 bg-surface border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
           />
-          <p className="text-xs text-text-muted">
+          <p className="text-xs text-text-secondary">
             Required for AI-powered issue search. Get one from{' '}
             <a
               href="https://platform.openai.com/api-keys"
@@ -352,7 +345,7 @@ function SentrySetupWizard() {
         )}
 
         {/* Security note */}
-        <div className="flex items-start gap-2 text-xs text-text-muted">
+        <div className="flex items-start gap-2 text-xs text-text-secondary">
           <Shield className="h-4 w-4 shrink-0 mt-0.5" />
           <span>Your token is encrypted and stored securely</span>
         </div>
@@ -363,16 +356,16 @@ function SentrySetupWizard() {
             href="https://docs.sentry.io/api/auth/"
             target="_blank"
             rel="noopener noreferrer"
-            className="text-xs text-text-muted hover:text-text-primary transition-colors"
+            className="text-xs text-text-secondary hover:text-text-primary transition-colors"
           >
             Documentation
           </a>
-          <span className="text-text-muted">·</span>
+          <span className="text-text-secondary">·</span>
           <a
             href="https://sentry.io/privacy/"
             target="_blank"
             rel="noopener noreferrer"
-            className="text-xs text-text-muted hover:text-text-primary transition-colors"
+            className="text-xs text-text-secondary hover:text-text-primary transition-colors"
           >
             Privacy Info
           </a>

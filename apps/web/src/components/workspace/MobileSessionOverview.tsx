@@ -52,7 +52,15 @@ export function MobileSessionOverview({
     );
   };
 
-  const getLastMessagePreview = (agent: Agent) => {
+  const getAgentPreview = (agent: Agent) => {
+    // For Claude Code agents, show the session title (first prompt)
+    if (agent.role === 'claude-code' && agent.claudeSessionInfo?.firstPrompt) {
+      const title = agent.claudeSessionInfo.firstPrompt.trim();
+      if (title.length > 60) return title.slice(0, 60) + '...';
+      return title;
+    }
+
+    // For other agents, show the last message
     const lastMessage = agent.messages?.[agent.messages.length - 1];
     if (!lastMessage) return 'No messages yet';
     const content = lastMessage.content || '';
@@ -254,13 +262,14 @@ export function MobileSessionOverview({
                         )}
                       </div>
                       <p className="text-sm text-text-secondary truncate mt-0.5">
-                        {getLastMessagePreview(agent)}
+                        {getAgentPreview(agent)}
                       </p>
                       <div className="flex items-center gap-3 mt-1 text-xs text-text-tertiary">
                         <span className="flex items-center gap-1">
                           <MessageSquare className="h-3 w-3" aria-hidden="true" />
                           <span>
-                            {messageCount} {messageCount === 1 ? 'message' : 'messages'}
+                            {messageCount >= 100 ? '100+' : messageCount}{' '}
+                            {messageCount === 1 ? 'message' : 'messages'}
                           </span>
                         </span>
                         {lastMessageTime && (

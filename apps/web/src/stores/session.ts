@@ -27,6 +27,7 @@ export type {
   AgentMode,
   AgentPosition,
   AgentRole,
+  ClaudeSessionInfo,
   FilePreview,
   GridSpan,
   PendingPermission,
@@ -60,6 +61,17 @@ interface SessionState {
   updateAgent: (sessionId: string, agentId: string, updates: Partial<Agent>) => void;
   setActiveAgent: (sessionId: string, agentId: string | null) => void;
   addAgentMessage: (sessionId: string, agentId: string, message: AgentMessage) => void;
+  /**
+   * Atomically merge new messages into agent's existing messages.
+   * This is safe from race conditions unlike read-modify-write patterns.
+   * Used by sync handlers to avoid losing optimistic messages.
+   */
+  mergeAgentMessages: (
+    sessionId: string,
+    agentId: string,
+    newMessages: AgentMessage[],
+    agentUpdates?: Partial<Agent>
+  ) => void;
   deleteAgentMessage: (sessionId: string, agentId: string, messageId: string) => void;
   updateMessageId: (sessionId: string, agentId: string, oldId: string, newId: string) => void;
   updateAgentPosition: (
@@ -71,7 +83,11 @@ interface SessionState {
   bringAgentToFront: (sessionId: string, agentId: string) => void;
 
   // File preview actions
-  openFilePreview: (sessionId: string, pathOrPreview: string | FilePreview) => void;
+  openFilePreview: (
+    sessionId: string,
+    pathOrPreview: string | FilePreview,
+    options?: { startLine?: number; endLine?: number }
+  ) => void;
   closeFilePreview: (sessionId: string, previewId: string) => void;
   updateFilePreview: (sessionId: string, previewId: string, updates: Partial<FilePreview>) => void;
   pinFilePreview: (sessionId: string, previewId: string, pinned: boolean) => void;
@@ -110,7 +126,9 @@ interface SessionState {
   updateSessionWorkspaceId: (sessionId: string, workspaceId: string) => void;
   updateSessionInfo: (
     sessionId: string,
-    updates: Partial<Pick<Session, 'name' | 'branch' | 'gitUrl'>>
+    updates: Partial<
+      Pick<Session, 'name' | 'branch' | 'gitUrl' | 'localPodId' | 'localPodName' | 'mount_path'>
+    >
   ) => void;
   updateSessionWorkspaceTier: (sessionId: string, tier: string) => void;
 
@@ -364,6 +382,77 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
       };
     }),
 
+  mergeAgentMessages: (sessionId, agentId, newMessages, agentUpdates) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            agents: session.agents.map((a) => {
+              if (a.id !== agentId) return a;
+
+              // First, deduplicate within newMessages itself (in case batch has dupes)
+              // Only skip duplicates for messages WITH IDs - messages without IDs pass through
+              const seenInBatch = new Set<string>();
+              const dedupedNewMessages = newMessages.filter((m) => {
+                if (!m.id) return true; // Keep messages without IDs
+                if (seenInBatch.has(m.id)) return false; // Skip duplicates
+                seenInBatch.add(m.id);
+                return true;
+              });
+
+              // Then filter out messages already in existing state (by ID)
+              const existingIds = new Set(a.messages.map((m) => m.id).filter(Boolean));
+              const uniqueNewMessages = dedupedNewMessages.filter(
+                (m) => !m.id || !existingIds.has(m.id)
+              );
+
+              if (uniqueNewMessages.length === 0 && !agentUpdates) {
+                return a; // Nothing to update
+              }
+
+              // Merge and sort by timestamp
+              const merged = [...a.messages, ...uniqueNewMessages];
+              merged.sort((x, y) => {
+                const timeA = x.timestamp
+                  ? new Date(x.timestamp).getTime()
+                  : Number.MAX_SAFE_INTEGER;
+                const timeB = y.timestamp
+                  ? new Date(y.timestamp).getTime()
+                  : Number.MAX_SAFE_INTEGER;
+                return timeA - timeB;
+              });
+
+              // Final dedup pass (safety net for any edge cases)
+              // Only dedupe by ID if message has one
+              const finalIds = new Set<string>();
+              const deduped = merged.filter((m) => {
+                if (!m.id) return true; // Keep messages without IDs
+                if (finalIds.has(m.id)) return false; // Skip duplicates
+                finalIds.add(m.id);
+                return true;
+              });
+
+              // Enforce limit
+              const limitedMessages =
+                deduped.length > MAX_MESSAGES_PER_AGENT
+                  ? deduped.slice(-MAX_MESSAGES_PER_AGENT)
+                  : deduped;
+
+              return {
+                ...a,
+                messages: limitedMessages,
+                ...agentUpdates,
+              };
+            }),
+          },
+        },
+      };
+    }),
+
   deleteAgentMessage: (sessionId, agentId, messageId) =>
     set((state) => {
       const session = state.sessions[sessionId];
@@ -468,7 +557,7 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
   // File Preview Actions
   // ========================================================================
 
-  openFilePreview: (sessionId, pathOrPreview) =>
+  openFilePreview: (sessionId, pathOrPreview, options) =>
     set((state) => {
       const session = state.sessions[sessionId];
       if (!session) return state;
@@ -484,11 +573,31 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
               pinned: false,
               position: { x: 100, y: 100 },
               docked: session.viewMode !== 'freeform',
+              startLine: options?.startLine,
+              endLine: options?.endLine,
             }
           : pathOrPreview;
 
-      const existing = session.filePreviews.find((p) => p.path === preview.path);
-      if (existing) return state;
+      // If file already exists, update it with new line numbers and return
+      const existingIdx = session.filePreviews.findIndex((p) => p.path === preview.path);
+      if (existingIdx >= 0) {
+        // Update existing preview with new line numbers
+        const updatedPreviews = [...session.filePreviews];
+        updatedPreviews[existingIdx] = {
+          ...updatedPreviews[existingIdx]!,
+          startLine: options?.startLine,
+          endLine: options?.endLine,
+        };
+        return {
+          sessions: {
+            ...state.sessions,
+            [sessionId]: {
+              ...session,
+              filePreviews: updatedPreviews,
+            },
+          },
+        };
+      }
 
       // Add to recent files
       const newRecentFiles = [

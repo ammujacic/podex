@@ -19,6 +19,7 @@ import {
   BarChart3,
   Zap,
   Activity,
+  MessageSquare,
 } from 'lucide-react';
 
 // Custom Sentry icon component to match lucide-react API
@@ -54,10 +55,15 @@ import { UsageSidebarPanel } from './UsageSidebarPanel';
 import { SentryPanel } from './SentryPanel';
 import { SkillsPanel } from './SkillsPanel';
 import ProjectHealth from './ProjectHealth';
+import { ClaudeSessionPicker } from './ClaudeSessionPicker';
 
 interface SidebarContainerProps {
   side: SidebarSide;
   sessionId: string;
+  /** If set, this is a local pod workspace */
+  localPodId?: string | null;
+  /** Mount path for local pods */
+  mountPath?: string | null;
 }
 
 const panelConfig: Record<
@@ -77,6 +83,7 @@ const panelConfig: Record<
   sentry: { icon: SentryIcon, label: 'Sentry MCP' },
   skills: { icon: Zap, label: 'Skills' },
   health: { icon: Activity, label: 'Health' },
+  claude: { icon: MessageSquare, label: 'Claude Sessions' },
 };
 
 // Left sidebar: traditional coding tools
@@ -85,6 +92,7 @@ const leftPanelIds: PanelId[] = ['files', 'search', 'git', 'github', 'problems',
 // Right sidebar: AI-related and utility panels
 const rightPanelIds: PanelId[] = [
   'agents',
+  'claude',
   'skills',
   'mcp',
   'sentry',
@@ -160,17 +168,21 @@ function PanelHeader({ panelId }: PanelHeaderProps) {
 interface SidebarPanelProps {
   panelId: PanelId;
   sessionId: string;
+  /** If set, this is a local pod workspace */
+  localPodId?: string | null;
+  /** Mount path for local pods */
+  mountPath?: string | null;
 }
 
-function SidebarPanel({ panelId, sessionId }: SidebarPanelProps) {
+function SidebarPanel({ panelId, sessionId, localPodId, mountPath }: SidebarPanelProps) {
   const renderContent = () => {
     switch (panelId) {
       case 'files':
-        return <FilesPanel sessionId={sessionId} />;
+        return <FilesPanel sessionId={sessionId} localPodId={localPodId} workingDir={mountPath} />;
       case 'agents':
         return <AgentsPanel sessionId={sessionId} />;
       case 'git':
-        return <GitPanel sessionId={sessionId} />;
+        return <GitPanel sessionId={sessionId} localPodId={localPodId} mountPath={mountPath} />;
       case 'github':
         return <GitHubWidget sessionId={sessionId} />;
       case 'mcp':
@@ -194,6 +206,8 @@ function SidebarPanel({ panelId, sessionId }: SidebarPanelProps) {
         return <SkillsPanel sessionId={sessionId} />;
       case 'health':
         return <ProjectHealth sessionId={sessionId} compact />;
+      case 'claude':
+        return <ClaudeSessionPicker sessionId={sessionId} />;
       default:
         return null;
     }
@@ -343,7 +357,12 @@ function HorizontalResizeHandle({ side }: HorizontalResizeHandleProps) {
   );
 }
 
-export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
+export function SidebarContainer({
+  side,
+  sessionId,
+  localPodId,
+  mountPath,
+}: SidebarContainerProps) {
   const { sidebarLayout, toggleSidebar, addPanel, removePanel, toggleTerminal, terminalVisible } =
     useUIStore();
   const { sessions, createPreviewGridCard, removePreviewGridCard } = useSessionStore();
@@ -552,7 +571,12 @@ export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
             {config.panels.map((panel, index) => (
               <div key={panel.panelId} className="contents">
                 <div style={{ height: `${panel.height}%` }} className="overflow-hidden min-h-0">
-                  <SidebarPanel panelId={panel.panelId} sessionId={sessionId} />
+                  <SidebarPanel
+                    panelId={panel.panelId}
+                    sessionId={sessionId}
+                    localPodId={localPodId}
+                    mountPath={mountPath}
+                  />
                 </div>
                 {index < config.panels.length - 1 && (
                   <PanelResizeHandle side={side} panelIndex={index} />

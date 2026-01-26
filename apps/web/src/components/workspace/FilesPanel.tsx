@@ -43,9 +43,15 @@ import {
 import { getUserConfig, updateUserConfig } from '@/lib/api/user-config';
 import { MobileFileItem } from './MobileFileItem';
 import { MobileFileActionsSheet } from './MobileFileActionsSheet';
+import { DirectoryBrowser } from './DirectoryBrowser';
+import { updateWorkspaceConfig, getWorkspaceInfo } from '@/lib/api';
 
 interface FilesPanelProps {
   sessionId: string;
+  /** If set, this is a local pod workspace */
+  localPodId?: string | null;
+  /** Current working directory for local pods */
+  workingDir?: string | null;
 }
 
 interface SyncInfo {
@@ -554,7 +560,7 @@ function MobileFileTreeNode({
   );
 }
 
-export function FilesPanel({ sessionId }: FilesPanelProps) {
+export function FilesPanel({ sessionId, localPodId, workingDir }: FilesPanelProps) {
   const { sessions, createEditorGridCard } = useSessionStore();
   const openTab = useEditorStore((s) => s.openTab);
   const openMobileFile = useUIStore((state) => state.openMobileFile);
@@ -566,6 +572,38 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
   const [filesLoading, setFilesLoading] = useState(false);
   const [filesError, setFilesError] = useState<string | null>(null);
   const [hasLoaded, setHasLoaded] = useState(false);
+
+  // Local pod directory selector state
+  const isLocalPod = !!localPodId;
+  const [showDirSelector, setShowDirSelector] = useState(false);
+  const [currentWorkingDir, setCurrentWorkingDir] = useState<string | null>(workingDir ?? null);
+  const [changingDir, setChangingDir] = useState(false);
+  const updateSessionInfo = useSessionStore((state) => state.updateSessionInfo);
+
+  // Sync currentWorkingDir from prop if it changes externally
+  useEffect(() => {
+    if (workingDir && workingDir !== currentWorkingDir) {
+      setCurrentWorkingDir(workingDir);
+    }
+  }, [workingDir, currentWorkingDir]);
+
+  // Fetch workspace info on mount if local pod and no working dir
+  useEffect(() => {
+    if (isLocalPod && !workingDir && !currentWorkingDir) {
+      getWorkspaceInfo(sessionId)
+        .then((info) => {
+          const dir = info.working_dir || info.mount_path;
+          if (dir) {
+            setCurrentWorkingDir(dir);
+            // Also update session store so it persists
+            updateSessionInfo(sessionId, { mount_path: dir });
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to fetch workspace info:', err);
+        });
+    }
+  }, [isLocalPod, workingDir, currentWorkingDir, sessionId, updateSessionInfo]);
 
   // Tree expansion state
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
@@ -830,33 +868,105 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
     [handleFileClick]
   );
 
+  // Handle working directory change for local pods
+  const handleWorkingDirChange = useCallback(
+    async (newPath: string | null) => {
+      if (!newPath || !isLocalPod) return;
+
+      setChangingDir(true);
+      try {
+        const result = await updateWorkspaceConfig(sessionId, newPath);
+        if (result.success) {
+          const updatedPath = result.working_dir ?? newPath;
+          setCurrentWorkingDir(updatedPath);
+          setShowDirSelector(false);
+          // Update session store so mount_path is persisted
+          updateSessionInfo(sessionId, { mount_path: updatedPath });
+          // Clear loaded data and reload
+          setExpandedFolders(new Set());
+          setLoadedFolders(new Map());
+          setHasLoaded(false);
+          await loadRootFiles();
+        } else {
+          setFilesError(result.error ?? 'Failed to change directory');
+        }
+      } catch (err) {
+        setFilesError(err instanceof Error ? err.message : 'Failed to change directory');
+      } finally {
+        setChangingDir(false);
+      }
+    },
+    [sessionId, isLocalPod, loadRootFiles, updateSessionInfo]
+  );
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="border-b border-border-subtle px-3 py-2 flex items-center justify-between shrink-0">
-        <span className="text-xs font-medium text-text-muted uppercase tracking-wide">
-          Explorer
-        </span>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => setShowHiddenFiles(!showHiddenFiles)}
-            className={cn(
-              'shrink-0 p-1 rounded hover:bg-overlay',
-              showHiddenFiles ? 'text-text-primary' : 'text-text-muted hover:text-text-primary'
-            )}
-            title={showHiddenFiles ? 'Hide hidden files' : 'Show hidden files'}
-          >
-            {showHiddenFiles ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
-          </button>
-          <button
-            onClick={handleRefresh}
-            disabled={filesLoading}
-            className="shrink-0 p-1 rounded text-text-muted hover:text-text-primary hover:bg-overlay disabled:opacity-50"
-            title="Refresh"
-          >
-            <RefreshCw className={cn('h-4 w-4', filesLoading && 'animate-spin')} />
-          </button>
+      <div className="border-b border-border-subtle px-3 py-2 shrink-0">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-text-muted uppercase tracking-wide">
+            Explorer
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setShowHiddenFiles(!showHiddenFiles)}
+              className={cn(
+                'shrink-0 p-1 rounded hover:bg-overlay',
+                showHiddenFiles ? 'text-text-primary' : 'text-text-muted hover:text-text-primary'
+              )}
+              title={showHiddenFiles ? 'Hide hidden files' : 'Show hidden files'}
+            >
+              {showHiddenFiles ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+            </button>
+            <button
+              onClick={handleRefresh}
+              disabled={filesLoading || changingDir}
+              className="shrink-0 p-1 rounded text-text-muted hover:text-text-primary hover:bg-overlay disabled:opacity-50"
+              title="Refresh"
+            >
+              <RefreshCw
+                className={cn('h-4 w-4', (filesLoading || changingDir) && 'animate-spin')}
+              />
+            </button>
+          </div>
         </div>
+
+        {/* Local pod working directory selector */}
+        {isLocalPod && localPodId && (
+          <div className="mt-2">
+            <button
+              onClick={() => setShowDirSelector(!showDirSelector)}
+              className="flex items-center gap-1 w-full text-left px-2 py-1 rounded bg-surface-hover hover:bg-overlay text-xs"
+              title={currentWorkingDir || workingDir || 'Select workspace directory'}
+            >
+              <Folder className="h-3.5 w-3.5 text-accent-primary shrink-0" />
+              <span className="truncate flex-1 text-text-primary font-mono">
+                {currentWorkingDir || workingDir
+                  ? (currentWorkingDir || workingDir || '').split('/').pop() ||
+                    currentWorkingDir ||
+                    workingDir
+                  : '(select directory)'}
+              </span>
+              <ChevronDown
+                className={cn(
+                  'h-3.5 w-3.5 text-text-muted shrink-0 transition-transform',
+                  showDirSelector && 'rotate-180'
+                )}
+              />
+            </button>
+
+            {/* Directory browser dropdown */}
+            {showDirSelector && (
+              <div className="mt-2">
+                <DirectoryBrowser
+                  podId={localPodId}
+                  selectedPath={currentWorkingDir || workingDir || null}
+                  onSelect={handleWorkingDirChange}
+                />
+              </div>
+            )}
+          </div>
+        )}
       </div>
       {/* File tree */}
       <DropdownMenu

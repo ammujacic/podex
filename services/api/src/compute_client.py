@@ -794,15 +794,31 @@ class ComputeClient:
         staged: bool = False,
         working_dir: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Get git diff."""
+        """Get git diff with actual diff content for each file."""
         flag = "--staged" if staged else ""
+
+        # First get file list with stats
         result = await self.exec_command(
             workspace_id,
             user_id,
             f"git diff {flag} --numstat",
             working_dir=working_dir,
         )
-        return self._parse_git_diff(result.get("stdout", ""))
+        files = self._parse_git_diff(result.get("stdout", ""))
+
+        # Then get actual diff content for each file
+        for file_info in files:
+            file_path = file_info["path"]
+            escaped_path = self._escape_shell_arg(file_path)
+            diff_result = await self.exec_command(
+                workspace_id,
+                user_id,
+                f"git diff {flag} -- {escaped_path}",
+                working_dir=working_dir,
+            )
+            file_info["diff"] = diff_result.get("stdout", "")
+
+        return files
 
     async def git_stage(
         self,
@@ -1044,6 +1060,7 @@ class ComputeClient:
         base: str,
         compare: str,
         working_dir: str | None = None,
+        include_uncommitted: bool = False,
     ) -> dict[str, Any]:
         """Compare two branches and return commits and changed files.
 
@@ -1053,16 +1070,19 @@ class ComputeClient:
             base: The base branch to compare from.
             compare: The branch to compare against.
             working_dir: Working directory for git commands.
+            include_uncommitted: If True, also include uncommitted working directory changes.
 
         Returns:
             Dictionary with commits, files, and stats.
         """
         try:
             # Get commits between branches
+            # Use compare..base to get commits on base not on compare
+            # (i.e., how many commits base is "ahead" of compare)
             commits_result = await self.exec_command(
                 workspace_id,
                 user_id,
-                f"git log --oneline --format='%H|%s|%an|%ad' --date=iso {base}..{compare}",
+                f"git log --oneline --format='%H|%s|%an|%ad' --date=iso {compare}..{base}",
                 working_dir=working_dir,
             )
             commits_output = commits_result.get("stdout", "")
@@ -1079,41 +1099,106 @@ class ComputeClient:
                         }
                     )
 
-            # Get diff stat
+            # Get diff stat (compare...base shows changes on base relative to merge-base)
             stat_result = await self.exec_command(
                 workspace_id,
                 user_id,
-                f"git diff --stat {base}...{compare}",
+                f"git diff --stat {compare}...{base}",
                 working_dir=working_dir,
             )
             stat_output = stat_result.get("stdout", "")
 
-            # Get list of changed files
+            # Get list of changed files between branches
             files_result = await self.exec_command(
                 workspace_id,
                 user_id,
-                f"git diff --name-status {base}...{compare}",
+                f"git diff --name-status {compare}...{base}",
                 working_dir=working_dir,
             )
             files_output = files_result.get("stdout", "")
             files = []
+            seen_paths: set[str] = set()
+            status_map = {
+                "A": "added",
+                "M": "modified",
+                "D": "deleted",
+                "R": "renamed",
+            }
+
             for line in files_output.strip().split("\n") if files_output.strip() else []:
                 parts = line.split("\t", 1)
                 if len(parts) >= MIN_COMMIT_INFO_PARTS:
                     status = parts[0]
                     path = parts[1]
-                    status_map = {
-                        "A": "added",
-                        "M": "modified",
-                        "D": "deleted",
-                        "R": "renamed",
-                    }
                     files.append(
                         {
                             "path": path,
                             "status": status_map.get(status[0], "modified"),
                         }
                     )
+                    seen_paths.add(path)
+
+            # Include uncommitted changes if requested
+            if include_uncommitted:
+                # Get staged changes
+                staged_result = await self.exec_command(
+                    workspace_id,
+                    user_id,
+                    "git diff --cached --name-status",
+                    working_dir=working_dir,
+                )
+                staged_output = staged_result.get("stdout", "")
+                for line in staged_output.strip().split("\n") if staged_output.strip() else []:
+                    parts = line.split("\t", 1)
+                    if len(parts) >= MIN_COMMIT_INFO_PARTS:
+                        status = parts[0]
+                        path = parts[1]
+                        if path not in seen_paths:
+                            files.append(
+                                {
+                                    "path": path,
+                                    "status": status_map.get(status[0], "modified"),
+                                }
+                            )
+                            seen_paths.add(path)
+
+                # Get unstaged changes
+                unstaged_result = await self.exec_command(
+                    workspace_id,
+                    user_id,
+                    "git diff --name-status",
+                    working_dir=working_dir,
+                )
+                unstaged_output = unstaged_result.get("stdout", "")
+                for line in unstaged_output.strip().split("\n") if unstaged_output.strip() else []:
+                    parts = line.split("\t", 1)
+                    if len(parts) >= MIN_COMMIT_INFO_PARTS:
+                        status = parts[0]
+                        path = parts[1]
+                        if path not in seen_paths:
+                            files.append(
+                                {
+                                    "path": path,
+                                    "status": status_map.get(status[0], "modified"),
+                                }
+                            )
+                            seen_paths.add(path)
+
+                # Get untracked files
+                untracked_result = await self.exec_command(
+                    workspace_id,
+                    user_id,
+                    "git ls-files --others --exclude-standard",
+                    working_dir=working_dir,
+                )
+                untracked_output = untracked_result.get("stdout", "")
+                for line in (
+                    untracked_output.strip().split("\n") if untracked_output.strip() else []
+                ):
+                    path = line.strip()
+                    if path and path not in seen_paths:
+                        files.append({"path": path, "status": "added"})
+                        seen_paths.add(path)
 
             return {
                 "base": base,
@@ -1395,7 +1480,7 @@ class ComputeClient:
                         "status": "modified",
                         "additions": additions,
                         "deletions": deletions,
-                        "diff": None,  # Would need separate call for actual diff
+                        "diff": None,  # Populated by git_diff() after parsing
                     },
                 )
         return files

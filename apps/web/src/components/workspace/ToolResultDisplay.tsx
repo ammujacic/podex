@@ -45,6 +45,7 @@ import {
   // Tasks
   CreateTaskResult,
   TaskStatsResult,
+  TodoWriteResult,
   // Skills
   ExecuteSkillResult,
   ListSkillsResult,
@@ -188,6 +189,8 @@ export const ToolResultDisplay = React.memo<ToolResultDisplayProps>(function Too
       return <CreateTaskResult result={parsedResult} />;
     case 'get_session_task_stats':
       return <TaskStatsResult result={parsedResult} />;
+    case 'TodoWrite': // Claude Code TodoWrite tool
+      return <TodoWriteResult result={parsedResult} />;
 
     // Skill tools
     case 'execute_skill':

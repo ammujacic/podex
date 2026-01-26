@@ -98,6 +98,7 @@ class GitStatus(BaseModel):
     staged: list[dict[str, Any]]
     unstaged: list[dict[str, Any]]
     untracked: list[str]
+    working_dir: str | None = None  # The actual working directory used for git commands
 
 
 class GitBranch(BaseModel):
@@ -569,10 +570,14 @@ async def compare_branches(
         description="Branch or ref to compare against (e.g., 'HEAD', 'origin/HEAD', 'main').",
     ),
     working_dir: str | None = Query(default=None, description="Working directory for git commands"),
+    include_uncommitted: bool = Query(
+        default=False, description="Include uncommitted working directory changes in comparison"
+    ),
 ) -> BranchCompareResponse:
     """Compare two branches and return commits and changed files.
 
     By default (if both base and compare are None), compares HEAD vs origin/HEAD.
+    If include_uncommitted is True, also includes uncommitted working directory changes.
     """
     workspace_id, user_id = await get_workspace_and_user(session_id, request, db)
 
@@ -605,6 +610,7 @@ async def compare_branches(
             base=safe_base,
             compare=safe_compare,
             working_dir=working_dir,
+            include_uncommitted=include_uncommitted,
         )
     except ComputeClientError as e:
         logger.exception(

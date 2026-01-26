@@ -16,12 +16,15 @@ import {
 import { cn, formatTimestamp } from '@/lib/utils';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { ToolResultDisplay } from './ToolResultDisplay';
+import { ClaudeEntryRenderer } from './ClaudeEntryRenderer';
 import type { AgentMessage } from '@/stores/session';
 
 interface AgentMessageListProps {
   messages: AgentMessage[];
   sessionId: string;
   agentId: string;
+  /** Whether this is a Claude Code agent with full session sync */
+  isClaudeCodeAgent?: boolean;
   /** Currently playing message ID */
   playingMessageId: string | null;
   /** Message ID being synthesized for TTS */
@@ -32,6 +35,8 @@ interface AgentMessageListProps {
   onPlayMessage: (messageId: string, regenerate?: boolean) => void;
   onPlanApprove: (planId: string) => Promise<void>;
   onPlanReject: (planId: string) => Promise<void>;
+  /** Callback when a file link is clicked in a message */
+  onFileClick?: (path: string, startLine?: number, endLine?: number) => void;
 }
 
 /**
@@ -41,6 +46,7 @@ interface AgentMessageListProps {
 export const AgentMessageList = React.memo<AgentMessageListProps>(
   function AgentMessageList({
     messages,
+    isClaudeCodeAgent = false,
     playingMessageId,
     synthesizingMessageId,
     deletingMessageId,
@@ -48,6 +54,7 @@ export const AgentMessageList = React.memo<AgentMessageListProps>(
     onPlayMessage,
     onPlanApprove,
     onPlanReject,
+    onFileClick,
   }) {
     const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
     const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
@@ -77,6 +84,20 @@ export const AgentMessageList = React.memo<AgentMessageListProps>(
       );
     }
 
+    // For Claude Code agents, use the specialized renderer that handles all entry types
+    if (isClaudeCodeAgent) {
+      return (
+        <>
+          {messages.map((msg, index) => (
+            <div key={msg.id || `msg-${index}`} className="space-y-1">
+              <ClaudeEntryRenderer message={msg} onFileClick={onFileClick} />
+            </div>
+          ))}
+        </>
+      );
+    }
+
+    // Standard rendering for non-Claude Code agents
     return (
       <>
         {messages.map((msg, index) => (
@@ -117,7 +138,7 @@ export const AgentMessageList = React.memo<AgentMessageListProps>(
                 )}
               >
                 {msg.role === 'assistant' ? (
-                  <MarkdownRenderer content={msg.content} />
+                  <MarkdownRenderer content={msg.content} onFileClick={onFileClick} />
                 ) : (
                   <p className="whitespace-pre-wrap">{msg.content}</p>
                 )}
@@ -271,9 +292,11 @@ export const AgentMessageList = React.memo<AgentMessageListProps>(
   (prevProps, nextProps) => {
     return (
       prevProps.messages === nextProps.messages &&
+      prevProps.isClaudeCodeAgent === nextProps.isClaudeCodeAgent &&
       prevProps.playingMessageId === nextProps.playingMessageId &&
       prevProps.synthesizingMessageId === nextProps.synthesizingMessageId &&
-      prevProps.deletingMessageId === nextProps.deletingMessageId
+      prevProps.deletingMessageId === nextProps.deletingMessageId &&
+      prevProps.onFileClick === nextProps.onFileClick
     );
   }
 );

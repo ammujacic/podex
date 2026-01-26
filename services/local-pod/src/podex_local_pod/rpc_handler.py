@@ -1,50 +1,193 @@
 """RPC request handler for local pod.
 
 Handles workspace management commands from Podex cloud.
+
+For native mode, operations are STATELESS - the backend passes working_dir
+with each call and the pod doesn't need to track workspace state.
 """
 
+import asyncio
+import contextlib
+import os
+import shlex
+import stat
+import subprocess
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
 if TYPE_CHECKING:
+    import socketio
+
     from .client import WorkspaceManager
+    from .config import LocalPodConfig
 
 logger = structlog.get_logger()
 
+# Terminal streaming settings
+TERMINAL_PIPE_READ_SIZE = 4096  # Bytes to read at a time from pipe
+TERMINAL_FIFO_DIR = "/tmp/podex-terminals"  # Directory for terminal FIFOs
+
 
 class RPCHandler:
-    """Handles RPC requests from Podex cloud."""
+    """Handles RPC requests from Podex cloud.
 
-    def __init__(self, manager: "WorkspaceManager") -> None:
+    For native mode, most operations are stateless and use working_dir
+    passed from the backend. The manager's _workspaces dict is only
+    used for Docker mode where we need to track container IDs.
+    """
+
+    def __init__(
+        self,
+        manager: "WorkspaceManager",
+        config: "LocalPodConfig | None" = None,
+        sio: "socketio.AsyncClient | None" = None,
+    ) -> None:
         """Initialize the handler.
 
         Args:
             manager: Workspace manager (Docker or Native) for workspace operations
+            config: Local pod configuration for security settings
+            sio: Socket.IO client for emitting events to cloud
         """
         self.manager = manager
+        self.config = config
+        self.sio = sio
+
+        # Track active terminal output streaming tasks: session_id -> task
+        self._terminal_output_tasks: dict[str, asyncio.Task[None]] = {}
+        # Track terminal FIFOs for cleanup: session_id -> fifo_path
+        self._terminal_fifos: dict[str, str] = {}
 
         # Method dispatch table
         self._handlers: dict[str, Any] = {
-            # Workspace lifecycle
+            # Workspace lifecycle (mostly for Docker mode)
             "workspace.create": self._create_workspace,
             "workspace.stop": self._stop_workspace,
             "workspace.delete": self._delete_workspace,
             "workspace.get": self._get_workspace,
+            "workspace.update": self._update_workspace,
             "workspace.list": self._list_workspaces,
             "workspace.heartbeat": self._workspace_heartbeat,
-            # Command execution
+            # Command execution (stateless - uses working_dir)
             "workspace.exec": self._exec_command,
-            # File operations
+            # File operations (stateless - uses working_dir)
             "workspace.read_file": self._read_file,
             "workspace.write_file": self._write_file,
             "workspace.list_files": self._list_files,
+            "workspace.delete_file": self._delete_file,
             # Ports/preview
             "workspace.get_ports": self._get_active_ports,
             "workspace.proxy": self._proxy_request,
             # Health
             "health.check": self._health_check,
+            # Host filesystem browsing (for workspace setup)
+            "host.browse": self._browse_host_directory,
+            # Terminal operations (stateless - uses working_dir and session_id)
+            "terminal.create": self._terminal_create,
+            "terminal.input": self._terminal_input,
+            "terminal.resize": self._terminal_resize,
+            "terminal.close": self._terminal_close,
+            # Claude Code session operations
+            "claude.list_projects": self._claude_list_projects,
+            "claude.list_sessions": self._claude_list_sessions,
+            "claude.get_session": self._claude_get_session,
+            "claude.get_messages": self._claude_get_messages,
+            "claude.sync_session": self._claude_sync_session,
+            "claude.resume_session": self._claude_resume_session,
+            # Claude session watcher registration (for real-time sync)
+            "claude.watch_session": self._claude_watch_session,
+            "claude.unwatch_session": self._claude_unwatch_session,
         }
+
+    async def shutdown(self) -> None:
+        """Gracefully shut down the RPC handler.
+
+        Cancels all terminal output streaming tasks and cleans up resources.
+        """
+        logger.debug("Shutting down RPC handler...")
+
+        # Cancel all terminal output tasks
+        for session_id, task in list(self._terminal_output_tasks.items()):
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            logger.debug("Cancelled terminal task", session_id=session_id)
+
+        self._terminal_output_tasks.clear()
+
+        # Clean up FIFOs
+        for session_id, fifo_path in list(self._terminal_fifos.items()):
+            if os.path.exists(fifo_path):
+                with contextlib.suppress(OSError):
+                    os.unlink(fifo_path)
+            logger.debug("Cleaned up FIFO", session_id=session_id)
+
+        self._terminal_fifos.clear()
+
+        logger.debug("RPC handler shutdown complete")
+
+    async def initialize(self) -> None:
+        """Initialize the RPC handler.
+
+        Cleans up any orphaned FIFOs from previous runs (e.g., after unexpected shutdown).
+        """
+        await self._cleanup_orphaned_fifos()
+
+    async def _cleanup_orphaned_fifos(self) -> None:
+        """Clean up orphaned FIFOs from previous runs.
+
+        When the pod restarts unexpectedly, FIFOs may be left behind in /tmp/podex-terminals.
+        This scans the directory and removes any stale FIFOs.
+        """
+        fifo_dir = Path(TERMINAL_FIFO_DIR)
+        if not fifo_dir.exists():
+            return
+
+        cleaned = 0
+        for fifo_path in fifo_dir.glob("*.fifo"):
+            try:
+                # Check if this FIFO is currently tracked (shouldn't be on startup)
+                session_id = fifo_path.stem
+                if session_id not in self._terminal_fifos:
+                    fifo_path.unlink()
+                    cleaned += 1
+                    logger.debug("Cleaned orphaned FIFO", fifo=str(fifo_path))
+            except OSError as e:
+                logger.warning(
+                    "Failed to clean orphaned FIFO",
+                    fifo=str(fifo_path),
+                    error=str(e),
+                )
+
+        if cleaned > 0:
+            logger.info("Cleaned orphaned FIFOs on startup", count=cleaned)
+
+    def _is_native_mode(self) -> bool:
+        """Check if running in native mode."""
+        return self.config is not None and self.config.is_native_mode()
+
+    def _get_working_dir(self, params: dict[str, Any]) -> str:
+        """Get working directory from params, workspace, or default.
+
+        For native mode, prefers working_dir from params (passed by backend).
+        Falls back to workspace lookup for Docker mode or legacy calls.
+        """
+        # First try: working_dir from params (stateless approach)
+        if params.get("working_dir"):
+            return str(params["working_dir"])
+
+        # Second try: look up workspace (for Docker mode or legacy)
+        workspace_id = params.get("workspace_id")
+        if workspace_id:
+            workspace = self.manager.workspaces.get(workspace_id)
+            if workspace:
+                return str(workspace.get("working_dir", os.path.expanduser("~")))
+
+        # Default: home directory
+        return os.path.expanduser("~")
 
     async def handle(self, method: str, params: dict[str, Any]) -> Any:
         """Dispatch RPC method to handler.
@@ -65,6 +208,8 @@ class RPCHandler:
 
         logger.debug("Handling RPC", method=method)
         return await handler(params)
+
+    # ==================== Workspace Lifecycle (mostly for Docker mode) ====================
 
     async def _create_workspace(self, params: dict[str, Any]) -> dict[str, Any]:
         """Create a new workspace."""
@@ -92,6 +237,14 @@ class RPCHandler:
         workspace = await self.manager.get_workspace(params["workspace_id"])
         return workspace
 
+    async def _update_workspace(self, params: dict[str, Any]) -> dict[str, Any] | None:
+        """Update workspace configuration (e.g., working directory)."""
+        result = await self.manager.update_workspace(
+            workspace_id=params["workspace_id"],
+            working_dir=params.get("working_dir"),
+        )
+        return dict(result) if result else None
+
     async def _list_workspaces(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         """List all workspaces."""
         workspaces = await self.manager.list_workspaces(
@@ -104,48 +257,157 @@ class RPCHandler:
         """Update workspace activity timestamp."""
         await self.manager.heartbeat(params["workspace_id"])
 
+    # ==================== Command Execution (Stateless) ====================
+
     async def _exec_command(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Execute command in workspace."""
-        result = await self.manager.exec_command(
+        """Execute command in workspace.
+
+        For native mode, uses working_dir from params (stateless).
+        For Docker mode, looks up container from workspace.
+        """
+        working_dir = self._get_working_dir(params)
+        command = params["command"]
+        timeout = params.get("timeout", 30)
+
+        if self._is_native_mode():
+            # Stateless execution - just run in the directory
+            return await self._exec_native(command, working_dir, timeout)
+
+        # Docker mode - delegate to manager (needs workspace for container ID)
+        return await self.manager.exec_command(
             workspace_id=params["workspace_id"],
-            command=params["command"],
-            working_dir=params.get("working_dir"),
-            timeout=params.get("timeout", 30),
+            command=command,
+            working_dir=working_dir,
+            timeout=timeout,
         )
-        return result
+
+    async def _exec_native(
+        self, command: str, working_dir: str, timeout: int = 30
+    ) -> dict[str, Any]:
+        """Execute command natively in the specified directory.
+
+        This is stateless - doesn't need workspace state.
+        """
+        try:
+            process = await asyncio.create_subprocess_shell(
+                command,
+                cwd=working_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={**os.environ},
+            )
+
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=timeout,
+                )
+            except TimeoutError:
+                process.kill()
+                await process.wait()
+                return {
+                    "exit_code": 124,
+                    "stdout": "",
+                    "stderr": f"Command timed out after {timeout} seconds",
+                }
+
+            return {
+                "exit_code": process.returncode or 0,
+                "stdout": stdout.decode("utf-8", errors="replace"),
+                "stderr": stderr.decode("utf-8", errors="replace"),
+            }
+
+        except Exception as e:
+            logger.error("Error executing command", error=str(e))
+            return {
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": str(e),
+            }
+
+    # ==================== File Operations (Stateless) ====================
 
     async def _read_file(self, params: dict[str, Any]) -> str:
         """Read file from workspace."""
-        content = await self.manager.read_file(
-            params["workspace_id"],
-            params["path"],
-        )
-        return content
+        working_dir = self._get_working_dir(params)
+        path = params["path"]
+
+        # Resolve path relative to working_dir
+        full_path = os.path.join(working_dir, path) if not os.path.isabs(path) else path
+
+        with open(full_path) as f:
+            return f.read()
 
     async def _write_file(self, params: dict[str, Any]) -> None:
         """Write file to workspace."""
-        await self.manager.write_file(
-            params["workspace_id"],
-            params["path"],
-            params["content"],
-        )
+        working_dir = self._get_working_dir(params)
+        path = params["path"]
+        content = params["content"]
+
+        # Resolve path relative to working_dir
+        full_path = os.path.join(working_dir, path) if not os.path.isabs(path) else path
+
+        # Ensure parent directory exists
+        Path(full_path).parent.mkdir(parents=True, exist_ok=True)
+
+        with open(full_path, "w") as f:
+            f.write(content)
 
     async def _list_files(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         """List files in workspace directory."""
-        files = await self.manager.list_files(
-            params["workspace_id"],
-            params.get("path", "."),
-        )
-        return files
+        working_dir = self._get_working_dir(params)
+        path = params.get("path", ".")
+
+        # Resolve path relative to working_dir
+        full_path = os.path.join(working_dir, path) if not os.path.isabs(path) else path
+
+        files = []
+        dir_path = Path(full_path)
+
+        if not dir_path.is_dir():
+            raise ValueError(f"Not a directory: {path}")
+
+        for entry in dir_path.iterdir():
+            stat = entry.stat()
+            files.append(
+                {
+                    "name": entry.name,
+                    "type": "directory" if entry.is_dir() else "file",
+                    "size": stat.st_size if entry.is_file() else 0,
+                    "permissions": oct(stat.st_mode)[-3:],
+                }
+            )
+
+        return sorted(files, key=lambda f: (f["type"] != "directory", f["name"]))
+
+    async def _delete_file(self, params: dict[str, Any]) -> None:
+        """Delete file from workspace."""
+        working_dir = self._get_working_dir(params)
+        path = params["path"]
+
+        # Resolve path relative to working_dir
+        full_path = os.path.join(working_dir, path) if not os.path.isabs(path) else path
+
+        file_path = Path(full_path)
+        if file_path.is_dir():
+            import shutil
+
+            shutil.rmtree(full_path)
+        else:
+            file_path.unlink()
+
+    # ==================== Ports/Preview ====================
 
     async def _get_active_ports(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         """Get active ports in workspace."""
-        ports = await self.manager.get_active_ports(params["workspace_id"])
-        return ports
+        # For native mode, return empty - ports are on localhost
+        if self._is_native_mode():
+            return []
+        return await self.manager.get_active_ports(params["workspace_id"])
 
     async def _proxy_request(self, params: dict[str, Any]) -> dict[str, Any]:
         """Proxy HTTP request to workspace."""
-        result = await self.manager.proxy_request(
+        return await self.manager.proxy_request(
             workspace_id=params["workspace_id"],
             port=params["port"],
             method=params["method"],
@@ -154,11 +416,924 @@ class RPCHandler:
             body=bytes.fromhex(params["body"]) if params.get("body") else None,
             query_string=params.get("query_string"),
         )
-        return result
+
+    # ==================== Health ====================
 
     async def _health_check(self, params: dict[str, Any]) -> dict[str, Any]:
         """Health check."""
         return {
             "status": "healthy",
+            "mode": "native" if self._is_native_mode() else "docker",
             "workspaces": len(self.manager.workspaces),
+        }
+
+    # ==================== Host Filesystem Browsing ====================
+
+    async def _browse_host_directory(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Browse host filesystem directory.
+
+        Returns directory contents for workspace selection.
+        Respects security settings (allowlist vs unrestricted).
+
+        Args:
+            params: Must contain 'path' (directory to list)
+
+        Returns:
+            Dict with 'path', 'entries' (list of files/dirs), and 'parent'
+        """
+        requested_path = params.get("path", "~")
+
+        # Expand user home directory
+        if requested_path.startswith("~"):
+            requested_path = os.path.expanduser(requested_path)
+
+        path = Path(requested_path).resolve()
+
+        # Security check for allowlist mode
+        if self.config and self.config.native.security == "allowlist":
+            # Only allow browsing within configured mount paths
+            allowed_paths = []
+            if self.config.mounts:
+                allowed_paths = [Path(m.path).resolve() for m in self.config.mounts]
+
+            # Also allow browsing parent directories of mounts (to navigate to them)
+            # and home directory as a starting point
+            home = Path.home()
+            is_allowed = path == home or any(
+                path == mp or mp.is_relative_to(path) or path.is_relative_to(mp)
+                for mp in allowed_paths
+            )
+
+            if not is_allowed:
+                logger.warning("Access denied to path", path=str(path))
+                return {
+                    "path": str(path),
+                    "parent": str(path.parent) if path.parent != path else None,
+                    "entries": [],
+                    "error": "Access denied - path not in allowlist",
+                    "allowed_paths": [str(p) for p in allowed_paths],
+                }
+
+        # Check if path exists and is a directory
+        if not path.exists():
+            return {
+                "path": str(path),
+                "parent": str(path.parent) if path.parent != path else None,
+                "entries": [],
+                "error": "Path does not exist",
+            }
+
+        if not path.is_dir():
+            return {
+                "path": str(path),
+                "parent": str(path.parent) if path.parent != path else None,
+                "entries": [],
+                "error": "Path is not a directory",
+            }
+
+        # List directory contents
+        entries = []
+        try:
+            for entry in sorted(path.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
+                # Skip hidden files unless explicitly requested
+                if entry.name.startswith(".") and not params.get("show_hidden", False):
+                    continue
+
+                try:
+                    stat = entry.stat()
+                    entries.append(
+                        {
+                            "name": entry.name,
+                            "path": str(entry),
+                            "is_dir": entry.is_dir(),
+                            "is_file": entry.is_file(),
+                            "size": stat.st_size if entry.is_file() else None,
+                            "modified": stat.st_mtime,
+                        }
+                    )
+                except (PermissionError, OSError):
+                    # Skip entries we can't access
+                    continue
+        except PermissionError:
+            return {
+                "path": str(path),
+                "parent": str(path.parent) if path.parent != path else None,
+                "entries": [],
+                "error": "Permission denied",
+            }
+
+        return {
+            "path": str(path),
+            "parent": str(path.parent) if path.parent != path else None,
+            "entries": entries,
+            "is_home": path == Path.home(),
+        }
+
+    # ==================== Terminal Operations (Stateless) ====================
+
+    def _get_user_shell(self) -> str:
+        """Get user's configured shell from $SHELL environment variable."""
+        shell = os.environ.get("SHELL", "/bin/bash")
+        # Validate the shell exists
+        if os.path.exists(shell):
+            return shell
+        return "/bin/bash"
+
+    async def _terminal_create(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Create a terminal session for a workspace.
+
+        STATELESS: Uses working_dir from params, doesn't need workspace state.
+        Creates a tmux session that agents can interact with.
+        Starts a background task to stream terminal output back to cloud using pipe-pane.
+
+        Args:
+            params: Must contain 'working_dir', optionally 'session_id', 'shell', 'command'
+                   If 'command' is provided, tmux starts running that command directly
+                   (no interactive shell, cleaner startup for agents).
+
+        Returns:
+            Dict with session info including 'session_id' and 'working_dir'
+        """
+        session_id = params.get("session_id", params.get("workspace_id", "default"))
+        workspace_id = params.get("workspace_id", session_id)
+        # Use user's configured shell by default (from $SHELL)
+        shell = params.get("shell") or self._get_user_shell()
+        command = params.get("command")  # Optional: run this instead of shell
+        working_dir = self._get_working_dir(params)
+
+        logger.info(
+            "Creating terminal session",
+            session_id=session_id,
+            working_dir=working_dir,
+            shell=shell,
+            has_command=command is not None,
+        )
+
+        # Check if tmux is available
+        result = await self._exec_native("which tmux", working_dir, timeout=5)
+        has_tmux = result.get("exit_code") == 0
+
+        if has_tmux:
+            # Check if tmux session already exists
+            check_result = await self._exec_native(
+                f"tmux has-session -t {session_id} 2>/dev/null && echo 'exists'",
+                working_dir,
+                timeout=5,
+            )
+            session_exists = "exists" in check_result.get("stdout", "")
+
+            if not session_exists:
+                # Create new tmux session
+                if command:
+                    # Start tmux directly with the command (no interactive shell)
+                    # Use shlex.quote to properly escape the command for shell
+                    # The command already includes cd and env setup from terminal_agents.py
+                    create_cmd = (
+                        f"tmux new-session -d -s {session_id} -c {working_dir} "
+                        f"bash -c {shlex.quote(command)}"
+                    )
+                else:
+                    # Start with interactive shell
+                    create_cmd = (
+                        f"tmux new-session -d -s {session_id} -c {working_dir} {shlex.quote(shell)}"
+                    )
+
+                create_result = await self._exec_native(create_cmd, working_dir, timeout=10)
+                if create_result.get("exit_code") != 0:
+                    logger.warning(
+                        "Failed to create tmux session",
+                        session_id=session_id,
+                        error=create_result.get("stderr"),
+                        command=create_cmd[:200],
+                    )
+
+            # Set up FIFO for pipe-pane streaming
+            fifo_path = await self._setup_terminal_fifo(session_id)
+
+            # Start output streaming task if we have sio client
+            if self.sio:
+                # Stop existing task if any
+                if session_id in self._terminal_output_tasks:
+                    self._terminal_output_tasks[session_id].cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await self._terminal_output_tasks[session_id]
+
+                # Start new output streaming task using pipe-pane
+                task = asyncio.create_task(
+                    self._terminal_stream_output(session_id, workspace_id, working_dir, fifo_path)
+                )
+                self._terminal_output_tasks[session_id] = task
+                logger.info(
+                    "Started terminal output streaming with pipe-pane",
+                    session_id=session_id,
+                    fifo=fifo_path,
+                )
+
+        return {
+            "session_id": session_id,
+            "workspace_id": workspace_id,
+            "working_dir": working_dir,
+            "shell": shell,
+            "has_tmux": has_tmux,
+        }
+
+    def _create_fifo_sync(self, fifo_path: str, session_id: str) -> bool:
+        """Create a FIFO synchronously with proper error handling.
+
+        Returns True if FIFO was created successfully.
+        """
+        try:
+            # Ensure FIFO directory exists
+            fifo_dir = Path(TERMINAL_FIFO_DIR)
+            fifo_dir.mkdir(parents=True, exist_ok=True)
+
+            # Remove existing FIFO if present
+            if os.path.exists(fifo_path):
+                try:
+                    os.unlink(fifo_path)
+                except OSError as e:
+                    logger.warning(
+                        "Failed to remove existing FIFO",
+                        fifo=fifo_path,
+                        error=str(e),
+                    )
+
+            # Create the FIFO
+            os.mkfifo(fifo_path, mode=0o600)
+
+            # Verify FIFO was created
+            if not os.path.exists(fifo_path):
+                logger.error(
+                    "FIFO creation failed - file does not exist after mkfifo",
+                    fifo=fifo_path,
+                    session_id=session_id,
+                )
+                return False
+
+            # Verify it's actually a FIFO
+            mode = os.stat(fifo_path).st_mode
+            if not stat.S_ISFIFO(mode):
+                logger.error(
+                    "Created file is not a FIFO",
+                    fifo=fifo_path,
+                    mode=oct(mode),
+                )
+                return False
+
+            logger.info(
+                "FIFO created and verified",
+                fifo=fifo_path,
+                session_id=session_id,
+            )
+            return True
+
+        except OSError as e:
+            logger.exception(
+                "Failed to create FIFO",
+                fifo=fifo_path,
+                session_id=session_id,
+                error=str(e),
+            )
+            return False
+
+    async def _setup_terminal_fifo(self, session_id: str) -> str:
+        """Create a FIFO (named pipe) for terminal output streaming.
+
+        Returns the path to the created FIFO.
+        """
+        fifo_path = str(Path(TERMINAL_FIFO_DIR) / f"{session_id}.fifo")
+
+        if self._create_fifo_sync(fifo_path, session_id):
+            self._terminal_fifos[session_id] = fifo_path
+        else:
+            logger.error(
+                "FIFO setup failed",
+                session_id=session_id,
+                fifo=fifo_path,
+            )
+
+        return fifo_path
+
+    async def _terminal_stream_output(
+        self, session_id: str, workspace_id: str, working_dir: str, fifo_path: str
+    ) -> None:
+        """Stream terminal output using tmux pipe-pane.
+
+        This provides real-time streaming by:
+        1. Setting up pipe-pane to stream output to a FIFO immediately
+        2. Reading from FIFO asynchronously and forwarding to websocket
+
+        Note: We intentionally do NOT use capture-pane for initial content because
+        it causes duplicate output. The shell prompt gets captured by both
+        capture-pane (initial state) and pipe-pane (streaming), resulting in the
+        prompt appearing twice or with extra newlines. By relying solely on
+        pipe-pane, we get clean output from session start.
+        """
+        logger.info(
+            "Terminal pipe-pane streaming started",
+            session_id=session_id,
+            workspace_id=workspace_id,
+            fifo=fifo_path,
+        )
+
+        fd = None
+        try:
+            # Small initial delay to let tmux session start
+            await asyncio.sleep(0.1)
+
+            # Set up pipe-pane to stream to our FIFO
+            pipe_cmd = f"tmux pipe-pane -t {session_id} 'cat >> {fifo_path}'"
+            pipe_result = await self._exec_native(pipe_cmd, working_dir, timeout=5)
+            if pipe_result.get("exit_code") != 0:
+                logger.error(
+                    "Failed to set up pipe-pane",
+                    session_id=session_id,
+                    error=pipe_result.get("stderr"),
+                )
+                return
+
+            logger.info("pipe-pane configured", session_id=session_id)
+
+            # 3. Open FIFO for reading (non-blocking)
+            # First ensure the FIFO exists (recreate if needed)
+            if not os.path.exists(fifo_path):
+                logger.warning(
+                    "FIFO missing before open, recreating",
+                    fifo=fifo_path,
+                    session_id=session_id,
+                )
+                if not self._create_fifo_sync(fifo_path, session_id):
+                    logger.error(
+                        "Failed to recreate FIFO",
+                        fifo=fifo_path,
+                        session_id=session_id,
+                    )
+                    return
+
+            # O_RDONLY | O_NONBLOCK so we don't block waiting for writers
+            fd = os.open(fifo_path, os.O_RDONLY | os.O_NONBLOCK)
+
+            # 4. Read from FIFO and stream to websocket
+            consecutive_empty_reads = 0
+            max_empty_reads = 1000  # ~10 seconds of no output before checking session
+
+            while True:
+                try:
+                    # Try to read data from FIFO
+                    data = os.read(fd, TERMINAL_PIPE_READ_SIZE)
+
+                    if data:
+                        consecutive_empty_reads = 0
+                        # Decode and emit immediately (real-time!)
+                        text = data.decode("utf-8", errors="replace")
+
+                        if self.sio and self.sio.connected:
+                            await self.sio.emit(
+                                "terminal_output",
+                                {
+                                    "session_id": session_id,
+                                    "workspace_id": workspace_id,
+                                    "data": text,
+                                    "type": "stream",
+                                },
+                                namespace="/local-pod",
+                            )
+                        else:
+                            logger.warning(
+                                "Cannot emit - sio not connected",
+                                session_id=session_id,
+                            )
+                    else:
+                        consecutive_empty_reads += 1
+
+                        # Periodically check if tmux session still exists
+                        if consecutive_empty_reads >= max_empty_reads:
+                            consecutive_empty_reads = 0
+                            check = await self._exec_native(
+                                f"tmux has-session -t {session_id} 2>/dev/null && echo 'exists'",
+                                working_dir,
+                                timeout=5,
+                            )
+                            if "exists" not in check.get("stdout", ""):
+                                logger.info(
+                                    "tmux session ended",
+                                    session_id=session_id,
+                                )
+                                break
+
+                        # Small sleep when no data (avoid busy loop)
+                        await asyncio.sleep(0.01)
+
+                except BlockingIOError:
+                    # No data available right now - this is expected
+                    await asyncio.sleep(0.01)
+                except OSError as e:
+                    if e.errno == 9:  # Bad file descriptor - FIFO was deleted
+                        # Try to recreate FIFO and continue (lazy-load resilience)
+                        logger.info(
+                            "FIFO deleted, attempting recreation",
+                            session_id=session_id,
+                            fifo=fifo_path,
+                        )
+
+                        # Check if tmux session still exists before recreating
+                        check = await self._exec_native(
+                            f"tmux has-session -t {session_id} 2>/dev/null && echo 'exists'",
+                            working_dir,
+                            timeout=5,
+                        )
+                        if "exists" not in check.get("stdout", ""):
+                            logger.info(
+                                "tmux session ended, not recreating FIFO",
+                                session_id=session_id,
+                            )
+                            break
+
+                        # Recreate the FIFO
+                        if not self._create_fifo_sync(fifo_path, session_id):
+                            logger.error(
+                                "Failed to recreate FIFO after deletion",
+                                session_id=session_id,
+                            )
+                            break
+
+                        # Re-establish pipe-pane
+                        pipe_cmd = f"tmux pipe-pane -t {session_id} 'cat >> {fifo_path}'"
+                        pipe_result = await self._exec_native(pipe_cmd, working_dir, timeout=5)
+                        if pipe_result.get("exit_code") != 0:
+                            logger.error(
+                                "Failed to re-establish pipe-pane",
+                                session_id=session_id,
+                            )
+                            break
+
+                        # Re-open the FIFO
+                        try:
+                            fd = os.open(fifo_path, os.O_RDONLY | os.O_NONBLOCK)
+                            self._terminal_fifos[session_id] = fifo_path
+                            logger.info(
+                                "FIFO recreated successfully",
+                                session_id=session_id,
+                            )
+                            continue
+                        except OSError:
+                            logger.error(
+                                "Failed to reopen recreated FIFO",
+                                session_id=session_id,
+                            )
+                            break
+                    raise
+
+        except asyncio.CancelledError:
+            logger.debug("Terminal stream cancelled", session_id=session_id)
+        except Exception as e:
+            logger.exception(
+                "Error in terminal stream",
+                session_id=session_id,
+                error=str(e),
+            )
+        finally:
+            # Clean up
+            if fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+
+            # Stop pipe-pane
+            await self._exec_native(
+                f"tmux pipe-pane -t {session_id}",  # Empty command stops pipe-pane
+                working_dir,
+                timeout=5,
+            )
+
+            # Remove FIFO
+            fifo = self._terminal_fifos.pop(session_id, None)
+            if fifo and os.path.exists(fifo):
+                with contextlib.suppress(OSError):
+                    os.unlink(fifo)
+
+            self._terminal_output_tasks.pop(session_id, None)
+            logger.info("Terminal stream stopped", session_id=session_id)
+
+    async def _terminal_input(self, params: dict[str, Any]) -> None:
+        """Send input to a terminal session.
+
+        STATELESS: Just needs session_id (tmux session name).
+
+        Args:
+            params: Must contain 'session_id' and 'data'
+        """
+        session_id = params.get("session_id", params.get("workspace_id", "default"))
+        data = params.get("data", "")
+        working_dir = self._get_working_dir(params)
+
+        if not data:
+            return
+
+        # Send input to tmux session
+        # Escape single quotes in data for shell
+        escaped_data = data.replace("'", "'\"'\"'")
+        await self._exec_native(
+            f"tmux send-keys -t {session_id} '{escaped_data}'",
+            working_dir,
+            timeout=5,
+        )
+
+    async def _terminal_resize(self, params: dict[str, Any]) -> None:
+        """Resize a terminal session.
+
+        STATELESS: Just needs session_id (tmux session name).
+
+        Args:
+            params: Must contain 'session_id', 'rows', and 'cols'
+        """
+        session_id = params.get("session_id", params.get("workspace_id", "default"))
+        rows = params.get("rows", 24)
+        cols = params.get("cols", 80)
+        working_dir = self._get_working_dir(params)
+
+        # Resize tmux window
+        await self._exec_native(
+            f"tmux resize-window -t {session_id} -x {cols} -y {rows}",
+            working_dir,
+            timeout=5,
+        )
+
+    async def _terminal_close(self, params: dict[str, Any]) -> None:
+        """Close a terminal session.
+
+        STATELESS: Just needs session_id (tmux session name).
+
+        Args:
+            params: Must contain 'session_id'
+        """
+        session_id = params.get("session_id", params.get("workspace_id", "default"))
+        working_dir = self._get_working_dir(params)
+
+        # Stop output streaming task if running
+        if session_id in self._terminal_output_tasks:
+            self._terminal_output_tasks[session_id].cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._terminal_output_tasks[session_id]
+            self._terminal_output_tasks.pop(session_id, None)
+
+        # Clean up FIFO if it exists
+        fifo = self._terminal_fifos.pop(session_id, None)
+        if fifo and os.path.exists(fifo):
+            with contextlib.suppress(OSError):
+                os.unlink(fifo)
+
+        # Stop pipe-pane before killing session
+        await self._exec_native(
+            f"tmux pipe-pane -t {session_id} 2>/dev/null || true",
+            working_dir,
+            timeout=5,
+        )
+
+        # Kill tmux session
+        await self._exec_native(
+            f"tmux kill-session -t {session_id} 2>/dev/null || true",
+            working_dir,
+            timeout=5,
+        )
+
+    # ==================== Claude Code Session Operations ====================
+
+    async def _claude_list_projects(self, params: dict[str, Any]) -> dict[str, Any]:
+        """List all projects that have Claude Code sessions.
+
+        Returns:
+            Dict with list of projects and their session counts
+        """
+        from .claude_sessions import list_claude_projects
+
+        projects = list_claude_projects()
+        return {
+            "projects": projects,
+            "total": len(projects),
+        }
+
+    async def _claude_list_sessions(self, params: dict[str, Any]) -> dict[str, Any]:
+        """List Claude Code sessions for a project.
+
+        Args:
+            params: Must contain 'project_path', optionally 'limit', 'offset',
+                   'sort_by', 'sort_order'
+
+        Returns:
+            Dict with sessions list and total count
+        """
+        from .claude_sessions import get_claude_sessions
+
+        project_path = params.get("project_path") or self._get_working_dir(params)
+        limit = params.get("limit", 50)
+        offset = params.get("offset", 0)
+        sort_by = params.get("sort_by", "modified")
+        sort_order = params.get("sort_order", "desc")
+
+        sessions, total = get_claude_sessions(
+            project_path=project_path,
+            limit=limit,
+            offset=offset,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+
+        return {
+            "sessions": sessions,
+            "total": total,
+            "project_path": project_path,
+        }
+
+    async def _claude_get_session(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Get details of a specific Claude Code session.
+
+        Args:
+            params: Must contain 'project_path' and 'session_id',
+                   optionally 'include_messages' and 'message_limit'
+
+        Returns:
+            Session detail dict or error
+        """
+        from .claude_sessions import get_claude_session_detail
+
+        project_path = params.get("project_path") or self._get_working_dir(params)
+        session_id = params.get("session_id")
+
+        if not session_id:
+            return {"error": "session_id is required"}
+
+        include_messages = params.get("include_messages", True)
+        message_limit = params.get("message_limit", 100)
+
+        detail = get_claude_session_detail(
+            project_path=project_path,
+            session_id=session_id,
+            include_messages=include_messages,
+            message_limit=message_limit,
+        )
+
+        if not detail:
+            return {"error": "Session not found"}
+
+        return {"session": detail}
+
+    async def _claude_get_messages(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Get messages from a Claude Code session.
+
+        Args:
+            params: Must contain 'project_path' and 'session_id',
+                   optionally 'limit', 'offset', and 'reverse'
+
+        Returns:
+            Dict with messages list, total count, and session_id.
+            When reverse=True, messages are returned newest-first for
+            bottom-up loading (fetch latest messages first).
+        """
+        from .claude_sessions import get_claude_session_messages
+
+        project_path = params.get("project_path") or self._get_working_dir(params)
+        session_id = params.get("session_id")
+
+        if not session_id:
+            return {"error": "session_id is required", "messages": [], "total": 0}
+
+        limit = params.get("limit", 100)
+        offset = params.get("offset", 0)
+        reverse = params.get("reverse", False)
+
+        messages, total = get_claude_session_messages(
+            project_path=project_path,
+            session_id=session_id,
+            limit=limit,
+            offset=offset,
+            reverse=reverse,
+        )
+
+        return {
+            "messages": messages,
+            "total": total,
+            "session_id": session_id,
+            "offset": offset,
+            "limit": limit,
+            "reverse": reverse,
+        }
+
+    async def _claude_sync_session(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Get session data formatted for syncing to Podex DB.
+
+        Args:
+            params: Must contain 'project_path' and 'session_id'
+
+        Returns:
+            Dict with session and messages data for sync
+        """
+        from .claude_sessions import sync_session_to_dict
+
+        project_path = params.get("project_path") or self._get_working_dir(params)
+        session_id = params.get("session_id")
+
+        if not session_id:
+            return {"error": "session_id is required"}
+
+        data = sync_session_to_dict(project_path, session_id)
+
+        if not data:
+            return {"error": "Session not found"}
+
+        return {"sync_data": data}
+
+    async def _claude_resume_session(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Resume a Claude Code session in a terminal.
+
+        Creates a terminal with `claude --resume <session_id>`.
+
+        Args:
+            params: Must contain 'session_id' and 'working_dir'
+
+        Returns:
+            Terminal session info
+        """
+        session_id = params.get("session_id")
+        working_dir = self._get_working_dir(params)
+        # Build terminal session ID - ensure session_id is valid before slicing
+        terminal_session_id = params.get("terminal_session_id")
+        if not terminal_session_id and session_id:
+            terminal_session_id = f"claude-{session_id[:8]}"
+        elif not terminal_session_id:
+            terminal_session_id = "claude-default"
+
+        if not session_id:
+            return {"error": "session_id is required"}
+
+        logger.info(
+            "Resuming Claude Code session",
+            claude_session_id=session_id,
+            terminal_session_id=terminal_session_id,
+            working_dir=working_dir,
+        )
+
+        # Check if tmux is available
+        result = await self._exec_native("which tmux", working_dir, timeout=5)
+        has_tmux = result.get("exit_code") == 0
+
+        if not has_tmux:
+            return {"error": "tmux is required for terminal sessions"}
+
+        # Check if tmux session already exists
+        check_result = await self._exec_native(
+            f"tmux has-session -t {terminal_session_id} 2>/dev/null && echo 'exists'",
+            working_dir,
+            timeout=5,
+        )
+        session_exists = "exists" in check_result.get("stdout", "")
+
+        if not session_exists:
+            # Create new tmux session with claude --resume command
+            resume_cmd = f"claude --resume {session_id}"
+            create_result = await self._exec_native(
+                f"tmux new-session -d -s {terminal_session_id} -c {working_dir} "
+                f"{shlex.quote(resume_cmd)}",
+                working_dir,
+                timeout=10,
+            )
+            if create_result.get("exit_code") != 0:
+                logger.warning(
+                    "Failed to create tmux session for Claude resume",
+                    terminal_session_id=terminal_session_id,
+                    error=create_result.get("stderr"),
+                )
+                return {"error": f"Failed to create terminal: {create_result.get('stderr')}"}
+
+        # Set up FIFO and start output streaming if sio client available
+        workspace_id = params.get("workspace_id", terminal_session_id)
+        if self.sio:
+            if terminal_session_id in self._terminal_output_tasks:
+                self._terminal_output_tasks[terminal_session_id].cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._terminal_output_tasks[terminal_session_id]
+
+            # Set up FIFO for pipe-pane streaming
+            fifo_path = await self._setup_terminal_fifo(terminal_session_id)
+
+            task = asyncio.create_task(
+                self._terminal_stream_output(
+                    terminal_session_id, workspace_id, working_dir, fifo_path
+                )
+            )
+            self._terminal_output_tasks[terminal_session_id] = task
+            logger.info(
+                "Started Claude session output streaming with pipe-pane",
+                session_id=terminal_session_id,
+            )
+
+        return {
+            "terminal_session_id": terminal_session_id,
+            "claude_session_id": session_id,
+            "workspace_id": workspace_id,
+            "working_dir": working_dir,
+            "has_tmux": True,
+        }
+
+    async def _claude_watch_session(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Register a Claude session for real-time sync watching.
+
+        Called when a user links a Claude session to a Podex agent.
+        The session watcher will monitor the JSONL file and push new
+        messages to the backend via WebSocket.
+
+        Args:
+            params: Must contain:
+                - claude_session_id: Claude Code session UUID
+                - project_path: Original project path
+                - podex_session_id: Podex session ID
+                - podex_agent_id: Podex agent ID
+                - last_synced_uuid: (optional) UUID of last synced message
+
+        Returns:
+            Dict with registration status
+        """
+        from .session_watcher import get_session_watcher
+
+        claude_session_id = params.get("claude_session_id")
+        project_path = params.get("project_path")
+        podex_session_id = params.get("podex_session_id")
+        podex_agent_id = params.get("podex_agent_id")
+        last_synced_uuid = params.get("last_synced_uuid")
+
+        if not claude_session_id:
+            return {"error": "claude_session_id is required"}
+        if not project_path:
+            return {"error": "project_path is required"}
+        if not podex_session_id:
+            return {"error": "podex_session_id is required"}
+        if not podex_agent_id:
+            return {"error": "podex_agent_id is required"}
+
+        watcher = get_session_watcher(self.sio)
+        watcher.register_session(
+            claude_session_id=claude_session_id,
+            project_path=project_path,
+            podex_session_id=podex_session_id,
+            podex_agent_id=podex_agent_id,
+        )
+
+        # Set the last synced UUID if provided
+        if last_synced_uuid:
+            watcher.update_last_synced_uuid(
+                claude_session_id=claude_session_id,
+                project_path=project_path,
+                uuid=last_synced_uuid,
+            )
+
+        logger.info(
+            "Registered Claude session for watching",
+            claude_session_id=claude_session_id,
+            podex_session_id=podex_session_id,
+            podex_agent_id=podex_agent_id,
+        )
+
+        return {
+            "status": "registered",
+            "claude_session_id": claude_session_id,
+            "podex_session_id": podex_session_id,
+            "podex_agent_id": podex_agent_id,
+        }
+
+    async def _claude_unwatch_session(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Unregister a Claude session from real-time sync watching.
+
+        Called when a user unlinks a Claude session from a Podex agent.
+
+        Args:
+            params: Must contain:
+                - claude_session_id: Claude Code session UUID
+                - project_path: Original project path
+
+        Returns:
+            Dict with unregistration status
+        """
+        from .session_watcher import get_session_watcher
+
+        claude_session_id = params.get("claude_session_id")
+        project_path = params.get("project_path")
+
+        if not claude_session_id:
+            return {"error": "claude_session_id is required"}
+        if not project_path:
+            return {"error": "project_path is required"}
+
+        watcher = get_session_watcher(self.sio)
+        watcher.unregister_session(
+            claude_session_id=claude_session_id,
+            project_path=project_path,
+        )
+
+        logger.info(
+            "Unregistered Claude session from watching",
+            claude_session_id=claude_session_id,
+        )
+
+        return {
+            "status": "unregistered",
+            "claude_session_id": claude_session_id,
         }

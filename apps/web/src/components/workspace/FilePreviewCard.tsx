@@ -207,6 +207,8 @@ export function FilePreviewCard({
           path={preview.path}
           onChange={handleContentChange}
           className="h-full"
+          startLine={preview.startLine}
+          endLine={preview.endLine}
         />
       </div>
 

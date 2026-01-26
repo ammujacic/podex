@@ -8,7 +8,22 @@
 import { initialize as initializeMonacoService } from '@codingame/monaco-vscode-api/services';
 import getTextmateServiceOverride from '@codingame/monaco-vscode-textmate-service-override';
 import getThemeServiceOverride from '@codingame/monaco-vscode-theme-service-override';
+
+// Theme extension (provides color themes)
 import '@codingame/monaco-vscode-theme-defaults-default-extension';
+
+// Language grammar extensions (provide syntax highlighting via TextMate grammars)
+import '@codingame/monaco-vscode-typescript-basics-default-extension'; // TypeScript & JavaScript
+import '@codingame/monaco-vscode-json-default-extension'; // JSON & JSONC
+import '@codingame/monaco-vscode-css-default-extension'; // CSS, SCSS, Less
+import '@codingame/monaco-vscode-html-default-extension'; // HTML
+import '@codingame/monaco-vscode-markdown-basics-default-extension'; // Markdown
+import '@codingame/monaco-vscode-python-default-extension'; // Python
+import '@codingame/monaco-vscode-yaml-default-extension'; // YAML
+import '@codingame/monaco-vscode-go-default-extension'; // Go
+import '@codingame/monaco-vscode-rust-default-extension'; // Rust
+import '@codingame/monaco-vscode-xml-default-extension'; // XML
+import '@codingame/monaco-vscode-java-default-extension'; // Java
 
 // Configure Monaco environment to suppress worker warnings
 // Monaco will fall back to main thread execution, which is fine for our use case

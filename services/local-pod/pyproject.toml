@@ -30,6 +30,7 @@ dependencies = [
     "httpx>=0.26.0",
     "aiofiles>=23.2.0",
     "sentry-sdk>=2.23.0",
+    "watchdog>=4.0.0",
 ]
 
 [project.optional-dependencies]

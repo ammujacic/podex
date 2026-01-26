@@ -177,6 +177,11 @@ class TerminalAgentSession(Base):
         nullable=False,
     )
 
+    # Claude Code session info (for resumed sessions)
+    claude_session_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    claude_project_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    claude_first_prompt: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
     # Relationships
     user: Mapped["User"] = relationship("User")
     agent_type: Mapped["TerminalIntegratedAgentType"] = relationship(

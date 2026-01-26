@@ -18,6 +18,10 @@ export interface CodeEditorProps {
   diagnostics?: LSPDiagnostic[];
   /** Callback when editor content changes (debounced) for triggering diagnostics */
   onContentChange?: (value: string) => void;
+  /** Line number to scroll to and highlight */
+  startLine?: number;
+  /** End line for highlighting a range */
+  endLine?: number;
 }
 
 export function CodeEditor({
@@ -30,9 +34,12 @@ export function CodeEditor({
   className,
   diagnostics,
   onContentChange,
+  startLine,
+  endLine,
 }: CodeEditorProps) {
   const editorRef = useRef<VSCodeEditorRef>(null);
   const contentChangeTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const hasScrolledToLine = useRef(false);
 
   // Handle editor mount
   const handleEditorMount = useCallback(
@@ -45,11 +52,68 @@ export function CodeEditor({
         }
       });
 
+      // Scroll to line and highlight range if specified
+      if (startLine && !hasScrolledToLine.current) {
+        hasScrolledToLine.current = true;
+        // Delay to ensure content is loaded
+        setTimeout(() => {
+          const model = editor.getModel();
+          const lineCount = model?.getLineCount() || 0;
+
+          // Validate line numbers are within bounds
+          const validStartLine = Math.min(Math.max(1, startLine), lineCount || 1);
+          const validEndLine = endLine ? Math.min(Math.max(1, endLine), lineCount || 1) : undefined;
+
+          if (lineCount > 0) {
+            editor.revealLineInCenter(validStartLine);
+            // If we have a range, highlight it
+            if (validEndLine) {
+              editor.setSelection({
+                startLineNumber: validStartLine,
+                startColumn: 1,
+                endLineNumber: validEndLine,
+                endColumn: model?.getLineMaxColumn(validEndLine) || 1,
+              });
+            } else {
+              // Just position cursor at the start of the line
+              editor.setPosition({ lineNumber: validStartLine, column: 1 });
+            }
+          }
+        }, 100);
+      }
+
       // Focus the editor
       editor.focus();
     },
-    [onSave]
+    [onSave, startLine, endLine]
   );
+
+  // Handle line number changes after initial mount
+  useEffect(() => {
+    const editor = editorRef.current?.getEditor();
+    if (!editor || !startLine) return;
+
+    const model = editor.getModel();
+    const lineCount = model?.getLineCount() || 0;
+
+    // Validate line numbers are within bounds
+    const validStartLine = Math.min(Math.max(1, startLine), lineCount || 1);
+    const validEndLine = endLine ? Math.min(Math.max(1, endLine), lineCount || 1) : undefined;
+
+    if (lineCount > 0) {
+      editor.revealLineInCenter(validStartLine);
+      if (validEndLine) {
+        editor.setSelection({
+          startLineNumber: validStartLine,
+          startColumn: 1,
+          endLineNumber: validEndLine,
+          endColumn: model?.getLineMaxColumn(validEndLine) || 1,
+        });
+      } else {
+        editor.setPosition({ lineNumber: validStartLine, column: 1 });
+      }
+    }
+  }, [startLine, endLine]);
 
   // Update Monaco markers when diagnostics change
   useEffect(() => {

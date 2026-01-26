@@ -6,8 +6,6 @@ import {
   Brain,
   ChevronDown,
   ClipboardList,
-  Eye,
-  EyeOff,
   HelpCircle,
   Loader2,
   Shield,
@@ -18,7 +16,7 @@ import {
   Slash,
   Key,
 } from 'lucide-react';
-import { ClaudeIcon, GeminiIcon, OpenAIIcon, PodexIcon } from '@/components/icons';
+import { GeminiIcon, OpenAIIcon, PodexIcon } from '@/components/icons';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { type Agent, type AgentMode, useSessionStore } from '@/stores/session';
@@ -45,6 +43,7 @@ import {
   getCliSupportedModels,
 } from '@/hooks/useCliAgentCommands';
 import type { ThinkingConfig } from '@podex/shared';
+import { ClaudeSessionDropdown } from './ClaudeSessionDropdown';
 
 interface MobileAgentToolbarProps {
   sessionId: string;
@@ -209,7 +208,6 @@ export function MobileAgentToolbar({ sessionId, agent, onSendCommand }: MobileAg
 
   const currentModeConfig = MODE_CONFIG[agent.mode] || MODE_CONFIG.ask;
   const supportsThinking = currentModelInfo?.capabilities?.thinking === true;
-  const supportsVision = currentModelInfo?.capabilities?.vision === true;
 
   // Handlers
   const handleChangeModel = useCallback(
@@ -330,201 +328,217 @@ export function MobileAgentToolbar({ sessionId, agent, onSendCommand }: MobileAg
 
   return (
     <>
-      {/* Toolbar */}
+      {/* Toolbar - split into scrollable section and fixed settings button */}
       <div
-        className="flex items-center gap-1.5 px-3 py-2 border-b border-border-subtle bg-surface overflow-x-auto scrollbar-hide"
+        className="flex items-center border-b border-border-subtle bg-surface"
         role="toolbar"
         aria-label="Agent controls"
       >
-        {/* Model selector */}
-        <button
-          onClick={() => setShowModelMenu(true)}
-          className="flex items-center gap-1 px-2 py-1 rounded-lg bg-surface-hover text-xs text-text-secondary hover:text-text-primary transition-colors flex-shrink-0 min-h-[44px]"
-          aria-label={`Current model: ${currentModelInfo?.display_name || agent.model}`}
-        >
-          <span className="truncate max-w-[80px]">
-            {currentModelInfo?.display_name ||
-              agent.modelDisplayName ||
-              getModelDisplayName(agent.model)}
-          </span>
-          <ChevronDown className="h-3 w-3" aria-hidden="true" />
-        </button>
-
-        {/* Mode selector */}
-        <button
-          onClick={() => setShowModeMenu(true)}
-          className={cn(
-            'flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors flex-shrink-0 min-h-[44px]',
-            'bg-surface-hover hover:bg-surface-active',
-            currentModeConfig.color
-          )}
-          aria-label={`Current mode: ${currentModeConfig.label}`}
-        >
-          <currentModeConfig.icon className="h-3 w-3" aria-hidden="true" />
-          <span>{currentModeConfig.label}</span>
-        </button>
-
-        {/* Plan mode toggle */}
-        <button
-          onClick={handleTogglePlanMode}
-          disabled={isTogglingPlanMode}
-          className={cn(
-            'flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors flex-shrink-0 min-h-[44px]',
-            agent.mode === 'plan'
-              ? 'bg-blue-500/30 text-blue-400 ring-1 ring-blue-400/50'
-              : 'bg-surface-hover text-text-muted hover:text-text-primary',
-            isTogglingPlanMode && 'opacity-50'
-          )}
-          aria-pressed={agent.mode === 'plan'}
-          aria-label={agent.mode === 'plan' ? 'Exit plan mode' : 'Enter plan mode'}
-        >
-          {isTogglingPlanMode ? (
-            <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-          ) : (
-            <ClipboardList className="h-3 w-3" aria-hidden="true" />
-          )}
-          <span>Plan</span>
-        </button>
-
-        {/* Thinking toggle */}
-        {supportsThinking && (
+        {/* Scrollable controls section */}
+        <div className="flex items-center gap-1.5 px-3 py-2 overflow-x-auto scrollbar-hide flex-1 min-w-0">
+          {/* Model selector */}
           <button
-            onClick={() => setShowThinkingMenu(true)}
+            onClick={() => setShowModelMenu(true)}
+            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-surface-hover text-xs text-text-secondary hover:text-text-primary transition-colors flex-shrink-0 min-h-[44px]"
+            aria-label={`Current model: ${currentModelInfo?.display_name || agent.model}`}
+          >
+            <span className="truncate max-w-[80px]">
+              {currentModelInfo?.display_name ||
+                agent.modelDisplayName ||
+                getModelDisplayName(agent.model)}
+            </span>
+            <ChevronDown className="h-3 w-3" aria-hidden="true" />
+          </button>
+
+          {/* Mode selector */}
+          <button
+            onClick={() => setShowModeMenu(true)}
             className={cn(
               'flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors flex-shrink-0 min-h-[44px]',
-              agent.thinkingConfig?.enabled
-                ? 'bg-purple-500/30 text-purple-400 ring-1 ring-purple-400/50'
-                : 'bg-surface-hover text-text-muted hover:text-text-primary'
+              'bg-surface-hover hover:bg-surface-active',
+              currentModeConfig.color
             )}
-            aria-label={
-              agent.thinkingConfig?.enabled
-                ? `Thinking enabled: ${agent.thinkingConfig.budgetTokens} tokens`
-                : 'Enable thinking'
-            }
+            aria-label={`Current mode: ${currentModeConfig.label}`}
           >
-            <Brain className="h-3 w-3" aria-hidden="true" />
-            <span>Think</span>
-            {agent.thinkingConfig?.enabled && (
-              <span className="text-purple-300">
-                {Math.round((agent.thinkingConfig.budgetTokens || 0) / 1000)}K
-              </span>
-            )}
+            <currentModeConfig.icon className="h-3 w-3" aria-hidden="true" />
+            <span>{currentModeConfig.label}</span>
           </button>
-        )}
 
-        {/* Context usage */}
-        <button
-          onClick={() => setShowContextMenu(true)}
-          className="flex items-center gap-1 px-2 py-1 rounded-lg bg-surface-hover text-xs text-text-secondary hover:text-text-primary transition-colors flex-shrink-0 min-h-[44px]"
-          aria-label="View context usage"
-        >
-          <ContextUsageRing agentId={agent.id} size="sm" />
-        </button>
-
-        {/* Vision indicator */}
-        <span
-          className={cn(
-            'flex items-center gap-1 px-2 py-1 rounded-lg bg-surface-hover text-xs flex-shrink-0 min-h-[44px]',
-            supportsVision ? 'text-green-400' : 'text-text-muted'
+          {/* Plan mode toggle - hidden for CLI agents */}
+          {!isCliAgent && (
+            <button
+              onClick={handleTogglePlanMode}
+              disabled={isTogglingPlanMode}
+              className={cn(
+                'flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors flex-shrink-0 min-h-[44px]',
+                agent.mode === 'plan'
+                  ? 'bg-blue-500/30 text-blue-400 ring-1 ring-blue-400/50'
+                  : 'bg-surface-hover text-text-muted hover:text-text-primary',
+                isTogglingPlanMode && 'opacity-50'
+              )}
+              aria-pressed={agent.mode === 'plan'}
+              aria-label={agent.mode === 'plan' ? 'Exit plan mode' : 'Enter plan mode'}
+            >
+              {isTogglingPlanMode ? (
+                <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+              ) : (
+                <ClipboardList className="h-3 w-3" aria-hidden="true" />
+              )}
+              <span>Plan</span>
+            </button>
           )}
-          aria-label={supportsVision ? 'Vision supported' : 'Vision not supported'}
-        >
-          {supportsVision ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
-        </span>
 
-        {/* Attention badge */}
-        {hasAttention && (
+          {/* Thinking toggle - hidden for CLI agents */}
+          {!isCliAgent && supportsThinking && (
+            <button
+              onClick={() => setShowThinkingMenu(true)}
+              className={cn(
+                'flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-colors flex-shrink-0 min-h-[44px]',
+                agent.thinkingConfig?.enabled
+                  ? 'bg-purple-500/30 text-purple-400 ring-1 ring-purple-400/50'
+                  : 'bg-surface-hover text-text-muted hover:text-text-primary'
+              )}
+              aria-label={
+                agent.thinkingConfig?.enabled
+                  ? `Thinking enabled: ${agent.thinkingConfig.budgetTokens} tokens`
+                  : 'Enable thinking'
+              }
+            >
+              <Brain className="h-3 w-3" aria-hidden="true" />
+              <span>Think</span>
+              {agent.thinkingConfig?.enabled && (
+                <span className="text-purple-300">
+                  {Math.round((agent.thinkingConfig.budgetTokens || 0) / 1000)}K
+                </span>
+              )}
+            </button>
+          )}
+
+          {/* Context usage */}
           <button
-            onClick={openPanel}
-            className={cn(
-              'flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all flex-shrink-0 min-h-[44px]',
-              hasUnread && 'animate-pulse',
-              highestPriorityAttention?.type === 'error' && 'bg-red-500/20 text-red-400',
-              highestPriorityAttention?.type === 'needs_approval' &&
-                'bg-yellow-500/20 text-yellow-400',
-              highestPriorityAttention?.type === 'completed' && 'bg-green-500/20 text-green-400',
-              highestPriorityAttention?.type === 'waiting_input' && 'bg-blue-500/20 text-blue-400',
-              !hasUnread && 'opacity-60'
-            )}
-            aria-label={`${unreadCount} notifications${hasUnread ? ', unread' : ''}`}
-          >
-            <Bell className="h-3 w-3" aria-hidden="true" />
-            {hasUnread ? (
-              <>
-                <span className="font-semibold">{unreadCount}</span>
-                <span
-                  className="h-1.5 w-1.5 rounded-full bg-orange-400 animate-pulse"
-                  aria-hidden="true"
-                />
-              </>
-            ) : (
-              <>
-                <span>{agentAttentions.length}</span>
-                <span className="h-1.5 w-1.5 rounded-full bg-blue-400" aria-hidden="true" />
-              </>
-            )}
-          </button>
-        )}
-
-        {/* Claude Code indicator */}
-        {isClaudeCodeAgent && (
-          <span
-            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#FF6B35]/20 text-[#FF6B35] text-xs flex-shrink-0 min-h-[44px]"
-            aria-label="Claude Code agent"
-          >
-            <ClaudeIcon className="h-3 w-3" />
-          </span>
-        )}
-
-        {/* OpenAI Codex indicator */}
-        {isOpenAICodexAgent && (
-          <span
-            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#10A37F]/20 text-[#10A37F] text-xs flex-shrink-0 min-h-[44px]"
-            aria-label="OpenAI Codex agent"
-          >
-            <OpenAIIcon className="h-3 w-3" />
-          </span>
-        )}
-
-        {/* Gemini CLI indicator */}
-        {isGeminiCliAgent && (
-          <span
-            className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#4285F4]/20 text-[#4285F4] text-xs flex-shrink-0 min-h-[44px]"
-            aria-label="Gemini CLI agent"
-          >
-            <GeminiIcon className="h-3 w-3" />
-          </span>
-        )}
-
-        {/* CLI agent slash commands button */}
-        {isCliAgent && (
-          <button
-            onClick={() => setShowSlashCommands(true)}
+            onClick={() => setShowContextMenu(true)}
             className="flex items-center gap-1 px-2 py-1 rounded-lg bg-surface-hover text-xs text-text-secondary hover:text-text-primary transition-colors flex-shrink-0 min-h-[44px]"
-            aria-label="Slash commands"
+            aria-label="View context usage"
           >
-            <Slash className="h-3 w-3" aria-hidden="true" />
-            <span>Cmds</span>
+            <ContextUsageRing agentId={agent.id} size="sm" />
           </button>
-        )}
 
-        {/* Podex native agent indicator */}
-        {!isCliAgent && agent.role !== 'custom' && (
-          <span
-            className="flex items-center justify-center px-2 py-1 rounded-lg flex-shrink-0 min-h-[44px]"
-            aria-label="Podex agent"
-          >
-            <PodexIcon size={20} />
-          </span>
-        )}
+          {/* Attention badge */}
+          {hasAttention && (
+            <button
+              onClick={openPanel}
+              className={cn(
+                'flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all flex-shrink-0 min-h-[44px]',
+                hasUnread && 'animate-pulse',
+                highestPriorityAttention?.type === 'error' && 'bg-red-500/20 text-red-400',
+                highestPriorityAttention?.type === 'needs_approval' &&
+                  'bg-yellow-500/20 text-yellow-400',
+                highestPriorityAttention?.type === 'completed' && 'bg-green-500/20 text-green-400',
+                highestPriorityAttention?.type === 'waiting_input' &&
+                  'bg-blue-500/20 text-blue-400',
+                !hasUnread && 'opacity-60'
+              )}
+              aria-label={`${unreadCount} notifications${hasUnread ? ', unread' : ''}`}
+            >
+              <Bell className="h-3 w-3" aria-hidden="true" />
+              {hasUnread ? (
+                <>
+                  <span className="font-semibold">{unreadCount}</span>
+                  <span
+                    className="h-1.5 w-1.5 rounded-full bg-orange-400 animate-pulse"
+                    aria-hidden="true"
+                  />
+                </>
+              ) : (
+                <>
+                  <span>{agentAttentions.length}</span>
+                  <span className="h-1.5 w-1.5 rounded-full bg-blue-400" aria-hidden="true" />
+                </>
+              )}
+            </button>
+          )}
 
-        {/* More menu */}
+          {/* Claude Code session picker (uses mobile bottom sheet) */}
+          {isClaudeCodeAgent && (
+            <ClaudeSessionDropdown
+              useMobileSheet={true}
+              initialSessionInfo={agent.claudeSessionInfo}
+              onSessionLoaded={(sessionDetail, sessionInfo) => {
+                // Convert Claude messages to AgentMessage format
+                const agentMessages = sessionDetail.messages.map((msg) => ({
+                  id: msg.uuid || crypto.randomUUID(),
+                  role: msg.role === 'user' ? ('user' as const) : ('assistant' as const),
+                  content: msg.content,
+                  timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
+                  toolCalls: msg.tool_calls?.map((tc) => ({
+                    id: tc.id,
+                    name: tc.name,
+                    args: (tc.input as Record<string, unknown>) || {},
+                    status: 'completed' as const,
+                  })),
+                }));
+
+                // Update agent with Claude session info and loaded messages
+                useSessionStore.getState().updateAgent(sessionId, agent.id, {
+                  claudeSessionInfo: sessionInfo,
+                  messages: agentMessages,
+                });
+                toast.success(`Session loaded (${sessionDetail.messages.length} messages)`);
+              }}
+              className="flex-shrink-0"
+            />
+          )}
+
+          {/* OpenAI Codex indicator */}
+          {isOpenAICodexAgent && (
+            <span
+              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#10A37F]/20 text-[#10A37F] text-xs flex-shrink-0 min-h-[44px]"
+              aria-label="OpenAI Codex agent"
+            >
+              <OpenAIIcon className="h-3 w-3" />
+            </span>
+          )}
+
+          {/* Gemini CLI indicator */}
+          {isGeminiCliAgent && (
+            <span
+              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#4285F4]/20 text-[#4285F4] text-xs flex-shrink-0 min-h-[44px]"
+              aria-label="Gemini CLI agent"
+            >
+              <GeminiIcon className="h-3 w-3" />
+            </span>
+          )}
+
+          {/* CLI agent slash commands button */}
+          {isCliAgent && (
+            <button
+              onClick={() => setShowSlashCommands(true)}
+              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-surface-hover text-xs text-text-secondary hover:text-text-primary transition-colors flex-shrink-0 min-h-[44px]"
+              aria-label="Slash commands"
+            >
+              <Slash className="h-3 w-3" aria-hidden="true" />
+              <span>Cmds</span>
+            </button>
+          )}
+
+          {/* Podex native agent indicator */}
+          {!isCliAgent && agent.role !== 'custom' && (
+            <span
+              className="flex items-center justify-center px-2 py-1 rounded-lg flex-shrink-0 min-h-[44px]"
+              aria-label="Podex agent"
+            >
+              <PodexIcon size={20} />
+            </span>
+          )}
+        </div>
+
+        {/* Settings button - always visible, fixed to the right */}
         <button
           onClick={() => setShowMoreMenu(true)}
-          className="flex items-center justify-center w-8 h-8 rounded-lg bg-surface-hover text-text-secondary hover:text-text-primary transition-colors flex-shrink-0 ml-auto"
-          aria-label="More options"
+          className="flex items-center justify-center w-10 h-10 rounded-lg bg-surface-hover text-text-secondary hover:text-text-primary transition-colors flex-shrink-0 mx-2 border-l border-border-subtle pl-2"
+          aria-label="Agent settings"
         >
-          <MoreVertical className="h-4 w-4" aria-hidden="true" />
+          <MoreVertical className="h-5 w-5" aria-hidden="true" />
         </button>
       </div>
 

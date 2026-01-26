@@ -1,7 +1,10 @@
-"""Terminal manager that proxies to compute service containers.
+"""Terminal manager that proxies to compute service containers or local pods.
 
 Supports tmux session persistence - sessions survive disconnections
 and can be reconnected.
+
+For cloud workspaces: Uses WebSocket to compute service
+For local pod workspaces: Uses RPC via Socket.IO
 """
 
 import asyncio
@@ -36,11 +39,14 @@ class TerminalSession:
     session_id: str  # Unique session identifier for tmux
     on_output: Callable[[str, str], Any] | None = None
     running: bool = True
+    is_local_pod: bool = False  # True if this is a local pod session
     _websocket: ClientConnection | None = field(default=None, repr=False)
     _read_task: asyncio.Task[None] | None = field(default=None, repr=False)
     # Track session activity for cleanup
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     last_activity: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # Local pod specific fields
+    working_dir: str | None = None  # Actual working directory for local pods
 
 
 class TerminalManager:
@@ -162,6 +168,7 @@ class TerminalManager:
         on_output: Callable[[str, str], Any],
         session_id: str | None = None,
         shell: str = "bash",
+        command: str | None = None,
     ) -> TerminalSession:
         """Create or reconnect to a terminal session.
 
@@ -172,6 +179,8 @@ class TerminalManager:
                        tmux session that can be reconnected. If not provided,
                        uses workspace_id as session ID.
             shell: Shell to use for the terminal (bash, zsh, fish).
+            command: Optional command to run instead of interactive shell.
+                    If provided, tmux starts directly running this command.
 
         Returns:
             The created or reconnected terminal session.
@@ -186,19 +195,41 @@ class TerminalManager:
             # Check if we already have a connection for this session
             if effective_session_id in self.sessions:
                 session = self.sessions[effective_session_id]
-                if session.running and session._websocket:
-                    session.on_output = on_output
-                    logger.info(
-                        "Reusing existing terminal connection",
-                        workspace_id=workspace_id,
-                        session_id=effective_session_id,
-                    )
-                    return session
+                if session.running:
+                    # For cloud workspaces, check if websocket is active
+                    if not session.is_local_pod and session._websocket:
+                        session.on_output = on_output
+                        logger.info(
+                            "Reusing existing terminal connection (cloud)",
+                            workspace_id=workspace_id,
+                            session_id=effective_session_id,
+                        )
+                        return session
+                    # For local pods, always re-call terminal.create to ensure
+                    # the output streaming loop is running on the pod
+                    if session.is_local_pod:
+                        session.on_output = on_output
+                        logger.info(
+                            "Re-activating local pod terminal session",
+                            workspace_id=workspace_id,
+                            session_id=effective_session_id,
+                        )
+                        # Call terminal.create on local pod to restart output loop
+                        await self._ensure_local_pod_output_loop(session, shell)
+                        return session
                 # Session exists but not running, clean up
                 await self._cleanup_session(session)
                 del self.sessions[effective_session_id]
 
-            # Connect to compute service terminal WebSocket
+            # Check if workspace is on a local pod
+            is_local_pod = await self._check_is_local_pod(workspace_id)
+
+            if is_local_pod:
+                return await self._create_local_pod_session(
+                    workspace_id, effective_session_id, on_output, shell, command
+                )
+
+            # Connect to compute service terminal WebSocket (cloud workspaces)
             terminal_url = self._get_compute_terminal_url(workspace_id, effective_session_id, shell)
             logger.info(
                 "Connecting to compute terminal",
@@ -250,6 +281,7 @@ class TerminalManager:
                 workspace_id=workspace_id,
                 session_id=effective_session_id,
                 on_output=on_output,
+                is_local_pod=False,
                 _websocket=websocket,
             )
 
@@ -262,6 +294,178 @@ class TerminalManager:
                 "Terminal session connected to compute (tmux)",
                 workspace_id=workspace_id,
                 session_id=effective_session_id,
+            )
+
+            return session
+
+    async def _check_is_local_pod(self, workspace_id: str) -> bool:
+        """Check if a workspace is running on a local pod."""
+        # Import here to avoid circular imports
+        from src.services.workspace_router import workspace_router  # noqa: PLC0415
+
+        return await workspace_router.is_local_pod_workspace(workspace_id)
+
+    async def _create_local_pod_session(
+        self,
+        workspace_id: str,
+        session_id: str,
+        on_output: Callable[[str, str], Any],
+        shell: str,
+        command: str | None = None,
+    ) -> TerminalSession:
+        """Create a terminal session for a local pod workspace.
+
+        Uses RPC to create a tmux session on the local pod.
+        Terminal output is streamed via Socket.IO events.
+
+        Args:
+            workspace_id: ID of the workspace.
+            session_id: Unique session ID for tmux.
+            on_output: Callback for terminal output.
+            shell: Shell to use (if command not provided).
+            command: Optional command to run instead of interactive shell.
+        """
+        # Import here to avoid circular imports
+        from src.services.workspace_router import workspace_router  # noqa: PLC0415
+
+        logger.info(
+            "Creating local pod terminal session",
+            workspace_id=workspace_id,
+            session_id=session_id,
+            shell=shell,
+            has_command=command is not None,
+        )
+
+        try:
+            # Create terminal session via RPC
+            result = await workspace_router.terminal_create(
+                workspace_id=workspace_id,
+                user_id="",  # Not needed for local pod
+                session_id=session_id,
+                shell=shell,
+                command=command,  # Pass command to run directly
+            )
+
+            working_dir = result.get("working_dir", ".")
+
+            session = TerminalSession(
+                workspace_id=workspace_id,
+                session_id=session_id,
+                on_output=on_output,
+                is_local_pod=True,
+                running=True,
+                working_dir=working_dir,
+            )
+
+            self.sessions[session_id] = session
+
+            logger.info(
+                "Local pod terminal session created",
+                workspace_id=workspace_id,
+                session_id=session_id,
+                working_dir=working_dir,
+            )
+
+            return session  # noqa: TRY300
+
+        except Exception as e:
+            logger.exception(
+                "Failed to create local pod terminal session",
+                workspace_id=workspace_id,
+                session_id=session_id,
+                error=str(e),
+            )
+            raise RuntimeError("Local pod terminal connection failed") from e  # noqa: TRY003
+
+    async def _ensure_local_pod_output_loop(self, session: TerminalSession, shell: str) -> None:
+        """Ensure the output streaming loop is running on the local pod.
+
+        Called when re-activating an existing local pod session to make sure
+        the pod is streaming terminal output. This handles cases where:
+        - The pod was restarted
+        - The output loop ended due to inactivity
+        - The client reconnected after disconnect
+        """
+        from src.services.workspace_router import workspace_router  # noqa: PLC0415
+
+        try:
+            # Call terminal.create on local pod - it handles idempotently:
+            # - If tmux session exists, it just restarts the output loop
+            # - If tmux session doesn't exist, it creates it
+            await workspace_router.terminal_create(
+                workspace_id=session.workspace_id,
+                user_id="",
+                session_id=session.session_id,
+                shell=shell,
+            )
+            logger.info(
+                "Local pod output loop re-activated",
+                workspace_id=session.workspace_id,
+                session_id=session.session_id,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to re-activate local pod output loop",
+                workspace_id=session.workspace_id,
+                session_id=session.session_id,
+                error=str(e),
+            )
+
+    async def register_local_pod_session(
+        self,
+        workspace_id: str,
+        session_id: str,
+        working_dir: str | None = None,
+        on_output: Callable[[str, str], Any] | None = None,
+    ) -> TerminalSession:
+        """Register an existing local pod terminal session for output routing.
+
+        Used when a terminal session is created directly on the local pod (e.g., via
+        Claude resume) rather than through the normal terminal_manager.create_session
+        flow. This allows the terminal manager to route output from the pod to clients.
+
+        Args:
+            workspace_id: ID of the workspace.
+            session_id: Unique session ID for the tmux session on the pod.
+            working_dir: Working directory of the session.
+            on_output: Optional callback for terminal output.
+
+        Returns:
+            The registered TerminalSession.
+        """
+        async with self._lock:
+            # Check if session already exists
+            if session_id in self.sessions:
+                existing = self.sessions[session_id]
+                if existing.running:
+                    logger.info(
+                        "Local pod session already registered",
+                        workspace_id=workspace_id,
+                        session_id=session_id,
+                    )
+                    if on_output:
+                        existing.on_output = on_output
+                    return existing
+                # Session exists but not running, clean it up
+                await self._cleanup_session(existing)
+                del self.sessions[session_id]
+
+            session = TerminalSession(
+                workspace_id=workspace_id,
+                session_id=session_id,
+                on_output=on_output,
+                is_local_pod=True,
+                running=True,
+                working_dir=working_dir,
+            )
+
+            self.sessions[session_id] = session
+
+            logger.info(
+                "Registered local pod terminal session",
+                workspace_id=workspace_id,
+                session_id=session_id,
+                working_dir=working_dir,
             )
 
             return session
@@ -288,8 +492,17 @@ class TerminalManager:
             True if successful, False otherwise.
         """
         session = self.sessions.get(session_id)
-        if not session or not session.running or not session._websocket:
+        if not session or not session.running:
             logger.warning("No active terminal session", session_id=session_id)
+            return False
+
+        # Handle local pod sessions via RPC
+        if session.is_local_pod:
+            return await self._write_input_local_pod(session, data)
+
+        # Cloud workspace: use WebSocket
+        if not session._websocket:
+            logger.warning("No WebSocket for terminal session", session_id=session_id)
             return False
 
         try:
@@ -306,6 +519,28 @@ class TerminalManager:
         else:
             return True
 
+    async def _write_input_local_pod(self, session: TerminalSession, data: str) -> bool:
+        """Write input to a local pod terminal session via RPC."""
+        # Import here to avoid circular imports
+        from src.services.workspace_router import workspace_router  # noqa: PLC0415
+
+        try:
+            await workspace_router.terminal_input(
+                workspace_id=session.workspace_id,
+                user_id="",  # Not needed for local pod
+                session_id=session.session_id,
+                data=data,
+            )
+            session.last_activity = datetime.now(UTC)
+            return True  # noqa: TRY300
+        except Exception as e:
+            logger.exception(
+                "Failed to write to local pod terminal",
+                session_id=session.session_id,
+                error=str(e),
+            )
+            return False
+
     async def resize(self, session_id: str, rows: int, cols: int) -> bool:
         """Resize a terminal session.
 
@@ -318,7 +553,15 @@ class TerminalManager:
             True if successful, False otherwise.
         """
         session = self.sessions.get(session_id)
-        if not session or not session.running or not session._websocket:
+        if not session or not session.running:
+            return False
+
+        # Handle local pod sessions via RPC
+        if session.is_local_pod:
+            return await self._resize_local_pod(session, rows, cols)
+
+        # Cloud workspace: use WebSocket
+        if not session._websocket:
             return False
 
         try:
@@ -341,14 +584,37 @@ class TerminalManager:
         else:
             return True
 
-    async def close_session(self, session_id: str) -> bool:
-        """Close a terminal session (WebSocket only - tmux keeps running).
+    async def _resize_local_pod(self, session: TerminalSession, rows: int, cols: int) -> bool:
+        """Resize a local pod terminal session via RPC."""
+        # Import here to avoid circular imports
+        from src.services.workspace_router import workspace_router  # noqa: PLC0415
 
-        This closes the WebSocket connection but the tmux session in the
-        container keeps running. Call kill_session to fully terminate.
+        try:
+            await workspace_router.terminal_resize(
+                workspace_id=session.workspace_id,
+                user_id="",
+                session_id=session.session_id,
+                rows=rows,
+                cols=cols,
+            )
+            return True  # noqa: TRY300
+        except Exception as e:
+            logger.exception(
+                "Failed to resize local pod terminal",
+                session_id=session.session_id,
+                error=str(e),
+            )
+            return False
+
+    async def close_session(self, session_id: str, kill_tmux: bool = False) -> bool:
+        """Close a terminal session.
+
+        For cloud workspaces: Closes WebSocket but tmux keeps running.
+        For local pods: Closes the session via RPC.
 
         Args:
             session_id: Session ID.
+            kill_tmux: If True, also kill the tmux session.
 
         Returns:
             True if successful, False otherwise.
@@ -358,15 +624,39 @@ class TerminalManager:
             if not session:
                 return False
 
+            # For local pods, close the tmux session via RPC
+            if session.is_local_pod and kill_tmux:
+                await self._close_local_pod_session(session)
+
             await self._cleanup_session(session)
             del self.sessions[session_id]
 
             logger.info(
-                "Terminal session closed (tmux persists)",
+                "Terminal session closed",
                 session_id=session_id,
                 workspace_id=session.workspace_id,
+                is_local_pod=session.is_local_pod,
+                tmux_killed=kill_tmux,
             )
             return True
+
+    async def _close_local_pod_session(self, session: TerminalSession) -> None:
+        """Close a local pod terminal session via RPC."""
+        # Import here to avoid circular imports
+        from src.services.workspace_router import workspace_router  # noqa: PLC0415
+
+        try:
+            await workspace_router.terminal_close(
+                workspace_id=session.workspace_id,
+                user_id="",
+                session_id=session.session_id,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to close local pod terminal",
+                session_id=session.session_id,
+                error=str(e),
+            )
 
     async def _read_loop(self, session: TerminalSession) -> None:
         """Read output from compute terminal and send to callback.

@@ -12,6 +12,8 @@ import { createFile } from '@/lib/api';
 interface MarkdownRendererProps {
   content: string;
   className?: string;
+  /** Callback when a file link is clicked (path, line range) */
+  onFileClick?: (path: string, startLine?: number, endLine?: number) => void;
 }
 
 interface NestedListItem {
@@ -30,9 +32,49 @@ interface ParsedBlock {
 }
 
 /**
+ * Check if a URL is a file path (not a web URL)
+ */
+function isFilePath(url: string): boolean {
+  // Skip web URLs
+  if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('mailto:')) {
+    return false;
+  }
+  // Check for file-like patterns (has extension or looks like a path)
+  return /\.[a-zA-Z0-9]+(?:#|$)/.test(url) || url.includes('/');
+}
+
+/**
+ * Parse file path and optional line numbers from a URL
+ * Supports formats: path/file.ts, path/file.ts#L42, path/file.ts#L42-L51
+ */
+function parseFilePath(url: string): { path: string; startLine?: number; endLine?: number } {
+  const [pathPart, fragment] = url.split('#');
+  const path = pathPart || url;
+
+  if (!fragment) {
+    return { path };
+  }
+
+  // Match L42 or L42-L51 patterns
+  const lineMatch = fragment.match(/^L(\d+)(?:-L(\d+))?$/);
+  if (lineMatch && lineMatch[1]) {
+    return {
+      path,
+      startLine: parseInt(lineMatch[1], 10),
+      endLine: lineMatch[2] ? parseInt(lineMatch[2], 10) : undefined,
+    };
+  }
+
+  return { path };
+}
+
+/**
  * Parses inline markdown elements (bold, italic, code, links)
  */
-function parseInlineMarkdown(text: string): React.ReactNode[] {
+function parseInlineMarkdown(
+  text: string,
+  onFileClick?: (path: string, startLine?: number, endLine?: number) => void
+): React.ReactNode[] {
   const elements: React.ReactNode[] = [];
   let remaining = text;
   let key = 0;
@@ -45,18 +87,18 @@ function parseInlineMarkdown(text: string): React.ReactNode[] {
       render: (match: string) => (
         <code
           key={key++}
-          className="rounded bg-void/50 px-1.5 py-0.5 text-xs font-mono text-accent-primary"
+          className="rounded bg-void/50 px-1.5 py-0.5 text-xs font-mono text-accent-primary break-all"
         >
           {match}
         </code>
       ),
     },
-    // Bold with asterisks
+    // Bold with asterisks - recursively parse content for nested links
     {
       regex: /\*\*([^*]+)\*\*/,
       render: (match: string) => (
         <strong key={key++} className="font-semibold">
-          {match}
+          {parseInlineMarkdown(match, onFileClick)}
         </strong>
       ),
     },
@@ -65,16 +107,16 @@ function parseInlineMarkdown(text: string): React.ReactNode[] {
       regex: /(?<![a-zA-Z0-9])__([^_]+)__(?![a-zA-Z0-9])/,
       render: (match: string) => (
         <strong key={key++} className="font-semibold">
-          {match}
+          {parseInlineMarkdown(match, onFileClick)}
         </strong>
       ),
     },
-    // Italic with asterisks
+    // Italic with asterisks - recursively parse content for nested links
     {
       regex: /\*([^*]+)\*/,
       render: (match: string) => (
         <em key={key++} className="italic">
-          {match}
+          {parseInlineMarkdown(match, onFileClick)}
         </em>
       ),
     },
@@ -84,24 +126,40 @@ function parseInlineMarkdown(text: string): React.ReactNode[] {
       regex: /(?<![a-zA-Z0-9])_([^_]+)_(?![a-zA-Z0-9])/,
       render: (match: string) => (
         <em key={key++} className="italic">
-          {match}
+          {parseInlineMarkdown(match, onFileClick)}
         </em>
       ),
     },
-    // Links
+    // Links - handle file paths specially if callback is provided
     {
       regex: /\[([^\]]+)\]\(([^)]+)\)/,
-      render: (_text: string, url: string) => (
-        <a
-          key={key++}
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-accent-primary hover:underline"
-        >
-          {_text}
-        </a>
-      ),
+      render: (linkText: string, url: string) => {
+        // Check if this is a file path and we have a callback
+        if (onFileClick && isFilePath(url)) {
+          const { path, startLine, endLine } = parseFilePath(url);
+          return (
+            <button
+              key={key++}
+              onClick={() => onFileClick(path, startLine, endLine)}
+              className="text-accent-primary hover:underline hover:text-accent-primary/80 cursor-pointer bg-transparent border-none p-0 font-inherit"
+            >
+              {linkText}
+            </button>
+          );
+        }
+        // Regular external link
+        return (
+          <a
+            key={key++}
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-accent-primary hover:underline"
+          >
+            {linkText}
+          </a>
+        );
+      },
     },
   ];
 
@@ -334,12 +392,27 @@ function parseMarkdown(content: string): ParsedBlock[] {
       continue;
     }
 
+    // Check if this line is a standalone code span (insight-style decorative line)
+    // These should be their own paragraphs, not joined with adjacent content
+    const isStandaloneCodeSpan = /^`[^`]+`$/.test(trimmedLine);
+
+    if (isStandaloneCodeSpan) {
+      // Standalone code spans get their own paragraph
+      blocks.push({
+        type: 'paragraph',
+        content: trimmedLine,
+      });
+      i++;
+      continue;
+    }
+
     // Regular paragraph - collect consecutive non-empty lines
     const paragraphLines: string[] = [trimmedLine];
     i++;
     while (i < lines.length) {
       const currentLine = lines[i] ?? '';
       const currentTrimmed = currentLine.trim();
+      // Stop at: empty lines, code blocks, headings, blockquotes, lists, HRs, or standalone code spans
       if (
         currentTrimmed === '' ||
         currentTrimmed.startsWith('```') ||
@@ -347,7 +420,8 @@ function parseMarkdown(content: string): ParsedBlock[] {
         currentTrimmed.startsWith('>') ||
         /^[-*+]\s/.test(currentTrimmed) ||
         /^\d+\.\s/.test(currentTrimmed) ||
-        /^[-*_]{3,}$/.test(currentTrimmed)
+        /^[-*_]{3,}$/.test(currentTrimmed) ||
+        /^`[^`]+`$/.test(currentTrimmed) // Standalone code spans break paragraphs
       ) {
         break;
       }
@@ -367,14 +441,27 @@ function parseMarkdown(content: string): ParsedBlock[] {
 /**
  * Recursively renders list items with their nested children
  */
-function ListItemRenderer({ item, ordered: _ordered }: { item: NestedListItem; ordered: boolean }) {
+function ListItemRenderer({
+  item,
+  ordered: _ordered,
+  onFileClick,
+}: {
+  item: NestedListItem;
+  ordered: boolean;
+  onFileClick?: (path: string, startLine?: number, endLine?: number) => void;
+}) {
   return (
-    <li className="leading-relaxed">
-      {parseInlineMarkdown(item.content)}
+    <li className="leading-relaxed break-words overflow-hidden">
+      {parseInlineMarkdown(item.content, onFileClick)}
       {item.children && item.children.length > 0 && (
         <ul className="pl-4 mt-1 space-y-1 list-disc">
           {item.children.map((child, childIndex) => (
-            <ListItemRenderer key={childIndex} item={child} ordered={false} />
+            <ListItemRenderer
+              key={childIndex}
+              item={child}
+              ordered={false}
+              onFileClick={onFileClick}
+            />
           ))}
         </ul>
       )}
@@ -646,11 +733,12 @@ function ToolCallBlock({ content, language }: { content: string; language: strin
 export const MarkdownRenderer = React.memo<MarkdownRendererProps>(function MarkdownRenderer({
   content,
   className,
+  onFileClick,
 }) {
   const blocks = useMemo(() => parseMarkdown(content), [content]);
 
   return (
-    <div className={cn('markdown-content space-y-2', className)}>
+    <div className={cn('markdown-content space-y-2 overflow-hidden', className)}>
       {blocks.map((block, index) => {
         switch (block.type) {
           case 'heading': {
@@ -664,7 +752,10 @@ export const MarkdownRenderer = React.memo<MarkdownRendererProps>(function Markd
               6: 'text-xs font-medium text-text-secondary',
             };
             const HeadingElement = ({ children }: { children: React.ReactNode }) => {
-              const className = cn(headingSizes[level], 'mt-3 first:mt-0');
+              const className = cn(
+                headingSizes[level],
+                'mt-3 first:mt-0 break-words overflow-hidden'
+              );
               switch (level) {
                 case 1:
                   return <h1 className={className}>{children}</h1>;
@@ -681,14 +772,16 @@ export const MarkdownRenderer = React.memo<MarkdownRendererProps>(function Markd
               }
             };
             return (
-              <HeadingElement key={index}>{parseInlineMarkdown(block.content)}</HeadingElement>
+              <HeadingElement key={index}>
+                {parseInlineMarkdown(block.content, onFileClick)}
+              </HeadingElement>
             );
           }
 
           case 'paragraph':
             return (
-              <p key={index} className="leading-relaxed">
-                {parseInlineMarkdown(block.content)}
+              <p key={index} className="leading-relaxed break-words overflow-hidden">
+                {parseInlineMarkdown(block.content, onFileClick)}
               </p>
             );
 
@@ -720,6 +813,7 @@ export const MarkdownRenderer = React.memo<MarkdownRendererProps>(function Markd
                     key={itemIndex}
                     item={typeof item === 'string' ? { content: item } : item}
                     ordered={block.ordered || false}
+                    onFileClick={onFileClick}
                   />
                 ))}
               </ListTag>
@@ -730,9 +824,9 @@ export const MarkdownRenderer = React.memo<MarkdownRendererProps>(function Markd
             return (
               <blockquote
                 key={index}
-                className="border-l-2 border-accent-primary/50 pl-3 py-1 italic text-text-secondary"
+                className="border-l-2 border-accent-primary/50 pl-3 py-1 italic text-text-secondary break-words overflow-hidden"
               >
-                {parseInlineMarkdown(block.content)}
+                {parseInlineMarkdown(block.content, onFileClick)}
               </blockquote>
             );
 

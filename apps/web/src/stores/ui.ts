@@ -35,7 +35,8 @@ export type PanelId =
   | 'usage'
   | 'sentry'
   | 'skills'
-  | 'health';
+  | 'health'
+  | 'claude';
 export type SidebarSide = 'left' | 'right';
 
 export interface PanelSlot {

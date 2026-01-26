@@ -31,6 +31,7 @@ from src.database import (
 )
 from src.database import Message as MessageModel
 from src.database import Session as SessionModel
+from src.database import Workspace as WorkspaceModel
 from src.database.connection import async_session_factory
 from src.exceptions import (
     AgentClientError,
@@ -949,7 +950,7 @@ async def _process_cli_agent_message(
         db: Database session.
         agent: The agent model.
     """
-    from src.compute_client import compute_client
+    from src.services.workspace_router import workspace_router
 
     # Get CLI config for this agent type
     cli_config = CLI_AGENT_CONFIG.get(agent.role)
@@ -1072,7 +1073,7 @@ async def _process_cli_agent_message(
                 check_command=cli_config["check_command"],
                 workspace_id=workspace_id,
             )
-            check_result = await compute_client.exec_command(
+            check_result = await workspace_router.exec_command(
                 workspace_id=workspace_id,
                 user_id=user_id,
                 command=cli_config["check_command"],
@@ -1107,7 +1108,7 @@ async def _process_cli_agent_message(
 
             try:
                 # First verify npm is available
-                npm_check = await compute_client.exec_command(
+                npm_check = await workspace_router.exec_command(
                     workspace_id=workspace_id,
                     user_id=user_id,
                     command="which npm && npm --version",
@@ -1168,7 +1169,7 @@ async def _process_cli_agent_message(
                     workspace_id=workspace_id,
                 )
 
-                install_result = await compute_client.exec_command(
+                install_result = await workspace_router.exec_command(
                     workspace_id=workspace_id,
                     user_id=user_id,
                     command=install_cmd,
@@ -1266,13 +1267,44 @@ async def _process_cli_agent_message(
                 return
 
         # Check authentication status
+        # Local pods use OAuth (browser-based) - check for ~/.claude or similar
+        # Cloud workspaces use API credentials file
         try:
-            auth_check = await compute_client.exec_command(
-                workspace_id=workspace_id,
-                user_id=user_id,
-                command=cli_config["credentials_check"],
-                exec_timeout=settings.WORKSPACE_EXEC_TIMEOUT_DEFAULT,
-            )
+            from src.services.workspace_router import workspace_router
+
+            # Check if this is a local pod workspace
+            ws_query = select(WorkspaceModel.local_pod_id).where(WorkspaceModel.id == workspace_id)
+            ws_result = await db.execute(ws_query)
+            local_pod_id = ws_result.scalar_one_or_none()
+            is_local_pod = local_pod_id is not None
+
+            if is_local_pod:
+                # Local pods: use ~ which expands to user's home directory
+                # Claude Code uses OAuth auth locally (no .credentials.json), so check
+                # for ~/.claude directory existence instead
+                if agent.role == AgentRole.CLAUDE_CODE.value:
+                    local_credentials_check = (
+                        "which claude >/dev/null 2>&1 && test -d ~/.claude && echo 'authenticated'"
+                    )
+                else:
+                    # For other CLIs, just swap /home/dev/ for ~/
+                    local_credentials_check = cli_config["credentials_check"].replace(
+                        "/home/dev/", "~/"
+                    )
+                auth_check = await workspace_router.exec_command(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    command=local_credentials_check,
+                    exec_timeout=settings.WORKSPACE_EXEC_TIMEOUT_DEFAULT,
+                )
+            else:
+                # Cloud workspace: use the configured credentials check path
+                auth_check = await workspace_router.exec_command(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    command=cli_config["credentials_check"],
+                    exec_timeout=settings.WORKSPACE_EXEC_TIMEOUT_DEFAULT,
+                )
             authenticated = "authenticated" in auth_check.get("stdout", "")
         except Exception as e:
             logger.debug("CLI authentication check failed", error=str(e))
@@ -1530,8 +1562,8 @@ async def _process_claude_code_message(
         db: Database session.
         agent: The agent model.
     """
-    from src.compute_client import compute_client
     from src.routes.claude_code import execute_claude_code_message
+    from src.services.workspace_router import workspace_router
 
     try:
         # Update agent status to running
@@ -1577,7 +1609,7 @@ async def _process_claude_code_message(
 
         # Check if Claude CLI is installed
         try:
-            check_result = await compute_client.exec_command(
+            check_result = await workspace_router.exec_command(
                 workspace_id=workspace_id,
                 user_id=user_id,
                 command="which claude",
@@ -1613,14 +1645,31 @@ async def _process_claude_code_message(
             return
 
         # Check authentication status
-        # Note: Use absolute path /home/dev instead of ~ because exec runs as root
+        # Local pods use OAuth (browser-based) - check if ~/.claude exists
+        # Cloud workspaces use API credentials file
         try:
-            auth_check = await compute_client.exec_command(
-                workspace_id=workspace_id,
-                user_id=user_id,
-                command="test -f /home/dev/.claude/.credentials.json && echo 'authenticated'",
-                exec_timeout=settings.WORKSPACE_EXEC_TIMEOUT_DEFAULT,
-            )
+            # Check if this is a local pod workspace
+            ws_query = select(WorkspaceModel.local_pod_id).where(WorkspaceModel.id == workspace_id)
+            ws_result = await db.execute(ws_query)
+            local_pod_id = ws_result.scalar_one_or_none()
+            is_local_pod = local_pod_id is not None
+
+            if is_local_pod:
+                # Local pods: Claude uses OAuth auth, check if ~/.claude exists
+                auth_check = await workspace_router.exec_command(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    command="test -d ~/.claude && echo 'authenticated'",
+                    exec_timeout=settings.WORKSPACE_EXEC_TIMEOUT_DEFAULT,
+                )
+            else:
+                # Cloud workspace: check for API credentials file
+                auth_check = await workspace_router.exec_command(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    command="test -f /home/dev/.claude/.credentials.json && echo 'authenticated'",
+                    exec_timeout=settings.WORKSPACE_EXEC_TIMEOUT_DEFAULT,
+                )
             authenticated = "authenticated" in auth_check.get("stdout", "")
         except Exception as e:
             logger.debug("CLI authentication check failed", error=str(e))

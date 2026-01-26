@@ -27,11 +27,11 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.compute_client import compute_client
 from src.database import Agent as AgentModel
 from src.database import Session as SessionModel
 from src.routes.dependencies import DbSession, get_current_user_id
 from src.routes.sessions import ensure_workspace_provisioned
+from src.services.workspace_router import workspace_router
 
 logger = structlog.get_logger()
 
@@ -142,7 +142,7 @@ async def check_auth_status(
     # Check if credentials exist in workspace
     # Note: Use absolute path /home/dev instead of ~ because exec runs as root
     try:
-        result = await compute_client.exec_command(
+        result = await workspace_router.exec_command(
             workspace_id=session.workspace_id,
             user_id=user_id,
             command="test -f /home/dev/.gemini/settings.json && echo 'authenticated'",
@@ -182,7 +182,7 @@ async def reauthenticate(
     # Clear credentials
     # Note: Use absolute path /home/dev instead of ~ because exec runs as root
     try:
-        await compute_client.exec_command(
+        await workspace_router.exec_command(
             workspace_id=session.workspace_id,
             user_id=user_id,
             command=(
@@ -229,7 +229,7 @@ async def list_sessions(
         return []
 
     try:
-        result = await compute_client.exec_command(
+        result = await workspace_router.exec_command(
             workspace_id=session.workspace_id,
             user_id=user_id,
             command="gemini --list-sessions 2>/dev/null || echo '[]'",
@@ -306,7 +306,7 @@ async def execute_gemini_cli_message(
                 temp_name = f"/tmp/attachment_{uuid.uuid4().hex[:8]}.{ext}"  # noqa: S108
 
                 try:
-                    await compute_client.exec_command(
+                    await workspace_router.exec_command(
                         workspace_id=workspace_id,
                         user_id=user_id,
                         command=f"echo '{data}' | base64 -d > {temp_name}",
@@ -368,7 +368,7 @@ async def execute_gemini_cli_message(
 
     # Execute the command
     try:
-        result = await compute_client.exec_command(
+        result = await workspace_router.exec_command(
             workspace_id=workspace_id,
             user_id=user_id,
             command=cmd,
@@ -546,7 +546,7 @@ async def check_installation(
 
     try:
         # Check if gemini is installed
-        check_result = await compute_client.exec_command(
+        check_result = await workspace_router.exec_command(
             workspace_id=session.workspace_id,
             user_id=user_id,
             command="which gemini",
@@ -557,7 +557,7 @@ async def check_installation(
         version = None
         if installed:
             # Get version
-            version_result = await compute_client.exec_command(
+            version_result = await workspace_router.exec_command(
                 workspace_id=session.workspace_id,
                 user_id=user_id,
                 command="gemini --version",
@@ -597,7 +597,7 @@ async def install_gemini(
 
     try:
         # Note: Check the actual package name - this might be different
-        result = await compute_client.exec_command(
+        result = await workspace_router.exec_command(
             workspace_id=session.workspace_id,
             user_id=user_id,
             command="npm install -g @anthropic-ai/gemini-cli",

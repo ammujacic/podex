@@ -130,6 +130,8 @@ export function DockedFilePreviewCard({
           onChange={() => {}}
           readOnly
           className="h-full"
+          startLine={preview.startLine}
+          endLine={preview.endLine}
         />
       </div>
 

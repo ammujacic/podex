@@ -17,6 +17,12 @@ from src.database.connection import get_db
 from src.database.models import LocalPod, Workspace
 from src.middleware.auth import get_current_user
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
+from src.websocket.local_pod_hub import (
+    PodNotConnectedError,
+    RPCMethods,
+    call_pod,
+    is_pod_online,
+)
 
 router = APIRouter(prefix="/local-pods", tags=["local-pods"])
 
@@ -122,6 +128,35 @@ class TokenRegenerateResponse(BaseModel):
 
     token: str  # New token - shown only once!
     token_prefix: str
+
+
+class BrowseDirectoryRequest(BaseModel):
+    """Request to browse host filesystem."""
+
+    path: str = Field(default="~", description="Directory path to browse")
+    show_hidden: bool = Field(default=False, description="Include hidden files")
+
+
+class DirectoryEntry(BaseModel):
+    """Single entry in a directory listing."""
+
+    name: str
+    path: str
+    is_dir: bool
+    is_file: bool
+    size: int | None = None
+    modified: float | None = None
+
+
+class BrowseDirectoryResponse(BaseModel):
+    """Response from browsing host filesystem."""
+
+    path: str
+    parent: str | None
+    entries: list[DirectoryEntry]
+    is_home: bool = False
+    error: str | None = None
+    allowed_paths: list[str] | None = None
 
 
 # ============== Helper Functions ==============
@@ -437,6 +472,56 @@ async def list_pod_workspaces(
         ],
         total=len(workspaces),
     )
+
+
+@router.post("/{pod_id}/browse", response_model=BrowseDirectoryResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def browse_host_directory(
+    request: Request,
+    response: Response,
+    pod_id: UUID,
+    data: BrowseDirectoryRequest,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> BrowseDirectoryResponse:
+    """Browse host filesystem on a local pod.
+
+    Used for workspace folder selection in native mode.
+    """
+    pod = await db.get(LocalPod, pod_id)
+
+    if not pod or pod.user_id != current_user["id"]:
+        raise HTTPException(status_code=404, detail="Local pod not found")
+
+    if not is_pod_online(str(pod_id)):
+        raise HTTPException(status_code=503, detail="Local pod is not connected")
+
+    try:
+        result = await call_pod(
+            str(pod_id),
+            RPCMethods.HOST_BROWSE,
+            {"path": data.path, "show_hidden": data.show_hidden},
+        )
+
+        # Result is a dict from the local pod
+        if isinstance(result, dict):
+            return BrowseDirectoryResponse(
+                path=result.get("path", ""),
+                parent=result.get("parent"),
+                entries=[DirectoryEntry(**e) for e in result.get("entries", [])],
+                is_home=result.get("is_home", False),
+                error=result.get("error"),
+                allowed_paths=result.get("allowed_paths"),
+            )
+
+        raise HTTPException(status_code=500, detail="Invalid response from pod")  # noqa: TRY301
+
+    except PodNotConnectedError:
+        raise HTTPException(status_code=503, detail="Local pod is not connected")
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="Request to local pod timed out")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to browse directory: {e}")
 
 
 # ============== Internal/WebSocket Helper Functions ==============

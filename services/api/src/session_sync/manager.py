@@ -211,7 +211,7 @@ class SessionSyncManager:
         room = f"session:{session_id}"
         await self._broadcast_callback(room, event, payload)
 
-        logger.debug("Broadcasted pubsub message", session_id=session_id, event=event)
+        logger.debug("Broadcasted pubsub message", session_id=session_id, event_name=event)
 
     async def publish_action(self, action: SyncAction) -> None:
         """Publish a sync action to all instances via Redis Pub/Sub.

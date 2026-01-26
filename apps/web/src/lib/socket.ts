@@ -529,6 +529,61 @@ export interface SkillCompleteEvent {
   duration_ms: number;
 }
 
+/** Claude Code session entry - all entry types from session files */
+export interface ClaudeSessionEntry {
+  uuid: string;
+  parent_uuid?: string;
+  type: string; // 'user' | 'assistant' | 'progress' | 'summary' | etc.
+  timestamp?: string;
+  session_id?: string;
+  is_sidechain?: boolean;
+  // For user/assistant messages
+  role?: 'user' | 'assistant';
+  content?: string;
+  thinking?: string | null; // Extended thinking content
+  model?: string;
+  tool_calls?: Array<{
+    id: string;
+    name: string;
+    input: Record<string, unknown>;
+  }> | null;
+  tool_results?: Array<{
+    tool_use_id: string;
+    content: unknown;
+    is_error: boolean;
+  }> | null;
+  stop_reason?: string;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  };
+  // For progress events
+  progress_type?: string;
+  data?: Record<string, unknown>;
+  tool_use_id?: string;
+  parent_tool_use_id?: string;
+  // For summary entries
+  summary?: string;
+  leaf_uuid?: string;
+  // For config/mode change entries
+  mode?: string;
+  config_data?: Record<string, unknown>;
+  // Raw data for unknown types
+  [key: string]: unknown;
+}
+
+/** Claude Code session sync event - real-time sync from local file watcher */
+export interface ClaudeSessionSyncEvent {
+  session_id: string;
+  agent_id: string;
+  claude_session_id: string;
+  new_messages: ClaudeSessionEntry[];
+  sync_type: 'incremental' | 'full';
+  total_count: number;
+}
+
 /**
  * Event emitted when a CLI agent's configuration changes.
  * Enables bi-directional sync between CLI tools and Podex UI.
@@ -552,7 +607,7 @@ export interface AgentConfigUpdateEvent {
  */
 export interface WorkspaceStatusEvent {
   workspace_id: string;
-  status: 'pending' | 'running' | 'standby' | 'stopped' | 'error';
+  status: 'pending' | 'running' | 'standby' | 'stopped' | 'error' | 'offline';
   standby_at?: string;
   error?: string;
 }
@@ -643,6 +698,8 @@ export interface SocketEvents {
   workspace_status: (data: WorkspaceStatusEvent) => void;
   // Billing standby event (credit exhaustion)
   workspace_billing_standby: (data: WorkspaceBillingStandbyEvent) => void;
+  // Claude Code session sync (real-time from file watcher)
+  'claude:session:sync': (data: ClaudeSessionSyncEvent) => void;
 }
 
 // Track active session for auto-rejoin on reconnect

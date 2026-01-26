@@ -1,10 +1,12 @@
 'use client';
 
-import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Loader2, LogIn, Mic, Paperclip, RefreshCw, Send, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { type Agent, type AgentMode, useSessionStore } from '@/stores/session';
+import { useEditorStore } from '@/stores/editor';
+import { getLanguageFromPath } from '@/lib/vscode';
 import { useStreamingStore } from '@/stores/streaming';
 import { useAttentionStore } from '@/stores/attention';
 import { useApprovalsStore } from '@/stores/approvals';
@@ -80,6 +82,7 @@ import {
   useIsAutoInclude,
   useHasPendingContext,
 } from '@/stores/browserContext';
+import { useClaudeSessionSync } from '@/hooks/useClaudeSessionSync';
 
 export interface AgentCardProps {
   agent: Agent;
@@ -157,6 +160,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     addAgentMessage,
     deleteAgentMessage,
     updateAgentThinking,
+    setActiveAgent,
   } = useSessionStore();
   const streamingMessages = useStreamingStore((state) => state.streamingMessages);
   const { getAgentWorktree } = useWorktreesStore();
@@ -177,6 +181,14 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     .map((msg) => msg.content)
     .reverse();
 
+  // Claude Code session sync - enables real-time bidirectional sync with local Claude sessions
+  useClaudeSessionSync({
+    sessionId,
+    agentId: agent.id,
+    claudeSessionInfo: agent.claudeSessionInfo,
+    enabled: agent.role === 'claude-code' && !!agent.claudeSessionInfo,
+  });
+
   // Handle scroll to detect if user has scrolled up
   const handleMessagesScroll = useCallback(() => {
     const container = messagesContainerRef.current;
@@ -188,11 +200,14 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   }, []);
 
   // Auto-scroll only when user is at bottom
-  useEffect(() => {
+  // Use useLayoutEffect to scroll synchronously after DOM updates (before browser paint)
+  // This ensures scrollHeight reflects the new content
+  const lastMessageId = agent.messages[agent.messages.length - 1]?.id;
+  useLayoutEffect(() => {
     if (messagesContainerRef.current && isUserAtBottomRef.current) {
       messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
     }
-  }, [agent.messages.length, isSending, streamingMessage?.content]);
+  }, [agent.messages.length, lastMessageId, isSending, streamingMessage?.content]);
 
   // Fetch models
   useEffect(() => {
@@ -1051,6 +1066,37 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentModelInfo?.supportsVision, attachments.length]);
 
+  // File link click handler - opens file in the Editor tab
+  const handleFileClick = useCallback(
+    async (path: string, _startLine?: number, _endLine?: number) => {
+      const { createEditorGridCard } = useSessionStore.getState();
+      const { openTab } = useEditorStore.getState();
+      const session = useSessionStore.getState().sessions[sessionId];
+
+      // Ensure the Editor tab is visible
+      if (!session?.editorGridCardId) {
+        createEditorGridCard(sessionId);
+      }
+
+      // Open the file in the Editor
+      const language = getLanguageFromPath(path);
+      openTab({
+        path,
+        name: path.split('/').pop() || path,
+        language,
+        isDirty: false,
+        isPreview: true, // Single click opens as preview, editing pins it
+        paneId: 'main',
+      });
+
+      // Switch to the Editor tab in Focus mode
+      setActiveAgent(sessionId, 'editor');
+
+      // TODO: If startLine/endLine are provided, scroll to those lines after the editor opens
+    },
+    [sessionId, setActiveAgent]
+  );
+
   // TTS playback
   const handlePlayMessage = useCallback(
     async (messageId: string, regenerate: boolean = false) => {
@@ -1229,6 +1275,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
             messages={agent.messages}
             sessionId={sessionId}
             agentId={agent.id}
+            isClaudeCodeAgent={isCliAgent}
             playingMessageId={playingMessageId}
             synthesizingMessageId={synthesizingMessageId}
             deletingMessageId={deletingMessageId}
@@ -1240,6 +1287,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
             onPlanReject={async (planId) => {
               await rejectPlan(sessionId, planId, 'User rejected');
             }}
+            onFileClick={handleFileClick}
           />
         )}
 
@@ -1495,12 +1543,13 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
               const compactMessage = options?.customInstructions
                 ? `/compact ${options.customInstructions}`
                 : '/compact';
-              // Add user message to UI
+              // Add user message to UI (marked as system type for minimal rendering)
               const userMessage = {
                 id: `temp-${Date.now()}`,
                 role: 'user' as const,
                 content: compactMessage,
                 timestamp: new Date(),
+                type: 'system' as const, // CLI commands render minimally
               };
               addAgentMessage(sessionId, agent.id, userMessage);
               updateAgent(sessionId, agent.id, { status: 'active' });

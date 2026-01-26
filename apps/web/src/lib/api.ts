@@ -1438,7 +1438,7 @@ export interface Session {
   workspace_id: string | null;
   branch: string;
   status: 'active' | 'stopped' | 'creating' | 'error';
-  workspace_status: 'running' | 'standby' | 'stopped' | 'pending' | 'error' | null;
+  workspace_status: 'running' | 'standby' | 'stopped' | 'pending' | 'error' | 'offline' | null;
   template_id: string | null;
   git_url: string | null;
   created_at: string;
@@ -1446,6 +1446,10 @@ export interface Session {
   pinned?: boolean;
   active_agents?: number;
   total_tokens?: number;
+  // Local pod info (null = cloud workspace)
+  local_pod_id?: string | null;
+  local_pod_name?: string | null;
+  mount_path?: string | null;
 }
 
 export interface SessionListResponse {
@@ -1558,6 +1562,7 @@ export interface GitStatus {
   staged: Array<{ path: string; status: string }>;
   unstaged: Array<{ path: string; status: string }>;
   untracked: string[];
+  working_dir?: string | null; // The actual working directory used for git commands
 }
 
 export interface GitBranch {
@@ -1715,13 +1720,17 @@ export async function compareBranches(
   sessionId: string,
   base: string,
   compare: string,
-  workingDir?: string
+  workingDir?: string,
+  includeUncommitted?: boolean
 ): Promise<BranchCompareResponse> {
   const params = new URLSearchParams();
   params.append('base', base);
   params.append('compare', compare);
   if (workingDir) {
     params.append('working_dir', workingDir);
+  }
+  if (includeUncommitted) {
+    params.append('include_uncommitted', 'true');
   }
   return api.get<BranchCompareResponse>(
     `/api/sessions/${sessionId}/git/compare?${params.toString()}`
@@ -1758,6 +1767,39 @@ export interface FileContent {
 
 export async function listFiles(sessionId: string, path = '.'): Promise<FileNode[]> {
   return api.get<FileNode[]>(`/api/sessions/${sessionId}/files?path=${encodeURIComponent(path)}`);
+}
+
+export interface UpdateWorkspaceResponse {
+  success: boolean;
+  working_dir?: string | null;
+  error?: string | null;
+}
+
+export interface WorkspaceInfoResponse {
+  working_dir?: string | null;
+  mount_path?: string | null;
+  status?: string | null;
+}
+
+/**
+ * Get workspace info including working directory.
+ * Useful for local pods where the working_dir might not be stored in session.
+ */
+export async function getWorkspaceInfo(sessionId: string): Promise<WorkspaceInfoResponse> {
+  return api.get<WorkspaceInfoResponse>(`/api/sessions/${sessionId}/workspace/info`);
+}
+
+/**
+ * Update workspace configuration (e.g., working directory).
+ * Only supported for local pod workspaces.
+ */
+export async function updateWorkspaceConfig(
+  sessionId: string,
+  workingDir: string
+): Promise<UpdateWorkspaceResponse> {
+  return api.patch<UpdateWorkspaceResponse>(`/api/sessions/${sessionId}/workspace`, {
+    working_dir: workingDir,
+  });
 }
 
 export async function getFileContent(sessionId: string, path: string): Promise<FileContent> {
@@ -3274,6 +3316,36 @@ export async function getLocalPodWorkspaces(
 export async function getOnlineLocalPods(): Promise<LocalPod[]> {
   const pods = await listLocalPods();
   return pods.filter((p) => p.status === 'online');
+}
+
+// Host filesystem browsing
+export interface DirectoryEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  is_file: boolean;
+  size: number | null;
+  modified: number | null;
+}
+
+export interface BrowseDirectoryResponse {
+  path: string;
+  parent: string | null;
+  entries: DirectoryEntry[];
+  is_home: boolean;
+  error: string | null;
+  allowed_paths: string[] | null;
+}
+
+export async function browseLocalPodDirectory(
+  podId: string,
+  path: string = '~',
+  showHidden: boolean = false
+): Promise<BrowseDirectoryResponse> {
+  return api.post<BrowseDirectoryResponse>(`/api/local-pods/${podId}/browse`, {
+    path,
+    show_hidden: showHidden,
+  });
 }
 
 // Local Pod Pricing (from platform settings)
@@ -5579,6 +5651,39 @@ export async function testLLMProvider(
 // Terminal Agent Operations
 // ============================================================================
 
+export interface TerminalAgentSession {
+  id: string;
+  user_id: string;
+  workspace_id: string;
+  agent_type_id: string;
+  env_profile_id: string | null;
+  status: string;
+  created_at: string;
+  last_heartbeat_at: string;
+  // Claude Code session info (for cross-device sync)
+  claude_session_id: string | null;
+  claude_project_path: string | null;
+  claude_first_prompt: string | null;
+}
+
+/**
+ * Get a terminal agent session by ID.
+ * Returns null if the session doesn't exist.
+ */
+export async function getTerminalAgentSession(
+  terminalSessionId: string
+): Promise<TerminalAgentSession | null> {
+  try {
+    return await api.get<TerminalAgentSession>(`/api/v1/terminal-agents/${terminalSessionId}`);
+  } catch (error) {
+    // Return null if session not found (404)
+    if (error instanceof Error && error.message.includes('404')) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 /**
  * Delete a terminal agent by session ID.
  */
@@ -6074,4 +6179,259 @@ export async function getProductivitySummary(days: number = 30): Promise<Product
  */
 export async function getProductivityTrends(days: number = 30): Promise<ProductivityTrends> {
   return api.get<ProductivityTrends>(`/api/productivity/trends?days=${days}`);
+}
+
+// ============== Claude Code Sessions ==============
+
+export interface ClaudeProject {
+  path: string;
+  encoded_path: string;
+  session_count: number;
+  last_modified: string;
+}
+
+export interface ClaudeProjectsResponse {
+  projects: ClaudeProject[];
+  total: number;
+}
+
+export interface ClaudeSessionSummary {
+  session_id: string;
+  first_prompt: string;
+  message_count: number;
+  created_at: string;
+  modified_at: string;
+  git_branch: string;
+  project_path: string;
+  is_sidechain: boolean;
+  file_size_bytes: number;
+}
+
+export interface ClaudeSessionsResponse {
+  sessions: ClaudeSessionSummary[];
+  total: number;
+  project_path: string;
+}
+
+export interface ClaudeMessage {
+  uuid: string;
+  parent_uuid: string | null;
+  type: string;
+  role?: string;
+  content: string;
+  thinking?: string | null; // Extended thinking content
+  timestamp: string | null;
+  model: string | null;
+  tool_calls: Array<{ id: string; name: string; input: unknown }> | null;
+  tool_results?: Array<{ tool_use_id: string; content: unknown; is_error: boolean }> | null;
+  stop_reason?: string | null;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+  } | null;
+  is_sidechain?: boolean;
+  // Progress-specific fields
+  progress_type?: string;
+  data?: Record<string, unknown>;
+  tool_use_id?: string;
+  parent_tool_use_id?: string;
+  // Summary-specific fields
+  summary?: string;
+  leaf_uuid?: string;
+  // Config/mode change fields
+  mode?: string;
+  config_data?: Record<string, unknown>;
+  // Allow additional fields for unknown entry types
+  [key: string]: unknown;
+}
+
+export interface ClaudeSessionDetail {
+  session_id: string;
+  first_prompt: string;
+  message_count: number;
+  created_at: string;
+  modified_at: string;
+  git_branch: string;
+  project_path: string;
+  is_sidechain: boolean;
+  messages: ClaudeMessage[];
+}
+
+export interface ClaudeMessagesResponse {
+  messages: ClaudeMessage[];
+  total: number;
+  session_id: string;
+}
+
+export interface ClaudeSyncRequest {
+  session_id: string;
+  project_path: string;
+  podex_session_id?: string;
+  agent_name?: string;
+}
+
+export interface ClaudeSyncResponse {
+  podex_session_id: string;
+  agent_id: string;
+  messages_synced: number;
+  claude_session_id: string;
+}
+
+export interface ClaudeResumeRequest {
+  session_id: string;
+  project_path: string;
+  workspace_id?: string;
+  first_prompt?: string; // For display purposes, enables cross-device sync
+}
+
+export interface ClaudeResumeResponse {
+  terminal_session_id: string;
+  claude_session_id: string;
+  workspace_id: string;
+  working_dir: string;
+  // Claude session info for cross-device sync
+  claude_project_path: string;
+  claude_first_prompt?: string;
+}
+
+/**
+ * List all local projects with Claude Code sessions.
+ * Requires a connected local pod.
+ */
+export async function listClaudeProjects(): Promise<ClaudeProjectsResponse> {
+  return api.get<ClaudeProjectsResponse>('/api/claude-sessions/projects');
+}
+
+/**
+ * List Claude Code sessions for a project.
+ */
+export async function listClaudeSessions(
+  projectPath: string,
+  options?: {
+    limit?: number;
+    offset?: number;
+    sortBy?: 'created' | 'modified' | 'message_count';
+    sortOrder?: 'asc' | 'desc';
+  }
+): Promise<ClaudeSessionsResponse> {
+  const params = new URLSearchParams({
+    project_path: projectPath,
+    ...(options?.limit && { limit: String(options.limit) }),
+    ...(options?.offset && { offset: String(options.offset) }),
+    ...(options?.sortBy && { sort_by: options.sortBy }),
+    ...(options?.sortOrder && { sort_order: options.sortOrder }),
+  });
+  return api.get<ClaudeSessionsResponse>(`/api/claude-sessions/sessions?${params}`);
+}
+
+/**
+ * Get details of a specific Claude Code session.
+ */
+export async function getClaudeSession(
+  sessionId: string,
+  projectPath: string,
+  options?: {
+    includeMessages?: boolean;
+    messageLimit?: number;
+  }
+): Promise<ClaudeSessionDetail> {
+  const params = new URLSearchParams({
+    project_path: projectPath,
+    ...(options?.includeMessages !== undefined && {
+      include_messages: String(options.includeMessages),
+    }),
+    ...(options?.messageLimit && { message_limit: String(options.messageLimit) }),
+  });
+  return api.get<ClaudeSessionDetail>(`/api/claude-sessions/sessions/${sessionId}?${params}`);
+}
+
+/**
+ * Get messages from a Claude Code session.
+ *
+ * For efficient loading, use `reverse: true` with pagination to implement
+ * bottom-up loading - fetch latest messages first, then progressively
+ * load older messages in batches.
+ *
+ * @param sessionId - Claude session ID
+ * @param projectPath - Project path
+ * @param options - Pagination and ordering options
+ * @param options.limit - Maximum messages to return (default: 100, max: 500)
+ * @param options.offset - Number of messages to skip (default: 0)
+ * @param options.reverse - If true, return newest messages first (default: false)
+ */
+export async function getClaudeSessionMessages(
+  sessionId: string,
+  projectPath: string,
+  options?: { limit?: number; offset?: number; reverse?: boolean }
+): Promise<ClaudeMessagesResponse> {
+  const params = new URLSearchParams({
+    project_path: projectPath,
+    ...(options?.limit && { limit: String(options.limit) }),
+    ...(options?.offset && { offset: String(options.offset) }),
+    ...(options?.reverse && { reverse: String(options.reverse) }),
+  });
+  return api.get<ClaudeMessagesResponse>(
+    `/api/claude-sessions/sessions/${sessionId}/messages?${params}`
+  );
+}
+
+/**
+ * Sync a Claude Code session to Podex database.
+ */
+export async function syncClaudeSession(request: ClaudeSyncRequest): Promise<ClaudeSyncResponse> {
+  return api.post<ClaudeSyncResponse>('/api/claude-sessions/sync', request);
+}
+
+/**
+ * Resume a Claude Code session in a terminal.
+ */
+export async function resumeClaudeSession(
+  request: ClaudeResumeRequest
+): Promise<ClaudeResumeResponse> {
+  return api.post<ClaudeResumeResponse>('/api/claude-sessions/resume', request);
+}
+
+/** Request to register a Claude session for real-time file watching */
+export interface ClaudeWatchRequest {
+  claude_session_id: string;
+  project_path: string;
+  podex_session_id: string;
+  podex_agent_id: string;
+  last_synced_uuid?: string;
+}
+
+/** Response from watch registration */
+export interface ClaudeWatchResponse {
+  status: 'registered' | 'error';
+  claude_session_id: string;
+  podex_session_id: string;
+  podex_agent_id: string;
+  error?: string;
+}
+
+/**
+ * Register a Claude Code session for real-time file watching.
+ * The local pod's file watcher will monitor the session file and push
+ * new messages to Podex in real-time.
+ */
+export async function watchClaudeSession(
+  request: ClaudeWatchRequest
+): Promise<ClaudeWatchResponse> {
+  return api.post<ClaudeWatchResponse>('/api/claude-sessions/watch', request);
+}
+
+/**
+ * Unregister a Claude Code session from real-time file watching.
+ */
+export async function unwatchClaudeSession(
+  claudeSessionId: string,
+  projectPath: string,
+  podexAgentId?: string
+): Promise<{ status: string }> {
+  return api.post<{ status: string }>('/api/claude-sessions/unwatch', {
+    claude_session_id: claudeSessionId,
+    project_path: projectPath,
+    podex_agent_id: podexAgentId,
+  });
 }

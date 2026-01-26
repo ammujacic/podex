@@ -19,7 +19,7 @@ import {
   Cloud,
   Laptop,
   Cpu,
-  Activity,
+  MemoryStick,
   RefreshCw,
   Plus,
   Copy,
@@ -39,6 +39,7 @@ import {
   getUserConfig,
   listHardwareSpecs,
   listLocalPods,
+  deleteLocalPod,
   getLocalPodPricing,
   getGitHubLinkURL,
   getGitHubBranches,
@@ -56,6 +57,7 @@ import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { cn } from '@/lib/utils';
 import { getGitHubStatus, getGitHubRepos } from '@/lib/api';
 import { MountPicker } from '@/components/workspace/MountPicker';
+import { DirectoryBrowser } from '@/components/workspace/DirectoryBrowser';
 
 // Template icon configuration with CDN URLs (Simple Icons)
 const templateIconConfig: Record<string, { url: string }> = {
@@ -67,6 +69,38 @@ const templateIconConfig: Record<string, { url: string }> = {
   react: { url: 'https://cdn.simpleicons.org/react/61DAFB' },
   layers: { url: 'https://cdn.simpleicons.org/stackblitz/1389FD' }, // Full Stack
 };
+
+// OS icon configuration
+const osIconConfig: Record<string, { url: string; label: string }> = {
+  macos: { url: 'https://cdn.simpleicons.org/apple/FFFFFF', label: 'macOS' },
+  darwin: { url: 'https://cdn.simpleicons.org/apple/FFFFFF', label: 'macOS' },
+  linux: { url: 'https://cdn.simpleicons.org/linux/FCC624', label: 'Linux' },
+  ubuntu: { url: 'https://cdn.simpleicons.org/ubuntu/E95420', label: 'Ubuntu' },
+  debian: { url: 'https://cdn.simpleicons.org/debian/A81D33', label: 'Debian' },
+  fedora: { url: 'https://cdn.simpleicons.org/fedora/51A2DA', label: 'Fedora' },
+  windows: { url: 'https://cdn.simpleicons.org/windows/0078D4', label: 'Windows' },
+};
+
+// Helper to parse OS info and get icon
+function getOsInfo(osInfo: string | null): { icon: string; label: string; arch: string | null } {
+  if (!osInfo) return { icon: '', label: 'Unknown', arch: null };
+
+  const lower = osInfo.toLowerCase();
+
+  // Try to detect specific distros first
+  for (const [key, config] of Object.entries(osIconConfig)) {
+    if (lower.includes(key)) {
+      // Extract architecture if present
+      let arch: string | null = null;
+      if (lower.includes('arm64') || lower.includes('aarch64')) arch = 'ARM64';
+      else if (lower.includes('x86_64') || lower.includes('amd64')) arch = 'x64';
+
+      return { icon: config.url, label: config.label, arch };
+    }
+  }
+
+  return { icon: '', label: osInfo.split(' ')[0] || 'Unknown', arch: null };
+}
 
 function TemplateIcon({
   icon,
@@ -895,6 +929,10 @@ export default function NewSessionPage() {
   const [showAddPodModal, setShowAddPodModal] = useState(false);
   const [selectedMountPath, setSelectedMountPath] = useState<string | null>(null);
 
+  // Delete pod confirmation
+  const [podToDelete, setPodToDelete] = useState<LocalPod | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
   useEffect(() => {
     if (!user) {
       router.push('/auth/login');
@@ -1325,7 +1363,7 @@ export default function NewSessionPage() {
                 {localPods
                   .filter((p) => p.status === 'online')
                   .map((pod, index) => (
-                    <motion.button
+                    <motion.div
                       key={pod.id}
                       initial={{ opacity: 0, y: 20 }}
                       animate={{ opacity: 1, y: 0 }}
@@ -1334,39 +1372,87 @@ export default function NewSessionPage() {
                         setComputeTarget(pod.id);
                         setSelectedMountPath(null);
                       }}
-                      className={`relative p-5 rounded-xl border-2 text-left transition-all ${
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          setComputeTarget(pod.id);
+                          setSelectedMountPath(null);
+                        }
+                      }}
+                      className={`group relative p-5 rounded-xl border-2 text-left transition-all cursor-pointer ${
                         computeTarget === pod.id
                           ? 'border-success bg-success/5 shadow-lg shadow-success/10'
                           : 'border-border-default hover:border-border-hover bg-surface'
                       }`}
                     >
-                      {computeTarget === pod.id && (
-                        <div className="absolute top-3 right-3 w-6 h-6 rounded-full bg-success flex items-center justify-center">
-                          <Check className="w-4 h-4 text-white" />
+                      {/* Top right: OS badge, delete button, or checkmark */}
+                      <div className="absolute top-3 right-3 flex items-center gap-2">
+                        {/* OS Icon */}
+                        {pod.os_info && getOsInfo(pod.os_info).icon && (
+                          <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-overlay/50">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={getOsInfo(pod.os_info).icon}
+                              alt={getOsInfo(pod.os_info).label}
+                              width={14}
+                              height={14}
+                              className="opacity-80"
+                            />
+                            <span className="text-[10px] text-text-muted font-medium">
+                              {getOsInfo(pod.os_info).label}
+                              {getOsInfo(pod.os_info).arch && (
+                                <span className="text-text-muted/60 ml-1">
+                                  {getOsInfo(pod.os_info).arch}
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                        )}
+                        {/* Delete button (hidden when selected) */}
+                        {computeTarget !== pod.id && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setPodToDelete(pod);
+                            }}
+                            className="p-1.5 rounded-lg bg-overlay hover:bg-error/20 text-text-muted hover:text-error transition-colors opacity-0 group-hover:opacity-100"
+                            title="Delete pod"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                        {computeTarget === pod.id && (
+                          <div className="w-6 h-6 rounded-full bg-success flex items-center justify-center">
+                            <Check className="w-4 h-4 text-white" />
+                          </div>
+                        )}
+                      </div>
+                      {/* Main icon */}
+                      <div className="mb-3">
+                        <div
+                          className={`p-3 rounded-lg w-fit ${
+                            computeTarget === pod.id
+                              ? 'bg-success/20 text-success'
+                              : 'bg-overlay text-text-muted'
+                          }`}
+                        >
+                          <Laptop className="w-6 h-6" />
                         </div>
-                      )}
-                      <div
-                        className={`p-3 rounded-lg w-fit mb-3 ${
-                          computeTarget === pod.id
-                            ? 'bg-success/20 text-success'
-                            : 'bg-overlay text-text-muted'
-                        }`}
-                      >
-                        <Laptop className="w-6 h-6" />
                       </div>
                       <div className="flex items-center gap-2 mb-1">
                         <h3 className="font-semibold text-text-primary">{pod.name}</h3>
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-success/20 text-success">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-success/20 text-success font-medium border border-success/30">
                           Online
                         </span>
                       </div>
                       {/* Mode and config info */}
                       <div className="flex items-center gap-2 mb-2">
                         <span
-                          className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                          className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border ${
                             pod.mode === 'native'
-                              ? 'bg-warning/20 text-warning'
-                              : 'bg-info/20 text-info'
+                              ? 'bg-accent-primary/20 text-accent-primary border-accent-primary/30'
+                              : 'bg-info/20 text-info border-info/30'
                           }`}
                         >
                           {pod.mode === 'native' ? 'Native Mode' : 'Docker Mode'}
@@ -1386,7 +1472,7 @@ export default function NewSessionPage() {
                         )}
                         {pod.total_memory_mb && (
                           <span className="flex items-center gap-1">
-                            <Activity className="w-3 h-3" />
+                            <MemoryStick className="w-3 h-3" />
                             {pod.total_memory_mb >= 1024
                               ? `${(pod.total_memory_mb / 1024).toFixed(0)} GB`
                               : `${pod.total_memory_mb} MB`}
@@ -1405,7 +1491,7 @@ export default function NewSessionPage() {
                           </span>
                         )}
                       </div>
-                    </motion.button>
+                    </motion.div>
                   ))}
 
                 {/* Offline pods */}
@@ -1421,14 +1507,47 @@ export default function NewSessionPage() {
                           0.1 +
                           (localPods.filter((p) => p.status === 'online').length + index) * 0.05,
                       }}
-                      className="p-5 rounded-xl border-2 border-border-subtle bg-surface/50 opacity-60 cursor-not-allowed"
+                      className="relative p-5 rounded-xl border-2 border-border-subtle bg-surface/50 opacity-75"
                     >
-                      <div className="p-3 rounded-lg w-fit mb-3 bg-overlay text-text-muted">
-                        <Laptop className="w-6 h-6" />
+                      {/* Top right: OS badge and delete button */}
+                      <div className="absolute top-3 right-3 flex items-center gap-2">
+                        {/* OS Icon */}
+                        {pod.os_info && getOsInfo(pod.os_info).icon && (
+                          <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-overlay/30">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={getOsInfo(pod.os_info).icon}
+                              alt={getOsInfo(pod.os_info).label}
+                              width={14}
+                              height={14}
+                              className="opacity-50"
+                            />
+                            <span className="text-[10px] text-text-muted/70 font-medium">
+                              {getOsInfo(pod.os_info).label}
+                            </span>
+                          </div>
+                        )}
+                        {/* Delete button */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPodToDelete(pod);
+                          }}
+                          className="p-1.5 rounded-lg bg-overlay hover:bg-error/20 text-text-muted hover:text-error transition-colors"
+                          title="Delete pod"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                      {/* Main icon */}
+                      <div className="mb-3">
+                        <div className="p-3 rounded-lg w-fit bg-overlay text-text-muted">
+                          <Laptop className="w-6 h-6" />
+                        </div>
                       </div>
                       <div className="flex items-center gap-2 mb-1">
                         <h3 className="font-semibold text-text-muted">{pod.name}</h3>
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-text-muted/20 text-text-muted">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-text-muted/20 text-text-muted border border-text-muted/20">
                           Offline
                         </span>
                       </div>
@@ -1640,11 +1759,14 @@ export default function NewSessionPage() {
                 </p>
               </div>
 
-              {/* Mount Selection for Local Pods (Native Mode) */}
+              {/* Mount/Directory Selection for Local Pods */}
               {computeTarget !== 'cloud' &&
                 (() => {
                   const selectedPod = localPods.find((p) => p.id === computeTarget);
-                  if (selectedPod && selectedPod.mounts && selectedPod.mounts.length > 0) {
+                  if (!selectedPod) return null;
+
+                  // If pod has pre-configured mounts, show MountPicker
+                  if (selectedPod.mounts && selectedPod.mounts.length > 0) {
                     return (
                       <div className="mb-8">
                         <h2 className="text-sm font-medium text-text-muted uppercase tracking-wider mb-4">
@@ -1658,122 +1780,143 @@ export default function NewSessionPage() {
                       </div>
                     );
                   }
+
+                  // For native mode without mounts, show directory browser
+                  if (selectedPod.mode === 'native') {
+                    return (
+                      <div className="mb-8">
+                        <h2 className="text-sm font-medium text-text-muted uppercase tracking-wider mb-4">
+                          Workspace Directory
+                        </h2>
+                        <DirectoryBrowser
+                          podId={selectedPod.id}
+                          selectedPath={selectedMountPath}
+                          onSelect={setSelectedMountPath}
+                        />
+                      </div>
+                    );
+                  }
+
                   return null;
                 })()}
 
-              {/* Hardware Tier Selection */}
-              <div className="mb-8">
-                <h2 className="text-sm font-medium text-text-muted uppercase tracking-wider mb-4">
-                  {computeTarget === 'cloud' ? 'Hardware Tier' : 'Resource Allocation'}
-                </h2>
-                {hardwareSpecs.length > 0 ? (
-                  <HardwareSelector
-                    specs={hardwareSpecs.map((spec) => ({
-                      id: spec.id,
-                      tier: spec.tier,
-                      displayName: spec.display_name,
-                      description: spec.description ?? undefined,
-                      architecture: spec.architecture,
-                      vcpu: spec.vcpu,
-                      memoryMb: spec.memory_mb,
-                      gpuType: spec.gpu_type ?? undefined,
-                      gpuMemoryGb: spec.gpu_memory_gb ?? undefined,
-                      storageGbDefault: spec.storage_gb_default,
-                      storageGbMax: spec.storage_gb_max,
-                      hourlyRate: spec.hourly_rate,
-                      isAvailable: spec.is_available,
-                      requiresSubscription: spec.requires_subscription ?? undefined,
-                    }))}
-                    selectedTier={selectedTier}
-                    onSelect={setSelectedTier}
-                  />
-                ) : (
-                  <div className="text-center py-8 border border-border-default rounded-xl bg-surface">
-                    <Loader2 className="w-6 h-6 animate-spin mx-auto mb-3 text-text-muted" />
-                    <p className="text-text-muted">Loading hardware options...</p>
-                  </div>
-                )}
-              </div>
-
-              {/* Software Versions */}
-              <div className="mb-8">
-                <button
-                  onClick={() => setShowAdvanced(!showAdvanced)}
-                  className="flex items-center gap-2 text-sm font-medium text-text-muted uppercase tracking-wider mb-4 hover:text-text-secondary"
-                >
-                  <span>Software Configuration</span>
-                  <ArrowRight
-                    className={`w-4 h-4 transition-transform ${showAdvanced ? 'rotate-90' : ''}`}
-                  />
-                </button>
-
-                <AnimatePresence>
-                  {showAdvanced && (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: 'auto' }}
-                      exit={{ opacity: 0, height: 0 }}
-                      className="overflow-hidden"
-                    >
-                      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3 bg-surface border border-border-default rounded-xl p-6">
-                        {/* OS Version */}
-                        <div>
-                          <label className="block text-sm font-medium text-text-primary mb-2">
-                            Operating System
-                          </label>
-                          <select
-                            value={selectedOsVersion}
-                            onChange={(e) => setSelectedOsVersion(e.target.value)}
-                            className="w-full px-3 py-2 bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:border-accent-primary"
-                          >
-                            {osVersions.map((os) => (
-                              <option key={os.value} value={os.value}>
-                                {os.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        {/* Python Version */}
-                        <div>
-                          <label className="block text-sm font-medium text-text-primary mb-2">
-                            Python Version
-                          </label>
-                          <select
-                            value={selectedPythonVersion}
-                            onChange={(e) => setSelectedPythonVersion(e.target.value)}
-                            className="w-full px-3 py-2 bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:border-accent-primary"
-                          >
-                            {pythonVersions.map((ver) => (
-                              <option key={ver.value} value={ver.value}>
-                                {ver.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        {/* Node Version */}
-                        <div>
-                          <label className="block text-sm font-medium text-text-primary mb-2">
-                            Node.js Version
-                          </label>
-                          <select
-                            value={selectedNodeVersion}
-                            onChange={(e) => setSelectedNodeVersion(e.target.value)}
-                            className="w-full px-3 py-2 bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:border-accent-primary"
-                          >
-                            {nodeVersions.map((ver) => (
-                              <option key={ver.value} value={ver.value}>
-                                {ver.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
-                    </motion.div>
+              {/* Hardware Tier Selection - Only for cloud pods */}
+              {!isNativeMode() && (
+                <div className="mb-8">
+                  <h2 className="text-sm font-medium text-text-muted uppercase tracking-wider mb-4">
+                    {computeTarget === 'cloud' ? 'Hardware Tier' : 'Resource Allocation'}
+                  </h2>
+                  {hardwareSpecs.length > 0 ? (
+                    <HardwareSelector
+                      specs={hardwareSpecs.map((spec) => ({
+                        id: spec.id,
+                        tier: spec.tier,
+                        displayName: spec.display_name,
+                        description: spec.description ?? undefined,
+                        architecture: spec.architecture,
+                        vcpu: spec.vcpu,
+                        memoryMb: spec.memory_mb,
+                        gpuType: spec.gpu_type ?? undefined,
+                        gpuMemoryGb: spec.gpu_memory_gb ?? undefined,
+                        storageGbDefault: spec.storage_gb_default,
+                        storageGbMax: spec.storage_gb_max,
+                        hourlyRate: spec.hourly_rate,
+                        isAvailable: spec.is_available,
+                        requiresSubscription: spec.requires_subscription ?? undefined,
+                      }))}
+                      selectedTier={selectedTier}
+                      onSelect={setSelectedTier}
+                    />
+                  ) : (
+                    <div className="text-center py-8 border border-border-default rounded-xl bg-surface">
+                      <Loader2 className="w-6 h-6 animate-spin mx-auto mb-3 text-text-muted" />
+                      <p className="text-text-muted">Loading hardware options...</p>
+                    </div>
                   )}
-                </AnimatePresence>
-              </div>
+                </div>
+              )}
+
+              {/* Software Versions - Only for cloud/docker pods */}
+              {!isNativeMode() && (
+                <div className="mb-8">
+                  <button
+                    onClick={() => setShowAdvanced(!showAdvanced)}
+                    className="flex items-center gap-2 text-sm font-medium text-text-muted uppercase tracking-wider mb-4 hover:text-text-secondary"
+                  >
+                    <span>Software Configuration</span>
+                    <ArrowRight
+                      className={`w-4 h-4 transition-transform ${showAdvanced ? 'rotate-90' : ''}`}
+                    />
+                  </button>
+
+                  <AnimatePresence>
+                    {showAdvanced && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3 bg-surface border border-border-default rounded-xl p-6">
+                          {/* OS Version */}
+                          <div>
+                            <label className="block text-sm font-medium text-text-primary mb-2">
+                              Operating System
+                            </label>
+                            <select
+                              value={selectedOsVersion}
+                              onChange={(e) => setSelectedOsVersion(e.target.value)}
+                              className="w-full px-3 py-2 bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:border-accent-primary"
+                            >
+                              {osVersions.map((os) => (
+                                <option key={os.value} value={os.value}>
+                                  {os.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {/* Python Version */}
+                          <div>
+                            <label className="block text-sm font-medium text-text-primary mb-2">
+                              Python Version
+                            </label>
+                            <select
+                              value={selectedPythonVersion}
+                              onChange={(e) => setSelectedPythonVersion(e.target.value)}
+                              className="w-full px-3 py-2 bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:border-accent-primary"
+                            >
+                              {pythonVersions.map((ver) => (
+                                <option key={ver.value} value={ver.value}>
+                                  {ver.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {/* Node Version */}
+                          <div>
+                            <label className="block text-sm font-medium text-text-primary mb-2">
+                              Node.js Version
+                            </label>
+                            <select
+                              value={selectedNodeVersion}
+                              onChange={(e) => setSelectedNodeVersion(e.target.value)}
+                              className="w-full px-3 py-2 bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:border-accent-primary"
+                            >
+                              {nodeVersions.map((ver) => (
+                                <option key={ver.value} value={ver.value}>
+                                  {ver.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              )}
 
               {/* Footer */}
               <div className="mt-10 flex justify-between">
@@ -1891,43 +2034,78 @@ export default function NewSessionPage() {
                   {/* Divider */}
                   <div className="w-px bg-border-default self-stretch" />
 
-                  {/* Hardware */}
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-lg bg-overlay flex items-center justify-center">
-                      <Server className="w-5 h-5 text-text-muted" />
+                  {/* Hardware / Resources */}
+                  {isNativeMode() ? (
+                    // Native mode: show actual pod resources
+                    (() => {
+                      const pod = localPods.find((p) => p.id === computeTarget);
+                      return (
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-lg bg-overlay flex items-center justify-center">
+                            <Server className="w-5 h-5 text-text-muted" />
+                          </div>
+                          <div>
+                            <p className="text-xs text-text-muted">Resources</p>
+                            <div className="flex items-center gap-3 text-sm">
+                              {pod?.total_cpu_cores && (
+                                <span className="flex items-center gap-1 text-text-primary">
+                                  <Cpu className="w-3.5 h-3.5 text-text-muted" />
+                                  {pod.total_cpu_cores} cores
+                                </span>
+                              )}
+                              {pod?.total_memory_mb && (
+                                <span className="flex items-center gap-1 text-text-primary">
+                                  <MemoryStick className="w-3.5 h-3.5 text-text-muted" />
+                                  {Math.round(pod.total_memory_mb / 1024)} GB
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()
+                  ) : (
+                    // Cloud mode: show selected tier
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-lg bg-overlay flex items-center justify-center">
+                        <Server className="w-5 h-5 text-text-muted" />
+                      </div>
+                      <div>
+                        <p className="text-xs text-text-muted">Hardware Tier</p>
+                        <p className="text-sm font-medium text-text-primary capitalize">
+                          {selectedTier}
+                        </p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-xs text-text-muted">
-                        {computeTarget === 'cloud' ? 'Hardware Tier' : 'Resources'}
-                      </p>
-                      <p className="text-sm font-medium text-text-primary capitalize">
-                        {selectedTier}
-                      </p>
-                    </div>
-                  </div>
+                  )}
 
-                  {/* Divider */}
-                  <div className="w-px bg-border-default self-stretch" />
+                  {/* Stack info - only for cloud mode */}
+                  {!isNativeMode() && (
+                    <>
+                      {/* Divider */}
+                      <div className="w-px bg-border-default self-stretch" />
 
-                  {/* Languages */}
-                  <div className="flex-1">
-                    <p className="text-xs text-text-muted mb-1">Stack</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {selectedPythonVersion !== 'none' && (
-                        <span className="text-xs bg-overlay px-2 py-0.5 rounded text-text-muted">
-                          Python {selectedPythonVersion}
-                        </span>
-                      )}
-                      {selectedNodeVersion !== 'none' && (
-                        <span className="text-xs bg-overlay px-2 py-0.5 rounded text-text-muted">
-                          Node {selectedNodeVersion}
-                        </span>
-                      )}
-                      <span className="text-xs bg-overlay px-2 py-0.5 rounded text-text-muted">
-                        {selectedOsVersion}
-                      </span>
-                    </div>
-                  </div>
+                      {/* Languages */}
+                      <div className="flex-1">
+                        <p className="text-xs text-text-muted mb-1">Stack</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {selectedPythonVersion !== 'none' && (
+                            <span className="text-xs bg-overlay px-2 py-0.5 rounded text-text-muted">
+                              Python {selectedPythonVersion}
+                            </span>
+                          )}
+                          {selectedNodeVersion !== 'none' && (
+                            <span className="text-xs bg-overlay px-2 py-0.5 rounded text-text-muted">
+                              Node {selectedNodeVersion}
+                            </span>
+                          )}
+                          <span className="text-xs bg-overlay px-2 py-0.5 rounded text-text-muted">
+                            {selectedOsVersion}
+                          </span>
+                        </div>
+                      </div>
+                    </>
+                  )}
 
                   {/* Change button */}
                   <button
@@ -1983,172 +2161,242 @@ export default function NewSessionPage() {
                 >
                   <div className="flex items-center gap-2 mb-4">
                     <GitBranch className="w-5 h-5 text-text-secondary" />
-                    <span className="font-medium text-text-primary">Git Repository (Optional)</span>
+                    <span className="font-medium text-text-primary">
+                      {isNativeMode() ? 'GitHub Integration' : 'Git Repository (Optional)'}
+                    </span>
                   </div>
-                  <div className="space-y-4">
-                    {githubLoading ? (
-                      <div className="flex items-center gap-2 text-sm text-text-muted">
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        Checking GitHub connection...
-                      </div>
-                    ) : githubStatus?.connected ? (
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2 text-sm text-text-secondary">
-                            <Github className="w-4 h-4" />
-                            <span>
-                              Connected
-                              {githubStatus.username ? ` as @${githubStatus.username}` : ''}
-                            </span>
-                          </div>
-                          <button
-                            onClick={fetchGitHubRepos}
-                            disabled={githubReposLoading}
-                            className="p-1.5 rounded text-text-muted hover:text-text-primary hover:bg-overlay disabled:opacity-50"
-                            title="Refresh repositories"
-                          >
-                            <RefreshCw
-                              className={cn('w-4 h-4', githubReposLoading && 'animate-spin')}
-                            />
-                          </button>
-                        </div>
 
-                        <div>
-                          <label className="block text-sm text-text-secondary mb-2">
-                            Select Repository
-                          </label>
+                  {isNativeMode() ? (
+                    // Native mode: simplified GitHub status only
+                    <div className="space-y-3">
+                      {githubLoading ? (
+                        <div className="flex items-center gap-2 text-sm text-text-muted">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Checking GitHub connection...
+                        </div>
+                      ) : githubStatus?.connected ? (
+                        <div className="flex items-center justify-between gap-4 rounded-lg border border-success/30 bg-success/5 p-4">
+                          <div className="flex items-center gap-3 text-sm">
+                            <Github className="w-5 h-5 text-success" />
+                            <div>
+                              <p className="text-sm font-medium text-text-primary">
+                                Connected as @{githubStatus.username}
+                              </p>
+                              <p className="text-xs text-text-muted">
+                                Git operations will use your GitHub credentials
+                              </p>
+                            </div>
+                          </div>
+                          <Check className="w-5 h-5 text-success" />
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between gap-4 rounded-lg border border-border-default bg-surface p-4">
+                          <div className="flex items-center gap-3 text-sm text-text-secondary">
+                            <Github className="w-5 h-5 text-text-muted" />
+                            <div>
+                              <p className="text-sm font-medium text-text-primary">
+                                Connect GitHub for private repos
+                              </p>
+                              <p className="text-xs text-text-tertiary">
+                                Public repos work without connecting
+                              </p>
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={handleConnectGitHub}
+                            disabled={githubConnecting}
+                          >
+                            {githubConnecting ? (
+                              <>
+                                <Loader2 className="w-3 h-3 animate-spin mr-1.5" />
+                                Connecting...
+                              </>
+                            ) : (
+                              'Connect'
+                            )}
+                          </Button>
+                        </div>
+                      )}
+                      <p className="text-xs text-text-muted">
+                        In native mode, you manage git locally. Use{' '}
+                        <code className="px-1 py-0.5 rounded bg-overlay">git clone</code> in your
+                        workspace directory.
+                      </p>
+                    </div>
+                  ) : (
+                    // Cloud mode: full git repo selection
+                    <div className="space-y-4">
+                      {githubLoading ? (
+                        <div className="flex items-center gap-2 text-sm text-text-muted">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Checking GitHub connection...
+                        </div>
+                      ) : githubStatus?.connected ? (
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2 text-sm text-text-secondary">
+                              <Github className="w-4 h-4" />
+                              <span>
+                                Connected
+                                {githubStatus.username ? ` as @${githubStatus.username}` : ''}
+                              </span>
+                            </div>
+                            <button
+                              onClick={fetchGitHubRepos}
+                              disabled={githubReposLoading}
+                              className="p-1.5 rounded text-text-muted hover:text-text-primary hover:bg-overlay disabled:opacity-50"
+                              title="Refresh repositories"
+                            >
+                              <RefreshCw
+                                className={cn('w-4 h-4', githubReposLoading && 'animate-spin')}
+                              />
+                            </button>
+                          </div>
+
+                          <div>
+                            <label className="block text-sm text-text-secondary mb-2">
+                              Select Repository
+                            </label>
+                            <select
+                              value={gitUrl}
+                              onChange={(e) => {
+                                const selectedUrl = e.target.value;
+                                setGitUrl(selectedUrl);
+                                setUseCustomBranch(false);
+                                const repo = githubRepos.find((r) => r.html_url === selectedUrl);
+                                if (repo?.default_branch) {
+                                  setBranch(repo.default_branch);
+                                }
+                              }}
+                              className="w-full px-3 py-2 bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:border-accent-primary"
+                            >
+                              <option value="">Select a repo (optional)</option>
+                              {githubRepos.map((repo) => (
+                                <option key={repo.id} value={repo.html_url}>
+                                  {repo.full_name} {repo.private ? '(Private)' : ''}
+                                </option>
+                              ))}
+                            </select>
+                            {githubRepoError && (
+                              <p className="text-xs text-accent-error mt-2">{githubRepoError}</p>
+                            )}
+                            {!githubRepoError &&
+                              githubRepos.length === 0 &&
+                              !githubReposLoading && (
+                                <p className="text-xs text-text-tertiary mt-2">
+                                  No repositories found for this account.
+                                </p>
+                              )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between gap-4 rounded-lg border border-border-default bg-surface p-4">
+                          <div className="flex items-center gap-3 text-sm text-text-secondary">
+                            <Github className="w-5 h-5 text-text-muted" />
+                            <div>
+                              <p className="text-sm font-medium text-text-primary">
+                                Connect GitHub to choose a repo
+                              </p>
+                              <p className="text-xs text-text-tertiary">
+                                Pull in your repositories and default branches.
+                              </p>
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={handleConnectGitHub}
+                            disabled={githubConnecting}
+                          >
+                            {githubConnecting ? (
+                              <>
+                                <Loader2 className="w-3 h-3 animate-spin mr-1.5" />
+                                Connecting...
+                              </>
+                            ) : (
+                              'Connect GitHub'
+                            )}
+                          </Button>
+                        </div>
+                      )}
+                      <div>
+                        <label className="block text-sm text-text-secondary mb-2">
+                          Repository URL
+                        </label>
+                        <Input
+                          value={gitUrl}
+                          onChange={(e) => setGitUrl(e.target.value)}
+                          placeholder="https://github.com/username/repo"
+                        />
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="block text-sm text-text-secondary">Branch</label>
+                          {githubStatus?.connected && gitUrl && (
+                            <button
+                              type="button"
+                              onClick={() => fetchGitHubBranches(gitUrl)}
+                              disabled={githubBranchesLoading}
+                              className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-overlay disabled:opacity-50"
+                              title="Refresh branches"
+                            >
+                              <RefreshCw
+                                className={cn(
+                                  'w-3.5 h-3.5',
+                                  githubBranchesLoading && 'animate-spin'
+                                )}
+                              />
+                            </button>
+                          )}
+                        </div>
+                        {githubBranches.length > 0 && !useCustomBranch ? (
                           <select
-                            value={gitUrl}
+                            value={branch}
                             onChange={(e) => {
-                              const selectedUrl = e.target.value;
-                              setGitUrl(selectedUrl);
-                              setUseCustomBranch(false);
-                              const repo = githubRepos.find((r) => r.html_url === selectedUrl);
-                              if (repo?.default_branch) {
-                                setBranch(repo.default_branch);
+                              const value = e.target.value;
+                              if (value === '__custom__') {
+                                setUseCustomBranch(true);
+                                setBranch('');
+                              } else {
+                                setBranch(value);
                               }
                             }}
                             className="w-full px-3 py-2 bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:border-accent-primary"
                           >
-                            <option value="">Select a repo (optional)</option>
-                            {githubRepos.map((repo) => (
-                              <option key={repo.id} value={repo.html_url}>
-                                {repo.full_name} {repo.private ? '(Private)' : ''}
+                            <option value="">Select a branch</option>
+                            {githubBranches.map((gitBranch) => (
+                              <option key={gitBranch.name} value={gitBranch.name}>
+                                {gitBranch.name}
                               </option>
                             ))}
+                            <option value="__custom__">Custom branch...</option>
                           </select>
-                          {githubRepoError && (
-                            <p className="text-xs text-accent-error mt-2">{githubRepoError}</p>
-                          )}
-                          {!githubRepoError && githubRepos.length === 0 && !githubReposLoading && (
-                            <p className="text-xs text-text-tertiary mt-2">
-                              No repositories found for this account.
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex items-center justify-between gap-4 rounded-lg border border-border-default bg-surface p-4">
-                        <div className="flex items-center gap-3 text-sm text-text-secondary">
-                          <Github className="w-5 h-5 text-text-muted" />
-                          <div>
-                            <p className="text-sm font-medium text-text-primary">
-                              Connect GitHub to choose a repo
-                            </p>
-                            <p className="text-xs text-text-tertiary">
-                              Pull in your repositories and default branches.
-                            </p>
-                          </div>
-                        </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={handleConnectGitHub}
-                          disabled={githubConnecting}
-                        >
-                          {githubConnecting ? (
-                            <>
-                              <Loader2 className="w-3 h-3 animate-spin mr-1.5" />
-                              Connecting...
-                            </>
-                          ) : (
-                            'Connect GitHub'
-                          )}
-                        </Button>
-                      </div>
-                    )}
-                    <div>
-                      <label className="block text-sm text-text-secondary mb-2">
-                        Repository URL
-                      </label>
-                      <Input
-                        value={gitUrl}
-                        onChange={(e) => setGitUrl(e.target.value)}
-                        placeholder="https://github.com/username/repo"
-                      />
-                    </div>
-                    <div>
-                      <div className="flex items-center justify-between mb-2">
-                        <label className="block text-sm text-text-secondary">Branch</label>
-                        {githubStatus?.connected && gitUrl && (
-                          <button
-                            type="button"
-                            onClick={() => fetchGitHubBranches(gitUrl)}
-                            disabled={githubBranchesLoading}
-                            className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-overlay disabled:opacity-50"
-                            title="Refresh branches"
-                          >
-                            <RefreshCw
-                              className={cn('w-3.5 h-3.5', githubBranchesLoading && 'animate-spin')}
+                        ) : (
+                          <div className="space-y-2">
+                            <Input
+                              value={branch}
+                              onChange={(e) => setBranch(e.target.value)}
+                              placeholder="main"
                             />
-                          </button>
+                            {githubBranches.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setUseCustomBranch(false)}
+                                className="text-xs text-accent-primary hover:underline"
+                              >
+                                Use branch list
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        {githubBranchesError && (
+                          <p className="text-xs text-accent-error mt-2">{githubBranchesError}</p>
                         )}
                       </div>
-                      {githubBranches.length > 0 && !useCustomBranch ? (
-                        <select
-                          value={branch}
-                          onChange={(e) => {
-                            const value = e.target.value;
-                            if (value === '__custom__') {
-                              setUseCustomBranch(true);
-                              setBranch('');
-                            } else {
-                              setBranch(value);
-                            }
-                          }}
-                          className="w-full px-3 py-2 bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:border-accent-primary"
-                        >
-                          <option value="">Select a branch</option>
-                          {githubBranches.map((gitBranch) => (
-                            <option key={gitBranch.name} value={gitBranch.name}>
-                              {gitBranch.name}
-                            </option>
-                          ))}
-                          <option value="__custom__">Custom branch...</option>
-                        </select>
-                      ) : (
-                        <div className="space-y-2">
-                          <Input
-                            value={branch}
-                            onChange={(e) => setBranch(e.target.value)}
-                            placeholder="main"
-                          />
-                          {githubBranches.length > 0 && (
-                            <button
-                              type="button"
-                              onClick={() => setUseCustomBranch(false)}
-                              className="text-xs text-accent-primary hover:underline"
-                            >
-                              Use branch list
-                            </button>
-                          )}
-                        </div>
-                      )}
-                      {githubBranchesError && (
-                        <p className="text-xs text-accent-error mt-2">{githubBranchesError}</p>
-                      )}
                     </div>
-                  </div>
+                  )}
                 </motion.div>
               </div>
 
@@ -2287,6 +2535,86 @@ export default function NewSessionPage() {
             setLocalPods(updatedPods);
           }}
         />
+      )}
+
+      {/* Delete Pod Confirmation Modal */}
+      {podToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => !isDeleting && setPodToDelete(null)}
+          />
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="relative bg-surface border border-border-default rounded-2xl p-6 max-w-md w-full mx-4 shadow-xl"
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-3 rounded-full bg-error/20">
+                <AlertCircle className="w-6 h-6 text-error" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold text-text-primary">Delete Local Pod</h3>
+                <p className="text-sm text-text-muted">This action cannot be undone</p>
+              </div>
+            </div>
+
+            <p className="text-text-secondary mb-2">
+              Are you sure you want to delete{' '}
+              <span className="font-semibold text-text-primary">{podToDelete.name}</span>?
+            </p>
+            <p className="text-sm text-text-muted mb-6">
+              This will permanently remove the pod configuration. Any running workspaces will be
+              terminated.
+            </p>
+
+            <div className="flex gap-3 justify-end">
+              <Button
+                variant="secondary"
+                onClick={() => setPodToDelete(null)}
+                disabled={isDeleting}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={async () => {
+                  setIsDeleting(true);
+                  try {
+                    await deleteLocalPod(podToDelete.id);
+                    // Refresh the local pods list
+                    const updatedPods = await listLocalPods().catch(() => []);
+                    setLocalPods(updatedPods);
+                    // Clear selection if deleted pod was selected
+                    if (computeTarget === podToDelete.id) {
+                      setComputeTarget('cloud');
+                    }
+                    toast.success(`Pod "${podToDelete.name}" deleted`);
+                    setPodToDelete(null);
+                  } catch (err) {
+                    toast.error(err instanceof Error ? err.message : 'Failed to delete pod');
+                  } finally {
+                    setIsDeleting(false);
+                  }
+                }}
+                disabled={isDeleting}
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    Delete Pod
+                  </>
+                )}
+              </Button>
+            </div>
+          </motion.div>
+        </div>
       )}
     </div>
   );

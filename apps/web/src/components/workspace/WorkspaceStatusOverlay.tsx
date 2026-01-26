@@ -2,13 +2,30 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ArrowLeft, Check, Loader2, Pause, Play, RefreshCw, Server, Clock } from 'lucide-react';
+import {
+  ArrowLeft,
+  Check,
+  Loader2,
+  Pause,
+  Play,
+  RefreshCw,
+  Server,
+  Clock,
+  WifiOff,
+} from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@podex/ui';
 import { getWorkspaceStatus, resumeWorkspace } from '@/lib/api';
 import { useSessionStore } from '@/stores/session';
 
-type WorkspaceStatus = 'pending' | 'running' | 'standby' | 'stopped' | 'error' | undefined;
+type WorkspaceStatus =
+  | 'pending'
+  | 'running'
+  | 'standby'
+  | 'stopped'
+  | 'error'
+  | 'offline'
+  | undefined;
 
 type LoadingMessage = { progress: number; message: string; detail: string };
 
@@ -360,6 +377,70 @@ export function WorkspaceStatusOverlay({
             Cancel and return to dashboard
           </button>
         </motion.div>
+      </div>
+    );
+  }
+
+  if (status === 'offline') {
+    return (
+      <div className="fixed inset-0 z-40 flex items-center justify-center">
+        <div className="absolute inset-0 bg-void/75 backdrop-blur-md" aria-hidden="true" />
+        <div className="relative w-full max-w-md rounded-2xl border border-border-default bg-surface/90 p-6 shadow-2xl">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-red-500/15">
+              <WifiOff className="h-5 w-5 text-red-400" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-text-primary">Local Pod Offline</h2>
+              <p className="text-sm text-text-muted">
+                {sessionName ? `Connection to ${sessionName} lost` : 'Connection to local pod lost'}
+              </p>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-border-subtle bg-overlay/60 p-4 text-sm text-text-secondary">
+            <div className="flex items-start gap-3">
+              <Server className="h-5 w-5 text-text-muted mt-0.5" />
+              <div>
+                <p className="text-text-secondary">
+                  Your local pod has disconnected. This workspace will automatically reconnect when
+                  the local pod comes back online.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-start gap-3 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 mt-4">
+            <Clock className="h-4 w-4 text-blue-400 shrink-0 mt-0.5" aria-hidden="true" />
+            <p className="text-xs text-blue-200/80">
+              Make sure your local pod application is running and connected to the internet.
+            </p>
+          </div>
+
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
+            <Button
+              variant="secondary"
+              onClick={() => router.push('/dashboard')}
+              className="w-full sm:w-auto"
+            >
+              <ArrowLeft className="h-4 w-4 mr-2" />
+              Back to Dashboard
+            </Button>
+            <Button onClick={handleRetryStatus} disabled={isRetrying || !workspaceId}>
+              {isRetrying ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Checking...
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  Check Status
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
       </div>
     );
   }

@@ -47,6 +47,13 @@ export interface PendingPermission {
   attentionId?: string;
 }
 
+/** Info about the currently resumed Claude Code session (synced with backend) */
+export interface ClaudeSessionInfo {
+  claudeSessionId: string;
+  projectPath: string;
+  firstPrompt: string | null;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -61,6 +68,8 @@ export interface Agent {
   templateId?: string; // Reference to custom agent template
   terminalSessionId?: string; // For terminal-integrated agents
   terminalAgentTypeId?: string; // The type ID of the terminal agent (for restarts)
+  // Claude Code session info (synced with backend for cross-device support)
+  claudeSessionInfo?: ClaudeSessionInfo;
   // Agent mode and command permissions
   mode: AgentMode;
   previousMode?: AgentMode; // For auto-revert tracking when mode is auto-switched
@@ -75,6 +84,52 @@ export interface Agent {
 // Message Types
 // ============================================================================
 
+/** Entry types from Claude Code session files */
+export type ClaudeEntryType =
+  | 'user'
+  | 'assistant'
+  | 'progress'
+  | 'summary'
+  | 'tool_result'
+  | 'queue-operation'
+  | 'file-history-snapshot'
+  | string; // Allow other types
+
+/** Progress event types from Claude Code */
+export type ProgressType =
+  | 'thinking'
+  | 'hook_progress'
+  | 'api_request'
+  | 'streaming'
+  | 'tool_use'
+  | string;
+
+/** Tool result from Claude Code */
+export interface ToolResult {
+  tool_use_id: string;
+  content: unknown;
+  is_error: boolean;
+}
+
+/** Usage stats from Claude API */
+export interface UsageStats {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
+/** Progress data from Claude Code */
+export interface ProgressData {
+  type: ProgressType;
+  hookEvent?: string;
+  hookName?: string;
+  command?: string;
+  content?: string;
+  thinking?: string;
+  [key: string]: unknown;
+}
+
 export interface AgentMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -82,6 +137,27 @@ export interface AgentMessage {
   thinking?: string; // Agent's thinking/reasoning process (collapsible)
   timestamp: Date;
   toolCalls?: ToolCall[];
+  // Extended fields for full Claude Code sync
+  type?: ClaudeEntryType;
+  toolResults?: ToolResult[];
+  stopReason?: string;
+  usage?: UsageStats;
+  model?: string;
+  isSidechain?: boolean;
+  parentUuid?: string;
+  // Progress-specific fields
+  progressType?: ProgressType;
+  progressData?: ProgressData;
+  toolUseId?: string;
+  parentToolUseId?: string;
+  // Summary-specific fields
+  summary?: string;
+  leafUuid?: string;
+  // Config/mode change fields
+  mode?: string;
+  configData?: Record<string, unknown>;
+  // Raw data for unknown types
+  rawData?: Record<string, unknown>;
 }
 
 export interface ToolCall {
@@ -119,6 +195,10 @@ export interface FilePreview {
   position: { x: number; y: number; width?: number; height?: number; zIndex?: number };
   gridSpan?: GridSpan;
   docked: boolean; // If true, shows in the main grid/freeform area. If false, floats as overlay.
+  /** Line number to scroll to when opening the file */
+  startLine?: number;
+  /** End line for highlighting a range */
+  endLine?: number;
 }
 
 // ============================================================================
@@ -131,7 +211,7 @@ export interface StandbySettings {
 }
 
 export type ViewMode = 'grid' | 'focus' | 'freeform';
-export type WorkspaceStatus = 'pending' | 'running' | 'standby' | 'stopped' | 'error';
+export type WorkspaceStatus = 'pending' | 'running' | 'standby' | 'stopped' | 'error' | 'offline';
 
 export interface Session {
   id: string;
@@ -160,6 +240,12 @@ export interface Session {
   previewGridSpan?: GridSpan;
   // Preview position for freeform mode
   previewFreeformPosition?: AgentPosition;
+  // Local pod (null = cloud workspace)
+  localPodId?: string | null;
+  // Display name for the local pod
+  localPodName?: string | null;
+  // Mount path for local pods (the workspace directory on the local machine)
+  mount_path?: string | null;
 }
 
 // ============================================================================

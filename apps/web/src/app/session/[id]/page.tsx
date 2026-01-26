@@ -20,6 +20,7 @@ import { CommandPalette } from '@/components/workspace/CommandPalette';
 import {
   getSession,
   getWorkspaceStatus,
+  getGitStatus,
   listAgents,
   getAgentMessages,
   type Session,
@@ -235,6 +236,9 @@ export default function SessionPage() {
             standbySettings: null,
             editorGridCardId: null,
             previewGridCardId: null,
+            localPodId: data.local_pod_id ?? null,
+            localPodName: data.local_pod_name ?? null,
+            mount_path: data.mount_path ?? null,
           });
         } else {
           // Session exists (likely from localStorage) - sync from API
@@ -258,6 +262,9 @@ export default function SessionPage() {
             name: data.name,
             branch: data.branch,
             gitUrl: data.git_url,
+            localPodId: data.local_pod_id ?? null,
+            localPodName: data.local_pod_name ?? null,
+            mount_path: data.mount_path ?? null,
           });
 
           // Merge agents: keep local state (messages, status) but ensure all API agents exist
@@ -266,7 +273,20 @@ export default function SessionPage() {
           for (const apiAgent of agentsWithMessages) {
             if (!existingAgentIds.has(apiAgent.id)) {
               // Agent exists in API but not in local store - add it
-              addAgentToSession(sessionId, apiAgent);
+              // For CLI agents, don't set model from API - let Claude sync set it from session file
+              const isCliAgent =
+                apiAgent.role === 'claude-code' ||
+                apiAgent.role === 'openai-codex' ||
+                apiAgent.role === 'gemini-cli';
+              if (isCliAgent) {
+                addAgentToSession(sessionId, {
+                  ...apiAgent,
+                  model: '', // Empty until Claude sync sets it from session file
+                  modelDisplayName: undefined,
+                });
+              } else {
+                addAgentToSession(sessionId, apiAgent);
+              }
             } else {
               // Agent exists in both - update with API data but keep local messages if more recent
               const localAgent = existingSession.agents.find((a: Agent) => a.id === apiAgent.id);
@@ -274,16 +294,26 @@ export default function SessionPage() {
                 // Merge messages: use API messages if local is empty, otherwise keep local
                 const mergedMessages =
                   localAgent.messages.length > 0 ? localAgent.messages : apiAgent.messages;
-                updateAgent(sessionId, apiAgent.id, {
+                // For CLI agents, DON'T update model from API - Claude sync provides accurate real-time model info
+                // The model field is set by useClaudeSessionSync from the actual session file
+                const isCliAgent =
+                  localAgent.role === 'claude-code' ||
+                  localAgent.role === 'openai-codex' ||
+                  localAgent.role === 'gemini-cli';
+                const updates: Partial<Agent> = {
                   name: apiAgent.name,
-                  model: apiAgent.model,
-                  modelDisplayName: apiAgent.modelDisplayName,
                   status: apiAgent.status,
                   messages: mergedMessages,
                   // Fix corrupted localStorage data: ensure color is always set
                   color: localAgent.color || apiAgent.color,
                   mode: localAgent.mode || apiAgent.mode,
-                });
+                };
+                // Only update model for non-CLI agents
+                if (!isCliAgent) {
+                  updates.model = apiAgent.model;
+                  updates.modelDisplayName = apiAgent.modelDisplayName;
+                }
+                updateAgent(sessionId, apiAgent.id, updates);
               }
             }
           }
@@ -330,6 +360,25 @@ export default function SessionPage() {
           } catch (statusError) {
             console.warn('Failed to fetch workspace status:', statusError);
             setWorkspaceStatusChecking(sessionId, false);
+          }
+        }
+
+        // Sync git branch from actual workspace state (handles local git changes)
+        // This runs for both cloud workspaces and local pods
+        if (data.status === 'active' && !isCancelled) {
+          try {
+            const gitStatus = await getGitStatus(sessionId);
+            if (!isCancelled && gitStatus.branch) {
+              const currentSession = useSessionStore.getState().sessions[sessionId];
+              if (currentSession && currentSession.branch !== gitStatus.branch) {
+                useSessionStore
+                  .getState()
+                  .updateSessionInfo(sessionId, { branch: gitStatus.branch });
+              }
+            }
+          } catch (gitError) {
+            // Git status fetch is best-effort - don't block session loading
+            console.warn('Failed to fetch git status for branch sync:', gitError);
           }
         }
 

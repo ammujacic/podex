@@ -359,6 +359,18 @@ class LocalDockerManager:
         if workspace_id in self._workspaces:
             self._workspaces[workspace_id]["last_activity"] = datetime.now(UTC).isoformat()
 
+    async def update_workspace(
+        self,
+        workspace_id: str,
+        working_dir: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Update workspace configuration."""
+        if workspace_id not in self._workspaces:
+            return None
+        if working_dir:
+            self._workspaces[workspace_id]["working_dir"] = working_dir
+        return self._workspaces[workspace_id]
+
     async def exec_command(
         self,
         workspace_id: str,

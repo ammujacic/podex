@@ -170,6 +170,9 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
   // CLI agent roles that should be grouped separately
   const CLI_AGENT_ROLES = ['claude-code', 'openai-codex', 'gemini-cli'];
 
+  // CLI agent roles that are coming soon (not yet fully supported)
+  const COMING_SOON_ROLES = ['openai-codex', 'gemini-cli'];
+
   // Group filtered agents
   const builtinFiltered = filteredAgents.filter(
     (a) => !a.isCustom && !CLI_AGENT_ROLES.includes(a.role)
@@ -295,22 +298,28 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
   const AgentButton = ({ agent }: { agent: AgentOption }) => {
     const Icon = agent.icon;
     const isSharing = sharingAgentId === agent.id;
+    const isComingSoon = COMING_SOON_ROLES.includes(agent.role);
 
     return (
       <div className="relative">
         <button
           onClick={() => {
+            if (isComingSoon) return;
             setSelectedAgent(agent);
             setCustomName('');
             setSharingAgentId(null);
           }}
+          disabled={isComingSoon}
           className={cn(
             'w-full flex items-center gap-3 rounded-lg border p-3 text-left transition-all min-h-[72px]',
-            selectedAgent?.id === agent.id
-              ? 'border-accent-primary bg-accent-primary/5 ring-1 ring-accent-primary'
-              : 'border-border-default hover:border-border-subtle hover:bg-overlay'
+            isComingSoon
+              ? 'border-border-default bg-elevated/50 cursor-not-allowed opacity-60'
+              : selectedAgent?.id === agent.id
+                ? 'border-accent-primary bg-accent-primary/5 ring-1 ring-accent-primary'
+                : 'border-border-default hover:border-border-subtle hover:bg-overlay'
           )}
           aria-pressed={selectedAgent?.id === agent.id}
+          aria-disabled={isComingSoon}
         >
           <div
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
@@ -321,7 +330,19 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <h3 className="font-medium text-text-primary truncate">{agent.name}</h3>
+              <h3
+                className={cn(
+                  'font-medium truncate',
+                  isComingSoon ? 'text-text-muted' : 'text-text-primary'
+                )}
+              >
+                {agent.name}
+              </h3>
+              {isComingSoon && (
+                <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 font-medium">
+                  Coming Soon
+                </span>
+              )}
               {agent.isCustom && (
                 <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 font-medium">
                   Custom

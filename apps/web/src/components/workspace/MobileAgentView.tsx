@@ -5,16 +5,25 @@ import { Send, Mic, Paperclip, Loader2, StopCircle, X, LogIn } from 'lucide-reac
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { useSessionStore, type AgentMessage } from '@/stores/session';
+import { useUIStore } from '@/stores/ui';
+import { getFileContent } from '@/lib/api';
+import { getLanguageFromPath } from '@/lib/vscode';
 import { useStreamingStore } from '@/stores/streaming';
 import { sendAgentMessage, abortAgent, isQuotaError } from '@/lib/api';
 import { useSwipeGesture } from '@/hooks/useGestures';
 import { useVoiceCapture } from '@/hooks/useVoiceCapture';
 import { isCliAgentRole, getCliAgentType, useCliAgentAuth } from '@/hooks/useCliAgentCommands';
+import { useClaudeSessionSync } from '@/hooks/useClaudeSessionSync';
+import { useAttentionStore } from '@/stores/attention';
+import { dismissAttention as dismissAttentionApi } from '@/lib/api';
+import { emitPermissionResponse, emitNativeApprovalResponse } from '@/lib/socket';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { CreditExhaustedBanner } from './CreditExhaustedBanner';
 import { MobileAgentToolbar } from './MobileAgentToolbar';
 import { MobileMessageBubble } from './MobileMessageBubble';
+import { ClaudeEntryRenderer } from './ClaudeEntryRenderer';
 import { NoMessagesEmptyState } from '@/components/ui/EmptyState';
+import { ApprovalDialog } from './ApprovalDialog';
 
 // Generate temporary ID for optimistic updates
 function generateTempId(): string {
@@ -49,49 +58,25 @@ export function MobileAgentView({
   const streamingMessages = useStreamingStore((state) => state.streamingMessages);
   const agent = session?.agents?.find((a) => a.id === agentId);
 
-  // Get finalized messages with deduplication (safety net for race conditions and stale localStorage)
-  // Uses O(n) Set-based approach for efficiency
+  // Get finalized messages with deduplication (safety net for race conditions)
+  // Only dedupes by exact ID - does NOT dedupe by content to allow duplicate messages
   const finalizedMessages = useMemo(() => {
     const messages = agent?.messages ?? [];
     if (messages.length === 0) return messages;
 
     const seenIds = new Set<string>();
-    const contentToRealId = new Map<string, string>(); // content key -> real (non-temp) message id
     const result: typeof messages = [];
 
-    // Single pass: track content keys and prefer real IDs over temp IDs
     for (const msg of messages) {
-      // Skip exact ID duplicates
-      if (seenIds.has(msg.id)) continue;
-      seenIds.add(msg.id);
+      // Skip messages without valid ID
+      const msgId = msg.id ?? '';
+      if (!msgId) continue;
 
-      const contentKey = `${msg.role}:${msg.content}`;
-      const existingRealId = contentToRealId.get(contentKey);
-      const isTemp = msg.id.startsWith('temp-');
+      // Skip exact ID duplicates only
+      if (seenIds.has(msgId)) continue;
+      seenIds.add(msgId);
 
-      if (existingRealId) {
-        // Content already added with a real ID, skip this duplicate
-        continue;
-      }
-
-      if (!isTemp) {
-        // This is a real ID - mark this content as having a real ID
-        contentToRealId.set(contentKey, msg.id);
-      }
-
-      // Check if we already added a temp version of this content
-      const existingTempIndex = result.findIndex(
-        (m) => m.id.startsWith('temp-') && `${m.role}:${m.content}` === contentKey
-      );
-
-      if (existingTempIndex !== -1 && !isTemp) {
-        // Replace temp message with real one (maintains position)
-        result[existingTempIndex] = msg;
-      } else if (existingTempIndex === -1) {
-        // No existing message with this content, add it
-        result.push(msg);
-      }
-      // else: temp message exists and this is also temp, skip
+      result.push(msg);
     }
 
     return result;
@@ -120,6 +105,15 @@ export function MobileAgentView({
     isCliAgent &&
     (agent?.messages ?? []).length === 0 &&
     (cliAuthStatus === null || cliAuthStatus?.needsAuth);
+
+  // Claude Code session sync - enables real-time updates from local pod file watcher
+  const isClaudeCodeAgent = agent?.role === 'claude-code';
+  useClaudeSessionSync({
+    sessionId,
+    agentId,
+    claudeSessionInfo: agent?.claudeSessionInfo,
+    enabled: isClaudeCodeAgent && !!agent?.claudeSessionInfo,
+  });
 
   // Voice capture integration
   const { isRecording, currentTranscript, startRecording, stopRecording, cancelRecording } =
@@ -168,6 +162,71 @@ export function MobileAgentView({
   }, [finalizedMessages, streamingMessage?.content]);
 
   const addAgentMessage = useSessionStore((state) => state.addAgentMessage);
+  const updateAgent = useSessionStore((state) => state.updateAgent);
+  const openMobileFile = useUIStore((state) => state.openMobileFile);
+  const { dismissAttention } = useAttentionStore();
+
+  // File link click handler - opens mobile file viewer sheet
+  const handleFileClick = useCallback(
+    async (path: string, _startLine?: number, _endLine?: number) => {
+      try {
+        // Fetch file content first
+        const fileContent = await getFileContent(sessionId, path);
+
+        // Open in mobile file viewer sheet
+        openMobileFile(
+          fileContent.path,
+          fileContent.content,
+          fileContent.language || getLanguageFromPath(path)
+        );
+      } catch (err) {
+        console.error('Failed to load file content:', err);
+        toast.error('Failed to open file');
+      }
+    },
+    [sessionId, openMobileFile]
+  );
+
+  // Handle permission approval/denial
+  const handlePermissionApproval = useCallback(
+    (approved: boolean, addedToAllowlist: boolean) => {
+      if (!agent?.pendingPermission) return;
+
+      // Use the appropriate emit function based on agent type
+      if (isCliAgent) {
+        // CLI agents (claude-code, openai-codex, gemini-cli) use permission_response
+        emitPermissionResponse(
+          sessionId,
+          agentId,
+          agent.pendingPermission.requestId,
+          approved,
+          agent.pendingPermission.command,
+          agent.pendingPermission.toolName,
+          addedToAllowlist
+        );
+      } else {
+        // Native Podex agents use native_approval_response
+        emitNativeApprovalResponse(
+          sessionId,
+          agentId,
+          agent.pendingPermission.requestId,
+          approved,
+          addedToAllowlist
+        );
+      }
+
+      if (agent.pendingPermission.attentionId) {
+        dismissAttention(sessionId, agent.pendingPermission.attentionId);
+        dismissAttentionApi(sessionId, agent.pendingPermission.attentionId).catch((error) => {
+          console.error('Failed to persist attention dismissal:', error);
+        });
+      }
+
+      // Clear the pending permission from the agent
+      updateAgent(sessionId, agentId, { pendingPermission: undefined });
+    },
+    [sessionId, agentId, isCliAgent, agent?.pendingPermission, updateAgent, dismissAttention]
+  );
 
   // Handle CLI agent login
   const handleCliLogin = useCallback(async () => {
@@ -333,12 +392,17 @@ export function MobileAgentView({
     async (command: string) => {
       if (!agent || isSubmitting) return;
 
+      // Detect if this is a CLI command (starts with /)
+      const isCliCommand = command.startsWith('/');
+
       // Add optimistic user message to store
       const userMessage: AgentMessage = {
         id: generateTempId(),
         role: 'user',
         content: command,
         timestamp: new Date(),
+        // Mark CLI commands as system type so they render minimally
+        ...(isCliCommand && { type: 'system' as const }),
       };
       addAgentMessage(sessionId, agentId, userMessage);
 
@@ -447,9 +511,21 @@ export function MobileAgentView({
           <NoMessagesEmptyState agentName={agent.name} />
         ) : (
           <div className="space-y-4">
-            {finalizedMessages.map((message) => (
-              <MobileMessageBubble key={message.id} message={message} />
-            ))}
+            {finalizedMessages.map((message) =>
+              isClaudeCodeAgent ? (
+                <ClaudeEntryRenderer
+                  key={message.id}
+                  message={message}
+                  onFileClick={handleFileClick}
+                />
+              ) : (
+                <MobileMessageBubble
+                  key={message.id}
+                  message={message}
+                  onFileClick={handleFileClick}
+                />
+              )
+            )}
             {/* Streaming message or thinking indicator */}
             {isProcessing && (
               <div className="flex flex-col items-start">
@@ -457,7 +533,10 @@ export function MobileAgentView({
                   <>
                     <div className="max-w-[85%] rounded-2xl px-4 py-2.5 bg-[#1a1a2e] border border-border-subtle text-text-primary rounded-bl-md">
                       <div className="text-sm">
-                        <MarkdownRenderer content={streamingMessage.content} />
+                        <MarkdownRenderer
+                          content={streamingMessage.content}
+                          onFileClick={handleFileClick}
+                        />
                       </div>
                     </div>
                     <div className="flex items-center gap-1.5 mt-1 px-1">
@@ -479,6 +558,30 @@ export function MobileAgentView({
           </div>
         )}
       </div>
+
+      {/* Approval dialog - shown when agent needs permission */}
+      {agent?.pendingPermission && (
+        <div className="flex-none border-t border-border-subtle bg-surface">
+          <ApprovalDialog
+            approval={{
+              id: agent.pendingPermission.requestId,
+              agent_id: agentId,
+              session_id: sessionId,
+              action_type: 'command_execute',
+              action_details: {
+                command: agent.pendingPermission.command ?? undefined,
+                tool_name: agent.pendingPermission.toolName,
+              },
+              status: 'pending',
+              expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+              created_at: agent.pendingPermission.timestamp,
+            }}
+            agentMode={agent.mode}
+            onClose={() => handlePermissionApproval(false, false)}
+            onApprovalComplete={handlePermissionApproval}
+          />
+        </div>
+      )}
 
       {/* Input area - always visible at bottom */}
       <div

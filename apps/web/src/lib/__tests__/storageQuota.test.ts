@@ -17,6 +17,7 @@ import {
 vi.mock('@/stores/config', () => ({
   useConfigStore: {
     getState: () => ({
+      isInitialized: true,
       getStorageQuotaDefaults: () => ({
         defaultQuotaBytes: 5 * 1024 * 1024, // 5MB
         warningThreshold: 0.7,
@@ -62,10 +63,11 @@ describe('storageQuota utilities', () => {
     it('returns quota info for empty localStorage', () => {
       const quota = getStorageQuota();
 
-      expect(quota.used).toBe(0);
-      expect(quota.total).toBe(5 * 1024 * 1024);
-      expect(quota.percentage).toBe(0);
-      expect(quota.usedFormatted).toBe('0 B');
+      expect(quota).not.toBeNull();
+      expect(quota!.used).toBe(0);
+      expect(quota!.total).toBe(5 * 1024 * 1024);
+      expect(quota!.percentage).toBe(0);
+      expect(quota!.usedFormatted).toBe('0 B');
     });
 
     it('calculates used bytes correctly', () => {
@@ -74,11 +76,12 @@ describe('storageQuota utilities', () => {
 
       const quota = getStorageQuota();
 
+      expect(quota).not.toBeNull();
       // Each character is 2 bytes (UTF-16)
       // 'key1' (4) + 'value1' (6) = 10 chars = 20 bytes
       // 'key2' (4) + 'value2' (6) = 10 chars = 20 bytes
       // Total = 40 bytes
-      expect(quota.used).toBe(40);
+      expect(quota!.used).toBe(40);
     });
 
     it('calculates percentage correctly', () => {
@@ -88,20 +91,23 @@ describe('storageQuota utilities', () => {
 
       const quota = getStorageQuota();
 
+      expect(quota).not.toBeNull();
       // (5 + 500000) * 2 bytes = ~1MB out of 5MB = ~20%
-      expect(quota.percentage).toBeGreaterThan(0.19);
-      expect(quota.percentage).toBeLessThan(0.21);
+      expect(quota!.percentage).toBeGreaterThan(0.19);
+      expect(quota!.percentage).toBeLessThan(0.21);
     });
 
     it('formats used size in KB', () => {
       mockLocalStorage['data'] = 'x'.repeat(1000); // 2KB
       const quota = getStorageQuota();
-      expect(quota.usedFormatted).toMatch(/KB$/);
+      expect(quota).not.toBeNull();
+      expect(quota!.usedFormatted).toMatch(/KB$/);
     });
 
     it('formats total size in MB', () => {
       const quota = getStorageQuota();
-      expect(quota.totalFormatted).toBe('5.00 MB');
+      expect(quota).not.toBeNull();
+      expect(quota!.totalFormatted).toBe('5.00 MB');
     });
 
     it('handles localStorage access errors', () => {
@@ -116,8 +122,9 @@ describe('storageQuota utilities', () => {
 
       const quota = getStorageQuota();
 
-      expect(quota.used).toBe(0);
-      expect(quota.percentage).toBe(0);
+      expect(quota).not.toBeNull();
+      expect(quota!.used).toBe(0);
+      expect(quota!.percentage).toBe(0);
     });
   });
 

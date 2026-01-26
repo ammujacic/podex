@@ -14,6 +14,7 @@ from .config import LocalPodConfig
 from .docker_manager import LocalDockerManager
 from .native_manager import NativeManager
 from .rpc_handler import RPCHandler
+from .session_watcher import get_session_watcher
 
 logger = structlog.get_logger()
 
@@ -41,6 +42,9 @@ class WorkspaceManager(Protocol):
         self, user_id: str | None = None, session_id: str | None = None
     ) -> list[dict[str, Any]]: ...
     async def heartbeat(self, workspace_id: str) -> None: ...
+    async def update_workspace(
+        self, workspace_id: str, working_dir: str | None = None
+    ) -> dict[str, Any] | None: ...
 
     # Command execution
     async def exec_command(
@@ -106,10 +110,14 @@ class LocalPodClient:
             self.manager = LocalDockerManager(config)
             logger.info("Using Docker execution mode")
 
-        self.rpc_handler = RPCHandler(self.manager)
+        # Pass sio to RPCHandler for terminal output streaming
+        self.rpc_handler = RPCHandler(self.manager, config, sio=self.sio)
         self._running = False
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._connected = False
+
+        # Initialize session watcher for Claude Code sync
+        self.session_watcher = get_session_watcher(self.sio)
 
         self._setup_handlers()
 
@@ -127,6 +135,9 @@ class LocalPodClient:
             # Start heartbeat
             if self._heartbeat_task is None or self._heartbeat_task.done():
                 self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+            # Start Claude session watcher for real-time sync
+            await self.session_watcher.start()
 
         @self.sio.on("disconnect", namespace="/local-pod")
         async def on_disconnect() -> None:
@@ -150,30 +161,40 @@ class LocalPodClient:
 
             logger.debug("RPC request received", call_id=call_id, method=method)
 
+            async def safe_emit(response_data: dict[str, Any]) -> None:
+                """Safely emit RPC response, handling disconnection gracefully."""
+                if not self._connected:
+                    logger.warning(
+                        "Cannot send RPC response: not connected",
+                        call_id=call_id,
+                        method=method,
+                    )
+                    return
+                try:
+                    await self.sio.emit(
+                        "rpc_response",
+                        response_data,
+                        namespace="/local-pod",
+                    )
+                except socketio.exceptions.BadNamespaceError:
+                    logger.warning(
+                        "Cannot send RPC response: namespace disconnected",
+                        call_id=call_id,
+                        method=method,
+                    )
+
             if not isinstance(method, str):
                 logger.error("Invalid RPC request: method must be a string")
-                await self.sio.emit(
-                    "rpc_response",
-                    {"call_id": call_id, "error": "method must be a string"},
-                    namespace="/local-pod",
-                )
+                await safe_emit({"call_id": call_id, "error": "method must be a string"})
                 return
 
             try:
                 result = await self.rpc_handler.handle(method, params)
-                await self.sio.emit(
-                    "rpc_response",
-                    {"call_id": call_id, "result": result},
-                    namespace="/local-pod",
-                )
+                await safe_emit({"call_id": call_id, "result": result})
                 logger.debug("RPC response sent", call_id=call_id)
             except Exception as e:
                 logger.exception("RPC handler error", method=method, error=str(e))
-                await self.sio.emit(
-                    "rpc_response",
-                    {"call_id": call_id, "error": str(e)},
-                    namespace="/local-pod",
-                )
+                await safe_emit({"call_id": call_id, "error": str(e)})
 
         @self.sio.on("terminal_input", namespace="/local-pod")
         async def on_terminal_input(data: dict[str, Any]) -> None:
@@ -267,6 +288,9 @@ class LocalPodClient:
         # Initialize workspace manager
         await self.manager.initialize()
 
+        # Initialize RPC handler (cleans up orphaned FIFOs from previous runs)
+        await self.rpc_handler.initialize()
+
         # Build WebSocket URL
         ws_url = self.config.cloud_url.replace("https://", "wss://").replace("http://", "ws://")
 
@@ -284,8 +308,13 @@ class LocalPodClient:
 
             # Keep running until shutdown
             while self._running and not shutdown_event.is_set():
-                await asyncio.sleep(1)
+                # Use wait_for with timeout so we respond immediately to shutdown_event
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(shutdown_event.wait(), timeout=1.0)
 
+        except asyncio.CancelledError:
+            # Graceful shutdown - don't treat as error
+            logger.debug("Client run loop cancelled")
         except socketio.exceptions.ConnectionError as e:
             logger.error("Failed to connect to Podex cloud", error=str(e))
             raise
@@ -303,6 +332,12 @@ class LocalPodClient:
             self._heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._heartbeat_task
+
+        # Stop Claude session watcher
+        await self.session_watcher.stop()
+
+        # Stop RPC handler (cancels terminal streaming tasks)
+        await self.rpc_handler.shutdown()
 
         # Stop all workspaces gracefully
         await self.manager.shutdown()

@@ -1248,6 +1248,14 @@ async def pause_workspace(
     # Verify user has access to this workspace
     workspace = await verify_workspace_access(workspace_id, request, db)
 
+    # Local pod workspaces cannot be paused - they stay running as long as the pod is connected
+    if workspace.local_pod_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Local workspaces cannot be paused. "
+            "They remain running while the local pod is connected.",
+        )
+
     if workspace.status == "standby":
         raise HTTPException(status_code=400, detail="Workspace is already paused")
 
@@ -1507,7 +1515,8 @@ async def force_stop_workspace(
     ]
     for session_id in sessions_to_close:
         try:
-            await terminal_manager.close_session(session_id)
+            # kill_tmux=True ensures local pod tmux sessions are properly cleaned up
+            await terminal_manager.close_session(session_id, kill_tmux=True)
         except Exception as e:
             logger.warning(
                 "Failed to close terminal session during force-stop",

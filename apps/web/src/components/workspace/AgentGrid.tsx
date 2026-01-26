@@ -2,6 +2,7 @@
 
 import { useRef, Component, type ReactNode } from 'react';
 import { Plus, AlertTriangle, RefreshCw, FileCode, X, Globe } from 'lucide-react';
+import { ClaudeIcon } from '@/components/icons/ClaudeIcon';
 import { useSessionStore, type Agent } from '@/stores/session';
 import { AgentCard } from './AgentCard';
 import { DraggableAgentCard } from './DraggableAgentCard';
@@ -181,7 +182,8 @@ const demoAgents: Agent[] = [
 ];
 
 export function AgentGrid({ sessionId }: AgentGridProps) {
-  const { sessions, setActiveAgent, closeFilePreview } = useSessionStore();
+  const { sessions, setActiveAgent, closeFilePreview, removeAgent, removeEditorGridCard } =
+    useSessionStore();
   const { openModal, gridConfig } = useUIStore();
   const containerRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
@@ -224,7 +226,7 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
       // Still remove from frontend even if backend fails
     }
     // Remove from local store (and localStorage via persist)
-    handleRemoveAgent(agent);
+    removeAgent(sessionId, agent.id);
   };
 
   const handleRemoveTerminalAgent = async (agent: Agent) => {
@@ -236,8 +238,8 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
         console.error('Failed to close terminal session:', err);
       }
     }
-    // Remove from store
-    handleRemoveAgent(agent);
+    // Remove from local store only (terminal agents don't exist in the database)
+    removeAgent(sessionId, agent.id);
   };
 
   // Freeform mode: draggable and resizable windows
@@ -312,10 +314,11 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
     viewMode === 'focus' &&
     (agents.length > 0 || dockedPreviews.length > 0 || editorGridCardId || previewGridCardId)
   ) {
+    // Find focused agent: if activeAgentId is set, try to find it; if not found (stale ID), fall back to first agent
     const focusedAgent =
       agents.length > 0
         ? activeAgentId
-          ? agents.find((a) => a.id === activeAgentId)
+          ? (agents.find((a) => a.id === activeAgentId) ?? agents[0])
           : agents[0]
         : null;
     // Check if activeAgentId is actually a file preview ID
@@ -346,22 +349,37 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
       return (
         <div className="h-full flex flex-col" data-tour="agent-grid">
           {/* Agent and file preview tabs in focus mode */}
-          <div className="flex items-center gap-1 px-4 py-2 border-b border-border-subtle bg-surface overflow-x-auto">
+          <div className="flex items-center gap-1 px-2 py-2 border-b border-border-subtle bg-surface overflow-x-auto">
             {/* Agent tabs */}
-            {agents.map((agent) => (
-              <button
-                key={agent.id}
-                onClick={() => setActiveAgent(sessionId, agent.id)}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm whitespace-nowrap transition-colors cursor-pointer ${
-                  agent.id === activeAgentId && !focusedFilePreview
-                    ? 'bg-overlay text-text-primary'
-                    : 'text-text-secondary hover:text-text-primary hover:bg-overlay/50'
-                }`}
-              >
-                <div className="h-2 w-2 rounded-full" style={{ backgroundColor: agent.color }} />
-                {agent.name}
-              </button>
-            ))}
+            {agents.map((agent) => {
+              // Use focusedAgent.id for highlighting since activeAgentId might be stale
+              const isActive = agent.id === focusedAgent?.id && !focusedFilePreview;
+              const isClaudeAgent = agent.role === 'claude-code' || !!agent.claudeSessionInfo;
+              return (
+                <button
+                  key={agent.id}
+                  onClick={() => setActiveAgent(sessionId, agent.id)}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm whitespace-nowrap transition-colors cursor-pointer ${
+                    isActive
+                      ? 'bg-accent-primary text-text-inverse'
+                      : 'bg-elevated text-text-secondary hover:text-text-primary hover:bg-overlay'
+                  }`}
+                >
+                  {isClaudeAgent ? (
+                    <ClaudeIcon
+                      size={14}
+                      className={isActive ? 'text-text-inverse' : 'text-[#D97757]'}
+                    />
+                  ) : (
+                    <div
+                      className="h-2 w-2 rounded-full"
+                      style={{ backgroundColor: agent.color }}
+                    />
+                  )}
+                  {agent.name}
+                </button>
+              );
+            })}
 
             {/* File preview tabs */}
             {dockedPreviews.length > 0 && (
@@ -375,14 +393,16 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
                   onClick={() => setActiveAgent(sessionId, preview.id)}
                   className={`group flex items-center gap-2 px-3 py-1.5 rounded-md text-sm whitespace-nowrap transition-colors cursor-pointer ${
                     preview.id === activeAgentId
-                      ? 'bg-overlay text-text-primary'
-                      : 'text-text-secondary hover:text-text-primary hover:bg-overlay/50'
+                      ? 'bg-accent-primary text-text-inverse'
+                      : 'bg-elevated text-text-secondary hover:text-text-primary hover:bg-overlay'
                   }`}
                 >
-                  <FileCode className="h-3.5 w-3.5 text-accent-secondary" />
+                  <FileCode
+                    className={`h-3.5 w-3.5 ${preview.id === activeAgentId ? 'text-text-inverse' : 'text-accent-secondary'}`}
+                  />
                   <span className="max-w-[120px] truncate">{fileName}</span>
                   <X
-                    className="h-3.5 w-3.5 text-text-muted hover:text-accent-error opacity-0 group-hover:opacity-100 transition-opacity"
+                    className={`h-3.5 w-3.5 ${preview.id === activeAgentId ? 'text-text-inverse/70 hover:text-text-inverse' : 'text-text-muted hover:text-accent-error'}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       closeFilePreview(sessionId, preview.id);
@@ -398,14 +418,27 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
                 <div className="h-4 w-px bg-border-subtle mx-1" />
                 <button
                   onClick={() => setActiveAgent(sessionId, 'editor')}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm whitespace-nowrap transition-colors cursor-pointer ${
+                  className={`group flex items-center gap-2 px-3 py-1.5 rounded-md text-sm whitespace-nowrap transition-colors cursor-pointer ${
                     isEditorFocused
-                      ? 'bg-overlay text-text-primary'
-                      : 'text-text-secondary hover:text-text-primary hover:bg-overlay/50'
+                      ? 'bg-accent-primary text-text-inverse'
+                      : 'bg-elevated text-text-secondary hover:text-text-primary hover:bg-overlay'
                   }`}
                 >
-                  <div className="h-2 w-2 rounded-full bg-accent-primary shrink-0" />
+                  <div
+                    className={`h-2 w-2 rounded-full shrink-0 ${isEditorFocused ? 'bg-text-inverse' : 'bg-accent-primary'}`}
+                  />
                   Editor
+                  <X
+                    className={`h-3.5 w-3.5 ${isEditorFocused ? 'text-text-inverse/70 hover:text-text-inverse' : 'text-text-muted hover:text-accent-error'}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeEditorGridCard(sessionId);
+                      // If editor was focused, switch to first agent
+                      if (isEditorFocused && agents.length > 0) {
+                        setActiveAgent(sessionId, agents[0]?.id ?? null);
+                      }
+                    }}
+                  />
                 </button>
               </>
             )}
@@ -418,11 +451,13 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
                   onClick={() => setActiveAgent(sessionId, 'preview')}
                   className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm whitespace-nowrap transition-colors cursor-pointer ${
                     isPreviewFocused
-                      ? 'bg-overlay text-text-primary'
-                      : 'text-text-secondary hover:text-text-primary hover:bg-overlay/50'
+                      ? 'bg-accent-primary text-text-inverse'
+                      : 'bg-elevated text-text-secondary hover:text-text-primary hover:bg-overlay'
                   }`}
                 >
-                  <Globe className="h-3.5 w-3.5 text-accent-secondary" />
+                  <Globe
+                    className={`h-3.5 w-3.5 ${isPreviewFocused ? 'text-text-inverse' : 'text-accent-secondary'}`}
+                  />
                   Preview
                 </button>
               </>
@@ -430,7 +465,7 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
 
             <button
               onClick={handleAddAgent}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-md text-sm text-text-muted hover:text-text-primary hover:bg-overlay/50 cursor-pointer"
+              className="flex items-center gap-1 px-3 py-1.5 rounded-md text-sm bg-elevated/50 border border-dashed border-border-default text-text-muted hover:text-text-primary hover:bg-elevated hover:border-border-strong cursor-pointer transition-colors"
             >
               <Plus className="h-4 w-4" />
               Add

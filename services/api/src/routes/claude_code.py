@@ -24,12 +24,13 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.compute_client import compute_client
 from src.database import Agent as AgentModel
 from src.database import Session as SessionModel
+from src.database import Workspace as WorkspaceModel
 from src.routes.dependencies import DbSession, get_current_user_id, verify_session_access
 from src.routes.sessions import ensure_workspace_provisioned, update_workspace_activity
 from src.services.claude_code_config import sync_claude_code_mcp_config
+from src.services.workspace_router import workspace_router
 from src.websocket.hub import (
     emit_agent_thinking_token,
     emit_agent_token,
@@ -195,7 +196,7 @@ async def _execute_builtin_command(
     )
 
     try:
-        result = await compute_client.exec_command(
+        result = await workspace_router.exec_command(
             workspace_id=workspace_id,
             user_id=user_id,
             command=cmd,
@@ -280,6 +281,15 @@ async def get_agent_session(
     return agent, session
 
 
+async def is_local_pod_workspace(db: AsyncSession, workspace_id: str) -> bool:
+    """Check if a workspace is running on a local pod."""
+    result = await db.execute(
+        select(WorkspaceModel.local_pod_id).where(WorkspaceModel.id == workspace_id)
+    )
+    local_pod_id = result.scalar_one_or_none()
+    return local_pod_id is not None
+
+
 # ==================== Authentication Endpoints ====================
 
 
@@ -337,44 +347,49 @@ async def check_auth_status(
             error=str(e),
         )
 
-    # Check if credentials file exists in workspace
-    # Note: Use absolute path /home/dev instead of ~ because exec runs as root
+    # Check authentication status
+    # For local pods: Use ~ which expands to user's home directory (OAuth auth)
+    # For cloud workspaces: Use /home/dev (API key credentials)
     try:
-        # First, run diagnostic to understand the environment
-        debug_result = await compute_client.exec_command(
-            workspace_id=session.workspace_id,
-            user_id=user_id,
-            command=(
-                "echo 'whoami:' $(whoami) && echo 'HOME:' $HOME && echo 'pwd:' $(pwd) && "
-                "echo 'ls /home/dev/.claude:' && "
-                "ls -la /home/dev/.claude/ 2>&1 || echo 'dir not found'"
-            ),
-            exec_timeout=10,
-        )
-        logger.info(
-            "Debug: workspace environment",
-            agent_id=agent_id,
-            workspace_id=session.workspace_id,
-            stdout=debug_result.get("stdout", ""),
-            stderr=debug_result.get("stderr", ""),
-            exit_code=debug_result.get("exit_code"),
-        )
+        is_local = await is_local_pod_workspace(db, session.workspace_id)
 
-        result = await compute_client.exec_command(
-            workspace_id=session.workspace_id,
-            user_id=user_id,
-            command="test -f /home/dev/.claude/.credentials.json && echo 'exists'",
-            exec_timeout=10,
-        )
-        logger.info(
-            "Debug: credentials check result",
-            agent_id=agent_id,
-            workspace_id=session.workspace_id,
-            stdout=result.get("stdout", ""),
-            stderr=result.get("stderr", ""),
-            exit_code=result.get("exit_code"),
-        )
-        authenticated = "exists" in result.get("stdout", "")
+        if is_local:
+            # Local pods use OAuth authentication - check if claude CLI is accessible
+            # and if ~/.claude/ directory exists (indicates user has used Claude locally)
+            result = await workspace_router.exec_command(
+                workspace_id=session.workspace_id,
+                user_id=user_id,
+                command=(
+                    "which claude >/dev/null 2>&1 && test -d ~/.claude && echo 'authenticated'"
+                ),
+                exec_timeout=10,
+            )
+            logger.info(
+                "Local pod auth check",
+                agent_id=agent_id,
+                workspace_id=session.workspace_id,
+                is_local=True,
+                stdout=result.get("stdout", ""),
+                exit_code=result.get("exit_code"),
+            )
+            authenticated = "authenticated" in result.get("stdout", "")
+        else:
+            # Cloud workspace - check for API credentials file
+            result = await workspace_router.exec_command(
+                workspace_id=session.workspace_id,
+                user_id=user_id,
+                command="test -f /home/dev/.claude/.credentials.json && echo 'exists'",
+                exec_timeout=10,
+            )
+            logger.info(
+                "Cloud workspace auth check",
+                agent_id=agent_id,
+                workspace_id=session.workspace_id,
+                is_local=False,
+                stdout=result.get("stdout", ""),
+                exit_code=result.get("exit_code"),
+            )
+            authenticated = "exists" in result.get("stdout", "")
     except Exception as e:
         logger.warning(
             "Failed to check Claude credentials",
@@ -413,10 +428,28 @@ async def reauthenticate(
     if not session.workspace_id:
         raise HTTPException(status_code=400, detail="No workspace associated with session")
 
-    # Remove credentials file
-    # Note: Use absolute path /home/dev instead of ~ because exec runs as root
+    # Check if this is a local pod workspace
+    is_local = await is_local_pod_workspace(db, session.workspace_id)
+
+    if is_local:
+        # Local pods use OAuth authentication managed by the user's browser.
+        # We can't remove OAuth tokens - user needs to run `claude logout` locally.
+        logger.info(
+            "Reauthenticate requested for local pod (OAuth auth)",
+            agent_id=agent_id,
+            workspace_id=session.workspace_id,
+        )
+        return {
+            "status": "local_pod",
+            "message": (
+                "Local pods use browser-based OAuth. "
+                "Run 'claude logout' then 'claude' to re-authenticate."
+            ),
+        }
+
+    # Cloud workspace - remove API credentials file
     try:
-        await compute_client.exec_command(
+        await workspace_router.exec_command(
             workspace_id=session.workspace_id,
             user_id=user_id,
             command="rm -f /home/dev/.claude/.credentials.json",
@@ -567,7 +600,7 @@ async def execute_claude_code_message(
                 # Write image to workspace via base64 decode
                 try:
                     # Use echo with base64 decode to write file
-                    await compute_client.exec_command(
+                    await workspace_router.exec_command(
                         workspace_id=workspace_id,
                         user_id=user_id,
                         command=f"echo '{data}' | base64 -d > {temp_name}",
@@ -642,7 +675,7 @@ async def execute_claude_code_message(
 
     # Execute the command
     try:
-        result = await compute_client.exec_command(
+        result = await workspace_router.exec_command(
             workspace_id=workspace_id,
             user_id=user_id,
             command=cmd,
@@ -1145,7 +1178,7 @@ async def execute_claude_code_message_streaming(
                 temp_name = f"/tmp/attachment_{uuid.uuid4().hex[:8]}.{ext}"  # noqa: S108
 
                 try:
-                    await compute_client.exec_command(
+                    await workspace_router.exec_command(
                         workspace_id=workspace_id,
                         user_id=user_id,
                         command=f"echo '{data}' | base64 -d > {temp_name}",
@@ -1226,7 +1259,7 @@ async def execute_claude_code_message_streaming(
         # Buffer for incomplete lines (streaming chunks may split mid-JSON)
         line_buffer = ""
 
-        async for chunk in compute_client.exec_command_stream(
+        async for chunk in workspace_router.exec_command_stream(
             workspace_id=workspace_id,
             user_id=user_id,
             command=cmd,
@@ -1733,7 +1766,7 @@ async def check_claude_installation(
 
     try:
         # Check if claude is installed and get version
-        result = await compute_client.exec_command(
+        result = await workspace_router.exec_command(
             workspace_id=session.workspace_id,
             user_id=user_id,
             command="claude --version 2>/dev/null || echo 'not_installed'",
@@ -1784,7 +1817,7 @@ async def install_claude_cli(
 
     try:
         # Install Claude Code CLI via npm
-        result = await compute_client.exec_command(
+        result = await workspace_router.exec_command(
             workspace_id=session.workspace_id,
             user_id=user_id,
             command="npm install -g @anthropic-ai/claude-code",
@@ -1802,7 +1835,7 @@ async def install_claude_cli(
             }
 
         # Verify installation
-        verify_result = await compute_client.exec_command(
+        verify_result = await workspace_router.exec_command(
             workspace_id=session.workspace_id,
             user_id=user_id,
             command="claude --version",
