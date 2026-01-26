@@ -18,7 +18,7 @@ from sentry_sdk.integrations.logging import LoggingIntegration
 
 from . import __version__
 from .client import LocalPodClient
-from .config import LocalPodConfig, load_config
+from .config import load_config
 from .config_manager import ConfigManager
 
 
@@ -101,21 +101,21 @@ def cli() -> None:
 @click.option(
     "--url",
     envvar="PODEX_CLOUD_URL",
-    default="https://api.podex.dev",
-    help="Podex cloud API URL",
+    default=None,
+    help="Podex cloud API URL (overrides config file)",
 )
 @click.option(
     "--name",
     envvar="PODEX_POD_NAME",
     default=None,
-    help="Display name for this pod (uses hostname if not set)",
+    help="Display name for this pod (overrides config file)",
 )
 @click.option(
     "--max-workspaces",
     envvar="PODEX_MAX_WORKSPACES",
-    default=3,
+    default=None,
     type=click.IntRange(1, 10),
-    help="Maximum concurrent workspaces",
+    help="Maximum concurrent workspaces (overrides config file)",
 )
 @click.option(
     "--config",
@@ -125,26 +125,37 @@ def cli() -> None:
 )
 def start(
     token: str | None,
-    url: str,
+    url: str | None,
     name: str | None,
-    max_workspaces: int,
+    max_workspaces: int | None,
     config_file: Path | None,
 ) -> None:
     """Start the Podex local pod agent.
 
     Connects to Podex cloud and waits for workspace commands.
     The pod will automatically reconnect if the connection is lost.
+
+    Configuration is loaded from (in priority order):
+    1. Command line arguments
+    2. Environment variables (PODEX_*)
+    3. Config file (~/.config/podex/local-pod.toml or --config)
     """
-    # Load configuration
-    if config_file:
-        config = load_config(config_file)
-    else:
-        config = LocalPodConfig(
-            pod_token=token or "",
-            cloud_url=url,
-            pod_name=name or socket.gethostname(),
-            max_workspaces=max_workspaces,
-        )
+    # Always load from config file first (uses default location if not specified)
+    config = load_config(config_file)
+
+    # Override with CLI arguments if explicitly provided
+    if token:
+        config = config.model_copy(update={"pod_token": token})
+    if url:
+        config = config.model_copy(update={"cloud_url": url})
+    if name:
+        config = config.model_copy(update={"pod_name": name})
+    if max_workspaces is not None:
+        config = config.model_copy(update={"max_workspaces": max_workspaces})
+
+    # Use hostname if pod_name still not set
+    if not config.pod_name:
+        config = config.model_copy(update={"pod_name": socket.gethostname()})
 
     if not config.pod_token:
         click.echo(
@@ -325,49 +336,164 @@ def config_show() -> None:
 
 
 @config.command("init")
-def config_init() -> None:
-    """Interactive configuration setup."""
+@click.option("--token", help="Pod authentication token from Podex")
+@click.option(
+    "--mode",
+    type=click.Choice(["docker", "native"]),
+    help="Execution mode: docker (containers) or native (direct)",
+)
+@click.option(
+    "--security",
+    type=click.Choice(["allowlist", "unrestricted"]),
+    help="Native mode security: allowlist or unrestricted",
+)
+@click.option("--workspace-dir", help="Directory for native mode workspaces")
+@click.option("--name", help="Display name for this pod")
+@click.option(
+    "--max-workspaces",
+    type=click.IntRange(1, 10),
+    help="Maximum concurrent workspaces (1-10)",
+)
+@click.option(
+    "--mount",
+    "mounts",
+    multiple=True,
+    help="Mount path in format 'path:mode:label' (can be repeated)",
+)
+@click.option("-y", "--yes", is_flag=True, help="Overwrite existing config without prompting")
+def config_init(
+    token: str | None,
+    mode: str | None,
+    security: str | None,
+    workspace_dir: str | None,
+    name: str | None,
+    max_workspaces: int | None,
+    mounts: tuple[str, ...],
+    yes: bool,
+) -> None:
+    """Initialize configuration.
+
+    Can be run interactively (no flags) or non-interactively with flags.
+
+    Examples:
+
+      # Interactive setup
+      podex-local-pod config init
+
+      # Non-interactive Docker mode
+      podex-local-pod config init --token pdx_pod_xxx --mode docker
+
+      # Non-interactive Native mode with mounts
+      podex-local-pod config init --token pdx_pod_xxx --mode native \\
+        --security allowlist --workspace-dir ~/workspaces \\
+        --mount "/path/to/project:rw:My Project"
+    """
     manager = ConfigManager()
 
-    click.echo(click.style("Podex Local Pod Setup", fg="cyan", bold=True))
-    click.echo()
+    # Check if any flags provided - determines interactive vs non-interactive
+    has_flags = any([token, mode, security, workspace_dir, name, max_workspaces, mounts])
 
     # Check if config exists
-    if manager.exists() and not click.confirm(
-        "Configuration already exists. Overwrite?", default=False
-    ):
-        click.echo("Setup cancelled.")
+    if manager.exists():
+        if has_flags and not yes:
+            click.echo(
+                click.style("Warning: ", fg="yellow")
+                + f"Config exists at {manager.config_path}. Use -y to overwrite."
+            )
+            sys.exit(1)
+        elif not has_flags and not click.confirm(
+            "Configuration already exists. Overwrite?", default=False
+        ):
+            click.echo("Setup cancelled.")
+            return
+
+    # Non-interactive mode: use provided flags with defaults
+    if has_flags:
+        final_token = token or ""
+        final_mode = mode or "docker"
+        final_security = security or "allowlist"
+        final_workspace_dir = workspace_dir or str(Path.home() / "podex-workspaces")
+        final_name = name or socket.gethostname()
+        final_max_workspaces = max_workspaces or 3
+
+        # Parse mounts
+        final_mounts = []
+        for mount_str in mounts:
+            parts = mount_str.split(":")
+            if len(parts) >= 1:
+                mount_path = parts[0]
+                mount_mode = parts[1] if len(parts) > 1 else "rw"
+                mount_label = parts[2] if len(parts) > 2 else Path(mount_path).name
+                # Resolve path
+                resolved = str(Path(mount_path).expanduser().resolve())
+                final_mounts.append(
+                    {
+                        "path": resolved,
+                        "mode": mount_mode,
+                        "label": mount_label,
+                    }
+                )
+
+        # Build config
+        cfg = {
+            "podex": {
+                "pod_token": final_token,
+                "cloud_url": "https://api.podex.dev",
+                "pod_name": final_name,
+                "max_workspaces": final_max_workspaces,
+                "mode": final_mode,
+            },
+            "native": {
+                "workspace_dir": final_workspace_dir,
+                "security": final_security,
+            },
+            "mounts": final_mounts,
+        }
+
+        manager.save(cfg)
+
+        click.echo(click.style("Configuration saved!", fg="green", bold=True))
+        click.echo(f"  File: {manager.config_path}")
+        click.echo(f"  Mode: {final_mode}")
+        if final_mounts:
+            click.echo(f"  Mounts: {len(final_mounts)} configured")
+        click.echo()
+        click.echo("Start the pod with: podex-local-pod start")
         return
+
+    # Interactive mode: prompt for each value
+    click.echo(click.style("Podex Local Pod Setup", fg="cyan", bold=True))
+    click.echo()
 
     # Token
     click.echo(click.style("Step 1: Pod Token", fg="green", bold=True))
     click.echo("Get your token from Podex: Settings > Local Pods > Add Pod")
-    token = click.prompt("Pod token", default="", show_default=False)
+    final_token = click.prompt("Pod token", default="", show_default=False)
 
     # Mode
     click.echo()
     click.echo(click.style("Step 2: Execution Mode", fg="green", bold=True))
     click.echo("  docker - Run workspaces in isolated containers (recommended)")
     click.echo("  native - Run workspaces directly on your machine")
-    mode = click.prompt(
+    final_mode = click.prompt(
         "Mode",
         type=click.Choice(["docker", "native"]),
         default="docker",
     )
 
     # Native settings
-    workspace_dir = str(Path.home() / "podex-workspaces")
-    security = "allowlist"
-    if mode == "native":
+    final_workspace_dir = str(Path.home() / "podex-workspaces")
+    final_security = "allowlist"
+    if final_mode == "native":
         click.echo()
         click.echo(click.style("Step 3: Native Mode Settings", fg="green", bold=True))
-        workspace_dir = click.prompt(
+        final_workspace_dir = click.prompt(
             "Workspace directory",
-            default=workspace_dir,
+            default=final_workspace_dir,
         )
         click.echo("  allowlist - Only allow access to configured mount paths")
         click.echo("  unrestricted - Full filesystem access (use with caution)")
-        security = click.prompt(
+        final_security = click.prompt(
             "Security mode",
             type=click.Choice(["allowlist", "unrestricted"]),
             default="allowlist",
@@ -377,10 +503,10 @@ def config_init() -> None:
     click.echo()
     click.echo(click.style("Step 4: Pod Identity", fg="green", bold=True))
     default_name = socket.gethostname()
-    pod_name = click.prompt("Pod name", default=default_name)
+    final_name = click.prompt("Pod name", default=default_name)
 
     # Max workspaces
-    max_workspaces = click.prompt(
+    final_max_workspaces = click.prompt(
         "Max concurrent workspaces",
         type=click.IntRange(1, 10),
         default=3,
@@ -389,15 +515,15 @@ def config_init() -> None:
     # Build config
     cfg = {
         "podex": {
-            "pod_token": token,
+            "pod_token": final_token,
             "cloud_url": "https://api.podex.dev",
-            "pod_name": pod_name,
-            "max_workspaces": max_workspaces,
-            "mode": mode,
+            "pod_name": final_name,
+            "max_workspaces": final_max_workspaces,
+            "mode": final_mode,
         },
         "native": {
-            "workspace_dir": workspace_dir,
-            "security": security,
+            "workspace_dir": final_workspace_dir,
+            "security": final_security,
         },
         "mounts": [],
     }
