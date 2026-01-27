@@ -1227,84 +1227,22 @@ class WorkspaceStatusResponse(BaseModel):
     """Workspace status response."""
 
     id: str
-    status: str  # "pending", "running", "standby", "stopped", "error"
-    standby_at: str | None
+    status: str  # "pending", "running", "stopped", "error"
     last_activity: str | None
 
 
-@router.post("/{workspace_id}/pause", response_model=WorkspaceStatusResponse)
+@router.post("/{workspace_id}/start", response_model=WorkspaceStatusResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def pause_workspace(
+async def start_workspace(
     workspace_id: str,
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> WorkspaceStatusResponse:
-    """Pause a workspace (stop Docker container, enter standby mode)."""
-    from datetime import UTC, datetime
+    """Start a stopped workspace (creates new pod with existing storage mounted).
 
-    from src.services.workspace_router import workspace_router
-
-    # Verify user has access to this workspace
-    workspace = await verify_workspace_access(workspace_id, request, db)
-
-    # Local pod workspaces cannot be paused - they stay running as long as the pod is connected
-    if workspace.local_pod_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Local workspaces cannot be paused. "
-            "They remain running while the local pod is connected.",
-        )
-
-    if workspace.status == "standby":
-        raise HTTPException(status_code=400, detail="Workspace is already paused")
-
-    if workspace.status not in ("running", "pending"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot pause workspace in '{workspace.status}' state",
-        )
-
-    try:
-        # Stop the container first
-        user_id: str = getattr(request.state, "user_id", "") or ""
-        await workspace_router.stop_workspace(workspace_id, user_id)
-
-        # Only update DB status after container stop succeeds
-        now = datetime.now(UTC)
-        workspace.status = "standby"
-        workspace.standby_at = now
-        await db.commit()
-        await db.refresh(workspace)
-
-        logger.info("Workspace paused", workspace_id=workspace_id, user_id=user_id)
-
-    except Exception:
-        # Rollback any pending changes on failure
-        await db.rollback()
-        logger.exception("Failed to pause workspace", workspace_id=workspace_id)
-        raise HTTPException(status_code=500, detail="Failed to pause workspace") from None
-
-    return WorkspaceStatusResponse(
-        id=workspace.id,
-        status=workspace.status,
-        standby_at=workspace.standby_at.isoformat() if workspace.standby_at else None,
-        last_activity=workspace.last_activity.isoformat() if workspace.last_activity else None,
-    )
-
-
-@router.post("/{workspace_id}/resume", response_model=WorkspaceStatusResponse)
-@limiter.limit(RATE_LIMIT_STANDARD)
-async def resume_workspace(
-    workspace_id: str,
-    request: Request,
-    response: Response,  # noqa: ARG001
-    db: DbSession,
-) -> WorkspaceStatusResponse:
-    """Resume a paused workspace (restart Docker container).
-
-    If the workspace doesn't exist in the compute service (common after standby),
-    it will be recreated automatically.
+    If the workspace doesn't exist in the compute service,
+    it will be recreated automatically with the GCS bucket mounted.
     """
     from datetime import UTC, datetime
 
@@ -1316,11 +1254,12 @@ async def resume_workspace(
     # Verify user has access to this workspace
     workspace = await verify_workspace_access(workspace_id, request, db)
 
-    if workspace.status != "standby":
+    # Allow starting from stopped or standby status (for backwards compatibility)
+    if workspace.status not in ("stopped", "standby"):
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot resume workspace in '{workspace.status}' state. "
-            "Only 'standby' workspaces can be resumed.",
+            detail=f"Cannot start workspace in '{workspace.status}' state. "
+            "Only stopped workspaces can be started.",
         )
 
     user_id: str = getattr(request.state, "user_id", "") or ""
@@ -1361,10 +1300,10 @@ async def resume_workspace(
             )
             await workspace_router.restart_workspace(workspace_id, user_id)
         else:
-            # Workspace doesn't exist in compute service (removed after standby)
-            # Need to recreate it
+            # Workspace doesn't exist in compute service
+            # Need to recreate it with the GCS bucket mounted
             logger.info(
-                "Workspace not found in compute service, recreating",
+                "Workspace not found in compute service, recreating with storage mounted",
                 workspace_id=workspace_id,
             )
 
@@ -1392,7 +1331,7 @@ async def resume_workspace(
                 user_id=user_id,
             )
 
-            # Create the workspace in compute service
+            # Create the workspace in compute service (GCS bucket will be mounted)
             await compute_client.create_workspace(
                 session_id=str(session.id),
                 user_id=user_id,
@@ -1401,7 +1340,7 @@ async def resume_workspace(
             )
 
             logger.info(
-                "Workspace recreated for resume",
+                "Workspace recreated with storage mounted",
                 workspace_id=workspace_id,
                 session_id=str(session.id),
             )
@@ -1409,23 +1348,22 @@ async def resume_workspace(
         # Update DB status after successful restart/recreation
         now = datetime.now(UTC)
         workspace.status = "running"
-        workspace.standby_at = None
         workspace.last_activity = now
         await db.commit()
         await db.refresh(workspace)
 
-        logger.info("Workspace resumed", workspace_id=workspace_id, user_id=user_id)
+        logger.info("Workspace started", workspace_id=workspace_id, user_id=user_id)
 
     except ComputeServiceHTTPError as e:
         await db.rollback()
         logger.exception(
-            "Compute service error during resume",
+            "Compute service error during start",
             workspace_id=workspace_id,
             status_code=e.status_code,
         )
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to resume workspace: compute service error ({e.status_code})",
+            detail=f"Failed to start workspace: compute service error ({e.status_code})",
         ) from None
     except HTTPException:
         # Re-raise HTTP exceptions as-is
@@ -1434,13 +1372,12 @@ async def resume_workspace(
     except Exception:
         # Rollback any pending changes on failure
         await db.rollback()
-        logger.exception("Failed to resume workspace", workspace_id=workspace_id)
-        raise HTTPException(status_code=500, detail="Failed to resume workspace") from None
+        logger.exception("Failed to start workspace", workspace_id=workspace_id)
+        raise HTTPException(status_code=500, detail="Failed to start workspace") from None
 
     return WorkspaceStatusResponse(
         id=workspace.id,
         status=workspace.status,
-        standby_at=None,
         last_activity=workspace.last_activity.isoformat() if workspace.last_activity else None,
     )
 
@@ -1457,10 +1394,14 @@ async def get_workspace_status(
     # Verify user has access to this workspace
     workspace = await verify_workspace_access(workspace_id, request, db)
 
+    # Map standby to stopped for backwards compatibility
+    status = workspace.status
+    if status == "standby":
+        status = "stopped"
+
     return WorkspaceStatusResponse(
         id=workspace.id,
-        status=workspace.status,
-        standby_at=workspace.standby_at.isoformat() if workspace.standby_at else None,
+        status=status,
         last_activity=workspace.last_activity.isoformat() if workspace.last_activity else None,
     )
 

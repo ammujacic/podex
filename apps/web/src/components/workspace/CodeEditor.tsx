@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useRef, useEffect } from 'react';
-import { VSCodeEditor, type VSCodeEditorRef, getLanguageFromPath } from '@/lib/vscode';
+import { VSCodeEditor, type VSCodeEditorRef } from '@/lib/vscode';
 import * as monaco from '@codingame/monaco-vscode-editor-api';
 import type { LSPDiagnostic } from '@/lib/api';
 import { diagnosticsToMonacoMarkers } from '@/hooks/useLSP';
@@ -200,6 +200,3 @@ export function CodeEditor({
     </div>
   );
 }
-
-// Re-export getLanguageFromPath from vscode lib
-export { getLanguageFromPath };

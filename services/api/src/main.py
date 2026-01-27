@@ -46,17 +46,14 @@ from src.routes import (
     billing,
     changes,
     checkpoints,
-    claude_code,
-    claude_sessions,
-    cli_sync,
     commands,
     completion,
     context,
+    conversations,
     cost_insights,
     dashboard,
     doctor,
     extensions,
-    gemini_cli,
     git,
     github,
     health_checks,
@@ -72,7 +69,6 @@ from src.routes import (
     mfa,
     notifications,
     oauth,
-    openai_codex,
     organizations,
     pending_changes,
     plans,
@@ -89,7 +85,6 @@ from src.routes import (
     skills,
     subagents,
     templates,
-    terminal_agents,
     uploads,
     user_compliance,
     user_config,
@@ -1567,10 +1562,6 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     await get_cost_tracker().stop_cleanup_task()
     logger.info("Cost tracker cleanup task stopped")
 
-    # Close all terminal sessions (terminates PTY processes)
-    await terminal_agents.terminal_session_manager.shutdown()
-    logger.info("Terminal sessions closed")
-
     # Cancel quota reset task
     if _tasks.quota_reset:
         _tasks.quota_reset.cancel()
@@ -1787,6 +1778,7 @@ api_v1.include_router(mfa.router)  # Already has prefix
 api_v1.include_router(oauth.router, prefix="/oauth", tags=["oauth"])
 api_v1.include_router(sessions.router, prefix="/sessions", tags=["sessions"])
 api_v1.include_router(sharing.router, prefix="/sessions", tags=["sharing"])
+api_v1.include_router(conversations.router, tags=["conversations"])
 api_v1.include_router(agents.router, prefix="/sessions/{session_id}/agents", tags=["agents"])
 api_v1.include_router(
     attention.router, prefix="/sessions/{session_id}/attention", tags=["attention"]
@@ -1810,7 +1802,6 @@ api_v1.include_router(skill_repositories.router, tags=["skill-repositories"])
 api_v1.include_router(marketplace.router, tags=["marketplace"])
 api_v1.include_router(llm_providers.router, tags=["llm-providers"])
 api_v1.include_router(local_pods.router)  # Already has prefix
-api_v1.include_router(claude_sessions.router)  # Already has prefix
 api_v1.include_router(llm_bridge.router, tags=["llm-bridge"])
 api_v1.include_router(voice.router, prefix="/voice", tags=["voice"])
 api_v1.include_router(uploads.router, prefix="/sessions", tags=["uploads"])
@@ -1836,16 +1827,11 @@ api_v1.include_router(changes.router, prefix="/changes", tags=["changes"])
 api_v1.include_router(pending_changes.router, tags=["pending-changes"])
 api_v1.include_router(subagents.router, tags=["subagents"])
 api_v1.include_router(hooks.router, tags=["hooks"])
-api_v1.include_router(terminal_agents.router, prefix="/terminal-agents", tags=["terminal-agents"])
 api_v1.include_router(lsp.router, tags=["lsp"])
 api_v1.include_router(commands.router, tags=["commands"])
 api_v1.include_router(project_init.router, tags=["init"])
 api_v1.include_router(doctor.router, tags=["doctor"])
 api_v1.include_router(extensions.router, prefix="/extensions", tags=["extensions"])
-api_v1.include_router(claude_code.router, tags=["claude-code"])
-api_v1.include_router(openai_codex.router, tags=["openai-codex"])
-api_v1.include_router(gemini_cli.router, tags=["gemini-cli"])
-api_v1.include_router(cli_sync.router, tags=["cli-sync"])
 api_v1.include_router(user_compliance.router, prefix="/compliance", tags=["compliance"])
 
 # Mount v1 API at /api/v1

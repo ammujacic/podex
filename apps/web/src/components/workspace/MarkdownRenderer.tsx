@@ -21,14 +21,26 @@ interface NestedListItem {
   children?: NestedListItem[];
 }
 
+interface TableCell {
+  content: string;
+  align?: 'left' | 'center' | 'right';
+}
+
+interface TableData {
+  headers: TableCell[];
+  rows: TableCell[][];
+  alignments: ('left' | 'center' | 'right')[];
+}
+
 interface ParsedBlock {
-  type: 'paragraph' | 'code' | 'heading' | 'list' | 'blockquote' | 'hr' | 'tool_call';
+  type: 'paragraph' | 'code' | 'heading' | 'list' | 'blockquote' | 'hr' | 'tool_call' | 'table';
   content: string;
   language?: string;
   level?: number;
   ordered?: boolean;
   items?: string[];
   nestedItems?: NestedListItem[];
+  tableData?: TableData;
 }
 
 /**
@@ -298,6 +310,112 @@ function parseList(lines: string[], startIndex: number): { list: ParsedList; end
 }
 
 /**
+ * Checks if a line is a valid table separator row (e.g., |---|---|)
+ */
+function isTableSeparator(line: string): boolean {
+  const trimmed = line.trim();
+  // Must start and end with | (or start with |)
+  if (!trimmed.startsWith('|')) return false;
+  // Check for pattern like |---|---| or | --- | --- |
+  const separatorPattern = /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/;
+  return separatorPattern.test(trimmed);
+}
+
+/**
+ * Parses a table row into cells
+ */
+function parseTableRow(line: string): string[] {
+  const trimmed = line.trim();
+  // Remove leading and trailing pipes
+  const content = trimmed.replace(/^\|/, '').replace(/\|$/, '');
+  // Split by | and trim each cell
+  return content.split('|').map((cell) => cell.trim());
+}
+
+/**
+ * Parses alignment from separator row
+ */
+function parseTableAlignments(separatorLine: string): ('left' | 'center' | 'right')[] {
+  const cells = parseTableRow(separatorLine);
+  return cells.map((cell) => {
+    const trimmed = cell.trim();
+    const leftColon = trimmed.startsWith(':');
+    const rightColon = trimmed.endsWith(':');
+    if (leftColon && rightColon) return 'center';
+    if (rightColon) return 'right';
+    return 'left';
+  });
+}
+
+/**
+ * Parses a markdown table
+ */
+function parseTable(
+  lines: string[],
+  startIndex: number
+): { table: TableData; endIndex: number } | null {
+  // Need at least header + separator (2 lines)
+  if (startIndex + 1 >= lines.length) return null;
+
+  const headerLine = lines[startIndex] ?? '';
+  const separatorLine = lines[startIndex + 1] ?? '';
+
+  // Validate header looks like a table row
+  if (!headerLine.trim().includes('|')) return null;
+
+  // Validate separator
+  if (!isTableSeparator(separatorLine)) return null;
+
+  const headers = parseTableRow(headerLine);
+  const alignments = parseTableAlignments(separatorLine);
+
+  // Ensure alignments array matches headers length
+  while (alignments.length < headers.length) {
+    alignments.push('left');
+  }
+
+  const headerCells: TableCell[] = headers.map((content, i) => ({
+    content,
+    align: alignments[i],
+  }));
+
+  const rows: TableCell[][] = [];
+  let i = startIndex + 2;
+
+  // Parse data rows
+  while (i < lines.length) {
+    const line = lines[i] ?? '';
+    const trimmed = line.trim();
+
+    // Empty line or non-table line ends the table
+    if (!trimmed || !trimmed.includes('|')) break;
+
+    const rowCells = parseTableRow(line);
+    const row: TableCell[] = rowCells.map((content, idx) => ({
+      content,
+      align: alignments[idx] || 'left',
+    }));
+
+    // Pad row if needed
+    while (row.length < headers.length) {
+      row.push({ content: '', align: 'left' });
+    }
+
+    rows.push(row);
+    i++;
+  }
+
+  return {
+    table: {
+      headers: headerCells,
+      rows,
+      alignments,
+    },
+    endIndex: i,
+  };
+}
+
+/**
  * Parses markdown content into structured blocks
  */
 function parseMarkdown(content: string): ParsedBlock[] {
@@ -390,6 +508,20 @@ function parseMarkdown(content: string): ParsedBlock[] {
       });
       i = endIndex;
       continue;
+    }
+
+    // Tables - check if this line starts a table (contains | and next line is separator)
+    if (trimmedLine.includes('|')) {
+      const tableResult = parseTable(lines, i);
+      if (tableResult) {
+        blocks.push({
+          type: 'table',
+          content: '',
+          tableData: tableResult.table,
+        });
+        i = tableResult.endIndex;
+        continue;
+      }
     }
 
     // Check if this line is a standalone code span (insight-style decorative line)
@@ -829,6 +961,67 @@ export const MarkdownRenderer = React.memo<MarkdownRendererProps>(function Markd
                 {parseInlineMarkdown(block.content, onFileClick)}
               </blockquote>
             );
+
+          case 'table': {
+            if (!block.tableData) return null;
+            const { headers, rows, alignments } = block.tableData;
+            const getAlignClass = (align: 'left' | 'center' | 'right' | undefined) => {
+              switch (align) {
+                case 'center':
+                  return 'text-center';
+                case 'right':
+                  return 'text-right';
+                default:
+                  return 'text-left';
+              }
+            };
+            return (
+              <div key={index} className="my-2 overflow-x-auto">
+                <table className="min-w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-border-default">
+                      {headers.map((header, colIndex) => (
+                        <th
+                          key={colIndex}
+                          className={cn(
+                            'px-3 py-2 font-semibold text-text-primary bg-surface-elevated/50',
+                            getAlignClass(alignments[colIndex]),
+                            'break-words'
+                          )}
+                        >
+                          {parseInlineMarkdown(header.content, onFileClick)}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row, rowIndex) => (
+                      <tr
+                        key={rowIndex}
+                        className={cn(
+                          'border-b border-border-subtle',
+                          rowIndex % 2 === 1 && 'bg-surface-elevated/20'
+                        )}
+                      >
+                        {row.map((cell, colIndex) => (
+                          <td
+                            key={colIndex}
+                            className={cn(
+                              'px-3 py-2 text-text-secondary',
+                              getAlignClass(alignments[colIndex]),
+                              'break-words'
+                            )}
+                          >
+                            {parseInlineMarkdown(cell.content, onFileClick)}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          }
 
           case 'hr':
             return <hr key={index} className="border-border-subtle my-3" />;

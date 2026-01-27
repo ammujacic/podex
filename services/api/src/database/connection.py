@@ -28,7 +28,6 @@ from src.database.models import (
     SkillTemplate,
     SubscriptionPlan,
     SystemSkill,
-    TerminalIntegratedAgentType,
 )
 
 logger = structlog.get_logger()
@@ -205,7 +204,6 @@ async def seed_database() -> None:
         DEFAULT_SETTINGS,
         DEFAULT_SKILL_TEMPLATES,
         DEFAULT_SYSTEM_SKILLS,
-        DEFAULT_TERMINAL_AGENTS,
         OFFICIAL_TEMPLATES,
     )
 
@@ -216,7 +214,6 @@ async def seed_database() -> None:
                 "hardware": 0,
                 "templates": 0,
                 "settings": 0,
-                "terminal_agents": 0,
                 "llm_providers": 0,
                 "llm_models": 0,
                 "global_commands": 0,
@@ -271,32 +268,6 @@ async def seed_database() -> None:
                         )
                     )
                     totals["settings"] += 1
-
-            # Seed terminal-integrated agent types
-            for agent_data in DEFAULT_TERMINAL_AGENTS:
-                result = await db.execute(
-                    select(TerminalIntegratedAgentType).where(
-                        TerminalIntegratedAgentType.slug == agent_data["slug"]
-                    )
-                )
-                if not result.scalar_one_or_none():
-                    db.add(
-                        TerminalIntegratedAgentType(
-                            name=agent_data["name"],
-                            slug=agent_data["slug"],
-                            logo_url=agent_data.get("logo_url"),
-                            description=agent_data.get("description"),
-                            check_installed_command=agent_data.get("check_installed_command"),
-                            version_command=agent_data.get("version_command"),
-                            install_command=agent_data.get("install_command"),
-                            update_command=agent_data.get("update_command"),
-                            run_command=agent_data["run_command"],
-                            default_env_template=agent_data.get("default_env_template", {}),
-                            is_enabled=agent_data.get("is_enabled", True),
-                            created_by_admin_id=None,
-                        )
-                    )
-                    totals["terminal_agents"] += 1
 
             # Seed LLM providers (must come before models)
             for provider_data in DEFAULT_PROVIDERS:
@@ -483,7 +454,6 @@ async def seed_database() -> None:
                     hardware=totals["hardware"],
                     templates=totals["templates"],
                     settings=totals["settings"],
-                    terminal_agents=totals["terminal_agents"],
                     llm_providers=totals["llm_providers"],
                     llm_models=totals["llm_models"],
                     global_commands=totals["global_commands"],

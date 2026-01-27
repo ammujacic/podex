@@ -34,10 +34,6 @@ describe('getWorkspaceStatusColor', () => {
     expect(getWorkspaceStatusColor('pending')).toBe('bg-status-warning animate-pulse');
   });
 
-  it('returns warning color for standby status', () => {
-    expect(getWorkspaceStatusColor('standby')).toBe('bg-status-warning');
-  });
-
   it('returns error color for stopped status', () => {
     expect(getWorkspaceStatusColor('stopped')).toBe('bg-status-error');
   });
@@ -59,10 +55,6 @@ describe('getWorkspaceStatusText', () => {
 
   it('returns "Starting..." for pending status', () => {
     expect(getWorkspaceStatusText('pending')).toBe('Starting...');
-  });
-
-  it('returns "Standby" for standby status', () => {
-    expect(getWorkspaceStatusText('standby')).toBe('Standby');
   });
 
   it('returns "Stopped" for stopped status', () => {

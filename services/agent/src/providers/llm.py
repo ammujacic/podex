@@ -134,13 +134,24 @@ class LLMProvider:
         """Get Anthropic client, optionally with user-provided API key.
 
         Args:
-            api_key: Optional user-provided API key. If None, uses platform default.
+            api_key: Optional user-provided API key (can be standard API key or OAuth token).
+                     OAuth tokens start with "sk-ant-oat" and require special headers.
 
         Returns:
             Anthropic client instance
         """
         if api_key:
-            # Create a new client with user's API key
+            # Check if this is an OAuth token (starts with sk-ant-oat)
+            is_oauth_token = api_key.startswith("sk-ant-oat")
+            if is_oauth_token:
+                # OAuth tokens require the dangerous-direct-browser-access header
+                return AsyncAnthropic(
+                    api_key=api_key,
+                    default_headers={
+                        "anthropic-dangerous-direct-browser-access": "true",
+                    },
+                )
+            # Standard API key
             return AsyncAnthropic(api_key=api_key)
         return self.anthropic_client
 
@@ -211,6 +222,10 @@ class LLMProvider:
         Returns:
             Response dictionary with content and metadata
         """
+        # Get user-provided API keys if available
+        user_anthropic_key = self._get_user_api_key(request.llm_api_keys, "anthropic")
+        user_openai_key = self._get_user_api_key(request.llm_api_keys, "openai")
+
         if self.provider == "anthropic":
             result = await self._complete_anthropic(
                 model=request.model,
@@ -218,6 +233,7 @@ class LLMProvider:
                 tools=request.tools,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
+                api_key=user_anthropic_key,
             )
         elif self.provider == "openai":
             result = await self._complete_openai(
@@ -226,6 +242,7 @@ class LLMProvider:
                 tools=request.tools,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
+                api_key=user_openai_key,
             )
         elif self.provider == "vertex":
             result = await self._complete_vertex(
@@ -278,6 +295,10 @@ class LLMProvider:
         Yields:
             StreamEvent objects for tokens, tool calls, and completion.
         """
+        # Get user-provided API keys if available
+        user_anthropic_key = self._get_user_api_key(request.llm_api_keys, "anthropic")
+        user_openai_key = self._get_user_api_key(request.llm_api_keys, "openai")
+
         try:
             if self.provider == "anthropic":
                 async for event in self._stream_anthropic(
@@ -286,6 +307,7 @@ class LLMProvider:
                     tools=request.tools,
                     max_tokens=request.max_tokens,
                     temperature=request.temperature,
+                    api_key=user_anthropic_key,
                 ):
                     yield event
             elif self.provider == "openai":
@@ -295,6 +317,7 @@ class LLMProvider:
                     tools=request.tools,
                     max_tokens=request.max_tokens,
                     temperature=request.temperature,
+                    api_key=user_openai_key,
                 ):
                     yield event
             elif self.provider == "vertex":
@@ -357,8 +380,21 @@ class LLMProvider:
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        api_key: str | None = None,
     ) -> dict[str, Any]:
-        """Complete using Anthropic API."""
+        """Complete using Anthropic API.
+
+        Args:
+            model: Model identifier
+            messages: Conversation messages
+            tools: Optional tool definitions
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            api_key: Optional user API key (standard or OAuth token)
+        """
+        # Get appropriate client (with user key or platform default)
+        client = self._get_anthropic_client(api_key)
+
         # Extract system message
         system_message = ""
         conversation_messages = []
@@ -384,7 +420,7 @@ class LLMProvider:
             request_params["tools"] = tools
 
         # Make API call
-        response = await self.anthropic_client.messages.create(**request_params)
+        response = await client.messages.create(**request_params)
 
         # Extract content
         content = ""
@@ -420,8 +456,21 @@ class LLMProvider:
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        api_key: str | None = None,
     ) -> dict[str, Any]:
-        """Complete using OpenAI API."""
+        """Complete using OpenAI API.
+
+        Args:
+            model: Model identifier
+            messages: Conversation messages
+            tools: Optional tool definitions
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            api_key: Optional user API key
+        """
+        # Get appropriate client (with user key or platform default)
+        client = self._get_openai_client(api_key)
+
         # Convert Anthropic-style tools to OpenAI format
         openai_tools = None
         if tools:
@@ -459,7 +508,7 @@ class LLMProvider:
             request_params["tool_choice"] = "auto"
 
         # Make API call
-        response = await self.openai_client.chat.completions.create(**request_params)
+        response = await client.chat.completions.create(**request_params)
 
         # Extract content and tool calls
         content = ""
@@ -612,8 +661,21 @@ class LLMProvider:
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        api_key: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
-        """Stream completion using Anthropic API."""
+        """Stream completion using Anthropic API.
+
+        Args:
+            model: Model identifier
+            messages: Conversation messages
+            tools: Optional tool definitions
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            api_key: Optional user API key (standard or OAuth token)
+        """
+        # Get appropriate client (with user key or platform default)
+        client = self._get_anthropic_client(api_key)
+
         # Extract system message
         system_message = ""
         conversation_messages = []
@@ -644,7 +706,7 @@ class LLMProvider:
         output_tokens = 0
         stop_reason = "end_turn"
 
-        async with self.anthropic_client.messages.stream(**request_params) as stream:
+        async with client.messages.stream(**request_params) as stream:
             async for event in stream:
                 if event.type == "message_start":
                     # Capture input token count
@@ -721,8 +783,21 @@ class LLMProvider:
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        api_key: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
-        """Stream completion using OpenAI API."""
+        """Stream completion using OpenAI API.
+
+        Args:
+            model: Model identifier
+            messages: Conversation messages
+            tools: Optional tool definitions
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            api_key: Optional user API key
+        """
+        # Get appropriate client (with user key or platform default)
+        client = self._get_openai_client(api_key)
+
         # Convert Anthropic-style tools to OpenAI format
         openai_tools = None
         if tools:
@@ -766,7 +841,7 @@ class LLMProvider:
         usage_data: dict[str, int] = {}
         finish_reason: str | None = None
 
-        stream = await self.openai_client.chat.completions.create(**request_params)
+        stream = await client.chat.completions.create(**request_params)
 
         async for chunk in stream:
             if not chunk.choices and chunk.usage:

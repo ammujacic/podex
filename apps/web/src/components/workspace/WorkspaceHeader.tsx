@@ -4,7 +4,6 @@ import { useState, useRef, useEffect } from 'react';
 import {
   AlertCircle,
   Bell,
-  Clock,
   GitBranch,
   Grid3X3,
   Layout,
@@ -12,9 +11,9 @@ import {
   LogOut,
   Mic,
   Move,
-  Pause,
   Server,
   Settings,
+  Square,
   Users,
   WifiOff,
   X,
@@ -99,10 +98,10 @@ function PodStatusIndicator({
       icon: null,
     },
     standby: {
-      color: 'text-yellow-400',
-      bgColor: 'bg-yellow-500',
-      label: 'Standby',
-      icon: <Pause className="h-3 w-3" />,
+      color: 'text-gray-400',
+      bgColor: 'bg-gray-500',
+      label: 'Stopped',
+      icon: <Square className="h-3 w-3" />,
     },
     pending: {
       color: 'text-blue-400',
@@ -114,7 +113,7 @@ function PodStatusIndicator({
       color: 'text-gray-400',
       bgColor: 'bg-gray-500',
       label: 'Stopped',
-      icon: <Pause className="h-3 w-3" />,
+      icon: <Square className="h-3 w-3" />,
     },
     error: {
       color: 'text-red-400',
@@ -182,7 +181,7 @@ function PodStatusIndicator({
 
 export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
   const router = useRouter();
-  const { openCommandPalette, openModal } = useUIStore();
+  const { openCommandPalette } = useUIStore();
   const { sessions, setViewMode } = useSessionStore();
   const { getUnreadCount, openPanel } = useAttentionStore();
   const unreadCount = getUnreadCount(sessionId);
@@ -495,28 +494,6 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
             </div>
           )}
         </div>
-
-        {/* Pause/Resume Session */}
-        {session?.workspaceStatus === 'running' && (
-          <button
-            onClick={() => openModal('pause-session')}
-            aria-label="Pause session"
-            className="rounded-md p-2 text-text-secondary hover:bg-overlay hover:text-yellow-400"
-            title="Pause session (enter standby)"
-          >
-            <Pause className="h-4 w-4" aria-hidden="true" />
-          </button>
-        )}
-
-        {/* Auto-Standby Settings */}
-        <button
-          onClick={() => openModal('standby-settings')}
-          aria-label="Configure auto-standby timeout"
-          className="rounded-md p-2 text-text-secondary hover:bg-overlay hover:text-text-primary"
-          title="Configure auto-standby timeout"
-        >
-          <Clock className="h-4 w-4" aria-hidden="true" />
-        </button>
 
         {/* Settings */}
         <button

@@ -264,7 +264,7 @@ export function useVoiceCommands({
                   model: agentResponse.model,
                   status: 'idle',
                   color: `agent-${(agentCount % 6) + 1}`,
-                  messages: [],
+                  conversationSessionId: null,
                   mode: 'auto',
                 });
               } catch (error) {

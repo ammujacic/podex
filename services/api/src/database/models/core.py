@@ -20,7 +20,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base, _generate_uuid
 
 if TYPE_CHECKING:
-    from .agent_config import AgentTemplate, TerminalIntegratedAgentType
+    from .agent_config import AgentTemplate
+    from .conversation import ConversationSession
     from .extensions import UserExtension, WorkspaceExtension
     from .infrastructure import GitHubIntegration, LocalPod
     from .organization import OrganizationMember
@@ -170,6 +171,11 @@ class Session(Base):
         back_populates="session",
         cascade="all, delete-orphan",
     )
+    conversation_sessions: Mapped[list["ConversationSession"]] = relationship(
+        "ConversationSession",
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
     shares: Mapped[list["SessionShare"]] = relationship(
         "SessionShare",
         back_populates="session",
@@ -240,15 +246,23 @@ class Agent(Base):
     # Agent kind: podex_native, terminal_external
     kind: Mapped[str] = mapped_column(String(20), default="podex_native", nullable=False)
     # Reference to terminal-integrated agent type (for terminal_external agents)
+    # Note: This field is deprecated and will be removed in future versions
     terminal_agent_type_id: Mapped[str | None] = mapped_column(
         UUID(as_uuid=False),
-        ForeignKey("terminal_integrated_agent_types.id", ondelete="SET NULL"),
+        nullable=True,
     )
     # Voice configuration for TTS (tts_enabled, auto_play, voice_id, speed, language)
     voice_config: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     # Context window tracking
     context_tokens_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     context_max_tokens: Mapped[int] = mapped_column(Integer, default=200000, nullable=False)
+
+    # Reference to attached conversation session (can be NULL if no conversation attached)
+    conversation_session_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("conversation_sessions.id", ondelete="SET NULL"),
+        index=True,
+    )
 
     # Status tracking for watchdog (detects stuck agents)
     status_changed_at: Mapped[datetime | None] = mapped_column(
@@ -271,22 +285,20 @@ class Agent(Base):
 
     # Relationships
     session: Mapped["Session"] = relationship("Session", back_populates="agents")
-    messages: Mapped[list["Message"]] = relationship(
-        "Message",
-        back_populates="agent",
-        cascade="all, delete-orphan",
-    )
     template: Mapped["AgentTemplate | None"] = relationship(
         "AgentTemplate",
         back_populates="agents",
-    )
-    terminal_agent_type: Mapped["TerminalIntegratedAgentType | None"] = relationship(
-        "TerminalIntegratedAgentType",
     )
     pending_approvals: Mapped[list["AgentPendingApproval"]] = relationship(
         "AgentPendingApproval",
         back_populates="agent",
         cascade="all, delete-orphan",
+    )
+    # Portable conversation session (can be attached/detached)
+    conversation_session: Mapped["ConversationSession | None"] = relationship(
+        "ConversationSession",
+        back_populates="attached_agent",
+        foreign_keys=[conversation_session_id],
     )
 
 

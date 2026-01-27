@@ -1,29 +1,22 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Send, Mic, Paperclip, Loader2, StopCircle, X, LogIn } from 'lucide-react';
+import { Send, Mic, Paperclip, Loader2, StopCircle, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { useSessionStore, type AgentMessage } from '@/stores/session';
 import { useUIStore } from '@/stores/ui';
 import { getFileContent } from '@/lib/api';
-import { getLanguageFromPath } from '@/lib/vscode';
+import { getLanguageFromPath } from '@/lib/vscode/languageUtils';
 import { useStreamingStore } from '@/stores/streaming';
 import { sendAgentMessage, abortAgent, isQuotaError } from '@/lib/api';
 import { useSwipeGesture } from '@/hooks/useGestures';
 import { useVoiceCapture } from '@/hooks/useVoiceCapture';
-import { isCliAgentRole, getCliAgentType, useCliAgentAuth } from '@/hooks/useCliAgentCommands';
-import { useClaudeSessionSync } from '@/hooks/useClaudeSessionSync';
-import { useAttentionStore } from '@/stores/attention';
-import { dismissAttention as dismissAttentionApi } from '@/lib/api';
-import { emitPermissionResponse, emitNativeApprovalResponse } from '@/lib/socket';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { CreditExhaustedBanner } from './CreditExhaustedBanner';
 import { MobileAgentToolbar } from './MobileAgentToolbar';
 import { MobileMessageBubble } from './MobileMessageBubble';
-import { ClaudeEntryRenderer } from './ClaudeEntryRenderer';
 import { NoMessagesEmptyState } from '@/components/ui/EmptyState';
-import { ApprovalDialog } from './ApprovalDialog';
 
 // Generate temporary ID for optimistic updates
 function generateTempId(): string {
@@ -55,17 +48,24 @@ export function MobileAgentView({
   const isUserAtBottomRef = useRef(true);
 
   const session = useSessionStore((state) => state.sessions[sessionId]);
+  const getConversationForAgent = useSessionStore((state) => state.getConversationForAgent);
+  const createConversationSession = useSessionStore((state) => state.createConversationSession);
+  const attachConversationToAgent = useSessionStore((state) => state.attachConversationToAgent);
+  const addConversationMessage = useSessionStore((state) => state.addConversationMessage);
   const streamingMessages = useStreamingStore((state) => state.streamingMessages);
   const agent = session?.agents?.find((a) => a.id === agentId);
+
+  // Get conversation session for this agent
+  const conversationSession = getConversationForAgent(sessionId, agentId);
+  const messages = conversationSession?.messages ?? [];
 
   // Get finalized messages with deduplication (safety net for race conditions)
   // Only dedupes by exact ID - does NOT dedupe by content to allow duplicate messages
   const finalizedMessages = useMemo(() => {
-    const messages = agent?.messages ?? [];
     if (messages.length === 0) return messages;
 
     const seenIds = new Set<string>();
-    const result: typeof messages = [];
+    const result: AgentMessage[] = [];
 
     for (const msg of messages) {
       // Skip messages without valid ID
@@ -80,7 +80,7 @@ export function MobileAgentView({
     }
 
     return result;
-  }, [agent?.messages]);
+  }, [messages]);
 
   // Find active streaming message for this agent
   const streamingMessage = useMemo(() => {
@@ -91,29 +91,6 @@ export function MobileAgentView({
 
   // Check if agent is processing
   const isProcessing = !!streamingMessage;
-
-  // CLI agent auth check
-  const isCliAgent = agent ? isCliAgentRole(agent.role) : false;
-  const cliAgentType = agent ? getCliAgentType(agent.role) : null;
-  const { authStatus: cliAuthStatus } = useCliAgentAuth(
-    cliAgentType ?? 'claude-code',
-    isCliAgent ? agentId : undefined
-  );
-
-  // Check if CLI agent needs authentication (blocks input until authenticated)
-  const cliNeedsAuth =
-    isCliAgent &&
-    (agent?.messages ?? []).length === 0 &&
-    (cliAuthStatus === null || cliAuthStatus?.needsAuth);
-
-  // Claude Code session sync - enables real-time updates from local pod file watcher
-  const isClaudeCodeAgent = agent?.role === 'claude-code';
-  useClaudeSessionSync({
-    sessionId,
-    agentId,
-    claudeSessionInfo: agent?.claudeSessionInfo,
-    enabled: isClaudeCodeAgent && !!agent?.claudeSessionInfo,
-  });
 
   // Voice capture integration
   const { isRecording, currentTranscript, startRecording, stopRecording, cancelRecording } =
@@ -161,10 +138,8 @@ export function MobileAgentView({
     }
   }, [finalizedMessages, streamingMessage?.content]);
 
-  const addAgentMessage = useSessionStore((state) => state.addAgentMessage);
   const updateAgent = useSessionStore((state) => state.updateAgent);
   const openMobileFile = useUIStore((state) => state.openMobileFile);
-  const { dismissAttention } = useAttentionStore();
 
   // File link click handler - opens mobile file viewer sheet
   const handleFileClick = useCallback(
@@ -186,72 +161,6 @@ export function MobileAgentView({
     },
     [sessionId, openMobileFile]
   );
-
-  // Handle permission approval/denial
-  const handlePermissionApproval = useCallback(
-    (approved: boolean, addedToAllowlist: boolean) => {
-      if (!agent?.pendingPermission) return;
-
-      // Use the appropriate emit function based on agent type
-      if (isCliAgent) {
-        // CLI agents (claude-code, openai-codex, gemini-cli) use permission_response
-        emitPermissionResponse(
-          sessionId,
-          agentId,
-          agent.pendingPermission.requestId,
-          approved,
-          agent.pendingPermission.command,
-          agent.pendingPermission.toolName,
-          addedToAllowlist
-        );
-      } else {
-        // Native Podex agents use native_approval_response
-        emitNativeApprovalResponse(
-          sessionId,
-          agentId,
-          agent.pendingPermission.requestId,
-          approved,
-          addedToAllowlist
-        );
-      }
-
-      if (agent.pendingPermission.attentionId) {
-        dismissAttention(sessionId, agent.pendingPermission.attentionId);
-        dismissAttentionApi(sessionId, agent.pendingPermission.attentionId).catch((error) => {
-          console.error('Failed to persist attention dismissal:', error);
-        });
-      }
-
-      // Clear the pending permission from the agent
-      updateAgent(sessionId, agentId, { pendingPermission: undefined });
-    },
-    [sessionId, agentId, isCliAgent, agent?.pendingPermission, updateAgent, dismissAttention]
-  );
-
-  // Handle CLI agent login
-  const handleCliLogin = useCallback(async () => {
-    if (isSubmitting || !agent) return;
-
-    setIsSubmitting(true);
-    const loginMessage = '/login';
-
-    const userMessage: AgentMessage = {
-      id: generateTempId(),
-      role: 'user',
-      content: loginMessage,
-      timestamp: new Date(),
-    };
-    addAgentMessage(sessionId, agentId, userMessage);
-
-    try {
-      await sendAgentMessage(sessionId, agentId, loginMessage);
-    } catch (error) {
-      console.error('Failed to send login command:', error);
-      toast.error('Failed to initiate login. Please try again.');
-    } finally {
-      setIsSubmitting(false);
-    }
-  }, [isSubmitting, agent, sessionId, agentId, addAgentMessage]);
 
   const handleSubmit = useCallback(async () => {
     const trimmedInput = input.trim();
@@ -275,6 +184,15 @@ export function MobileAgentView({
       inputRef.current.style.height = 'auto';
     }
 
+    // Create or get conversation session for this agent
+    let conversationId = conversationSession?.id;
+    if (!conversationId) {
+      // Create a new conversation session and attach to this agent
+      const newConversation = createConversationSession(sessionId, { firstMessage: trimmedInput });
+      conversationId = newConversation.id;
+      attachConversationToAgent(sessionId, conversationId, agentId);
+    }
+
     // Add optimistic user message to store (with temp ID that will be updated by WebSocket)
     const userMessage: AgentMessage = {
       id: generateTempId(),
@@ -282,7 +200,8 @@ export function MobileAgentView({
       content: trimmedInput,
       timestamp: new Date(),
     };
-    addAgentMessage(sessionId, agentId, userMessage);
+    addConversationMessage(sessionId, conversationId, userMessage);
+    updateAgent(sessionId, agentId, { status: 'active' });
 
     try {
       await sendAgentMessage(sessionId, agentId, trimmedInput);
@@ -293,11 +212,22 @@ export function MobileAgentView({
       } else {
         toast.error('Failed to send message');
       }
-      // Note: We don't restore input on error since the optimistic message is already shown
+      updateAgent(sessionId, agentId, { status: 'error' });
     } finally {
       setIsSubmitting(false);
     }
-  }, [input, isSubmitting, agent, sessionId, agentId, addAgentMessage]);
+  }, [
+    input,
+    isSubmitting,
+    agent,
+    sessionId,
+    agentId,
+    conversationSession,
+    createConversationSession,
+    attachConversationToAgent,
+    addConversationMessage,
+    updateAgent,
+  ]);
 
   // Handle voice recording toggle
   const handleVoiceToggle = useCallback(async () => {
@@ -353,6 +283,14 @@ export function MobileAgentView({
         inputRef.current.style.height = 'auto';
       }
 
+      // Create or get conversation session for this agent
+      let conversationId = conversationSession?.id;
+      if (!conversationId) {
+        const newConversation = createConversationSession(sessionId, { firstMessage: transcript });
+        conversationId = newConversation.id;
+        attachConversationToAgent(sessionId, conversationId, agentId);
+      }
+
       // Add optimistic user message to store
       const userMessage: AgentMessage = {
         id: generateTempId(),
@@ -360,7 +298,8 @@ export function MobileAgentView({
         content: transcript,
         timestamp: new Date(),
       };
-      addAgentMessage(sessionId, agentId, userMessage);
+      addConversationMessage(sessionId, conversationId, userMessage);
+      updateAgent(sessionId, agentId, { status: 'active' });
 
       try {
         await sendAgentMessage(sessionId, agentId, transcript);
@@ -371,11 +310,24 @@ export function MobileAgentView({
         } else {
           toast.error('Failed to send message');
         }
+        updateAgent(sessionId, agentId, { status: 'error' });
       } finally {
         setIsSubmitting(false);
       }
     }
-  }, [currentTranscript, stopRecording, isSubmitting, agent, sessionId, agentId, addAgentMessage]);
+  }, [
+    currentTranscript,
+    stopRecording,
+    isSubmitting,
+    agent,
+    sessionId,
+    agentId,
+    conversationSession,
+    createConversationSession,
+    attachConversationToAgent,
+    addConversationMessage,
+    updateAgent,
+  ]);
 
   const handleAbort = useCallback(async () => {
     try {
@@ -386,35 +338,6 @@ export function MobileAgentView({
       toast.error('Failed to stop agent');
     }
   }, [sessionId, agentId]);
-
-  // Handler for sending commands from toolbar (used for CLI agents)
-  const handleSendCommand = useCallback(
-    async (command: string) => {
-      if (!agent || isSubmitting) return;
-
-      // Detect if this is a CLI command (starts with /)
-      const isCliCommand = command.startsWith('/');
-
-      // Add optimistic user message to store
-      const userMessage: AgentMessage = {
-        id: generateTempId(),
-        role: 'user',
-        content: command,
-        timestamp: new Date(),
-        // Mark CLI commands as system type so they render minimally
-        ...(isCliCommand && { type: 'system' as const }),
-      };
-      addAgentMessage(sessionId, agentId, userMessage);
-
-      try {
-        await sendAgentMessage(sessionId, agentId, command);
-      } catch (error) {
-        console.error('Failed to send command:', error);
-        toast.error('Failed to send command');
-      }
-    },
-    [agent, isSubmitting, sessionId, agentId, addAgentMessage]
-  );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -457,7 +380,7 @@ export function MobileAgentView({
 
       {/* Agent toolbar - always visible at top */}
       <div className="flex-none">
-        <MobileAgentToolbar sessionId={sessionId} agent={agent} onSendCommand={handleSendCommand} />
+        <MobileAgentToolbar sessionId={sessionId} agent={agent} />
       </div>
 
       {/* Messages area - scrollable middle section */}
@@ -466,66 +389,17 @@ export function MobileAgentView({
         onScroll={handleMessagesScroll}
         className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-4"
       >
-        {/* CLI Agent Login Prompt - shown when auth is needed or unknown and no messages yet */}
-        {isCliAgent &&
-        finalizedMessages.length === 0 &&
-        !streamingMessage &&
-        (cliAuthStatus === null || cliAuthStatus?.needsAuth) ? (
-          <div className="flex h-full items-center justify-center">
-            <div className="text-center space-y-4 max-w-sm px-4">
-              <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-accent-primary/10">
-                <LogIn className="h-7 w-7 text-accent-primary" />
-              </div>
-              <div>
-                <h3 className="text-base font-medium text-text-primary mb-1">
-                  Authentication Required
-                </h3>
-                <p className="text-sm text-text-muted">
-                  {agent.role === 'claude-code'
-                    ? 'Sign in with your Anthropic account to use Claude Code.'
-                    : agent.role === 'openai-codex'
-                      ? 'Sign in with your OpenAI account to use Codex.'
-                      : 'Sign in to use this CLI agent.'}
-                </p>
-              </div>
-              <button
-                onClick={handleCliLogin}
-                disabled={isSubmitting}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-accent-primary text-text-inverse text-sm font-medium hover:bg-accent-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px]"
-              >
-                {isSubmitting ? (
-                  <>
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                    Connecting...
-                  </>
-                ) : (
-                  <>
-                    <LogIn className="h-5 w-5" />
-                    Sign In
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        ) : finalizedMessages.length === 0 && !streamingMessage ? (
+        {finalizedMessages.length === 0 && !streamingMessage ? (
           <NoMessagesEmptyState agentName={agent.name} />
         ) : (
           <div className="space-y-4">
-            {finalizedMessages.map((message) =>
-              isClaudeCodeAgent ? (
-                <ClaudeEntryRenderer
-                  key={message.id}
-                  message={message}
-                  onFileClick={handleFileClick}
-                />
-              ) : (
-                <MobileMessageBubble
-                  key={message.id}
-                  message={message}
-                  onFileClick={handleFileClick}
-                />
-              )
-            )}
+            {finalizedMessages.map((message) => (
+              <MobileMessageBubble
+                key={message.id}
+                message={message}
+                onFileClick={handleFileClick}
+              />
+            ))}
             {/* Streaming message or thinking indicator */}
             {isProcessing && (
               <div className="flex flex-col items-start">
@@ -558,30 +432,6 @@ export function MobileAgentView({
           </div>
         )}
       </div>
-
-      {/* Approval dialog - shown when agent needs permission */}
-      {agent?.pendingPermission && (
-        <div className="flex-none border-t border-border-subtle bg-surface">
-          <ApprovalDialog
-            approval={{
-              id: agent.pendingPermission.requestId,
-              agent_id: agentId,
-              session_id: sessionId,
-              action_type: 'command_execute',
-              action_details: {
-                command: agent.pendingPermission.command ?? undefined,
-                tool_name: agent.pendingPermission.toolName,
-              },
-              status: 'pending',
-              expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-              created_at: agent.pendingPermission.timestamp,
-            }}
-            agentMode={agent.mode}
-            onClose={() => handlePermissionApproval(false, false)}
-            onApprovalComplete={handlePermissionApproval}
-          />
-        </div>
-      )}
 
       {/* Input area - always visible at bottom */}
       <div
@@ -668,14 +518,12 @@ export function MobileAgentView({
                 onKeyDown={handleKeyDown}
                 placeholder="Message..."
                 rows={1}
-                disabled={cliNeedsAuth}
                 className={cn(
                   'w-full px-4 py-2.5 rounded-xl resize-none',
                   'bg-surface-hover border border-border-subtle',
                   'text-base text-text-primary placeholder:text-text-tertiary',
                   'focus:outline-none focus:ring-2 focus:ring-accent-primary/50',
-                  'overflow-y-auto',
-                  cliNeedsAuth && 'opacity-50 cursor-not-allowed'
+                  'overflow-y-auto'
                 )}
                 style={{
                   minHeight: '44px',
@@ -701,7 +549,7 @@ export function MobileAgentView({
             ) : input.trim() ? (
               <button
                 onClick={handleSubmit}
-                disabled={isSubmitting || cliNeedsAuth}
+                disabled={isSubmitting}
                 className={cn(
                   'p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg',
                   'bg-accent-primary text-text-inverse',
@@ -720,12 +568,10 @@ export function MobileAgentView({
             ) : (
               <button
                 onClick={handleVoiceToggle}
-                disabled={cliNeedsAuth}
                 className={cn(
                   'p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg',
                   'hover:bg-surface-hover active:bg-surface-active',
-                  'transition-colors touch-manipulation',
-                  cliNeedsAuth && 'opacity-50 cursor-not-allowed'
+                  'transition-colors touch-manipulation'
                 )}
                 aria-label="Voice input"
               >

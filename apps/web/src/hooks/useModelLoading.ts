@@ -85,10 +85,7 @@ export function useModelLoading(): UseModelLoadingResult {
       id: m.model_id,
       provider: (isUserKey ? m.provider : 'podex') as LLMProvider,
       displayName: m.display_name,
-      shortName: m.display_name
-        .replace('Claude ', '')
-        .replace('Llama ', '')
-        .replace(' (Direct)', ''),
+      shortName: m.display_name.replace(' (User API)', ''),
       tier:
         m.cost_tier === 'premium' || m.cost_tier === 'high'
           ? 'flagship'
@@ -130,7 +127,7 @@ export function useModelLoading(): UseModelLoadingResult {
       id: m.model_id,
       provider: m.provider as LLMProvider,
       displayName: m.display_name,
-      shortName: m.display_name.replace('Claude ', '').replace(' (Direct)', ''),
+      shortName: m.display_name.replace(' (User API)', ''),
       tier:
         m.cost_tier === 'premium' || m.cost_tier === 'high'
           ? 'flagship'
@@ -185,20 +182,17 @@ export function useModelLoading(): UseModelLoadingResult {
   const getModelDisplayName = useCallback(
     (modelId: string, agentDisplayName?: string): string => {
       if (agentDisplayName) {
-        return agentDisplayName.replace('Claude ', '').replace('Llama ', '');
+        return agentDisplayName;
       }
 
       const userModel = userProviderModels.find((m) => m.model_id === modelId);
       if (userModel) {
-        return userModel.display_name
-          .replace('Claude ', '')
-          .replace('Llama ', '')
-          .replace(' (Direct)', '');
+        return userModel.display_name.replace(' (User API)', '');
       }
 
       const backendModel = backendModels.find((m) => m.model_id === modelId);
       if (backendModel) {
-        return backendModel.display_name.replace('Claude ', '').replace('Llama ', '');
+        return backendModel.display_name;
       }
 
       return modelId;

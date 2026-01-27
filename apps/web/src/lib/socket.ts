@@ -232,50 +232,6 @@ export interface NativeApprovalDecisionEvent {
   add_to_allowlist: boolean;
 }
 
-// Permission request from Claude Code CLI
-export interface PermissionRequestEvent {
-  session_id: string;
-  agent_id: string;
-  request_id: string;
-  command: string | null;
-  description: string | null;
-  tool_name: string;
-  attention_id?: string;
-  action_type: 'command_execute';
-  action_details: {
-    command: string | null;
-    tool_name: string;
-  };
-  timestamp: string;
-}
-
-export interface PermissionDecisionEvent {
-  session_id: string;
-  agent_id: string;
-  request_id: string;
-  approved: boolean;
-  timestamp: string;
-}
-
-export interface AgentModeUpdateEvent {
-  session_id: string;
-  agent_id: string;
-  mode: 'plan' | 'ask' | 'auto' | 'sovereign';
-  command_allowlist: string[] | null;
-}
-
-export interface AgentAutoModeSwitchEvent {
-  session_id: string;
-  agent_id: string;
-  agent_name: string;
-  old_mode: string;
-  new_mode: string;
-  reason: string;
-  trigger_phrase: string | null;
-  auto_revert: boolean;
-  timestamp: string;
-}
-
 // Context window events
 export interface ContextUsageUpdateEvent {
   agent_id: string;
@@ -529,64 +485,9 @@ export interface SkillCompleteEvent {
   duration_ms: number;
 }
 
-/** Claude Code session entry - all entry types from session files */
-export interface ClaudeSessionEntry {
-  uuid: string;
-  parent_uuid?: string;
-  type: string; // 'user' | 'assistant' | 'progress' | 'summary' | etc.
-  timestamp?: string;
-  session_id?: string;
-  is_sidechain?: boolean;
-  // For user/assistant messages
-  role?: 'user' | 'assistant';
-  content?: string;
-  thinking?: string | null; // Extended thinking content
-  model?: string;
-  tool_calls?: Array<{
-    id: string;
-    name: string;
-    input: Record<string, unknown>;
-  }> | null;
-  tool_results?: Array<{
-    tool_use_id: string;
-    content: unknown;
-    is_error: boolean;
-  }> | null;
-  stop_reason?: string;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    cache_creation_input_tokens?: number;
-    cache_read_input_tokens?: number;
-  };
-  // For progress events
-  progress_type?: string;
-  data?: Record<string, unknown>;
-  tool_use_id?: string;
-  parent_tool_use_id?: string;
-  // For summary entries
-  summary?: string;
-  leaf_uuid?: string;
-  // For config/mode change entries
-  mode?: string;
-  config_data?: Record<string, unknown>;
-  // Raw data for unknown types
-  [key: string]: unknown;
-}
-
-/** Claude Code session sync event - real-time sync from local file watcher */
-export interface ClaudeSessionSyncEvent {
-  session_id: string;
-  agent_id: string;
-  claude_session_id: string;
-  new_messages: ClaudeSessionEntry[];
-  sync_type: 'incremental' | 'full';
-  total_count: number;
-}
-
 /**
- * Event emitted when a CLI agent's configuration changes.
- * Enables bi-directional sync between CLI tools and Podex UI.
+ * Event emitted when an agent's configuration changes.
+ * Enables sync between agents and Podex UI.
  */
 export interface AgentConfigUpdateEvent {
   session_id: string;
@@ -598,29 +499,27 @@ export interface AgentConfigUpdateEvent {
     thinking_budget?: number;
     context_compacted?: boolean;
   };
-  source: 'cli' | 'user' | 'system';
+  source: 'agent' | 'user' | 'system';
   timestamp: string;
 }
 
 /**
- * Event emitted when workspace status changes (running, standby, error, etc.)
+ * Event emitted when workspace status changes (running, stopped, error, etc.)
  */
 export interface WorkspaceStatusEvent {
   workspace_id: string;
-  status: 'pending' | 'running' | 'standby' | 'stopped' | 'error' | 'offline';
-  standby_at?: string;
+  status: 'pending' | 'running' | 'stopped' | 'error' | 'offline';
   error?: string;
 }
 
 /**
- * Event emitted when workspace is moved to standby due to credit exhaustion
+ * Event emitted when workspace is stopped due to credit exhaustion
  */
 export interface WorkspaceBillingStandbyEvent {
   workspace_id: string;
-  status: 'standby';
+  status: 'stopped';
   reason: 'credit_exhaustion';
   message: string;
-  standby_at: string;
   upgrade_url: string;
   add_credits_url: string;
 }
@@ -653,11 +552,6 @@ export interface SocketEvents {
   // Native Podex agent approval events
   native_approval_request: (data: NativeApprovalRequestEvent) => void;
   native_approval_decision: (data: NativeApprovalDecisionEvent) => void;
-  // Claude Code CLI permission events
-  permission_request: (data: PermissionRequestEvent) => void;
-  permission_decision: (data: PermissionDecisionEvent) => void;
-  agent_mode_update: (data: AgentModeUpdateEvent) => void;
-  agent_auto_mode_switch: (data: AgentAutoModeSwitchEvent) => void;
   // Context window events
   context_usage_update: (data: ContextUsageUpdateEvent) => void;
   compaction_started: (data: CompactionStartedEvent) => void;
@@ -692,14 +586,12 @@ export interface SocketEvents {
   skill_start: (data: SkillStartEvent) => void;
   skill_step: (data: SkillStepEvent) => void;
   skill_complete: (data: SkillCompleteEvent) => void;
-  // CLI agent config sync events
+  // Agent config sync events
   agent_config_update: (data: AgentConfigUpdateEvent) => void;
   // Workspace status events
   workspace_status: (data: WorkspaceStatusEvent) => void;
   // Billing standby event (credit exhaustion)
   workspace_billing_standby: (data: WorkspaceBillingStandbyEvent) => void;
-  // Claude Code session sync (real-time from file watcher)
-  'claude:session:sync': (data: ClaudeSessionSyncEvent) => void;
 }
 
 // Track active session for auto-rejoin on reconnect
@@ -1043,28 +935,6 @@ export function emitNativeApprovalResponse(
     agent_id: agentId,
     approval_id: approvalId,
     approved,
-    add_to_allowlist: addToAllowlist,
-  });
-}
-
-// Claude Code CLI permission response
-export function emitPermissionResponse(
-  sessionId: string,
-  agentId: string,
-  requestId: string,
-  approved: boolean,
-  command: string | null = null,
-  toolName: string | null = null,
-  addToAllowlist: boolean = false
-): void {
-  const sock = getSocket();
-  sock.emit('permission_response', {
-    session_id: sessionId,
-    agent_id: agentId,
-    request_id: requestId,
-    approved,
-    command,
-    tool_name: toolName,
     add_to_allowlist: addToAllowlist,
   });
 }

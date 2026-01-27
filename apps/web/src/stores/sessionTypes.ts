@@ -32,27 +32,7 @@ export type AgentRole =
   | 'security'
   | 'devops'
   | 'documentator'
-  | 'custom'
-  | 'claude-code'
-  | 'openai-codex'
-  | 'gemini-cli';
-
-/** Pending permission request from Claude Code CLI */
-export interface PendingPermission {
-  requestId: string;
-  command: string | null;
-  description: string | null;
-  toolName: string;
-  timestamp: string;
-  attentionId?: string;
-}
-
-/** Info about the currently resumed Claude Code session (synced with backend) */
-export interface ClaudeSessionInfo {
-  claudeSessionId: string;
-  projectPath: string;
-  firstPrompt: string | null;
-}
+  | 'custom';
 
 export interface Agent {
   id: string;
@@ -62,72 +42,36 @@ export interface Agent {
   modelDisplayName?: string; // User-friendly model name from backend
   status: 'idle' | 'active' | 'error';
   color: string;
-  messages: AgentMessage[];
   position?: AgentPosition;
   gridSpan?: GridSpan;
   templateId?: string; // Reference to custom agent template
-  terminalSessionId?: string; // For terminal-integrated agents
-  terminalAgentTypeId?: string; // The type ID of the terminal agent (for restarts)
-  // Claude Code session info (synced with backend for cross-device support)
-  claudeSessionInfo?: ClaudeSessionInfo;
   // Agent mode and command permissions
   mode: AgentMode;
   previousMode?: AgentMode; // For auto-revert tracking when mode is auto-switched
   commandAllowlist?: string[]; // Allowed commands for Auto mode (glob patterns)
   // Extended thinking configuration
   thinkingConfig?: ThinkingConfig;
-  // Pending permission request (Claude Code CLI)
-  pendingPermission?: PendingPermission;
+  // Reference to attached conversation session (can be null if no conversation attached)
+  conversationSessionId: string | null;
 }
 
 // ============================================================================
 // Message Types
 // ============================================================================
 
-/** Entry types from Claude Code session files */
-export type ClaudeEntryType =
-  | 'user'
-  | 'assistant'
-  | 'progress'
-  | 'summary'
-  | 'tool_result'
-  | 'queue-operation'
-  | 'file-history-snapshot'
-  | string; // Allow other types
-
-/** Progress event types from Claude Code */
-export type ProgressType =
-  | 'thinking'
-  | 'hook_progress'
-  | 'api_request'
-  | 'streaming'
-  | 'tool_use'
-  | string;
-
-/** Tool result from Claude Code */
+/** Tool result from agent execution */
 export interface ToolResult {
   tool_use_id: string;
   content: unknown;
   is_error: boolean;
 }
 
-/** Usage stats from Claude API */
+/** Usage stats from LLM API */
 export interface UsageStats {
   input_tokens?: number;
   output_tokens?: number;
   cache_creation_input_tokens?: number;
   cache_read_input_tokens?: number;
-}
-
-/** Progress data from Claude Code */
-export interface ProgressData {
-  type: ProgressType;
-  hookEvent?: string;
-  hookName?: string;
-  command?: string;
-  content?: string;
-  thinking?: string;
-  [key: string]: unknown;
 }
 
 export interface AgentMessage {
@@ -137,27 +81,29 @@ export interface AgentMessage {
   thinking?: string; // Agent's thinking/reasoning process (collapsible)
   timestamp: Date;
   toolCalls?: ToolCall[];
-  // Extended fields for full Claude Code sync
-  type?: ClaudeEntryType;
   toolResults?: ToolResult[];
   stopReason?: string;
   usage?: UsageStats;
   model?: string;
-  isSidechain?: boolean;
-  parentUuid?: string;
-  // Progress-specific fields
-  progressType?: ProgressType;
-  progressData?: ProgressData;
-  toolUseId?: string;
-  parentToolUseId?: string;
-  // Summary-specific fields
-  summary?: string;
-  leafUuid?: string;
-  // Config/mode change fields
-  mode?: string;
-  configData?: Record<string, unknown>;
-  // Raw data for unknown types
-  rawData?: Record<string, unknown>;
+}
+
+// ============================================================================
+// Conversation Session Types
+// ============================================================================
+
+/**
+ * A portable conversation session that can be attached to any agent card.
+ * Sessions hold the message history and can be moved between agents.
+ */
+export interface ConversationSession {
+  id: string;
+  name: string;
+  messages: AgentMessage[];
+  attachedToAgentId: string | null;
+  messageCount: number;
+  lastMessageAt: string | null; // ISO timestamp
+  createdAt: string; // ISO timestamp
+  updatedAt: string; // ISO timestamp
 }
 
 export interface ToolCall {
@@ -205,13 +151,8 @@ export interface FilePreview {
 // Session Types
 // ============================================================================
 
-export interface StandbySettings {
-  timeoutMinutes: number | null; // null = Never
-  source: 'session' | 'user_default';
-}
-
 export type ViewMode = 'grid' | 'focus' | 'freeform';
-export type WorkspaceStatus = 'pending' | 'running' | 'standby' | 'stopped' | 'error' | 'offline';
+export type WorkspaceStatus = 'pending' | 'running' | 'stopped' | 'error' | 'offline';
 
 export interface Session {
   id: string;
@@ -221,6 +162,7 @@ export interface Session {
   branch: string;
   gitUrl?: string | null;
   agents: Agent[];
+  conversationSessions: ConversationSession[]; // Portable conversation pool
   filePreviews: FilePreview[];
   activeAgentId: string | null;
   viewMode: ViewMode;
@@ -228,8 +170,6 @@ export interface Session {
   workspaceStatus: WorkspaceStatus;
   workspaceStatusChecking?: boolean;
   workspaceError?: string | null; // Error message when workspace is unavailable (503/500)
-  standbyAt: string | null;
-  standbySettings: StandbySettings | null;
   // Consolidated editor grid card
   editorGridCardId: string | null;
   editorGridSpan?: GridSpan;
@@ -252,8 +192,8 @@ export interface Session {
 // Constants
 // ============================================================================
 
-/** Maximum number of messages to keep per agent to prevent localStorage overflow */
-export const MAX_MESSAGES_PER_AGENT = 100;
+/** Maximum number of messages to keep per conversation to prevent localStorage overflow */
+export const MAX_MESSAGES_PER_CONVERSATION = 100;
 
 /** Maximum number of recent files to keep */
 export const MAX_RECENT_FILES = 50;
@@ -261,6 +201,63 @@ export const MAX_RECENT_FILES = 50;
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+/**
+ * Derive a conversation session name from the first message.
+ * Truncates at word boundary if too long.
+ */
+export function deriveSessionName(firstMessage: string, maxLength: number = 40): string {
+  const cleaned = firstMessage.trim().replace(/\n/g, ' ');
+  if (cleaned.length <= maxLength) return cleaned;
+
+  const truncated = cleaned.slice(0, maxLength);
+  const lastSpace = truncated.lastIndexOf(' ');
+
+  if (lastSpace > maxLength / 2) {
+    return truncated.slice(0, lastSpace) + '...';
+  }
+  return truncated + '...';
+}
+
+/**
+ * Get the display title for an agent card.
+ * Format: "Role: Session Name" or just "Role" if no session attached.
+ */
+export function getAgentDisplayTitle(
+  agent: Agent,
+  conversationSession: ConversationSession | null
+): string {
+  const roleDisplay = agent.role.charAt(0).toUpperCase() + agent.role.slice(1);
+
+  if (!conversationSession) {
+    return roleDisplay;
+  }
+
+  return `${roleDisplay}: ${conversationSession.name}`;
+}
+
+/**
+ * Format a relative time string (e.g., "2h ago", "3d ago").
+ */
+export function formatRelativeTime(dateString: string | null): string {
+  if (!dateString) return '';
+
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSeconds = Math.floor(diffMs / 1000);
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  const diffHours = Math.floor(diffMinutes / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffMinutes < 1) return 'just now';
+  if (diffMinutes < 60) return `${diffMinutes}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+
+  // For older dates, show the date
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
 
 /** Get file extension language for syntax highlighting */
 export function getLanguageFromPath(path: string): string {

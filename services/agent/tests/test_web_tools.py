@@ -39,15 +39,6 @@ class TestWebBrowser:
         assert browser is not None
 
 
-class TestTerminalToolsModule:
-    """Test terminal tools module."""
-
-    def test_module_exists(self):
-        """Test terminal tools module can be imported."""
-        from src.tools import terminal_tools
-        assert terminal_tools is not None
-
-
 class TestRemoteToolsModule:
     """Test remote tools module."""
 
@@ -258,22 +249,3 @@ class TestDeployModules:
         """Test e2e module can be imported."""
         from src.deploy import e2e
         assert e2e is not None
-
-
-class TestExecutorsModules:
-    """Test executors modules."""
-
-    def test_claude_code_executor_module_exists(self):
-        """Test claude code executor module can be imported."""
-        from src.executors import claude_code_executor
-        assert claude_code_executor is not None
-
-    def test_gemini_cli_executor_module_exists(self):
-        """Test gemini cli executor module can be imported."""
-        from src.executors import gemini_cli_executor
-        assert gemini_cli_executor is not None
-
-    def test_openai_codex_executor_module_exists(self):
-        """Test openai codex executor module can be imported."""
-        from src.executors import openai_codex_executor
-        assert openai_codex_executor is not None

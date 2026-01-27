@@ -18,7 +18,7 @@ import { useUIStore } from '@/stores/ui';
 import { useSessionStore } from '@/stores/session';
 import { useEditorStore } from '@/stores/editor';
 import { cn } from '@/lib/utils';
-import { getLanguageFromPath } from './CodeEditor';
+import { getLanguageFromPath } from '@/lib/vscode/languageUtils';
 import { listFiles, type FileNode } from '@/lib/api';
 
 interface FlatFileNode {

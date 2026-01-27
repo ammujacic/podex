@@ -26,7 +26,6 @@ import type {
   AgentStreamEndEvent,
   AgentConfigUpdateEvent,
   WorkspaceStatusEvent,
-  WorkspaceBillingStandbyEvent,
   PermissionRequestEvent,
   NativeApprovalRequestEvent,
 } from '@/lib/socket';
@@ -219,10 +218,6 @@ describe('useAgentSocket', () => {
       );
       expect(socketLib.onSocketEvent).toHaveBeenCalledWith(
         'workspace_status',
-        expect.any(Function)
-      );
-      expect(socketLib.onSocketEvent).toHaveBeenCalledWith(
-        'workspace_billing_standby',
         expect.any(Function)
       );
       expect(socketLib.onSocketEvent).toHaveBeenCalledWith(
@@ -983,32 +978,6 @@ describe('useAgentSocket', () => {
   // ========================================
 
   describe('Workspace Status Events', () => {
-    it('should handle workspace standby status', async () => {
-      renderHook(() => useAgentSocket({ sessionId, userId, authToken }));
-
-      const statusEvent: WorkspaceStatusEvent = {
-        workspace_id: 'ws-001',
-        status: 'standby',
-        standby_at: new Date().toISOString(),
-      };
-
-      triggerSocketEvent('workspace_status', statusEvent);
-
-      await waitFor(() => {
-        expect(mockSessionStore.setWorkspaceStatus).toHaveBeenCalledWith(
-          sessionId,
-          'standby',
-          expect.any(String)
-        );
-        expect(toast.info).toHaveBeenCalledWith(
-          'Workspace moved to standby',
-          expect.objectContaining({
-            description: expect.stringContaining('paused due to inactivity'),
-          })
-        );
-      });
-    });
-
     it('should handle workspace error status', async () => {
       renderHook(() => useAgentSocket({ sessionId, userId, authToken }));
 
@@ -1021,7 +990,7 @@ describe('useAgentSocket', () => {
       triggerSocketEvent('workspace_status', statusEvent);
 
       await waitFor(() => {
-        expect(mockSessionStore.setWorkspaceStatus).toHaveBeenCalledWith(sessionId, 'error', null);
+        expect(mockSessionStore.setWorkspaceStatus).toHaveBeenCalledWith(sessionId, 'error');
         expect(toast.error).toHaveBeenCalledWith(
           'Workspace error',
           expect.objectContaining({
@@ -1042,55 +1011,22 @@ describe('useAgentSocket', () => {
       triggerSocketEvent('workspace_status', statusEvent);
 
       await waitFor(() => {
-        expect(mockSessionStore.setWorkspaceStatus).toHaveBeenCalledWith(
-          sessionId,
-          'running',
-          null
-        );
+        expect(mockSessionStore.setWorkspaceStatus).toHaveBeenCalledWith(sessionId, 'running');
       });
     });
-  });
 
-  // ========================================
-  // Billing Standby Tests
-  // ========================================
-
-  describe('Billing Standby Events', () => {
-    it('should handle credit exhaustion', async () => {
+    it('should handle workspace stopped status', async () => {
       renderHook(() => useAgentSocket({ sessionId, userId, authToken }));
 
-      const billingEvent: WorkspaceBillingStandbyEvent = {
+      const statusEvent: WorkspaceStatusEvent = {
         workspace_id: 'ws-001',
-        status: 'standby',
-        reason: 'credit_exhaustion',
-        message: 'Your credits have been exhausted',
-        standby_at: new Date().toISOString(),
-        upgrade_url: '/upgrade',
-        add_credits_url: '/credits',
+        status: 'stopped',
       };
 
-      triggerSocketEvent('workspace_billing_standby', billingEvent);
+      triggerSocketEvent('workspace_status', statusEvent);
 
       await waitFor(() => {
-        expect(mockSessionStore.setWorkspaceStatus).toHaveBeenCalledWith(
-          sessionId,
-          'standby',
-          expect.any(String)
-        );
-        expect(mockBillingStore.showCreditExhaustedModal).toHaveBeenCalledWith(
-          expect.objectContaining({
-            error_code: 'CREDITS_EXHAUSTED',
-            message: 'Your credits have been exhausted',
-            upgrade_url: '/upgrade',
-            add_credits_url: '/credits',
-          })
-        );
-        expect(toast.warning).toHaveBeenCalledWith(
-          'Workspace paused - credits exhausted',
-          expect.objectContaining({
-            description: 'Your credits have been exhausted',
-          })
-        );
+        expect(mockSessionStore.setWorkspaceStatus).toHaveBeenCalledWith(sessionId, 'stopped');
       });
     });
   });

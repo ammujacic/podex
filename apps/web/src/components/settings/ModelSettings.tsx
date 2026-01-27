@@ -911,7 +911,7 @@ export function ModelSettings({ className }: ModelSettingsProps) {
       id: m.model_id,
       provider: 'podex',
       displayName: m.display_name,
-      shortName: m.display_name.replace('Claude ', '').replace('Llama ', ''),
+      shortName: m.display_name,
       tier:
         m.cost_tier === 'premium' || m.cost_tier === 'high'
           ? 'flagship'
@@ -1341,7 +1341,7 @@ export function ModelSettings({ className }: ModelSettingsProps) {
                           <optgroup label="Podex Native">
                             {platformModels.map((m) => (
                               <option key={m.model_id} value={m.model_id}>
-                                {m.display_name.replace('Claude ', '').replace('Llama ', '')}
+                                {m.display_name}
                               </option>
                             ))}
                           </optgroup>

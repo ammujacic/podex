@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { AlertTriangle, RefreshCw, RotateCcw, X, Loader2 } from 'lucide-react';
 import { useSessionStore } from '@/stores/session';
-import { resumeWorkspace } from '@/lib/api';
+import { startWorkspace } from '@/lib/api';
 
 interface WorkspaceErrorBannerProps {
   sessionId: string;
@@ -45,10 +45,10 @@ export function WorkspaceErrorBanner({ sessionId, onRetry }: WorkspaceErrorBanne
     setRecreateError(null);
 
     try {
-      const result = await resumeWorkspace(workspaceId);
+      const result = await startWorkspace(workspaceId);
       // Success - clear error and update status
       setWorkspaceError(sessionId, null);
-      setWorkspaceStatus(sessionId, result.status as 'running' | 'pending', null);
+      setWorkspaceStatus(sessionId, result.status as 'running' | 'pending');
       // Trigger retry to reload data
       onRetry?.();
     } catch (err) {

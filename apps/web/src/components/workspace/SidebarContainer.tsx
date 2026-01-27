@@ -19,7 +19,6 @@ import {
   BarChart3,
   Zap,
   Activity,
-  MessageSquare,
 } from 'lucide-react';
 
 // Custom Sentry icon component to match lucide-react API
@@ -55,7 +54,6 @@ import { UsageSidebarPanel } from './UsageSidebarPanel';
 import { SentryPanel } from './SentryPanel';
 import { SkillsPanel } from './SkillsPanel';
 import ProjectHealth from './ProjectHealth';
-import { ClaudeSessionPicker } from './ClaudeSessionPicker';
 
 interface SidebarContainerProps {
   side: SidebarSide;
@@ -83,7 +81,6 @@ const panelConfig: Record<
   sentry: { icon: SentryIcon, label: 'Sentry MCP' },
   skills: { icon: Zap, label: 'Skills' },
   health: { icon: Activity, label: 'Health' },
-  claude: { icon: MessageSquare, label: 'Claude Sessions' },
 };
 
 // Left sidebar: traditional coding tools
@@ -92,7 +89,6 @@ const leftPanelIds: PanelId[] = ['files', 'search', 'git', 'github', 'problems',
 // Right sidebar: AI-related and utility panels
 const rightPanelIds: PanelId[] = [
   'agents',
-  'claude',
   'skills',
   'mcp',
   'sentry',
@@ -206,8 +202,6 @@ function SidebarPanel({ panelId, sessionId, localPodId, mountPath }: SidebarPane
         return <SkillsPanel sessionId={sessionId} />;
       case 'health':
         return <ProjectHealth sessionId={sessionId} compact />;
-      case 'claude':
-        return <ClaudeSessionPicker sessionId={sessionId} />;
       default:
         return null;
     }

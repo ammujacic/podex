@@ -3,7 +3,7 @@
 All models are organized into domain-specific modules:
 - base.py: Base class and utilities
 - core.py: User, Session, Agent, Message, Workspace
-- agent_config.py: AgentTemplate, TerminalIntegratedAgentType, Subagent, AgentWorktree
+- agent_config.py: AgentTemplate, Subagent, AgentWorktree, AgentRoleConfig, AgentTool
 - billing.py: SubscriptionPlan, UserSubscription, UsageRecord, Invoice, etc.
 - checkpoints.py: FileCheckpoint, CheckpointFile, PendingChangeSet, ChangeSetFile
 - user_preferences.py: UserConfig, UserHook, CustomCommand
@@ -24,10 +24,7 @@ from .agent_config import (
     AgentTemplate,
     AgentTool,
     AgentWorktree,
-    ExternalAgentEnvProfile,
     Subagent,
-    TerminalAgentSession,
-    TerminalIntegratedAgentType,
 )
 from .base import Base, _generate_uuid
 
@@ -55,13 +52,6 @@ from .checkpoints import (
     PendingChangeSet,
 )
 
-# CLI sync models
-from .cli_sync import (
-    CLISyncConflict,
-    CLISyncLog,
-    CLISyncStatus,
-)
-
 # Context management models
 from .context import (
     CompactionLog,
@@ -69,6 +59,12 @@ from .context import (
     ConversationSummary,
     Memory,
     UserSkill,
+)
+
+# Conversation models (decoupled from agents)
+from .conversation import (
+    ConversationMessage,
+    ConversationSession,
 )
 
 # Core models
@@ -164,6 +160,7 @@ from .user_preferences import (
     CustomCommand,
     UserConfig,
     UserHook,
+    UserOAuthToken,
 )
 
 __all__ = [
@@ -178,13 +175,12 @@ __all__ = [
     "AuditLog",
     "Base",
     "BillingEvent",
-    "CLISyncConflict",
-    "CLISyncLog",
-    "CLISyncStatus",
     "ChangeSetFile",
     "CheckpointFile",
     "CompactionLog",
     "ContextCompactionSettings",
+    "ConversationMessage",
+    "ConversationSession",
     "ConversationSummary",
     "CostAlert",
     "CreditBalance",
@@ -195,7 +191,6 @@ __all__ = [
     "DataRetentionPolicy",
     "DefaultMCPServer",
     "ExecutionPlan",
-    "ExternalAgentEnvProfile",
     "FileChange",
     "FileCheckpoint",
     "GitHubIntegration",
@@ -239,8 +234,6 @@ __all__ = [
     "SubscriptionPlan",
     "SystemSkill",
     "TaskProgress",
-    "TerminalAgentSession",
-    "TerminalIntegratedAgentType",
     "UsageQuota",
     "UsageRecord",
     "User",
@@ -250,6 +243,7 @@ __all__ = [
     "UserCorrection",
     "UserExtension",
     "UserHook",
+    "UserOAuthToken",
     "UserSkill",
     "UserSubscription",
     "WikiDocument",

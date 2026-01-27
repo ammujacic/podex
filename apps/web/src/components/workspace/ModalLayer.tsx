@@ -5,8 +5,6 @@ import { useUIStore } from '@/stores/ui';
 import { useSessionStore } from '@/stores/session';
 import {
   CreateAgentModal,
-  PauseSessionModal,
-  StandbySettingsModal,
   MCPSettingsModal,
   WorkspaceScalingModal,
   ExtensionMarketplaceModal,
@@ -49,12 +47,6 @@ export function ModalLayer({ sessionId }: ModalLayerProps) {
     <>
       {activeModal === 'create-agent' && (
         <CreateAgentModal sessionId={sessionId} onClose={closeModal} />
-      )}
-      {activeModal === 'pause-session' && workspaceId && (
-        <PauseSessionModal sessionId={sessionId} workspaceId={workspaceId} onClose={closeModal} />
-      )}
-      {activeModal === 'standby-settings' && (
-        <StandbySettingsModal sessionId={sessionId} onClose={closeModal} />
       )}
       {activeModal === 'mcp-settings' && <MCPSettingsModal onClose={closeModal} />}
       {activeModal === 'extensions-marketplace' && (

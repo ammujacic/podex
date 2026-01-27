@@ -203,7 +203,7 @@ export function EditorToolbar({
         setPlatformModels(
           platformModelsList.map((m) => ({
             id: m.model_id,
-            displayName: m.display_name.replace('Claude ', '').replace('Llama ', ''),
+            displayName: m.display_name,
           }))
         );
 

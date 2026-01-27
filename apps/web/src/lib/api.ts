@@ -633,29 +633,6 @@ export async function handleGitHubLinkCallback(
   return api.post<GitHubLinkResponse>('/api/oauth/github/link-callback', { code, state });
 }
 
-// Terminal Agents methods
-export interface CreateTerminalAgentRequest {
-  workspace_id: string;
-  agent_type_id: string;
-}
-
-export interface TerminalAgentSessionResponse {
-  id: string;
-  user_id: string;
-  workspace_id: string;
-  agent_type_id: string;
-  env_profile_id: string | null;
-  status: string;
-  created_at: string;
-  last_heartbeat_at: string;
-}
-
-export async function createTerminalAgent(
-  data: CreateTerminalAgentRequest
-): Promise<TerminalAgentSessionResponse> {
-  return api.post<TerminalAgentSessionResponse>('/api/v1/terminal-agents', data);
-}
-
 // Marketplace methods
 
 // Skills methods
@@ -793,10 +770,7 @@ export interface AgentCreateRequest {
     | 'security'
     | 'devops'
     | 'documentator'
-    | 'custom'
-    | 'claude-code'
-    | 'openai-codex'
-    | 'gemini-cli';
+    | 'custom';
   model?: string; // Optional - uses role default from platform settings if not provided
   config?: Record<string, unknown>;
   template_id?: string; // Reference to custom agent template
@@ -813,6 +787,7 @@ export interface AgentResponse {
   mode?: 'plan' | 'ask' | 'auto' | 'sovereign';
   config?: Record<string, unknown>;
   template_id?: string | null;
+  conversation_session_id?: string | null; // Reference to attached conversation session
   created_at: string;
 }
 
@@ -1492,26 +1467,16 @@ export async function deleteSession(sessionId: string): Promise<void> {
   await api.delete(`/api/sessions/${sessionId}`);
 }
 
-// ==================== Workspace Standby ====================
+// ==================== Workspace Status ====================
 
 export interface WorkspaceStatusResponse {
   id: string;
-  status: 'pending' | 'running' | 'standby' | 'stopped' | 'error';
-  standby_at: string | null;
+  status: 'pending' | 'running' | 'stopped' | 'error';
   last_activity: string | null;
 }
 
-export interface StandbySettingsResponse {
-  timeout_minutes: number | null; // null = Never
-  source: 'session' | 'user_default';
-}
-
-export async function pauseWorkspace(workspaceId: string): Promise<WorkspaceStatusResponse> {
-  return api.post<WorkspaceStatusResponse>(`/api/workspaces/${workspaceId}/pause`, {});
-}
-
-export async function resumeWorkspace(workspaceId: string): Promise<WorkspaceStatusResponse> {
-  return api.post<WorkspaceStatusResponse>(`/api/workspaces/${workspaceId}/resume`, {});
+export async function startWorkspace(workspaceId: string): Promise<WorkspaceStatusResponse> {
+  return api.post<WorkspaceStatusResponse>(`/api/workspaces/${workspaceId}/start`, {});
 }
 
 export async function getWorkspaceStatus(workspaceId: string): Promise<WorkspaceStatusResponse> {
@@ -1533,23 +1498,6 @@ export async function scaleWorkspace(
   return api.post<WorkspaceScaleResponse>(`/api/sessions/${sessionId}/scale-workspace`, {
     new_tier: newTier,
   });
-}
-
-export async function getStandbySettings(sessionId: string): Promise<StandbySettingsResponse> {
-  return api.get<StandbySettingsResponse>(`/api/sessions/${sessionId}/standby-settings`);
-}
-
-export async function updateStandbySettings(
-  sessionId: string,
-  timeoutMinutes: number | null
-): Promise<StandbySettingsResponse> {
-  return api.patch<StandbySettingsResponse>(`/api/sessions/${sessionId}/standby-settings`, {
-    timeout_minutes: timeoutMinutes,
-  });
-}
-
-export async function clearStandbySettings(sessionId: string): Promise<StandbySettingsResponse> {
-  return api.delete(`/api/sessions/${sessionId}/standby-settings`);
 }
 
 // ==================== Git ====================
@@ -5648,50 +5596,6 @@ export async function testLLMProvider(
 }
 
 // ============================================================================
-// Terminal Agent Operations
-// ============================================================================
-
-export interface TerminalAgentSession {
-  id: string;
-  user_id: string;
-  workspace_id: string;
-  agent_type_id: string;
-  env_profile_id: string | null;
-  status: string;
-  created_at: string;
-  last_heartbeat_at: string;
-  // Claude Code session info (for cross-device sync)
-  claude_session_id: string | null;
-  claude_project_path: string | null;
-  claude_first_prompt: string | null;
-}
-
-/**
- * Get a terminal agent session by ID.
- * Returns null if the session doesn't exist.
- */
-export async function getTerminalAgentSession(
-  terminalSessionId: string
-): Promise<TerminalAgentSession | null> {
-  try {
-    return await api.get<TerminalAgentSession>(`/api/v1/terminal-agents/${terminalSessionId}`);
-  } catch (error) {
-    // Return null if session not found (404)
-    if (error instanceof Error && error.message.includes('404')) {
-      return null;
-    }
-    throw error;
-  }
-}
-
-/**
- * Delete a terminal agent by session ID.
- */
-export async function deleteTerminalAgent(terminalSessionId: string): Promise<void> {
-  await api.delete(`/api/v1/terminal-agents/${terminalSessionId}`);
-}
-
-// ============================================================================
 // Workspace Search & Symbols
 // ============================================================================
 
@@ -6179,259 +6083,4 @@ export async function getProductivitySummary(days: number = 30): Promise<Product
  */
 export async function getProductivityTrends(days: number = 30): Promise<ProductivityTrends> {
   return api.get<ProductivityTrends>(`/api/productivity/trends?days=${days}`);
-}
-
-// ============== Claude Code Sessions ==============
-
-export interface ClaudeProject {
-  path: string;
-  encoded_path: string;
-  session_count: number;
-  last_modified: string;
-}
-
-export interface ClaudeProjectsResponse {
-  projects: ClaudeProject[];
-  total: number;
-}
-
-export interface ClaudeSessionSummary {
-  session_id: string;
-  first_prompt: string;
-  message_count: number;
-  created_at: string;
-  modified_at: string;
-  git_branch: string;
-  project_path: string;
-  is_sidechain: boolean;
-  file_size_bytes: number;
-}
-
-export interface ClaudeSessionsResponse {
-  sessions: ClaudeSessionSummary[];
-  total: number;
-  project_path: string;
-}
-
-export interface ClaudeMessage {
-  uuid: string;
-  parent_uuid: string | null;
-  type: string;
-  role?: string;
-  content: string;
-  thinking?: string | null; // Extended thinking content
-  timestamp: string | null;
-  model: string | null;
-  tool_calls: Array<{ id: string; name: string; input: unknown }> | null;
-  tool_results?: Array<{ tool_use_id: string; content: unknown; is_error: boolean }> | null;
-  stop_reason?: string | null;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    cache_read_input_tokens?: number;
-  } | null;
-  is_sidechain?: boolean;
-  // Progress-specific fields
-  progress_type?: string;
-  data?: Record<string, unknown>;
-  tool_use_id?: string;
-  parent_tool_use_id?: string;
-  // Summary-specific fields
-  summary?: string;
-  leaf_uuid?: string;
-  // Config/mode change fields
-  mode?: string;
-  config_data?: Record<string, unknown>;
-  // Allow additional fields for unknown entry types
-  [key: string]: unknown;
-}
-
-export interface ClaudeSessionDetail {
-  session_id: string;
-  first_prompt: string;
-  message_count: number;
-  created_at: string;
-  modified_at: string;
-  git_branch: string;
-  project_path: string;
-  is_sidechain: boolean;
-  messages: ClaudeMessage[];
-}
-
-export interface ClaudeMessagesResponse {
-  messages: ClaudeMessage[];
-  total: number;
-  session_id: string;
-}
-
-export interface ClaudeSyncRequest {
-  session_id: string;
-  project_path: string;
-  podex_session_id?: string;
-  agent_name?: string;
-}
-
-export interface ClaudeSyncResponse {
-  podex_session_id: string;
-  agent_id: string;
-  messages_synced: number;
-  claude_session_id: string;
-}
-
-export interface ClaudeResumeRequest {
-  session_id: string;
-  project_path: string;
-  workspace_id?: string;
-  first_prompt?: string; // For display purposes, enables cross-device sync
-}
-
-export interface ClaudeResumeResponse {
-  terminal_session_id: string;
-  claude_session_id: string;
-  workspace_id: string;
-  working_dir: string;
-  // Claude session info for cross-device sync
-  claude_project_path: string;
-  claude_first_prompt?: string;
-}
-
-/**
- * List all local projects with Claude Code sessions.
- * Requires a connected local pod.
- */
-export async function listClaudeProjects(): Promise<ClaudeProjectsResponse> {
-  return api.get<ClaudeProjectsResponse>('/api/claude-sessions/projects');
-}
-
-/**
- * List Claude Code sessions for a project.
- */
-export async function listClaudeSessions(
-  projectPath: string,
-  options?: {
-    limit?: number;
-    offset?: number;
-    sortBy?: 'created' | 'modified' | 'message_count';
-    sortOrder?: 'asc' | 'desc';
-  }
-): Promise<ClaudeSessionsResponse> {
-  const params = new URLSearchParams({
-    project_path: projectPath,
-    ...(options?.limit && { limit: String(options.limit) }),
-    ...(options?.offset && { offset: String(options.offset) }),
-    ...(options?.sortBy && { sort_by: options.sortBy }),
-    ...(options?.sortOrder && { sort_order: options.sortOrder }),
-  });
-  return api.get<ClaudeSessionsResponse>(`/api/claude-sessions/sessions?${params}`);
-}
-
-/**
- * Get details of a specific Claude Code session.
- */
-export async function getClaudeSession(
-  sessionId: string,
-  projectPath: string,
-  options?: {
-    includeMessages?: boolean;
-    messageLimit?: number;
-  }
-): Promise<ClaudeSessionDetail> {
-  const params = new URLSearchParams({
-    project_path: projectPath,
-    ...(options?.includeMessages !== undefined && {
-      include_messages: String(options.includeMessages),
-    }),
-    ...(options?.messageLimit && { message_limit: String(options.messageLimit) }),
-  });
-  return api.get<ClaudeSessionDetail>(`/api/claude-sessions/sessions/${sessionId}?${params}`);
-}
-
-/**
- * Get messages from a Claude Code session.
- *
- * For efficient loading, use `reverse: true` with pagination to implement
- * bottom-up loading - fetch latest messages first, then progressively
- * load older messages in batches.
- *
- * @param sessionId - Claude session ID
- * @param projectPath - Project path
- * @param options - Pagination and ordering options
- * @param options.limit - Maximum messages to return (default: 100, max: 500)
- * @param options.offset - Number of messages to skip (default: 0)
- * @param options.reverse - If true, return newest messages first (default: false)
- */
-export async function getClaudeSessionMessages(
-  sessionId: string,
-  projectPath: string,
-  options?: { limit?: number; offset?: number; reverse?: boolean }
-): Promise<ClaudeMessagesResponse> {
-  const params = new URLSearchParams({
-    project_path: projectPath,
-    ...(options?.limit && { limit: String(options.limit) }),
-    ...(options?.offset && { offset: String(options.offset) }),
-    ...(options?.reverse && { reverse: String(options.reverse) }),
-  });
-  return api.get<ClaudeMessagesResponse>(
-    `/api/claude-sessions/sessions/${sessionId}/messages?${params}`
-  );
-}
-
-/**
- * Sync a Claude Code session to Podex database.
- */
-export async function syncClaudeSession(request: ClaudeSyncRequest): Promise<ClaudeSyncResponse> {
-  return api.post<ClaudeSyncResponse>('/api/claude-sessions/sync', request);
-}
-
-/**
- * Resume a Claude Code session in a terminal.
- */
-export async function resumeClaudeSession(
-  request: ClaudeResumeRequest
-): Promise<ClaudeResumeResponse> {
-  return api.post<ClaudeResumeResponse>('/api/claude-sessions/resume', request);
-}
-
-/** Request to register a Claude session for real-time file watching */
-export interface ClaudeWatchRequest {
-  claude_session_id: string;
-  project_path: string;
-  podex_session_id: string;
-  podex_agent_id: string;
-  last_synced_uuid?: string;
-}
-
-/** Response from watch registration */
-export interface ClaudeWatchResponse {
-  status: 'registered' | 'error';
-  claude_session_id: string;
-  podex_session_id: string;
-  podex_agent_id: string;
-  error?: string;
-}
-
-/**
- * Register a Claude Code session for real-time file watching.
- * The local pod's file watcher will monitor the session file and push
- * new messages to Podex in real-time.
- */
-export async function watchClaudeSession(
-  request: ClaudeWatchRequest
-): Promise<ClaudeWatchResponse> {
-  return api.post<ClaudeWatchResponse>('/api/claude-sessions/watch', request);
-}
-
-/**
- * Unregister a Claude Code session from real-time file watching.
- */
-export async function unwatchClaudeSession(
-  claudeSessionId: string,
-  projectPath: string,
-  podexAgentId?: string
-): Promise<{ status: string }> {
-  return api.post<{ status: string }>('/api/claude-sessions/unwatch', {
-    claude_session_id: claudeSessionId,
-    project_path: projectPath,
-    podex_agent_id: podexAgentId,
-  });
 }

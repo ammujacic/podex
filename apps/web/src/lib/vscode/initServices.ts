@@ -3,31 +3,24 @@
  *
  * This module sets up the necessary services from @codingame/monaco-vscode-api
  * to enable full VS Code API compatibility in the browser.
+ *
+ * IMPORTANT: All Monaco VS Code extension imports are done dynamically inside
+ * initializeVSCodeServices() to avoid SSR issues. These packages access browser
+ * APIs like localStorage at import time, which causes warnings during Next.js
+ * static page generation.
  */
 
-import { initialize as initializeMonacoService } from '@codingame/monaco-vscode-api/services';
-import getTextmateServiceOverride from '@codingame/monaco-vscode-textmate-service-override';
-import getThemeServiceOverride from '@codingame/monaco-vscode-theme-service-override';
+let servicesInitialized = false;
+let initializationPromise: Promise<void> | null = null;
+let themeRegistered = false;
 
-// Theme extension (provides color themes)
-import '@codingame/monaco-vscode-theme-defaults-default-extension';
+/**
+ * Configure Monaco environment to suppress worker warnings.
+ * Monaco will fall back to main thread execution, which is fine for our use case.
+ */
+function configureMonacoEnvironment() {
+  if (typeof window === 'undefined') return;
 
-// Language grammar extensions (provide syntax highlighting via TextMate grammars)
-import '@codingame/monaco-vscode-typescript-basics-default-extension'; // TypeScript & JavaScript
-import '@codingame/monaco-vscode-json-default-extension'; // JSON & JSONC
-import '@codingame/monaco-vscode-css-default-extension'; // CSS, SCSS, Less
-import '@codingame/monaco-vscode-html-default-extension'; // HTML
-import '@codingame/monaco-vscode-markdown-basics-default-extension'; // Markdown
-import '@codingame/monaco-vscode-python-default-extension'; // Python
-import '@codingame/monaco-vscode-yaml-default-extension'; // YAML
-import '@codingame/monaco-vscode-go-default-extension'; // Go
-import '@codingame/monaco-vscode-rust-default-extension'; // Rust
-import '@codingame/monaco-vscode-xml-default-extension'; // XML
-import '@codingame/monaco-vscode-java-default-extension'; // Java
-
-// Configure Monaco environment to suppress worker warnings
-// Monaco will fall back to main thread execution, which is fine for our use case
-if (typeof window !== 'undefined') {
   type MonacoEnv = {
     getWorker: (_workerId: string, _label: string) => Worker;
   };
@@ -45,53 +38,77 @@ if (typeof window !== 'undefined') {
   };
 }
 
-let servicesInitialized = false;
-let initializationPromise: Promise<void> | null = null;
-let themeRegistered = false;
-
 /**
- * Apply Terminal Noir theme customizations via CSS.
- * Since VS Code Monaco API uses a different theming system,
- * we apply customizations through CSS variables and overrides.
+ * Apply Terminal Noir theme via CSS overrides.
+ * Since @codingame/monaco-vscode-api uses VS Code's theming service (not Monaco's
+ * standalone defineTheme API), we apply customizations through CSS.
+ *
+ * The key insight: Monaco with TextMate grammars uses inline styles for token colors,
+ * so we need to use CSS custom properties that VS Code respects, plus aggressive
+ * overrides for the default foreground color.
  */
 function applyTerminalNoirTheme() {
   if (themeRegistered) return;
 
   try {
-    // Inject CSS variables for Monaco editor theming
     const style = document.createElement('style');
     style.id = 'terminal-noir-theme';
     style.textContent = `
-      /* Terminal Noir Theme for Monaco Editor */
-      .monaco-editor {
-        --vscode-editor-background: #0d0d12;
-        --vscode-editor-foreground: #ffffff;
-        --vscode-editorLineNumber-foreground: #8B5CF6;
-        --vscode-editorLineNumber-activeForeground: #a78bfa;
-        --vscode-editorCursor-foreground: #8B5CF6;
-        --vscode-editor-lineHighlightBackground: #1a1a21;
-        --vscode-editor-selectionBackground: rgba(139, 92, 246, 0.3);
-        --vscode-editor-inactiveSelectionBackground: rgba(139, 92, 246, 0.15);
-        --vscode-editor-selectionHighlightBackground: rgba(139, 92, 246, 0.2);
-        --vscode-editorIndentGuide-background: #1e1e26;
-        --vscode-editorIndentGuide-activeBackground: #2a2a35;
+      /* Terminal Noir Theme - CSS Overrides for Monaco + VS Code API */
+
+      /* Editor background */
+      .monaco-editor,
+      .monaco-editor .overflow-guard,
+      .monaco-editor-background {
+        background-color: #0d0d12 !important;
       }
 
-      /* Syntax token colors */
-      .monaco-editor .mtk1 { color: #ffffff !important; } /* default */
-      .monaco-editor .mtk2 { color: #546e7a !important; } /* comment */
-      .monaco-editor .mtk3 { color: #c792ea !important; } /* keyword */
-      .monaco-editor .mtk4 { color: #c3e88d !important; } /* string */
-      .monaco-editor .mtk5 { color: #ffd700 !important; } /* number */
-      .monaco-editor .mtk6 { color: #82aaff !important; } /* function */
-      .monaco-editor .mtk7 { color: #ffcb6b !important; } /* type */
-      .monaco-editor .mtk8 { color: #00e5ff !important; } /* constant */
-      .monaco-editor .mtk9 { color: #89ddff !important; } /* operator */
-      .monaco-editor .mtk10 { color: #b4b4c8 !important; } /* delimiter */
+      /* Set default foreground via CSS variable - doesn't override token colors */
+      .monaco-editor {
+        --vscode-editor-foreground: #f4f4f5;
+      }
 
-      /* Line numbers with purple accent */
-      .monaco-editor .line-numbers { color: #8B5CF6 !important; }
-      .monaco-editor .current-line-number { color: #a78bfa !important; }
+      /* Line numbers - indigo theme */
+      .monaco-editor .line-numbers { color: #818cf8 !important; }
+      .monaco-editor .current-line-number { color: #c7d2fe !important; font-weight: 600; }
+      .monaco-editor .margin-view-overlays .line-numbers { color: #818cf8 !important; }
+
+      /* Current line highlight */
+      .monaco-editor .current-line,
+      .monaco-editor .view-overlays .current-line {
+        background-color: #18181b !important;
+        border-left: 2px solid #6366f1 !important;
+      }
+
+      /* Selection */
+      .monaco-editor .selected-text { background-color: rgba(99, 102, 241, 0.35) !important; }
+      .monaco-editor .selectionHighlight { background-color: rgba(99, 102, 241, 0.25) !important; }
+
+      /* Bracket matching */
+      .monaco-editor .bracket-match {
+        background-color: rgba(99, 102, 241, 0.3) !important;
+        border: 1px solid #6366f1 !important;
+      }
+
+      /* Cursor */
+      .monaco-editor .cursor { background-color: #8B5CF6 !important; }
+
+      /* Indent guides */
+      .monaco-editor .lines-content .cigr { background: #27272a; }
+      .monaco-editor .lines-content .cigra { background: #3f3f46; }
+
+      /* Scrollbar */
+      .monaco-editor .scrollbar .slider { background: rgba(99, 102, 241, 0.2) !important; }
+      .monaco-editor .scrollbar .slider:hover { background: rgba(99, 102, 241, 0.3) !important; }
+
+      /* Minimap */
+      .monaco-editor .minimap { background-color: #0d0d12 !important; }
+      .monaco-editor .minimap-slider { background: rgba(99, 102, 241, 0.2) !important; }
+      .monaco-editor .minimap-slider:hover { background: rgba(99, 102, 241, 0.3) !important; }
+
+      /* Widgets (autocomplete, hover, etc) */
+      .monaco-editor .monaco-editor-hover { background-color: #18181b !important; border-color: #27272a !important; }
+      .monaco-editor .suggest-widget { background-color: #18181b !important; border-color: #27272a !important; }
     `;
 
     document.head.appendChild(style);
@@ -102,12 +119,99 @@ function applyTerminalNoirTheme() {
 }
 
 /**
+ * Load Monaco service overrides (but not extensions yet).
+ */
+async function loadServiceOverrides() {
+  const [
+    { initialize: initializeMonacoService },
+    getTextmateServiceOverride,
+    getThemeServiceOverride,
+    getLanguagesServiceOverride,
+  ] = await Promise.all([
+    import('@codingame/monaco-vscode-api/services'),
+    import('@codingame/monaco-vscode-textmate-service-override').then((m) => m.default),
+    import('@codingame/monaco-vscode-theme-service-override').then((m) => m.default),
+    import('@codingame/monaco-vscode-languages-service-override').then((m) => m.default),
+  ]);
+
+  return {
+    initializeMonacoService,
+    getTextmateServiceOverride,
+    getThemeServiceOverride,
+    getLanguagesServiceOverride,
+  };
+}
+
+/**
+ * Load language grammar extensions AFTER services are initialized.
+ * These extensions register themselves with the service layer.
+ */
+async function loadGrammarExtensions() {
+  // Theme extension (provides color themes like vs-dark)
+  await import('@codingame/monaco-vscode-theme-defaults-default-extension');
+
+  // Language grammar extensions (provide syntax highlighting via TextMate grammars)
+  // Load these in parallel for faster initialization
+  await Promise.all([
+    // Web languages
+    import('@codingame/monaco-vscode-typescript-basics-default-extension'), // TypeScript & JavaScript
+    import('@codingame/monaco-vscode-json-default-extension'), // JSON & JSONC
+    import('@codingame/monaco-vscode-css-default-extension'), // CSS, SCSS, Less
+    import('@codingame/monaco-vscode-html-default-extension'), // HTML
+    import('@codingame/monaco-vscode-markdown-basics-default-extension'), // Markdown
+    import('@codingame/monaco-vscode-xml-default-extension'), // XML
+
+    // Systems programming
+    import('@codingame/monaco-vscode-cpp-default-extension'), // C & C++
+    import('@codingame/monaco-vscode-rust-default-extension'), // Rust
+    import('@codingame/monaco-vscode-go-default-extension'), // Go
+
+    // JVM languages
+    import('@codingame/monaco-vscode-java-default-extension'), // Java
+    import('@codingame/monaco-vscode-groovy-default-extension'), // Groovy
+    import('@codingame/monaco-vscode-clojure-default-extension'), // Clojure
+
+    // .NET languages
+    import('@codingame/monaco-vscode-csharp-default-extension'), // C#
+    import('@codingame/monaco-vscode-fsharp-default-extension'), // F#
+
+    // Scripting languages
+    import('@codingame/monaco-vscode-python-default-extension'), // Python
+    import('@codingame/monaco-vscode-ruby-default-extension'), // Ruby
+    import('@codingame/monaco-vscode-php-default-extension'), // PHP
+    import('@codingame/monaco-vscode-perl-default-extension'), // Perl
+    import('@codingame/monaco-vscode-lua-default-extension'), // Lua
+    import('@codingame/monaco-vscode-r-default-extension'), // R
+
+    // Apple ecosystem
+    import('@codingame/monaco-vscode-swift-default-extension'), // Swift
+    import('@codingame/monaco-vscode-objective-c-default-extension'), // Objective-C
+
+    // Shell & scripting
+    import('@codingame/monaco-vscode-shellscript-default-extension'), // Bash, Shell
+    import('@codingame/monaco-vscode-powershell-default-extension'), // PowerShell
+    import('@codingame/monaco-vscode-bat-default-extension'), // Windows Batch
+
+    // Config & data
+    import('@codingame/monaco-vscode-yaml-default-extension'), // YAML
+    import('@codingame/monaco-vscode-sql-default-extension'), // SQL
+    import('@codingame/monaco-vscode-docker-default-extension'), // Dockerfile
+    import('@codingame/monaco-vscode-make-default-extension'), // Makefile
+  ]);
+}
+
+/**
  * Initialize Monaco VS Code services.
  * This should be called once at app startup before using the editor.
  *
  * Services are initialized lazily - calling this multiple times is safe.
  */
 export async function initializeVSCodeServices(): Promise<void> {
+  // Only run on client side
+  if (typeof window === 'undefined') {
+    return;
+  }
+
   // Return early if already initialized
   if (servicesInitialized) {
     return;
@@ -120,13 +224,30 @@ export async function initializeVSCodeServices(): Promise<void> {
 
   initializationPromise = (async () => {
     try {
-      // Initialize Monaco services with VS Code API compatibility
+      // Configure Monaco environment first
+      configureMonacoEnvironment();
+
+      // Step 1: Load service overrides
+      const {
+        initializeMonacoService,
+        getTextmateServiceOverride,
+        getThemeServiceOverride,
+        getLanguagesServiceOverride,
+      } = await loadServiceOverrides();
+
+      // Step 2: Initialize Monaco services with VS Code API compatibility
+      // This MUST happen before loading grammar extensions
       await initializeMonacoService({
+        ...getLanguagesServiceOverride(),
         ...getTextmateServiceOverride(),
         ...getThemeServiceOverride(),
       });
 
-      // Apply custom theme after services are initialized
+      // Step 3: Load grammar extensions AFTER services are initialized
+      // Extensions register themselves with the service layer
+      await loadGrammarExtensions();
+
+      // Step 4: Apply custom theme
       applyTerminalNoirTheme();
 
       servicesInitialized = true;

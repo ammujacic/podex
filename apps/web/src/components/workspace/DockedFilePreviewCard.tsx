@@ -1,13 +1,18 @@
 'use client';
 
 import { useRef, useCallback } from 'react';
+import dynamic from 'next/dynamic';
 import { X, ExternalLink } from 'lucide-react';
 import { type FilePreview, type GridSpan, useSessionStore } from '@/stores/session';
 import { useUIStore } from '@/stores/ui';
-import { CodeEditor } from './CodeEditor';
 import { useOptionalGridContext } from './GridContext';
 import { useGridResize } from '@/hooks/useGridResize';
 import { cn } from '@/lib/utils';
+
+// Dynamic import to prevent Monaco from loading during SSR
+const CodeEditor = dynamic(() => import('./CodeEditor').then((mod) => mod.CodeEditor), {
+  ssr: false,
+});
 
 interface DockedFilePreviewCardProps {
   preview: FilePreview;

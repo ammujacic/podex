@@ -23,6 +23,7 @@ import {
   CreditCard,
   Building2,
   Brain,
+  Link2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -34,6 +35,7 @@ const settingsNavItems = [
   { href: '/settings/agents', label: 'Agents & AI', icon: Bot },
   { href: '/settings/memory', label: 'Memory', icon: Brain },
   { href: '/settings/voice', label: 'Voice & Audio', icon: Volume2 },
+  { href: '/settings/connections', label: 'Connected Accounts', icon: Link2 },
   { href: '/settings/local-pods', label: 'Local Pods', icon: Server },
   { href: '/settings/integrations', label: 'Integrations (MCP)', icon: Plug },
   { href: '/settings/organization', label: 'Organization', icon: Building2 },

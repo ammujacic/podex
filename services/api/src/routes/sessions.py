@@ -1207,133 +1207,6 @@ async def update_editor_layout(
     }
 
 
-# ==================== Standby Settings Routes ====================
-
-
-class StandbySettingsResponse(BaseModel):
-    """Session standby settings response."""
-
-    timeout_minutes: int | None  # None = Never
-    source: str  # "session" or "user_default"
-
-
-class StandbySettingsRequest(BaseModel):
-    """Update session standby settings."""
-
-    timeout_minutes: int | None = None  # None = Never, or 15/30/60/120
-
-
-@router.get("/{session_id}/standby-settings", response_model=StandbySettingsResponse)
-@limiter.limit(RATE_LIMIT_STANDARD)
-async def get_standby_settings(
-    session_id: str,
-    request: Request,
-    response: Response,
-    db: DbSession,
-) -> StandbySettingsResponse:
-    """Get effective standby settings for session."""
-    from src.database.models import UserConfig
-
-    session = await get_session_or_404(session_id, request, db)
-
-    # Check session-level override first
-    settings = session.settings or {}
-    if "standby_timeout_minutes" in settings:
-        return StandbySettingsResponse(
-            timeout_minutes=settings.get("standby_timeout_minutes"),
-            source="session",
-        )
-
-    # Fall back to user default
-    result = await db.execute(select(UserConfig).where(UserConfig.user_id == session.owner_id))
-    user_config = result.scalar_one_or_none()
-
-    timeout = (user_config.default_standby_timeout_minutes if user_config else None) or 60
-
-    return StandbySettingsResponse(
-        timeout_minutes=timeout,
-        source="user_default",
-    )
-
-
-@router.patch("/{session_id}/standby-settings", response_model=StandbySettingsResponse)
-@limiter.limit(RATE_LIMIT_STANDARD)
-async def update_standby_settings(
-    session_id: str,
-    data: StandbySettingsRequest,
-    request: Request,
-    response: Response,
-    db: DbSession,
-) -> StandbySettingsResponse:
-    """Update per-session standby override."""
-    session = await get_session_or_404(session_id, request, db)
-
-    user_id = get_current_user_id(request)
-    if session.owner_id != user_id:
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    # Validate timeout value (must be one of the presets or None)
-    valid_timeouts = {15, 30, 60, 120, None}
-    if data.timeout_minutes not in valid_timeouts:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid timeout. Must be 15, 30, 60, 120, or null (never)",
-        )
-
-    # Update session settings
-    settings = session.settings or {}
-    settings["standby_timeout_minutes"] = data.timeout_minutes
-    session.settings = settings
-    await db.commit()
-
-    # Invalidate session cache
-    await cache_delete(session_key(session_id))
-
-    return StandbySettingsResponse(
-        timeout_minutes=data.timeout_minutes,
-        source="session",
-    )
-
-
-@router.delete("/{session_id}/standby-settings")
-@limiter.limit(RATE_LIMIT_STANDARD)
-async def clear_standby_settings(
-    session_id: str,
-    request: Request,
-    response: Response,
-    db: DbSession,
-) -> StandbySettingsResponse:
-    """Clear per-session standby override (revert to user default)."""
-    from src.database.models import UserConfig
-
-    session = await get_session_or_404(session_id, request, db)
-
-    user_id = get_current_user_id(request)
-    if session.owner_id != user_id:
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    # Remove session-level override
-    settings = session.settings or {}
-    if "standby_timeout_minutes" in settings:
-        del settings["standby_timeout_minutes"]
-        session.settings = settings
-        await db.commit()
-
-    # Invalidate session cache
-    await cache_delete(session_key(session_id))
-
-    # Return user default
-    result = await db.execute(select(UserConfig).where(UserConfig.user_id == session.owner_id))
-    user_config = result.scalar_one_or_none()
-
-    timeout = (user_config.default_standby_timeout_minutes if user_config else None) or 60
-
-    return StandbySettingsResponse(
-        timeout_minutes=timeout,
-        source="user_default",
-    )
-
-
 # ==================== File System Routes ====================
 
 
@@ -1374,12 +1247,13 @@ class MoveFileRequest(BaseModel):
     dest_path: str
 
 
-def validate_file_path(path: str, max_length: int = 4096) -> str:
+def validate_file_path(path: str, max_length: int = 4096, allow_absolute: bool = False) -> str:
     """Validate and normalize a file path to prevent path traversal attacks.
 
     Args:
         path: The file path to validate.
         max_length: Maximum allowed path length (default 4096).
+        allow_absolute: If True, allow absolute paths (for local pod workspaces).
 
     Returns:
         The normalized, safe path.
@@ -1417,10 +1291,17 @@ def validate_file_path(path: str, max_length: int = 4096) -> str:
     normalized = os.path.normpath(clean_path)
 
     # Check for path traversal attempts
-    if normalized.startswith(("..", "/")):
+    # Allow absolute paths for local pod workspaces (user's own filesystem)
+    if normalized.startswith(".."):
         raise HTTPException(
             status_code=400,
-            detail="Invalid path: absolute paths and path traversal are not allowed",
+            detail="Invalid path: path traversal is not allowed",
+        )
+
+    if normalized.startswith("/") and not allow_absolute:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid path: absolute paths are not allowed",
         )
 
     # Check for any remaining .. after normalization
@@ -2074,8 +1955,14 @@ async def get_file_content(
     session = await get_session_or_404(session_id, request, db)
     user_id = get_current_user_id(request)
 
+    # Check if this is a local pod workspace (allows absolute paths)
+    is_local_pod = False
+    if session.workspace_id:
+        is_local_pod = await workspace_router.is_local_pod_workspace(str(session.workspace_id))
+
     # Validate path to prevent traversal attacks
-    safe_path = validate_file_path(path)
+    # Allow absolute paths for local pod workspaces (user's own filesystem)
+    safe_path = validate_file_path(path, allow_absolute=is_local_pod)
 
     # Try to fetch from compute service
     if session.workspace_id:
@@ -2177,8 +2064,14 @@ async def update_file_content(
     session = await get_session_or_404(session_id, request, db)
     user_id = get_current_user_id(request)
 
+    # Check if this is a local pod workspace (allows absolute paths)
+    is_local_pod = False
+    if session.workspace_id:
+        is_local_pod = await workspace_router.is_local_pod_workspace(str(session.workspace_id))
+
     # Validate path to prevent traversal attacks
-    safe_path = validate_file_path(path)
+    # Allow absolute paths for local pod workspaces (user's own filesystem)
+    safe_path = validate_file_path(path, allow_absolute=is_local_pod)
 
     # Update file in compute service
     if session.workspace_id:

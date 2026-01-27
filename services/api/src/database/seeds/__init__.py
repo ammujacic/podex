@@ -17,7 +17,6 @@ from src.database.seeds.settings import DEFAULT_SETTINGS
 from src.database.seeds.skill_templates import DEFAULT_SKILL_TEMPLATES
 from src.database.seeds.skills import DEFAULT_SYSTEM_SKILLS
 from src.database.seeds.templates import OFFICIAL_TEMPLATES
-from src.database.seeds.terminal_agents import DEFAULT_TERMINAL_AGENTS, TerminalAgentData
 
 __all__ = [
     # Agent Role Configurations
@@ -44,8 +43,6 @@ __all__ = [
     "DEFAULT_SKILL_TEMPLATES",
     # System Skills
     "DEFAULT_SYSTEM_SKILLS",
-    # Terminal-Integrated Agents
-    "DEFAULT_TERMINAL_AGENTS",
     # Pod Templates
     "OFFICIAL_TEMPLATES",
     "AgentRoleData",
@@ -54,5 +51,4 @@ __all__ = [
     "HealthCheckData",
     "LLMProviderData",
     "MCPCategory",
-    "TerminalAgentData",
 ]

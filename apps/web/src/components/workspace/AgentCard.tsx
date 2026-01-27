@@ -2,11 +2,11 @@
 
 import { useState, useCallback, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { Loader2, LogIn, Mic, Paperclip, RefreshCw, Send, X } from 'lucide-react';
+import { Loader2, Mic, Paperclip, Send, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { type Agent, type AgentMode, useSessionStore } from '@/stores/session';
+import { type Agent, type AgentMode, type AgentRole, useSessionStore } from '@/stores/session';
 import { useEditorStore } from '@/stores/editor';
-import { getLanguageFromPath } from '@/lib/vscode';
+import { getLanguageFromPath } from '@/lib/vscode/languageUtils';
 import { useStreamingStore } from '@/stores/streaming';
 import { useAttentionStore } from '@/stores/attention';
 import { useApprovalsStore } from '@/stores/approvals';
@@ -36,7 +36,6 @@ import {
   compactAgentContext,
   getAvailableModels,
   getUserProviderModels,
-  dismissAttention as dismissAttentionApi,
   executeCommand,
   type PublicModel,
   type UserProviderModel,
@@ -44,12 +43,7 @@ import {
 } from '@/lib/api';
 import { useVoiceCapture } from '@/hooks/useVoiceCapture';
 import { useAudioPlayback } from '@/hooks/useAudioPlayback';
-import {
-  onSocketEvent,
-  emitPermissionResponse,
-  emitNativeApprovalResponse,
-  type AgentMessageEvent,
-} from '@/lib/socket';
+import { onSocketEvent, type AgentMessageEvent } from '@/lib/socket';
 import { SUPPORTED_IMAGE_TYPES, MAX_ATTACHMENT_SIZE_MB } from '@podex/shared';
 import type { ThinkingConfig, AttachmentFile, ModelInfo, LLMProvider } from '@podex/shared';
 
@@ -65,24 +59,13 @@ import { CompactionDialog } from './CompactionDialog';
 import { ThinkingConfigDialog } from './ThinkingConfigDialog';
 import { SlashCommandMenu, isBuiltInCommand, type BuiltInCommand } from './SlashCommandMenu';
 import { CreditExhaustedBanner } from './CreditExhaustedBanner';
-import { SlashCommandDialog } from './SlashCommandSheet';
-import { ApprovalDialog } from './ApprovalDialog';
 import { BrowserContextDialog } from './BrowserContextDialog';
-import {
-  isCliAgentRole,
-  getCliAgentType,
-  getCliSupportedModels,
-  normalizeCliModelId,
-  useCliAgentAuth,
-} from '@/hooks/useCliAgentCommands';
-import { useUIStore } from '@/stores/ui';
 import {
   useBrowserContextStore,
   useIsCaptureEnabled,
   useIsAutoInclude,
   useHasPendingContext,
 } from '@/stores/browserContext';
-import { useClaudeSessionSync } from '@/hooks/useClaudeSessionSync';
 
 export interface AgentCardProps {
   agent: Agent;
@@ -116,7 +99,6 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [thinkingDialogOpen, setThinkingDialogOpen] = useState(false);
-  const [slashCommandSheetOpen, setSlashCommandSheetOpen] = useState(false);
   const [browserContextDialogOpen, setBrowserContextDialogOpen] = useState(false);
 
   // Browser context state for forwarding preview data to agent
@@ -157,14 +139,23 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     removeAgent,
     updateAgent,
     addAgent,
-    addAgentMessage,
-    deleteAgentMessage,
     updateAgentThinking,
     setActiveAgent,
+    // Conversation session actions
+    createConversationSession,
+    attachConversationToAgent,
+    detachConversationFromAgent,
+    addConversationMessage,
+    deleteConversationMessage,
+    getConversationForAgent,
   } = useSessionStore();
   const streamingMessages = useStreamingStore((state) => state.streamingMessages);
   const { getAgentWorktree } = useWorktreesStore();
   const { getAgentCheckpoints, restoringCheckpointId } = useCheckpointsStore();
+
+  // Get the conversation session attached to this agent
+  const conversationSession = getConversationForAgent(sessionId, agent.id);
+  const messages = conversationSession?.messages ?? [];
 
   // Related data
   const agentWorktree = getAgentWorktree(sessionId, agent.id);
@@ -175,19 +166,11 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     (sm) => sm.sessionId === sessionId && sm.agentId === agent.id && sm.isStreaming
   );
 
-  // User message history
-  const userMessages = agent.messages
+  // User message history (from conversation session)
+  const userMessages = messages
     .filter((msg) => msg.role === 'user')
     .map((msg) => msg.content)
     .reverse();
-
-  // Claude Code session sync - enables real-time bidirectional sync with local Claude sessions
-  useClaudeSessionSync({
-    sessionId,
-    agentId: agent.id,
-    claudeSessionInfo: agent.claudeSessionInfo,
-    enabled: agent.role === 'claude-code' && !!agent.claudeSessionInfo,
-  });
 
   // Handle scroll to detect if user has scrolled up
   const handleMessagesScroll = useCallback(() => {
@@ -202,12 +185,12 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   // Auto-scroll only when user is at bottom
   // Use useLayoutEffect to scroll synchronously after DOM updates (before browser paint)
   // This ensures scrollHeight reflects the new content
-  const lastMessageId = agent.messages[agent.messages.length - 1]?.id;
+  const lastMessageId = messages[messages.length - 1]?.id;
   useLayoutEffect(() => {
     if (messagesContainerRef.current && isUserAtBottomRef.current) {
       messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
     }
-  }, [agent.messages.length, lastMessageId, isSending, streamingMessage?.content]);
+  }, [messages.length, lastMessageId, isSending, streamingMessage?.content]);
 
   // Fetch models
   useEffect(() => {
@@ -268,7 +251,6 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     getUnreadCountForAgent,
     hasUnreadForAgent,
     openPanel,
-    dismissAttention,
   } = useAttentionStore();
   const agentAttentions = getAttentionsForAgent(sessionId, agent.id);
   const highestPriorityAttention = getHighestPriorityAttention(sessionId, agent.id);
@@ -279,8 +261,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   // Approvals
   const { getAgentApprovals } = useApprovalsStore();
   const agentApprovals = getAgentApprovals(sessionId, agent.id);
-  const pendingApprovalCount =
-    agentApprovals.filter((a) => a.status === 'pending').length + (agent.pendingPermission ? 1 : 0);
+  const pendingApprovalCount = agentApprovals.filter((a) => a.status === 'pending').length;
 
   // Voice capture
   const { isRecording, currentTranscript, startRecording, stopRecording } = useVoiceCapture({
@@ -300,76 +281,6 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       sessionId,
       onPlayEnd: () => {},
     });
-
-  // CLI agent auth (for claude-code, openai-codex, gemini-cli)
-  const isCliAgent = isCliAgentRole(agent.role);
-  const cliAgentType = getCliAgentType(agent.role);
-  const {
-    authStatus: cliAuthStatus,
-    reauthenticate: claudeCodeReauthenticate,
-    checkAuth: checkCliAuth,
-  } = useCliAgentAuth(cliAgentType ?? 'claude-code', isCliAgent ? agent.id : undefined);
-
-  // Terminal toggle for CLI auth
-  const { toggleTerminal, terminalVisible } = useUIStore();
-
-  // Check if CLI agent needs authentication (blocks input until authenticated)
-  const cliNeedsAuth =
-    isCliAgent &&
-    agent.messages.length === 0 &&
-    (cliAuthStatus === null || cliAuthStatus?.needsAuth);
-
-  // CLI agent handlers (non-message handlers)
-  const handleOpenSlashCommands = useCallback(() => {
-    setSlashCommandSheetOpen(true);
-  }, []);
-
-  // Get CLI command name for the agent
-  const getCliCommand = useCallback(() => {
-    switch (agent.role) {
-      case 'claude-code':
-        return 'claude';
-      case 'openai-codex':
-        return 'codex';
-      case 'gemini-cli':
-        return 'gemini';
-      default:
-        return agent.role;
-    }
-  }, [agent.role]);
-
-  // Handle CLI agent login - opens terminal for interactive auth
-  const handleCliLogin = useCallback(() => {
-    // Open terminal if not visible
-    if (!terminalVisible) {
-      toggleTerminal();
-    }
-
-    const cliCommand = getCliCommand();
-    toast.success(`Terminal opened! Run "${cliCommand}" and type "/login" to authenticate.`, {
-      duration: 8000,
-    });
-  }, [terminalVisible, toggleTerminal, getCliCommand]);
-
-  // Handle refresh auth status
-  const handleRefreshAuth = useCallback(async () => {
-    if (checkCliAuth) {
-      toast.info('Checking authentication status...');
-      await checkCliAuth();
-    }
-  }, [checkCliAuth]);
-
-  const handleClaudeCodeReauthenticate = useCallback(async () => {
-    try {
-      await claudeCodeReauthenticate();
-      toast.success(
-        'Re-authentication initiated. Please check your workspace for the login prompt.'
-      );
-    } catch (error) {
-      console.error('Failed to reauthenticate:', error);
-      toast.error('Failed to start re-authentication');
-    }
-  }, [claudeCodeReauthenticate]);
 
   const borderColor = getAgentBorderColor(agent.color);
 
@@ -439,94 +350,19 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   );
 
   const currentModelInfo = useMemo(() => {
-    // For CLI agents, look up model in CLI_CAPABILITIES
-    const cliType = getCliAgentType(agent.role);
-    if (cliType) {
-      const cliModels = getCliSupportedModels(cliType);
-      const normalizedModelId = normalizeCliModelId(agent.model, cliType);
-      const cliModel = cliModels.find((m) => m.id === normalizedModelId);
-      if (cliModel) {
-        const supportsVision = cliModel.supportsVision ?? true;
-        const supportsThinking = cliModel.supportsThinking ?? false;
-        return {
-          id: cliModel.id,
-          provider: 'anthropic' as LLMProvider,
-          displayName: cliModel.name,
-          shortName: cliModel.name,
-          tier: 'flagship' as const,
-          contextWindow: 200000,
-          maxOutputTokens: 64000,
-          supportsVision,
-          supportsThinking,
-          thinkingStatus: supportsThinking ? ('available' as const) : ('not_supported' as const),
-          capabilities: [
-            'chat' as const,
-            'code' as const,
-            ...(supportsVision ? (['vision'] as const) : []),
-            'function_calling' as const,
-          ],
-          goodFor: [] as string[],
-          description: '',
-          reasoningEffort: 'medium' as const,
-          isUserKey: false,
-        };
-      }
-    }
-
-    // For Podex agents, look up in user/backend models
+    // Look up model in user/backend models
     const userModel = userProviderModels.find((m) => m.model_id === agent.model);
     if (userModel) return userModelToInfo(userModel);
     const backendModel = backendModels.find((m) => m.model_id === agent.model);
     if (backendModel) return backendModelToInfo(backendModel);
     return undefined;
-  }, [
-    agent.model,
-    agent.role,
-    backendModels,
-    userProviderModels,
-    backendModelToInfo,
-    userModelToInfo,
-  ]);
+  }, [agent.model, backendModels, userProviderModels, backendModelToInfo, userModelToInfo]);
 
   const modelsByTier = useMemo(() => {
     const flagship: ExtendedModelInfo[] = [];
     const balanced: ExtendedModelInfo[] = [];
     const fast: ExtendedModelInfo[] = [];
     const userApi: ExtendedModelInfo[] = [];
-
-    // For CLI agents, use the hardcoded CLI models directly
-    const cliType = getCliAgentType(agent.role);
-    if (cliType) {
-      const cliModels = getCliSupportedModels(cliType);
-      for (const m of cliModels) {
-        const supportsVision = m.supportsVision ?? true;
-        const supportsThinking = m.supportsThinking ?? false;
-        // Create minimal ExtendedModelInfo for CLI models
-        flagship.push({
-          id: m.id,
-          provider: 'anthropic' as LLMProvider, // CLI-specific, not Podex
-          displayName: m.name,
-          shortName: m.name,
-          tier: 'flagship',
-          contextWindow: 200000,
-          maxOutputTokens: 64000,
-          supportsVision,
-          supportsThinking,
-          thinkingStatus: supportsThinking ? 'available' : 'not_supported',
-          capabilities: [
-            'chat',
-            'code',
-            ...(supportsVision ? (['vision'] as const) : []),
-            'function_calling',
-          ],
-          goodFor: [],
-          description: '',
-          reasoningEffort: 'medium',
-          isUserKey: false,
-        });
-      }
-      return { flagship, balanced, fast, userApi };
-    }
 
     // Standard Podex model tiers
     for (const m of backendModels) {
@@ -540,19 +376,17 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     }
 
     return { flagship, balanced, fast, userApi };
-  }, [agent.role, backendModels, userProviderModels, backendModelToInfo, userModelToInfo]);
+  }, [backendModels, userProviderModels, backendModelToInfo, userModelToInfo]);
 
   const getModelDisplayName = useCallback(
     (modelId: string) => {
-      // Only strip "Claude " since Sonnet/Opus/Haiku are recognizable on their own
-      // Keep "Llama " since "3.1 8B" alone is not recognizable
       if (agent.modelDisplayName) {
-        return agent.modelDisplayName.replace('Claude ', '');
+        return agent.modelDisplayName;
       }
       const userModel = userProviderModels.find((m) => m.model_id === modelId);
-      if (userModel) return userModel.display_name.replace('Claude ', '').replace(' (Direct)', '');
+      if (userModel) return userModel.display_name.replace(' (User API)', '');
       const backendModel = backendModels.find((m) => m.model_id === modelId);
-      if (backendModel) return backendModel.display_name.replace('Claude ', '');
+      if (backendModel) return backendModel.display_name;
       // Fallback: parse raw model ID into user-friendly name
       return parseModelIdToDisplayName(modelId);
     },
@@ -577,7 +411,18 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         content: messageContent,
         timestamp: new Date(),
       };
-      addAgentMessage(sessionId, agent.id, userMessage);
+
+      // Add message to conversation session (creates one if needed)
+      let conversationId = conversationSession?.id;
+      if (!conversationId) {
+        // Create a new conversation session and attach to this agent
+        const newConversation = createConversationSession(sessionId, {
+          firstMessage: messageContent,
+        });
+        conversationId = newConversation.id;
+        attachConversationToAgent(sessionId, conversationId, agent.id);
+      }
+      addConversationMessage(sessionId, conversationId, userMessage);
       updateAgent(sessionId, agent.id, { status: 'active' });
 
       try {
@@ -626,7 +471,10 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       sessionId,
       agent.id,
       agent.thinkingConfig,
-      addAgentMessage,
+      conversationSession,
+      createConversationSession,
+      attachConversationToAgent,
+      addConversationMessage,
       updateAgent,
       router,
       browserAutoInclude,
@@ -637,40 +485,19 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     ]
   );
 
-  // Handle slash command selection for CLI agents (must be after handleSendMessage)
-  const handleCliSlashCommand = useCallback(
-    (commandName: string) => {
-      // Close the sheet
-      setSlashCommandSheetOpen(false);
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setMessage(value);
 
-      // Clear the input and send the command directly
-      setMessage('');
-      handleSendMessage(`/${commandName}`);
-    },
-    [handleSendMessage]
-  );
-
-  const handleInputChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const value = e.target.value;
-      setMessage(value);
-
-      if (value.startsWith('/')) {
-        // For CLI agents (claude-code, openai-codex, gemini-cli), show their specific command sheet
-        if (isCliAgent) {
-          setSlashCommandSheetOpen(true);
-        } else {
-          // For regular agents, show the standard slash menu
-          setSlashQuery(value.slice(1));
-          setShowSlashMenu(true);
-        }
-      } else {
-        setShowSlashMenu(false);
-        setSlashQuery('');
-      }
-    },
-    [isCliAgent]
-  );
+    if (value.startsWith('/')) {
+      // Show the standard slash menu
+      setSlashQuery(value.slice(1));
+      setShowSlashMenu(true);
+    } else {
+      setShowSlashMenu(false);
+      setSlashQuery('');
+    }
+  }, []);
 
   const handleSlashCommandSelect = useCallback(
     async (command: BuiltInCommand | CustomCommand) => {
@@ -690,11 +517,12 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
               setMessage('');
               return;
             case 'clear':
-              if (agent.messages.length > 0) {
-                updateAgent(sessionId, agent.id, { messages: [] });
-                toast.success('Conversation cleared');
+              if (conversationSession && messages.length > 0) {
+                // Detach the conversation from this agent (returns it to the pool)
+                detachConversationFromAgent(sessionId, conversationSession.id);
+                toast.success('Conversation detached');
               } else {
-                toast.info('Conversation is already empty');
+                toast.info('No conversation attached');
               }
               setMessage('');
               return;
@@ -778,10 +606,11 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       }
     },
     [
-      agent.messages.length,
+      messages.length,
+      conversationSession,
       agentCheckpoints.length,
       handleSendMessage,
-      updateAgent,
+      detachConversationFromAgent,
       sessionId,
       agent.id,
       agent.model,
@@ -845,47 +674,6 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     [agent.id, sessionId, updateAgent]
   );
 
-  // Permission approval handler (for both CLI and native agents)
-  const handlePermissionApproval = useCallback(
-    (approved: boolean, addedToAllowlist: boolean) => {
-      if (!agent.pendingPermission) return;
-
-      // Use the appropriate emit function based on agent type
-      if (isCliAgentRole(agent.role)) {
-        // CLI agents (claude-code, openai-codex, gemini-cli) use permission_response
-        emitPermissionResponse(
-          sessionId,
-          agent.id,
-          agent.pendingPermission.requestId,
-          approved,
-          agent.pendingPermission.command,
-          agent.pendingPermission.toolName,
-          addedToAllowlist
-        );
-      } else {
-        // Native Podex agents use native_approval_response
-        emitNativeApprovalResponse(
-          sessionId,
-          agent.id,
-          agent.pendingPermission.requestId,
-          approved,
-          addedToAllowlist
-        );
-      }
-
-      if (agent.pendingPermission.attentionId) {
-        dismissAttention(sessionId, agent.pendingPermission.attentionId);
-        dismissAttentionApi(sessionId, agent.pendingPermission.attentionId).catch((error) => {
-          console.error('Failed to persist attention dismissal:', error);
-        });
-      }
-
-      // Clear the pending permission from the agent
-      updateAgent(sessionId, agent.id, { pendingPermission: undefined });
-    },
-    [sessionId, agent.id, agent.role, agent.pendingPermission, updateAgent, dismissAttention]
-  );
-
   const handleDuplicate = useCallback(async () => {
     if (isDuplicating) return;
     setIsDuplicating(true);
@@ -898,9 +686,9 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         model: newAgentData.model,
         status: 'idle',
         color: agent.color,
-        messages: [],
         mode: (newAgentData.mode || 'ask') as AgentMode,
         gridSpan: agent.gridSpan ?? { colSpan: 1, rowSpan: 2 },
+        conversationSessionId: null, // New agent starts without a conversation
       });
       toast.success(`Agent duplicated as "${newAgentData.name}"`);
     } catch (error) {
@@ -913,18 +701,18 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
 
   const handleDeleteMessage = useCallback(
     async (messageId: string) => {
-      if (deletingMessageId) return;
+      if (deletingMessageId || !conversationSession) return;
       setDeletingMessageId(messageId);
       try {
         await deleteAgentMessageApi(sessionId, agent.id, messageId);
-        deleteAgentMessage(sessionId, agent.id, messageId);
+        deleteConversationMessage(sessionId, conversationSession.id, messageId);
       } catch (error) {
         console.error('Failed to delete message:', error);
       } finally {
         setDeletingMessageId(null);
       }
     },
-    [sessionId, agent.id, deletingMessageId, deleteAgentMessage]
+    [sessionId, agent.id, conversationSession, deletingMessageId, deleteConversationMessage]
   );
 
   const handleDeleteConfirm = useCallback(async () => {
@@ -993,6 +781,35 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     },
     [agent.id, sessionId, updateAgent]
   );
+
+  // Role change handler
+  const handleChangeRole = useCallback(
+    (newRole: AgentRole) => {
+      updateAgent(sessionId, agent.id, { role: newRole });
+      // TODO: Persist role change to backend when API supports it
+    },
+    [agent.id, sessionId, updateAgent]
+  );
+
+  // Conversation session handlers
+  const handleAttachSession = useCallback(
+    (conversationId: string) => {
+      attachConversationToAgent(sessionId, conversationId, agent.id);
+    },
+    [sessionId, agent.id, attachConversationToAgent]
+  );
+
+  const handleDetachSession = useCallback(() => {
+    if (conversationSession) {
+      detachConversationFromAgent(sessionId, conversationSession.id);
+    }
+  }, [sessionId, conversationSession, detachConversationFromAgent]);
+
+  const handleCreateNewSession = useCallback(() => {
+    // Create a new conversation and attach it to this agent
+    const newConversation = createConversationSession(sessionId);
+    attachConversationToAgent(sessionId, newConversation.id, agent.id);
+  }, [sessionId, agent.id, createConversationSession, attachConversationToAgent]);
 
   const handleSaveThinkingConfig = useCallback(
     (config: ThinkingConfig) => {
@@ -1175,6 +992,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       <AgentCardHeader
         agent={agent}
         sessionId={sessionId}
+        conversationSession={conversationSession}
         currentModelInfo={currentModelInfo}
         getModelDisplayName={getModelDisplayName}
         modelsByTier={modelsByTier}
@@ -1191,6 +1009,10 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         highestPriorityAttention={highestPriorityAttention}
         pendingApprovalCount={pendingApprovalCount}
         onChangeModel={handleChangeModel}
+        onChangeRole={handleChangeRole}
+        onAttachSession={handleAttachSession}
+        onDetachSession={handleDetachSession}
+        onCreateNewSession={handleCreateNewSession}
         onTogglePlanMode={handleTogglePlanMode}
         onRestoreCheckpoint={handleRestoreCheckpoint}
         onOpenCompaction={() => setCompactionDialogOpen(true)}
@@ -1201,8 +1023,6 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         onRename={() => setRenameDialogOpen(true)}
         onDuplicate={handleDuplicate}
         onDelete={() => setDeleteDialogOpen(true)}
-        onOpenSlashCommands={isCliAgent ? handleOpenSlashCommands : undefined}
-        onReauthenticate={isCliAgent ? handleClaudeCodeReauthenticate : undefined}
         browserCaptureEnabled={browserCaptureEnabled}
         browserAutoInclude={browserAutoInclude}
         hasPendingBrowserContext={hasPendingBrowserContext}
@@ -1221,75 +1041,23 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         role="log"
         aria-label="Messages"
       >
-        {/* CLI Agent Login Prompt - shown when auth is needed or unknown and no messages yet */}
-        {isCliAgent &&
-          agent.messages.length === 0 &&
-          (cliAuthStatus === null || cliAuthStatus?.needsAuth) && (
-            <div className="flex h-full items-center justify-center">
-              <div className="text-center space-y-4 max-w-sm">
-                <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-accent-primary/10">
-                  <LogIn className="h-6 w-6 text-accent-primary" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-medium text-text-primary mb-1">
-                    Authentication Required
-                  </h3>
-                  <p className="text-xs text-text-muted">
-                    {agent.role === 'claude-code'
-                      ? 'Sign in with your Anthropic account to use Claude Code.'
-                      : agent.role === 'openai-codex'
-                        ? 'Sign in with your OpenAI account to use Codex.'
-                        : 'Sign in to use this CLI agent.'}
-                  </p>
-                </div>
-                <div className="flex items-center justify-center gap-3">
-                  <button
-                    onClick={handleCliLogin}
-                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-primary text-text-inverse text-sm font-medium hover:bg-accent-primary/90 transition-colors"
-                  >
-                    <LogIn className="h-4 w-4" />
-                    Sign In
-                  </button>
-                  <button
-                    onClick={handleRefreshAuth}
-                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-bg-tertiary text-text-primary text-sm font-medium hover:bg-bg-secondary transition-colors border border-border-default"
-                  >
-                    <RefreshCw className="h-4 w-4" />
-                    Refresh
-                  </button>
-                </div>
-                <p className="text-xs text-text-muted mt-3">
-                  After signing in via Terminal, click Refresh to continue.
-                </p>
-              </div>
-            </div>
-          )}
-
-        {/* Regular message list - hidden when showing login prompt */}
-        {!(
-          isCliAgent &&
-          agent.messages.length === 0 &&
-          (cliAuthStatus === null || cliAuthStatus?.needsAuth)
-        ) && (
-          <AgentMessageList
-            messages={agent.messages}
-            sessionId={sessionId}
-            agentId={agent.id}
-            isClaudeCodeAgent={isCliAgent}
-            playingMessageId={playingMessageId}
-            synthesizingMessageId={synthesizingMessageId}
-            deletingMessageId={deletingMessageId}
-            onDeleteMessage={handleDeleteMessage}
-            onPlayMessage={handlePlayMessage}
-            onPlanApprove={async (planId) => {
-              await approvePlan(sessionId, planId);
-            }}
-            onPlanReject={async (planId) => {
-              await rejectPlan(sessionId, planId, 'User rejected');
-            }}
-            onFileClick={handleFileClick}
-          />
-        )}
+        <AgentMessageList
+          messages={messages}
+          sessionId={sessionId}
+          agentId={agent.id}
+          playingMessageId={playingMessageId}
+          synthesizingMessageId={synthesizingMessageId}
+          deletingMessageId={deletingMessageId}
+          onDeleteMessage={handleDeleteMessage}
+          onPlayMessage={handlePlayMessage}
+          onPlanApprove={async (planId) => {
+            await approvePlan(sessionId, planId);
+          }}
+          onPlanReject={async (planId) => {
+            await rejectPlan(sessionId, planId, 'User rejected');
+          }}
+          onFileClick={handleFileClick}
+        />
 
         {/* Streaming message */}
         <AgentStreamingMessage
@@ -1301,8 +1069,8 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         {/* Plan approval actions */}
         {agent.mode === 'plan' &&
           agent.status === 'idle' &&
-          agent.messages.length > 0 &&
-          agent.messages[agent.messages.length - 1]?.role === 'assistant' && (
+          messages.length > 0 &&
+          messages[messages.length - 1]?.role === 'assistant' && (
             <PlanApprovalActions
               sessionId={sessionId}
               agentId={agent.id}
@@ -1317,7 +1085,10 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                     content: feedback,
                     timestamp: new Date(),
                   };
-                  addAgentMessage(sessionId, agent.id, userMessage);
+                  // Add message to conversation session
+                  if (conversationSession) {
+                    addConversationMessage(sessionId, conversationSession.id, userMessage);
+                  }
                   updateAgent(sessionId, agent.id, { status: 'active' });
                   sendAgentMessage(sessionId, agent.id, feedback, {
                     thinkingConfig: agent.thinkingConfig,
@@ -1449,7 +1220,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                   : `Type / for commands or ask ${agent.name.toLowerCase()}...`
               }
               className="w-full bg-elevated border border-border-default rounded-md px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-border-focus focus:outline-none selection:bg-accent-primary selection:text-white"
-              disabled={isRecording || cliNeedsAuth}
+              disabled={isRecording}
               autoComplete="off"
               data-1p-ignore
             />
@@ -1461,27 +1232,6 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
                 onClose={() => setShowSlashMenu(false)}
               />
             )}
-            {/* Claude Code CLI Permission Approval - inline above input */}
-            {agent.pendingPermission && (
-              <ApprovalDialog
-                approval={{
-                  id: agent.pendingPermission.requestId,
-                  agent_id: agent.id,
-                  session_id: sessionId,
-                  action_type: 'command_execute',
-                  action_details: {
-                    command: agent.pendingPermission.command ?? undefined,
-                    tool_name: agent.pendingPermission.toolName,
-                  },
-                  status: 'pending',
-                  expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-                  created_at: agent.pendingPermission.timestamp,
-                }}
-                agentMode={agent.mode}
-                onClose={() => handlePermissionApproval(false, false)}
-                onApprovalComplete={handlePermissionApproval}
-              />
-            )}
           </div>
 
           <button
@@ -1490,7 +1240,6 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
               (!message.trim() && attachments.length === 0) ||
               isSending ||
               isRecording ||
-              cliNeedsAuth ||
               (attachments.length > 0 && !currentModelInfo?.supportsVision)
             }
             className={cn(
@@ -1538,29 +1287,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
           sessionId={sessionId}
           onClose={() => setCompactionDialogOpen(false)}
           onCompact={async (options) => {
-            // For CLI agents, send /compact as a message instead of using Podex API
-            if (isCliAgentRole(agent.role)) {
-              const compactMessage = options?.customInstructions
-                ? `/compact ${options.customInstructions}`
-                : '/compact';
-              // Add user message to UI (marked as system type for minimal rendering)
-              const userMessage = {
-                id: `temp-${Date.now()}`,
-                role: 'user' as const,
-                content: compactMessage,
-                timestamp: new Date(),
-                type: 'system' as const, // CLI commands render minimally
-              };
-              addAgentMessage(sessionId, agent.id, userMessage);
-              updateAgent(sessionId, agent.id, { status: 'active' });
-              // Send to CLI agent
-              await sendAgentMessage(sessionId, agent.id, compactMessage, {
-                thinkingConfig: agent.thinkingConfig,
-              });
-            } else {
-              // For Podex native agents, use the context API
-              await compactAgentContext(agent.id, options);
-            }
+            await compactAgentContext(agent.id, options);
           }}
         />
       )}
@@ -1591,18 +1318,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         config={agent.thinkingConfig}
         onSave={handleSaveThinkingConfig}
         modelName={currentModelInfo?.displayName ?? 'Model'}
-        agentRole={agent.role}
       />
-
-      {/* CLI Agent Slash Commands - single responsive component */}
-      {isCliAgent && cliAgentType && (
-        <SlashCommandDialog
-          isOpen={slashCommandSheetOpen}
-          onClose={() => setSlashCommandSheetOpen(false)}
-          onSelect={handleCliSlashCommand}
-          agentType={cliAgentType}
-        />
-      )}
 
       {/* Browser Context Dialog - preview and configure browser context for agents */}
       <BrowserContextDialog

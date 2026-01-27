@@ -258,7 +258,6 @@ export function MobileWorkspaceLayout({ sessionId }: MobileWorkspaceLayoutProps)
         showBackButton={currentView === 'agent'}
         onBack={handleBackToOverview}
         subtitle={currentView === 'agent' && currentAgent ? currentAgent.name : undefined}
-        agentRole={currentView === 'agent' && currentAgent ? currentAgent.role : undefined}
       />
 
       {/* Main content */}

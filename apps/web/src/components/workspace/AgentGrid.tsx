@@ -1,26 +1,30 @@
 'use client';
 
 import { useRef, Component, type ReactNode } from 'react';
+import dynamic from 'next/dynamic';
 import { Plus, AlertTriangle, RefreshCw, FileCode, X, Globe } from 'lucide-react';
-import { ClaudeIcon } from '@/components/icons/ClaudeIcon';
 import { useSessionStore, type Agent } from '@/stores/session';
 import { AgentCard } from './AgentCard';
 import { DraggableAgentCard } from './DraggableAgentCard';
-import { DraggableTerminalCard } from './DraggableTerminalCard';
 import { DraggableEditorCard } from './DraggableEditorCard';
 import { DraggablePreviewCard } from './DraggablePreviewCard';
 import { ResizableGridCard } from './ResizableGridCard';
-import { ResizableTerminalCard } from './ResizableTerminalCard';
-import { TerminalAgentCell } from './TerminalAgentCell';
 import { DockedFilePreviewCard } from './DockedFilePreviewCard';
 import { EditorGridCard } from './EditorGridCard';
 import { PreviewGridCard } from './PreviewGridCard';
 import { PreviewPanel } from './PreviewPanel';
 import { GridProvider } from './GridContext';
 import { useUIStore } from '@/stores/ui';
-import { CodeEditor } from './CodeEditor';
-import { EnhancedCodeEditor } from '@/components/editor/EnhancedCodeEditor';
-import { deleteAgent as deleteAgentApi, deleteTerminalAgent } from '@/lib/api';
+import { deleteAgent as deleteAgentApi } from '@/lib/api';
+
+// Dynamic imports to prevent Monaco from loading during SSR
+const CodeEditor = dynamic(() => import('./CodeEditor').then((mod) => mod.CodeEditor), {
+  ssr: false,
+});
+const EnhancedCodeEditor = dynamic(
+  () => import('@/components/editor/EnhancedCodeEditor').then((mod) => mod.EnhancedCodeEditor),
+  { ssr: false }
+);
 
 // Error boundary for individual agent cards to prevent one broken card from crashing the entire grid
 interface AgentCardErrorBoundaryProps {
@@ -126,14 +130,7 @@ const demoAgents: Agent[] = [
     status: 'active',
     color: 'agent-1',
     mode: 'auto',
-    messages: [
-      {
-        id: 'm1',
-        role: 'assistant',
-        content: 'Planning the authentication system architecture...',
-        timestamp: new Date(),
-      },
-    ],
+    conversationSessionId: null,
   },
   {
     id: 'agent-2',
@@ -143,14 +140,7 @@ const demoAgents: Agent[] = [
     status: 'active',
     color: 'agent-2',
     mode: 'auto',
-    messages: [
-      {
-        id: 'm2',
-        role: 'assistant',
-        content: 'Building the login form with react-hook-form...',
-        timestamp: new Date(),
-      },
-    ],
+    conversationSessionId: null,
   },
   {
     id: 'agent-3',
@@ -160,14 +150,7 @@ const demoAgents: Agent[] = [
     status: 'active',
     color: 'agent-3',
     mode: 'auto',
-    messages: [
-      {
-        id: 'm3',
-        role: 'assistant',
-        content: 'Setting up the auth API endpoints...',
-        timestamp: new Date(),
-      },
-    ],
+    conversationSessionId: null,
   },
   {
     id: 'agent-4',
@@ -177,7 +160,7 @@ const demoAgents: Agent[] = [
     status: 'idle',
     color: 'agent-4',
     mode: 'ask',
-    messages: [],
+    conversationSessionId: null,
   },
 ];
 
@@ -229,19 +212,6 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
     removeAgent(sessionId, agent.id);
   };
 
-  const handleRemoveTerminalAgent = async (agent: Agent) => {
-    // Close the terminal session on the backend
-    if (agent.terminalSessionId) {
-      try {
-        await deleteTerminalAgent(agent.terminalSessionId);
-      } catch (err) {
-        console.error('Failed to close terminal session:', err);
-      }
-    }
-    // Remove from local store only (terminal agents don't exist in the database)
-    removeAgent(sessionId, agent.id);
-  };
-
   // Freeform mode: draggable and resizable windows
   if (viewMode === 'freeform') {
     return (
@@ -251,26 +221,6 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
         data-tour="agent-grid"
       >
         {agents.map((agent) => {
-          // Check if this is a terminal agent
-          if (agent.terminalSessionId) {
-            return (
-              <AgentCardErrorBoundary
-                key={agent.id}
-                agentName={agent.name}
-                onRemove={() => handleRemoveTerminalAgent(agent)}
-              >
-                <DraggableTerminalCard
-                  agent={agent}
-                  sessionId={sessionId}
-                  workspaceId={workspaceId}
-                  containerRef={containerRef}
-                  onRemove={() => handleRemoveTerminalAgent(agent)}
-                />
-              </AgentCardErrorBoundary>
-            );
-          }
-
-          // Regular Podex agent
           return (
             <AgentCardErrorBoundary
               key={agent.id}
@@ -354,7 +304,6 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
             {agents.map((agent) => {
               // Use focusedAgent.id for highlighting since activeAgentId might be stale
               const isActive = agent.id === focusedAgent?.id && !focusedFilePreview;
-              const isClaudeAgent = agent.role === 'claude-code' || !!agent.claudeSessionInfo;
               return (
                 <button
                   key={agent.id}
@@ -365,17 +314,7 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
                       : 'bg-elevated text-text-secondary hover:text-text-primary hover:bg-overlay'
                   }`}
                 >
-                  {isClaudeAgent ? (
-                    <ClaudeIcon
-                      size={14}
-                      className={isActive ? 'text-text-inverse' : 'text-[#D97757]'}
-                    />
-                  ) : (
-                    <div
-                      className="h-2 w-2 rounded-full"
-                      style={{ backgroundColor: agent.color }}
-                    />
-                  )}
+                  <div className="h-2 w-2 rounded-full" style={{ backgroundColor: agent.color }} />
                   {agent.name}
                 </button>
               );
@@ -513,24 +452,9 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
                 // Render agent
                 <AgentCardErrorBoundary
                   agentName={focusedAgent.name}
-                  onRemove={() =>
-                    focusedAgent.terminalSessionId
-                      ? handleRemoveTerminalAgent(focusedAgent)
-                      : handleRemoveAgent(focusedAgent)
-                  }
+                  onRemove={() => handleRemoveAgent(focusedAgent)}
                 >
-                  {focusedAgent.terminalSessionId ? (
-                    <div className="h-full rounded-lg border border-border-default bg-surface overflow-hidden">
-                      <TerminalAgentCell
-                        agent={focusedAgent}
-                        sessionId={sessionId}
-                        workspaceId={workspaceId}
-                        onRemove={() => handleRemoveTerminalAgent(focusedAgent)}
-                      />
-                    </div>
-                  ) : (
-                    <AgentCard agent={focusedAgent} sessionId={sessionId} expanded />
-                  )}
+                  <AgentCard agent={focusedAgent} sessionId={sessionId} expanded />
                 </AgentCardErrorBoundary>
               ) : null}
             </div>
@@ -555,37 +479,15 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
             gridAutoRows: `${gridConfig.rowHeight}px`,
           }}
         >
-          {agents.map((agent) => {
-            // Check if this is a terminal agent
-            if (agent.terminalSessionId) {
-              return (
-                <AgentCardErrorBoundary
-                  key={agent.id}
-                  agentName={agent.name}
-                  onRemove={() => handleRemoveTerminalAgent(agent)}
-                >
-                  <ResizableTerminalCard
-                    agent={agent}
-                    sessionId={sessionId}
-                    workspaceId={workspaceId}
-                    maxCols={dynamicMaxCols}
-                    onRemove={() => handleRemoveTerminalAgent(agent)}
-                  />
-                </AgentCardErrorBoundary>
-              );
-            }
-
-            // Regular Podex agent
-            return (
-              <AgentCardErrorBoundary
-                key={agent.id}
-                agentName={agent.name}
-                onRemove={() => handleRemoveAgent(agent)}
-              >
-                <ResizableGridCard agent={agent} sessionId={sessionId} maxCols={dynamicMaxCols} />
-              </AgentCardErrorBoundary>
-            );
-          })}
+          {agents.map((agent) => (
+            <AgentCardErrorBoundary
+              key={agent.id}
+              agentName={agent.name}
+              onRemove={() => handleRemoveAgent(agent)}
+            >
+              <ResizableGridCard agent={agent} sessionId={sessionId} maxCols={dynamicMaxCols} />
+            </AgentCardErrorBoundary>
+          ))}
 
           {/* Docked file previews */}
           {dockedPreviews.map((preview) => (

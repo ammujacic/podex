@@ -179,7 +179,7 @@ def start(
     click.echo(f"  Max workspaces: {config.max_workspaces}")
     click.echo(f"  Mode: {config.mode}")
 
-    # Check tmux availability for native mode (required for terminal agents)
+    # Check tmux availability for native mode (required for terminal features)
     if config.is_native_mode():
         import shutil
 
@@ -187,8 +187,7 @@ def start(
             click.echo()
             click.echo(
                 click.style("Warning: ", fg="yellow", bold=True)
-                + "tmux is not installed. Terminal agents (Claude, Codex, Gemini CLI) "
-                "will not work properly without tmux.\n"
+                + "tmux is not installed. Terminal features will not work properly without tmux.\n"
                 "Install it with: brew install tmux (macOS) or apt install tmux (Linux)"
             )
 

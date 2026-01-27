@@ -18,7 +18,7 @@ import {
 import { useUIStore } from '@/stores/ui';
 import { useSessionStore, type FilePreview } from '@/stores/session';
 import { cn } from '@/lib/utils';
-import { getLanguageFromPath } from './CodeEditor';
+import { getLanguageFromPath } from '@/lib/vscode/languageUtils';
 import { GitPanel } from './GitPanel';
 import { listFiles, getFileContent, type FileNode } from '@/lib/api';
 

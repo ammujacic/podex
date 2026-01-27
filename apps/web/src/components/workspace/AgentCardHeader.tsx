@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import {
   Bell,
   Brain,
@@ -8,21 +9,19 @@ import {
   ClipboardList,
   Copy,
   Globe,
-  History,
   ImageOff,
-  KeyRound,
+  Key,
   Loader2,
   MoreVertical,
   Pencil,
   RefreshCw,
   Settings2,
   Shield,
-  Slash,
   Trash2,
   Undo2,
   Volume2,
 } from 'lucide-react';
-import { ClaudeIcon, GeminiIcon, OpenAIIcon, PodexIcon } from '@/components/icons';
+import { PodexIcon } from '@/components/icons';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -41,13 +40,13 @@ import { getRoleIcon, getAgentTextColor, getModeConfig } from '@/lib/agentConsta
 import { ContextUsageRing } from './ContextUsageRing';
 import { WorktreeStatus } from './WorktreeStatus';
 import { ModelTooltip, ModelCapabilityBadges } from './ModelTooltip';
-import type { Agent } from '@/stores/session';
-import { useSessionStore } from '@/stores/session';
+import { SessionDropdown } from './SessionDropdown';
+import { RoleDropdown } from './RoleDropdown';
+import type { Agent, AgentRole, ConversationSession } from '@/stores/session';
+import { getAgentDisplayTitle } from '@/stores/session';
 import type { ModelInfo } from '@podex/shared';
 import type { Worktree } from '@/stores/worktrees';
 import type { Checkpoint } from '@/stores/checkpoints';
-import { getCliAgentType, normalizeCliModelId } from '@/hooks/useCliAgentCommands';
-import { ClaudeSessionDropdown } from './ClaudeSessionDropdown';
 
 // Extended ModelInfo with user API flag
 type ExtendedModelInfo = ModelInfo & { isUserKey?: boolean };
@@ -55,6 +54,8 @@ type ExtendedModelInfo = ModelInfo & { isUserKey?: boolean };
 interface AgentCardHeaderProps {
   agent: Agent;
   sessionId: string;
+  // Conversation session attached to this agent
+  conversationSession: ConversationSession | null;
   // Current model info
   currentModelInfo: ExtendedModelInfo | undefined;
   getModelDisplayName: (modelId: string) => string;
@@ -82,6 +83,10 @@ interface AgentCardHeaderProps {
   pendingApprovalCount: number;
   // Callbacks
   onChangeModel: (modelId: string) => void;
+  onChangeRole: (role: AgentRole) => void;
+  onAttachSession: (conversationId: string) => void;
+  onDetachSession: () => void;
+  onCreateNewSession: () => void;
   onTogglePlanMode: () => void;
   onRestoreCheckpoint: (checkpointId: string, description: string | null) => void;
   onOpenCompaction: () => void;
@@ -92,10 +97,6 @@ interface AgentCardHeaderProps {
   onRename: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
-  // Claude Code specific callbacks (optional - only used for claude-code agents)
-  onOpenSlashCommands?: () => void;
-  onReauthenticate?: () => void;
-  onOpenSessionPicker?: () => void;
   // Browser context (for forwarding preview data to agent)
   browserCaptureEnabled?: boolean;
   browserAutoInclude?: boolean;
@@ -110,6 +111,7 @@ interface AgentCardHeaderProps {
 export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCardHeader({
   agent,
   sessionId,
+  conversationSession,
   currentModelInfo,
   getModelDisplayName,
   modelsByTier,
@@ -126,6 +128,10 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
   highestPriorityAttention,
   pendingApprovalCount,
   onChangeModel,
+  onChangeRole,
+  onAttachSession,
+  onDetachSession,
+  onCreateNewSession,
   onTogglePlanMode,
   onRestoreCheckpoint,
   onOpenCompaction,
@@ -136,30 +142,16 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
   onRename,
   onDuplicate,
   onDelete,
-  onOpenSlashCommands,
-  onReauthenticate,
-  onOpenSessionPicker,
   browserCaptureEnabled,
   browserAutoInclude,
   hasPendingBrowserContext,
   onToggleBrowserCapture,
   onOpenBrowserContextDialog: _onOpenBrowserContextDialog,
 }) {
-  // CLI agent type checks
-  const isClaudeCodeAgent = agent.role === 'claude-code';
-  const isOpenAICodexAgent = agent.role === 'openai-codex';
-  const isGeminiCliAgent = agent.role === 'gemini-cli';
-  const isCliAgent = isClaudeCodeAgent || isOpenAICodexAgent || isGeminiCliAgent;
-
-  // Normalize model ID for CLI agents (e.g., "claude-sonnet-4-5-20250929" -> "sonnet")
-  const cliAgentType = getCliAgentType(agent.role);
-  const normalizedModelId = cliAgentType
-    ? normalizeCliModelId(agent.model, cliAgentType)
-    : agent.model;
-
   const Icon = getRoleIcon(agent.role);
   const textColor = getAgentTextColor(agent.color);
   const currentModeConfig = getModeConfig(agent.mode);
+  const displayTitle = getAgentDisplayTitle(agent, conversationSession);
 
   return (
     <div className="flex items-center justify-between border-b border-border-subtle px-4 py-3">
@@ -168,42 +160,30 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
           <Icon className="h-4 w-4" />
         </div>
         <div>
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* Claude Code badge */}
-            {isClaudeCodeAgent && (
-              <span
-                className="flex items-center justify-center w-5 h-5 rounded bg-[#FF6B35]/20"
-                title="Claude Code Agent"
-              >
-                <ClaudeIcon className="h-3 w-3 text-[#FF6B35]" />
-              </span>
-            )}
-            {/* OpenAI Codex badge */}
-            {isOpenAICodexAgent && (
-              <span
-                className="flex items-center justify-center w-5 h-5 rounded bg-[#10A37F]/20"
-                title="OpenAI Codex Agent"
-              >
-                <OpenAIIcon className="h-3 w-3 text-[#10A37F]" />
-              </span>
-            )}
-            {/* Gemini CLI badge */}
-            {isGeminiCliAgent && (
-              <span
-                className="flex items-center justify-center w-5 h-5 rounded bg-[#4285F4]/20"
-                title="Gemini CLI Agent"
-              >
-                <GeminiIcon className="h-3 w-3 text-[#4285F4]" />
-              </span>
-            )}
-            {/* Podex native agent badge */}
-            {!isCliAgent && agent.role !== 'custom' && (
+          {/* Dynamic title: Role: Session Name */}
+          <div className="flex items-center gap-2 mb-1">
+            {agent.role !== 'custom' && (
               <span className="flex items-center justify-center w-5 h-5" title="Podex Agent">
                 <PodexIcon size={20} />
               </span>
             )}
-            <span className="font-medium text-text-primary">{agent.name}</span>
+            <span className="font-medium text-text-primary">{displayTitle}</span>
+          </div>
 
+          {/* Role and Session dropdowns row */}
+          <div className="flex items-center gap-2 mb-1">
+            <RoleDropdown currentRole={agent.role} onRoleChange={onChangeRole} />
+            <SessionDropdown
+              sessionId={sessionId}
+              agentId={agent.id}
+              currentConversation={conversationSession}
+              onAttach={onAttachSession}
+              onDetach={onDetachSession}
+              onCreateNew={onCreateNewSession}
+            />
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
             {/* Status indicator */}
             <span
               className={cn(
@@ -237,37 +217,35 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
               {currentModeConfig.label}
             </button>
 
-            {/* Plan mode toggle button - hidden for CLI agents (they manage mode themselves) */}
-            {!isCliAgent && (
-              <button
-                onClick={onTogglePlanMode}
-                disabled={isTogglingPlanMode}
-                className={cn(
-                  'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-colors cursor-pointer',
-                  agent.mode === 'plan'
-                    ? 'bg-blue-500/30 text-blue-400 ring-1 ring-blue-400/50 hover:bg-blue-500/40'
-                    : 'bg-elevated text-text-muted hover:bg-overlay hover:text-text-primary',
-                  isTogglingPlanMode && 'opacity-50 cursor-not-allowed'
-                )}
-                title={
-                  agent.mode === 'plan'
-                    ? `Exit Plan mode (return to ${agent.previousMode || 'Ask'})`
-                    : 'Enter Plan mode (read-only)'
-                }
-              >
-                <ClipboardList className="h-3 w-3" />
-                <span>Plan</span>
-                {agent.mode === 'plan' && (
-                  <span
-                    className="ml-0.5 h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse"
-                    aria-hidden="true"
-                  />
-                )}
-              </button>
-            )}
+            {/* Plan mode toggle button */}
+            <button
+              onClick={onTogglePlanMode}
+              disabled={isTogglingPlanMode}
+              className={cn(
+                'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-colors cursor-pointer',
+                agent.mode === 'plan'
+                  ? 'bg-blue-500/30 text-blue-400 ring-1 ring-blue-400/50 hover:bg-blue-500/40'
+                  : 'bg-elevated text-text-muted hover:bg-overlay hover:text-text-primary',
+                isTogglingPlanMode && 'opacity-50 cursor-not-allowed'
+              )}
+              title={
+                agent.mode === 'plan'
+                  ? `Exit Plan mode (return to ${agent.previousMode || 'Ask'})`
+                  : 'Enter Plan mode (read-only)'
+              }
+            >
+              <ClipboardList className="h-3 w-3" />
+              <span>Plan</span>
+              {agent.mode === 'plan' && (
+                <span
+                  className="ml-0.5 h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse"
+                  aria-hidden="true"
+                />
+              )}
+            </button>
 
-            {/* Extended Thinking toggle - hidden for CLI agents (they manage thinking themselves) */}
-            {!isCliAgent && currentModelInfo?.supportsThinking && (
+            {/* Extended Thinking toggle */}
+            {currentModelInfo?.supportsThinking && (
               <button
                 onClick={onOpenThinkingDialog}
                 className={cn(
@@ -300,8 +278,8 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
               </button>
             )}
 
-            {/* Thinking coming soon badge - hidden for CLI agents */}
-            {!isCliAgent && currentModelInfo?.thinkingStatus === 'coming_soon' && (
+            {/* Thinking coming soon badge */}
+            {currentModelInfo?.thinkingStatus === 'coming_soon' && (
               <span
                 className="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-gray-500/20 text-gray-400"
                 title="Extended thinking coming soon for this model"
@@ -311,8 +289,8 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
               </span>
             )}
 
-            {/* Browser context capture toggle - hidden for CLI agents */}
-            {!isCliAgent && onToggleBrowserCapture && (
+            {/* Browser context capture toggle */}
+            {onToggleBrowserCapture && (
               <button
                 onClick={onToggleBrowserCapture}
                 className={cn(
@@ -454,7 +432,7 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
             <WorktreeStatus worktree={agentWorktree} />
           </div>
 
-          {/* Model selector row - contains model dropdown and session picker */}
+          {/* Model selector row */}
           <div className="flex items-center gap-2">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -475,48 +453,69 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
               <DropdownMenuContent align="start" className="w-64">
                 <DropdownMenuSeparator />
 
-                {isCliAgent ? (
-                  /* CLI agents: Simple flat list without categories */
-                  <DropdownMenuRadioGroup value={normalizedModelId} onValueChange={onChangeModel}>
-                    {modelsByTier.flagship.map((model) => (
+                {/* Flagship Tier */}
+                <DropdownMenuLabel className="text-xs text-text-primary">
+                  Flagship
+                </DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
+                  {modelsByTier.flagship.map((model) => (
+                    <ModelTooltip key={model.id} model={model} side="right">
                       <DropdownMenuRadioItem
-                        key={model.id}
                         value={model.id}
-                        className="flex items-center justify-between hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
+                        className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
                       >
-                        <span>{model.displayName}</span>
+                        <span>{model.shortName}</span>
                         <ModelCapabilityBadges model={model} compact />
                       </DropdownMenuRadioItem>
-                    ))}
-                  </DropdownMenuRadioGroup>
-                ) : (
-                  /* Podex agents: Tiered categories */
+                    </ModelTooltip>
+                  ))}
+                </DropdownMenuRadioGroup>
+                <DropdownMenuSeparator />
+
+                {/* Balanced Tier */}
+                <DropdownMenuLabel className="text-xs text-text-primary">
+                  Balanced
+                </DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
+                  {modelsByTier.balanced.map((model) => (
+                    <ModelTooltip key={model.id} model={model} side="right">
+                      <DropdownMenuRadioItem
+                        value={model.id}
+                        className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
+                      >
+                        <span>{model.shortName}</span>
+                        <ModelCapabilityBadges model={model} compact />
+                      </DropdownMenuRadioItem>
+                    </ModelTooltip>
+                  ))}
+                </DropdownMenuRadioGroup>
+                <DropdownMenuSeparator />
+
+                {/* Fast Tier */}
+                <DropdownMenuLabel className="text-xs text-text-primary">Fast</DropdownMenuLabel>
+                <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
+                  {modelsByTier.fast.map((model) => (
+                    <ModelTooltip key={model.id} model={model} side="right">
+                      <DropdownMenuRadioItem
+                        value={model.id}
+                        className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
+                      >
+                        <span>{model.shortName}</span>
+                        <ModelCapabilityBadges model={model} compact />
+                      </DropdownMenuRadioItem>
+                    </ModelTooltip>
+                  ))}
+                </DropdownMenuRadioGroup>
+
+                {/* Your API Keys */}
+                {modelsByTier.userApi.length > 0 && (
                   <>
-                    {/* Flagship Tier */}
-                    <DropdownMenuLabel className="text-xs text-text-primary">
-                      Flagship
-                    </DropdownMenuLabel>
-                    <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                      {modelsByTier.flagship.map((model) => (
-                        <ModelTooltip key={model.id} model={model} side="right">
-                          <DropdownMenuRadioItem
-                            value={model.id}
-                            className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
-                          >
-                            <span>{model.shortName}</span>
-                            <ModelCapabilityBadges model={model} compact />
-                          </DropdownMenuRadioItem>
-                        </ModelTooltip>
-                      ))}
-                    </DropdownMenuRadioGroup>
                     <DropdownMenuSeparator />
-
-                    {/* Balanced Tier */}
-                    <DropdownMenuLabel className="text-xs text-text-primary">
-                      Balanced
+                    <DropdownMenuLabel className="text-xs text-accent-primary">
+                      Your API Keys
                     </DropdownMenuLabel>
                     <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                      {modelsByTier.balanced.map((model) => (
+                      {modelsByTier.userApi.map((model) => (
                         <ModelTooltip key={model.id} model={model} side="right">
                           <DropdownMenuRadioItem
                             value={model.id}
@@ -528,87 +527,26 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                         </ModelTooltip>
                       ))}
                     </DropdownMenuRadioGroup>
-                    <DropdownMenuSeparator />
-
-                    {/* Fast Tier */}
-                    <DropdownMenuLabel className="text-xs text-text-primary">
-                      Fast
-                    </DropdownMenuLabel>
-                    <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                      {modelsByTier.fast.map((model) => (
-                        <ModelTooltip key={model.id} model={model} side="right">
-                          <DropdownMenuRadioItem
-                            value={model.id}
-                            className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
-                          >
-                            <span>{model.shortName}</span>
-                            <ModelCapabilityBadges model={model} compact />
-                          </DropdownMenuRadioItem>
-                        </ModelTooltip>
-                      ))}
-                    </DropdownMenuRadioGroup>
-
-                    {/* Your API Keys */}
-                    {modelsByTier.userApi.length > 0 && (
-                      <>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuLabel className="text-xs text-accent-primary">
-                          Your API Keys
-                        </DropdownMenuLabel>
-                        <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                          {modelsByTier.userApi.map((model) => (
-                            <ModelTooltip key={model.id} model={model} side="right">
-                              <DropdownMenuRadioItem
-                                value={model.id}
-                                className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
-                              >
-                                <span>{model.shortName}</span>
-                                <ModelCapabilityBadges model={model} compact />
-                              </DropdownMenuRadioItem>
-                            </ModelTooltip>
-                          ))}
-                        </DropdownMenuRadioGroup>
-                      </>
-                    )}
                   </>
                 )}
+
+                {/* Connect Providers Link */}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem asChild className="cursor-pointer">
+                  <Link
+                    href="/settings/connections"
+                    className="flex items-center gap-2 text-text-secondary hover:text-text-primary"
+                  >
+                    <Key className="h-4 w-4" />
+                    <span>
+                      {modelsByTier.userApi.length > 0
+                        ? 'Manage Connected Accounts'
+                        : 'Connect Your API Keys'}
+                    </span>
+                  </Link>
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-
-            {/* Claude Code session picker - shown next to model selector for Claude Code agents */}
-            {isClaudeCodeAgent && (
-              <ClaudeSessionDropdown
-                initialSessionInfo={agent.claudeSessionInfo}
-                onSessionLoaded={(sessionDetail, sessionInfo) => {
-                  // Convert Claude messages to AgentMessage format
-                  const agentMessages = sessionDetail.messages.map((msg) => ({
-                    id: msg.uuid || crypto.randomUUID(),
-                    role: msg.role === 'user' ? ('user' as const) : ('assistant' as const),
-                    content: msg.content,
-                    timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
-                    toolCalls: msg.tool_calls?.map((tc) => ({
-                      id: tc.id,
-                      name: tc.name,
-                      args: (tc.input as Record<string, unknown>) || {},
-                      status: 'completed' as const,
-                    })),
-                  }));
-
-                  // Update agent with Claude session info and loaded messages
-                  useSessionStore.getState().updateAgent(sessionId, agent.id, {
-                    claudeSessionInfo: sessionInfo,
-                    messages: agentMessages,
-                  });
-                }}
-                onNewSession={() => {
-                  // Clear messages and session info to start fresh
-                  useSessionStore.getState().updateAgent(sessionId, agent.id, {
-                    claudeSessionInfo: undefined,
-                    messages: [],
-                  });
-                }}
-              />
-            )}
           </div>
         </div>
       </div>
@@ -640,29 +578,59 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
               Change Model
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent className="w-64">
-              {isCliAgent ? (
-                /* CLI agents: Simple flat list */
-                <DropdownMenuRadioGroup value={normalizedModelId} onValueChange={onChangeModel}>
-                  {modelsByTier.flagship.map((model) => (
-                    <DropdownMenuRadioItem
-                      key={model.id}
-                      value={model.id}
-                      className="flex items-center justify-between hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
-                    >
-                      <span>{model.displayName}</span>
-                      <ModelCapabilityBadges model={model} compact />
-                    </DropdownMenuRadioItem>
-                  ))}
-                </DropdownMenuRadioGroup>
-              ) : (
-                /* Podex agents: Tiered categories */
+              {/* Flagship */}
+              <DropdownMenuLabel className="text-xs text-text-primary">Flagship</DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
+                {modelsByTier.flagship.map((model) => (
+                  <DropdownMenuRadioItem
+                    key={model.id}
+                    value={model.id}
+                    className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
+                  >
+                    <span>{model.shortName}</span>
+                    <ModelCapabilityBadges model={model} compact />
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+              <DropdownMenuSeparator />
+              {/* Balanced */}
+              <DropdownMenuLabel className="text-xs text-text-primary">Balanced</DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
+                {modelsByTier.balanced.map((model) => (
+                  <DropdownMenuRadioItem
+                    key={model.id}
+                    value={model.id}
+                    className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
+                  >
+                    <span>{model.shortName}</span>
+                    <ModelCapabilityBadges model={model} compact />
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+              <DropdownMenuSeparator />
+              {/* Fast */}
+              <DropdownMenuLabel className="text-xs text-text-primary">Fast</DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
+                {modelsByTier.fast.map((model) => (
+                  <DropdownMenuRadioItem
+                    key={model.id}
+                    value={model.id}
+                    className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
+                  >
+                    <span>{model.shortName}</span>
+                    <ModelCapabilityBadges model={model} compact />
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+              {/* Your API Keys */}
+              {modelsByTier.userApi.length > 0 && (
                 <>
-                  {/* Flagship */}
-                  <DropdownMenuLabel className="text-xs text-text-primary">
-                    Flagship
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel className="text-xs text-accent-primary">
+                    Your API Keys
                   </DropdownMenuLabel>
                   <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                    {modelsByTier.flagship.map((model) => (
+                    {modelsByTier.userApi.map((model) => (
                       <DropdownMenuRadioItem
                         key={model.id}
                         value={model.id}
@@ -673,61 +641,24 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                       </DropdownMenuRadioItem>
                     ))}
                   </DropdownMenuRadioGroup>
-                  <DropdownMenuSeparator />
-                  {/* Balanced */}
-                  <DropdownMenuLabel className="text-xs text-text-primary">
-                    Balanced
-                  </DropdownMenuLabel>
-                  <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                    {modelsByTier.balanced.map((model) => (
-                      <DropdownMenuRadioItem
-                        key={model.id}
-                        value={model.id}
-                        className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
-                      >
-                        <span>{model.shortName}</span>
-                        <ModelCapabilityBadges model={model} compact />
-                      </DropdownMenuRadioItem>
-                    ))}
-                  </DropdownMenuRadioGroup>
-                  <DropdownMenuSeparator />
-                  {/* Fast */}
-                  <DropdownMenuLabel className="text-xs text-text-primary">Fast</DropdownMenuLabel>
-                  <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                    {modelsByTier.fast.map((model) => (
-                      <DropdownMenuRadioItem
-                        key={model.id}
-                        value={model.id}
-                        className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
-                      >
-                        <span>{model.shortName}</span>
-                        <ModelCapabilityBadges model={model} compact />
-                      </DropdownMenuRadioItem>
-                    ))}
-                  </DropdownMenuRadioGroup>
-                  {/* Your API Keys */}
-                  {modelsByTier.userApi.length > 0 && (
-                    <>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuLabel className="text-xs text-accent-primary">
-                        Your API Keys
-                      </DropdownMenuLabel>
-                      <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                        {modelsByTier.userApi.map((model) => (
-                          <DropdownMenuRadioItem
-                            key={model.id}
-                            value={model.id}
-                            className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
-                          >
-                            <span>{model.shortName}</span>
-                            <ModelCapabilityBadges model={model} compact />
-                          </DropdownMenuRadioItem>
-                        ))}
-                      </DropdownMenuRadioGroup>
-                    </>
-                  )}
                 </>
               )}
+
+              {/* Connect Providers Link */}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem asChild className="cursor-pointer">
+                <Link
+                  href="/settings/connections"
+                  className="flex items-center gap-2 text-text-secondary hover:text-text-primary"
+                >
+                  <Key className="h-4 w-4" />
+                  <span>
+                    {modelsByTier.userApi.length > 0
+                      ? 'Manage Connected Accounts'
+                      : 'Connect Your API Keys'}
+                  </span>
+                </Link>
+              </DropdownMenuItem>
             </DropdownMenuSubContent>
           </DropdownMenuSub>
           <DropdownMenuItem onClick={onOpenVoiceSettings} className="cursor-pointer">
@@ -738,43 +669,6 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
             <Shield className="mr-2 h-4 w-4" />
             Mode Settings
           </DropdownMenuItem>
-          {/* CLI Agent specific options */}
-          {isCliAgent && onOpenSlashCommands && (
-            <>
-              <DropdownMenuSeparator />
-              <DropdownMenuLabel
-                className={cn(
-                  'text-xs flex items-center gap-1',
-                  isClaudeCodeAgent && 'text-[#FF6B35]',
-                  isOpenAICodexAgent && 'text-[#10A37F]',
-                  isGeminiCliAgent && 'text-[#4285F4]'
-                )}
-              >
-                {isClaudeCodeAgent && <ClaudeIcon className="h-3 w-3" />}
-                {isOpenAICodexAgent && <OpenAIIcon className="h-3 w-3" />}
-                {isGeminiCliAgent && <GeminiIcon className="h-3 w-3" />}
-                {isClaudeCodeAgent && 'Claude Code'}
-                {isOpenAICodexAgent && 'OpenAI Codex'}
-                {isGeminiCliAgent && 'Gemini CLI'}
-              </DropdownMenuLabel>
-              <DropdownMenuItem onClick={onOpenSlashCommands} className="cursor-pointer">
-                <Slash className="mr-2 h-4 w-4" />
-                Slash Commands
-              </DropdownMenuItem>
-              {isClaudeCodeAgent && onOpenSessionPicker && (
-                <DropdownMenuItem onClick={onOpenSessionPicker} className="cursor-pointer">
-                  <History className="mr-2 h-4 w-4" />
-                  Resume Session
-                </DropdownMenuItem>
-              )}
-              {onReauthenticate && (
-                <DropdownMenuItem onClick={onReauthenticate} className="cursor-pointer">
-                  <KeyRound className="mr-2 h-4 w-4" />
-                  Re-authenticate
-                </DropdownMenuItem>
-              )}
-            </>
-          )}
           <DropdownMenuItem
             onClick={onDuplicate}
             disabled={isDuplicating}

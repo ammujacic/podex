@@ -957,7 +957,7 @@ describe('sessionStore', () => {
     });
 
     describe('setWorkspaceStatus', () => {
-      it('sets workspace status', () => {
+      it('sets workspace status to running', () => {
         const { result } = renderHook(() => useSessionStore());
 
         act(() => {
@@ -967,27 +967,24 @@ describe('sessionStore', () => {
         expect(result.current.sessions[mockSession.id].workspaceStatus).toBe('running');
       });
 
-      it('sets standby timestamp when entering standby', () => {
+      it('sets workspace status to stopped', () => {
         const { result } = renderHook(() => useSessionStore());
-        const now = new Date().toISOString();
 
         act(() => {
-          result.current.setWorkspaceStatus(mockSession.id, 'standby', now);
+          result.current.setWorkspaceStatus(mockSession.id, 'stopped');
         });
 
-        expect(result.current.sessions[mockSession.id].workspaceStatus).toBe('standby');
-        expect(result.current.sessions[mockSession.id].standbyAt).toBe(now);
+        expect(result.current.sessions[mockSession.id].workspaceStatus).toBe('stopped');
       });
 
-      it('clears standby timestamp when leaving standby', () => {
+      it('sets workspace status to error', () => {
         const { result } = renderHook(() => useSessionStore());
 
         act(() => {
-          result.current.setWorkspaceStatus(mockSession.id, 'standby', new Date().toISOString());
-          result.current.setWorkspaceStatus(mockSession.id, 'running', null);
+          result.current.setWorkspaceStatus(mockSession.id, 'error');
         });
 
-        expect(result.current.sessions[mockSession.id].standbyAt).toBeNull();
+        expect(result.current.sessions[mockSession.id].workspaceStatus).toBe('error');
       });
     });
 

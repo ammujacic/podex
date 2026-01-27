@@ -11,7 +11,6 @@ import {
   GitBranch,
   MoreVertical,
   Play,
-  Pause,
   Trash2,
   Loader2,
   Server,
@@ -59,8 +58,7 @@ import {
   pinSession,
   unpinSession,
   getUsageHistory,
-  pauseWorkspace,
-  resumeWorkspace,
+  startWorkspace,
   logout,
   type Session,
   type PodTemplate,
@@ -233,8 +231,7 @@ export default function DashboardPage() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [pinningSession, setPinningSession] = useState<string | null>(null);
-  const [pausingSession, setPausingSession] = useState<string | null>(null);
-  const [resumingSession, setResumingSession] = useState<string | null>(null);
+  const [startingSession, setStartingSession] = useState<string | null>(null);
   const [selectedPeriod, setSelectedPeriod] = useState('30d');
   const [loadingUsage, setLoadingUsage] = useState(false);
   const [visiblePods, setVisiblePods] = useState<Set<string>>(new Set());
@@ -552,30 +549,15 @@ export default function DashboardPage() {
     });
   };
 
-  const handlePauseSession = async (sessionId: string, workspaceId: string) => {
-    setPausingSession(sessionId);
+  const handleStartSession = async (sessionId: string, workspaceId: string) => {
+    setStartingSession(sessionId);
     try {
-      await pauseWorkspace(workspaceId);
-      setSessions((prev) =>
-        prev.map((s) => (s.id === sessionId ? { ...s, status: 'stopped' } : s))
-      );
-    } catch (error) {
-      console.error('Failed to pause session:', error);
-    } finally {
-      setPausingSession(null);
-      setOpenMenuId(null);
-    }
-  };
-
-  const handleResumeSession = async (sessionId: string, workspaceId: string) => {
-    setResumingSession(sessionId);
-    try {
-      await resumeWorkspace(workspaceId);
+      await startWorkspace(workspaceId);
       setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, status: 'active' } : s)));
     } catch (error) {
-      console.error('Failed to resume session:', error);
+      console.error('Failed to start session:', error);
     } finally {
-      setResumingSession(null);
+      setStartingSession(null);
       setOpenMenuId(null);
     }
   };
@@ -1294,36 +1276,20 @@ export default function DashboardPage() {
                                   <Play className="w-4 h-4" />
                                   Open
                                 </Link>
-                                {session.status === 'active' && session.workspace_id && (
-                                  <button
-                                    onClick={() =>
-                                      handlePauseSession(session.id, session.workspace_id!)
-                                    }
-                                    disabled={pausingSession === session.id}
-                                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-overlay"
-                                  >
-                                    {pausingSession === session.id ? (
-                                      <Loader2 className="w-4 h-4 animate-spin" />
-                                    ) : (
-                                      <Pause className="w-4 h-4" />
-                                    )}
-                                    Pause
-                                  </button>
-                                )}
                                 {session.status === 'stopped' && session.workspace_id && (
                                   <button
                                     onClick={() =>
-                                      handleResumeSession(session.id, session.workspace_id!)
+                                      handleStartSession(session.id, session.workspace_id!)
                                     }
-                                    disabled={resumingSession === session.id}
+                                    disabled={startingSession === session.id}
                                     className="w-full flex items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-overlay"
                                   >
-                                    {resumingSession === session.id ? (
+                                    {startingSession === session.id ? (
                                       <Loader2 className="w-4 h-4 animate-spin" />
                                     ) : (
                                       <Play className="w-4 h-4" />
                                     )}
-                                    Resume
+                                    Start
                                   </button>
                                 )}
                                 <button
@@ -1571,34 +1537,17 @@ export default function DashboardPage() {
                                     <Play className="w-4 h-4" />
                                   </Button>
                                 </Link>
-                                {session.status === 'active' && session.workspace_id && (
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() =>
-                                      handlePauseSession(session.id, session.workspace_id!)
-                                    }
-                                    disabled={pausingSession === session.id}
-                                    title="Pause session"
-                                  >
-                                    {pausingSession === session.id ? (
-                                      <Loader2 className="w-4 h-4 animate-spin" />
-                                    ) : (
-                                      <Pause className="w-4 h-4 text-yellow-500" />
-                                    )}
-                                  </Button>
-                                )}
                                 {session.status === 'stopped' && session.workspace_id && (
                                   <Button
                                     variant="ghost"
                                     size="sm"
                                     onClick={() =>
-                                      handleResumeSession(session.id, session.workspace_id!)
+                                      handleStartSession(session.id, session.workspace_id!)
                                     }
-                                    disabled={resumingSession === session.id}
-                                    title="Resume session"
+                                    disabled={startingSession === session.id}
+                                    title="Start session"
                                   >
-                                    {resumingSession === session.id ? (
+                                    {startingSession === session.id ? (
                                       <Loader2 className="w-4 h-4 animate-spin" />
                                     ) : (
                                       <Play className="w-4 h-4 text-green-500" />

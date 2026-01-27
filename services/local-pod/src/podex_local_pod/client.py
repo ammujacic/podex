@@ -14,7 +14,6 @@ from .config import LocalPodConfig
 from .docker_manager import LocalDockerManager
 from .native_manager import NativeManager
 from .rpc_handler import RPCHandler
-from .session_watcher import get_session_watcher
 
 logger = structlog.get_logger()
 
@@ -116,9 +115,6 @@ class LocalPodClient:
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._connected = False
 
-        # Initialize session watcher for Claude Code sync
-        self.session_watcher = get_session_watcher(self.sio)
-
         self._setup_handlers()
 
     def _setup_handlers(self) -> None:
@@ -135,9 +131,6 @@ class LocalPodClient:
             # Start heartbeat
             if self._heartbeat_task is None or self._heartbeat_task.done():
                 self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-
-            # Start Claude session watcher for real-time sync
-            await self.session_watcher.start()
 
         @self.sio.on("disconnect", namespace="/local-pod")
         async def on_disconnect() -> None:
@@ -332,9 +325,6 @@ class LocalPodClient:
             self._heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._heartbeat_task
-
-        # Stop Claude session watcher
-        await self.session_watcher.stop()
 
         # Stop RPC handler (cancels terminal streaming tasks)
         await self.rpc_handler.shutdown()

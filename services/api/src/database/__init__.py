@@ -37,7 +37,6 @@ from src.database.models import (
     CustomCommand,
     # Planning
     ExecutionPlan,
-    ExternalAgentEnvProfile,
     FileChange,
     FileCheckpoint,
     HardwareSpec,
@@ -61,8 +60,6 @@ from src.database.models import (
     Subagent,
     SubscriptionPlan,
     TaskProgress,
-    TerminalAgentSession,
-    TerminalIntegratedAgentType,
     UsageQuota,
     UsageRecord,
     User,
@@ -102,7 +99,6 @@ __all__ = [
     "CustomCommand",
     # Planning
     "ExecutionPlan",
-    "ExternalAgentEnvProfile",
     "FileChange",
     # Checkpoints
     "FileCheckpoint",
@@ -129,8 +125,6 @@ __all__ = [
     # Billing
     "SubscriptionPlan",
     "TaskProgress",
-    "TerminalAgentSession",
-    "TerminalIntegratedAgentType",
     "UsageQuota",
     "UsageRecord",
     # Core

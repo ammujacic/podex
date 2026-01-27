@@ -108,9 +108,6 @@ DEFAULT_SETTINGS = [
                 "max_tokens": 8192,
             },
             "custom": {"model_id": "claude-sonnet-4-5", "temperature": 0.5, "max_tokens": 4096},
-            "claude-code": {"model_id": "sonnet", "temperature": 0.3, "max_tokens": 8192},
-            "gemini-cli": {"model_id": "gemini-2.5-pro", "temperature": 0.3, "max_tokens": 8192},
-            "openai-codex": {"model_id": "gpt-4o", "temperature": 0.3, "max_tokens": 8192},
         },
         "description": "Default model settings per agent type",
         "category": "agents",
@@ -586,6 +583,55 @@ DEFAULT_SETTINGS = [
         },
         "description": "Backend TTS and speech configuration",
         "category": "voice",
+        "is_public": False,
+    },
+    # ===================
+    # OAUTH PROVIDERS
+    # ===================
+    {
+        "key": "oauth_providers",
+        "value": {
+            "anthropic": {
+                "enabled": True,
+                "name": "Anthropic (Claude Pro/Max)",
+                "description": (
+                    "Connect your Claude Pro or Max subscription to use your personal quota"
+                ),
+                "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+                "scopes": ["org:create_api_key", "user:profile", "user:inference"],
+                "icon": "anthropic",
+            },
+            "google": {
+                "enabled": True,
+                "name": "Google (Gemini)",
+                "description": "Connect your Google account to use Gemini models",
+                "scopes": [
+                    "https://www.googleapis.com/auth/generative-language",
+                    "https://www.googleapis.com/auth/userinfo.email",
+                    "https://www.googleapis.com/auth/userinfo.profile",
+                ],
+                "icon": "google",
+            },
+            "github": {
+                "enabled": True,
+                "name": "GitHub (Copilot)",
+                "description": "Connect your GitHub account to use GitHub Copilot",
+                "scopes": ["read:user", "user:email", "copilot"],
+                "icon": "github",
+            },
+        },
+        "description": "OAuth provider configuration for personal LLM subscriptions",
+        "category": "oauth",
+        "is_public": True,  # Frontend needs to display available providers
+    },
+    {
+        "key": "oauth_redirect_urls",
+        "value": {
+            "development": "http://localhost:3000/api/oauth/callback",
+            "production": "https://app.podex.dev/api/oauth/callback",
+        },
+        "description": "OAuth redirect URLs by environment",
+        "category": "oauth",
         "is_public": False,
     },
 ]

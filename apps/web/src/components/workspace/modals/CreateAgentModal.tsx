@@ -11,20 +11,13 @@ import {
   Copy,
   ExternalLink,
   Sparkles,
-  AlertTriangle,
   Loader2,
-  Plug,
+  AlertTriangle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSessionStore, type Agent } from '@/stores/session';
 import { useFocusTrap } from '@/hooks/useFocusTrap';
-import {
-  api,
-  createAgent,
-  getAgentTemplates,
-  createShareLink,
-  type AgentTemplate,
-} from '@/lib/api';
+import { createAgent, getAgentTemplates, createShareLink, type AgentTemplate } from '@/lib/api';
 import {
   createCustomAgentOption,
   createAgentOptionFromRole,
@@ -34,34 +27,16 @@ import {
 } from './agentConstants';
 import { useConfigStore } from '@/stores/config';
 
-interface TerminalAgentType {
-  id: string;
-  name: string;
-  slug: string;
-  logo_url?: string;
-  description?: string;
-  is_enabled: boolean;
-}
-
-interface EnvProfile {
-  id: string;
-  name: string;
-  agent_type_id?: string;
-  env_vars: Record<string, string>;
-}
-
 interface CreateAgentModalProps {
   sessionId: string;
   onClose: () => void;
 }
 
 /**
- * Modal for creating new agents (Podex native or external terminal).
+ * Modal for creating new Podex agents.
  */
 export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) {
-  const { addAgent, sessions } = useSessionStore();
-  const workspaceId = sessions[sessionId]?.workspaceId ?? '';
-  const [activeTab, setActiveTab] = useState<'podex' | 'external'>('podex');
+  const { addAgent } = useSessionStore();
 
   // Get agent roles from config store
   const agentRoles = useConfigStore((state) => state.agentRoles);
@@ -69,7 +44,7 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
   // Focus trap for accessibility
   const modalRef = useFocusTrap<HTMLDivElement>(true);
 
-  // Podex native agent state
+  // Agent state
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedAgent, setSelectedAgent] = useState<AgentOption | null>(null);
   const [customName, setCustomName] = useState('');
@@ -77,16 +52,6 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
   const [error, setError] = useState<string | null>(null);
   const [customTemplates, setCustomTemplates] = useState<AgentTemplate[]>([]);
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(true);
-
-  // External terminal agent state
-  const [terminalAgentTypes, setTerminalAgentTypes] = useState<TerminalAgentType[]>([]);
-  const [_envProfiles, setEnvProfiles] = useState<EnvProfile[]>([]);
-  const [selectedTerminalAgent, setSelectedTerminalAgent] = useState<TerminalAgentType | null>(
-    null
-  );
-  const [selectedEnvProfile, _setSelectedEnvProfile] = useState<EnvProfile | null>(null);
-  const [isLoadingTerminalAgents, setIsLoadingTerminalAgents] = useState(false);
-  const [_isLoadingEnvProfiles, setIsLoadingEnvProfiles] = useState(false);
 
   // Share state
   const [sharingAgentId, setSharingAgentId] = useState<string | null>(null);
@@ -108,40 +73,6 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
     };
     fetchTemplates();
   }, []);
-
-  // Fetch terminal agents when external tab is active
-  useEffect(() => {
-    if (activeTab === 'external') {
-      const fetchTerminalAgents = async () => {
-        setIsLoadingTerminalAgents(true);
-        try {
-          const data = await api.get<TerminalAgentType[]>(
-            '/api/v1/terminal-agents/terminal-agent-types'
-          );
-          setTerminalAgentTypes(data);
-        } catch (err) {
-          console.error('Failed to fetch terminal agents:', err);
-        } finally {
-          setIsLoadingTerminalAgents(false);
-        }
-      };
-
-      const fetchEnvProfiles = async () => {
-        setIsLoadingEnvProfiles(true);
-        try {
-          const data = await api.get<EnvProfile[]>('/api/v1/terminal-agents/env-profiles');
-          setEnvProfiles(data);
-        } catch (err) {
-          console.error('Failed to fetch env profiles:', err);
-        } finally {
-          setIsLoadingEnvProfiles(false);
-        }
-      };
-
-      fetchTerminalAgents();
-      fetchEnvProfiles();
-    }
-  }, [activeTab]);
 
   // Convert agent roles to AgentOption format
   const builtinAgentOptions: AgentOption[] = useMemo(() => {
@@ -167,80 +98,41 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
     );
   }, [searchQuery, builtinAgentOptions, customAgentOptions]);
 
-  // CLI agent roles that should be grouped separately
-  const CLI_AGENT_ROLES = ['claude-code', 'openai-codex', 'gemini-cli'];
-
-  // CLI agent roles that are coming soon (not yet fully supported)
-  const COMING_SOON_ROLES = ['openai-codex', 'gemini-cli'];
-
   // Group filtered agents
-  const builtinFiltered = filteredAgents.filter(
-    (a) => !a.isCustom && !CLI_AGENT_ROLES.includes(a.role)
-  );
-  const cliFiltered = filteredAgents.filter((a) => !a.isCustom && CLI_AGENT_ROLES.includes(a.role));
+  const builtinFiltered = filteredAgents.filter((a) => !a.isCustom);
   const customFiltered = filteredAgents.filter((a) => a.isCustom);
 
   const handleCreate = async () => {
+    if (!selectedAgent) return;
+
     setIsCreating(true);
     setError(null);
 
     try {
-      if (activeTab === 'podex') {
-        if (!selectedAgent) return;
+      const createdAgent = await createAgent(sessionId, {
+        name: customName || selectedAgent.name,
+        role: selectedAgent.role,
+        template_id: selectedAgent.templateId,
+      });
 
-        const createdAgent = await createAgent(sessionId, {
-          name: customName || selectedAgent.name,
-          role: selectedAgent.role,
-          template_id: selectedAgent.templateId,
-        });
+      const agentColor =
+        typeof createdAgent.config?.color === 'string'
+          ? createdAgent.config.color
+          : selectedAgent.color;
+      const agent: Agent = {
+        id: createdAgent.id,
+        name: createdAgent.name,
+        role: createdAgent.role as AgentRole,
+        model: createdAgent.model,
+        status: (createdAgent.status || 'idle') as AgentStatus,
+        color: agentColor,
+        mode: 'auto',
+        templateId: createdAgent.template_id ?? undefined,
+        conversationSessionId: null,
+        gridSpan: { colSpan: 1, rowSpan: 2 },
+      };
 
-        const agentColor =
-          typeof createdAgent.config?.color === 'string'
-            ? createdAgent.config.color
-            : selectedAgent.color;
-        const agent: Agent = {
-          id: createdAgent.id,
-          name: createdAgent.name,
-          role: createdAgent.role as AgentRole,
-          model: createdAgent.model,
-          status: (createdAgent.status || 'idle') as AgentStatus,
-          color: agentColor,
-          mode: 'auto',
-          templateId: createdAgent.template_id ?? undefined,
-          messages: [],
-          gridSpan: { colSpan: 1, rowSpan: 2 },
-        };
-
-        addAgent(sessionId, agent);
-      } else {
-        if (!selectedTerminalAgent) return;
-        if (!workspaceId) {
-          throw new Error('No workspace available. Please ensure the session has a workspace.');
-        }
-
-        const terminalSession = await api.post<{ id: string }>('/api/v1/terminal-agents', {
-          workspace_id: workspaceId,
-          agent_type_id: selectedTerminalAgent.id,
-          env_profile_id: selectedEnvProfile?.id,
-        });
-
-        const agent: Agent = {
-          id: `terminal-${terminalSession.id}`,
-          name: customName || selectedTerminalAgent.name,
-          role: 'custom' as AgentRole,
-          model: 'terminal',
-          status: 'active' as AgentStatus,
-          color: '#10b981',
-          mode: 'auto',
-          terminalSessionId: terminalSession.id,
-          terminalAgentTypeId: selectedTerminalAgent.id,
-          messages: [],
-          gridSpan: { colSpan: 2, rowSpan: 2 },
-        };
-
-        addAgent(sessionId, agent);
-      }
-
+      addAgent(sessionId, agent);
       onClose();
     } catch (err: unknown) {
       let errorMessage = 'Failed to create agent';
@@ -298,28 +190,22 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
   const AgentButton = ({ agent }: { agent: AgentOption }) => {
     const Icon = agent.icon;
     const isSharing = sharingAgentId === agent.id;
-    const isComingSoon = COMING_SOON_ROLES.includes(agent.role);
 
     return (
       <div className="relative">
         <button
           onClick={() => {
-            if (isComingSoon) return;
             setSelectedAgent(agent);
             setCustomName('');
             setSharingAgentId(null);
           }}
-          disabled={isComingSoon}
           className={cn(
             'w-full flex items-center gap-3 rounded-lg border p-3 text-left transition-all min-h-[72px]',
-            isComingSoon
-              ? 'border-border-default bg-elevated/50 cursor-not-allowed opacity-60'
-              : selectedAgent?.id === agent.id
-                ? 'border-accent-primary bg-accent-primary/5 ring-1 ring-accent-primary'
-                : 'border-border-default hover:border-border-subtle hover:bg-overlay'
+            selectedAgent?.id === agent.id
+              ? 'border-accent-primary bg-accent-primary/5 ring-1 ring-accent-primary'
+              : 'border-border-default hover:border-border-subtle hover:bg-overlay'
           )}
           aria-pressed={selectedAgent?.id === agent.id}
-          aria-disabled={isComingSoon}
         >
           <div
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
@@ -330,19 +216,7 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <h3
-                className={cn(
-                  'font-medium truncate',
-                  isComingSoon ? 'text-text-muted' : 'text-text-primary'
-                )}
-              >
-                {agent.name}
-              </h3>
-              {isComingSoon && (
-                <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 font-medium">
-                  Coming Soon
-                </span>
-              )}
+              <h3 className={cn('font-medium truncate', 'text-text-primary')}>{agent.name}</h3>
               {agent.isCustom && (
                 <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 font-medium">
                   Custom
@@ -479,199 +353,97 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
           </button>
         </div>
 
-        {/* Tabs */}
-        <div className="px-6 py-3 border-b border-border-subtle shrink-0" role="tablist">
-          <div className="flex gap-1">
-            <button
-              role="tab"
-              aria-selected={activeTab === 'podex'}
-              onClick={() => setActiveTab('podex')}
-              className={cn(
-                'px-4 py-2 text-sm font-medium rounded-lg transition-colors min-h-[40px]',
-                activeTab === 'podex'
-                  ? 'bg-accent-primary text-text-inverse'
-                  : 'text-text-secondary hover:text-text-primary hover:bg-overlay'
-              )}
-            >
-              Podex Native
-            </button>
-            <button
-              role="tab"
-              aria-selected={activeTab === 'external'}
-              onClick={() => setActiveTab('external')}
-              className={cn(
-                'px-4 py-2 text-sm font-medium rounded-lg transition-colors min-h-[40px]',
-                activeTab === 'external'
-                  ? 'bg-accent-primary text-text-inverse'
-                  : 'text-text-secondary hover:text-text-primary hover:bg-overlay'
-              )}
-            >
-              External Terminal
-            </button>
-          </div>
-        </div>
-
         {/* Content */}
-        <div className="flex-1 overflow-y-auto" role="tabpanel">
-          {activeTab === 'podex' ? (
-            <div className="p-6">
-              {/* Search */}
-              <div className="mb-4">
-                <div className="relative">
-                  <Search
-                    className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-muted"
-                    aria-hidden="true"
-                  />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search agents..."
-                    autoFocus
-                    className="w-full rounded-lg border border-border-default bg-elevated pl-10 pr-4 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:outline-none focus:ring-1 focus:ring-accent-primary min-h-[44px]"
-                    aria-label="Search agents"
-                  />
-                </div>
-              </div>
+        <div className="flex-1 overflow-y-auto p-6">
+          {/* Search */}
+          <div className="mb-4">
+            <div className="relative">
+              <Search
+                className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-muted"
+                aria-hidden="true"
+              />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search agents..."
+                autoFocus
+                className="w-full rounded-lg border border-border-default bg-elevated pl-10 pr-4 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:outline-none focus:ring-1 focus:ring-accent-primary min-h-[44px]"
+                aria-label="Search agents"
+              />
+            </div>
+          </div>
 
-              {isLoadingTemplates ? (
-                <div className="flex items-center justify-center py-8 text-text-muted">
-                  <Loader2 className="h-5 w-5 animate-spin mr-2" aria-hidden="true" />
-                  Loading agents...
-                </div>
-              ) : filteredAgents.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-8 text-center">
-                  <Search className="h-8 w-8 text-text-muted mb-2" aria-hidden="true" />
-                  <p className="text-text-secondary">No agents found</p>
-                  <p className="text-sm text-text-muted">Try a different search term</p>
-                </div>
-              ) : (
-                <div className="space-y-6" role="listbox" aria-label="Available agents">
-                  {/* Podex Integrated CLI agents */}
-                  {cliFiltered.length > 0 && (
-                    <div>
-                      <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-3">
-                        Podex Integrated
-                      </h3>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        {cliFiltered.map((agent) => (
-                          <AgentButton key={agent.id} agent={agent} />
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Built-in agents */}
-                  {builtinFiltered.length > 0 && (
-                    <div>
-                      <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-3">
-                        Built-in Agents
-                      </h3>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        {builtinFiltered.map((agent) => (
-                          <AgentButton key={agent.id} agent={agent} />
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Custom agents */}
-                  {customFiltered.length > 0 && (
-                    <div>
-                      <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-3">
-                        Your Custom Agents
-                      </h3>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        {customFiltered.map((agent) => (
-                          <AgentButton key={agent.id} agent={agent} />
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* No custom agents hint */}
-                  {customTemplates.length === 0 && !searchQuery && (
-                    <div className="text-center py-4 px-6 rounded-lg bg-elevated border border-border-subtle">
-                      <Sparkles className="h-5 w-5 text-pink-400 mx-auto mb-2" aria-hidden="true" />
-                      <p className="text-sm text-text-secondary">
-                        Create your own agents with the <strong>Agent Builder</strong>
-                      </p>
-                    </div>
-                  )}
+          {isLoadingTemplates ? (
+            <div className="flex items-center justify-center py-8 text-text-muted">
+              <Loader2 className="h-5 w-5 animate-spin mr-2" aria-hidden="true" />
+              Loading agents...
+            </div>
+          ) : filteredAgents.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8 text-center">
+              <Search className="h-8 w-8 text-text-muted mb-2" aria-hidden="true" />
+              <p className="text-text-secondary">No agents found</p>
+              <p className="text-sm text-text-muted">Try a different search term</p>
+            </div>
+          ) : (
+            <div className="space-y-6" role="listbox" aria-label="Available agents">
+              {/* Built-in agents */}
+              {builtinFiltered.length > 0 && (
+                <div>
+                  <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-3">
+                    Built-in Agents
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {builtinFiltered.map((agent) => (
+                      <AgentButton key={agent.id} agent={agent} />
+                    ))}
+                  </div>
                 </div>
               )}
 
-              {/* Custom name input */}
-              {selectedAgent && (
-                <div className="mt-6 pt-6 border-t border-border-subtle">
-                  <label
-                    htmlFor="custom-name"
-                    className="block text-sm font-medium text-text-secondary mb-2"
-                  >
-                    Custom Name (optional)
-                  </label>
-                  <input
-                    id="custom-name"
-                    type="text"
-                    value={customName}
-                    onChange={(e) => setCustomName(e.target.value)}
-                    placeholder={selectedAgent.name}
-                    className="w-full rounded-lg border border-border-default bg-elevated px-4 py-2 text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:outline-none focus:ring-1 focus:ring-accent-primary min-h-[44px]"
-                  />
+              {/* Custom agents */}
+              {customFiltered.length > 0 && (
+                <div>
+                  <h3 className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-3">
+                    Your Custom Agents
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {customFiltered.map((agent) => (
+                      <AgentButton key={agent.id} agent={agent} />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* No custom agents hint */}
+              {customTemplates.length === 0 && !searchQuery && (
+                <div className="text-center py-4 px-6 rounded-lg bg-elevated border border-border-subtle">
+                  <Sparkles className="h-5 w-5 text-pink-400 mx-auto mb-2" aria-hidden="true" />
+                  <p className="text-sm text-text-secondary">
+                    Create your own agents with the <strong>Agent Builder</strong>
+                  </p>
                 </div>
               )}
             </div>
-          ) : (
-            <div className="p-6">
-              {/* External Terminal Agents */}
-              {isLoadingTerminalAgents ? (
-                <div className="flex items-center justify-center py-8 text-text-muted">
-                  <Loader2 className="h-5 w-5 animate-spin mr-2" aria-hidden="true" />
-                  Loading terminal agents...
-                </div>
-              ) : terminalAgentTypes.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-8 text-center">
-                  <Plug className="h-8 w-8 text-text-muted mb-2" aria-hidden="true" />
-                  <p className="text-text-secondary">No terminal agents available</p>
-                  <p className="text-sm text-text-muted">Configure external agents in settings</p>
-                </div>
-              ) : (
-                <div className="space-y-2" role="listbox" aria-label="Terminal agents">
-                  {terminalAgentTypes.map((agent) => (
-                    <button
-                      key={agent.id}
-                      onClick={() => setSelectedTerminalAgent(agent)}
-                      className={cn(
-                        'w-full p-4 rounded-lg border text-left transition-colors min-h-[72px]',
-                        selectedTerminalAgent?.id === agent.id
-                          ? 'border-accent-primary bg-accent-primary/10'
-                          : 'border-border-default hover:border-border-subtle hover:bg-overlay'
-                      )}
-                      aria-pressed={selectedTerminalAgent?.id === agent.id}
-                    >
-                      <div className="flex items-center gap-3">
-                        {agent.logo_url ? (
-                          /* eslint-disable-next-line @next/next/no-img-element */
-                          <img
-                            src={agent.logo_url}
-                            alt=""
-                            className="h-8 w-8 rounded"
-                            aria-hidden="true"
-                          />
-                        ) : (
-                          <Plug className="h-8 w-8 text-text-muted" aria-hidden="true" />
-                        )}
-                        <div>
-                          <h4 className="font-medium text-text-primary">{agent.name}</h4>
-                          {agent.description && (
-                            <p className="text-sm text-text-muted">{agent.description}</p>
-                          )}
-                        </div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
+          )}
+
+          {/* Custom name input */}
+          {selectedAgent && (
+            <div className="mt-6 pt-6 border-t border-border-subtle">
+              <label
+                htmlFor="custom-name"
+                className="block text-sm font-medium text-text-secondary mb-2"
+              >
+                Custom Name (optional)
+              </label>
+              <input
+                id="custom-name"
+                type="text"
+                value={customName}
+                onChange={(e) => setCustomName(e.target.value)}
+                placeholder={selectedAgent.name}
+                className="w-full rounded-lg border border-border-default bg-elevated px-4 py-2 text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:outline-none focus:ring-1 focus:ring-accent-primary min-h-[44px]"
+              />
             </div>
           )}
         </div>
@@ -726,15 +498,9 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
         {/* Footer */}
         <div className="flex items-center justify-between gap-3 border-t border-border-subtle px-6 py-4 shrink-0">
           <div className="text-sm text-text-muted">
-            {activeTab === 'podex' && selectedAgent && (
+            {selectedAgent && (
               <span>
                 Selected: <strong className="text-text-secondary">{selectedAgent.name}</strong>
-              </span>
-            )}
-            {activeTab === 'external' && selectedTerminalAgent && (
-              <span>
-                Selected:{' '}
-                <strong className="text-text-secondary">{selectedTerminalAgent.name}</strong>
               </span>
             )}
           </div>
@@ -748,11 +514,7 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
             </button>
             <button
               onClick={handleCreate}
-              disabled={
-                (activeTab === 'podex' && !selectedAgent) ||
-                (activeTab === 'external' && !selectedTerminalAgent) ||
-                isCreating
-              }
+              disabled={!selectedAgent || isCreating}
               className="rounded-lg bg-accent-primary px-4 py-2 text-sm font-medium text-text-inverse hover:bg-accent-primary/90 disabled:cursor-not-allowed disabled:opacity-50 min-h-[44px] flex items-center gap-2"
             >
               {isCreating ? (

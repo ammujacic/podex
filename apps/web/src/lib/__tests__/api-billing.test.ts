@@ -197,12 +197,8 @@ import {
   acknowledgeCostAlert,
   // Workspace APIs
   getWorkspaceStatus,
-  pauseWorkspace,
-  resumeWorkspace,
+  startWorkspace,
   scaleWorkspace,
-  getStandbySettings,
-  updateStandbySettings,
-  clearStandbySettings,
   // Git APIs
   getGitStatus,
   getGitBranches,
@@ -950,7 +946,7 @@ describe('API - Workspace Functions', () => {
   });
 
   describe('Workspace Status', () => {
-    const mockStatus = { id: 'workspace-1', status: 'running', standby_at: null };
+    const mockStatus = { id: 'workspace-1', status: 'running' };
 
     it('should get workspace status', async () => {
       mockApiClient.get.mockResolvedValue(mockStatus);
@@ -961,22 +957,12 @@ describe('API - Workspace Functions', () => {
       expect(result.status).toBe('running');
     });
 
-    it('should pause workspace', async () => {
-      const pausedStatus = { ...mockStatus, status: 'standby' };
-      mockApiClient.post.mockResolvedValue(pausedStatus);
-
-      const result = await pauseWorkspace('workspace-1');
-
-      expect(mockApiClient.post).toHaveBeenCalledWith('/api/workspaces/workspace-1/pause', {});
-      expect(result.status).toBe('standby');
-    });
-
-    it('should resume workspace', async () => {
+    it('should start a stopped workspace', async () => {
       mockApiClient.post.mockResolvedValue(mockStatus);
 
-      const result = await resumeWorkspace('workspace-1');
+      const result = await startWorkspace('workspace-1');
 
-      expect(mockApiClient.post).toHaveBeenCalledWith('/api/workspaces/workspace-1/resume', {});
+      expect(mockApiClient.post).toHaveBeenCalledWith('/api/workspaces/workspace-1/start', {});
       expect(result.status).toBe('running');
     });
   });
@@ -993,50 +979,6 @@ describe('API - Workspace Functions', () => {
         new_tier: 'gpu-t4',
       });
       expect(result.new_tier).toBe('gpu-t4');
-    });
-  });
-
-  describe('Standby Settings', () => {
-    const mockSettings = { timeout_minutes: 30, source: 'session' };
-
-    it('should get standby settings', async () => {
-      mockApiClient.get.mockResolvedValue(mockSettings);
-
-      const result = await getStandbySettings('session-1');
-
-      expect(mockApiClient.get).toHaveBeenCalledWith('/api/sessions/session-1/standby-settings');
-      expect(result.timeout_minutes).toBe(30);
-    });
-
-    it('should update standby settings', async () => {
-      const updated = { ...mockSettings, timeout_minutes: 60 };
-      mockApiClient.patch.mockResolvedValue(updated);
-
-      const result = await updateStandbySettings('session-1', 60);
-
-      expect(mockApiClient.patch).toHaveBeenCalledWith('/api/sessions/session-1/standby-settings', {
-        timeout_minutes: 60,
-      });
-      expect(result.timeout_minutes).toBe(60);
-    });
-
-    it('should update standby settings to never', async () => {
-      mockApiClient.patch.mockResolvedValue({ timeout_minutes: null, source: 'session' });
-
-      await updateStandbySettings('session-1', null);
-
-      expect(mockApiClient.patch).toHaveBeenCalledWith('/api/sessions/session-1/standby-settings', {
-        timeout_minutes: null,
-      });
-    });
-
-    it('should clear standby settings', async () => {
-      mockApiClient.delete.mockResolvedValue({ timeout_minutes: null, source: 'user_default' });
-
-      const result = await clearStandbySettings('session-1');
-
-      expect(mockApiClient.delete).toHaveBeenCalledWith('/api/sessions/session-1/standby-settings');
-      expect(result.source).toBe('user_default');
     });
   });
 });

@@ -28,7 +28,7 @@ import { useConfigStore } from '@/stores/config';
 import { cn } from '@/lib/utils';
 import { NoFilesEmptyState, ErrorEmptyState } from '@/components/ui/EmptyState';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { getLanguageFromPath } from './CodeEditor';
+import { getLanguageFromPath } from '@/lib/vscode/languageUtils';
 import {
   listFiles,
   getFileContent,

@@ -22,11 +22,10 @@ import {
   getWorkspaceStatus,
   getGitStatus,
   listAgents,
-  getAgentMessages,
   type Session,
   type AgentResponse,
 } from '@/lib/api';
-import type { Agent, AgentMessage } from '@/stores/session';
+import type { Agent } from '@/stores/session';
 import { useUser, useAuthStore } from '@/stores/auth';
 import { useSessionStore } from '@/stores/session';
 import { useEditorStore } from '@/stores/editor';
@@ -172,45 +171,18 @@ export default function SessionPage() {
 
         if (isCancelled) return;
 
-        // Fetch messages for each agent (backend creates default Chat agent on session creation)
-        const agentsWithMessages: Agent[] = await Promise.all(
-          agentsData.map(async (agentResponse: AgentResponse, index: number) => {
-            try {
-              const messagesData = await getAgentMessages(sessionId, agentResponse.id);
-              const messages: AgentMessage[] = messagesData.map((msg) => ({
-                id: msg.id,
-                role: msg.role,
-                content: msg.content,
-                timestamp: new Date(msg.created_at),
-              }));
-
-              return {
-                id: agentResponse.id,
-                name: agentResponse.name,
-                role: agentResponse.role as Agent['role'],
-                model: agentResponse.model,
-                modelDisplayName: agentResponse.model_display_name ?? undefined,
-                status: agentResponse.status as Agent['status'],
-                color: agentColors[index % agentColors.length] ?? 'agent-1',
-                messages,
-                mode: (agentResponse.mode as Agent['mode']) || 'ask',
-              };
-            } catch {
-              // If messages fail to load, return agent with empty messages
-              return {
-                id: agentResponse.id,
-                name: agentResponse.name,
-                role: agentResponse.role as Agent['role'],
-                model: agentResponse.model,
-                modelDisplayName: agentResponse.model_display_name ?? undefined,
-                status: agentResponse.status as Agent['status'],
-                color: agentColors[index % agentColors.length] ?? 'agent-1',
-                messages: [],
-                mode: (agentResponse.mode as Agent['mode']) || 'ask',
-              };
-            }
-          })
-        );
+        // Map agents from API response (conversation sessions are loaded separately)
+        const agents: Agent[] = agentsData.map((agentResponse: AgentResponse, index: number) => ({
+          id: agentResponse.id,
+          name: agentResponse.name,
+          role: agentResponse.role as Agent['role'],
+          model: agentResponse.model,
+          modelDisplayName: agentResponse.model_display_name ?? undefined,
+          status: agentResponse.status as Agent['status'],
+          color: agentColors[index % agentColors.length] ?? 'agent-1',
+          conversationSessionId: agentResponse.conversation_session_id ?? null,
+          mode: (agentResponse.mode as Agent['mode']) || 'ask',
+        }));
 
         if (isCancelled) return;
 
@@ -226,14 +198,13 @@ export default function SessionPage() {
             workspaceId: data.workspace_id ?? '', // Store requires string, empty means no workspace yet
             branch: data.branch,
             gitUrl: data.git_url,
-            agents: agentsWithMessages,
+            agents,
+            conversationSessions: [], // Conversation sessions loaded separately
             filePreviews: [],
             activeAgentId: null,
             viewMode: 'grid',
             workspaceStatus: data.status === 'active' ? 'running' : 'pending',
             workspaceStatusChecking: false,
-            standbyAt: null,
-            standbySettings: null,
             editorGridCardId: null,
             previewGridCardId: null,
             localPodId: data.local_pod_id ?? null,
@@ -267,52 +238,29 @@ export default function SessionPage() {
             mount_path: data.mount_path ?? null,
           });
 
-          // Merge agents: keep local state (messages, status) but ensure all API agents exist
+          // Merge agents: sync from API but preserve local state where appropriate
           const existingAgentIds = new Set(existingSession.agents.map((a: Agent) => a.id));
 
-          for (const apiAgent of agentsWithMessages) {
+          for (const apiAgent of agents) {
             if (!existingAgentIds.has(apiAgent.id)) {
               // Agent exists in API but not in local store - add it
-              // For CLI agents, don't set model from API - let Claude sync set it from session file
-              const isCliAgent =
-                apiAgent.role === 'claude-code' ||
-                apiAgent.role === 'openai-codex' ||
-                apiAgent.role === 'gemini-cli';
-              if (isCliAgent) {
-                addAgentToSession(sessionId, {
-                  ...apiAgent,
-                  model: '', // Empty until Claude sync sets it from session file
-                  modelDisplayName: undefined,
-                });
-              } else {
-                addAgentToSession(sessionId, apiAgent);
-              }
+              addAgentToSession(sessionId, apiAgent);
             } else {
-              // Agent exists in both - update with API data but keep local messages if more recent
+              // Agent exists in both - update with API data but keep local conversation reference
               const localAgent = existingSession.agents.find((a: Agent) => a.id === apiAgent.id);
               if (localAgent) {
-                // Merge messages: use API messages if local is empty, otherwise keep local
-                const mergedMessages =
-                  localAgent.messages.length > 0 ? localAgent.messages : apiAgent.messages;
-                // For CLI agents, DON'T update model from API - Claude sync provides accurate real-time model info
-                // The model field is set by useClaudeSessionSync from the actual session file
-                const isCliAgent =
-                  localAgent.role === 'claude-code' ||
-                  localAgent.role === 'openai-codex' ||
-                  localAgent.role === 'gemini-cli';
                 const updates: Partial<Agent> = {
                   name: apiAgent.name,
                   status: apiAgent.status,
-                  messages: mergedMessages,
+                  model: apiAgent.model,
+                  modelDisplayName: apiAgent.modelDisplayName,
                   // Fix corrupted localStorage data: ensure color is always set
                   color: localAgent.color || apiAgent.color,
                   mode: localAgent.mode || apiAgent.mode,
+                  // Keep local conversation session ID if set, otherwise use API value
+                  conversationSessionId:
+                    localAgent.conversationSessionId ?? apiAgent.conversationSessionId,
                 };
-                // Only update model for non-CLI agents
-                if (!isCliAgent) {
-                  updates.model = apiAgent.model;
-                  updates.modelDisplayName = apiAgent.modelDisplayName;
-                }
                 updateAgent(sessionId, apiAgent.id, updates);
               }
             }
@@ -320,11 +268,8 @@ export default function SessionPage() {
 
           // Remove agents that exist locally but not in API (i.e., were deleted elsewhere)
           // Also remove corrupted agents (missing id or essential fields)
-          const apiAgentIds = new Set(agentsWithMessages.map((a) => a.id));
+          const apiAgentIds = new Set(agents.map((a) => a.id));
           for (const localAgent of existingSession.agents) {
-            // Skip terminal agents - they're managed separately and may not exist in API
-            if (localAgent.terminalSessionId) continue;
-
             // Remove corrupted agents (missing required fields)
             if (!localAgent.id || !localAgent.name) {
               if (localAgent.id) {
@@ -344,17 +289,11 @@ export default function SessionPage() {
           try {
             if (data.status === 'active') {
               setWorkspaceStatusChecking(sessionId, true);
-              useSessionStore.getState().setWorkspaceStatus(sessionId, 'pending', null);
+              useSessionStore.getState().setWorkspaceStatus(sessionId, 'pending');
             }
             const workspaceStatus = await getWorkspaceStatus(data.workspace_id);
             if (!isCancelled) {
-              useSessionStore
-                .getState()
-                .setWorkspaceStatus(
-                  sessionId,
-                  workspaceStatus.status,
-                  workspaceStatus.standby_at ?? null
-                );
+              useSessionStore.getState().setWorkspaceStatus(sessionId, workspaceStatus.status);
               setWorkspaceStatusChecking(sessionId, false);
             }
           } catch (statusError) {

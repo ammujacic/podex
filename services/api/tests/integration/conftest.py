@@ -95,7 +95,6 @@ async def integration_engine() -> AsyncGenerator[AsyncEngine, None]:
     await engine.dispose()
 
     # Give asyncpg time to clean up connection resources
-    import asyncio
 
     await asyncio.sleep(0.05)
 
@@ -406,7 +405,6 @@ async def cleanup_after_test() -> AsyncGenerator[None, None]:
     """
     yield
 
-    import asyncio
     import gc
 
     # Clear app dependency overrides first
@@ -433,7 +431,6 @@ async def test_client(
     The client engine is disposed before this fixture completes to ensure all
     connections are closed in the current event loop.
     """
-    import asyncio
     from unittest.mock import AsyncMock, patch
 
     from src.database.connection import get_db
@@ -507,7 +504,7 @@ async def test_client(
         await asyncio.sleep(0.3)
 
         # 3. Close any remaining active sessions
-        for session in list(_active_sessions):
+        for session in _active_sessions:
             try:
                 await session.close()
             except Exception:

@@ -210,7 +210,7 @@ export function MobileMenu({ isOpen, onClose }: MobileMenuProps) {
                     ? 'bg-status-success'
                     : session.workspaceStatus === 'pending'
                       ? 'bg-status-warning animate-pulse'
-                      : session.workspaceStatus === 'standby'
+                      : session.workspaceStatus === 'stopped'
                         ? 'bg-status-warning'
                         : 'bg-status-error';
 

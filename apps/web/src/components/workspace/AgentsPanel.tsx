@@ -3,7 +3,6 @@
 import { Bot } from 'lucide-react';
 import { useSessionStore } from '@/stores/session';
 import { cn } from '@/lib/utils';
-import { ClaudeIcon } from '@/components/icons/ClaudeIcon';
 
 interface AgentsPanelProps {
   sessionId: string;
@@ -28,7 +27,6 @@ export function AgentsPanel({ sessionId }: AgentsPanelProps) {
         <div className="p-3 space-y-2">
           {agents.map((agent) => {
             const isActive = session?.activeAgentId === agent.id;
-            const isClaudeAgent = agent.role === 'claude-code' || !!agent.claudeSessionInfo;
             return (
               <button
                 key={agent.id}
@@ -38,20 +36,10 @@ export function AgentsPanel({ sessionId }: AgentsPanelProps) {
                   isActive ? 'bg-accent-primary text-text-inverse' : 'bg-elevated hover:bg-overlay'
                 )}
               >
-                {isClaudeAgent ? (
-                  <ClaudeIcon
-                    size={16}
-                    className={cn(
-                      'shrink-0 ml-0.5',
-                      isActive ? 'text-text-inverse' : 'text-[#D97757]'
-                    )}
-                  />
-                ) : (
-                  <div
-                    className="h-3.5 w-3.5 rounded-full shrink-0 ml-0.5"
-                    style={{ backgroundColor: agent.color }}
-                  />
-                )}
+                <div
+                  className="h-3.5 w-3.5 rounded-full shrink-0 ml-0.5"
+                  style={{ backgroundColor: agent.color }}
+                />
                 <div className="flex-1 truncate">
                   <div
                     className={cn(
@@ -67,7 +55,7 @@ export function AgentsPanel({ sessionId }: AgentsPanelProps) {
                       isActive ? 'text-text-inverse/70' : 'text-text-muted'
                     )}
                   >
-                    {agent.role === 'claude-code' ? 'Claude Code' : agent.role}
+                    {agent.role}
                   </div>
                 </div>
                 <div
