@@ -102,12 +102,6 @@ const statusConfig: Record<
     label: 'Stopped',
     icon: <Circle className="w-2 h-2" />,
   },
-  standby: {
-    color: 'text-accent-warning',
-    bg: 'bg-accent-warning/10',
-    label: 'Standby',
-    icon: <Circle className="w-2 h-2 fill-current" />,
-  },
   pending: {
     color: 'text-accent-warning',
     bg: 'bg-accent-warning/10',

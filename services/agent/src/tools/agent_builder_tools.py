@@ -159,8 +159,8 @@ class AgentTemplateConfig:
     slug: str
     system_prompt: str
     allowed_tools: list[str]
+    model: str
     description: str | None = None
-    model: str = "claude-sonnet-4-20250514"
     temperature: float | None = None
     icon: str | None = None
 
@@ -277,8 +277,8 @@ class AgentTemplatePreviewConfig:
     name: str
     system_prompt: str
     allowed_tools: list[str]
+    model: str
     description: str | None = None
-    model: str = "claude-sonnet-4-20250514"
     temperature: float | None = None
     icon: str | None = None
 

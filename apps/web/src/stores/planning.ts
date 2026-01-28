@@ -115,8 +115,9 @@ export const usePlanningStore = create<PlanningState>()(
       showComparisonView: false,
       comparisonPlanIds: [],
       settings: {
-        planningModel: 'claude-opus-4-20250514',
-        executionModel: 'claude-sonnet-4-20250514',
+        // Use Claude Opus 4.5 for planning and Sonnet 4.5 for execution by default
+        planningModel: 'claude-opus-4-5',
+        executionModel: 'claude-sonnet-4-5',
         parallelPlans: 3,
         backgroundPlanning: true,
         autoSelectSimplest: false,
@@ -274,8 +275,8 @@ export function transformBackgroundTask(data: any): BackgroundPlanTask {
 
 // Available models for planning
 export const AVAILABLE_MODELS = [
-  { id: 'claude-opus-4-20250514', name: 'Claude Opus 4', tier: 'premium' },
-  { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', tier: 'standard' },
+  { id: 'claude-opus-4-5', name: 'Claude Opus 4.5', tier: 'premium' },
+  { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', tier: 'standard' },
   { id: 'gpt-4o', name: 'GPT-4o', tier: 'premium' },
   { id: 'gpt-4o-mini', name: 'GPT-4o Mini', tier: 'standard' },
 ] as const;

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useMemo } from 'react';
-import { Check, ChevronDown, MessageSquare, Plus, Unplug } from 'lucide-react';
+import { Check, ChevronDown, MessageSquare, Plus } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -41,7 +41,7 @@ export function SessionDropdown({
   agentId: _agentId,
   currentConversation,
   onAttach,
-  onDetach,
+  onDetach: _onDetach,
   onCreateNew,
   className,
   disabled,
@@ -112,13 +112,6 @@ export function SessionDropdown({
               <span className="text-xs text-text-muted">
                 {formatRelativeTime(currentConversation.lastMessageAt)}
               </span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              className="flex items-center gap-2 cursor-pointer text-text-muted hover:text-text-secondary"
-              onClick={onDetach}
-            >
-              <Unplug className="h-3 w-3" />
-              <span>Detach session</span>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
           </>

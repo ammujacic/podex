@@ -72,6 +72,12 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
+# Install cloudflared (tunnel / public URL exposure)
+RUN ARCH=$(dpkg --print-architecture) \
+    && curl -fsSL -o /tmp/cloudflared.deb "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}.deb" \
+    && dpkg -i /tmp/cloudflared.deb \
+    && rm /tmp/cloudflared.deb
+
 # Create a non-root user 'dev' with sudo access
 RUN useradd -m -s /bin/zsh -G sudo dev \
     && echo "dev ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/dev \

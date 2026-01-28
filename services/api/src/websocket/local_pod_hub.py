@@ -617,3 +617,7 @@ class RPCMethods:
 
     # Host filesystem browsing
     HOST_BROWSE = "host.browse"
+
+    TUNNEL_START = "tunnel.start"
+    TUNNEL_STOP = "tunnel.stop"
+    TUNNEL_STATUS = "tunnel.status"

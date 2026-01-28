@@ -59,7 +59,8 @@ class AgentTemplateCreate(BaseModel):
     icon: str | None = None
     system_prompt: str = Field(..., min_length=10)
     allowed_tools: list[str]
-    model: str = "claude-sonnet-4-20250514"
+    # Model must be provided explicitly; defaults come from platform/role settings
+    model: str
     temperature: float | None = Field(None, ge=0, le=1)
     max_tokens: int | None = Field(None, ge=1, le=100000)
     config: dict[str, Any] | None = None

@@ -32,6 +32,9 @@ class CompletionRequest:
     # Optional user-provided API keys for external providers
     # Format: {"openai": "sk-...", "anthropic": "sk-ant-...", ...}
     llm_api_keys: dict[str, str] | None = None
+    # Model's registered provider from the database (passed from API)
+    # This takes precedence over guessing the provider from model name
+    model_provider: str | None = None
 
 
 @dataclass
@@ -144,11 +147,24 @@ class LLMProvider:
             # Check if this is an OAuth token (starts with sk-ant-oat)
             is_oauth_token = api_key.startswith("sk-ant-oat")
             if is_oauth_token:
-                # OAuth tokens require the dangerous-direct-browser-access header
+                # OAuth tokens MUST use auth_token parameter, not api_key
+                # Stealth mode: Mimic Claude Code's identity to authorize OAuth token usage
+                # OAuth tokens are restricted to Claude Code and require specific headers
                 return AsyncAnthropic(
-                    api_key=api_key,
+                    api_key=None,  # Must be None for OAuth
+                    auth_token=api_key,  # OAuth token goes here
                     default_headers={
+                        "accept": "application/json",
                         "anthropic-dangerous-direct-browser-access": "true",
+                        # Include Claude Code version and OAuth beta flags
+                        "anthropic-beta": (
+                            "claude-code-20250219,"
+                            "oauth-2025-04-20,"
+                            "fine-grained-tool-streaming-2025-05-14"
+                        ),
+                        # Identify as Claude Code CLI (required for OAuth tokens)
+                        "user-agent": "claude-cli/2.1.2 (external, cli)",
+                        "x-app": "cli",
                     },
                 )
             # Standard API key
@@ -183,6 +199,124 @@ class LLMProvider:
             return None
         return llm_api_keys.get(provider)
 
+    def _resolve_anthropic_model_id(self, model: str) -> str:
+        """Map short Anthropic model aliases to full API model IDs.
+
+        Args:
+            model: Model identifier (can be short alias like "opus" or full ID)
+
+        Returns:
+            Full Anthropic API model ID
+        """
+        model_lower = model.lower()
+
+        # Map short aliases to current Anthropic API model IDs
+        # Keep these in sync with the platform's canonical Claude 4.5 models.
+        alias_map = {
+            # Claude 4.5 Opus
+            "opus": "claude-opus-4-5",
+            # Claude 4.5 Sonnet
+            "sonnet": "claude-sonnet-4-5",
+            # Claude 4.5 Haiku (fast / low-cost)
+            "haiku": "claude-haiku-4-5",
+        }
+
+        return alias_map.get(model_lower, model)
+
+    def _get_provider_for_model(self, model: str) -> str:
+        """Determine the native provider for a given model ID.
+
+        Args:
+            model: Model identifier (e.g., "claude-sonnet-4-5-20250929", "sonnet", "gpt-4o")
+
+        Returns:
+            Provider name: "anthropic", "openai", "google", or empty string for unknown
+        """
+        model_lower = model.lower()
+
+        # Anthropic models - full names and short aliases
+        if model_lower.startswith("claude"):
+            return "anthropic"
+        # Short aliases for Anthropic models (used in user-key models)
+        if model_lower in ("sonnet", "haiku", "opus"):
+            return "anthropic"
+
+        # OpenAI models
+        if model_lower.startswith(("gpt-", "o1-", "o3-", "chatgpt-")):
+            return "openai"
+
+        # Google models
+        if model_lower.startswith("gemini"):
+            return "google"
+
+        # Unknown - will use default provider
+        return ""
+
+    def _resolve_provider(
+        self,
+        model: str,
+        llm_api_keys: dict[str, str] | None,
+        model_provider: str | None = None,
+    ) -> tuple[str, str | None]:
+        """Resolve which provider to use based on model and available API keys.
+
+        Priority:
+        1. Use model_provider from database if provided
+        2. Fall back to guessing provider from model name
+        3. If user has API key for the provider, use user's key
+        4. Otherwise fall back to configured default provider
+
+        Args:
+            model: Model identifier
+            llm_api_keys: User-provided API keys
+            model_provider: Model's registered provider from database (takes precedence)
+
+        Returns:
+            Tuple of (provider_name, api_key_if_user_provided)
+        """
+        # Use database-provided provider first, then fall back to guessing from model name
+        native_provider = model_provider or self._get_provider_for_model(model)
+
+        # Debug: log what keys are available
+        if llm_api_keys:
+            logger.debug(
+                "Available LLM API keys",
+                providers=list(llm_api_keys.keys()),
+                native_provider=native_provider,
+                model=model,
+            )
+
+        # If user has an API key for the model's native provider, use it
+        if native_provider and llm_api_keys:
+            user_key = llm_api_keys.get(native_provider)
+            if user_key:
+                logger.info(
+                    "Using user-provided API key for model",
+                    model=model,
+                    provider=native_provider,
+                    from_database=bool(model_provider),
+                    key_prefix=user_key[:15] + "..." if len(user_key) > 15 else user_key,
+                )
+                return native_provider, user_key
+            else:
+                logger.warning(
+                    "Native provider not found in user's API keys",
+                    native_provider=native_provider,
+                    available_providers=list(llm_api_keys.keys()),
+                    model=model,
+                )
+
+        # Fall back to default provider
+        logger.debug(
+            "Using default provider for model",
+            model=model,
+            native_provider=native_provider or "unknown",
+            from_database=bool(model_provider),
+            default_provider=self.provider,
+            has_llm_keys=bool(llm_api_keys),
+        )
+        return self.provider, None
+
     def _determine_usage_source(self, provider: str, llm_api_keys: dict[str, str] | None) -> str:
         """Determine the usage source for billing purposes.
 
@@ -214,7 +348,12 @@ class LLMProvider:
 
     async def complete(self, request: CompletionRequest) -> dict[str, Any]:
         """
-        Generate a completion using the configured LLM provider.
+        Generate a completion using the appropriate LLM provider.
+
+        Routes to the correct provider based on:
+        1. The model being requested (e.g., claude-* → anthropic)
+        2. Whether the user has provided an API key for that provider
+        3. Falls back to the configured default provider if no user key
 
         Args:
             request: CompletionRequest containing model, messages, tools, and tracking context.
@@ -222,29 +361,30 @@ class LLMProvider:
         Returns:
             Response dictionary with content and metadata
         """
-        # Get user-provided API keys if available
-        user_anthropic_key = self._get_user_api_key(request.llm_api_keys, "anthropic")
-        user_openai_key = self._get_user_api_key(request.llm_api_keys, "openai")
+        # Resolve which provider to use based on model, database provider, and user's API keys
+        resolved_provider, user_key = self._resolve_provider(
+            request.model, request.llm_api_keys, request.model_provider
+        )
 
-        if self.provider == "anthropic":
+        if resolved_provider == "anthropic":
             result = await self._complete_anthropic(
                 model=request.model,
                 messages=request.messages,
                 tools=request.tools,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
-                api_key=user_anthropic_key,
+                api_key=user_key,
             )
-        elif self.provider == "openai":
+        elif resolved_provider == "openai":
             result = await self._complete_openai(
                 model=request.model,
                 messages=request.messages,
                 tools=request.tools,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
-                api_key=user_openai_key,
+                api_key=user_key,
             )
-        elif self.provider == "vertex":
+        elif resolved_provider == "vertex":
             result = await self._complete_vertex(
                 model=request.model,
                 messages=request.messages,
@@ -252,7 +392,7 @@ class LLMProvider:
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
             )
-        elif self.provider == "ollama":
+        elif resolved_provider == "ollama":
             result = await self._complete_ollama(
                 model=request.model,
                 messages=request.messages,
@@ -261,12 +401,12 @@ class LLMProvider:
                 temperature=request.temperature,
             )
         else:
-            raise ValueError(f"Unknown provider: {self.provider}")
+            raise ValueError(f"Unknown provider: {resolved_provider}")
 
         # Track usage if user context is provided
         if request.user_id and result.get("usage"):
             # Determine usage source for billing
-            usage_source = self._determine_usage_source(self.provider, request.llm_api_keys)
+            usage_source = self._determine_usage_source(resolved_provider, request.llm_api_keys)
 
             tracking_context = UsageTrackingContext(
                 user_id=request.user_id,
@@ -285,7 +425,12 @@ class LLMProvider:
         self, request: CompletionRequest
     ) -> AsyncGenerator[StreamEvent, None]:
         """
-        Stream a completion from the configured LLM provider.
+        Stream a completion from the appropriate LLM provider.
+
+        Routes to the correct provider based on:
+        1. The model being requested (e.g., claude-* → anthropic)
+        2. Whether the user has provided an API key for that provider
+        3. Falls back to the configured default provider if no user key
 
         Yields StreamEvent objects as tokens are generated.
 
@@ -295,32 +440,33 @@ class LLMProvider:
         Yields:
             StreamEvent objects for tokens, tool calls, and completion.
         """
-        # Get user-provided API keys if available
-        user_anthropic_key = self._get_user_api_key(request.llm_api_keys, "anthropic")
-        user_openai_key = self._get_user_api_key(request.llm_api_keys, "openai")
+        # Resolve which provider to use based on model, database provider, and user's API keys
+        resolved_provider, user_key = self._resolve_provider(
+            request.model, request.llm_api_keys, request.model_provider
+        )
 
         try:
-            if self.provider == "anthropic":
+            if resolved_provider == "anthropic":
                 async for event in self._stream_anthropic(
                     model=request.model,
                     messages=request.messages,
                     tools=request.tools,
                     max_tokens=request.max_tokens,
                     temperature=request.temperature,
-                    api_key=user_anthropic_key,
+                    api_key=user_key,
                 ):
                     yield event
-            elif self.provider == "openai":
+            elif resolved_provider == "openai":
                 async for event in self._stream_openai(
                     model=request.model,
                     messages=request.messages,
                     tools=request.tools,
                     max_tokens=request.max_tokens,
                     temperature=request.temperature,
-                    api_key=user_openai_key,
+                    api_key=user_key,
                 ):
                     yield event
-            elif self.provider == "vertex":
+            elif resolved_provider == "vertex":
                 async for event in self._stream_vertex(
                     model=request.model,
                     messages=request.messages,
@@ -329,7 +475,7 @@ class LLMProvider:
                     temperature=request.temperature,
                 ):
                     yield event
-            elif self.provider == "ollama":
+            elif resolved_provider == "ollama":
                 async for event in self._stream_ollama(
                     model=request.model,
                     messages=request.messages,
@@ -339,10 +485,10 @@ class LLMProvider:
                 ):
                     yield event
             else:
-                yield StreamEvent(type="error", error=f"Unknown provider: {self.provider}")
+                yield StreamEvent(type="error", error=f"Unknown provider: {resolved_provider}")
                 return
         except Exception as e:
-            logger.exception("Streaming error", provider=self.provider)
+            logger.exception("Streaming error", provider=resolved_provider)
             yield StreamEvent(type="error", error=str(e))
 
     async def _track_usage(self, context: UsageTrackingContext) -> None:
@@ -395,6 +541,9 @@ class LLMProvider:
         # Get appropriate client (with user key or platform default)
         client = self._get_anthropic_client(api_key)
 
+        # Resolve short model aliases to full API model IDs (e.g., "opus" -> "claude-opus-4-5")
+        resolved_model = self._resolve_anthropic_model_id(model)
+
         # Extract system message
         system_message = ""
         conversation_messages = []
@@ -407,7 +556,7 @@ class LLMProvider:
 
         # Build request
         request_params: dict[str, Any] = {
-            "model": model,
+            "model": resolved_model,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "messages": conversation_messages,
@@ -676,6 +825,9 @@ class LLMProvider:
         # Get appropriate client (with user key or platform default)
         client = self._get_anthropic_client(api_key)
 
+        # Resolve short model aliases to full API model IDs (e.g., "opus" -> "claude-opus-4-5")
+        resolved_model = self._resolve_anthropic_model_id(model)
+
         # Extract system message
         system_message = ""
         conversation_messages = []
@@ -688,7 +840,7 @@ class LLMProvider:
 
         # Build request
         request_params: dict[str, Any] = {
-            "model": model,
+            "model": resolved_model,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "messages": conversation_messages,

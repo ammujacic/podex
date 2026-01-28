@@ -217,6 +217,12 @@ class AgentConfig:
     # Workspace container ID for remote execution
     # When set, file/command/git tools execute on the workspace container
     workspace_id: str | None = None
+    # User-provided LLM API keys (e.g., {"anthropic": "sk-ant-...", "openai": "sk-..."})
+    # These are used when the user wants to use their own API keys instead of platform keys
+    llm_api_keys: dict[str, str] | None = None
+    # Model's registered provider from database (e.g., "anthropic", "openai")
+    # This takes precedence over guessing from model name
+    model_provider: str | None = None
 
 
 class BaseAgent(ABC):
@@ -238,6 +244,9 @@ class BaseAgent(ABC):
         self.previous_mode = config.previous_mode  # For auto-revert tracking
         self.command_allowlist = config.command_allowlist or []
         self.user_id = config.user_id
+        # LLM API keys and model provider for routing to correct provider
+        self.llm_api_keys = config.llm_api_keys
+        self.model_provider = config.model_provider
         self.tools = self._get_all_tools()
         # Build system prompt with mode-specific instructions
         base_prompt = self._get_system_prompt()
@@ -904,6 +913,8 @@ Use this context to provide more personalized and consistent responses.
                 model=self.model,
                 messages=messages,
                 tools=tools_api if tools_api else None,
+                llm_api_keys=self.llm_api_keys,
+                model_provider=self.model_provider,
             )
             response = await self.llm_provider.complete(request)
 
@@ -919,9 +930,11 @@ Use this context to provide more personalized and consistent responses.
                 tracker = get_usage_tracker()
                 if tracker:
                     try:
-                        # Determine usage_source based on provider
+                        # Use resolved provider (model_provider from API) not config default.
+                        # Config default (llm_provider.provider) is e.g. ollama; when using
+                        # Anthropic OAuth we resolve to anthropic and must report external.
                         # vertex = included, ollama/lmstudio = local, anthropic/openai = external
-                        provider = self.llm_provider.provider
+                        provider = self.model_provider or self.llm_provider.provider
                         if provider in ("ollama", "lmstudio"):
                             usage_source = "local"
                         elif provider == "vertex":
@@ -1125,6 +1138,8 @@ Use this context to provide more personalized and consistent responses.
                 model=self.model,
                 messages=messages,
                 tools=tools_api if tools_api else None,
+                llm_api_keys=self.llm_api_keys,
+                model_provider=self.model_provider,
             )
 
             # Emit stream start
@@ -1228,10 +1243,10 @@ Use this context to provide more personalized and consistent responses.
                         tracker = get_usage_tracker()
                         if tracker:
                             try:
-                                # Determine usage_source based on provider:
-                                # vertex = included, ollama/lmstudio = local,
+                                # Use resolved provider (model_provider from API),
+                                # not config default. vertex = included, ollama/lmstudio = local,
                                 # anthropic/openai = external
-                                provider = self.llm_provider.provider
+                                provider = self.model_provider or self.llm_provider.provider
                                 if provider in ("ollama", "lmstudio"):
                                     usage_source = "local"
                                 elif provider == "vertex":

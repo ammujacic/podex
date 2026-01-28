@@ -560,9 +560,10 @@ DEFAULT_SETTINGS = [
         "value": {
             "maxParallelPlans": 5,
             "defaultModels": [
-                "claude-sonnet-4-20250514",
+                # Use Claude Sonnet 4.5 + Opus 4.5 as planning defaults
+                "claude-sonnet-4-5",
                 "gpt-4o",
-                "claude-opus-4-20250514",
+                "claude-opus-4-5",
             ],
         },
         "description": "Configuration for parallel plan generation",

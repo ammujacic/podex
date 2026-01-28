@@ -278,7 +278,8 @@ class Planner:
         )
 
         request = CompletionRequest(
-            model="claude-sonnet-4-20250514",
+            # Use Claude Sonnet 4.5 for execution plan generation
+            model="claude-sonnet-4-5",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=4096,
             temperature=0.3,

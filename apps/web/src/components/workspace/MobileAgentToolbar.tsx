@@ -33,7 +33,6 @@ import {
 import { ContextUsageRing } from './ContextUsageRing';
 import { MobileBottomSheet } from '@/components/ui/MobileBottomSheet';
 import { ModelTierSection, UserModelsSection } from './ModelTierSection';
-import { getModelDisplayName } from '@/lib/ui-utils';
 import type { ThinkingConfig } from '@podex/shared';
 
 interface MobileAgentToolbarProps {
@@ -154,13 +153,16 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
       try {
         await updateAgentSettings(sessionId, agent.id, { model: modelId });
         updateAgent(sessionId, agent.id, { model: modelId });
-        toast.success(`Model changed to ${getModelDisplayName(modelId)}`);
+        const pub = publicModels.find((m) => m.model_id === modelId);
+        const user = userModels.find((m) => m.model_id === modelId);
+        const label = pub?.display_name || user?.display_name || modelId;
+        toast.success(`Model changed to ${label}`);
       } catch (err) {
         console.error('Failed to change model:', err);
         toast.error('Failed to change model');
       }
     },
-    [sessionId, agent.id, updateAgent]
+    [sessionId, agent.id, updateAgent, publicModels, userModels]
   );
 
   const handleChangeMode = useCallback(
@@ -254,9 +256,7 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
             aria-label={`Current model: ${currentModelInfo?.display_name || agent.model}`}
           >
             <span className="truncate max-w-[80px]">
-              {currentModelInfo?.display_name ||
-                agent.modelDisplayName ||
-                getModelDisplayName(agent.model)}
+              {currentModelInfo?.display_name || agent.modelDisplayName || agent.model}
             </span>
             <ChevronDown className="h-3 w-3" aria-hidden="true" />
           </button>

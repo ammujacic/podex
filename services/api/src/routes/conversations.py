@@ -462,16 +462,15 @@ async def attach_conversation(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found in this session")
 
-    # Check if agent already has a conversation attached
-    if agent.conversation_session_id and agent.conversation_session_id != conversation_id:
+    # Check if agent already has a conversation attached (via relationship)
+    if agent.conversation_session and agent.conversation_session.id != conversation_id:
         raise HTTPException(
             status_code=409,
             detail="Agent already has a different conversation attached. Detach it first.",
         )
 
-    # Attach the conversation
+    # Attach the conversation (only the ConversationSession holds the FK)
     conversation.attached_to_agent_id = body.agent_id
-    agent.conversation_session_id = conversation_id
 
     await db.commit()
     await db.refresh(conversation)
@@ -526,14 +525,7 @@ async def detach_conversation(
 
     old_agent_id = conversation.attached_to_agent_id
 
-    if old_agent_id:
-        # Clear the agent's reference
-        result = await db.execute(select(AgentModel).where(AgentModel.id == old_agent_id))
-        agent = result.scalar_one_or_none()
-        if agent:
-            agent.conversation_session_id = None
-
-    # Clear the conversation's reference
+    # Clear the conversation's reference (only FK is on ConversationSession)
     conversation.attached_to_agent_id = None
 
     await db.commit()

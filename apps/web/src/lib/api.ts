@@ -800,6 +800,17 @@ export interface MessageResponse {
   created_at: string;
 }
 
+// Conversation session API types
+export interface ConversationSummary {
+  id: string;
+  name: string;
+  attached_to_agent_id: string | null;
+  message_count: number;
+  last_message_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 // Agent API methods
 export async function createAgent(
   sessionId: string,
@@ -810,6 +821,10 @@ export async function createAgent(
 
 export async function listAgents(sessionId: string): Promise<AgentResponse[]> {
   return api.get<AgentResponse[]>(`/api/sessions/${sessionId}/agents`);
+}
+
+export async function listConversations(sessionId: string): Promise<ConversationSummary[]> {
+  return api.get<ConversationSummary[]>(`/api/sessions/${sessionId}/conversations`);
 }
 
 // ==================== Agent Role Configuration ====================
@@ -1481,6 +1496,64 @@ export async function startWorkspace(workspaceId: string): Promise<WorkspaceStat
 
 export async function getWorkspaceStatus(workspaceId: string): Promise<WorkspaceStatusResponse> {
   return api.get<WorkspaceStatusResponse>(`/api/workspaces/${workspaceId}/status`);
+}
+
+// ==================== Tunnels (Cloudflare external exposure) ====================
+
+export interface TunnelItem {
+  id: string;
+  workspace_id: string;
+  port: number;
+  public_url: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TunnelListResponse {
+  tunnels: TunnelItem[];
+  total: number;
+}
+
+export interface TunnelStatusResponse {
+  status: string;
+  connected: boolean;
+  error: string | null;
+}
+
+export async function listTunnels(workspaceId: string): Promise<TunnelListResponse> {
+  return api.get<TunnelListResponse>(`/api/workspaces/${workspaceId}/tunnels`);
+}
+
+export async function exposePort(workspaceId: string, port: number): Promise<TunnelItem> {
+  return api.post<TunnelItem>(`/api/workspaces/${workspaceId}/tunnels`, { port });
+}
+
+export async function unexposePort(workspaceId: string, port: number): Promise<void> {
+  return api.delete(`/api/workspaces/${workspaceId}/tunnels/${port}`);
+}
+
+export async function getTunnelStatus(workspaceId: string): Promise<TunnelStatusResponse> {
+  return api.get<TunnelStatusResponse>(`/api/workspaces/${workspaceId}/tunnel-status`);
+}
+
+export interface WorkspaceExecRequest {
+  command: string;
+  working_dir?: string | null;
+  timeout?: number;
+}
+
+export interface WorkspaceExecResponse {
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+}
+
+export async function runWorkspaceCommand(
+  workspaceId: string,
+  body: WorkspaceExecRequest
+): Promise<WorkspaceExecResponse> {
+  return api.post<WorkspaceExecResponse>(`/api/workspaces/${workspaceId}/exec`, body);
 }
 
 export interface WorkspaceScaleResponse {

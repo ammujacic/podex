@@ -19,11 +19,11 @@ from src.audit_logger import AuditAction, AuditLogger
 from src.database import get_db
 from src.database.models import (
     AccessReview,
-    Agent,
     AuditLog,
+    ConversationMessage,
+    ConversationSession,
     DataExportRequest,
     DataRetentionPolicy,
-    Message,
     Session,
     UsageRecord,
     User,
@@ -401,16 +401,20 @@ async def run_retention_policies(
                         records_deleted = count_result.scalar() or 0
 
             elif policy.data_type == "messages":
-                # Delete messages from sessions older than retention period
+                # Delete messages from conversation sessions older than retention period
                 # Messages are cascade deleted with sessions, but this allows direct cleanup
                 if not dry_run:
                     delete_result = await db.execute(
-                        delete(Message).where(Message.created_at < retention_cutoff)
+                        delete(ConversationMessage).where(
+                            ConversationMessage.created_at < retention_cutoff
+                        )
                     )
                     records_deleted = getattr(delete_result, "rowcount", 0)
                 else:
                     count_result = await db.execute(
-                        select(func.count(Message.id)).where(Message.created_at < retention_cutoff)
+                        select(func.count(ConversationMessage.id)).where(
+                            ConversationMessage.created_at < retention_cutoff
+                        )
                     )
                     records_deleted = count_result.scalar() or 0
 
@@ -764,11 +768,14 @@ async def process_data_export(
 
         # Messages data
         if "messages" in categories:
-            # Get messages from user's sessions (via agents)
+            # Get messages from user's sessions via conversation sessions
             messages_query = (
-                select(Message)
-                .join(Agent, Message.agent_id == Agent.id)
-                .join(Session, Agent.session_id == Session.id)
+                select(ConversationMessage)
+                .join(
+                    ConversationSession,
+                    ConversationMessage.conversation_session_id == ConversationSession.id,
+                )
+                .join(Session, ConversationSession.session_id == Session.id)
                 .where(Session.owner_id == user_id)
                 .limit(5000)
             )

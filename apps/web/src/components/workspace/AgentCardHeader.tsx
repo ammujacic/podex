@@ -10,7 +10,7 @@ import {
   Copy,
   Globe,
   ImageOff,
-  Key,
+  Link2,
   Loader2,
   MoreVertical,
   Pencil,
@@ -144,7 +144,7 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
   onDelete,
   browserCaptureEnabled,
   browserAutoInclude,
-  hasPendingBrowserContext,
+  hasPendingBrowserContext: _hasPendingBrowserContext,
   onToggleBrowserCapture,
   onOpenBrowserContextDialog: _onOpenBrowserContextDialog,
 }) {
@@ -168,22 +168,7 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
               </span>
             )}
             <span className="font-medium text-text-primary">{displayTitle}</span>
-          </div>
 
-          {/* Role and Session dropdowns row */}
-          <div className="flex items-center gap-2 mb-1">
-            <RoleDropdown currentRole={agent.role} onRoleChange={onChangeRole} />
-            <SessionDropdown
-              sessionId={sessionId}
-              agentId={agent.id}
-              currentConversation={conversationSession}
-              onAttach={onAttachSession}
-              onDetach={onDetachSession}
-              onCreateNew={onCreateNewSession}
-            />
-          </div>
-
-          <div className="flex items-center gap-2 flex-wrap">
             {/* Status indicator */}
             <span
               className={cn(
@@ -201,7 +186,7 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
               agentId={agent.id}
               size="xs"
               onClick={onOpenCompaction}
-              className="my-1 shrink-0"
+              className="shrink-0"
             />
 
             {/* Mode badge */}
@@ -217,159 +202,6 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
               {currentModeConfig.label}
             </button>
 
-            {/* Plan mode toggle button */}
-            <button
-              onClick={onTogglePlanMode}
-              disabled={isTogglingPlanMode}
-              className={cn(
-                'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-colors cursor-pointer',
-                agent.mode === 'plan'
-                  ? 'bg-blue-500/30 text-blue-400 ring-1 ring-blue-400/50 hover:bg-blue-500/40'
-                  : 'bg-elevated text-text-muted hover:bg-overlay hover:text-text-primary',
-                isTogglingPlanMode && 'opacity-50 cursor-not-allowed'
-              )}
-              title={
-                agent.mode === 'plan'
-                  ? `Exit Plan mode (return to ${agent.previousMode || 'Ask'})`
-                  : 'Enter Plan mode (read-only)'
-              }
-            >
-              <ClipboardList className="h-3 w-3" />
-              <span>Plan</span>
-              {agent.mode === 'plan' && (
-                <span
-                  className="ml-0.5 h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse"
-                  aria-hidden="true"
-                />
-              )}
-            </button>
-
-            {/* Extended Thinking toggle */}
-            {currentModelInfo?.supportsThinking && (
-              <button
-                onClick={onOpenThinkingDialog}
-                className={cn(
-                  'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-colors cursor-pointer',
-                  agent.thinkingConfig?.enabled
-                    ? 'bg-purple-500/30 text-purple-400 ring-1 ring-purple-400/50 hover:bg-purple-500/40'
-                    : 'bg-elevated text-text-muted hover:bg-overlay hover:text-text-primary'
-                )}
-                title={
-                  agent.thinkingConfig?.enabled
-                    ? `Extended Thinking: ${agent.thinkingConfig.budgetTokens.toLocaleString()} tokens`
-                    : 'Enable Extended Thinking'
-                }
-              >
-                <Brain className="h-3 w-3" />
-                <span>Think</span>
-                {agent.thinkingConfig?.enabled ? (
-                  <>
-                    <span className="text-purple-300">
-                      {Math.round(agent.thinkingConfig.budgetTokens / 1000)}K
-                    </span>
-                    <span
-                      className="ml-0.5 h-1.5 w-1.5 rounded-full bg-purple-400 animate-pulse"
-                      aria-hidden="true"
-                    />
-                  </>
-                ) : (
-                  <span className="text-text-muted/60">Off</span>
-                )}
-              </button>
-            )}
-
-            {/* Thinking coming soon badge */}
-            {currentModelInfo?.thinkingStatus === 'coming_soon' && (
-              <span
-                className="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium bg-gray-500/20 text-gray-400"
-                title="Extended thinking coming soon for this model"
-              >
-                <Brain className="h-3 w-3" />
-                Soon
-              </span>
-            )}
-
-            {/* Browser context capture toggle */}
-            {onToggleBrowserCapture && (
-              <button
-                onClick={onToggleBrowserCapture}
-                className={cn(
-                  'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition-colors cursor-pointer',
-                  browserCaptureEnabled || browserAutoInclude
-                    ? 'bg-emerald-500/30 text-emerald-400 ring-1 ring-emerald-400/50 hover:bg-emerald-500/40'
-                    : 'bg-elevated text-text-muted hover:bg-overlay hover:text-text-primary'
-                )}
-                title={
-                  browserCaptureEnabled
-                    ? 'Browser capture enabled - click to configure'
-                    : 'Capture browser context (console, network, errors) for debugging'
-                }
-              >
-                <Globe className="h-3 w-3" />
-                <span>Browser</span>
-                {(browserCaptureEnabled || hasPendingBrowserContext) && (
-                  <span
-                    className="ml-0.5 h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"
-                    aria-hidden="true"
-                  />
-                )}
-                {browserAutoInclude && <span className="text-emerald-300 text-[10px]">Auto</span>}
-              </button>
-            )}
-
-            {/* Undo/Checkpoint dropdown */}
-            {agentCheckpoints.length > 0 && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    className={cn(
-                      'flex items-center justify-center rounded-full p-1 text-xs transition-colors cursor-pointer',
-                      'bg-elevated text-text-muted hover:bg-overlay hover:text-text-primary',
-                      restoringCheckpointId && 'opacity-50 cursor-not-allowed'
-                    )}
-                    disabled={!!restoringCheckpointId}
-                    title="Undo changes"
-                  >
-                    <Undo2 className="h-3 w-3" />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="w-64">
-                  <DropdownMenuLabel className="text-xs text-text-muted">
-                    Restore to checkpoint
-                  </DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  {agentCheckpoints.slice(0, 10).map((cp) => (
-                    <DropdownMenuItem
-                      key={cp.id}
-                      onClick={() => onRestoreCheckpoint(cp.id, cp.description)}
-                      disabled={cp.status === 'restored' || !!restoringCheckpointId}
-                      className="cursor-pointer"
-                    >
-                      <div className="flex flex-col gap-0.5 w-full">
-                        <div className="flex items-center justify-between hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30">
-                          <span className="text-sm truncate">
-                            {cp.description || `Checkpoint #${cp.checkpointNumber}`}
-                          </span>
-                          {cp.status === 'restored' && (
-                            <span className="text-xs text-green-400">restored</span>
-                          )}
-                        </div>
-                        <span className="text-xs text-text-muted">
-                          {cp.fileCount} file{cp.fileCount !== 1 ? 's' : ''} • +{cp.totalLinesAdded}
-                          /-{cp.totalLinesRemoved}
-                        </span>
-                      </div>
-                    </DropdownMenuItem>
-                  ))}
-                  {agentCheckpoints.length > 10 && (
-                    <DropdownMenuItem disabled className="text-xs text-text-muted">
-                      +{agentCheckpoints.length - 10} more checkpoints
-                    </DropdownMenuItem>
-                  )}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
-
             {/* Auto-switched badge */}
             {agent.previousMode && (
               <span
@@ -380,64 +212,30 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                 Auto
               </span>
             )}
-
-            {/* Pending approval badge */}
-            {pendingApprovalCount > 0 && (
-              <span className="flex items-center gap-1 rounded-full bg-yellow-500/20 px-2 py-0.5 text-xs font-medium text-yellow-400 animate-pulse">
-                <Shield className="h-3 w-3" />
-                {pendingApprovalCount}
-              </span>
-            )}
-
-            {/* Attention badge */}
-            {hasAttention && (
-              <button
-                onClick={onOpenAttentionPanel}
-                className={cn(
-                  'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium cursor-pointer transition-all',
-                  hasUnread && 'animate-pulse',
-                  highestPriorityAttention?.type === 'error' && 'bg-red-500/20 text-red-400',
-                  highestPriorityAttention?.type === 'needs_approval' &&
-                    'bg-yellow-500/20 text-yellow-400',
-                  highestPriorityAttention?.type === 'completed' &&
-                    'bg-green-500/20 text-green-400',
-                  highestPriorityAttention?.type === 'waiting_input' &&
-                    'bg-blue-500/20 text-blue-400',
-                  !hasUnread && 'opacity-60'
-                )}
-                title={highestPriorityAttention?.title}
-              >
-                <Bell className="h-3 w-3" />
-                {hasUnread ? (
-                  <>
-                    <span className="font-semibold">{unreadCount}</span>
-                    {unreadCount !== agentAttentionsCount && (
-                      <span className="text-[10px] opacity-70">/{agentAttentionsCount}</span>
-                    )}
-                    <span
-                      className="h-1.5 w-1.5 rounded-full bg-orange-400 animate-pulse"
-                      aria-hidden="true"
-                    />
-                  </>
-                ) : (
-                  <>
-                    <span>{agentAttentionsCount}</span>
-                    <span className="h-1.5 w-1.5 rounded-full bg-blue-400" aria-hidden="true" />
-                  </>
-                )}
-              </button>
-            )}
-
-            {/* Worktree status badge */}
-            <WorktreeStatus worktree={agentWorktree} />
           </div>
 
-          {/* Model selector row */}
-          <div className="flex items-center gap-2">
+          {/* Role, Session, and Model dropdowns row */}
+          <div className="flex items-center gap-2 mb-1">
+            <RoleDropdown currentRole={agent.role} onRoleChange={onChangeRole} />
+            <SessionDropdown
+              sessionId={sessionId}
+              agentId={agent.id}
+              currentConversation={conversationSession}
+              onAttach={onAttachSession}
+              onDetach={onDetachSession}
+              onCreateNew={onCreateNewSession}
+            />
+
+            {/* Model selector */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary cursor-pointer">
-                  {getModelDisplayName(agent.model)}
+                <button
+                  className={cn(
+                    'flex items-center gap-1.5 rounded px-2 py-1 text-xs transition-colors',
+                    'bg-elevated text-text-secondary hover:bg-overlay hover:text-text-primary'
+                  )}
+                >
+                  <span>{getModelDisplayName(agent.model)}</span>
                   {currentModelInfo && <ModelCapabilityBadges model={currentModelInfo} compact />}
                   {!currentModelInfo?.supportsVision && (
                     <span
@@ -447,7 +245,7 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                       <ImageOff className="h-3 w-3" />
                     </span>
                   )}
-                  <ChevronDown className="h-3 w-3" />
+                  <ChevronDown className="h-3 w-3 text-text-muted" />
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-64">
@@ -537,7 +335,7 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                     href="/settings/connections"
                     className="flex items-center gap-2 text-text-secondary hover:text-text-primary"
                   >
-                    <Key className="h-4 w-4" />
+                    <Link2 className="h-4 w-4" />
                     <span>
                       {modelsByTier.userApi.length > 0
                         ? 'Manage Connected Accounts'
@@ -547,6 +345,111 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Undo/Checkpoint dropdown */}
+            {agentCheckpoints.length > 0 && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    className={cn(
+                      'flex items-center justify-center rounded-full p-1 text-xs transition-colors cursor-pointer',
+                      'bg-elevated text-text-muted hover:bg-overlay hover:text-text-primary',
+                      restoringCheckpointId && 'opacity-50 cursor-not-allowed'
+                    )}
+                    disabled={!!restoringCheckpointId}
+                    title="Undo changes"
+                  >
+                    <Undo2 className="h-3 w-3" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-64">
+                  <DropdownMenuLabel className="text-xs text-text-muted">
+                    Restore to checkpoint
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  {agentCheckpoints.slice(0, 10).map((cp) => (
+                    <DropdownMenuItem
+                      key={cp.id}
+                      onClick={() => onRestoreCheckpoint(cp.id, cp.description)}
+                      disabled={cp.status === 'restored' || !!restoringCheckpointId}
+                      className="cursor-pointer"
+                    >
+                      <div className="flex flex-col gap-0.5 w-full">
+                        <div className="flex items-center justify-between hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30">
+                          <span className="text-sm truncate">
+                            {cp.description || `Checkpoint #${cp.checkpointNumber}`}
+                          </span>
+                          {cp.status === 'restored' && (
+                            <span className="text-xs text-green-400">restored</span>
+                          )}
+                        </div>
+                        <span className="text-xs text-text-muted">
+                          {cp.fileCount} file{cp.fileCount !== 1 ? 's' : ''} • +{cp.totalLinesAdded}
+                          /-{cp.totalLinesRemoved}
+                        </span>
+                      </div>
+                    </DropdownMenuItem>
+                  ))}
+                  {agentCheckpoints.length > 10 && (
+                    <DropdownMenuItem disabled className="text-xs text-text-muted">
+                      +{agentCheckpoints.length - 10} more checkpoints
+                    </DropdownMenuItem>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+
+            {/* Pending approval badge */}
+            {pendingApprovalCount > 0 && (
+              <span className="flex items-center gap-1 rounded-full bg-yellow-500/20 px-2 py-0.5 text-xs font-medium text-yellow-400 animate-pulse">
+                <Shield className="h-3 w-3" />
+                {pendingApprovalCount}
+              </span>
+            )}
+
+            {/* Attention badge */}
+            {hasAttention && (
+              <button
+                onClick={onOpenAttentionPanel}
+                className={cn(
+                  'flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium cursor-pointer transition-all',
+                  hasUnread && 'animate-pulse',
+                  highestPriorityAttention?.type === 'error' && 'bg-red-500/20 text-red-400',
+                  highestPriorityAttention?.type === 'needs_approval' &&
+                    'bg-yellow-500/20 text-yellow-400',
+                  highestPriorityAttention?.type === 'completed' &&
+                    'bg-green-500/20 text-green-400',
+                  highestPriorityAttention?.type === 'waiting_input' &&
+                    'bg-blue-500/20 text-blue-400',
+                  !hasUnread && 'opacity-60'
+                )}
+                title={highestPriorityAttention?.title}
+              >
+                <Bell className="h-3 w-3" />
+                {hasUnread ? (
+                  <>
+                    <span className="font-semibold">{unreadCount}</span>
+                    {unreadCount !== agentAttentionsCount && (
+                      <span className="text-[10px] opacity-70">/{agentAttentionsCount}</span>
+                    )}
+                    <span
+                      className="h-1.5 w-1.5 rounded-full bg-orange-400 animate-pulse"
+                      aria-hidden="true"
+                    />
+                  </>
+                ) : (
+                  <>
+                    <span>{agentAttentionsCount}</span>
+                    <span className="h-1.5 w-1.5 rounded-full bg-blue-400" aria-hidden="true" />
+                  </>
+                )}
+              </button>
+            )}
+
+            {/* Worktree status badge */}
+            <WorktreeStatus worktree={agentWorktree} />
           </div>
         </div>
       </div>
@@ -572,6 +475,37 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
             <Pencil className="mr-2 h-4 w-4" />
             Rename
           </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={onTogglePlanMode}
+            disabled={isTogglingPlanMode}
+            className="cursor-pointer"
+          >
+            <ClipboardList className="mr-2 h-4 w-4" />
+            {agent.mode === 'plan' ? `Exit Plan Mode` : 'Enter Plan Mode'}
+            {agent.mode === 'plan' && (
+              <span className="ml-auto h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
+            )}
+          </DropdownMenuItem>
+          {currentModelInfo?.supportsThinking && (
+            <DropdownMenuItem onClick={onOpenThinkingDialog} className="cursor-pointer">
+              <Brain className="mr-2 h-4 w-4" />
+              Extended Thinking
+              {agent.thinkingConfig?.enabled && (
+                <span className="ml-auto text-purple-400">
+                  {Math.round(agent.thinkingConfig.budgetTokens / 1000)}K
+                </span>
+              )}
+            </DropdownMenuItem>
+          )}
+          {onToggleBrowserCapture && (
+            <DropdownMenuItem onClick={onToggleBrowserCapture} className="cursor-pointer">
+              <Globe className="mr-2 h-4 w-4" />
+              Browser Capture
+              {(browserCaptureEnabled || browserAutoInclude) && (
+                <span className="ml-auto h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              )}
+            </DropdownMenuItem>
+          )}
           <DropdownMenuSub>
             <DropdownMenuSubTrigger>
               <Settings2 className="mr-2 h-4 w-4" />
@@ -651,7 +585,7 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                   href="/settings/connections"
                   className="flex items-center gap-2 text-text-secondary hover:text-text-primary"
                 >
-                  <Key className="h-4 w-4" />
+                  <Link2 className="h-4 w-4" />
                   <span>
                     {modelsByTier.userApi.length > 0
                       ? 'Manage Connected Accounts'

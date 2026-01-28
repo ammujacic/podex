@@ -1572,6 +1572,207 @@ async def check_workspace_health(
     )
 
 
+# ==================== Workspace Exec (run command in workspace) ====================
+
+
+class WorkspaceExecRequest(BaseModel):
+    """Request to run a command in the workspace."""
+
+    command: str
+    working_dir: str | None = None
+    timeout: int = 120
+
+
+class WorkspaceExecResponse(BaseModel):
+    """Response from workspace exec."""
+
+    exit_code: int
+    stdout: str
+    stderr: str
+
+
+@router.post("/{workspace_id}/exec", response_model=WorkspaceExecResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def exec_in_workspace(
+    workspace_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    body: WorkspaceExecRequest,
+    db: DbSession,
+) -> WorkspaceExecResponse:
+    """Run a shell command in the workspace (e.g. for installs, scripts)."""
+    from src.services.workspace_router import workspace_router
+
+    workspace = await verify_workspace_access(workspace_id, request, db)
+    user_id: str = getattr(request.state, "user_id", "") or ""
+
+    result = await workspace_router.exec_command(
+        workspace_id=workspace.id,
+        user_id=user_id,
+        command=body.command,
+        working_dir=body.working_dir,
+        exec_timeout=body.timeout,
+    )
+    return WorkspaceExecResponse(
+        exit_code=result.get("exit_code", -1),
+        stdout=result.get("stdout", ""),
+        stderr=result.get("stderr", ""),
+    )
+
+
+# ==================== Tunnels (Cloudflare external exposure) ====================
+
+
+class ExposePortRequest(BaseModel):
+    """Request to expose a workspace port via tunnel."""
+
+    port: int
+
+
+class TunnelItem(BaseModel):
+    """Single tunnel record (no token)."""
+
+    id: str
+    workspace_id: str
+    port: int
+    public_url: str
+    status: str
+    created_at: str
+    updated_at: str
+
+
+class TunnelListResponse(BaseModel):
+    """List of tunnels for a workspace."""
+
+    tunnels: list[TunnelItem]
+    total: int
+
+
+class TunnelStatusResponse(BaseModel):
+    """Daemon health for tunnel operations."""
+
+    status: str
+    connected: bool
+    error: str | None = None
+
+
+@router.post("/{workspace_id}/tunnels", response_model=TunnelItem, status_code=201)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def expose_port(
+    workspace_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    body: ExposePortRequest,
+    db: DbSession,
+) -> TunnelItem:
+    """Expose a workspace port to the internet via Cloudflare Tunnel.
+
+    Only supported for workspaces on a local pod. Creates tunnel, DNS, and
+    starts cloudflared on the pod.
+    """
+    from src.services.tunnel_manager import create_tunnel_for_workspace
+    from src.websocket.local_pod_hub import PodNotConnectedError
+
+    await verify_workspace_access(workspace_id, request, db)
+    port = body.port
+    if port < 1 or port > 65535:
+        raise HTTPException(status_code=400, detail="Port must be 1-65535")
+
+    try:
+        rec = await create_tunnel_for_workspace(db, workspace_id, port)
+    except PodNotConnectedError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Local pod not connected: {e.pod_id}",
+        ) from e
+    except RuntimeError as e:
+        logger.warning("Tunnel create failed", workspace_id=workspace_id, port=port, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    return TunnelItem(
+        id=rec.id,
+        workspace_id=rec.workspace_id,
+        port=rec.port,
+        public_url=rec.public_url,
+        status=rec.status,
+        created_at=rec.created_at.isoformat(),
+        updated_at=rec.updated_at.isoformat(),
+    )
+
+
+@router.delete("/{workspace_id}/tunnels/{port}", status_code=204)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def unexpose_port(
+    workspace_id: str,
+    port: int,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> None:
+    """Stop tunnel and remove port exposure."""
+    from src.services.tunnel_manager import delete_tunnel_for_workspace, list_tunnels
+
+    await verify_workspace_access(workspace_id, request, db)
+    if port < 1 or port > 65535:
+        raise HTTPException(status_code=400, detail="Port must be 1-65535")
+
+    tunnels = await list_tunnels(db, workspace_id)
+    if not any(t.port == port for t in tunnels):
+        raise HTTPException(status_code=404, detail="No tunnel for this port")
+
+    await delete_tunnel_for_workspace(db, workspace_id, port)
+
+
+@router.get("/{workspace_id}/tunnels", response_model=TunnelListResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def list_workspace_tunnels(
+    workspace_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> TunnelListResponse:
+    """List active tunnels for a workspace."""
+    from src.services.tunnel_manager import list_tunnels
+
+    await verify_workspace_access(workspace_id, request, db)
+    tunnels = await list_tunnels(db, workspace_id)
+    return TunnelListResponse(
+        tunnels=[
+            TunnelItem(
+                id=t.id,
+                workspace_id=t.workspace_id,
+                port=t.port,
+                public_url=t.public_url,
+                status=t.status,
+                created_at=t.created_at.isoformat(),
+                updated_at=t.updated_at.isoformat(),
+            )
+            for t in tunnels
+        ],
+        total=len(tunnels),
+    )
+
+
+@router.get("/{workspace_id}/tunnel-status", response_model=TunnelStatusResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def get_tunnel_status(
+    workspace_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> TunnelStatusResponse:
+    """Get tunnel daemon health for the workspace's pod."""
+    from src.services.tunnel_manager import get_tunnel_status as _get_status
+
+    await verify_workspace_access(workspace_id, request, db)
+    out = await _get_status(workspace_id)
+    return TunnelStatusResponse(
+        status=out.get("status", "unknown"),
+        connected=out.get("connected", False),
+        error=out.get("error"),
+    )
+
+
 # ==================== Terminal History ====================
 
 

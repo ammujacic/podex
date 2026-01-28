@@ -101,11 +101,11 @@ class ConversationSummarizer:
     # Thresholds for when to summarize
     DEFAULT_MESSAGE_THRESHOLD = 40  # Summarize when messages exceed this
     DEFAULT_TOKEN_THRESHOLD = 50000  # Summarize when tokens exceed this
-    SUMMARY_MODEL = "claude-sonnet-4-20250514"  # Use faster model for summaries
 
     def __init__(
         self,
         llm_provider: "LLMProvider",
+        model: str,
         message_threshold: int | None = None,
         token_threshold: int | None = None,
     ) -> None:
@@ -116,8 +116,14 @@ class ConversationSummarizer:
             message_threshold: Message count threshold for summarization
             token_threshold: Token count threshold for summarization
         """
+        if not model:
+            raise ValueError(
+                "model is required for ConversationSummarizer; "
+                "pass the agent's resolved model from DB/role defaults."
+            )
         self._llm = llm_provider
-        self._tokenizer = Tokenizer()
+        self._model = model
+        self._tokenizer = Tokenizer(model)
         self._message_threshold = message_threshold or self.DEFAULT_MESSAGE_THRESHOLD
         self._token_threshold = token_threshold or self.DEFAULT_TOKEN_THRESHOLD
 
@@ -180,7 +186,7 @@ class ConversationSummarizer:
         prompt = SUMMARIZATION_PROMPT.format(conversation=conversation_text)
 
         request = CompletionRequest(
-            model=self.SUMMARY_MODEL,
+            model=self._model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=2000,
             temperature=0.3,  # Lower temperature for factual summaries

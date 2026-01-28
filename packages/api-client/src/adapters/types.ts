@@ -53,6 +53,8 @@ export interface AuthProvider {
   getAccessToken(): string | null;
   /** Called when API returns 401 to trigger logout. */
   onUnauthorized(): void;
+  /** Attempt to refresh the access token using refresh token. Returns true if successful. */
+  refreshToken(): Promise<boolean>;
 }
 
 /**

@@ -1,23 +1,28 @@
 """SQLAlchemy models for Podex database.
 
 All models are organized into domain-specific modules:
-- base.py: Base class and utilities
-- core.py: User, Session, Agent, Message, Workspace
-- agent_config.py: AgentTemplate, Subagent, AgentWorktree, AgentRoleConfig, AgentTool
-- billing.py: SubscriptionPlan, UserSubscription, UsageRecord, Invoice, etc.
-- checkpoints.py: FileCheckpoint, CheckpointFile, PendingChangeSet, ChangeSetFile
-- user_preferences.py: UserConfig, UserHook, CustomCommand
-- context.py: ConversationSummary, Memory, ContextCompactionSettings, CompactionLog
-- infrastructure.py: PodTemplate, LocalPod, MCPServer
-- notifications.py: Notification, PushSubscription, AgentAttention
-- organization.py: Organization, OrganizationMember, OrganizationSubscription, etc.
-- planning.py: ExecutionPlan, TaskProgress
-- knowledge.py: WikiDocument, UserCorrection
-- platform.py: PlatformSetting, LLMModel
-- extensions.py: UserExtension, WorkspaceExtension
+ - base.py: Base class and utilities
+ - core.py: User, Session, Agent, Workspace
+ - conversation.py: ConversationSession, ConversationMessage (portable chat sessions)
+ - agent_config.py: AgentTemplate, Subagent, AgentWorktree, AgentRoleConfig, AgentTool
+ - billing.py: SubscriptionPlan, UserSubscription, UsageRecord, Invoice, etc.
+ - checkpoints.py: FileCheckpoint, CheckpointFile, PendingChangeSet, ChangeSetFile
+ - user_preferences.py: UserConfig, UserHook, CustomCommand
+ - context.py: ConversationSummary, Memory, ContextCompactionSettings, CompactionLog
+ - infrastructure.py: PodTemplate, LocalPod, MCPServer
+ - notifications.py: Notification, PushSubscription, AgentAttention
+ - organization.py: Organization, OrganizationMember, OrganizationSubscription, etc.
+ - planning.py: ExecutionPlan, TaskProgress
+ - knowledge.py: WikiDocument, UserCorrection
+ - platform.py: PlatformSetting, LLMModel
+ - extensions.py: UserExtension, WorkspaceExtension
 """
 
+# ruff: noqa: I001
+
 # Base class and utilities
+from .base import Base, _generate_uuid
+
 # Agent configuration models
 from .agent_config import (
     AgentRoleConfig,
@@ -26,7 +31,6 @@ from .agent_config import (
     AgentWorktree,
     Subagent,
 )
-from .base import Base, _generate_uuid
 
 # Billing models
 from .billing import (
@@ -72,7 +76,6 @@ from .core import (
     Agent,
     AgentPendingApproval,
     FileChange,
-    Message,
     PendingChange,
     Session,
     SessionCollaborator,
@@ -143,6 +146,9 @@ from .platform import (
     ProjectHealthScore,
 )
 
+# Tunnel models (Cloudflare external exposure)
+from .tunnels import WorkspaceTunnel
+
 # Skill management models
 from .skill_sync import (
     MarketplaceSkill,
@@ -203,7 +209,6 @@ __all__ = [
     "MCPServer",
     "MarketplaceSkill",
     "Memory",
-    "Message",
     "Notification",
     "Organization",
     "OrganizationCreditTransaction",
@@ -249,5 +254,6 @@ __all__ = [
     "WikiDocument",
     "Workspace",
     "WorkspaceExtension",
+    "WorkspaceTunnel",
     "_generate_uuid",
 ]

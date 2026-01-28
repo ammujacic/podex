@@ -37,7 +37,7 @@ export function mapCostTierToReasoningEffort(costTier: string): ReasoningEffort 
  * Create a short display name from a full model name.
  * Only removes prefixes that leave recognizable names (e.g., "Claude Sonnet" → "Sonnet").
  * Keeps prefixes where removal would be confusing (e.g., "Llama 3.1" stays as is).
- * Normalizes Claude model names to "{Variant} {Version}" format (e.g., "Haiku 3.5" not "3.5 Haiku").
+ * Normalizes Claude model names to "{Variant} {Version}" format (e.g., "Haiku 4.5" not "4.5 Haiku").
  *
  * @param displayName - Full model display name
  * @returns Shortened name for UI display
@@ -46,7 +46,7 @@ export function createShortModelName(displayName: string): string {
   const name = displayName.replace(' (Direct)', '');
 
   // Handle Claude models - normalize to "{Variant} {Version}" format
-  // Matches: "Claude 3.5 Haiku", "Claude Haiku 3.5", "Claude Sonnet 4", etc.
+  // Matches: "Claude 4.5 Haiku", "Claude Haiku 4.5", "Claude Sonnet 4", etc.
   const claudeMatch = name.match(/^Claude\s+([\d.]+)?\s*(Opus|Sonnet|Haiku)\s*([\d.]+)?$/i);
   if (claudeMatch && claudeMatch[2]) {
     const version = claudeMatch[1] || claudeMatch[3] || '';

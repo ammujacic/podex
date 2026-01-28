@@ -1,5 +1,7 @@
 """Podex API Gateway - Main FastAPI application."""
 
+# ruff: noqa: I001
+
 import asyncio
 import contextlib
 import os
@@ -43,6 +45,7 @@ from src.routes import (
     agents,
     attention,
     auth,
+    auth_oauth,
     billing,
     changes,
     checkpoints,
@@ -157,6 +160,7 @@ class _BackgroundTasks:
     """Container for background tasks to avoid global statement."""
 
     quota_reset: asyncio.Task[None] | None = None
+    oauth_refresh: asyncio.Task[None] | None = None
     standby_check: asyncio.Task[None] | None = None
     workspace_provision: asyncio.Task[None] | None = None
     billing_maintenance: asyncio.Task[None] | None = None
@@ -292,6 +296,128 @@ async def quota_reset_background_task() -> None:
             _report_background_error("quota_reset", str(e), exc=e)
             # Continue running despite errors
             await asyncio.sleep(60)  # Wait a bit before retrying
+
+
+async def oauth_token_refresh_background_task() -> None:
+    """Background task to periodically refresh OAuth tokens that are expiring soon.
+
+    Runs every 30 minutes to check for OAuth tokens that will expire within 1 hour
+    and proactively refreshes them.
+
+    RELIABILITY: Uses asyncio.wait_for() timeout to prevent connection pool
+    exhaustion from hung operations.
+    """
+    from sqlalchemy import select
+    from src.database.models import UserOAuthToken
+    from src.services.oauth import get_oauth_provider
+
+    while True:
+        try:
+            async for db in get_db():
+                try:
+                    # Find tokens expiring within 1 hour
+                    import time
+
+                    one_hour_from_now = int(time.time()) + 3600
+                    logger.debug(
+                        "Checking for expiring OAuth tokens",
+                        current_time=int(time.time()),
+                        one_hour_from_now=one_hour_from_now,
+                    )
+
+                    result = await db.execute(
+                        select(UserOAuthToken)
+                        .where(
+                            UserOAuthToken.status.in_(["connected", "error"])
+                        )  # Also retry error tokens
+                        .where(UserOAuthToken.expires_at < one_hour_from_now)
+                        .where(UserOAuthToken.refresh_token.isnot(None))
+                    )
+                    expiring_tokens = result.scalars().all()
+
+                    logger.debug(
+                        "Found expiring OAuth tokens"
+                        if expiring_tokens
+                        else "No expiring OAuth tokens found",
+                        count=len(expiring_tokens),
+                    )
+
+                    if not expiring_tokens:
+                        continue
+
+                    logger.info(
+                        "Refreshing expiring OAuth tokens",
+                        count=len(expiring_tokens),
+                    )
+
+                    for token in expiring_tokens:
+                        try:
+                            logger.debug(
+                                "Attempting to refresh token",
+                                provider=token.provider,
+                                refresh_token_prefix=token.refresh_token[:20]
+                                if token.refresh_token
+                                else None,
+                                refresh_token_len=len(token.refresh_token)
+                                if token.refresh_token
+                                else 0,
+                            )
+                            oauth_provider = get_oauth_provider(token.provider)
+                            if not token.refresh_token:
+                                continue
+                            credentials = await asyncio.wait_for(
+                                oauth_provider.refresh_token(token.refresh_token),
+                                timeout=30.0,
+                            )
+
+                            # Update token
+                            token.access_token = credentials.access_token
+                            if credentials.refresh_token:
+                                token.refresh_token = credentials.refresh_token
+                            token.expires_at = credentials.expires_at
+                            token.status = "connected"
+                            token.last_error = None
+
+                            logger.info(
+                                "Refreshed OAuth token",
+                                provider=token.provider,
+                                user_id=token.user_id,
+                            )
+                        except Exception as e:
+                            token.status = "error"
+                            token.last_error = str(e)
+                            logger.warning(
+                                "Failed to refresh OAuth token",
+                                provider=token.provider,
+                                user_id=token.user_id,
+                                error=str(e),
+                            )
+
+                    await asyncio.wait_for(
+                        db.commit(),
+                        timeout=settings.BG_TASK_DB_TIMEOUT,
+                    )
+
+                except TimeoutError:
+                    await db.rollback()
+                    logger.exception("OAuth refresh timed out - possible DB connection issue")
+                    _report_background_error("oauth_refresh", "Database operation timed out")
+                except Exception as e:
+                    await db.rollback()
+                    logger.exception("Failed to refresh OAuth tokens", error=str(e))
+                    _report_background_error("oauth_refresh", str(e), exc=e)
+
+        except asyncio.CancelledError:
+            logger.info("OAuth refresh task cancelled")
+            break
+        except Exception as e:
+            logger.exception("Error in OAuth refresh task", error=str(e))
+            _report_background_error("oauth_refresh", str(e), exc=e)
+            await asyncio.sleep(60)
+            continue
+
+        # Run every 30 minutes
+        await asyncio.sleep(30 * 60)
 
 
 async def billing_maintenance_background_task() -> None:
@@ -1532,6 +1658,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     )
     logger.info("Credit enforcement background task started")
 
+    _tasks.oauth_refresh = create_monitored_task(
+        oauth_token_refresh_background_task(), "oauth_refresh"
+    )
+    logger.info("OAuth token refresh background task started")
+
     # Start terminal session cleanup task (cleans up stale sessions after 24 hours)
     await terminal_manager.start_cleanup_task()
     logger.info("Terminal session cleanup task started")
@@ -1775,7 +1906,10 @@ api_v1 = APIRouter()
 # Include all routes in v1 router
 api_v1.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_v1.include_router(mfa.router)  # Already has prefix
-api_v1.include_router(oauth.router, prefix="/oauth", tags=["oauth"])
+api_v1.include_router(
+    auth_oauth.router, prefix="/oauth", tags=["oauth"]
+)  # User authentication OAuth
+api_v1.include_router(oauth.router, prefix="/llm-oauth", tags=["llm-oauth"])  # LLM provider OAuth
 api_v1.include_router(sessions.router, prefix="/sessions", tags=["sessions"])
 api_v1.include_router(sharing.router, prefix="/sessions", tags=["sharing"])
 api_v1.include_router(conversations.router, tags=["conversations"])

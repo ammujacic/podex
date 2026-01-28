@@ -43,7 +43,8 @@ class AgentTemplate(Base):
     # Agent configuration
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
     allowed_tools: Mapped[list[str]] = mapped_column(JSONB, nullable=False)  # List of tool names
-    model: Mapped[str] = mapped_column(String(100), default="claude-sonnet-4-20250514")
+    # Default to Claude Sonnet 4.5, the platform's balanced model
+    model: Mapped[str] = mapped_column(String(100), default="claude-sonnet-4-5")
     temperature: Mapped[float | None] = mapped_column(Float)  # None means provider default
     max_tokens: Mapped[int | None] = mapped_column(Integer)
 

@@ -4,7 +4,6 @@
  */
 
 import type { Agent } from '@/stores/session';
-import { parseModelIdToDisplayName } from '@/lib/model-utils';
 
 // ============================================================================
 // Status Colors
@@ -140,25 +139,13 @@ export function getAgentColor(agent: Agent | { name: string; color?: string }): 
 // Model Display Names
 // ============================================================================
 
-const MODEL_DISPLAY_NAMES: Record<string, string> = {
-  'claude-sonnet-4-20250514': 'Sonnet 4',
-  'claude-opus-4-20250514': 'Opus 4',
-  'claude-3-5-sonnet-latest': 'Sonnet 3.5',
-  'claude-3-5-haiku-latest': 'Haiku 3.5',
-  'gpt-4o': 'GPT-4o',
-  'gpt-4o-mini': 'GPT-4o Mini',
-  o1: 'o1',
-  'o1-mini': 'o1 Mini',
-  'o3-mini': 'o3 Mini',
-  'gemini-2.0-flash': 'Gemini 2.0',
-  'gemini-1.5-pro': 'Gemini 1.5 Pro',
-};
-
 /**
  * Get human-readable display name for a model ID
  */
 export function getModelDisplayName(modelId: string): string {
-  return MODEL_DISPLAY_NAMES[modelId] || parseModelIdToDisplayName(modelId);
+  // Frontend no longer attempts to infer pretty names from IDs.
+  // Call sites should prefer backend model metadata; this is a minimal helper.
+  return modelId;
 }
 
 // ============================================================================

@@ -7,7 +7,7 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Uni
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from src.database.encrypted_types import EncryptedJSON
+from src.database.encrypted_types import EncryptedJSON, EncryptedString
 
 from .base import Base, _generate_uuid
 
@@ -219,8 +219,8 @@ class UserOAuthToken(Base):
     provider: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
 
     # OAuth tokens (encrypted at rest)
-    access_token: Mapped[str] = mapped_column(EncryptedJSON, nullable=False)
-    refresh_token: Mapped[str | None] = mapped_column(EncryptedJSON)
+    access_token: Mapped[str] = mapped_column(EncryptedString, nullable=False)
+    refresh_token: Mapped[str | None] = mapped_column(EncryptedString)
 
     # Token expiration (Unix timestamp)
     expires_at: Mapped[int] = mapped_column(Integer, nullable=False)

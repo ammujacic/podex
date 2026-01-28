@@ -22,10 +22,12 @@ import {
   getWorkspaceStatus,
   getGitStatus,
   listAgents,
+  listConversations,
   type Session,
   type AgentResponse,
+  type ConversationSummary,
 } from '@/lib/api';
-import type { Agent } from '@/stores/session';
+import type { Agent, ConversationSession } from '@/stores/session';
 import { useUser, useAuthStore } from '@/stores/auth';
 import { useSessionStore } from '@/stores/session';
 import { useEditorStore } from '@/stores/editor';
@@ -70,6 +72,7 @@ export default function SessionPage() {
   // Use getState() for initial check to avoid dependency on sessions object
   // This prevents the effect from re-running when any session changes
   const createSession = useSessionStore((s) => s.createSession);
+  const setConversationSessions = useSessionStore((s) => s.setConversationSessions);
   const setWorkspaceStatusChecking = useSessionStore((s) => s.setWorkspaceStatusChecking);
   const resetEditorLayout = useEditorStore((s) => s.resetLayout);
 
@@ -158,10 +161,11 @@ export default function SessionPage() {
 
     async function loadSession() {
       try {
-        // Fetch session and agents in parallel
-        const [data, agentsData] = await Promise.all([
+        // Fetch session, agents, and conversation sessions in parallel
+        const [data, agentsData, conversationsData] = await Promise.all([
           getSession(sessionId),
           listAgents(sessionId),
+          listConversations(sessionId),
         ]);
 
         // Check if request was cancelled
@@ -186,6 +190,20 @@ export default function SessionPage() {
 
         if (isCancelled) return;
 
+        // Map conversations from API response
+        const conversations: ConversationSession[] = conversationsData.map(
+          (conv: ConversationSummary) => ({
+            id: conv.id,
+            name: conv.name,
+            messages: [],
+            attachedToAgentId: conv.attached_to_agent_id,
+            messageCount: conv.message_count,
+            lastMessageAt: conv.last_message_at,
+            createdAt: conv.created_at,
+            updatedAt: conv.updated_at,
+          })
+        );
+
         // Sync session to Zustand store
         // Note: workspace_id can be null during session creation - handle gracefully
         // Components should check for valid workspaceId before performing terminal/LSP operations
@@ -199,7 +217,7 @@ export default function SessionPage() {
             branch: data.branch,
             gitUrl: data.git_url,
             agents,
-            conversationSessions: [], // Conversation sessions loaded separately
+            conversationSessions: conversations,
             filePreviews: [],
             activeAgentId: null,
             viewMode: 'grid',
@@ -283,6 +301,9 @@ export default function SessionPage() {
               removeAgent(sessionId, localAgent.id);
             }
           }
+
+          // Replace conversation sessions with backend source of truth
+          setConversationSessions(sessionId, conversations);
         }
 
         if (data.workspace_id) {

@@ -11,10 +11,10 @@ import {
   RefreshCw,
   Eye,
   EyeOff,
+  Check,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { browseLocalPodDirectory, type DirectoryEntry } from '@/lib/api';
-import { Button } from '@podex/ui';
 
 interface DirectoryBrowserProps {
   podId: string;
@@ -22,7 +22,11 @@ interface DirectoryBrowserProps {
   onSelect: (path: string | null) => void;
 }
 
-export function DirectoryBrowser({ podId, selectedPath, onSelect }: DirectoryBrowserProps) {
+export function DirectoryBrowser({
+  podId,
+  selectedPath: _selectedPath,
+  onSelect,
+}: DirectoryBrowserProps) {
   const [currentPath, setCurrentPath] = useState<string>('~');
   const [entries, setEntries] = useState<DirectoryEntry[]>([]);
   const [parentPath, setParentPath] = useState<string | null>(null);
@@ -58,20 +62,27 @@ export function DirectoryBrowser({ podId, selectedPath, onSelect }: DirectoryBro
 
   useEffect(() => {
     fetchDirectory(currentPath);
-  }, [fetchDirectory, currentPath]);
+    onSelect(currentPath);
+  }, [fetchDirectory, currentPath, onSelect]);
 
   const handleNavigate = (path: string) => {
     setCurrentPath(path);
+    // Auto-select when navigating
+    onSelect(path);
   };
 
   const handleGoUp = () => {
     if (parentPath) {
       setCurrentPath(parentPath);
+      // Auto-select when navigating
+      onSelect(parentPath);
     }
   };
 
   const handleGoHome = () => {
     setCurrentPath('~');
+    // Auto-select when navigating
+    onSelect('~');
   };
 
   const handleRefresh = () => {
@@ -80,18 +91,13 @@ export function DirectoryBrowser({ podId, selectedPath, onSelect }: DirectoryBro
 
   const handleSelectFolder = (entry: DirectoryEntry) => {
     if (entry.is_dir) {
-      // Navigate into the directory
+      // Navigate into the directory (will auto-select via handleNavigate)
       handleNavigate(entry.path);
     }
   };
 
-  const handleSelectCurrent = () => {
-    onSelect(currentPath);
-  };
-
   // Parse path into breadcrumbs
   const breadcrumbs = currentPath.split('/').filter(Boolean);
-  const isRootSelected = selectedPath === currentPath;
 
   // Only show directories in the list
   const directories = entries.filter((e) => e.is_dir);
@@ -206,32 +212,19 @@ export function DirectoryBrowser({ podId, selectedPath, onSelect }: DirectoryBro
         )}
       </div>
 
-      {/* Footer with selection */}
+      {/* Footer with current directory display */}
       <div className="px-4 py-3 border-t border-border-subtle bg-surface flex-shrink-0">
         <div className="flex items-center justify-between">
-          <div className="flex-1 min-w-0 mr-4">
-            <p className="text-xs text-text-muted">Current directory:</p>
-            <code className="text-sm text-text-primary font-mono truncate block">
+          <div className="flex-1 min-w-0">
+            <p className="text-xs text-text-muted mb-1">Selected workspace directory:</p>
+            <code className="text-sm text-accent-primary font-mono truncate block">
               {currentPath}
             </code>
           </div>
-          <Button
-            onClick={handleSelectCurrent}
-            size="sm"
-            variant={isRootSelected ? 'secondary' : 'primary'}
-          >
-            {isRootSelected ? 'Selected' : 'Select'}
-          </Button>
-        </div>
-
-        {selectedPath && selectedPath !== currentPath && (
-          <div className="mt-2 pt-2 border-t border-border-subtle">
-            <p className="text-xs text-text-muted">Selected workspace:</p>
-            <code className="text-sm text-accent-primary font-mono truncate block">
-              {selectedPath}
-            </code>
+          <div className="ml-4 flex items-center gap-2 text-accent-primary">
+            <Check className="h-4 w-4" />
           </div>
-        )}
+        </div>
       </div>
     </div>
   );

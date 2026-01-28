@@ -3,13 +3,53 @@
  */
 
 import type { AuthProvider } from '@podex/api-client';
+import { calculateExpiry } from '@podex/api-client';
 import { useAuthStore } from '@/stores/auth';
+import { getApiBaseUrlSync } from '@/lib/api-url';
 
 export class ZustandAuthProvider implements AuthProvider {
   private isRedirecting = false;
 
   getAccessToken(): string | null {
     return useAuthStore.getState().tokens?.accessToken ?? null;
+  }
+
+  async refreshToken(): Promise<boolean> {
+    const store = useAuthStore.getState();
+    const tokens = store.tokens;
+
+    try {
+      const apiBaseUrl = getApiBaseUrlSync();
+      const body = tokens?.refreshToken ? { refresh_token: tokens.refreshToken } : {};
+
+      // Call refresh endpoint directly to avoid circular dependency
+      const response = await fetch(`${apiBaseUrl}/api/auth/refresh`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        credentials: 'include', // Include httpOnly cookies
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        return false;
+      }
+
+      const data = await response.json();
+
+      // Update tokens in store
+      store.setTokens({
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token,
+        expiresAt: calculateExpiry(data.expires_in),
+      });
+
+      return true;
+    } catch {
+      // Refresh failed
+      return false;
+    }
   }
 
   onUnauthorized(): void {

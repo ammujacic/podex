@@ -1,19 +1,9 @@
-"""Core models: User, Session, Agent, Message, Workspace and related."""
+"""Core models: User, Session, Agent, Workspace and related."""
 
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import (
-    Boolean,
-    DateTime,
-    Float,
-    ForeignKey,
-    Integer,
-    String,
-    Text,
-    func,
-    quoted_name,
-)
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func, quoted_name
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -257,13 +247,6 @@ class Agent(Base):
     context_tokens_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     context_max_tokens: Mapped[int] = mapped_column(Integer, default=200000, nullable=False)
 
-    # Reference to attached conversation session (can be NULL if no conversation attached)
-    conversation_session_id: Mapped[str | None] = mapped_column(
-        UUID(as_uuid=False),
-        ForeignKey("conversation_sessions.id", ondelete="SET NULL"),
-        index=True,
-    )
-
     # Status tracking for watchdog (detects stuck agents)
     status_changed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
@@ -295,10 +278,11 @@ class Agent(Base):
         cascade="all, delete-orphan",
     )
     # Portable conversation session (can be attached/detached)
+    # The FK lives on ConversationSession.attached_to_agent_id
     conversation_session: Mapped["ConversationSession | None"] = relationship(
         "ConversationSession",
         back_populates="attached_agent",
-        foreign_keys=[conversation_session_id],
+        uselist=False,
     )
 
 
@@ -414,39 +398,6 @@ class PendingChange(Base):
     # Relationships
     session: Mapped["Session"] = relationship("Session")
     agent: Mapped["Agent"] = relationship("Agent")
-
-
-class Message(Base):
-    """Agent conversation message model."""
-
-    __tablename__ = "messages"
-
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
-    agent_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False),
-        ForeignKey("agents.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    role: Mapped[str] = mapped_column(String(50), nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    tool_calls: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
-    tokens_used: Mapped[int | None] = mapped_column()
-    # Voice/audio fields
-    audio_url: Mapped[str | None] = mapped_column(Text)  # S3 URL for audio
-    audio_duration_ms: Mapped[int | None] = mapped_column(Integer)  # Duration in milliseconds
-    input_type: Mapped[str] = mapped_column(String(20), default="text")  # "text" or "voice"
-    transcription_confidence: Mapped[float | None] = mapped_column(Float)  # STT confidence score
-    # TTS summary - short spoken version of the message (avoids reading code/plans)
-    tts_summary: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
-
-    # Relationships
-    agent: Mapped["Agent"] = relationship("Agent", back_populates="messages")
 
 
 class Workspace(Base):

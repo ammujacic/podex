@@ -113,6 +113,10 @@ class DatabaseAgentConfig:
     # Optional overrides (if not provided, loaded from database)
     system_prompt_override: str | None = None
     tools_override: list[str] | None = None
+    # User-provided LLM API keys for external providers
+    llm_api_keys: dict[str, str] | None = None
+    # Model's registered provider from database
+    model_provider: str | None = None
 
 
 async def _get_redis() -> Any:
@@ -333,6 +337,8 @@ class DatabaseAgent(BaseAgent):
             command_allowlist=config.command_allowlist,
             user_id=config.user_id,
             workspace_id=config.workspace_id,
+            llm_api_keys=config.llm_api_keys,
+            model_provider=config.model_provider,
         )
 
         super().__init__(agent_config)
@@ -401,6 +407,8 @@ async def create_database_agent(
     system_prompt_override: str | None = None,
     tools_override: list[str] | None = None,
     workspace_id: str | None = None,
+    llm_api_keys: dict[str, str] | None = None,
+    model_provider: str | None = None,
 ) -> DatabaseAgent | None:
     """Create a database agent by loading config from the API.
 
@@ -453,6 +461,8 @@ async def create_database_agent(
         workspace_id=workspace_id,
         system_prompt_override=system_prompt_override,
         tools_override=tools_override,
+        llm_api_keys=llm_api_keys,
+        model_provider=model_provider,
     )
 
     return DatabaseAgent(config, role_config, tool_definitions)

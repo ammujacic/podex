@@ -6,6 +6,8 @@ import {
   FileCode,
   FolderTree,
   GitBranch,
+  Globe,
+  MessageCircle,
   Settings,
   Terminal,
   ChevronRight,
@@ -20,6 +22,8 @@ import { useSessionStore, type FilePreview } from '@/stores/session';
 import { cn } from '@/lib/utils';
 import { getLanguageFromPath } from '@/lib/vscode/languageUtils';
 import { GitPanel } from './GitPanel';
+import { MoltBotWidget } from './MoltBotWidget';
+import { TunnelWidget } from './TunnelWidget';
 import { listFiles, getFileContent, type FileNode } from '@/lib/api';
 
 interface WorkspaceSidebarProps {
@@ -37,6 +41,8 @@ const sidebarItems = [
   { icon: Terminal, label: 'Terminal', id: 'terminal' },
   { icon: GitBranch, label: 'Git', id: 'git' },
   { icon: FileCode, label: 'Preview', id: 'preview' },
+  { icon: Globe, label: 'Tunnels', id: 'tunnels' },
+  { icon: MessageCircle, label: 'MoltBot', id: 'moltbot' },
 ];
 
 interface FileTreeNodeProps {
@@ -371,6 +377,31 @@ export function WorkspaceSidebar({
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {activePanel === 'tunnels' && (
+        <div className="w-64 border-r border-border-subtle bg-surface flex flex-col max-h-full">
+          <div className="border-b border-border-subtle px-4 py-3 shrink-0">
+            <h2 className="text-sm font-medium text-text-primary">Public URLs</h2>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4">
+            <TunnelWidget workspaceId={session?.workspaceId ?? null} />
+          </div>
+        </div>
+      )}
+
+      {activePanel === 'moltbot' && (
+        <div className="w-64 border-r border-border-subtle bg-surface flex flex-col max-h-full">
+          <div className="border-b border-border-subtle px-4 py-3 shrink-0">
+            <h2 className="text-sm font-medium text-text-primary">MoltBot</h2>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            <MoltBotWidget
+              workspaceId={session?.workspaceId ?? null}
+              localPodId={localPodId ?? null}
+            />
           </div>
         </div>
       )}

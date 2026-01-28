@@ -36,11 +36,13 @@ from src.database import (
     PlatformSetting,
     PodTemplate,
     SubscriptionPlan,
+    UserConfig,
     UserSubscription,
 )
 from src.database import Session as SessionModel
 from src.database import Workspace as WorkspaceModel
 from src.database.models import GitHubIntegration
+from src.database.models.platform import LLMModel
 from src.exceptions import ComputeClientError, ComputeServiceHTTPError
 from src.middleware.rate_limit import (
     RATE_LIMIT_STANDARD,
@@ -58,8 +60,86 @@ router = APIRouter()
 DEFAULT_AGENT_COLOR = "#00e5ff"
 
 
-async def _get_default_model_for_role(db: AsyncSession, role: str) -> str:
-    """Get the default model for an agent role from platform settings."""
+async def _user_has_model_access(
+    db: AsyncSession,
+    user_id: str,
+    model_id: str,
+) -> bool:
+    """Check if the user has access to the given model.
+
+    This mirrors the logic in the agents routes to keep behavior consistent
+    when selecting default models for newly created agents.
+    """
+    from src.database.models import UserOAuthToken
+
+    # First, try to resolve as a platform/user-key model
+    result = await db.execute(
+        select(LLMModel).where(
+            LLMModel.model_id == model_id,
+            LLMModel.is_enabled.is_(True),
+        )
+    )
+    model = result.scalar_one_or_none()
+
+    if model:
+        if not model.is_user_key_model:
+            # Platform-provided model, enabled => accessible
+            return True
+
+        # User-key model: require API key or OAuth token
+        config_result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+        config = config_result.scalar_one_or_none()
+
+        api_keys = (config.llm_api_keys or {}) if config and config.llm_api_keys else {}
+        if model.provider in api_keys:
+            return True
+
+        # Check OAuth tokens
+        oauth_result = await db.execute(
+            select(UserOAuthToken).where(
+                UserOAuthToken.user_id == user_id,
+                UserOAuthToken.provider == model.provider,
+                UserOAuthToken.status == "connected",
+            )
+        )
+        oauth_token = oauth_result.scalar_one_or_none()
+        return oauth_token is not None
+
+    # If no LLMModel row, treat as potential local model (ollama/lmstudio)
+    if "/" in model_id:
+        provider, _ = model_id.split("/", 1)
+        if provider in {"ollama", "lmstudio"}:
+            config_result = await db.execute(
+                select(UserConfig).where(UserConfig.user_id == user_id)
+            )
+            config = config_result.scalar_one_or_none()
+            prefs = (config.agent_preferences or {}) if config and config.agent_preferences else {}
+            local_cfg = prefs.get("local_llm_config") or {}
+            provider_cfg = local_cfg.get(provider) or {}
+            models = provider_cfg.get("models") or []
+            return any(m.get("id") == model_id for m in models)
+
+    return False
+
+
+async def _get_default_model_for_role(db: AsyncSession, role: str, user_id: str) -> str:
+    """Get the default model for an agent role, preferring user defaults when accessible."""
+    # First, try user-specific defaults from UserConfig.agent_preferences.model_defaults
+    config_result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+    config = config_result.scalar_one_or_none()
+    if config and config.agent_preferences:
+        prefs = config.agent_preferences or {}
+        model_defaults = prefs.get("model_defaults") or {}
+        if isinstance(model_defaults, dict):
+            user_model_id = model_defaults.get(role)
+            if (
+                isinstance(user_model_id, str)
+                and user_model_id
+                and await _user_has_model_access(db, user_id, user_model_id)
+            ):
+                return user_model_id
+
+    # Fall back to platform-wide defaults from PlatformSetting.agent_model_defaults
     result = await db.execute(
         select(PlatformSetting).where(PlatformSetting.key == "agent_model_defaults")
     )
@@ -187,6 +267,11 @@ def build_session_response(
     if workspace and workspace.local_pod:
         local_pod_name = workspace.local_pod.name
 
+    # Map standby to stopped for backwards compatibility
+    final_workspace_status = workspace_status or (workspace.status if workspace else None)
+    if final_workspace_status == "standby":
+        final_workspace_status = "stopped"
+
     return SessionResponse(
         id=session.id,
         name=session.name,
@@ -194,7 +279,7 @@ def build_session_response(
         workspace_id=session.workspace_id,
         branch=session.branch,
         status=session.status,
-        workspace_status=workspace_status or (workspace.status if workspace else None),
+        workspace_status=final_workspace_status,
         template_id=session.template_id,
         git_url=session.git_url,
         local_pod_id=local_pod_id,
@@ -607,7 +692,7 @@ async def create_session(
 
     # Create default Chat agent for the session
     try:
-        default_model = await _get_default_model_for_role(db, "chat")
+        default_model = await _get_default_model_for_role(db, "chat", user_id)
         default_agent = AgentModel(
             session_id=session.id,
             name="Chat",
@@ -2810,8 +2895,12 @@ async def perform_editor_ai_action(
             ),
         )
 
-    # Determine model to use (user override or default)
-    model_id = data.model or "claude-3-5-haiku"
+    # Determine model to use (user override or defaults from DB)
+    if data.model:
+        model_id = data.model
+    else:
+        # Fall back to per-role defaults (coder role) using the shared helper
+        model_id = await _get_default_model_for_role(db, "coder", user_id)
 
     # Build the prompt for the AI action
     system_prompt = """You are an expert software engineer assisting with code tasks.

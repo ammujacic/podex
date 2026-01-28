@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { cn } from '@/lib/utils';
 import { useCostStore, formatCost, formatTokens } from '@/stores/cost';
 import { Bot, Zap, BarChart3, Coins, PieChart, TrendingUp, ChevronRight } from 'lucide-react';
+import { useModelLoading } from '@/hooks/useModelLoading';
 
 interface AgentCostBreakdownProps {
   sessionId: string;
@@ -17,6 +18,29 @@ export function AgentCostBreakdown({
   onAgentClick,
 }: AgentCostBreakdownProps) {
   const cost = useCostStore((state) => state.sessionCosts[sessionId]);
+  const { backendModels, userProviderModels } = useModelLoading();
+
+  const modelNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const m of backendModels) {
+      map.set(m.model_id, m.display_name);
+    }
+    for (const m of userProviderModels) {
+      // Strip noisy suffixes from user models if present
+      map.set(m.model_id, m.display_name.replace(' (User API)', ''));
+    }
+    return map;
+  }, [backendModels, userProviderModels]);
+
+  const formatModelName = useCallback(
+    (modelId: string): string => {
+      const fromBackend = modelNameById.get(modelId);
+      if (fromBackend) return fromBackend;
+      // If we don't have metadata, surface the raw ID so the user sees exactly what ran.
+      return modelId;
+    },
+    [modelNameById]
+  );
 
   const agentCosts = useMemo(() => {
     if (!cost || !cost.byAgent) return [];
@@ -245,31 +269,6 @@ function CostBar({ label, cost, totalCost, tokens, color }: CostBarProps) {
         <span className="text-xs text-text-muted w-16 text-right">{formatTokens(tokens)}</span>
       </div>
     </div>
-  );
-}
-
-function formatModelName(model: string): string {
-  // Convert model IDs to readable names
-  const modelNames: Record<string, string> = {
-    'claude-opus-4-20250514': 'Claude Opus 4',
-    'claude-sonnet-4-20250514': 'Claude Sonnet 4',
-    'claude-3-5-sonnet-20241022': 'Claude 3.5 Sonnet',
-    'claude-3-5-haiku-20241022': 'Claude 3.5 Haiku',
-    'gpt-4o': 'GPT-4o',
-    'gpt-4o-mini': 'GPT-4o Mini',
-    'gpt-4-turbo': 'GPT-4 Turbo',
-    o1: 'O1',
-    'o1-mini': 'O1 Mini',
-    'gemini-2.0-flash': 'Gemini 2.0 Flash',
-    'gemini-1.5-pro': 'Gemini 1.5 Pro',
-  };
-
-  return (
-    modelNames[model] ||
-    model
-      .split('-')
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ')
   );
 }
 

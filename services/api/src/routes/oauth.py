@@ -28,7 +28,7 @@ from src.services.oauth.base import generate_pkce, generate_state
 
 logger = structlog.get_logger()
 
-router = APIRouter(prefix="/oauth", tags=["oauth"])
+router = APIRouter(tags=["llm-oauth"])
 
 # Type alias for database session dependency
 DbSession = Annotated[AsyncSession, Depends(get_db)]
@@ -132,10 +132,13 @@ async def start_oauth_flow(
 
     # Generate PKCE and state
     code_verifier, code_challenge = generate_pkce()
-    state = generate_state()
+
+    # For Anthropic, use code_verifier as state (matching pi-mono's approach)
+    # This is required because Anthropic's token endpoint validates state == code_verifier
+    state = code_verifier if provider == "anthropic" else generate_state()
 
     # Build redirect URI
-    redirect_uri = f"{settings.API_BASE_URL}/api/oauth/{provider}/callback"
+    redirect_uri = f"{settings.API_BASE_URL}/api/llm-oauth/{provider}/callback"
 
     # Get authorization URL
     auth_url = await oauth_provider.get_auth_url(

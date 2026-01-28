@@ -524,6 +524,66 @@ export interface WorkspaceBillingStandbyEvent {
   add_credits_url: string;
 }
 
+// Conversation session events
+export interface ConversationCreatedEvent {
+  session_id: string;
+  conversation: {
+    id: string;
+    name: string;
+    attached_to_agent_id: string | null;
+    message_count: number;
+    last_message_at: string | null;
+    created_at: string;
+    updated_at: string;
+  };
+}
+
+export interface ConversationUpdatedEvent {
+  session_id: string;
+  conversation: {
+    id: string;
+    name?: string;
+    attached_to_agent_id?: string | null;
+    message_count?: number;
+    last_message_at?: string | null;
+    created_at?: string;
+    updated_at?: string;
+  };
+}
+
+export interface ConversationDeletedEvent {
+  session_id: string;
+  conversation_id: string;
+}
+
+export interface ConversationAttachedEvent {
+  session_id: string;
+  conversation_id: string;
+  agent_id: string;
+}
+
+export interface ConversationDetachedEvent {
+  session_id: string;
+  conversation_id: string;
+  previous_agent_id?: string | null;
+}
+
+export interface ConversationMessageEvent {
+  session_id: string;
+  conversation_id: string;
+  message: {
+    id: string;
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    thinking?: string | null;
+    tool_calls?: Record<string, unknown> | null;
+    tool_results?: Record<string, unknown> | null;
+    model?: string | null;
+    stop_reason?: string | null;
+    created_at: string;
+  };
+}
+
 export interface SocketEvents {
   agent_message: (data: AgentMessageEvent) => void;
   agent_status: (data: AgentStatusEvent) => void;
@@ -592,6 +652,13 @@ export interface SocketEvents {
   workspace_status: (data: WorkspaceStatusEvent) => void;
   // Billing standby event (credit exhaustion)
   workspace_billing_standby: (data: WorkspaceBillingStandbyEvent) => void;
+  // Conversation session events
+  conversation_created: (data: ConversationCreatedEvent) => void;
+  conversation_updated: (data: ConversationUpdatedEvent) => void;
+  conversation_deleted: (data: ConversationDeletedEvent) => void;
+  conversation_attached: (data: ConversationAttachedEvent) => void;
+  conversation_detached: (data: ConversationDetachedEvent) => void;
+  conversation_message: (data: ConversationMessageEvent) => void;
 }
 
 // Track active session for auto-rejoin on reconnect

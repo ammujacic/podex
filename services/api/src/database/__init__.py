@@ -47,7 +47,6 @@ from src.database.models import (
     LocalPod,
     MCPServer,
     Memory,
-    Message,
     Notification,
     PendingChangeSet,
     PlatformSetting,
@@ -74,6 +73,7 @@ from src.database.models import (
     WikiDocument,
     Workspace,
     WorkspaceExtension,
+    WorkspaceTunnel,
     _generate_uuid,
 )
 
@@ -108,7 +108,6 @@ __all__ = [
     "LocalPod",
     "MCPServer",
     "Memory",
-    "Message",
     # Notifications
     "Notification",
     "PendingChangeSet",
@@ -141,6 +140,7 @@ __all__ = [
     "WikiDocument",
     "Workspace",
     "WorkspaceExtension",
+    "WorkspaceTunnel",
     "_generate_uuid",
     # Connection
     "async_session_factory",

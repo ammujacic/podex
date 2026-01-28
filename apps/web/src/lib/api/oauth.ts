@@ -37,7 +37,7 @@ export interface OAuthCallbackRequest {
  * Get available OAuth providers and their configuration status.
  */
 export async function getOAuthProviders(): Promise<OAuthProvider[]> {
-  const response = await api.get<{ providers: OAuthProvider[] }>('/api/oauth/providers');
+  const response = await api.get<{ providers: OAuthProvider[] }>('/api/llm-oauth/providers');
   return response.providers;
 }
 
@@ -45,7 +45,7 @@ export async function getOAuthProviders(): Promise<OAuthProvider[]> {
  * Get user's OAuth connections.
  */
 export async function getOAuthConnections(): Promise<OAuthConnection[]> {
-  const response = await api.get<{ connections: OAuthConnection[] }>('/api/oauth/connections');
+  const response = await api.get<{ connections: OAuthConnection[] }>('/api/llm-oauth/connections');
   return response.connections;
 }
 
@@ -54,7 +54,7 @@ export async function getOAuthConnections(): Promise<OAuthConnection[]> {
  * Returns the authorization URL to redirect/open in popup.
  */
 export async function startOAuthFlow(provider: string): Promise<OAuthStartResponse> {
-  return api.get<OAuthStartResponse>(`/api/oauth/${provider}/start`);
+  return api.get<OAuthStartResponse>(`/api/llm-oauth/${provider}/start`);
 }
 
 /**
@@ -65,21 +65,21 @@ export async function completeOAuthFlow(
   provider: string,
   data: OAuthCallbackRequest
 ): Promise<OAuthConnection> {
-  return api.post<OAuthConnection>(`/api/oauth/${provider}/callback`, data);
+  return api.post<OAuthConnection>(`/api/llm-oauth/${provider}/callback`, data);
 }
 
 /**
  * Disconnect an OAuth provider.
  */
 export async function disconnectOAuth(provider: string): Promise<void> {
-  await api.delete(`/api/oauth/${provider}`);
+  await api.delete(`/api/llm-oauth/${provider}`);
 }
 
 /**
  * Refresh an OAuth token.
  */
 export async function refreshOAuthToken(provider: string): Promise<OAuthConnection> {
-  return api.post<OAuthConnection>(`/api/oauth/${provider}/refresh`, {});
+  return api.post<OAuthConnection>(`/api/llm-oauth/${provider}/refresh`, {});
 }
 
 /**

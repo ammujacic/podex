@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+# ruff: noqa: I001
+
 import re
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from uuid import uuid4
 
 import structlog
@@ -14,11 +16,13 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request,
 from pydantic import BaseModel, field_validator
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from podex_shared import generate_tts_summary
 from src.agent_client import agent_client
 from src.audit_logger import AuditAction, AuditLogger
 from src.config import settings
+from src.cache import cache_delete, user_config_key
 from src.database import Agent as AgentModel
 from src.database import (
     AgentTemplate,
@@ -29,10 +33,9 @@ from src.database import (
     UserConfig,
     UserSubscription,
 )
-from src.database import Message as MessageModel
 from src.database import Session as SessionModel
 from src.database.connection import async_session_factory
-from src.database.models import UserOAuthToken
+from src.database.models import ConversationMessage, ConversationSession, UserOAuthToken
 from src.exceptions import (
     AgentClientError,
     EmptyMessageContentError,
@@ -732,6 +735,107 @@ def _build_agent_response(
     )
 
 
+async def _user_has_model_access(
+    db: AsyncSession,
+    user_id: str,
+    model_id: str,
+) -> bool:
+    """Check if the user has access to the given model.
+
+    Access rules:
+    - Platform models (is_user_key_model=False):
+      - Must be enabled.
+    - User-key models (is_user_key_model=True):
+      - Must be enabled AND
+      - User must have an API key configured for the provider OR
+      - User must have an active OAuth token for the provider.
+    - Local models (ollama/lmstudio):
+      - Identified by model_id starting with "ollama/" or "lmstudio/".
+      - Must exist in UserConfig.agent_preferences["local_llm_config"].
+    """
+    # First, try to resolve as a platform/user-key model
+    result = await db.execute(
+        select(LLMModel).where(
+            LLMModel.model_id == model_id,
+            LLMModel.is_enabled.is_(True),
+        )
+    )
+    model = result.scalar_one_or_none()
+
+    if model:
+        if not model.is_user_key_model:
+            # Platform-provided model, enabled => accessible
+            return True
+
+        # User-key model: require API key or OAuth token
+        config_result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+        config = config_result.scalar_one_or_none()
+
+        api_keys = (config.llm_api_keys or {}) if config and config.llm_api_keys else {}
+        if model.provider in api_keys:
+            return True
+
+        # Check OAuth tokens
+        oauth_result = await db.execute(
+            select(UserOAuthToken).where(
+                UserOAuthToken.user_id == user_id,
+                UserOAuthToken.provider == model.provider,
+                UserOAuthToken.status == "connected",
+            )
+        )
+        oauth_token = oauth_result.scalar_one_or_none()
+        return oauth_token is not None
+
+    # If no LLMModel row, treat as potential local model (ollama/lmstudio)
+    if "/" in model_id:
+        provider, _ = model_id.split("/", 1)
+        if provider in {"ollama", "lmstudio"}:
+            config_result = await db.execute(
+                select(UserConfig).where(UserConfig.user_id == user_id)
+            )
+            config = config_result.scalar_one_or_none()
+            prefs = (config.agent_preferences or {}) if config and config.agent_preferences else {}
+            local_cfg = prefs.get("local_llm_config") or {}
+            provider_cfg = local_cfg.get(provider) or {}
+            models = provider_cfg.get("models") or []
+            # Local models in config use "id" equal to the model_id we constructed
+            return any(m.get("id") == model_id for m in models)
+
+    return False
+
+
+async def _get_user_model_default_for_role(
+    db: AsyncSession,
+    user_id: str,
+    role: str,
+) -> str | None:
+    """Get the user's preferred default model for a role, if accessible.
+
+    Reads UserConfig.agent_preferences["model_defaults"][role] and verifies that
+    the user still has access to that model. If not accessible, returns None
+    without mutating the stored preference (so it can be reused if access is restored).
+    """
+    result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+    config = result.scalar_one_or_none()
+    if not config or not config.agent_preferences:
+        return None
+
+    prefs = config.agent_preferences or {}
+    model_defaults = prefs.get("model_defaults") or {}
+    if not isinstance(model_defaults, dict):
+        return None
+
+    model_id = model_defaults.get(role)
+    if not isinstance(model_id, str) or not model_id:
+        return None
+
+    if await _user_has_model_access(db, user_id, model_id):
+        return model_id
+
+    # Preference exists but is no longer accessible - ignore it for this request
+    return None
+
+
 # ==================== Agent Attention Detection ====================
 
 # Patterns that indicate the agent needs user approval
@@ -944,6 +1048,10 @@ class AgentMessageContext:
     agent_role: str
     agent_model: str
     user_message: str
+    # Conversation session ID for the portable conversation system
+    conversation_session_id: str | None = None
+    # Model's registered provider from database (anthropic, openai, vertex, ollama, etc.)
+    model_provider: str | None = None
     agent_config: dict[str, Any] | None = None
     user_id: str | None = None
     # MCP config will be populated during processing (async DB lookup)
@@ -974,6 +1082,9 @@ def _build_agent_service_context(
         "role": ctx.agent_role,
         "model": ctx.agent_model,
     }
+    # Pass the model's registered provider from the database
+    if ctx.model_provider:
+        agent_context["model_provider"] = ctx.model_provider
     if ctx.user_id:
         agent_context["user_id"] = ctx.user_id
     if ctx.agent_config and "template_config" in ctx.agent_config:
@@ -1027,7 +1138,7 @@ async def _notify_agent_status(
 
 async def _emit_agent_response(
     ctx: AgentMessageContext,
-    message: MessageModel,
+    message: ConversationMessage,
     response_content: str,
     tts_summary: str | None,
     *,
@@ -1101,14 +1212,37 @@ async def _process_and_emit_response(
     tts_summary = tts_result.summary if tts_result.was_summarized else None
 
     # Use the provided message_id if available (for streaming), otherwise let DB generate one
-    assistant_message = MessageModel(
+    # Messages now belong to conversation sessions, not agents directly
+    if not ctx.conversation_session_id:
+        logger.warning("No conversation session for agent response", agent_id=ctx.agent_id)
+        # Create a conversation session if none exists
+        conversation = ConversationSession(
+            session_id=ctx.session_id,
+            name="New Session",
+            attached_to_agent_id=ctx.agent_id,
+        )
+        db.add(conversation)
+        await db.flush()
+        ctx.conversation_session_id = conversation.id
+        # Update agent reference
+        agent.conversation_session = conversation
+
+    assistant_message = ConversationMessage(
         id=processing_ctx.message_id,  # Will be None for non-streaming, triggering auto-generation
-        agent_id=ctx.agent_id,
+        conversation_session_id=ctx.conversation_session_id,
         role="assistant",
         content=response_content,
         tts_summary=tts_summary,
     )
     db.add(assistant_message)
+
+    # Update conversation metadata
+    conv_result = await db.execute(
+        select(ConversationSession).where(ConversationSession.id == ctx.conversation_session_id)
+    )
+    conversation = cast("ConversationSession", conv_result.scalar_one_or_none())
+    conversation.message_count += 1
+    conversation.last_message_at = func.now()
 
     # Update agent status to idle
     agent.status = "idle"
@@ -1436,13 +1570,18 @@ async def create_agent(
     # Determine role (custom if using template, otherwise as specified)
     role = "custom" if data.template_id else data.role
 
-    # Determine model: template model > provided model > role default from platform settings
+    # Determine model: template model > provided model > user default > role default from platform
     if template:
         model = template.model
     elif data.model:
         model = data.model
     else:
-        model = await get_default_model_for_role(db, role)
+        # Prefer user's per-role default if accessible; otherwise fall back to platform default
+        user_default_model = await _get_user_model_default_for_role(db, session.owner_id, role)
+        if user_default_model:
+            model = user_default_model
+        else:
+            model = await get_default_model_for_role(db, role)
 
     # Create agent
     agent = AgentModel(
@@ -1711,11 +1850,47 @@ async def update_agent(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
+    # Track original model to detect changes
+    original_model = agent.model
+
     # Update fields if provided
     if data.name is not None:
         agent.name = data.name
     if data.model is not None:
         agent.model = data.model
+
+    # If the model changed, persist this as the user's per-role default model
+    if data.model is not None and data.model != original_model:
+        user_id = get_current_user_id(request)
+
+        # Load or create UserConfig with minimal initialization
+        config_result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+        config = config_result.scalar_one_or_none()
+
+        if not config:
+            config = UserConfig(
+                user_id=user_id,
+            )
+            db.add(config)
+            await db.flush()
+
+        # Ensure agent_preferences and model_defaults exist as dictionaries
+        if config.agent_preferences is None:
+            config.agent_preferences = {}
+        if not isinstance(config.agent_preferences, dict):
+            config.agent_preferences = {}
+
+        prefs: dict[str, Any] = dict(config.agent_preferences)
+        model_defaults = prefs.get("model_defaults") or {}
+        if not isinstance(model_defaults, dict):
+            model_defaults = {}
+
+        model_defaults[agent.role] = agent.model
+        prefs["model_defaults"] = model_defaults
+        config.agent_preferences = prefs
+
+        # Invalidate cached user config so preferences are reflected immediately
+        await cache_delete(user_config_key(user_id))
 
     await db.commit()
     await db.refresh(agent)
@@ -1847,15 +2022,29 @@ async def delete_agent(
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
 
-    query = select(AgentModel).where(
-        AgentModel.id == agent_id,
-        AgentModel.session_id == session_id,
+    # Load agent with its attached conversation session (if any)
+    query = (
+        select(AgentModel)
+        .options(selectinload(AgentModel.conversation_session))
+        .where(
+            AgentModel.id == agent_id,
+            AgentModel.session_id == session_id,
+        )
     )
     result = await db.execute(query)
     agent = result.scalar_one_or_none()
 
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Detach any attached conversation session instead of deleting it.
+    # This ensures portable conversation sessions are not coupled to agent lifecycle.
+    conversation_id: str | None = None
+    if agent.conversation_session:
+        conversation = agent.conversation_session
+        conversation_id = conversation.id
+        # Only ConversationSession holds the FK (attached_to_agent_id), clear it here.
+        conversation.attached_to_agent_id = None
 
     # Capture agent info before deletion for audit log
     agent_name = agent.name
@@ -1874,6 +2063,18 @@ async def delete_agent(
         details={"name": agent_name, "role": agent_role},
     )
 
+    # If there was an attached conversation, emit a detach event so frontends
+    # update their local state and keep the conversation in the pool.
+    if conversation_id:
+        await emit_to_session(
+            session_id,
+            "conversation_detached",
+            {
+                "conversation_id": conversation_id,
+                "previous_agent_id": agent_id,
+            },
+        )
+
     return {"message": "Agent deleted"}
 
 
@@ -1889,9 +2090,15 @@ async def _send_message_impl(
     await update_workspace_activity(session, deps.common.db)
 
     # Validate agent exists
-    agent_query = select(AgentModel).where(
-        AgentModel.id == params.agent_id,
-        AgentModel.session_id == params.session_id,
+    from sqlalchemy.orm import selectinload
+
+    agent_query = (
+        select(AgentModel)
+        .options(selectinload(AgentModel.conversation_session))
+        .where(
+            AgentModel.id == params.agent_id,
+            AgentModel.session_id == params.session_id,
+        )
     )
     agent_result = await deps.common.db.execute(agent_query)
     agent = agent_result.scalar_one_or_none()
@@ -1920,13 +2127,44 @@ async def _send_message_impl(
             ),
         )
 
-    # Create user message
-    message = MessageModel(
-        agent_id=params.agent_id,
+    # Get or create conversation session for this agent
+    conversation_session_id = None
+    if agent.conversation_session:
+        conversation_session_id = agent.conversation_session.id
+    else:
+        # Create a new conversation session attached to this agent
+        from src.routes.conversations import derive_session_name
+
+        conversation = ConversationSession(
+            session_id=params.session_id,
+            name=derive_session_name(params.data.content),
+            attached_to_agent_id=params.agent_id,
+        )
+        deps.common.db.add(conversation)
+        await deps.common.db.flush()
+        conversation_session_id = conversation.id
+
+    # Create user message in the conversation session
+    message = ConversationMessage(
+        conversation_session_id=conversation_session_id,
         role="user",
         content=params.data.content,
     )
     deps.common.db.add(message)
+
+    # Update conversation metadata
+    conv_result = await deps.common.db.execute(
+        select(ConversationSession).where(ConversationSession.id == conversation_session_id)
+    )
+    conversation = cast("ConversationSession", conv_result.scalar_one_or_none())
+    conversation.message_count += 1
+    conversation.last_message_at = func.now()
+    # Update name from first message if it was "New Session"
+    if conversation.message_count == 1 and conversation.name == "New Session":
+        from src.routes.conversations import derive_session_name
+
+        conversation.name = derive_session_name(params.data.content)
+
     await deps.common.db.commit()
     await deps.common.db.refresh(message)
 
@@ -1989,14 +2227,43 @@ async def _send_message_impl(
         )
         oauth_tokens = oauth_tokens_result.scalars().all()
 
+        current_time = int(time.time())
         for token in oauth_tokens:
             # Skip expired tokens
-            if token.expires_at <= int(time.time()):
+            if token.expires_at and token.expires_at <= current_time:
+                logger.debug(
+                    "Skipping expired OAuth token",
+                    provider=token.provider,
+                    expires_at=token.expires_at,
+                    current_time=current_time,
+                )
                 continue
             # Map provider to API key format
             if llm_api_keys is None:
                 llm_api_keys = {}
             llm_api_keys[token.provider] = token.access_token
+            logger.info(
+                "Loaded OAuth token for provider",
+                provider=token.provider,
+                token_prefix=token.access_token[:15] + "..." if token.access_token else None,
+            )
+    else:
+        logger.debug("No user_id available, skipping OAuth token loading")
+
+    # Look up the model's registered provider from the database
+    model_provider: str | None = None
+    model_result = await deps.common.db.execute(
+        select(LLMModel.provider).where(LLMModel.model_id == agent.model)
+    )
+    model_row = model_result.scalar_one_or_none()
+    if model_row:
+        model_provider = model_row
+        logger.info(
+            "Resolved model provider from database",
+            model=agent.model,
+            provider=model_provider,
+            available_llm_keys=list(llm_api_keys.keys()) if llm_api_keys else [],
+        )
 
     # Schedule background task to process the message and generate agent response
     msg_context = AgentMessageContext(
@@ -2006,6 +2273,7 @@ async def _send_message_impl(
         agent_role=agent.role,
         agent_model=agent.model,
         user_message=params.data.content,
+        conversation_session_id=conversation_session_id,
         agent_config=agent.config,
         user_id=user_id,
         agent_mode=agent.mode,
@@ -2015,12 +2283,13 @@ async def _send_message_impl(
         llm_api_keys=llm_api_keys,
         workspace_id=str(session.workspace_id) if session.workspace_id else None,
         claude_session_id=params.data.claude_session_id,
+        model_provider=model_provider,
     )
     deps.background_tasks.add_task(process_agent_message, msg_context)
 
     return MessageResponse(
         id=message.id,
-        agent_id=message.agent_id,
+        agent_id=params.agent_id,  # Use params since ConversationMessage doesn't have agent_id
         role=message.role,
         content=message.content,
         tool_calls=message.tool_calls,
@@ -2061,24 +2330,39 @@ async def _get_messages_impl(
     # Verify user has access to session
     await verify_session_access(params.session_id, common.request, common.db)
 
-    # Verify agent exists in session
-    agent_query = select(AgentModel).where(
-        AgentModel.id == params.agent_id,
-        AgentModel.session_id == params.session_id,
+    # Verify agent exists and get its conversation session
+    from sqlalchemy.orm import selectinload
+
+    agent_query = (
+        select(AgentModel)
+        .options(selectinload(AgentModel.conversation_session))
+        .where(
+            AgentModel.id == params.agent_id,
+            AgentModel.session_id == params.session_id,
+        )
     )
     agent_result = await common.db.execute(agent_query)
-    if not agent_result.scalar_one_or_none():
+    agent = agent_result.scalar_one_or_none()
+    if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    # Build base query
-    query = select(MessageModel).where(MessageModel.agent_id == params.agent_id)
+    # If agent has no conversation session, return empty list
+    if not agent.conversation_session:
+        return []
+
+    conversation_session_id = agent.conversation_session.id
+
+    # Build base query - messages now come from ConversationMessage
+    query = select(ConversationMessage).where(
+        ConversationMessage.conversation_session_id == conversation_session_id
+    )
 
     # Use cursor-based pagination if cursor provided (more efficient)
     if params.pagination.cursor:
         # First, get the cursor message to find its created_at timestamp
-        cursor_query = select(MessageModel.created_at, MessageModel.id).where(
-            MessageModel.id == params.pagination.cursor,
-            MessageModel.agent_id == params.agent_id,
+        cursor_query = select(ConversationMessage.created_at, ConversationMessage.id).where(
+            ConversationMessage.id == params.pagination.cursor,
+            ConversationMessage.conversation_session_id == conversation_session_id,
         )
         cursor_result = await common.db.execute(cursor_query)
         cursor_row = cursor_result.first()
@@ -2086,15 +2370,19 @@ async def _get_messages_impl(
         if cursor_row:
             cursor_created_at, cursor_id = cursor_row
             # Get messages after the cursor (using composite key for deterministic ordering)
-            # This is efficient as it uses the index on created_at
             query = query.where(
-                (MessageModel.created_at > cursor_created_at)
-                | ((MessageModel.created_at == cursor_created_at) & (MessageModel.id > cursor_id))
+                (ConversationMessage.created_at > cursor_created_at)
+                | (
+                    (ConversationMessage.created_at == cursor_created_at)
+                    & (ConversationMessage.id > cursor_id)
+                )
             )
         # If cursor message not found, ignore and return from start
 
     # Apply ordering and limit
-    query = query.order_by(MessageModel.created_at, MessageModel.id).limit(params.pagination.limit)
+    query = query.order_by(ConversationMessage.created_at, ConversationMessage.id).limit(
+        params.pagination.limit
+    )
 
     # Only apply offset if not using cursor (for backwards compatibility)
     if not params.pagination.cursor:
@@ -2106,7 +2394,7 @@ async def _get_messages_impl(
     return [
         MessageResponse(
             id=m.id,
-            agent_id=m.agent_id,
+            agent_id=params.agent_id,  # Use params since ConversationMessage doesn't have agent_id
             role=m.role,
             content=m.content,
             tool_calls=m.tool_calls,
@@ -2168,10 +2456,16 @@ async def abort_agent(
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
 
-    # Verify agent exists in session
-    agent_query = select(AgentModel).where(
-        AgentModel.id == agent_id,
-        AgentModel.session_id == session_id,
+    # Verify agent exists in session (with conversation session for message creation)
+    from sqlalchemy.orm import selectinload
+
+    agent_query = (
+        select(AgentModel)
+        .options(selectinload(AgentModel.conversation_session))
+        .where(
+            AgentModel.id == agent_id,
+            AgentModel.session_id == session_id,
+        )
     )
     agent_result = await db.execute(agent_query)
     agent = agent_result.scalar_one_or_none()
@@ -2199,13 +2493,16 @@ async def abort_agent(
     await _notify_agent_status(session_id, agent_id, "idle")
 
     # Add an "Aborted" message if there were tasks cancelled
-    if cancelled_count > 0:
-        aborted_message = MessageModel(
-            agent_id=agent_id,
+    if cancelled_count > 0 and agent.conversation_session:
+        aborted_message = ConversationMessage(
+            conversation_session_id=agent.conversation_session.id,
             role="assistant",
             content="Task aborted by user.",
         )
         db.add(aborted_message)
+        # Update conversation metadata
+        agent.conversation_session.message_count += 1
+        agent.conversation_session.last_message_at = func.now()
         await db.commit()
         await db.refresh(aborted_message)
 
@@ -2352,10 +2649,16 @@ async def pause_agent(
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
 
-    # Verify agent exists in session
-    agent_query = select(AgentModel).where(
-        AgentModel.id == agent_id,
-        AgentModel.session_id == session_id,
+    # Verify agent exists in session (with conversation session for message creation)
+    from sqlalchemy.orm import selectinload
+
+    agent_query = (
+        select(AgentModel)
+        .options(selectinload(AgentModel.conversation_session))
+        .where(
+            AgentModel.id == agent_id,
+            AgentModel.session_id == session_id,
+        )
     )
     agent_result = await db.execute(agent_query)
     agent = agent_result.scalar_one_or_none()
@@ -2387,29 +2690,32 @@ async def pause_agent(
     # Notify via WebSocket
     await _notify_agent_status(session_id, agent_id, "paused")
 
-    # Emit system message
-    pause_message = MessageModel(
-        agent_id=agent_id,
-        role="system",
-        content="Agent paused by user. Send a message to resume.",
-    )
-    db.add(pause_message)
-    await db.commit()
-    await db.refresh(pause_message)
+    # Emit system message (only if conversation session exists)
+    if agent.conversation_session:
+        pause_message = ConversationMessage(
+            conversation_session_id=agent.conversation_session.id,
+            role="system",
+            content="Agent paused by user. Send a message to resume.",
+        )
+        db.add(pause_message)
+        agent.conversation_session.message_count += 1
+        agent.conversation_session.last_message_at = func.now()
+        await db.commit()
+        await db.refresh(pause_message)
 
-    await emit_to_session(
-        session_id,
-        "agent_message",
-        {
-            "id": pause_message.id,
-            "agent_id": agent_id,
-            "agent_name": agent.name,
-            "role": "system",
-            "content": "Agent paused by user. Send a message to resume.",
-            "session_id": session_id,
-            "created_at": pause_message.created_at.isoformat(),
-        },
-    )
+        await emit_to_session(
+            session_id,
+            "agent_message",
+            {
+                "id": pause_message.id,
+                "agent_id": agent_id,
+                "agent_name": agent.name,
+                "role": "system",
+                "content": "Agent paused by user. Send a message to resume.",
+                "session_id": session_id,
+                "created_at": pause_message.created_at.isoformat(),
+            },
+        )
 
     return {
         "success": True,
@@ -2435,10 +2741,16 @@ async def resume_agent(
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
 
-    # Verify agent exists in session
-    agent_query = select(AgentModel).where(
-        AgentModel.id == agent_id,
-        AgentModel.session_id == session_id,
+    # Verify agent exists in session (with conversation session for message creation)
+    from sqlalchemy.orm import selectinload
+
+    agent_query = (
+        select(AgentModel)
+        .options(selectinload(AgentModel.conversation_session))
+        .where(
+            AgentModel.id == agent_id,
+            AgentModel.session_id == session_id,
+        )
     )
     agent_result = await db.execute(agent_query)
     agent = agent_result.scalar_one_or_none()
@@ -2470,29 +2782,32 @@ async def resume_agent(
     # Notify via WebSocket
     await _notify_agent_status(session_id, agent_id, "running")
 
-    # Emit system message
-    resume_message = MessageModel(
-        agent_id=agent_id,
-        role="system",
-        content="Agent resumed. Continuing from where it left off.",
-    )
-    db.add(resume_message)
-    await db.commit()
-    await db.refresh(resume_message)
+    # Emit system message (only if conversation session exists)
+    if agent.conversation_session:
+        resume_message = ConversationMessage(
+            conversation_session_id=agent.conversation_session.id,
+            role="system",
+            content="Agent resumed. Continuing from where it left off.",
+        )
+        db.add(resume_message)
+        agent.conversation_session.message_count += 1
+        agent.conversation_session.last_message_at = func.now()
+        await db.commit()
+        await db.refresh(resume_message)
 
-    await emit_to_session(
-        session_id,
-        "agent_message",
-        {
-            "id": resume_message.id,
-            "agent_id": agent_id,
-            "agent_name": agent.name,
-            "role": "system",
-            "content": "Agent resumed. Continuing from where it left off.",
-            "session_id": session_id,
-            "created_at": resume_message.created_at.isoformat(),
-        },
-    )
+        await emit_to_session(
+            session_id,
+            "agent_message",
+            {
+                "id": resume_message.id,
+                "agent_id": agent_id,
+                "agent_name": agent.name,
+                "role": "system",
+                "content": "Agent resumed. Continuing from where it left off.",
+                "session_id": session_id,
+                "created_at": resume_message.created_at.isoformat(),
+            },
+        )
 
     return {
         "success": True,
@@ -2606,10 +2921,16 @@ async def delete_message(
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
 
-    # Verify agent exists in session
-    agent_query = select(AgentModel).where(
-        AgentModel.id == agent_id,
-        AgentModel.session_id == session_id,
+    # Verify agent exists in session and get its conversation session
+    from sqlalchemy.orm import selectinload
+
+    agent_query = (
+        select(AgentModel)
+        .options(selectinload(AgentModel.conversation_session))
+        .where(
+            AgentModel.id == agent_id,
+            AgentModel.session_id == session_id,
+        )
     )
     agent_result = await db.execute(agent_query)
     agent = agent_result.scalar_one_or_none()
@@ -2617,10 +2938,13 @@ async def delete_message(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    # Get the message
-    message_query = select(MessageModel).where(
-        MessageModel.id == message_id,
-        MessageModel.agent_id == agent_id,
+    if not agent.conversation_session:
+        raise HTTPException(status_code=404, detail="Agent has no conversation session")
+
+    # Get the message from the conversation session
+    message_query = select(ConversationMessage).where(
+        ConversationMessage.id == message_id,
+        ConversationMessage.conversation_session_id == agent.conversation_session.id,
     )
     message_result = await db.execute(message_query)
     message = message_result.scalar_one_or_none()
@@ -2628,8 +2952,9 @@ async def delete_message(
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
 
-    # Delete the message
+    # Delete the message and update conversation metadata
     await db.delete(message)
+    agent.conversation_session.message_count = max(0, agent.conversation_session.message_count - 1)
     await db.commit()
 
     # Notify via WebSocket

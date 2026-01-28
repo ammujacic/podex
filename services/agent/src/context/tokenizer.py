@@ -71,7 +71,7 @@ class Tokenizer:
     # Model context limits
     MODEL_LIMITS: ClassVar[dict[str, int]] = {
         "claude-opus-4-5-20251101": 200000,
-        "claude-sonnet-4-20250514": 200000,
+        "claude-sonnet-4-5": 200000,
         "claude-3-5-sonnet-20241022": 200000,
         "claude-3-sonnet": 200000,
         "claude-3-haiku": 200000,

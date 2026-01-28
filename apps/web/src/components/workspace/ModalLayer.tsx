@@ -9,6 +9,7 @@ import {
   WorkspaceScalingModal,
   ExtensionMarketplaceModal,
   NewPathModal,
+  MoltBotInstallWizardModal,
 } from './modals';
 import type { WorkspaceTier } from '@podex/shared';
 
@@ -67,6 +68,14 @@ export function ModalLayer({ sessionId }: ModalLayerProps) {
           initialPath={
             typeof modalData?.initialPath === 'string' ? (modalData.initialPath as string) : ''
           }
+          onClose={closeModal}
+        />
+      )}
+      {activeModal === 'moltbot-wizard' && (
+        <MoltBotInstallWizardModal
+          sessionId={sessionId}
+          workspaceId={workspaceId ?? null}
+          localPodId={currentSession?.localPodId ?? null}
           onClose={closeModal}
         />
       )}

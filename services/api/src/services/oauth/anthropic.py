@@ -22,6 +22,8 @@ ANTHROPIC_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
 ANTHROPIC_REVOKE_URL = "https://console.anthropic.com/v1/oauth/revoke"
 ANTHROPIC_USERINFO_URL = "https://api.anthropic.com/v1/me"
 ANTHROPIC_SCOPES = "org:create_api_key user:profile user:inference"
+# Use Anthropic's own callback page - displays code for manual entry
+ANTHROPIC_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
 
 
 class AnthropicOAuthProvider(OAuthProvider):
@@ -34,14 +36,18 @@ class AnthropicOAuthProvider(OAuthProvider):
         self,
         state: str,
         code_challenge: str,
-        redirect_uri: str,
+        redirect_uri: str,  # Ignored - we use Anthropic's callback page  # noqa: ARG002
     ) -> str:
-        """Generate Anthropic OAuth authorization URL."""
+        """Generate Anthropic OAuth authorization URL.
+
+        Uses Anthropic's own callback page which displays the authorization
+        code for manual entry. The code format is 'code#state'.
+        """
         params = {
             "code": "true",
             "client_id": ANTHROPIC_CLIENT_ID,
             "response_type": "code",
-            "redirect_uri": redirect_uri,
+            "redirect_uri": ANTHROPIC_REDIRECT_URI,
             "scope": ANTHROPIC_SCOPES,
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
@@ -53,19 +59,38 @@ class AnthropicOAuthProvider(OAuthProvider):
         self,
         code: str,
         code_verifier: str,
-        redirect_uri: str,
+        redirect_uri: str,  # Ignored - we use Anthropic's callback page  # noqa: ARG002
     ) -> OAuthCredentials:
-        """Exchange authorization code for Anthropic tokens."""
+        """Exchange authorization code for Anthropic tokens.
+
+        The code may be in 'code#state' format from Anthropic's callback page.
+        We extract the code and state portions.
+        """
+        # Handle 'code#state' format from Anthropic's callback page
+        if "#" in code:
+            parts = code.split("#")
+            actual_code = parts[0]
+            state = parts[1] if len(parts) > 1 else None
+        else:
+            actual_code = code
+            state = None
+
+        request_body: dict[str, str] = {
+            "grant_type": "authorization_code",
+            "client_id": ANTHROPIC_CLIENT_ID,
+            "code": actual_code,
+            "redirect_uri": ANTHROPIC_REDIRECT_URI,
+            "code_verifier": code_verifier,
+        }
+
+        # Include state if present (required by Anthropic)
+        if state:
+            request_body["state"] = state
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 ANTHROPIC_TOKEN_URL,
-                json={
-                    "grant_type": "authorization_code",
-                    "client_id": ANTHROPIC_CLIENT_ID,
-                    "code": code,
-                    "redirect_uri": redirect_uri,
-                    "code_verifier": code_verifier,
-                },
+                json=request_body,
                 headers={"Content-Type": "application/json"},
                 timeout=30.0,
             )
@@ -94,7 +119,11 @@ class AnthropicOAuthProvider(OAuthProvider):
             )
 
     async def refresh_token(self, refresh_token: str) -> OAuthCredentials:
-        """Refresh an expired Anthropic access token."""
+        """Refresh an expired Anthropic access token.
+
+        Based on pi-mono implementation: only grant_type, client_id, and refresh_token.
+        Do NOT include redirect_uri (causes "Invalid request format" error).
+        """
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 ANTHROPIC_TOKEN_URL,
@@ -102,6 +131,7 @@ class AnthropicOAuthProvider(OAuthProvider):
                     "grant_type": "refresh_token",
                     "client_id": ANTHROPIC_CLIENT_ID,
                     "refresh_token": refresh_token,
+                    # NOTE: redirect_uri is NOT included in refresh (only in initial exchange)
                 },
                 headers={"Content-Type": "application/json"},
                 timeout=30.0,

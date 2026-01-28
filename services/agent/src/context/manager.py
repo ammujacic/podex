@@ -239,9 +239,13 @@ class ContextWindowManager:
                 "output_reservation is required - use create_context_manager_with_settings()"
             )
 
+        if not model:
+            msg = "model is required - use create_context_manager_with_settings()"
+            raise ValueError(msg)
+
         self._llm = llm_provider
         self._tokenizer = Tokenizer(model)
-        self._summarizer = ConversationSummarizer(llm_provider)
+        self._summarizer = ConversationSummarizer(llm_provider, model)
 
         # Set context limits (values are required)
         self._max_tokens = max_context_tokens

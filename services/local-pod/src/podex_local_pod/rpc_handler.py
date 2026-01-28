@@ -59,6 +59,8 @@ class RPCHandler:
         self._terminal_output_tasks: dict[str, asyncio.Task[None]] = {}
         # Track terminal FIFOs for cleanup: session_id -> fifo_path
         self._terminal_fifos: dict[str, str] = {}
+        # Track cloudflared tunnel processes: f"{workspace_id}:{port}" -> Popen
+        self._tunnel_processes: dict[str, subprocess.Popen[bytes]] = {}
 
         # Method dispatch table
         self._handlers: dict[str, Any] = {
@@ -89,6 +91,10 @@ class RPCHandler:
             "terminal.input": self._terminal_input,
             "terminal.resize": self._terminal_resize,
             "terminal.close": self._terminal_close,
+            # Tunnel (cloudflared)
+            "tunnel.start": self._tunnel_start,
+            "tunnel.stop": self._tunnel_stop,
+            "tunnel.status": self._tunnel_status,
         }
 
     async def shutdown(self) -> None:
@@ -116,6 +122,17 @@ class RPCHandler:
             logger.debug("Cleaned up FIFO", session_id=session_id)
 
         self._terminal_fifos.clear()
+
+        # Stop all tunnel processes
+        for key, proc in list(self._tunnel_processes.items()):
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except (subprocess.TimeoutExpired, OSError):
+                with contextlib.suppress(Exception):
+                    proc.kill()
+            logger.debug("Stopped tunnel process", key=key)
+        self._tunnel_processes.clear()
 
         logger.debug("RPC handler shutdown complete")
 
@@ -985,3 +1002,101 @@ class RPCHandler:
             working_dir,
             timeout=5,
         )
+
+    # ==================== Tunnel (cloudflared) ====================
+
+    def _tunnel_key(self, workspace_id: str, port: int) -> str:
+        return f"{workspace_id}:{port}"
+
+    async def _tunnel_start(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Start cloudflared for a workspace tunnel.
+
+        Params: workspace_id, config { token, port, hostname }.
+        """
+        workspace_id = params["workspace_id"]
+        cfg = params.get("config") or {}
+        token = cfg.get("token")
+        port = cfg.get("port")
+        if not token or port is None:
+            raise ValueError("tunnel config must include token and port")
+
+        key = self._tunnel_key(workspace_id, port)
+        if key in self._tunnel_processes:
+            proc = self._tunnel_processes[key]
+            if proc.poll() is None:
+                return {"status": "running", "pid": proc.pid}
+            self._tunnel_processes.pop(key, None)
+
+        from .cloudflared_bundle import get_cloudflared_path
+
+        cloudflared = get_cloudflared_path()
+        cmd = [
+            cloudflared,
+            "tunnel",
+            "run",
+            "--token",
+            token,
+            "--url",
+            f"http://localhost:{port}",
+        ]
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            raise ValueError(
+                "cloudflared not found; install from https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation"
+            ) from None
+        except OSError as e:
+            raise ValueError(f"Failed to start cloudflared: {e}") from e
+
+        self._tunnel_processes[key] = proc
+        logger.info(
+            "Started cloudflared tunnel", workspace_id=workspace_id, port=port, pid=proc.pid
+        )
+        return {"status": "running", "pid": proc.pid}
+
+    async def _tunnel_stop(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Stop cloudflared for a workspace tunnel.
+
+        Params: workspace_id, port.
+        """
+        workspace_id = params["workspace_id"]
+        port = params.get("port")
+        if port is None:
+            raise ValueError("tunnel stop requires port")
+
+        key = self._tunnel_key(workspace_id, port)
+        proc = self._tunnel_processes.pop(key, None)
+        if not proc:
+            return {"status": "stopped"}
+
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(Exception):
+                proc.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+                proc.wait(timeout=5)
+        except OSError:
+            pass
+        logger.info("Stopped cloudflared tunnel", workspace_id=workspace_id, port=port)
+        return {"status": "stopped"}
+
+    async def _tunnel_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Report tunnel daemon health.
+
+        Params: workspace_id. Returns status, connected for any tunnels for this workspace.
+        """
+        workspace_id = params["workspace_id"]
+        connected = False
+        for key in list(self._tunnel_processes):
+            if key.startswith(f"{workspace_id}:"):
+                proc = self._tunnel_processes.get(key)
+                if proc and proc.poll() is None:
+                    connected = True
+                    break
+        return {"status": "running" if connected else "stopped", "connected": connected}

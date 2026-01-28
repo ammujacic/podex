@@ -114,6 +114,8 @@ interface SessionState {
     event: string,
     data: Record<string, unknown>
   ) => void;
+  /** Replace all conversations for a session from backend source of truth */
+  setConversationSessions: (sessionId: string, conversations: ConversationSession[]) => void;
 
   // File preview actions
   openFilePreview: (
@@ -283,6 +285,15 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
     set((state) => {
       const session = state.sessions[sessionId];
       if (!session) return state;
+
+      // Detach any conversations that were attached to this agent so they
+      // return to the available pool (matches backend detach semantics).
+      const updatedConversations = session.conversationSessions.map((c) =>
+        c.attachedToAgentId === agentId
+          ? { ...c, attachedToAgentId: null, updatedAt: new Date().toISOString() }
+          : c
+      );
+
       return {
         sessions: {
           ...state.sessions,
@@ -290,6 +301,7 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
             ...session,
             agents: session.agents.filter((a) => a.id !== agentId),
             activeAgentId: session.activeAgentId === agentId ? null : session.activeAgentId,
+            conversationSessions: updatedConversations,
           },
         },
       };
@@ -330,7 +342,10 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
     const id = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const now = new Date().toISOString();
 
-    // Derive name from first message or use provided name or default
+    // Derive name from first message or use provided name or default.
+    // NOTE: We intentionally do NOT seed the first message here.
+    // Messages are added via optimistic updates + WebSocket events to avoid
+    // the first user message appearing twice when the conversation is created.
     const name = options.firstMessage
       ? deriveSessionName(options.firstMessage)
       : options.name || 'New Session';
@@ -338,19 +353,10 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
     const conversation: ConversationSession = {
       id,
       name,
-      messages: options.firstMessage
-        ? [
-            {
-              id: `msg-${Date.now()}`,
-              role: 'user',
-              content: options.firstMessage,
-              timestamp: new Date(),
-            },
-          ]
-        : [],
+      messages: [],
       attachedToAgentId: null,
-      messageCount: options.firstMessage ? 1 : 0,
-      lastMessageAt: options.firstMessage ? now : null,
+      messageCount: 0,
+      lastMessageAt: null,
       createdAt: now,
       updatedAt: now,
     };
@@ -836,6 +842,22 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
         default:
           return state;
       }
+    }),
+
+  setConversationSessions: (sessionId, conversations) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            conversationSessions: conversations,
+          },
+        },
+      };
     }),
 
   // ========================================================================

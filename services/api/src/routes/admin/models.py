@@ -21,6 +21,7 @@ from src.database.models import (
     PlatformSetting,
     SubscriptionPlan,
     UserConfig,
+    UserOAuthToken,
     UserSubscription,
 )
 from src.middleware.admin import get_admin_user_id, require_admin, require_super_admin
@@ -655,12 +656,27 @@ async def list_user_provider_models(
     config_result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
     config = config_result.scalar_one_or_none()
 
+    # Get user's OAuth-connected providers
+    oauth_result = await db.execute(
+        select(UserOAuthToken)
+        .where(UserOAuthToken.user_id == user_id)
+        .where(UserOAuthToken.status == "connected")
+    )
+    oauth_tokens = oauth_result.scalars().all()
+    oauth_providers = [t.provider for t in oauth_tokens]
+
     models: list[UserProviderModelResponse] = []
 
-    # Add models from API key providers (cloud providers)
+    # Combine API key providers and OAuth providers
+    configured_providers: list[str] = []
     if config and config.llm_api_keys:
-        configured_providers = list(config.llm_api_keys.keys())
+        configured_providers.extend(list(config.llm_api_keys.keys()))
+    configured_providers.extend(oauth_providers)
+    # Remove duplicates while preserving order
+    configured_providers = list(dict.fromkeys(configured_providers))
 
+    # Add models from configured providers (API keys + OAuth)
+    if configured_providers:
         # Query user-key models from database where provider matches user's configured keys
         query = (
             select(LLMModel)

@@ -3,7 +3,13 @@
  */
 
 import { useEffect, useCallback } from 'react';
-import { useSessionStore, type AgentMessage, type AgentMode } from '@/stores/session';
+import {
+  useSessionStore,
+  type AgentMessage,
+  type AgentMode,
+  type ConversationSession,
+  type ToolCall,
+} from '@/stores/session';
 import { useStoreCallbacks } from './useStoreCallbacks';
 import {
   connectSocket,
@@ -19,6 +25,12 @@ import {
   type AgentConfigUpdateEvent,
   type WorkspaceStatusEvent,
   type WorkspaceBillingStandbyEvent,
+  type ConversationCreatedEvent,
+  type ConversationUpdatedEvent,
+  type ConversationDeletedEvent,
+  type ConversationAttachedEvent,
+  type ConversationDetachedEvent,
+  type ConversationMessageEvent,
 } from '@/lib/socket';
 import { sendAgentMessage } from '@/lib/api';
 import { toast } from 'sonner';
@@ -38,6 +50,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
   // Get store methods directly - Zustand selectors are stable and efficient
   const addConversationMessage = useSessionStore((state) => state.addConversationMessage);
   const getConversationForAgent = useSessionStore((state) => state.getConversationForAgent);
+  const handleConversationEvent = useSessionStore((state) => state.handleConversationEvent);
   const updateAgent = useSessionStore((state) => state.updateAgent);
   const handleAutoModeSwitch = useSessionStore((state) => state.handleAutoModeSwitch);
   const startStreamingMessage = useSessionStore((state) => state.startStreamingMessage);
@@ -57,6 +70,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
     appendThinkingToken,
     finalizeStreamingMessage,
     setWorkspaceStatus,
+    handleConversationEvent,
   });
 
   useEffect(() => {
@@ -212,6 +226,103 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
     });
 
     // Handle billing stop events (credit exhaustion)
+    // Handle conversation session lifecycle events
+    const unsubConversationCreated = onSocketEvent(
+      'conversation_created',
+      (data: ConversationCreatedEvent) => {
+        if (data.session_id !== sessionId) return;
+
+        const conv = data.conversation;
+        callbacksRef.current.handleConversationEvent(sessionId, 'conversation_created', {
+          conversation: {
+            id: conv.id,
+            name: conv.name,
+            messages: [],
+            attachedToAgentId: conv.attached_to_agent_id,
+            messageCount: conv.message_count,
+            lastMessageAt: conv.last_message_at,
+            createdAt: conv.created_at,
+            updatedAt: conv.updated_at,
+          } as ConversationSession,
+        });
+      }
+    );
+
+    const unsubConversationUpdated = onSocketEvent(
+      'conversation_updated',
+      (data: ConversationUpdatedEvent) => {
+        if (data.session_id !== sessionId) return;
+        const conv = data.conversation;
+        callbacksRef.current.handleConversationEvent(sessionId, 'conversation_updated', {
+          conversation: {
+            id: conv.id,
+            name: conv.name,
+            attachedToAgentId: conv.attached_to_agent_id,
+            messageCount: conv.message_count ?? 0,
+            lastMessageAt: conv.last_message_at ?? null,
+            createdAt: conv.created_at ?? new Date().toISOString(),
+            updatedAt: conv.updated_at ?? new Date().toISOString(),
+            messages: [],
+          } as ConversationSession,
+        });
+      }
+    );
+
+    const unsubConversationDeleted = onSocketEvent(
+      'conversation_deleted',
+      (data: ConversationDeletedEvent) => {
+        if (data.session_id !== sessionId) return;
+        callbacksRef.current.handleConversationEvent(sessionId, 'conversation_deleted', {
+          conversation_id: data.conversation_id,
+        });
+      }
+    );
+
+    const unsubConversationAttached = onSocketEvent(
+      'conversation_attached',
+      (data: ConversationAttachedEvent) => {
+        if (data.session_id !== sessionId) return;
+        callbacksRef.current.handleConversationEvent(sessionId, 'conversation_attached', {
+          conversation_id: data.conversation_id,
+          agent_id: data.agent_id,
+        });
+      }
+    );
+
+    const unsubConversationDetached = onSocketEvent(
+      'conversation_detached',
+      (data: ConversationDetachedEvent) => {
+        if (data.session_id !== sessionId) return;
+        callbacksRef.current.handleConversationEvent(sessionId, 'conversation_detached', {
+          conversation_id: data.conversation_id,
+          previous_agent_id: data.previous_agent_id,
+        });
+      }
+    );
+
+    const unsubConversationMessage = onSocketEvent(
+      'conversation_message',
+      (data: ConversationMessageEvent) => {
+        if (data.session_id !== sessionId) return;
+
+        const backendMsg = data.message;
+        const agentMessage: AgentMessage = {
+          id: backendMsg.id,
+          role: backendMsg.role === 'system' ? 'assistant' : backendMsg.role,
+          content: backendMsg.content,
+          thinking: backendMsg.thinking ?? undefined,
+          // Backend tool_calls is an arbitrary record; we don't have full typing here,
+          // so leave toolCalls undefined to avoid type mismatches.
+          toolCalls: undefined as ToolCall[] | undefined,
+          timestamp: new Date(backendMsg.created_at),
+        };
+
+        callbacksRef.current.handleConversationEvent(sessionId, 'conversation_message', {
+          conversation_id: data.conversation_id,
+          message: agentMessage,
+        });
+      }
+    );
     const unsubBillingStandby = onSocketEvent(
       'workspace_billing_standby',
       (data: WorkspaceBillingStandbyEvent) => {
@@ -248,6 +359,12 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       unsubConfigUpdate();
       unsubWorkspaceStatus();
       unsubBillingStandby();
+      unsubConversationCreated();
+      unsubConversationUpdated();
+      unsubConversationDeleted();
+      unsubConversationAttached();
+      unsubConversationDetached();
+      unsubConversationMessage();
       leaveSession(sessionId, userId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

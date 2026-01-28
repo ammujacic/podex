@@ -54,9 +54,9 @@ const mockMediumModel: PublicModel = {
 };
 
 const mockLowModel: PublicModel = {
-  model_id: 'claude-haiku-3-5',
+  model_id: 'claude-haiku-4-5',
   provider: 'anthropic',
-  display_name: 'Claude Haiku 3.5',
+  display_name: 'Claude Haiku 4.5',
   cost_tier: 'low',
   context_window: 200000,
   max_output_tokens: 4096,

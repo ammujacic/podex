@@ -716,6 +716,13 @@ class ToolExecutor:
         if tool_name == "create_agent_template":
             if not self.user_id:
                 return {"success": False, "error": "User ID not available"}
+            model = arguments.get("model")
+            if not model:
+                return {
+                    "success": False,
+                    "error": "Model is required to create an agent template. "
+                    "Pass an explicit model or configure role defaults in the platform settings.",
+                }
             config = AgentTemplateConfig(
                 user_id=self.user_id,
                 name=arguments.get("name", ""),
@@ -723,7 +730,7 @@ class ToolExecutor:
                 system_prompt=arguments.get("system_prompt", ""),
                 allowed_tools=arguments.get("allowed_tools", []),
                 description=arguments.get("description"),
-                model=arguments.get("model", "claude-sonnet-4-20250514"),
+                model=model,
                 temperature=arguments.get("temperature"),
                 icon=arguments.get("icon"),
             )
@@ -731,12 +738,19 @@ class ToolExecutor:
         if tool_name == "list_available_tools":
             return await list_available_tools()
         if tool_name == "preview_agent_template":
+            model = arguments.get("model")
+            if not model:
+                return {
+                    "success": False,
+                    "error": "Model is required to preview an agent template. "
+                    "Pass an explicit model or configure role defaults in the platform settings.",
+                }
             preview_config = AgentTemplatePreviewConfig(
                 name=arguments.get("name", ""),
                 system_prompt=arguments.get("system_prompt", ""),
                 allowed_tools=arguments.get("allowed_tools", []),
                 description=arguments.get("description"),
-                model=arguments.get("model", "claude-sonnet-4-20250514"),
+                model=model,
                 temperature=arguments.get("temperature"),
                 icon=arguments.get("icon"),
             )
@@ -769,7 +783,7 @@ class ToolExecutor:
                 name=arguments.get("name", ""),
                 system_prompt=arguments.get("system_prompt", ""),
                 tools=arguments.get("tools", []),
-                model=arguments.get("model", "claude-sonnet-4-20250514"),
+                model=arguments.get("model") or "",
             ),
             "delegate_to_custom_agent": lambda: delegate_to_custom_agent(
                 session_id=self.session_id,

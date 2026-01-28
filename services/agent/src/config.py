@@ -49,18 +49,6 @@ class Settings(BaseSettings):
     GCP_REGION: str = "us-east1"  # Region where Claude models are available
 
     # Default models by role (fallback only - actual defaults come from database)
-    # These are used ONLY if the API service is unavailable at startup.
-    # Admins configure actual defaults via the admin panel (PlatformSetting: agent_model_defaults)
-    # Cost-effective defaults: Sonnet 4.5 for most tasks, Haiku for chat
-    DEFAULT_ARCHITECT_MODEL: str = "claude-sonnet-4-5-20250929"
-    DEFAULT_CODER_MODEL: str = "claude-sonnet-4-5-20250929"
-    DEFAULT_REVIEWER_MODEL: str = "claude-sonnet-4-20250514"
-    DEFAULT_TESTER_MODEL: str = "claude-sonnet-4-5-20250929"
-    DEFAULT_CHAT_MODEL: str = "claude-haiku-4-5-20251001"
-    DEFAULT_SECURITY_MODEL: str = "claude-sonnet-4-5-20250929"
-    DEFAULT_DEVOPS_MODEL: str = "claude-sonnet-4-5-20250929"
-    DEFAULT_DOCUMENTATOR_MODEL: str = "claude-sonnet-4-20250514"
-
     # Workspace configuration
     WORKSPACE_BASE_PATH: str = _WORKSPACE_BASE
 
@@ -129,10 +117,11 @@ class Settings(BaseSettings):
 # Fallback: Models that support vision (used if API unavailable)
 _FALLBACK_VISION_CAPABLE_MODELS = frozenset(
     [
-        "claude-opus-4-5-20251101",
-        "claude-sonnet-4-5-20250929",
-        "claude-sonnet-4-20250514",
-        "claude-haiku-4-5-20251001",
+        # Claude 4.5 family
+        "claude-opus-4-5",
+        "claude-sonnet-4-5",
+        "claude-haiku-4-5",
+        # Gemini
         "gemini-2.0-flash",
         "gemini-2.5-pro-preview",
     ]
@@ -141,9 +130,9 @@ _FALLBACK_VISION_CAPABLE_MODELS = frozenset(
 # Fallback: Models that support extended thinking (used if API unavailable)
 _FALLBACK_THINKING_CAPABLE_MODELS = frozenset(
     [
-        "claude-opus-4-5-20251101",
-        "claude-sonnet-4-5-20250929",
-        "claude-haiku-4-5-20251001",
+        "claude-opus-4-5",
+        "claude-sonnet-4-5",
+        "claude-haiku-4-5",
         "gemini-2.0-flash",
         "gemini-2.5-pro-preview",
     ]
@@ -176,7 +165,7 @@ async def get_settings_from_cache() -> dict[str, Any]:
         await redis_client.connect()
         cached = await redis_client.get_json(PLATFORM_SETTINGS_CACHE_KEY)
         if cached and isinstance(cached, dict):
-            return cached
+            return cast("dict[str, Any]", cached)
     except Exception as e:
         raise SettingsNotAvailableError(f"Failed to get settings from Redis cache: {e}") from e
 
@@ -426,22 +415,6 @@ async def get_model_capabilities(model_id: str) -> dict[str, Any] | None:
     Returns None if model is not in cache.
     """
     return await _model_capabilities_cache.get_capabilities(model_id)
-
-
-def get_default_model_for_role(role: str) -> str:
-    """Get the default model ID for an agent role."""
-    s = get_settings()
-    role_map = {
-        "architect": s.DEFAULT_ARCHITECT_MODEL,
-        "coder": s.DEFAULT_CODER_MODEL,
-        "reviewer": s.DEFAULT_REVIEWER_MODEL,
-        "tester": s.DEFAULT_TESTER_MODEL,
-        "chat": s.DEFAULT_CHAT_MODEL,
-        "security": s.DEFAULT_SECURITY_MODEL,
-        "devops": s.DEFAULT_DEVOPS_MODEL,
-        "documentator": s.DEFAULT_DOCUMENTATOR_MODEL,
-    }
-    return role_map.get(role, s.DEFAULT_CODER_MODEL)
 
 
 @lru_cache

@@ -85,6 +85,10 @@ class AgentCreationParams:
     command_allowlist: list[str] | None = None
     # Workspace container ID for remote tool execution
     workspace_id: str | None = None
+    # User-provided LLM API keys for external providers
+    llm_api_keys: dict[str, str] | None = None
+    # Model's registered provider from database
+    model_provider: str | None = None
 
 
 @dataclass
@@ -603,6 +607,8 @@ class AgentOrchestrator:
                     command_allowlist=params.command_allowlist,
                     user_id=params.user_id,
                     workspace_id=params.workspace_id,
+                    llm_api_keys=params.llm_api_keys,
+                    model_provider=params.model_provider,
                 )
 
                 if db_agent:
@@ -615,6 +621,8 @@ class AgentOrchestrator:
                         mode=params.mode,
                         workspace=str(workspace_path),
                         mcp_tools=mcp_lifecycle.get_tool_count() if mcp_lifecycle else 0,
+                        model_provider=params.model_provider,
+                        has_llm_keys=bool(params.llm_api_keys),
                     )
                 else:
                     # Database agent creation failed - role config not available
@@ -746,7 +754,13 @@ class AgentOrchestrator:
         try:
             # Get agent configuration from context
             role = task.context.get("role", "coder")
-            model = task.context.get("model", "claude-sonnet-4-20250514")
+            model = task.context.get("model")
+            if not model:
+                raise RuntimeError(
+                    "Model is required in task context. "
+                    "API must resolve a model from agent/role settings "
+                    "before calling agent service."
+                )
             user_id = task.context.get("user_id")
             template_config_data = task.context.get("template_config")
 
@@ -797,6 +811,17 @@ class AgentOrchestrator:
             mode = task.context.get("mode", "ask")
             command_allowlist = task.context.get("command_allowlist")
             workspace_id = task.context.get("workspace_id")  # Workspace container ID
+            # Get user's LLM API keys and model provider from database
+            llm_api_keys = task.context.get("llm_api_keys")
+            model_provider = task.context.get("model_provider")
+
+            logger.debug(
+                "Context received from API",
+                has_llm_api_keys=bool(llm_api_keys),
+                llm_providers=list(llm_api_keys.keys()) if llm_api_keys else [],
+                model_provider=model_provider,
+                model=str(model),
+            )
 
             # Get or create agent
             agent_params = AgentCreationParams(
@@ -810,6 +835,8 @@ class AgentOrchestrator:
                 mode=mode,
                 command_allowlist=command_allowlist,
                 workspace_id=workspace_id,
+                llm_api_keys=llm_api_keys,
+                model_provider=model_provider,
             )
             agent = await self.get_or_create_agent(agent_params, mcp_lifecycle)
 
@@ -963,7 +990,7 @@ class AgentOrchestrator:
                 message=task_description,
                 context={
                     "role": agent_config.get("role", "coder"),
-                    "model": agent_config.get("model", "claude-sonnet-4-20250514"),
+                    "model": agent_config["model"],
                 },
             )
             task_id = await self.submit_task(task)

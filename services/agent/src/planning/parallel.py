@@ -99,7 +99,6 @@ class ParallelPlanGenerator:
     """
 
     MAX_PARALLEL_PLANS = 5
-    DEFAULT_MODELS = ["claude-sonnet-4-20250514", "gpt-4o", "claude-opus-4-20250514"]
 
     def __init__(self, llm_client: Any = None):
         self._llm_client = llm_client
@@ -132,7 +131,11 @@ class ParallelPlanGenerator:
             List of generated plans (may include failures)
         """
         num_plans = min(num_plans, self.MAX_PARALLEL_PLANS)
-        models = models or self.DEFAULT_MODELS
+        if not models:
+            raise ValueError(
+                "models are required for parallel planning. "
+                "Pass explicit planning models derived from DB/role defaults."
+            )
 
         logger.info(
             "generating_parallel_plans",

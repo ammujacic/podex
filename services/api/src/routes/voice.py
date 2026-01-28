@@ -16,7 +16,7 @@ from podex_shared.gcp.stt import SpeechClient
 from podex_shared.gcp.tts import TTSClient
 from src.config import settings
 from src.database.models import Agent as AgentModel
-from src.database.models import Message as MessageModel
+from src.database.models import ConversationMessage
 from src.database.models import Session as SessionModel
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, RATE_LIMIT_UPLOAD, limiter
 from src.routes.dependencies import DbSession, get_current_user_id
@@ -514,19 +514,29 @@ async def synthesize_message(
     # Verify user has access to the session
     await verify_session_access(session_id, request, db)
 
-    # Verify agent exists in the session
-    agent_check_query = select(AgentModel).where(
-        AgentModel.id == agent_id,
-        AgentModel.session_id == session_id,
+    # Verify agent exists in the session and get its conversation session
+    from sqlalchemy.orm import selectinload
+
+    agent_check_query = (
+        select(AgentModel)
+        .options(selectinload(AgentModel.conversation_session))
+        .where(
+            AgentModel.id == agent_id,
+            AgentModel.session_id == session_id,
+        )
     )
     agent_check_result = await db.execute(agent_check_query)
-    if not agent_check_result.scalar_one_or_none():
+    agent = agent_check_result.scalar_one_or_none()
+    if not agent:
         raise HTTPException(status_code=404, detail="Agent not found in session")
 
-    # Get the message (verify it belongs to the agent)
-    query = select(MessageModel).where(
-        MessageModel.id == message_id,
-        MessageModel.agent_id == agent_id,
+    if not agent.conversation_session:
+        raise HTTPException(status_code=404, detail="Agent has no conversation session")
+
+    # Get the message from the agent's conversation session
+    query = select(ConversationMessage).where(
+        ConversationMessage.id == message_id,
+        ConversationMessage.conversation_session_id == agent.conversation_session.id,
     )
     result = await db.execute(query)
     message = result.scalar_one_or_none()
@@ -550,11 +560,7 @@ async def synthesize_message(
     if not text_to_speak.strip():
         raise HTTPException(status_code=400, detail="No speakable content")
 
-    # Get agent voice config
-    agent_query = select(AgentModel).where(AgentModel.id == agent_id)
-    agent_result = await db.execute(agent_query)
-    agent = agent_result.scalar_one_or_none()
-
+    # Get agent voice config (agent was already loaded above)
     voice_config: dict[str, Any] | None = agent.voice_config if agent else None
     default_voice = settings.DEFAULT_TTS_VOICE_ID
     voice_id = voice_config.get("voice_id", default_voice) if voice_config else default_voice

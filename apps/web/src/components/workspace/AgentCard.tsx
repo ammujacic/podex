@@ -18,7 +18,6 @@ import {
   mapCostTierToTier,
   mapCostTierToReasoningEffort,
   createShortModelName,
-  parseModelIdToDisplayName,
 } from '@/lib/model-utils';
 import {
   sendAgentMessage,
@@ -387,10 +386,11 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       if (userModel) return userModel.display_name.replace(' (User API)', '');
       const backendModel = backendModels.find((m) => m.model_id === modelId);
       if (backendModel) return backendModel.display_name;
-      // Fallback: parse raw model ID into user-friendly name
-      return parseModelIdToDisplayName(modelId);
+      // If we don't have metadata yet, surface the raw ID as-is.
+      return modelId;
     },
-    [agent.modelDisplayName, backendModels, userProviderModels]
+    // Include agent.model to ensure React.memo re-renders header when model changes
+    [agent.modelDisplayName, agent.model, backendModels, userProviderModels]
   );
 
   // Message handlers
@@ -772,7 +772,8 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
 
   const handleChangeModel = useCallback(
     async (newModel: string) => {
-      updateAgent(sessionId, agent.id, { model: newModel });
+      // Clear modelDisplayName when model changes so we look up the new display name
+      updateAgent(sessionId, agent.id, { model: newModel, modelDisplayName: undefined });
       try {
         await updateAgentSettings(sessionId, agent.id, { model: newModel });
       } catch (error) {

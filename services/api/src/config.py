@@ -75,8 +75,8 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
-    BROWSER_ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
-    BROWSER_REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+    BROWSER_ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080  # 7 days (7 * 24 * 60)
+    BROWSER_REFRESH_TOKEN_EXPIRE_DAYS: int = 90  # Extended to 90 days for better UX
 
     # Auth Cookies (httpOnly cookies for XSS protection)
     COOKIE_SECURE: bool = True  # Set False for local dev without HTTPS
@@ -153,6 +153,12 @@ class Settings(BaseSettings):
     AGENT_SERVICE_URL: str = "http://agent:3002"
     AGENT_TASK_POLL_INTERVAL: float = 0.5  # seconds
     AGENT_TASK_TIMEOUT: float = 120.0  # seconds
+
+    # Cloudflare Tunnel (external exposure: tunnel.podex.dev)
+    CLOUDFLARE_API_TOKEN: str | None = None
+    CLOUDFLARE_ACCOUNT_ID: str | None = None
+    CLOUDFLARE_ZONE_ID: str | None = None  # Zone for tunnel.podex.dev
+    TUNNEL_DOMAIN: str = "tunnel.podex.dev"  # Base domain for public URLs
 
     # Voice/Audio settings (Google Cloud TTS and Speech)
     DEFAULT_TTS_VOICE_ID: str = "en-US-Neural2-F"  # GCP TTS voice
