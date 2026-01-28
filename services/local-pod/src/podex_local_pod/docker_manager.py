@@ -164,10 +164,6 @@ class LocalDockerManager:
         if not self._client:
             raise RuntimeError("Docker client not initialized")
 
-        # Check workspace limit
-        if len(self._workspaces) >= self.config.max_workspaces:
-            raise RuntimeError(f"Maximum workspace limit ({self.config.max_workspaces}) reached")
-
         workspace_id = workspace_id or _generate_workspace_id()
         container_name = f"podex-workspace-{workspace_id}"
 

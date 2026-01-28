@@ -77,17 +77,10 @@ def create_cloud_run_services(
             member=service_account.email.apply(lambda e: f"serviceAccount:{e}"),
         )
 
-    # VPC Connector for Cloud Run to access VPC resources (Redis VM, Cloud SQL)
-    # Using 10.9.0.0/28 to avoid overlap with GKE services range (10.8.0.0/20)
-    vpc_connector = gcp.vpcaccess.Connector(
-        f"podex-connector-{env}",
-        name=f"podex-connector-{env}",
-        region=region,
-        ip_cidr_range="10.9.0.0/28",
-        network=vpc["network"].name,
-        min_instances=2,
-        max_instances=3,
-    )
+    # VPC Connector removed - not needed!
+    # - Cloud SQL: Uses Unix domain sockets via Cloud Run built-in support (no VPC needed)
+    # - Redis: Uses public IP with password protection and firewall rules
+    # This saves ~$0-5/month (VPC connector pay-per-use) and simplifies infrastructure
 
     # Base image path
     image_base = pulumi.Output.all(artifact_repo.location, artifact_repo.name).apply(
@@ -457,13 +450,19 @@ def create_cloud_run_services(
                     min_instance_count=0,
                     max_instance_count=cfg["max_instances"],
                 ),
-                # VPC access for Redis
-                vpc_access=gcp.cloudrunv2.ServiceTemplateVpcAccessArgs(
-                    connector=vpc_connector.id,
-                    egress="PRIVATE_RANGES_ONLY",
-                )
-                if cfg["needs_redis"]
-                else None,
+                # VPC access removed - Cloud SQL uses Unix sockets, Redis uses public IP
+                vpc_access=None,
+                # Cloud SQL connection via Unix socket (for services that need DB)
+                volumes=[
+                    gcp.cloudrunv2.ServiceTemplateVolumeArgs(
+                        name="cloudsql",
+                        cloud_sql_instance=gcp.cloudrunv2.ServiceTemplateVolumeCloudSqlInstanceArgs(
+                            instances=[cloud_sql["connection_name"]],
+                        ),
+                    ),
+                ]
+                if cfg["needs_db"]
+                else [],
                 # Container configuration
                 containers=[
                     gcp.cloudrunv2.ServiceTemplateContainerArgs(
@@ -485,6 +484,15 @@ def create_cloud_run_services(
                             cpu_idle=True,  # Don't charge when idle
                         ),
                         envs=envs,
+                        # Mount Cloud SQL Unix socket (for services that need DB)
+                        volume_mounts=[
+                            gcp.cloudrunv2.ServiceTemplateContainerVolumeMountArgs(
+                                name="cloudsql",
+                                mount_path="/cloudsql",
+                            ),
+                        ]
+                        if cfg["needs_db"]
+                        else [],
                         # Health check (skip for web frontend)
                         startup_probe=gcp.cloudrunv2.ServiceTemplateContainerStartupProbeArgs(
                             http_get=gcp.cloudrunv2.ServiceTemplateContainerStartupProbeHttpGetArgs(

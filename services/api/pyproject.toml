@@ -322,9 +322,8 @@ module = ["src.routes.webhooks"]
 ignore_errors = true
 
 [[tool.mypy.overrides]]
-module = ["src.github_client", "src.routes.github", "src.audit_logger", "src.routes.admin.audit", "src.routes.llm_bridge"]
-# GitHub integration, audit logger, admin audit, and LLM bridge files use many dict returns and complex typing
-# LLM bridge has Redis bytes/string conversion issues that need refactoring
+module = ["src.github_client", "src.routes.github", "src.audit_logger", "src.routes.admin.audit"]
+# GitHub integration, audit logger, and admin audit use many dict returns and complex typing
 ignore_errors = true
 
 [tool.pydantic-mypy]

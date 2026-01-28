@@ -111,13 +111,6 @@ def cli() -> None:
     help="Display name for this pod (overrides config file)",
 )
 @click.option(
-    "--max-workspaces",
-    envvar="PODEX_MAX_WORKSPACES",
-    default=None,
-    type=click.IntRange(1, 10),
-    help="Maximum concurrent workspaces (overrides config file)",
-)
-@click.option(
     "--config",
     "config_file",
     type=click.Path(exists=True, path_type=Path),
@@ -127,7 +120,6 @@ def start(
     token: str | None,
     url: str | None,
     name: str | None,
-    max_workspaces: int | None,
     config_file: Path | None,
 ) -> None:
     """Start the Podex local pod agent.
@@ -150,8 +142,6 @@ def start(
         config = config.model_copy(update={"cloud_url": url})
     if name:
         config = config.model_copy(update={"pod_name": name})
-    if max_workspaces is not None:
-        config = config.model_copy(update={"max_workspaces": max_workspaces})
 
     # Use hostname if pod_name still not set
     if not config.pod_name:
@@ -176,7 +166,6 @@ def start(
     )
     click.echo(f"  Name: {config.pod_name}")
     click.echo(f"  Cloud: {config.cloud_url}")
-    click.echo(f"  Max workspaces: {config.max_workspaces}")
     click.echo(f"  Mode: {config.mode}")
 
     # Check tmux availability for native mode (required for terminal features)
@@ -348,7 +337,6 @@ def config_show() -> None:
     click.echo(f"  pod_token = {token_display}")
     click.echo(f"  cloud_url = {podex.get('cloud_url', '')}")
     click.echo(f"  pod_name = {podex.get('pod_name') or '(auto)'}")
-    click.echo(f"  max_workspaces = {podex.get('max_workspaces', 3)}")
     click.echo(f"  mode = {podex.get('mode', 'docker')}")
     click.echo()
 
@@ -390,11 +378,6 @@ def config_show() -> None:
 @click.option("--workspace-dir", help="Directory for native mode workspaces")
 @click.option("--name", help="Display name for this pod")
 @click.option(
-    "--max-workspaces",
-    type=click.IntRange(1, 10),
-    help="Maximum concurrent workspaces (1-10)",
-)
-@click.option(
     "--mount",
     "mounts",
     multiple=True,
@@ -407,7 +390,6 @@ def config_init(
     security: str | None,
     workspace_dir: str | None,
     name: str | None,
-    max_workspaces: int | None,
     mounts: tuple[str, ...],
     yes: bool,
 ) -> None:
@@ -431,7 +413,7 @@ def config_init(
     manager = ConfigManager()
 
     # Check if any flags provided - determines interactive vs non-interactive
-    has_flags = any([token, mode, security, workspace_dir, name, max_workspaces, mounts])
+    has_flags = any([token, mode, security, workspace_dir, name, mounts])
 
     # Check if config exists
     if manager.exists():
@@ -454,7 +436,6 @@ def config_init(
         final_security = security or "allowlist"
         final_workspace_dir = workspace_dir or str(Path.home() / "podex-workspaces")
         final_name = name or socket.gethostname()
-        final_max_workspaces = max_workspaces or 3
 
         # Parse mounts
         final_mounts = []
@@ -480,7 +461,6 @@ def config_init(
                 "pod_token": final_token,
                 "cloud_url": "https://api.podex.dev",
                 "pod_name": final_name,
-                "max_workspaces": final_max_workspaces,
                 "mode": final_mode,
             },
             "native": {
@@ -545,20 +525,12 @@ def config_init(
     default_name = socket.gethostname()
     final_name = click.prompt("Pod name", default=default_name)
 
-    # Max workspaces
-    final_max_workspaces = click.prompt(
-        "Max concurrent workspaces",
-        type=click.IntRange(1, 10),
-        default=3,
-    )
-
     # Build config
     cfg = {
         "podex": {
             "pod_token": final_token,
             "cloud_url": "https://api.podex.dev",
             "pod_name": final_name,
-            "max_workspaces": final_max_workspaces,
             "mode": final_mode,
         },
         "native": {

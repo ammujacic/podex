@@ -153,7 +153,16 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             # Only commit if there are pending changes (new, dirty, or deleted objects)
-            if session.new or session.dirty or session.deleted:
+            # Use a try-except to handle cases where checking session state might trigger
+            # synchronous database access (e.g., lazy loading relationships)
+            try:
+                has_changes = bool(session.new or session.dirty or session.deleted)
+            except Exception:
+                # If checking state fails (e.g., due to lazy loading), commit anyway
+                # SQLAlchemy will only commit if there are actual changes
+                has_changes = True
+
+            if has_changes:
                 await session.commit()
         except Exception:
             await session.rollback()
@@ -174,7 +183,16 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             # Only commit if there are pending changes (new, dirty, or deleted objects)
-            if session.new or session.dirty or session.deleted:
+            # Use a try-except to handle cases where checking session state might trigger
+            # synchronous database access (e.g., lazy loading relationships)
+            try:
+                has_changes = bool(session.new or session.dirty or session.deleted)
+            except Exception:
+                # If checking state fails (e.g., due to lazy loading), commit anyway
+                # SQLAlchemy will only commit if there are actual changes
+                has_changes = True
+
+            if has_changes:
                 await session.commit()
         except Exception:
             await session.rollback()

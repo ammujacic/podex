@@ -200,6 +200,11 @@ class MockGCP:
                 for k, v in kwargs.items():
                     setattr(self, k, v)
 
+        class InstanceNetworkInterfaceAccessConfigArgs:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
         class InstanceSchedulingArgs:
             def __init__(self, *args: Any, **kwargs: Any) -> None:
                 for k, v in kwargs.items():

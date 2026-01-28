@@ -489,6 +489,13 @@ function ProviderConfigPanel({
     [baseUrl, providerId, onConfigured]
   );
 
+  // Sync discovered models from parent when parent has loaded config (e.g. after refresh)
+  useEffect(() => {
+    if (info?.isLocal && models?.length > 0) {
+      setDiscoveredModels(models);
+    }
+  }, [info?.isLocal, models]);
+
   // Load saved URL and models on mount (only once per provider)
   useEffect(() => {
     if (!info?.isLocal) return;
@@ -511,11 +518,10 @@ function ProviderConfigPanel({
         const providerConfig = config[providerId];
         if (providerConfig?.base_url) {
           setBaseUrl(providerConfig.base_url);
-          // Auto-discover models if URL is saved
+          // Restore saved models so they persist after refresh (do not re-discover here;
+          // that would clear the list and leave it empty if the backend cannot reach the URL)
           if (providerConfig.models && providerConfig.models.length > 0) {
             setDiscoveredModels(providerConfig.models);
-            // Also trigger a refresh to get latest models
-            handleDiscoverModels(providerConfig.base_url);
           }
         }
         loadingRef.current = null;
@@ -536,8 +542,7 @@ function ProviderConfigPanel({
         loadingRef.current = null;
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [providerId, info?.isLocal]); // Only depend on providerId and isLocal, not handleDiscoverModels
+  }, [providerId, info?.isLocal]);
 
   if (!info) return null;
 

@@ -73,11 +73,11 @@ class TestSecretsConfiguration:
         # Verify RandomPassword was called for the required secrets (5 times)
         assert mock_random_password.call_count == 5
 
-        # Verify Secret was called for all secrets (29 times: 4 generated + 1 admin email + 1 admin pass + 23 optional)
-        assert mock_secret.call_count == 29
+        # Verify Secret was called for all secrets (28: 6 base + 22 optional)
+        assert mock_secret.call_count == 28
 
-        # Verify SecretVersion was called for all secrets (29 times)
-        assert mock_secret_version.call_count == 29
+        # Verify SecretVersion was called for all secrets (28 times)
+        assert mock_secret_version.call_count == 28
 
     def test_secret_ids_follow_naming_convention(self, project_id: str, env: str) -> None:
         """Test that secret IDs follow the expected naming convention."""

@@ -757,10 +757,9 @@ async def discover_local_models(
         elif not config.agent_preferences:
             config.agent_preferences = {"local_llm_config": {}}
 
-        # Update local LLM config with discovered models
-        if config.agent_preferences is None:
-            config.agent_preferences = {}
-        local_config = config.agent_preferences.get("local_llm_config", {})
+        # Update local LLM config with discovered models (assign new dict so JSONB is persisted)
+        prefs = (config.agent_preferences or {}).copy()
+        local_config = dict(prefs.get("local_llm_config") or {})
         local_config[provider] = {
             "base_url": base_url,
             "models": [
@@ -769,9 +768,11 @@ async def discover_local_models(
             ],
             "discovered_at": datetime.now(UTC).isoformat(),
         }
-        config.agent_preferences["local_llm_config"] = local_config
+        prefs["local_llm_config"] = local_config
+        config.agent_preferences = prefs
         await db.commit()
         await db.refresh(config)
+        await cache_delete(user_config_key(user_id))
 
         return DiscoverLocalModelsResponse(models=models, success=True)
 
@@ -884,20 +885,19 @@ async def save_local_llm_url(
     elif not config.agent_preferences:
         config.agent_preferences = {"local_llm_config": {}}
 
-    # Update local LLM config with URL (preserve existing models if any)
-    if config.agent_preferences is None:
-        config.agent_preferences = {}
-    local_config = config.agent_preferences.get("local_llm_config", {})
-    if not isinstance(local_config, dict):
-        local_config = {}
-    if provider not in local_config:
+    # Update local LLM config with URL; preserve existing models, assign new dict so JSONB persists
+    prefs = (config.agent_preferences or {}).copy()
+    local_config = dict(prefs.get("local_llm_config") or {})
+    existing = local_config.get(provider)
+    if not isinstance(existing, dict):
         local_config[provider] = {"base_url": base_url, "models": []}
     else:
-        local_config[provider]["base_url"] = base_url
-
-    config.agent_preferences["local_llm_config"] = local_config
+        local_config[provider] = {**existing, "base_url": base_url}
+    prefs["local_llm_config"] = local_config
+    config.agent_preferences = prefs
     await db.commit()
     await db.refresh(config)
+    await cache_delete(user_config_key(user_id))
 
     logger.info(
         "Saved local LLM URL",

@@ -35,7 +35,10 @@ import {
   compactAgentContext,
   getAvailableModels,
   getUserProviderModels,
+  getLocalLLMConfig,
   executeCommand,
+  attachConversation,
+  detachConversation,
   type PublicModel,
   type UserProviderModel,
   type CustomCommand,
@@ -81,6 +84,8 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   // UI state
   const [message, setMessage] = useState('');
   const [isSending, setIsSending] = useState(false);
+  // Track last sent message to prevent duplicate submissions (e.g., from double-clicks or React strict mode)
+  const lastSentMessageRef = useRef<{ content: string; timestamp: number } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isDuplicating, setIsDuplicating] = useState(false);
   const [isAborting, setIsAborting] = useState(false);
@@ -117,6 +122,9 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   // Models
   const [backendModels, setBackendModels] = useState<PublicModel[]>([]);
   const [userProviderModels, setUserProviderModels] = useState<UserProviderModel[]>([]);
+  const [localLLMConfig, setLocalLLMConfig] = useState<
+    Record<string, { base_url: string; models: { id: string; name: string }[] }>
+  >({});
 
   // Slash command menu
   const [showSlashMenu, setShowSlashMenu] = useState(false);
@@ -191,7 +199,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     }
   }, [messages.length, lastMessageId, isSending, streamingMessage?.content]);
 
-  // Fetch models
+  // Fetch models (platform, user API keys, and saved local Ollama/LM Studio config)
   useEffect(() => {
     getAvailableModels()
       .then(setBackendModels)
@@ -199,6 +207,9 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     getUserProviderModels()
       .then(setUserProviderModels)
       .catch((err) => console.error('Failed to fetch user-provider models:', err));
+    getLocalLLMConfig()
+      .then(setLocalLLMConfig)
+      .catch((err) => console.error('Failed to fetch local LLM config:', err));
   }, []);
 
   // Abort handler
@@ -354,14 +365,52 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     if (userModel) return userModelToInfo(userModel);
     const backendModel = backendModels.find((m) => m.model_id === agent.model);
     if (backendModel) return backendModelToInfo(backendModel);
+    // Local model (ollama/name or lmstudio/name)
+    if (agent.model.includes('/')) {
+      const parts = agent.model.split('/', 2);
+      const provider = parts[0];
+      const name = parts[1];
+      if (!provider || name === undefined) return undefined;
+      const cfg = localLLMConfig[provider as keyof typeof localLLMConfig];
+      const m = cfg?.models?.find((x: { id?: string; name: string }) => (x.id || x.name) === name);
+      if (m) {
+        const providerLabels: Record<string, string> = { ollama: 'Ollama', lmstudio: 'LM Studio' };
+        const label = providerLabels[provider] ?? provider;
+        return {
+          id: agent.model,
+          provider: provider as LLMProvider,
+          displayName: `${m.name} (${label})`,
+          shortName: m.name,
+          tier: 'fast',
+          contextWindow: 4096,
+          maxOutputTokens: 2048,
+          supportsVision: false,
+          supportsThinking: false,
+          thinkingStatus: 'not_supported',
+          capabilities: ['chat', 'code'],
+          goodFor: [],
+          description: `Local model via ${label}`,
+          reasoningEffort: 'low',
+          isUserKey: false,
+        } as ExtendedModelInfo;
+      }
+    }
     return undefined;
-  }, [agent.model, backendModels, userProviderModels, backendModelToInfo, userModelToInfo]);
+  }, [
+    agent.model,
+    backendModels,
+    userProviderModels,
+    localLLMConfig,
+    backendModelToInfo,
+    userModelToInfo,
+  ]);
 
   const modelsByTier = useMemo(() => {
     const flagship: ExtendedModelInfo[] = [];
     const balanced: ExtendedModelInfo[] = [];
     const fast: ExtendedModelInfo[] = [];
     const userApi: ExtendedModelInfo[] = [];
+    const local: ExtendedModelInfo[] = [];
 
     // Standard Podex model tiers
     for (const m of backendModels) {
@@ -374,13 +423,54 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       userApi.push(userModelToInfo(m));
     }
 
-    return { flagship, balanced, fast, userApi };
-  }, [backendModels, userProviderModels, backendModelToInfo, userModelToInfo]);
+    // Local models (Ollama / LM Studio) from saved config; id format is "provider/name"
+    const providerLabels: Record<string, string> = { ollama: 'Ollama', lmstudio: 'LM Studio' };
+    for (const [provider, cfg] of Object.entries(localLLMConfig)) {
+      if (!cfg?.models?.length) continue;
+      const label = providerLabels[provider] ?? provider;
+      for (const m of cfg.models) {
+        const modelId = `${provider}/${m.id || m.name}`;
+        local.push({
+          id: modelId,
+          provider: provider as LLMProvider,
+          displayName: `${m.name} (${label})`,
+          shortName: m.name,
+          tier: 'fast',
+          contextWindow: 4096,
+          maxOutputTokens: 2048,
+          supportsVision: false,
+          supportsThinking: false,
+          thinkingStatus: 'not_supported',
+          capabilities: ['chat', 'code'],
+          goodFor: [],
+          description: `Local model via ${label}`,
+          reasoningEffort: 'low',
+          isUserKey: false,
+        } as ExtendedModelInfo);
+      }
+    }
+
+    return { flagship, balanced, fast, userApi, local };
+  }, [backendModels, userProviderModels, localLLMConfig, backendModelToInfo, userModelToInfo]);
 
   const getModelDisplayName = useCallback(
     (modelId: string) => {
       if (agent.modelDisplayName) {
         return agent.modelDisplayName;
+      }
+      // Local models: "ollama/name" or "lmstudio/name"
+      if (modelId.includes('/')) {
+        const parts = modelId.split('/', 2);
+        const provider = parts[0];
+        const name = parts[1];
+        if (provider !== undefined && name !== undefined) {
+          const providerLabels: Record<string, string> = {
+            ollama: 'Ollama',
+            lmstudio: 'LM Studio',
+          };
+          const label = providerLabels[provider] ?? provider;
+          return `${name} (${label})`;
+        }
       }
       const userModel = userProviderModels.find((m) => m.model_id === modelId);
       if (userModel) return userModel.display_name.replace(' (User API)', '');
@@ -390,7 +480,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       return modelId;
     },
     // Include agent.model to ensure React.memo re-renders header when model changes
-    [agent.modelDisplayName, agent.model, backendModels, userProviderModels]
+    [agent.modelDisplayName, backendModels, userProviderModels]
   );
 
   // Message handlers
@@ -400,6 +490,21 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       if ((!effectiveMessage.trim() && attachments.length === 0) || isSending) return;
 
       const messageContent = effectiveMessage.trim();
+
+      // Prevent duplicate submissions: check if same message was sent recently (within 2 seconds)
+      const now = Date.now();
+      if (
+        lastSentMessageRef.current &&
+        lastSentMessageRef.current.content === messageContent &&
+        now - lastSentMessageRef.current.timestamp < 2000
+      ) {
+        console.warn('Duplicate message submission prevented', { content: messageContent });
+        return;
+      }
+
+      // Track this message as sent
+      lastSentMessageRef.current = { content: messageContent, timestamp: now };
+
       const currentAttachments = [...attachments];
       setIsSending(true);
       setMessage('');
@@ -420,7 +525,14 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
           firstMessage: messageContent,
         });
         conversationId = newConversation.id;
+        // Optimistically update local state
         attachConversationToAgent(sessionId, conversationId, agent.id);
+        // Call API to attach (don't await - let it happen in background)
+        // Backend will handle detaching old conversation if needed
+        attachConversation(sessionId, conversationId, agent.id).catch((error) => {
+          console.error('Failed to attach conversation:', error);
+          // WebSocket event will sync state if API call fails
+        });
       }
       addConversationMessage(sessionId, conversationId, userMessage);
       updateAgent(sessionId, agent.id, { status: 'active' });
@@ -612,7 +724,6 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       handleSendMessage,
       detachConversationFromAgent,
       sessionId,
-      agent.id,
       agent.model,
     ]
   );
@@ -794,23 +905,62 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
 
   // Conversation session handlers
   const handleAttachSession = useCallback(
-    (conversationId: string) => {
-      attachConversationToAgent(sessionId, conversationId, agent.id);
+    async (conversationId: string) => {
+      try {
+        // Optimistically update local state
+        attachConversationToAgent(sessionId, conversationId, agent.id);
+
+        // Call API to attach (backend will handle detaching old conversation)
+        await attachConversation(sessionId, conversationId, agent.id);
+      } catch (error) {
+        console.error('Failed to attach conversation:', error);
+        toast.error('Failed to attach session');
+        // Revert optimistic update - WebSocket event will sync state if API call fails
+        // But we should manually detach to fix the UI immediately
+        detachConversationFromAgent(sessionId, conversationId);
+      }
     },
-    [sessionId, agent.id, attachConversationToAgent]
+    [sessionId, agent.id, attachConversationToAgent, detachConversationFromAgent]
   );
 
-  const handleDetachSession = useCallback(() => {
+  const handleDetachSession = useCallback(async () => {
     if (conversationSession) {
-      detachConversationFromAgent(sessionId, conversationSession.id);
-    }
-  }, [sessionId, conversationSession, detachConversationFromAgent]);
+      try {
+        // Optimistically update local state
+        detachConversationFromAgent(sessionId, conversationSession.id);
 
-  const handleCreateNewSession = useCallback(() => {
+        // Call API to detach from this specific agent
+        await detachConversation(sessionId, conversationSession.id, agent.id);
+      } catch (error) {
+        console.error('Failed to detach conversation:', error);
+        toast.error('Failed to detach session');
+        // WebSocket event will sync state if API call fails
+      }
+    }
+  }, [sessionId, conversationSession, agent.id, detachConversationFromAgent]);
+
+  const handleCreateNewSession = useCallback(async () => {
     // Create a new conversation and attach it to this agent
     const newConversation = createConversationSession(sessionId);
-    attachConversationToAgent(sessionId, newConversation.id, agent.id);
-  }, [sessionId, agent.id, createConversationSession, attachConversationToAgent]);
+    try {
+      // Optimistically update local state
+      attachConversationToAgent(sessionId, newConversation.id, agent.id);
+
+      // Call API to attach (backend will handle detaching old conversation)
+      await attachConversation(sessionId, newConversation.id, agent.id);
+    } catch (error) {
+      console.error('Failed to attach new conversation:', error);
+      toast.error('Failed to create new session');
+      // Revert optimistic update
+      detachConversationFromAgent(sessionId, newConversation.id);
+    }
+  }, [
+    sessionId,
+    agent.id,
+    createConversationSession,
+    attachConversationToAgent,
+    detachConversationFromAgent,
+  ]);
 
   const handleSaveThinkingConfig = useCallback(
     (config: ThinkingConfig) => {

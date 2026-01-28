@@ -6,14 +6,15 @@ This deploys the complete GCP-native infrastructure:
 - Redis on e2-micro VM (FREE tier)
 - Cloud Storage (5GB FREE)
 - Secret Manager (6 versions FREE)
-- GKE cluster with GPU node pools (scaled to 0 = FREE)
 - Cloud DNS + managed SSL
 - Docker images (optional, built and pushed to Artifact Registry)
+
+Note: GKE cluster removed - can be added back when GPU workspaces are needed.
 """
 
 import pulumi
 
-from stacks import compute, database, dns, gke, images, monitoring, network, redis, secrets, storage
+from stacks import compute, database, dns, images, monitoring, network, redis, secrets, storage
 
 # Configuration
 config = pulumi.Config()
@@ -43,8 +44,10 @@ bucket = storage.create_bucket(project_id, env)
 artifact_repo = storage.create_artifact_registry(project_id, region, env)
 
 # ============================================
-# 3. Network (for GKE)
+# 3. Network (for Cloud SQL private IP option and Redis VM)
 # ============================================
+# Note: VPC is still created for Cloud SQL private IP option (future use)
+# and Redis VM placement, but VPC connector is not needed
 pulumi.log.info("Creating network...")
 vpc = network.create_vpc(project_id, region, env)
 
@@ -73,14 +76,7 @@ redis_vm = redis.create_redis_vm(
 )
 
 # ============================================
-# 6. GKE Cluster (GPU ready, scaled to 0)
-# ============================================
-pulumi.log.info("Creating GKE cluster (scaled to 0)...")
-gke_result = gke.create_gke_cluster(project_id, region, env, vpc)
-gpu_pools = gke.create_gpu_node_pools(gke_result["cluster"], env)
-
-# ============================================
-# 7. Docker Images (optional)
+# 6. Docker Images (optional)
 # ============================================
 image_refs = None
 if build_images:
@@ -96,7 +92,7 @@ else:
     pulumi.log.info("Skipping Docker image build (use --config build_images=true to enable)")
 
 # ============================================
-# 8. Cloud Run Services (FREE TIER)
+# 7. Cloud Run Services (FREE TIER)
 # ============================================
 pulumi.log.info("Creating Cloud Run services...")
 services = compute.create_cloud_run_services(
@@ -114,7 +110,7 @@ services = compute.create_cloud_run_services(
 )
 
 # ============================================
-# 9. DNS + SSL (Custom Domain)
+# 8. DNS + SSL (Custom Domain)
 # ============================================
 pulumi.log.info("Creating DNS and SSL...")
 dns_result = dns.create_dns_and_ssl(
@@ -126,7 +122,7 @@ dns_result = dns.create_dns_and_ssl(
 )
 
 # ============================================
-# 10. Monitoring (FREE)
+# 9. Monitoring (FREE)
 # ============================================
 pulumi.log.info("Creating monitoring...")
 monitoring_result = monitoring.create_monitoring(
@@ -134,7 +130,7 @@ monitoring_result = monitoring.create_monitoring(
     env=env,
     cloud_run_services=services,
     cloud_sql=cloud_sql,
-    gke_cluster=gke_result,
+    gke_cluster=None,  # GKE removed - can be added back when needed
 )
 
 # ============================================
@@ -164,13 +160,10 @@ pulumi.export("database_ip", cloud_sql["public_ip"])
 
 # Redis
 pulumi.export("redis_internal_ip", redis_vm["internal_ip"])
+pulumi.export("redis_public_ip", redis_vm["public_ip"])
 
 # Storage
 pulumi.export("bucket_name", bucket.name)
 pulumi.export("artifact_registry", artifact_repo.name)
-
-# GKE
-pulumi.export("gke_cluster_name", gke_result["cluster"].name)
-pulumi.export("gke_cluster_endpoint", gke_result["cluster"].endpoint)
 
 pulumi.log.info("Infrastructure deployment complete!")

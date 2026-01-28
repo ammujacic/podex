@@ -305,7 +305,7 @@ class ComputeClient:
             )
         except ComputeServiceHTTPError as e:
             if e.status_code == HTTPStatus.NOT_FOUND:
-                # Workspace not found in compute service, mark as standby
+                # Workspace not found in compute service - normalize to a fully stopped workspace.
                 await self._handle_workspace_not_found(workspace_id, "get")
                 return None
             raise
@@ -317,10 +317,11 @@ class ComputeClient:
 
         This indicates a state inconsistency where the API database thinks a workspace
         exists but the compute service doesn't have it (likely stopped/removed).
-        Automatically mark as standby in the database.
+        We normalize this to a *stopped* workspace in the database - we no longer use a
+        separate 'standby' status.
         """
         logger.warning(
-            "Compute service returned 404 for workspace %s, marking as standby",
+            "Compute service returned 404 for workspace %s, marking as stopped",
             operation,
             workspace_id=workspace_id,
             operation=operation,
@@ -328,17 +329,17 @@ class ComputeClient:
 
         try:
             async with get_db_context() as db:
-                # Update workspace status to standby
+                # Update workspace status to stopped (no more 'standby' state)
                 now = datetime.now(UTC)
                 result = await db.execute(
                     update(Workspace)
                     .where(Workspace.id == workspace_id)
-                    .values(status="standby", standby_at=now, updated_at=now)
+                    .values(status="stopped", standby_at=None, updated_at=now)
                 )
 
                 if result.rowcount and result.rowcount > 0:  # type: ignore[attr-defined]
                     logger.info(
-                        "Automatically marked inconsistent workspace as standby",
+                        "Automatically marked inconsistent workspace as stopped",
                         workspace_id=workspace_id,
                         operation=operation,
                     )
@@ -358,8 +359,8 @@ class ComputeClient:
                                 "workspace_status",
                                 {
                                     "workspace_id": workspace_id,
-                                    "status": "standby",
-                                    "standby_at": now.isoformat(),
+                                    "status": "stopped",
+                                    "standby_at": None,
                                 },
                             )
                     except Exception as e:
@@ -370,7 +371,7 @@ class ComputeClient:
                         )
                 else:
                     logger.warning(
-                        "Workspace not found in database during auto-standby",
+                        "Workspace not found in database during auto-stop normalization",
                         workspace_id=workspace_id,
                     )
 
@@ -378,7 +379,7 @@ class ComputeClient:
 
         except Exception as e:
             logger.exception(
-                "Failed to auto-mark workspace as standby",
+                "Failed to auto-mark workspace as stopped",
                 workspace_id=workspace_id,
                 operation=operation,
                 error=str(e),
@@ -390,13 +391,13 @@ class ComputeClient:
             await self._request("POST", f"/workspaces/{workspace_id}/stop", user_id=user_id)
         except ComputeServiceHTTPError as e:
             if e.status_code == 404:
-                # Workspace not found in compute service, mark as standby
+                # Workspace not found in compute service - normalize to stopped in DB.
                 await self._handle_workspace_not_found(workspace_id, "stop")
             else:
                 raise
 
     async def restart_workspace(self, workspace_id: str, user_id: str) -> dict[str, Any]:
-        """Restart a stopped/standby workspace."""
+        """Restart a stopped workspace."""
         result: dict[str, Any] = await self._request(
             "POST",
             f"/workspaces/{workspace_id}/restart",

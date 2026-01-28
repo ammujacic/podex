@@ -173,7 +173,7 @@ class TestDockerIntegration:
     async def test_multiple_containers_concurrently(self, docker_client, test_network, test_image):
         """Test creating multiple containers concurrently."""
         config = LocalPodConfig(
-            pod_token="test", docker_network=test_network.name, workspace_image=test_image, max_workspaces=3
+            pod_token="test", docker_network=test_network.name, workspace_image=test_image
         )
         manager = LocalDockerManager(config)
         await manager.initialize()

@@ -124,6 +124,8 @@ services:
       - ./services/api/migrations:/app/services/api/migrations
       - ./services/shared/src:/app/services/shared/src
       - ./service-account.json:/app/service-account.json:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -176,6 +178,8 @@ services:
       # Compute Service (for remote workspace operations)
       COMPUTE_SERVICE_URL: http://compute:3003
       COMPUTE_INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./services/agent/src:/app/services/agent/src
       - ./services/shared/src:/app/services/shared/src
@@ -263,7 +267,7 @@ services:
       resources:
         limits:
           memory: 16G
-          cpus: '8.0'
+          cpus: '4.0'
     environment:
       NODE_ENV: development
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}

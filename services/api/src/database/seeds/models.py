@@ -53,32 +53,6 @@ DEFAULT_MODELS = [
         },
     },
     {
-        "model_id": "claude-sonnet-4",
-        "display_name": "Claude Sonnet 4",
-        "provider": "vertex",
-        "family": "anthropic",
-        "cost_tier": "medium",
-        "capabilities": {
-            "vision": True,
-            "thinking": False,
-            "thinking_coming_soon": True,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 200000,
-        "max_output_tokens": 8192,
-        "input_cost_per_million": 3.0,
-        "output_cost_per_million": 15.0,
-        "is_enabled": True,
-        "is_default": False,
-        "sort_order": 25,
-        "model_metadata": {
-            "description": "Reliable model for everyday coding tasks",
-            "good_for": ["Balanced Tasks", "Code Review", "Analysis"],
-        },
-    },
-    {
         "model_id": "claude-haiku-4-5",
         "display_name": "Claude Haiku 4.5",
         "provider": "vertex",
@@ -101,31 +75,6 @@ DEFAULT_MODELS = [
         "model_metadata": {
             "description": "Fast and efficient for simple tasks",
             "good_for": ["Quick Tasks", "Chat", "Efficient Agents"],
-        },
-    },
-    {
-        "model_id": "claude-3-5-haiku",
-        "display_name": "Claude 3.5 Haiku",
-        "provider": "vertex",
-        "family": "anthropic",
-        "cost_tier": "low",
-        "capabilities": {
-            "vision": False,
-            "thinking": False,
-            "tool_use": True,
-            "streaming": True,
-            "json_mode": True,
-        },
-        "context_window": 200000,
-        "max_output_tokens": 4096,
-        "input_cost_per_million": 0.8,
-        "output_cost_per_million": 4.0,
-        "is_enabled": True,
-        "is_default": False,
-        "sort_order": 35,
-        "model_metadata": {
-            "description": "Budget option for high-volume simple tasks (no vision)",
-            "good_for": ["Fast Coding", "Quick Responses", "Cost-Effective"],
         },
     },
     # Google Gemini Models (Vertex AI Native)
@@ -289,7 +238,8 @@ DEFAULT_MODELS = [
     },
     {
         "model_id": "haiku",
-        "display_name": "Claude 3.5 Haiku (Direct)",
+        # Use latest Haiku version for direct Anthropic API
+        "display_name": "Claude Haiku 4.5 (Direct)",
         "provider": "anthropic",
         "family": "anthropic",
         "cost_tier": "low",
@@ -309,7 +259,7 @@ DEFAULT_MODELS = [
         "is_user_key_model": True,
         "sort_order": 120,
         "model_metadata": {
-            "description": "Fast and efficient via your API key",
+            "description": "Fast and efficient latest Haiku via your API key",
             "good_for": ["Fast Coding", "Quick Responses", "Cost-Effective"],
         },
     },

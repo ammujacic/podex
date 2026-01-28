@@ -354,7 +354,8 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
       id,
       name,
       messages: [],
-      attachedToAgentId: null,
+      attachedToAgentId: null, // Legacy field
+      attachedAgentIds: [], // New field for many-to-many
       messageCount: 0,
       lastMessageAt: null,
       createdAt: now,
@@ -426,12 +427,20 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
       const session = state.sessions[sessionId];
       if (!session) return state;
 
-      // Update conversation to point to agent
-      const updatedConversations = session.conversationSessions.map((c) =>
-        c.id === conversationId
-          ? { ...c, attachedToAgentId: agentId, updatedAt: new Date().toISOString() }
-          : c
-      );
+      // Update conversation to include agent in attached list
+      const updatedConversations = session.conversationSessions.map((c) => {
+        if (c.id !== conversationId) return c;
+        const attachedAgentIds = c.attachedAgentIds || [];
+        if (!attachedAgentIds.includes(agentId)) {
+          return {
+            ...c,
+            attachedToAgentId: c.attachedToAgentId || agentId, // Legacy field
+            attachedAgentIds: [...attachedAgentIds, agentId],
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        return c;
+      });
 
       // Update agent to point to conversation
       const updatedAgents = session.agents.map((a) =>
@@ -450,25 +459,41 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
       };
     }),
 
-  detachConversationFromAgent: (sessionId, conversationId) =>
+  detachConversationFromAgent: (sessionId, conversationId, agentId?: string) =>
     set((state) => {
       const session = state.sessions[sessionId];
       if (!session) return state;
 
       const conversation = session.conversationSessions.find((c) => c.id === conversationId);
-      const agentId = conversation?.attachedToAgentId;
+      if (!conversation) return state;
 
-      // Clear conversation's agent reference
+      // Determine which agent to detach from
+      const targetAgentId = agentId || conversation.attachedToAgentId;
+      if (!targetAgentId) return state;
+
+      // Remove agent from attached list
+      const attachedAgentIds = (conversation.attachedAgentIds || []).filter(
+        (id) => id !== targetAgentId
+      );
+
+      // Update conversation
       const updatedConversations = session.conversationSessions.map((c) =>
         c.id === conversationId
-          ? { ...c, attachedToAgentId: null, updatedAt: new Date().toISOString() }
+          ? {
+              ...c,
+              attachedToAgentId: attachedAgentIds.length > 0 ? (attachedAgentIds[0] ?? null) : null, // Legacy field
+              attachedAgentIds: attachedAgentIds,
+              updatedAt: new Date().toISOString(),
+            }
           : c
       );
 
-      // Clear agent's conversation reference
-      const updatedAgents = agentId
-        ? session.agents.map((a) => (a.id === agentId ? { ...a, conversationSessionId: null } : a))
-        : session.agents;
+      // Clear agent's conversation reference if this was its conversation
+      const updatedAgents = session.agents.map((a) =>
+        a.id === targetAgentId && a.conversationSessionId === conversationId
+          ? { ...a, conversationSessionId: null }
+          : a
+      );
 
       return {
         sessions: {
@@ -744,9 +769,14 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
               ...state.sessions,
               [sessionId]: {
                 ...session,
-                conversationSessions: session.conversationSessions.map((c) =>
-                  c.id === convData.id ? { ...c, ...convData } : c
-                ),
+                conversationSessions: session.conversationSessions.map((c) => {
+                  if (c.id !== convData.id) return c;
+                  const base = { ...c, ...convData };
+                  return {
+                    ...base,
+                    attachedToAgentId: base.attachedToAgentId ?? c.attachedToAgentId ?? null,
+                  };
+                }),
               },
             },
           };
@@ -779,9 +809,19 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
                 agents: session.agents.map((a) =>
                   a.id === agentId ? { ...a, conversationSessionId: convId } : a
                 ),
-                conversationSessions: session.conversationSessions.map((c) =>
-                  c.id === convId ? { ...c, attachedToAgentId: agentId } : c
-                ),
+                conversationSessions: session.conversationSessions.map((c) => {
+                  if (c.id !== convId) return c;
+                  // Add agent to attached list if not already present
+                  const attachedAgentIds = c.attachedAgentIds || [];
+                  if (!attachedAgentIds.includes(agentId)) {
+                    return {
+                      ...c,
+                      attachedToAgentId: c.attachedToAgentId || agentId, // Legacy field
+                      attachedAgentIds: [...attachedAgentIds, agentId],
+                    };
+                  }
+                  return c;
+                }),
               },
             },
           };
@@ -800,43 +840,28 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
                       a.id === prevAgentId ? { ...a, conversationSessionId: null } : a
                     )
                   : session.agents,
-                conversationSessions: session.conversationSessions.map((c) =>
-                  c.id === convId ? { ...c, attachedToAgentId: null } : c
-                ),
+                conversationSessions: session.conversationSessions.map((c) => {
+                  if (c.id !== convId) return c;
+                  // Remove agent from attached list
+                  const attachedAgentIds = (c.attachedAgentIds || []).filter(
+                    (id) => id !== prevAgentId
+                  );
+                  return {
+                    ...c,
+                    attachedToAgentId:
+                      attachedAgentIds.length > 0 ? (attachedAgentIds[0] ?? null) : null, // Legacy
+                    attachedAgentIds: attachedAgentIds,
+                  };
+                }),
               },
             },
           };
         }
 
         case 'conversation_message': {
-          const convId = data.conversation_id as string;
-          const msgData = data.message as AgentMessage;
-          const conversation = session.conversationSessions.find((c) => c.id === convId);
-          if (!conversation) return state;
-
-          // Check for duplicates
-          if (conversation.messages.some((m) => m.id === msgData.id)) {
-            return state;
-          }
-
-          return {
-            sessions: {
-              ...state.sessions,
-              [sessionId]: {
-                ...session,
-                conversationSessions: session.conversationSessions.map((c) => {
-                  if (c.id !== convId) return c;
-                  const newMessages = [...c.messages, msgData];
-                  return {
-                    ...c,
-                    messages: newMessages,
-                    messageCount: newMessages.length,
-                    lastMessageAt: new Date().toISOString(),
-                  };
-                }),
-              },
-            },
-          };
+          // This case is no longer used - WebSocket handlers now call addConversationMessage directly
+          // Keeping for backward compatibility but it does nothing
+          return state;
         }
 
         default:
@@ -1479,14 +1504,20 @@ const persistedSessionStore = persist(sessionStoreCreator, {
   partialize: (state) => ({
     currentSessionId: state.currentSessionId,
     // Limit persisted data to prevent localStorage overflow
+    // NOTE: Backend is always the source of truth for agents, conversations, and messages.
+    // localStorage is only used for UI state (viewMode, positions, filePreviews).
+    // When loading a session, we always fetch fresh data from the backend and replace
+    // any localStorage data. WebSocket events keep sessions in sync across windows/tabs.
     sessions: Object.fromEntries(
       Object.entries(state.sessions).map(([id, session]) => [
         id,
         {
           ...session,
           // Agents no longer have messages - they reference conversation sessions
+          // Backend data (id, name, role, model, status, conversationSessionId) always wins
           agents: session.agents,
-          // Limit messages per conversation for persistence
+          // Limit messages per conversation for persistence (for offline/quick load)
+          // But backend fetch always replaces this with fresh data
           conversationSessions: session.conversationSessions.map((conv) => ({
             ...conv,
             messages: conv.messages.slice(-MAX_MESSAGES_PER_CONVERSATION),

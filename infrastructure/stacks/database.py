@@ -55,18 +55,17 @@ def create_cloud_sql(
                 if env == "prod"
                 else None,
             ),
-            # IP Configuration - Secure access with SSL required
-            # Public IP is disabled by default - use Cloud SQL Proxy for local development
+            # IP Configuration - Enable public IP for Cloud Run Unix socket connection
+            # Cloud Run can connect via Unix domain sockets without VPC connector
+            # Format: postgresql://user:pass@localhost/db?host=/cloudsql/project:region:instance
             ip_configuration=gcp.sql.DatabaseInstanceSettingsIpConfigurationArgs(
-                # Disable public IP by default for security
-                # Use Cloud SQL Proxy or VPN for local development access
-                ipv4_enabled=False,
-                # Private IP for VPC access (Cloud Run can reach via VPC connector)
-                private_network=vpc["network"].id,
+                ipv4_enabled=True,  # Enable public IP for Unix socket access
+                # Keep private IP for future VPC access if needed
+                private_network=vpc["network"].id if vpc else None,
                 enable_private_path_for_google_cloud_services=True,
                 # Require SSL for all connections
                 ssl_mode="ENCRYPTED_ONLY",
-                # No authorized networks - VPC-only access
+                # Restrict authorized networks (empty = only Cloud Run can connect via Unix sockets)
                 authorized_networks=[],
             ),
             # Flags for performance
@@ -109,13 +108,14 @@ def create_cloud_sql(
     )
 
     # Database URL for asyncpg
-    # Use private IP for Cloud Run (connects via VPC connector)
-    # Falls back to public IP if private IP is not available
+    # Use Unix domain socket connection (Cloud Run built-in, no VPC connector needed)
+    # Format: postgresql+asyncpg://user:pass@/db?host=/cloudsql/project:region:instance
+    # Note: Empty hostname means use Unix socket, host parameter specifies socket path
+    connection_name = instance.connection_name
     db_url = pulumi.Output.all(
-        instance.private_ip_address,
-        instance.public_ip_address,
+        connection_name,
         secrets["db_password_value"],
-    ).apply(lambda args: f"postgresql+asyncpg://podex:{args[2]}@{args[0] or args[1]}:5432/podex")
+    ).apply(lambda args: f"postgresql+asyncpg://podex:{args[1]}@/podex?host=/cloudsql/{args[0]}")
 
     gcp.secretmanager.SecretVersion(
         f"database-url-version-{env}",

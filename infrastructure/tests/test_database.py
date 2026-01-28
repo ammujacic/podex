@@ -170,19 +170,13 @@ class TestDatabaseConfiguration:
         settings = instance_call_args[1]["settings"]
         ip_config = settings.ip_configuration
 
-        # Security: VPC-only access when no authorized networks configured
-        if env == "dev":
-            # Dev environment defaults to VPC-only when no authorized networks configured
-            assert not ip_config.ipv4_enabled, "Dev database should use VPC-only by default"
-            authorized_networks = ip_config.authorized_networks
-            assert len(authorized_networks) == 0, (
-                "Dev should have no authorized networks by default"
-            )
-        else:
-            # Production environment: always VPC-only
-            assert not ip_config.ipv4_enabled, "Prod database should not have public IP"
-            authorized_networks = ip_config.authorized_networks
-            assert len(authorized_networks) == 0, "Prod should have no authorized networks"
+        # Database uses public IP for Cloud Run Unix socket connection (no VPC connector).
+        # authorized_networks=[] so only Cloud Run / trusted paths can connect.
+        assert ip_config.ipv4_enabled, "Database uses public IP for Cloud Run Unix sockets"
+        authorized_networks = ip_config.authorized_networks
+        assert len(authorized_networks) == 0, (
+            "No authorized networks; Cloud Run connects via Unix sockets"
+        )
 
         # Private network should always be configured
         assert ip_config.private_network is not None

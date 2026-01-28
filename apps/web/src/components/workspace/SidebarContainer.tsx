@@ -2,24 +2,49 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
+  Activity,
+  AlertTriangle,
+  BarChart3,
   Bot,
+  Box,
+  Cable,
   FileCode,
   FolderTree,
   GitBranch,
   Github,
-  Terminal,
   MoreVertical,
-  X,
   PanelLeftClose,
   PanelRightClose,
   Plug,
-  Box,
   Search,
-  AlertTriangle,
-  BarChart3,
+  Terminal,
+  X,
   Zap,
-  Activity,
 } from 'lucide-react';
+
+// Custom Moltbot icon component using official lobster logo, styled as a monochrome icon
+function MoltbotIcon({ className }: { className?: string }) {
+  return (
+    // Use the SVG as a mask so the icon takes on the current text color,
+    // matching the single-color Lucide style used elsewhere in the sidebar.
+    <span
+      aria-hidden="true"
+      className={cn('inline-block bg-current', className)}
+      style={{
+        WebkitMaskImage:
+          'url(https://mintcdn.com/clawdhub/4rYvG-uuZrMK_URE/assets/pixel-lobster.svg?fit=max&auto=format&n=4rYvG-uuZrMK_URE&q=85&s=da2032e9eac3b5d9bfe7eb96ca6a8a26)',
+        maskImage:
+          'url(https://mintcdn.com/clawdhub/4rYvG-uuZrMK_URE/assets/pixel-lobster.svg?fit=max&auto=format&n=4rYvG-uuZrMK_URE&q=85&s=da2032e9eac3b5d9bfe7eb96ca6a8a26)',
+        WebkitMaskSize: 'contain',
+        maskSize: 'contain',
+        WebkitMaskRepeat: 'no-repeat',
+        maskRepeat: 'no-repeat',
+        WebkitMaskPosition: 'center',
+        maskPosition: 'center',
+      }}
+    />
+  );
+}
 
 // Custom Sentry icon component to match lucide-react API
 function SentryIcon({ className }: { className?: string }) {
@@ -54,6 +79,8 @@ import { UsageSidebarPanel } from './UsageSidebarPanel';
 import { SentryPanel } from './SentryPanel';
 import { SkillsPanel } from './SkillsPanel';
 import ProjectHealth from './ProjectHealth';
+import { TunnelWidget } from './TunnelWidget';
+import { MoltBotWidget } from './MoltBotWidget';
 
 interface SidebarContainerProps {
   side: SidebarSide;
@@ -81,10 +108,20 @@ const panelConfig: Record<
   sentry: { icon: SentryIcon, label: 'Sentry MCP' },
   skills: { icon: Zap, label: 'Skills' },
   health: { icon: Activity, label: 'Health' },
+  tunnels: { icon: Cable, label: 'Tunnels' },
+  moltbot: { icon: MoltbotIcon, label: 'MoltBot' },
 };
 
 // Left sidebar: traditional coding tools
-const leftPanelIds: PanelId[] = ['files', 'search', 'git', 'github', 'problems', 'health'];
+const leftPanelIds: PanelId[] = [
+  'files',
+  'search',
+  'git',
+  'github',
+  'problems',
+  'health',
+  'tunnels',
+];
 
 // Right sidebar: AI-related and utility panels
 const rightPanelIds: PanelId[] = [
@@ -94,6 +131,7 @@ const rightPanelIds: PanelId[] = [
   'sentry',
   'extensions',
   'usage',
+  'moltbot',
   'preview',
 ];
 
@@ -168,9 +206,17 @@ interface SidebarPanelProps {
   localPodId?: string | null;
   /** Mount path for local pods */
   mountPath?: string | null;
+  /** Workspace id for session (if any) */
+  workspaceId: string | null;
 }
 
-function SidebarPanel({ panelId, sessionId, localPodId, mountPath }: SidebarPanelProps) {
+function SidebarPanel({
+  panelId,
+  sessionId,
+  localPodId,
+  mountPath,
+  workspaceId,
+}: SidebarPanelProps) {
   const renderContent = () => {
     switch (panelId) {
       case 'files':
@@ -192,6 +238,10 @@ function SidebarPanel({ panelId, sessionId, localPodId, mountPath }: SidebarPane
       case 'usage':
         // Usage panel receives isVisible=true since it's only rendered when in the active panels list
         return <UsageSidebarPanel sessionId={sessionId} isVisible={true} />;
+      case 'tunnels':
+        return <TunnelWidget workspaceId={workspaceId} />;
+      case 'moltbot':
+        return <MoltBotWidget workspaceId={workspaceId} localPodId={localPodId ?? null} />;
       case 'preview':
         // Preview is now rendered as a grid card, not a sidebar panel
         // This case should not be reached since handleIconClick returns early for preview
@@ -366,6 +416,7 @@ export function SidebarContainer({
 
   // Check if preview grid card exists for this session
   const previewGridCardId = sessions[sessionId]?.previewGridCardId;
+  const workspaceId = sessions[sessionId]?.workspaceId ?? null;
 
   const handleIconClick = (panelId: PanelId) => {
     // Special handling for preview panel - creates/removes preview grid card instead of sidebar panel
@@ -570,6 +621,7 @@ export function SidebarContainer({
                     sessionId={sessionId}
                     localPodId={localPodId}
                     mountPath={mountPath}
+                    workspaceId={workspaceId}
                   />
                 </div>
                 {index < config.panels.length - 1 && (

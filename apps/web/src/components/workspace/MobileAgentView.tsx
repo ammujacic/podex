@@ -9,7 +9,7 @@ import { useUIStore } from '@/stores/ui';
 import { getFileContent } from '@/lib/api';
 import { getLanguageFromPath } from '@/lib/vscode/languageUtils';
 import { useStreamingStore } from '@/stores/streaming';
-import { sendAgentMessage, abortAgent, isQuotaError } from '@/lib/api';
+import { sendAgentMessage, abortAgent, isQuotaError, attachConversation } from '@/lib/api';
 import { useSwipeGesture } from '@/hooks/useGestures';
 import { useVoiceCapture } from '@/hooks/useVoiceCapture';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -57,7 +57,10 @@ export function MobileAgentView({
 
   // Get conversation session for this agent
   const conversationSession = getConversationForAgent(sessionId, agentId);
-  const messages = conversationSession?.messages ?? [];
+  const messages = useMemo(
+    () => conversationSession?.messages ?? [],
+    [conversationSession?.messages]
+  );
 
   // Get finalized messages with deduplication (safety net for race conditions)
   // Only dedupes by exact ID - does NOT dedupe by content to allow duplicate messages
@@ -190,7 +193,14 @@ export function MobileAgentView({
       // Create a new conversation session and attach to this agent
       const newConversation = createConversationSession(sessionId, { firstMessage: trimmedInput });
       conversationId = newConversation.id;
+      // Optimistically update local state
       attachConversationToAgent(sessionId, conversationId, agentId);
+      // Call API to attach (don't await - let it happen in background)
+      // Backend will handle detaching old conversation if needed
+      attachConversation(sessionId, conversationId, agentId).catch((error) => {
+        console.error('Failed to attach conversation:', error);
+        // WebSocket event will sync state if API call fails
+      });
     }
 
     // Add optimistic user message to store (with temp ID that will be updated by WebSocket)
@@ -288,7 +298,14 @@ export function MobileAgentView({
       if (!conversationId) {
         const newConversation = createConversationSession(sessionId, { firstMessage: transcript });
         conversationId = newConversation.id;
+        // Optimistically update local state
         attachConversationToAgent(sessionId, conversationId, agentId);
+        // Call API to attach (don't await - let it happen in background)
+        // Backend will handle detaching old conversation if needed
+        attachConversation(sessionId, conversationId, agentId).catch((error) => {
+          console.error('Failed to attach conversation:', error);
+          // WebSocket event will sync state if API call fails
+        });
       }
 
       // Add optimistic user message to store

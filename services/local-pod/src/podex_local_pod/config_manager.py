@@ -72,7 +72,6 @@ class ConfigManager:
                 "pod_token": "",
                 "cloud_url": "https://api.podex.dev",
                 "pod_name": None,
-                "max_workspaces": 3,
                 "mode": "docker",
             },
             "native": {
@@ -121,7 +120,6 @@ class ConfigManager:
         lines.append(f'cloud_url = "{podex.get("cloud_url", "https://api.podex.dev")}"')
         if podex.get("pod_name"):
             lines.append(f'pod_name = "{podex["pod_name"]}"')
-        lines.append(f"max_workspaces = {podex.get('max_workspaces', 3)}")
         lines.append(f'mode = "{podex.get("mode", "docker")}"')
         lines.append("")
 

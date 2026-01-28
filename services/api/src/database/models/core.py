@@ -277,12 +277,19 @@ class Agent(Base):
         back_populates="agent",
         cascade="all, delete-orphan",
     )
-    # Portable conversation session (can be attached/detached)
+    # Legacy relationship for backward compatibility (one-to-one)
     # The FK lives on ConversationSession.attached_to_agent_id
     conversation_session: Mapped["ConversationSession | None"] = relationship(
         "ConversationSession",
         back_populates="attached_agent",
         uselist=False,
+        foreign_keys="ConversationSession.attached_to_agent_id",
+    )
+    # Many-to-many relationship: conversations attached to this agent
+    attached_conversations: Mapped[list["ConversationSession"]] = relationship(
+        "ConversationSession",
+        secondary="agent_conversation_attachments",
+        back_populates="attached_agents",
     )
 
 

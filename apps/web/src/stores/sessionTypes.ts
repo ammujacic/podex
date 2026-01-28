@@ -99,7 +99,8 @@ export interface ConversationSession {
   id: string;
   name: string;
   messages: AgentMessage[];
-  attachedToAgentId: string | null;
+  attachedToAgentId: string | null; // Legacy field for backward compatibility
+  attachedAgentIds?: string[]; // List of agent IDs that have this conversation attached (many-to-many)
   messageCount: number;
   lastMessageAt: string | null; // ISO timestamp
   createdAt: string; // ISO timestamp

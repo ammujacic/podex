@@ -492,9 +492,6 @@ async def create_context_manager_with_settings(
 
     Returns:
         Configured ContextWindowManager instance
-
-    Raises:
-        SettingsNotAvailableError: If settings are not available in Redis cache
     """
     limits = await get_context_limits()
     return ContextWindowManager(

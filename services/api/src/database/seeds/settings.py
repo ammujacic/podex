@@ -182,6 +182,7 @@ DEFAULT_SETTINGS = [
             "git_integration_enabled": True,
             "planning_mode_enabled": True,
             "vision_enabled": True,
+            "anthropic_prompt_caching_enabled": True,
         },
         "description": "Platform-wide feature toggles",
         "category": "features",

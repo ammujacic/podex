@@ -1,22 +1,35 @@
 'use client';
 
 import { useState } from 'react';
-import {
-  Bot,
-  Copy,
-  ExternalLink,
-  Loader2,
-  AlertTriangle,
-  MessageCircle,
-  Play,
-  Unplug,
-} from 'lucide-react';
+import { Bot, Copy, ExternalLink, Loader2, AlertTriangle, Play, Unplug } from 'lucide-react';
 import { useTunnels } from '@/hooks/useTunnels';
 import { useUIStore } from '@/stores/ui';
 import { cn } from '@/lib/utils';
 
 const MOLTBOT_GATEWAY_PORT = 18789;
 const DISCORD_DEV_PORTAL = 'https://discord.com/developers/applications';
+
+// Reuse the same lobster icon styling as in the sidebar: monochrome, currentColor-tinted mask
+function MoltbotIcon({ className }: { className?: string }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn('inline-block bg-current', className)}
+      style={{
+        WebkitMaskImage:
+          'url(https://mintcdn.com/clawdhub/4rYvG-uuZrMK_URE/assets/pixel-lobster.svg?fit=max&auto=format&n=4rYvG-uuZrMK_URE&q=85&s=da2032e9eac3b5d9bfe7eb96ca6a8a26)',
+        maskImage:
+          'url(https://mintcdn.com/clawdhub/4rYvG-uuZrMK_URE/assets/pixel-lobster.svg?fit=max&auto=format&n=4rYvG-uuZrMK_URE&q=85&s=da2032e9eac3b5d9bfe7eb96ca6a8a26)',
+        WebkitMaskSize: 'contain',
+        maskSize: 'contain',
+        WebkitMaskRepeat: 'no-repeat',
+        maskRepeat: 'no-repeat',
+        WebkitMaskPosition: 'center',
+        maskPosition: 'center',
+      }}
+    />
+  );
+}
 
 interface MoltBotWidgetProps {
   workspaceId: string | null;
@@ -66,7 +79,7 @@ export function MoltBotWidget({ workspaceId, localPodId }: MoltBotWidgetProps) {
       <div className="flex flex-col gap-4 p-4">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent-primary/10">
-            <MessageCircle className="h-5 w-5 text-accent-primary" />
+            <MoltbotIcon className="h-5 w-5" />
           </div>
           <div>
             <h3 className="text-sm font-medium text-text-primary">MoltBot (ClawdBot)</h3>
@@ -100,7 +113,7 @@ export function MoltBotWidget({ workspaceId, localPodId }: MoltBotWidgetProps) {
       <div className="flex flex-col gap-4 p-4">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent-primary/10">
-            <MessageCircle className="h-5 w-5 text-accent-primary" />
+            <MoltbotIcon className="h-5 w-5" />
           </div>
           <div>
             <h3 className="text-sm font-medium text-text-primary">MoltBot</h3>
@@ -127,7 +140,7 @@ export function MoltBotWidget({ workspaceId, localPodId }: MoltBotWidgetProps) {
       <div className="flex flex-col gap-4 p-4">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent-primary/10">
-            <MessageCircle className="h-5 w-5 text-accent-primary" />
+            <MoltbotIcon className="h-5 w-5" />
           </div>
           <div>
             <h3 className="text-sm font-medium text-text-primary">MoltBot (ClawdBot)</h3>
@@ -153,7 +166,7 @@ export function MoltBotWidget({ workspaceId, localPodId }: MoltBotWidgetProps) {
     <div className="flex flex-col gap-4 p-4">
       <div className="flex items-center gap-3">
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent-primary/10">
-          <MessageCircle className="h-5 w-5 text-accent-primary" />
+          <MoltbotIcon className="h-5 w-5" />
         </div>
         <div className="min-w-0 flex-1">
           <h3 className="text-sm font-medium text-text-primary">MoltBot</h3>

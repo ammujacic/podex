@@ -108,8 +108,13 @@ echo "Redis installation complete!"
             gcp.compute.InstanceNetworkInterfaceArgs(
                 network=vpc["network"].id,
                 subnetwork=vpc["subnet"].id,
-                # No external IP - access via internal network only
-                # (More secure, Cloud Run can still reach it via VPC connector)
+                # Enable public IP for Cloud Run access (no VPC connector needed)
+                # Security: Redis is password-protected and firewall-restricted
+                access_configs=[
+                    gcp.compute.InstanceNetworkInterfaceAccessConfigArgs(
+                        network_tier="STANDARD",
+                    ),
+                ],
             ),
         ],
         metadata_startup_script=startup_script,
@@ -134,7 +139,9 @@ echo "Redis installation complete!"
         ),
     )
 
-    # Firewall rule for Redis (internal only)
+    # Firewall rule for Redis - allow from Cloud Run IP ranges
+    # Cloud Run uses Google's managed IP ranges, so we allow from all (password protects access)
+    # Alternative: Use VPC connector for more restrictive access
     gcp.compute.Firewall(
         f"allow-redis-{env}",
         name=f"podex-allow-redis-{env}",
@@ -145,8 +152,9 @@ echo "Redis installation complete!"
                 ports=["6379"],
             ),
         ],
-        # Only allow from VPC CIDR
-        source_ranges=["10.0.0.0/8"],
+        # Allow from internet (Redis is password-protected)
+        # For production, consider using VPC connector for more restrictive access
+        source_ranges=["0.0.0.0/0"],
         target_tags=["redis-server"],
         priority=1000,
     )
@@ -160,9 +168,10 @@ echo "Redis installation complete!"
         ),
     )
 
-    # Redis URL
+    # Redis URL - use public IP (external IP address)
     redis_url = pulumi.Output.all(
-        redis_vm.network_interfaces[0].network_ip, secrets["redis_password_value"]
+        redis_vm.network_interfaces[0].access_configs[0].nat_ip,
+        secrets["redis_password_value"],
     ).apply(lambda args: f"redis://:{args[1]}@{args[0]}:6379/0")
 
     gcp.secretmanager.SecretVersion(
@@ -174,6 +183,7 @@ echo "Redis installation complete!"
     return {
         "instance": redis_vm,
         "internal_ip": redis_vm.network_interfaces[0].network_ip,
+        "public_ip": redis_vm.network_interfaces[0].access_configs[0].nat_ip,
         "url_secret": redis_url_secret,
         "url": redis_url,
     }

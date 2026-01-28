@@ -58,6 +58,7 @@ import {
   pinSession,
   unpinSession,
   getUsageHistory,
+  getWorkspaceStatus,
   startWorkspace,
   logout,
   type Session,
@@ -123,6 +124,27 @@ const statusConfig: Record<
 };
 
 const getStatus = (status: string) => statusConfig[status] ?? defaultStatus;
+
+/** Derive display status from session when we don't have fresh workspace status (session page uses session.status). */
+function getDisplayStatus(session: Session): string {
+  if (session.status === 'active') return 'running';
+  if (session.status === 'creating') return 'pending';
+  if (session.status === 'stopped') return 'stopped';
+  if (session.status === 'error') return 'error';
+  return session.workspace_status || 'stopped';
+}
+
+/** Prefer fresh workspace status from API (syncs from compute) when available. */
+function getDisplayStatusForSession(
+  session: Session,
+  workspaceStatusByWorkspaceId: Record<string, string>
+): string {
+  const fresh =
+    session.workspace_id && workspaceStatusByWorkspaceId[session.workspace_id] != null
+      ? workspaceStatusByWorkspaceId[session.workspace_id]
+      : null;
+  return fresh ?? getDisplayStatus(session);
+}
 
 // Template icon configuration with CDN URLs (Simple Icons)
 const templateIconConfig: Record<string, { url: string; color: string }> = {
@@ -229,6 +251,10 @@ export default function DashboardPage() {
   const [selectedPeriod, setSelectedPeriod] = useState('30d');
   const [loadingUsage, setLoadingUsage] = useState(false);
   const [visiblePods, setVisiblePods] = useState<Set<string>>(new Set());
+  /** Fresh workspace status from GET /workspaces/:id/status (syncs from compute). Keyed by workspace_id. */
+  const [workspaceStatusByWorkspaceId, setWorkspaceStatusByWorkspaceId] = useState<
+    Record<string, string>
+  >({});
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Click outside handler for notifications dropdown
@@ -316,6 +342,35 @@ export default function DashboardPage() {
 
     loadData();
   }, [user, router, isInitialized]);
+
+  // Fetch actual workspace status from compute when we have sessions (GET /status syncs from compute)
+  useEffect(() => {
+    if (!user || sessions.length === 0) return;
+
+    const workspaceIds = [
+      ...new Set(sessions.map((s) => s.workspace_id).filter((id): id is string => id != null)),
+    ];
+    if (workspaceIds.length === 0) return;
+
+    let cancelled = false;
+    Promise.allSettled(
+      workspaceIds.map(async (workspaceId) => {
+        const res = await getWorkspaceStatus(workspaceId);
+        return { workspaceId, status: res.status };
+      })
+    ).then((results) => {
+      if (cancelled) return;
+      const updates: Record<string, string> = {};
+      for (const r of results) {
+        if (r.status === 'fulfilled') updates[r.value.workspaceId] = r.value.status;
+      }
+      setWorkspaceStatusByWorkspaceId((prev) => ({ ...prev, ...updates }));
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user, sessions]);
 
   // Load usage history when period changes
   // Gate on configIsInitialized to ensure getDaysFromValue has access to time range options
@@ -951,7 +1006,9 @@ export default function DashboardPage() {
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
               {pinnedSessions.map((session, index) => {
                 const template = getTemplateForSession(session);
-                const status = getStatus(session.workspace_status || 'stopped');
+                const status = getStatus(
+                  getDisplayStatusForSession(session, workspaceStatusByWorkspaceId)
+                );
                 return (
                   <motion.div
                     key={session.id}
@@ -1098,7 +1155,9 @@ export default function DashboardPage() {
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                 {recentSessions.map((session, index) => {
                   const template = getTemplateForSession(session);
-                  const status = getStatus(session.workspace_status || 'stopped');
+                  const status = getStatus(
+                    getDisplayStatusForSession(session, workspaceStatusByWorkspaceId)
+                  );
 
                   return (
                     <motion.div
@@ -1239,7 +1298,9 @@ export default function DashboardPage() {
                   <AnimatePresence>
                     {allSessions.map((session, index) => {
                       const template = getTemplateForSession(session);
-                      const status = getStatus(session.workspace_status || 'stopped');
+                      const status = getStatus(
+                        getDisplayStatusForSession(session, workspaceStatusByWorkspaceId)
+                      );
 
                       return (
                         <motion.div
@@ -1436,7 +1497,9 @@ export default function DashboardPage() {
                     <tbody>
                       {allSessions.map((session) => {
                         const template = getTemplateForSession(session);
-                        const status = getStatus(session.workspace_status || 'stopped');
+                        const status = getStatus(
+                          getDisplayStatusForSession(session, workspaceStatusByWorkspaceId)
+                        );
 
                         return (
                           <tr

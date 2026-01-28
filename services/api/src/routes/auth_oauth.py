@@ -497,7 +497,7 @@ async def _update_workspaces_with_github_token(
             select(Session)
             .where(Session.owner_id == user_id)
             .where(Session.workspace_id.isnot(None))
-            .where(Session.status.in_(["running", "standby"]))
+            .where(Session.status == "running")
         )
         sessions = result.scalars().all()
 

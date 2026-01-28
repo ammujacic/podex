@@ -1480,9 +1480,7 @@ export default function NewSessionPage() {
                         )}
                       </div>
                       <div className="flex items-center justify-between mt-2 text-xs">
-                        <span className="text-text-muted">
-                          {pod.current_workspaces}/{pod.max_workspaces} workspaces
-                        </span>
+                        <span className="text-text-muted">{pod.current_workspaces} workspaces</span>
                         {localPodPricing && (
                           <span className="font-medium text-success">
                             {localPodPricing.hourly_rate_cents === 0

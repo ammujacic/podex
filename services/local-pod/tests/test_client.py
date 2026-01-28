@@ -45,7 +45,7 @@ class TestLocalPodClientCapabilities:
     @pytest.mark.asyncio
     async def test_send_capabilities(self) -> None:
         """Test sending capabilities to cloud."""
-        config = LocalPodConfig(max_workspaces=5)
+        config = LocalPodConfig()
         client = LocalPodClient(config)
         client.sio.emit = AsyncMock()
 
@@ -61,7 +61,6 @@ class TestLocalPodClientCapabilities:
         data = call_args.args[1]
         # Capabilities are now nested under "capabilities" key
         capabilities = data["capabilities"]
-        assert capabilities["max_workspaces"] == 5
         assert capabilities["docker_version"] == "24.0.0"
         # Config is also included
         assert "config" in data

@@ -139,9 +139,22 @@ function isHiddenFile(name: string): boolean {
   return name.startsWith('.');
 }
 
+function sortNodes(items: FileNode[]): FileNode[] {
+  return [...items].sort((a, b) => {
+    const aIsDir = a.type === 'directory';
+    const bIsDir = b.type === 'directory';
+
+    if (aIsDir !== bIsDir) {
+      return aIsDir ? -1 : 1;
+    }
+
+    return a.name.localeCompare(b.name);
+  });
+}
+
 function filterFiles(files: FileNode[], showHidden: boolean): FileNode[] {
-  if (showHidden) return files;
-  return files.filter((file) => !isHiddenFile(file.name));
+  const visibleFiles = showHidden ? files : files.filter((file) => !isHiddenFile(file.name));
+  return sortNodes(visibleFiles);
 }
 
 function FileTreeNode({

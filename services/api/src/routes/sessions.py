@@ -553,13 +553,6 @@ async def create_session(
                 detail="Local pod is not online. Please start the pod agent first.",
             )
 
-        # Check workspace capacity
-        if local_pod.current_workspaces >= local_pod.max_workspaces:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Local pod has reached its workspace limit ({local_pod.max_workspaces})",
-            )
-
     # Create workspace first (with local_pod_id if using local pod)
     workspace = WorkspaceModel(
         status="pending",
@@ -1764,15 +1757,11 @@ async def update_workspace_activity(
     session: SessionModel,
     db: AsyncSession,
 ) -> None:
-    """Update workspace activity timestamp and handle standby->running transition.
+    """Update workspace activity timestamp.
 
-    This function:
-    1. Updates workspace.last_activity to prevent idle detection from triggering
-    2. If workspace was in "standby" state (but container auto-restarted),
-       transitions it back to "running" and notifies connected clients
-
-    Should be called after any successful workspace operation (file access,
-    terminal usage, agent activity, etc.) to keep the workspace alive.
+    This function updates workspace.last_activity to reflect recent usage. We no longer
+    support a separate 'standby' state - workspaces are either 'running' or 'stopped',
+    and transitions are driven by explicit user actions.
     """
     if not session.workspace_id:
         return
@@ -1793,19 +1782,19 @@ async def update_workspace_activity(
     now = datetime.now(UTC)
     workspace.last_activity = now
 
-    # Handle standby -> running transition
-    # This happens when the compute service auto-restarts a stopped container
-    if workspace.status == "standby":
+    # If this is a local-pod workspace and any operation reached this point
+    # successfully, we know the workspace is effectively "running" even if a
+    # previous failure left the status as "error" or "stopped". Auto-heal the
+    # status so the UI reflects reality.
+    status_changed = False
+    if workspace.local_pod_id and workspace.status != "running":
         workspace.status = "running"
         workspace.standby_at = None
+        status_changed = True
 
-        logger.info(
-            "Workspace auto-resumed from standby",
-            workspace_id=str(workspace.id),
-            session_id=str(session.id),
-        )
+    await db.commit()
 
-        # Notify connected clients about the status change
+    if status_changed:
         await emit_to_session(
             str(session.id),
             "workspace_status",
@@ -1816,8 +1805,6 @@ async def update_workspace_activity(
                 "last_activity": now.isoformat(),
             },
         )
-
-    await db.commit()
 
 
 class UpdateWorkspaceRequest(BaseModel):

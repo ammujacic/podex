@@ -62,7 +62,6 @@ from src.routes import (
     health_checks,
     hooks,
     knowledge,
-    llm_bridge,
     llm_providers,
     local_pods,
     lsp,
@@ -519,12 +518,12 @@ async def billing_maintenance_background_task() -> None:
 
 
 async def credit_enforcement_background_task() -> None:
-    """Background task to enforce credit limits by moving workspaces to standby.
+    """Background task to enforce credit limits by stopping cloud workspaces.
 
     Runs every 5 minutes to check for users who have exhausted their compute credits
-    (both plan quota and prepaid credits) and moves their running workspaces to standby.
+    (both plan quota and prepaid credits) and moves their running *compute-backed*
+    workspaces from 'running' to 'stopped'. Local-pod workspaces are not affected.
     """
-    from datetime import UTC, datetime
 
     from sqlalchemy import select
 
@@ -540,7 +539,6 @@ async def credit_enforcement_background_task() -> None:
 
             async for db in get_db():
                 try:
-                    now = datetime.now(UTC)
                     standby_count = 0
 
                     # Get users who have exhausted compute credits
@@ -554,15 +552,16 @@ async def credit_enforcement_background_task() -> None:
                         user_count=len(exhausted_users),
                     )
 
-                    # For each exhausted user, find and standby their running workspaces
+                    # For each exhausted user, find and stop their running compute workspaces
                     for user_id in exhausted_users:
-                        # Find running workspaces owned by this user
+                        # Find running *cloud* workspaces owned by this user
                         query = (
                             select(Workspace, SessionModel)
                             .join(SessionModel, SessionModel.workspace_id == Workspace.id)
                             .where(
                                 SessionModel.owner_id == user_id,
                                 Workspace.status == "running",
+                                Workspace.local_pod_id.is_(None),
                             )
                         )
 
@@ -573,7 +572,7 @@ async def credit_enforcement_background_task() -> None:
                             try:
                                 from src.exceptions import ComputeServiceHTTPError
 
-                                # Stop the container
+                                # Stop the container in the compute service
                                 try:
                                     await compute_client.stop_workspace(workspace.id, user_id)
                                 except ComputeServiceHTTPError as compute_error:
@@ -581,24 +580,24 @@ async def credit_enforcement_background_task() -> None:
                                     if compute_error.status_code != 404:
                                         raise compute_error  # noqa: TRY201
 
-                                # Update database
-                                workspace.status = "standby"
-                                workspace.standby_at = now
+                                # Update database: normalize to explicit 'stopped' state
+                                workspace.status = "stopped"
+                                workspace.standby_at = None
 
-                                # Notify connected clients about billing standby
+                                # Notify connected clients about billing stop
                                 await emit_to_session(
                                     str(session.id),
                                     "workspace_billing_standby",
                                     {
                                         "workspace_id": workspace.id,
-                                        "status": "standby",
+                                        "status": "stopped",
                                         "reason": "credit_exhaustion",
                                         "message": (
-                                            "Your workspace has been paused due to "
-                                            "insufficient credits. Please upgrade your "
+                                            "Your cloud workspace has been stopped due to "
+                                            "insufficient compute credits. Please upgrade your "
                                             "plan or add credits to resume."
                                         ),
-                                        "standby_at": now.isoformat(),
+                                        "standby_at": None,
                                         "upgrade_url": "/settings/plans",
                                         "add_credits_url": "/settings/billing",
                                     },
@@ -606,7 +605,7 @@ async def credit_enforcement_background_task() -> None:
 
                                 standby_count += 1
                                 logger.info(
-                                    "Moved workspace to standby due to credit exhaustion",
+                                    "Stopped workspace due to credit exhaustion",
                                     workspace_id=workspace.id,
                                     session_id=str(session.id),
                                     user_id=user_id,
@@ -839,14 +838,16 @@ async def workspace_provision_background_task() -> None:
                 try:
                     provisioned_count = 0
 
-                    # Find active sessions with workspaces that should be running
-                    # Include pending/running/creating statuses (not stopped/standby)
+                    # Find active *cloud* sessions with workspaces that should be running.
+                    # IMPORTANT: Skip local-pod workspaces entirely - those are managed by the
+                    # local pod connection and should never be auto-provisioned via compute.
                     query = (
                         select(SessionModel, Workspace)
                         .join(Workspace, SessionModel.workspace_id == Workspace.id)
                         .where(
                             SessionModel.status == "active",
                             Workspace.status.in_(["running", "creating", "pending"]),
+                            Workspace.local_pod_id.is_(None),
                         )
                     )
 
@@ -1625,8 +1626,14 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     _tasks.quota_reset = create_monitored_task(quota_reset_background_task(), "quota_reset")
     logger.info("Quota reset background task started")
 
-    _tasks.standby_check = create_monitored_task(standby_background_task(), "standby_check")
-    logger.info("Standby check background task started")
+    # NOTE: Idle standby/auto-pause and long-standby cleanup are disabled. The only
+    # automatic transition away from 'running' is explicit credit enforcement for
+    # cloud workspaces; everything else is user-driven.
+
+    _tasks.credit_enforcement = create_monitored_task(
+        credit_enforcement_background_task(), "credit_enforcement"
+    )
+    logger.info("Credit enforcement background task started")
 
     _tasks.workspace_provision = create_monitored_task(
         workspace_provision_background_task(), "workspace_provision"
@@ -1647,16 +1654,6 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         container_health_check_background_task(), "container_health_check"
     )
     logger.info("Container health check background task started")
-
-    _tasks.standby_cleanup = create_monitored_task(
-        standby_cleanup_background_task(), "standby_cleanup"
-    )
-    logger.info("Standby cleanup background task started")
-
-    _tasks.credit_enforcement = create_monitored_task(
-        credit_enforcement_background_task(), "credit_enforcement"
-    )
-    logger.info("Credit enforcement background task started")
 
     _tasks.oauth_refresh = create_monitored_task(
         oauth_token_refresh_background_task(), "oauth_refresh"
@@ -1936,7 +1933,6 @@ api_v1.include_router(skill_repositories.router, tags=["skill-repositories"])
 api_v1.include_router(marketplace.router, tags=["marketplace"])
 api_v1.include_router(llm_providers.router, tags=["llm-providers"])
 api_v1.include_router(local_pods.router)  # Already has prefix
-api_v1.include_router(llm_bridge.router, tags=["llm-bridge"])
 api_v1.include_router(voice.router, prefix="/voice", tags=["voice"])
 api_v1.include_router(uploads.router, prefix="/sessions", tags=["uploads"])
 api_v1.include_router(billing.router, tags=["billing"])

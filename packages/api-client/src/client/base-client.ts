@@ -38,7 +38,7 @@ export class BaseApiClient {
   }
 
   /**
-   * Update the base URL (useful for Electron apps that need to configure it at runtime).
+   * Update the base URL (e.g. when configuring it at runtime).
    */
   setBaseUrl(url: string): void {
     this.baseUrl = url.replace(/\/$/, ''); // Remove trailing slash

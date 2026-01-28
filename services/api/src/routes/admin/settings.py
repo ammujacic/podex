@@ -756,6 +756,7 @@ async def reset_setting_to_default(
             "git_integration_enabled": True,
             "planning_mode_enabled": True,
             "vision_enabled": True,
+            "anthropic_prompt_caching_enabled": True,
         },
         "platform_limits": {
             "max_concurrent_agents": 3,

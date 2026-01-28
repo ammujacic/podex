@@ -231,6 +231,21 @@ async def get_context_limits() -> dict[str, int]:
     }
 
 
+async def get_anthropic_prompt_caching_enabled() -> bool:
+    """Whether Anthropic prompt caching is enabled (admin-controlled, default True).
+
+    Reads from platform feature_flags in Redis cache. Used by LLMProvider when
+    building Anthropic requests with cache_control on conversation summaries.
+    """
+    try:
+        flags = await get_setting_from_cache("feature_flags")
+        if flags and isinstance(flags, dict):
+            return bool(flags.get("anthropic_prompt_caching_enabled", True))
+    except SettingsNotAvailableError:
+        pass
+    return True
+
+
 # Default thinking budget values (these are used by synchronous code
 # that can't call async functions). Should match database seed values.
 DEFAULT_THINKING_BUDGET = 8000

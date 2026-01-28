@@ -120,9 +120,8 @@ import {
   SentryErrorReporter,
   ZustandAuthProvider,
 } from '@/lib/api-adapters';
-import { getApiBaseUrl, getApiBaseUrlSync } from '@/lib/api-url';
+import { getApiBaseUrlSync } from '@/lib/api-url';
 
-// Initialize with sync URL (will be updated if in Electron)
 const API_BASE_URL = getApiBaseUrlSync();
 
 // Create and export the API client singleton
@@ -132,21 +131,6 @@ export const api = new PodexApiClient({
   authProvider: new ZustandAuthProvider(),
   errorReporter: new SentryErrorReporter(),
 });
-
-// Update API URL from Electron if available (async, non-blocking)
-if (typeof window !== 'undefined') {
-  getApiBaseUrl()
-    .then((url) => {
-      if (url !== API_BASE_URL) {
-        // Update the baseUrl on the client instance
-        api.setBaseUrl(url);
-        // API URL updated from Electron settings - silent in production
-      }
-    })
-    .catch((error) => {
-      console.warn('Failed to update API URL from Electron:', error);
-    });
-}
 
 // Export the request cache for direct access
 export const requestCache = api.getCache();
@@ -811,6 +795,28 @@ export interface ConversationSummary {
   updated_at: string;
 }
 
+export interface ConversationMessage {
+  id: string;
+  role: string;
+  content: string;
+  thinking?: string | null;
+  tool_calls?: Record<string, unknown> | null;
+  tool_results?: Record<string, unknown> | null;
+  model?: string | null;
+  stop_reason?: string | null;
+  usage?: Record<string, unknown> | null;
+  audio_url?: string | null;
+  audio_duration_ms?: number | null;
+  input_type?: string;
+  transcription_confidence?: number | null;
+  tts_summary?: string | null;
+  created_at: string;
+}
+
+export interface ConversationWithMessages extends ConversationSummary {
+  messages: ConversationMessage[];
+}
+
 // Agent API methods
 export async function createAgent(
   sessionId: string,
@@ -825,6 +831,36 @@ export async function listAgents(sessionId: string): Promise<AgentResponse[]> {
 
 export async function listConversations(sessionId: string): Promise<ConversationSummary[]> {
   return api.get<ConversationSummary[]>(`/api/sessions/${sessionId}/conversations`);
+}
+
+export async function getConversation(
+  sessionId: string,
+  conversationId: string
+): Promise<ConversationWithMessages> {
+  return api.get<ConversationWithMessages>(
+    `/api/sessions/${sessionId}/conversations/${conversationId}`
+  );
+}
+
+export async function attachConversation(
+  sessionId: string,
+  conversationId: string,
+  agentId: string
+): Promise<ConversationSummary> {
+  return api.post(`/api/sessions/${sessionId}/conversations/${conversationId}/attach`, {
+    agent_id: agentId,
+  }) as Promise<ConversationSummary>;
+}
+
+export async function detachConversation(
+  sessionId: string,
+  conversationId: string,
+  agentId?: string
+): Promise<ConversationSummary> {
+  return api.post(
+    `/api/sessions/${sessionId}/conversations/${conversationId}/detach`,
+    agentId ? { agent_id: agentId } : {}
+  ) as Promise<ConversationSummary>;
 }
 
 // ==================== Agent Role Configuration ====================
@@ -1421,6 +1457,15 @@ export async function resetAllTours(): Promise<CompletedToursResponse> {
 
 // ==================== Sessions ====================
 
+/**
+ * Session: one "pod" / dev environment the user has.
+ *
+ * Status fields (they are not the same):
+ * - status: Session lifecycle (active, creating, stopped, error). "Is this session in use?"
+ * - workspace_status: Compute/container lifecycle (running, stopped, pending, error, etc.).
+ *   "Is the actual container running?" Can be stale in DB until someone calls GET workspace status
+ *   (which syncs from compute) or compute pushes a sync.
+ */
 export interface Session {
   id: string;
   name: string;
@@ -1985,6 +2030,7 @@ export async function downloadFolder(sessionId: string, path: string): Promise<v
 export interface GridSpanLayout {
   col_span: number;
   row_span: number;
+  col_start?: number;
 }
 
 export interface PositionLayout {
@@ -3249,7 +3295,6 @@ export interface LocalPod {
   docker_version: string | null;
   total_memory_mb: number | null;
   total_cpu_cores: number | null;
-  max_workspaces: number;
   current_workspaces: number;
   labels: Record<string, string> | null;
   // Execution mode and mount configuration
@@ -3272,7 +3317,6 @@ export interface LocalPodWithWorkspaces extends LocalPod {
 
 export interface CreateLocalPodRequest {
   name: string;
-  max_workspaces?: number;
   labels?: Record<string, string>;
 }
 
@@ -3283,7 +3327,6 @@ export interface CreateLocalPodResponse {
 
 export interface UpdateLocalPodRequest {
   name?: string;
-  max_workspaces?: number;
   labels?: Record<string, string>;
 }
 

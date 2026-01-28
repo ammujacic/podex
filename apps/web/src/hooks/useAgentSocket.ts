@@ -317,10 +317,9 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
           timestamp: new Date(backendMsg.created_at),
         };
 
-        callbacksRef.current.handleConversationEvent(sessionId, 'conversation_message', {
-          conversation_id: data.conversation_id,
-          message: agentMessage,
-        });
+        // Use addConversationMessage directly instead of handleConversationEvent
+        // This ensures proper deduplication logic is applied
+        callbacksRef.current.addConversationMessage(sessionId, data.conversation_id, agentMessage);
       }
     );
     const unsubBillingStandby = onSocketEvent(

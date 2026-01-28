@@ -74,10 +74,12 @@ class TestRedisConfiguration:
         expected_zone = f"{region}-a"
         assert instance_call_args[1]["zone"] == expected_zone
 
-        # Verify no external IP (internal only)
+        # Verify network config (public IP via access_configs for Cloud Run, no VPC connector)
         network_interfaces = instance_call_args[1]["network_interfaces"]
         assert len(network_interfaces) == 1
-        # Should not have external IP configured
+        ni = network_interfaces[0]
+        access_configs = getattr(ni, "access_configs", [])
+        assert len(access_configs) > 0
 
         # Verify startup script is provided
         assert "metadata_startup_script" in instance_call_args[1]

@@ -169,7 +169,6 @@ def create_secrets(project_id: str, env: str) -> dict[str, Any]:
         "sentry-dsn-agent",
         "sentry-dsn-compute",
         "sentry-dsn-web",
-        "sentry-dsn-desktop",
         # Sentry build-time (for source maps upload)
         "sentry-auth-token",
         "sentry-org",

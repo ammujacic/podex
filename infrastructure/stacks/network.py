@@ -1,6 +1,7 @@
-"""VPC Network configuration for GKE.
+"""VPC Network configuration.
 
-Creates a VPC with subnets for GKE nodes and pods.
+Creates a VPC with subnets for Cloud SQL and Redis VM access.
+Note: GKE-specific secondary ranges are included for future use but not required.
 """
 
 from typing import Any

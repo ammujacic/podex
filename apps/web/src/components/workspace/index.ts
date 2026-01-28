@@ -1,7 +1,6 @@
 // Workspace layout
 export { WorkspaceLayout } from './WorkspaceLayout';
 export { SidebarContainer } from './SidebarContainer';
-export { WorkspaceSidebar } from './WorkspaceSidebar'; // Legacy
 export { WorkspaceHeader } from './WorkspaceHeader';
 
 // Sidebar panels

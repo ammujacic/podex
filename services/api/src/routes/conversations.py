@@ -4,6 +4,7 @@ Conversations are portable chat sessions that can be attached to any agent card.
 They hold the message history and can be moved between agents.
 """
 
+import contextlib
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -62,11 +63,49 @@ class ConversationSessionResponse(BaseModel):
 
     id: str
     name: str
-    attached_to_agent_id: str | None = None
+    attached_to_agent_id: str | None = None  # Legacy field for backward compatibility
+    attached_agent_ids: list[str] = []  # List of agent IDs that have this conversation attached
     message_count: int
     last_message_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+    @classmethod
+    def model_validate(cls, obj: Any, **kwargs: Any) -> "ConversationSessionResponse":
+        """Custom validation to populate attached_agent_ids from relationship."""
+        # Extract agent IDs from the relationship if available
+        # Use try-except to handle cases where relationship might trigger lazy loading
+        attached_agent_ids = []
+        with contextlib.suppress(Exception):
+            if hasattr(obj, "attached_agents") and obj.attached_agents:
+                attached_agent_ids = [agent.id for agent in obj.attached_agents]
+
+        # Fallback to __dict__ if available
+        if (
+            not attached_agent_ids
+            and hasattr(obj, "__dict__")
+            and "attached_agents" in obj.__dict__
+        ):
+            with contextlib.suppress(Exception):
+                att = obj.__dict__["attached_agents"]
+                attached_agent_ids = [agent.id for agent in att]
+
+        # Use model_validate with a dict to properly set all fields
+        if isinstance(obj, dict):
+            data = obj.copy()
+        else:
+            data = {
+                "id": obj.id,
+                "name": obj.name,
+                "attached_to_agent_id": obj.attached_to_agent_id,
+                "message_count": obj.message_count,
+                "last_message_at": obj.last_message_at,
+                "created_at": obj.created_at,
+                "updated_at": obj.updated_at,
+            }
+
+        data["attached_agent_ids"] = attached_agent_ids
+        return super().model_validate(data, **kwargs)
 
 
 class ConversationSessionWithMessagesResponse(ConversationSessionResponse):
@@ -92,6 +131,12 @@ class AttachConversationRequest(BaseModel):
     """Request model for attaching a conversation to an agent."""
 
     agent_id: str
+
+
+class DetachConversationRequest(BaseModel):
+    """Request model for detaching a conversation from an agent."""
+
+    agent_id: str | None = None  # If None, detach from all agents (backward compatibility)
 
 
 class SendMessageRequest(BaseModel):
@@ -166,7 +211,10 @@ async def verify_conversation_access(
     # Get the conversation
     result = await db.execute(
         select(ConversationSession)
-        .options(selectinload(ConversationSession.messages))
+        .options(
+            selectinload(ConversationSession.messages),
+            selectinload(ConversationSession.attached_agents),
+        )
         .where(
             ConversationSession.id == conversation_id,
             ConversationSession.session_id == session_id,
@@ -212,6 +260,7 @@ async def list_conversations(
 
     result = await db.execute(
         select(ConversationSession)
+        .options(selectinload(ConversationSession.attached_agents))
         .where(ConversationSession.session_id == session_id)
         .order_by(ConversationSession.last_message_at.desc().nullsfirst())
     )
@@ -443,13 +492,6 @@ async def attach_conversation(
     """
     conversation = await verify_conversation_access(db, session_id, conversation_id, request)
 
-    # Check if already attached to another agent
-    if conversation.attached_to_agent_id and conversation.attached_to_agent_id != body.agent_id:
-        raise HTTPException(
-            status_code=409,
-            detail="Conversation is already attached to another agent. Detach it first.",
-        )
-
     # Verify the agent exists and belongs to this session
     result = await db.execute(
         select(AgentModel).where(
@@ -462,15 +504,21 @@ async def attach_conversation(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found in this session")
 
-    # Check if agent already has a conversation attached (via relationship)
-    if agent.conversation_session and agent.conversation_session.id != conversation_id:
-        raise HTTPException(
-            status_code=409,
-            detail="Agent already has a different conversation attached. Detach it first.",
-        )
+    # Load attached agents relationship
+    await db.refresh(conversation, ["attached_agents"])
 
-    # Attach the conversation (only the ConversationSession holds the FK)
-    conversation.attached_to_agent_id = body.agent_id
+    # Check if already attached to this agent (idempotent)
+    if agent in conversation.attached_agents:
+        # Already attached, just return success
+        await db.refresh(conversation, ["attached_agents"])
+        return ConversationSessionResponse.model_validate(conversation)
+
+    # Add to many-to-many relationship
+    conversation.attached_agents.append(agent)
+
+    # Also update legacy field for backward compatibility (set to first attached agent)
+    if not conversation.attached_to_agent_id:
+        conversation.attached_to_agent_id = body.agent_id
 
     await db.commit()
     await db.refresh(conversation)
@@ -505,16 +553,16 @@ async def detach_conversation(
     response: Response,  # noqa: ARG001
     session_id: str,
     conversation_id: str,
+    body: DetachConversationRequest,
     db: DbSession,
     user_id: CurrentUserId,  # noqa: ARG001
 ) -> ConversationSessionResponse:
-    """Detach a conversation from its current agent.
-
-    The conversation returns to the pool and can be attached to another agent.
+    """Detach a conversation from an agent (or all agents if agent_id not provided).
 
     Args:
         session_id: Parent session ID
         conversation_id: Conversation ID
+        body: Detach request with optional agent_id
         db: Database session
         user_id: Current user ID
 
@@ -523,10 +571,36 @@ async def detach_conversation(
     """
     conversation = await verify_conversation_access(db, session_id, conversation_id, request)
 
-    old_agent_id = conversation.attached_to_agent_id
+    # Load attached agents
+    await db.refresh(conversation, ["attached_agents"])
 
-    # Clear the conversation's reference (only FK is on ConversationSession)
-    conversation.attached_to_agent_id = None
+    old_agent_id: str | None
+    if body.agent_id:
+        # Detach from specific agent
+        agent_result = await db.execute(
+            select(AgentModel).where(
+                AgentModel.id == body.agent_id,
+                AgentModel.session_id == session_id,
+            )
+        )
+        agent = agent_result.scalar_one_or_none()
+        if agent and agent in conversation.attached_agents:
+            conversation.attached_agents.remove(agent)
+            # Update legacy field if this was the only agent or if it matched
+            if conversation.attached_to_agent_id == body.agent_id:
+                conversation.attached_to_agent_id = (
+                    conversation.attached_agents[0].id if conversation.attached_agents else None
+                )
+            old_agent_id = body.agent_id
+        else:
+            # Agent not found or not attached, return as-is
+            await db.refresh(conversation)
+            return ConversationSessionResponse.model_validate(conversation)
+    else:
+        # Detach from all agents (backward compatibility)
+        old_agent_id = conversation.attached_to_agent_id
+        conversation.attached_agents.clear()
+        conversation.attached_to_agent_id = None
 
     await db.commit()
     await db.refresh(conversation)

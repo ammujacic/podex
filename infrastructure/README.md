@@ -8,11 +8,14 @@ The infrastructure deploys the following GCP resources:
 
 - **Cloud Run Services** (API, Agent, Compute, Web) - Scale to zero when idle
 - **Cloud SQL PostgreSQL** (db-f1-micro) - ~$9/month database
+  - Connected via Unix domain sockets (no VPC connector needed)
 - **Redis on Compute Engine** (e2-micro) - Always Free tier
+  - Public IP with password protection and firewall rules
 - **Cloud Storage** - 5GB free storage
 - **Secret Manager** - 6 free secret versions
-- **GKE Cluster** - GPU-ready, scales to zero when idle
 - **Cloud DNS + SSL** - Custom domain with managed certificates
+
+**Note:** VPC Connector removed - Cloud SQL uses Unix sockets, Redis uses public IP. GKE cluster removed - can be added back when GPU workspaces are needed.
 
 ## Testing
 
@@ -148,19 +151,22 @@ pulumi up
 
 The infrastructure is designed for cost efficiency:
 
-- **Cloud Run**: Scales to zero automatically
-- **GKE**: Node pools scale to zero when idle
-- **Cloud SQL**: Smallest instance (db-f1-micro)
-- **Redis**: Uses Always Free e2-micro VM
-- **Storage**: Stays within free tier limits
+- **Cloud Run**: Scales to zero automatically (FREE tier: 2M requests/month)
+- **Cloud SQL**: Smallest instance (db-f1-micro) - ~$9/month
+  - Connected via Unix domain sockets (no VPC connector cost!)
+- **Redis**: Uses Always Free e2-micro VM - FREE
+- **Storage**: Stays within free tier limits (5GB FREE)
+- **Secret Manager**: 6 secret versions FREE
+
+**Estimated Monthly Cost:** ~$9/month (Cloud SQL only - everything else is FREE!)
 
 ## Security Considerations
 
 ### Identified Issues
 
-1. **Database Access**: Dev environment allows `0.0.0.0/0` access (should be restricted)
-2. **VPC Connector**: Uses "default" network instead of custom VPC
-3. **Service Accounts**: Broad IAM permissions (follows least privilege principle)
+1. **Database Access**: Cloud SQL uses private IP only (VPC-only access) ✅
+2. **VPC Connector**: Uses custom VPC network ✅
+3. **Service Accounts**: Minimal required IAM permissions ✅
 
 ### Recommendations
 
@@ -207,11 +213,18 @@ pulumi stack output
 - Lower cost for small workloads
 - Familiar development experience
 
-### Why GKE over Cloud Run for GPUs?
+### Why No VPC Connector?
 
-- GPU workload requirements
-- Complex orchestration needs
-- Cost-effective scaling to zero
+- **Cloud SQL**: Uses Cloud Run's built-in Unix domain socket connection
+  - Format: `postgresql://user:pass@localhost/db?host=/cloudsql/project:region:instance`
+  - No VPC connector needed - Cloud Run handles this automatically
+  - Secure: Only Cloud Run services can access via Unix sockets
+- **Redis**: Uses public IP with password protection and firewall rules
+  - Redis is password-protected, so public IP is acceptable
+  - Firewall restricts access to port 6379 only
+  - Alternative: Use Cloud Memorystore (managed Redis) for production if needed
+
+**Note:** GKE cluster removed - can be added back when GPU workspaces are needed. GKE would be used for GPU workloads that require Kubernetes orchestration.
 
 ## Contributing
 

@@ -974,20 +974,7 @@ function PodCard({ pod, isExpanded, onToggleExpand, onDelete, onRegenerateToken 
 
             {/* Workspaces */}
             <div className="flex items-center gap-2 mt-2">
-              <span className="text-xs text-text-muted">
-                Workspaces: {pod.current_workspaces}/{pod.max_workspaces}
-              </span>
-              <div className="flex-1 h-1.5 bg-overlay rounded-full overflow-hidden max-w-24">
-                <div
-                  className={cn(
-                    'h-full rounded-full transition-all',
-                    pod.current_workspaces === pod.max_workspaces
-                      ? 'bg-warning'
-                      : 'bg-accent-primary'
-                  )}
-                  style={{ width: `${(pod.current_workspaces / pod.max_workspaces) * 100}%` }}
-                />
-              </div>
+              <span className="text-xs text-text-muted">Workspaces: {pod.current_workspaces}</span>
             </div>
           </div>
 

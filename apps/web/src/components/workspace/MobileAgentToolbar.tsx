@@ -22,6 +22,7 @@ import { useAttentionStore } from '@/stores/attention';
 import {
   getAvailableModels,
   getUserProviderModels,
+  getLocalLLMConfig,
   updateAgentSettings,
   togglePlanMode,
   deleteAgent as deleteAgentApi,
@@ -32,7 +33,7 @@ import {
 } from '@/lib/api';
 import { ContextUsageRing } from './ContextUsageRing';
 import { MobileBottomSheet } from '@/components/ui/MobileBottomSheet';
-import { ModelTierSection, UserModelsSection } from './ModelTierSection';
+import { ModelTierSection, UserModelsSection, LocalModelsSection } from './ModelTierSection';
 import type { ThinkingConfig } from '@podex/shared';
 
 interface MobileAgentToolbarProps {
@@ -113,13 +114,31 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
   const unreadCount = getUnreadCountForAgent(sessionId, agent.id);
   const hasUnread = hasUnreadForAgent(sessionId, agent.id);
 
+  // Local (Ollama / LM Studio) models from saved config
+  const [localModels, setLocalModels] = useState<{ model_id: string; display_name: string }[]>([]);
+
   // Load models
   useEffect(() => {
     const loadModels = async () => {
       try {
-        const [pub, user] = await Promise.all([getAvailableModels(), getUserProviderModels()]);
+        const [pub, user, localConfig] = await Promise.all([
+          getAvailableModels(),
+          getUserProviderModels(),
+          getLocalLLMConfig().catch(() => ({})),
+        ]);
         setPublicModels(pub);
         setUserModels(user);
+        const providerLabels: Record<string, string> = { ollama: 'Ollama', lmstudio: 'LM Studio' };
+        const local: { model_id: string; display_name: string }[] = [];
+        for (const [provider, cfg] of Object.entries(localConfig)) {
+          if (!cfg?.models?.length) continue;
+          const label = providerLabels[provider] ?? provider;
+          for (const m of cfg.models) {
+            const name = m.id || m.name;
+            local.push({ model_id: `${provider}/${name}`, display_name: `${name} (${label})` });
+          }
+        }
+        setLocalModels(local);
       } catch (err) {
         console.error('Failed to load models:', err);
       }
@@ -127,13 +146,16 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
     loadModels();
   }, []);
 
-  // Find current model info
+  // Find current model info (platform, user API, or local)
   const currentModelInfo = useMemo(() => {
     const pubModel = publicModels.find((m) => m.model_id === agent.model);
     if (pubModel) return pubModel;
     const userModel = userModels.find((m) => m.model_id === agent.model);
-    return userModel || null;
-  }, [publicModels, userModels, agent.model]);
+    if (userModel) return userModel;
+    const localModel = localModels.find((m) => m.model_id === agent.model);
+    if (localModel) return { display_name: localModel.display_name } as PublicModel;
+    return null;
+  }, [publicModels, userModels, localModels, agent.model]);
 
   // Group models by tier
   const modelsByTier = useMemo(() => {
@@ -155,14 +177,15 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
         updateAgent(sessionId, agent.id, { model: modelId });
         const pub = publicModels.find((m) => m.model_id === modelId);
         const user = userModels.find((m) => m.model_id === modelId);
-        const label = pub?.display_name || user?.display_name || modelId;
+        const local = localModels.find((m) => m.model_id === modelId);
+        const label = pub?.display_name || user?.display_name || local?.display_name || modelId;
         toast.success(`Model changed to ${label}`);
       } catch (err) {
         console.error('Failed to change model:', err);
         toast.error('Failed to change model');
       }
     },
-    [sessionId, agent.id, updateAgent, publicModels, userModels]
+    [sessionId, agent.id, updateAgent, publicModels, userModels, localModels]
   );
 
   const handleChangeMode = useCallback(
@@ -413,6 +436,11 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
             title="Fast"
             titleColor="text-text-primary"
             models={modelsByTier.fast}
+            currentModel={agent.model}
+            onSelect={handleChangeModel}
+          />
+          <LocalModelsSection
+            models={localModels}
             currentModel={agent.model}
             onSelect={handleChangeModel}
           />

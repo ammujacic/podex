@@ -32,7 +32,6 @@ CurrentUser = Annotated[dict[str, str | None], Depends(get_current_user)]
 
 # Limits
 MAX_PODS_PER_USER = 10
-MAX_WORKSPACES_PER_POD = 10
 
 
 # ============== Request/Response Models ==============
@@ -43,7 +42,6 @@ class LocalPodCreate(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=100)
     labels: dict[str, str] = Field(default_factory=dict)
-    max_workspaces: int = Field(default=3, ge=1, le=MAX_WORKSPACES_PER_POD)
 
 
 class LocalPodUpdate(BaseModel):
@@ -51,7 +49,6 @@ class LocalPodUpdate(BaseModel):
 
     name: str | None = Field(None, min_length=1, max_length=100)
     labels: dict[str, str] | None = None
-    max_workspaces: int | None = Field(None, ge=1, le=MAX_WORKSPACES_PER_POD)
 
 
 class MountConfig(BaseModel):
@@ -77,7 +74,6 @@ class LocalPodResponse(BaseModel):
     docker_version: str | None
     total_memory_mb: int | None
     total_cpu_cores: int | None
-    max_workspaces: int
     current_workspaces: int
     labels: dict[str, Any] | None
     # New fields for mode and mounts
@@ -201,7 +197,6 @@ def _pod_to_response(pod: LocalPod) -> LocalPodResponse:
         docker_version=pod.docker_version,
         total_memory_mb=pod.total_memory_mb,
         total_cpu_cores=pod.total_cpu_cores,
-        max_workspaces=pod.max_workspaces,
         current_workspaces=pod.current_workspaces,
         labels=pod.labels,
         mode=pod.mode,
@@ -289,7 +284,6 @@ async def register_pod(
         token_hash=token_hash,
         token_prefix=token_prefix,
         labels=data.labels if data.labels else None,
-        max_workspaces=data.max_workspaces,
     )
 
     db.add(pod)
@@ -363,8 +357,6 @@ async def update_pod(
         pod.name = data.name
     if data.labels is not None:
         pod.labels = data.labels if data.labels else None
-    if data.max_workspaces is not None:
-        pod.max_workspaces = data.max_workspaces
 
     await db.commit()
     await db.refresh(pod)

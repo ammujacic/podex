@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useMemo } from 'react';
-import { Check, ChevronDown, MessageSquare, Plus } from 'lucide-react';
+import { Check, ChevronDown, MessageSquare, Plus, X } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,6 +12,8 @@ import {
 } from '@podex/ui';
 import { cn } from '@/lib/utils';
 import { type ConversationSession, formatRelativeTime, useSessionStore } from '@/stores/session';
+import { detachConversation } from '@/lib/api';
+import { toast } from 'sonner';
 
 interface SessionDropdownProps {
   /** Current session ID (workspace session) */
@@ -38,33 +40,96 @@ interface SessionDropdownProps {
  */
 export function SessionDropdown({
   sessionId,
-  agentId: _agentId,
+  agentId,
   currentConversation,
   onAttach,
-  onDetach: _onDetach,
+  onDetach,
   onCreateNew,
   className,
   disabled,
 }: SessionDropdownProps) {
   // Get all conversation sessions for this workspace
   const session = useSessionStore((state) => state.sessions[sessionId]);
-  const conversationSessions = session?.conversationSessions ?? [];
+  const conversationSessions = useMemo(
+    () => session?.conversationSessions ?? [],
+    [session?.conversationSessions]
+  );
+  const detachConversationFromAgent = useSessionStore((state) => state.detachConversationFromAgent);
 
-  // Filter to available (unattached) sessions, excluding the current one
-  const availableSessions = useMemo(() => {
-    return conversationSessions.filter(
-      (c) => c.attachedToAgentId === null && c.id !== currentConversation?.id
-    );
+  // Separate sessions into attached and unattached (excluding current)
+  const { attached, unattached } = useMemo(() => {
+    const attachedSessions: ConversationSession[] = [];
+    const unattachedSessions: ConversationSession[] = [];
+
+    conversationSessions.forEach((conv) => {
+      // Skip current conversation
+      if (conv.id === currentConversation?.id) return;
+
+      // Check if attached to any agent (use new field if available, fallback to legacy)
+      const isAttached =
+        (conv.attachedAgentIds && conv.attachedAgentIds.length > 0) ||
+        conv.attachedToAgentId !== null;
+
+      if (isAttached) {
+        attachedSessions.push(conv);
+      } else {
+        unattachedSessions.push(conv);
+      }
+    });
+
+    return { attached: attachedSessions, unattached: unattachedSessions };
   }, [conversationSessions, currentConversation?.id]);
 
-  // Sort available sessions by last message time (most recent first)
-  const sortedAvailableSessions = useMemo(() => {
-    return [...availableSessions].sort((a, b) => {
+  // Sort sessions by last message time (most recent first)
+  const sortedAttachedSessions = useMemo(() => {
+    return [...attached].sort((a, b) => {
       const timeA = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
       const timeB = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
       return timeB - timeA;
     });
-  }, [availableSessions]);
+  }, [attached]);
+
+  const sortedUnattachedSessions = useMemo(() => {
+    return [...unattached].sort((a, b) => {
+      const timeA = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+      const timeB = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+      return timeB - timeA;
+    });
+  }, [unattached]);
+
+  // Get agent name helper
+  const getAgentName = (agentId: string | null): string => {
+    if (!agentId) return '';
+    const agent = session?.agents.find((a) => a.id === agentId);
+    return agent?.name || 'Unknown Agent';
+  };
+
+  // Handle detach
+  const handleDetach = async (
+    e: React.MouseEvent,
+    conversationId: string,
+    attachedAgentId?: string
+  ) => {
+    e.stopPropagation(); // Prevent dropdown from closing
+    try {
+      // Optimistically update local state
+      detachConversationFromAgent(sessionId, conversationId);
+
+      // Call API to detach from the specific agent (if provided) or all agents
+      await detachConversation(sessionId, conversationId, attachedAgentId);
+
+      // If this was the current conversation, call onDetach callback
+      if (conversationId === currentConversation?.id && onDetach) {
+        onDetach();
+      }
+
+      toast.success('Session detached');
+    } catch (error) {
+      console.error('Failed to detach conversation:', error);
+      toast.error('Failed to detach session');
+      // WebSocket event will sync state if API call fails
+    }
+  };
 
   return (
     <DropdownMenu>
@@ -117,13 +182,78 @@ export function SessionDropdown({
           </>
         )}
 
-        {/* Available sessions */}
-        {sortedAvailableSessions.length > 0 && (
+        {/* Attached sessions */}
+        {sortedAttachedSessions.length > 0 && (
+          <>
+            <DropdownMenuLabel className="text-xs text-text-muted">
+              Attached Sessions
+            </DropdownMenuLabel>
+            {sortedAttachedSessions.slice(0, 10).map((conv) => {
+              // Check if attached to current agent
+              const attachedAgentIds =
+                conv.attachedAgentIds || (conv.attachedToAgentId ? [conv.attachedToAgentId] : []);
+              const isAttachedToCurrentAgent = attachedAgentIds.includes(agentId);
+
+              return (
+                <DropdownMenuItem
+                  key={conv.id}
+                  className={cn(
+                    'flex items-center justify-between group',
+                    isAttachedToCurrentAgent
+                      ? 'cursor-default bg-accent-primary/5'
+                      : 'cursor-pointer'
+                  )}
+                  onClick={() => {
+                    if (!isAttachedToCurrentAgent) {
+                      onAttach(conv.id);
+                    }
+                  }}
+                >
+                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                    <span className="truncate max-w-[100px]">{conv.name}</span>
+                    {attachedAgentIds.length > 0 && (
+                      <span className="text-xs text-text-muted truncate">
+                        (
+                        {attachedAgentIds.length === 1
+                          ? getAgentName(attachedAgentIds[0] ?? null)
+                          : `${attachedAgentIds.length} agents`}
+                        )
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-text-muted">
+                      {formatRelativeTime(conv.lastMessageAt)}
+                    </span>
+                    {!isAttachedToCurrentAgent && (
+                      <button
+                        className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-overlay rounded transition-opacity"
+                        onClick={(e) => handleDetach(e, conv.id, agentId)}
+                        title="Detach session from this agent"
+                      >
+                        <X className="h-3 w-3 text-text-muted hover:text-text-primary" />
+                      </button>
+                    )}
+                  </div>
+                </DropdownMenuItem>
+              );
+            })}
+            {sortedAttachedSessions.length > 10 && (
+              <DropdownMenuItem disabled className="text-xs text-text-muted">
+                +{sortedAttachedSessions.length - 10} more attached sessions
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuSeparator />
+          </>
+        )}
+
+        {/* Available (unattached) sessions */}
+        {sortedUnattachedSessions.length > 0 && (
           <>
             <DropdownMenuLabel className="text-xs text-text-muted">
               Available Sessions
             </DropdownMenuLabel>
-            {sortedAvailableSessions.slice(0, 10).map((conv) => (
+            {sortedUnattachedSessions.slice(0, 10).map((conv) => (
               <DropdownMenuItem
                 key={conv.id}
                 className="flex items-center justify-between cursor-pointer"
@@ -135,9 +265,9 @@ export function SessionDropdown({
                 </span>
               </DropdownMenuItem>
             ))}
-            {sortedAvailableSessions.length > 10 && (
+            {sortedUnattachedSessions.length > 10 && (
               <DropdownMenuItem disabled className="text-xs text-text-muted">
-                +{sortedAvailableSessions.length - 10} more sessions
+                +{sortedUnattachedSessions.length - 10} more sessions
               </DropdownMenuItem>
             )}
             <DropdownMenuSeparator />

@@ -63,6 +63,46 @@ interface UserModelsSectionProps {
   onSelect: (modelId: string) => void;
 }
 
+export interface LocalModelItem {
+  model_id: string;
+  display_name: string;
+}
+
+interface LocalModelsSectionProps {
+  models: LocalModelItem[];
+  currentModel: string;
+  onSelect: (modelId: string) => void;
+}
+
+/**
+ * Renders local (Ollama / LM Studio) models section.
+ */
+export function LocalModelsSection({ models, currentModel, onSelect }: LocalModelsSectionProps) {
+  if (models.length === 0) return null;
+
+  return (
+    <div>
+      <p className="text-xs font-medium text-accent-success mb-2">Local</p>
+      <div className="space-y-1">
+        {models.map((model) => (
+          <button
+            key={model.model_id}
+            onClick={() => onSelect(model.model_id)}
+            className={cn(
+              'w-full flex items-center justify-between px-3 py-2 rounded-lg transition-colors min-h-[44px]',
+              currentModel === model.model_id
+                ? 'bg-green-500/20 text-accent-success'
+                : 'bg-surface-hover text-text-primary hover:bg-surface-active'
+            )}
+          >
+            <span>{model.display_name}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /**
  * Renders the user's API key models section.
  */

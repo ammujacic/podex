@@ -150,8 +150,15 @@ async def _update_local_pod_workspaces_status(pod_id: str, status: str) -> None:
 
         for workspace, session in workspace_sessions:
             old_status = workspace.status
-            # Don't update if already in the target status or if stopped/error
-            if old_status == status or old_status in ("stopped", "error"):
+            # Don't update if already in the target status or if stopped.
+            # IMPORTANT: allow recovering from 'error' back to 'running' when the pod is healthy.
+            if old_status in (status, "stopped"):
+                continue
+
+            # If the pod reports 'offline', keep existing 'error' (it already indicates a problem).
+            # If the pod reports 'running', treat as heartbeat: workspace healthy again,
+            # so we can safely move from 'error' -> 'running'.
+            if status == "offline" and old_status == "error":
                 continue
 
             workspace.status = status

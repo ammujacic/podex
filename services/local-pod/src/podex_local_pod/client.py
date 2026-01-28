@@ -217,7 +217,6 @@ class LocalPodClient:
             "docker_version": docker_version,
             "total_memory_mb": psutil.virtual_memory().total // (1024 * 1024),
             "cpu_cores": psutil.cpu_count(),
-            "max_workspaces": self.config.max_workspaces,
             "pod_version": "0.1.0",
         }
 

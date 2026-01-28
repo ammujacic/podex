@@ -1254,8 +1254,15 @@ async def start_workspace(
     # Verify user has access to this workspace
     workspace = await verify_workspace_access(workspace_id, request, db)
 
-    # Allow starting from stopped or standby status (for backwards compatibility)
-    if workspace.status not in ("stopped", "standby"):
+    # Normalize any legacy 'standby' state to 'stopped' - we no longer support standby.
+    if workspace.status == "standby":
+        workspace.status = "stopped"
+        workspace.standby_at = None
+        await db.commit()
+        await db.refresh(workspace)
+
+    # Allow starting only from explicitly stopped state
+    if workspace.status != "stopped":
         raise HTTPException(
             status_code=400,
             detail=f"Cannot start workspace in '{workspace.status}' state. "
@@ -1292,7 +1299,7 @@ async def start_workspace(
         workspace_info = await workspace_router.get_workspace(workspace_id, user_id)
 
         if workspace_info is not None:
-            # Workspace exists, try to restart it
+            # Workspace exists, try to restart it (routes to local pod or cloud as appropriate)
             logger.info(
                 "Workspace found, restarting",
                 workspace_id=workspace_id,
@@ -1300,11 +1307,13 @@ async def start_workspace(
             )
             await workspace_router.restart_workspace(workspace_id, user_id)
         else:
-            # Workspace doesn't exist in compute service
-            # Need to recreate it with the GCS bucket mounted
+            # Workspace doesn't exist in backend (local pod or compute) and needs to be recreated.
+            # IMPORTANT: Route recreation based on workspace type so local-pod workspaces are never
+            # accidentally provisioned on the cloud/compute service.
             logger.info(
-                "Workspace not found in compute service, recreating with storage mounted",
+                "Workspace not found in backend, recreating",
                 workspace_id=workspace_id,
+                is_local_pod=bool(workspace.local_pod_id),
             )
 
             # Get the session associated with this workspace
@@ -1319,31 +1328,86 @@ async def start_workspace(
                     detail="Session not found for this workspace",
                 )
 
-            # Determine tier from session settings
-            tier = session.settings.get("tier", "starter") if session.settings else "starter"
+            if workspace.local_pod_id:
+                # Local pod workspace: re-create it on the pod, do NOT fall back to compute.
+                from src.websocket.local_pod_hub import PodNotConnectedError, call_pod
 
-            # Build workspace config
-            workspace_config = await build_workspace_config(
-                db,
-                session.template_id,
-                session.git_url,
-                tier,
-                user_id=user_id,
-            )
+                # Build minimal workspace config for local pod; mount_path from session settings
+                workspace_config: dict[str, Any] = {}
+                if session.settings and session.settings.get("mount_path"):
+                    workspace_config["mount_path"] = session.settings.get("mount_path")
 
-            # Create the workspace in compute service (GCS bucket will be mounted)
-            await compute_client.create_workspace(
-                session_id=str(session.id),
-                user_id=user_id,
-                workspace_id=workspace_id,
-                config=workspace_config,
-            )
+                try:
+                    await call_pod(
+                        str(workspace.local_pod_id),
+                        "workspace.create",
+                        {
+                            "workspace_id": workspace_id,
+                            "session_id": str(session.id),
+                            "user_id": user_id,
+                            "config": workspace_config,
+                        },
+                        rpc_timeout=30,
+                    )
+                    logger.info(
+                        "Workspace recreated on local pod during start",
+                        workspace_id=workspace_id,
+                        pod_id=str(workspace.local_pod_id),
+                    )
+                except PodNotConnectedError as e:
+                    logger.warning(
+                        "Local pod not connected while recreating workspace on start",
+                        workspace_id=workspace_id,
+                        pod_id=str(workspace.local_pod_id),
+                        error=str(e),
+                    )
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Local pod is not connected. Please start your local pod.",
+                    ) from None
+                except TimeoutError:
+                    logger.warning(
+                        "Local pod workspace recreation timed out during start",
+                        workspace_id=workspace_id,
+                        pod_id=str(workspace.local_pod_id),
+                    )
+                    raise HTTPException(
+                        status_code=504,
+                        detail="Timed out while recreating workspace on local pod.",
+                    ) from None
+            else:
+                # Cloud/compute-backed workspace: recreate via compute service with storage mounted
+                logger.info(
+                    "Workspace not found in compute service, recreating with storage mounted",
+                    workspace_id=workspace_id,
+                    session_id=str(session.id),
+                )
 
-            logger.info(
-                "Workspace recreated with storage mounted",
-                workspace_id=workspace_id,
-                session_id=str(session.id),
-            )
+                # Determine tier from session settings
+                tier = session.settings.get("tier", "starter") if session.settings else "starter"
+
+                # Build workspace config
+                workspace_config = await build_workspace_config(
+                    db,
+                    session.template_id,
+                    session.git_url,
+                    tier,
+                    user_id=user_id,
+                )
+
+                # Create the workspace in compute service (GCS bucket will be mounted)
+                await compute_client.create_workspace(
+                    session_id=str(session.id),
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    config=workspace_config,
+                )
+
+                logger.info(
+                    "Workspace recreated with storage mounted",
+                    workspace_id=workspace_id,
+                    session_id=str(session.id),
+                )
 
         # Update DB status after successful restart/recreation
         now = datetime.now(UTC)
@@ -1390,18 +1454,34 @@ async def get_workspace_status(
     response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> WorkspaceStatusResponse:
-    """Get current workspace status."""
+    """Get current workspace status, syncing from compute/local pod when possible."""
+    from src.services.workspace_router import workspace_router
+
     # Verify user has access to this workspace
     workspace = await verify_workspace_access(workspace_id, request, db)
+    user_id: str = getattr(request.state, "user_id", "") or ""
 
-    # Map standby to stopped for backwards compatibility
-    status = workspace.status
-    if status == "standby":
-        status = "stopped"
+    # Sync from compute/local pod so we return actual state (and keep DB in sync)
+    try:
+        info = await workspace_router.get_workspace(workspace_id, user_id)
+        if isinstance(info, dict) and "status" in info:
+            new_status = info["status"]
+            if new_status == "standby":
+                new_status = "stopped"
+            if workspace.status != new_status:
+                workspace.status = new_status
+                await db.commit()
+                await db.refresh(workspace)
+    except Exception as e:
+        logger.debug(
+            "Could not sync workspace status from compute, using DB value",
+            workspace_id=workspace_id,
+            error=str(e),
+        )
 
     return WorkspaceStatusResponse(
         id=workspace.id,
-        status=status,
+        status=workspace.status,
         last_activity=workspace.last_activity.isoformat() if workspace.last_activity else None,
     )
 
@@ -1901,7 +1981,7 @@ def verify_internal_service_token(request: Request) -> None:
 class WorkspaceStatusSyncRequest(BaseModel):
     """Request to sync workspace status from compute service."""
 
-    status: str  # running, standby, stopped, error
+    status: str  # running, stopped, error
     container_id: str | None = None
 
 
@@ -1967,18 +2047,18 @@ async def sync_workspace_status_from_compute(
     now = datetime.now(UTC)
     updated = False
 
-    # Update status if changed
-    if workspace.status != body.status:
-        workspace.status = body.status
+    # Update status if changed, normalizing any legacy 'standby' input to 'stopped'
+    new_status = "stopped" if body.status == "standby" else body.status
+
+    if workspace.status != new_status:
+        workspace.status = new_status
         updated = True
 
         # Handle specific status transitions
-        if body.status == "running":
+        if new_status == "running":
             workspace.standby_at = None
             workspace.last_activity = now
-        elif body.status == "standby":
-            workspace.standby_at = now
-        elif body.status == "stopped":
+        elif new_status == "stopped":
             workspace.standby_at = None
 
         # Update container_id if provided
@@ -2003,7 +2083,7 @@ async def sync_workspace_status_from_compute(
                 "workspace_status",
                 {
                     "workspace_id": workspace_id,
-                    "status": body.status,
+                    "status": new_status,
                     "standby_at": workspace.standby_at.isoformat()
                     if workspace.standby_at
                     else None,

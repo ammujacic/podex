@@ -35,7 +35,9 @@ export type PanelId =
   | 'usage'
   | 'sentry'
   | 'skills'
-  | 'health';
+  | 'health'
+  | 'tunnels'
+  | 'moltbot';
 export type SidebarSide = 'left' | 'right';
 
 export interface PanelSlot {

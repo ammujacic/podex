@@ -258,60 +258,65 @@ class LLMProvider:
         llm_api_keys: dict[str, str] | None,
         model_provider: str | None = None,
     ) -> tuple[str, str | None]:
-        """Resolve which provider to use based on model and available API keys.
+        """Resolve which provider to use based on database metadata and API keys.
 
         Priority:
-        1. Use model_provider from database if provided
-        2. Fall back to guessing provider from model name
-        3. If user has API key for the provider, use user's key
-        4. Otherwise fall back to configured default provider
+        1. **Always** use model_provider from the database when provided
+        2. If user has an API key for that provider, use the user's key
+        3. If no model_provider is set, fall back to the configured default
+           LLM provider (settings.LLM_PROVIDER) without guessing from model ID
+
+        This ensures the API/database is the single source of truth for which
+        provider backs a given model and avoids heuristics based on model name.
 
         Args:
-            model: Model identifier
+            model: Model identifier (for logging only)
             llm_api_keys: User-provided API keys
-            model_provider: Model's registered provider from database (takes precedence)
+            model_provider: Model's registered provider from database
 
         Returns:
             Tuple of (provider_name, api_key_if_user_provided)
         """
-        # Use database-provided provider first, then fall back to guessing from model name
-        native_provider = model_provider or self._get_provider_for_model(model)
+        # Use database-provided provider as the source of truth.
+        native_provider = (model_provider or "").strip().lower()
 
         # Debug: log what keys are available
         if llm_api_keys:
             logger.debug(
                 "Available LLM API keys",
                 providers=list(llm_api_keys.keys()),
-                native_provider=native_provider,
+                native_provider=native_provider or "unset",
                 model=model,
             )
 
-        # If user has an API key for the model's native provider, use it
-        if native_provider and llm_api_keys:
-            user_key = llm_api_keys.get(native_provider)
-            if user_key:
-                logger.info(
-                    "Using user-provided API key for model",
-                    model=model,
-                    provider=native_provider,
-                    from_database=bool(model_provider),
-                    key_prefix=user_key[:15] + "..." if len(user_key) > 15 else user_key,
-                )
-                return native_provider, user_key
-            else:
-                logger.warning(
-                    "Native provider not found in user's API keys",
-                    native_provider=native_provider,
-                    available_providers=list(llm_api_keys.keys()),
-                    model=model,
-                )
+        # Case 1: model_provider is present - respect it.
+        if native_provider:
+            # If user has an API key for this provider, use it.
+            if llm_api_keys:
+                user_key = llm_api_keys.get(native_provider)
+                if user_key:
+                    logger.info(
+                        "Using user-provided API key for model",
+                        model=model,
+                        provider=native_provider,
+                        from_database=True,
+                        key_prefix=user_key[:15] + "..." if len(user_key) > 15 else user_key,
+                    )
+                    return native_provider, user_key
 
-        # Fall back to default provider
-        logger.debug(
-            "Using default provider for model",
+            # Otherwise fall back to the platform-configured credentials for that provider.
+            logger.debug(
+                "Using platform provider from database for model",
+                model=model,
+                provider=native_provider,
+                has_llm_keys=bool(llm_api_keys),
+            )
+            return native_provider, None
+
+        # Case 2: no model_provider in DB - fall back to global default without guessing.
+        logger.warning(
+            "No model_provider from database; falling back to default LLM provider",
             model=model,
-            native_provider=native_provider or "unknown",
-            from_database=bool(model_provider),
             default_provider=self.provider,
             has_llm_keys=bool(llm_api_keys),
         )

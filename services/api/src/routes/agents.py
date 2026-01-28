@@ -403,6 +403,7 @@ class AgentResponse(BaseModel):
     command_allowlist: list[str] | None = None
     config: dict[str, Any] | None = None
     template_id: str | None = None
+    conversation_session_id: str | None = None  # ID of attached conversation session
     created_at: datetime
 
     class Config:
@@ -719,6 +720,11 @@ def _build_agent_response(
     Returns:
         AgentResponse with all fields populated
     """
+    # Get conversation_session_id from the relationship if loaded
+    conversation_session_id = None
+    if agent.conversation_session:
+        conversation_session_id = agent.conversation_session.id
+
     return AgentResponse(
         id=agent.id,
         session_id=agent.session_id,
@@ -731,6 +737,7 @@ def _build_agent_response(
         command_allowlist=agent.command_allowlist,
         config=agent.config,
         template_id=agent.template_id,
+        conversation_session_id=conversation_session_id,
         created_at=agent.created_at,
     )
 
@@ -788,7 +795,7 @@ async def _user_has_model_access(
 
     # If no LLMModel row, treat as potential local model (ollama/lmstudio)
     if "/" in model_id:
-        provider, _ = model_id.split("/", 1)
+        provider, local_id = model_id.split("/", 1)
         if provider in {"ollama", "lmstudio"}:
             config_result = await db.execute(
                 select(UserConfig).where(UserConfig.user_id == user_id)
@@ -798,8 +805,8 @@ async def _user_has_model_access(
             local_cfg = prefs.get("local_llm_config") or {}
             provider_cfg = local_cfg.get(provider) or {}
             models = provider_cfg.get("models") or []
-            # Local models in config use "id" equal to the model_id we constructed
-            return any(m.get("id") == model_id for m in models)
+            # Stored models use "id" as tag; agent model_id is "provider/name"
+            return any(m.get("id") == local_id for m in models)
 
     return False
 
@@ -1702,8 +1709,10 @@ async def list_agents(
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
 
+    # Eagerly load conversation_session relationship to get conversation_session_id
     query = (
         select(AgentModel)
+        .options(selectinload(AgentModel.conversation_session))
         .where(AgentModel.session_id == session_id)
         .order_by(AgentModel.created_at)
     )
@@ -1733,9 +1742,14 @@ async def get_agent(
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
 
-    query = select(AgentModel).where(
-        AgentModel.id == agent_id,
-        AgentModel.session_id == session_id,
+    # Eagerly load conversation_session relationship to get conversation_session_id
+    query = (
+        select(AgentModel)
+        .options(selectinload(AgentModel.conversation_session))
+        .where(
+            AgentModel.id == agent_id,
+            AgentModel.session_id == session_id,
+        )
     )
     result = await db.execute(query)
     agent = result.scalar_one_or_none()
@@ -1767,10 +1781,14 @@ async def update_agent_mode(
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
 
-    # Get the agent
-    query = select(AgentModel).where(
-        AgentModel.id == agent_id,
-        AgentModel.session_id == session_id,
+    # Get the agent (eager-load conversation_session for _build_agent_response)
+    query = (
+        select(AgentModel)
+        .where(
+            AgentModel.id == agent_id,
+            AgentModel.session_id == session_id,
+        )
+        .options(selectinload(AgentModel.conversation_session))
     )
     result = await db.execute(query)
     agent = result.scalar_one_or_none()
@@ -1839,10 +1857,14 @@ async def update_agent(
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
 
-    # Get the agent
-    query = select(AgentModel).where(
-        AgentModel.id == agent_id,
-        AgentModel.session_id == session_id,
+    # Get the agent (eager-load conversation_session for _build_agent_response)
+    query = (
+        select(AgentModel)
+        .where(
+            AgentModel.id == agent_id,
+            AgentModel.session_id == session_id,
+        )
+        .options(selectinload(AgentModel.conversation_session))
     )
     result = await db.execute(query)
     agent = result.scalar_one_or_none()
@@ -2143,6 +2165,42 @@ async def _send_message_impl(
         deps.common.db.add(conversation)
         await deps.common.db.flush()
         conversation_session_id = conversation.id
+
+    # Deduplication: Check if an identical message was recently added to this conversation
+    # This prevents duplicates from double-clicks, race conditions, or retries
+    from datetime import timedelta
+
+    recent_duplicate_check = await deps.common.db.execute(
+        select(ConversationMessage)
+        .where(
+            ConversationMessage.conversation_session_id == conversation_session_id,
+            ConversationMessage.role == "user",
+            ConversationMessage.content == params.data.content,
+            ConversationMessage.created_at >= func.now() - timedelta(seconds=5),
+        )
+        .order_by(ConversationMessage.created_at.desc())
+        .limit(1)
+    )
+    existing_message = recent_duplicate_check.scalar_one_or_none()
+
+    if existing_message:
+        # Message already exists - return the existing one instead of creating duplicate
+        logger.info(
+            "Duplicate message prevented",
+            conversation_session_id=conversation_session_id,
+            message_id=existing_message.id,
+            content_preview=params.data.content[:50],
+        )
+        await deps.common.db.refresh(existing_message)
+        return MessageResponse(
+            id=existing_message.id,
+            agent_id=params.agent_id,
+            role=existing_message.role,
+            content=existing_message.content,
+            tool_calls=existing_message.tool_calls,
+            images=None,
+            created_at=existing_message.created_at,
+        )
 
     # Create user message in the conversation session
     message = ConversationMessage(

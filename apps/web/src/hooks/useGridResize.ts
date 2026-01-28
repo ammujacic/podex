@@ -33,11 +33,12 @@ export function useGridResize({
   // Get grid configuration from UI store
   const gridConfig = useUIStore((state) => state.gridConfig);
 
-  // Use gridConfig values if set (0 means use defaults)
-  // For maxCols: 0 means match grid columns (will be computed dynamically)
-  // For maxRows: 0 means unlimited
-  const effectiveMaxCols = gridConfig.maxCols || maxCols;
-  const effectiveMaxRows = gridConfig.maxRows || maxRows;
+  // Use gridConfig values if set
+  // For maxCols: 0 means "match grid columns" (computed dynamically below)
+  // For maxRows: 0 means "unlimited"
+  const effectiveMaxCols = gridConfig.maxCols ?? maxCols;
+  const effectiveMaxRows =
+    gridConfig.maxRows === 0 ? Number.POSITIVE_INFINITY : (gridConfig.maxRows ?? maxRows);
 
   const [resizeState, setResizeState] = useState<ResizeState>({
     isResizing: false,

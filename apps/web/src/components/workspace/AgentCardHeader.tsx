@@ -65,6 +65,7 @@ interface AgentCardHeaderProps {
     balanced: ExtendedModelInfo[];
     fast: ExtendedModelInfo[];
     userApi: ExtendedModelInfo[];
+    local: ExtendedModelInfo[];
   };
   // State flags
   isDeleting: boolean;
@@ -304,6 +305,29 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                     </ModelTooltip>
                   ))}
                 </DropdownMenuRadioGroup>
+
+                {/* Local (Ollama / LM Studio) */}
+                {modelsByTier.local.length > 0 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel className="text-xs text-accent-success">
+                      Local
+                    </DropdownMenuLabel>
+                    <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
+                      {modelsByTier.local.map((model) => (
+                        <ModelTooltip key={model.id} model={model} side="right">
+                          <DropdownMenuRadioItem
+                            value={model.id}
+                            className="flex items-center justify-between cursor-pointer hover:bg-green-500/20 data-[state=checked]:bg-green-500/30"
+                          >
+                            <span>{model.shortName}</span>
+                            <ModelCapabilityBadges model={model} compact />
+                          </DropdownMenuRadioItem>
+                        </ModelTooltip>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </>
+                )}
 
                 {/* Your API Keys */}
                 {modelsByTier.userApi.length > 0 && (
@@ -556,6 +580,27 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
                   </DropdownMenuRadioItem>
                 ))}
               </DropdownMenuRadioGroup>
+              {/* Local (Ollama / LM Studio) */}
+              {modelsByTier.local.length > 0 && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel className="text-xs text-accent-success">
+                    Local
+                  </DropdownMenuLabel>
+                  <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
+                    {modelsByTier.local.map((model) => (
+                      <DropdownMenuRadioItem
+                        key={model.id}
+                        value={model.id}
+                        className="flex items-center justify-between cursor-pointer hover:bg-green-500/20 data-[state=checked]:bg-green-500/30"
+                      >
+                        <span>{model.shortName}</span>
+                        <ModelCapabilityBadges model={model} compact />
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                </>
+              )}
               {/* Your API Keys */}
               {modelsByTier.userApi.length > 0 && (
                 <>

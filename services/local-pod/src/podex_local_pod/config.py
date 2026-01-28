@@ -56,14 +56,6 @@ class LocalPodConfig(BaseSettings):
         description="Display name for this pod (optional, uses hostname if not set)",
     )
 
-    # Workspace limits
-    max_workspaces: int = Field(
-        default=3,
-        ge=1,
-        le=10,
-        description="Maximum concurrent workspaces",
-    )
-
     # Execution mode: "docker" or "native"
     mode: Literal["docker", "native"] = Field(
         default="docker",

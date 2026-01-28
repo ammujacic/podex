@@ -39,44 +39,74 @@ export function TunnelWidget({ workspaceId }: TunnelWidgetProps) {
 
   if (!workspaceId) {
     return (
-      <div className="p-4 text-center text-text-muted text-sm">
-        No workspace yet. Start a session to expose ports.
+      <div className="h-full flex items-center justify-center px-4 py-6 text-center">
+        <p className="text-sm text-text-muted">
+          No workspace yet. Start a session to expose ports.
+        </p>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex h-full flex-col gap-4 p-4 overflow-auto">
       {error && (
-        <div className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-accent-error">{error}</div>
+        <div className="flex items-start gap-2 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-accent-error">
+          <span className="mt-0.5 h-1.5 w-1.5 rounded-full bg-accent-error" />
+          <p className="flex-1">{error}</p>
+        </div>
       )}
 
       {tunnels.length > 0 ? (
-        <div className="space-y-2">
-          <h3 className="text-xs font-medium uppercase tracking-wide text-text-muted">
-            Public URLs
-          </h3>
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <h3 className="text-xs font-medium uppercase tracking-wide text-text-muted">
+                Public URLs
+              </h3>
+              <p className="mt-0.5 text-xs text-text-tertiary">
+                Secure links to your local services.
+              </p>
+            </div>
+            <span className="rounded-full bg-surface-hover px-2 py-0.5 text-xs text-text-muted">
+              {tunnels.length} {tunnels.length === 1 ? 'tunnel' : 'tunnels'}
+            </span>
+          </div>
           {tunnels.map((t) => (
             <div
               key={t.id}
-              className="flex flex-col gap-1 rounded-lg border border-border-subtle bg-overlay/50 p-2"
+              className="flex flex-col gap-2 rounded-lg border border-border-subtle bg-overlay/60 p-3"
             >
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xs text-text-muted">Port {t.port}</span>
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-xs font-medium text-text-primary">Port {t.port}</span>
+                  <span className="text-[11px] text-text-tertiary truncate">
+                    {t.public_url.replace(/^https?:\/\//, '')}
+                  </span>
+                </div>
                 <span
                   className={cn(
-                    'rounded px-1.5 py-0.5 text-xs font-medium',
+                    'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
                     t.status === 'running'
-                      ? 'bg-green-500/15 text-accent-success'
+                      ? 'bg-green-500/10 text-accent-success'
                       : t.status === 'starting'
-                        ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
-                        : 'bg-text-muted/20 text-text-muted'
+                        ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                        : 'bg-text-muted/15 text-text-muted'
                   )}
                 >
+                  <span
+                    className={cn(
+                      'h-1.5 w-1.5 rounded-full',
+                      t.status === 'running'
+                        ? 'bg-accent-success'
+                        : t.status === 'starting'
+                          ? 'bg-amber-500'
+                          : 'bg-text-muted'
+                    )}
+                  />
                   {t.status}
                 </span>
               </div>
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1.5">
                 <a
                   href={t.public_url}
                   target="_blank"
@@ -112,17 +142,33 @@ export function TunnelWidget({ workspaceId }: TunnelWidgetProps) {
                 </button>
               </div>
               {copied === t.public_url && (
-                <span className="text-xs text-accent-success">Copied</span>
+                <span className="text-xs text-accent-success">Copied to clipboard</span>
               )}
             </div>
           ))}
         </div>
       ) : (
-        !loading && <p className="text-sm text-text-muted">No ports exposed. Add one below.</p>
+        !loading && (
+          <div className="rounded-lg border border-dashed border-border-subtle/70 bg-surface-hover/40 px-3 py-4 text-center">
+            <p className="text-sm font-medium text-text-secondary">No ports exposed</p>
+            <p className="mt-1 text-xs text-text-muted">
+              Expose a port below to create a shareable HTTPS URL for a local service.
+            </p>
+          </div>
+        )
       )}
 
-      <div className="space-y-2 border-t border-border-subtle pt-3">
-        <h3 className="text-xs font-medium uppercase tracking-wide text-text-muted">Expose port</h3>
+      <div className="space-y-2 border-t border-border-subtle pt-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-xs font-medium uppercase tracking-wide text-text-muted">
+              Expose port
+            </h3>
+            <p className="mt-0.5 text-xs text-text-tertiary">
+              Start your dev server, then publish it with one click.
+            </p>
+          </div>
+        </div>
         <div className="flex gap-2">
           <input
             type="number"
@@ -138,7 +184,7 @@ export function TunnelWidget({ workspaceId }: TunnelWidgetProps) {
             type="button"
             onClick={handleExpose}
             disabled={exposing || loading || !portInput.trim()}
-            className="rounded-lg bg-accent-primary px-3 py-2 text-sm font-medium text-white hover:bg-accent-primary/90 disabled:opacity-50"
+            className="inline-flex items-center justify-center rounded-lg bg-accent-primary px-3 py-2 text-sm font-medium text-white hover:bg-accent-primary/90 disabled:opacity-50"
           >
             {exposing ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Expose'}
           </button>

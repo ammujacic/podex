@@ -1,4 +1,4 @@
-.PHONY: build test check run stop logs clean help desktop desktop-package sync-venvs
+.PHONY: build test check run stop logs clean help sync-venvs
 
 # Colors for output
 CYAN := \033[0;36m
@@ -18,18 +18,15 @@ NC := \033[0m # No Color
 build:
 	@echo "$(CYAN)Installing dependencies...$(NC)"
 	pnpm install
-	@echo "$(CYAN)Installing desktop app dependencies and rebuilding native modules...$(NC)"
-	@if [ -f "apps/desktop/package.json" ]; then \
-		cd apps/desktop && pnpm install || echo "$(YELLOW)Warning: Desktop app install failed, continuing...$(NC)"; \
-	else \
-		echo "$(YELLOW)Desktop app not found, skipping...$(NC)"; \
-	fi
 	@echo "$(CYAN)Installing Python packages...$(NC)"
 	cd services/shared && uv sync --active --dev --quiet
 	cd services/api && uv sync --active --dev --quiet
 	cd services/agent && uv sync --active --dev --quiet
 	cd services/compute && uv sync --active --dev --quiet
 	cd infrastructure && uv sync --active --dev --quiet
+	@echo "$(CYAN)Building workspace base image (podex/workspace:latest)...$(NC)"
+	@# Build the dedicated workspace-base image explicitly so compute workspaces always have it available
+	docker-compose build workspace-base
 	@echo "$(CYAN)Building frontend packages...$(NC)"
 	pnpm build
 	@echo "$(CYAN)Building Docker images...$(NC)"
@@ -465,41 +462,6 @@ logs-workspaces:
 	wait
 
 # ============================================
-# DESKTOP
-# ============================================
-
-## Launch Electron desktop app (requires 'make run' to be running)
-desktop:
-	@echo "$(CYAN)Checking if services are running...$(NC)"
-	@if ! curl -s http://localhost:3000 > /dev/null 2>&1; then \
-		echo "$(RED)Error: Web app not running on localhost:3000$(NC)"; \
-		echo "$(YELLOW)Please run 'make run' first in another terminal$(NC)"; \
-		exit 1; \
-	fi
-	@echo "$(GREEN)Services detected, launching Electron...$(NC)"
-	@# Check if desktop dependencies are installed
-	@if [ ! -d "apps/desktop/node_modules" ]; then \
-		echo "$(CYAN)Installing desktop dependencies...$(NC)"; \
-		pnpm install; \
-	fi
-	@echo "$(CYAN)Building and starting Electron app...$(NC)"
-	cd apps/desktop && pnpm dev
-
-## Package Electron app for distribution
-desktop-package:
-	@echo "$(CYAN)Building desktop app for distribution...$(NC)"
-	@# Ensure dependencies are installed
-	@if [ ! -d "apps/desktop/node_modules" ]; then \
-		echo "$(CYAN)Installing desktop dependencies...$(NC)"; \
-		pnpm install; \
-	fi
-	@echo "$(CYAN)Compiling TypeScript...$(NC)"
-	cd apps/desktop && pnpm build
-	@echo "$(CYAN)Packaging for current platform...$(NC)"
-	cd apps/desktop && pnpm package
-	@echo "$(GREEN)Package complete! Check apps/desktop/release/$(NC)"
-
-# ============================================
 # CLEAN
 # ============================================
 
@@ -551,10 +513,6 @@ help:
 	@echo "  $(GREEN)make stop$(NC)              Stop running services"
 	@echo "  $(GREEN)make logs$(NC)              Watch logs from all services"
 	@echo "  $(GREEN)make clean$(NC)             Stop all services, remove volumes, kill workspaces"
-	@echo ""
-	@echo "$(YELLOW)Desktop App:$(NC)"
-	@echo "  $(GREEN)make desktop$(NC)           Launch Electron desktop app (requires 'make run' first)"
-	@echo "  $(GREEN)make desktop-package$(NC)   Package desktop app for distribution"
 	@echo ""
 	@echo "$(YELLOW)Testing:$(NC)"
 	@echo "  $(GREEN)make test$(NC)              Run all tests with coverage + cleanup (recommended)"

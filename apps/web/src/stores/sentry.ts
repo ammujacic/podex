@@ -180,16 +180,34 @@ export const useSentryStore = create<SentryState>()(
           set({ isCheckingConfig: true, error: null });
           try {
             const { isConfigured: configured, server } = await checkSentryConfigured();
+
+            if (!configured) {
+              // Sentry MCP is not configured for this workspace.
+              // Clean up any stale localStorage state from previous workspaces so
+              // we don't show outdated badges or cached issues.
+              set({
+                isConfigured: false,
+                serverId: null,
+                isCheckingConfig: false,
+                lastDataFetch: null,
+                organizations: [],
+                selectedOrganizationSlug: null,
+                projects: [],
+                issues: [],
+                selectedProjectSlug: null,
+                expandedIssueId: null,
+              });
+              return;
+            }
+
             set({
-              isConfigured: configured,
+              isConfigured: true,
               serverId: server?.id || null,
               isCheckingConfig: false,
             });
 
             // If configured, load organizations (respects cache unless forcing)
-            if (configured) {
-              await get().loadOrganizations(true, forceRefresh);
-            }
+            await get().loadOrganizations(true, forceRefresh);
           } catch (err) {
             set({
               isCheckingConfig: false,
@@ -638,8 +656,12 @@ export const useSentryStore = create<SentryState>()(
 // Selectors
 // ============================================================================
 
-export const selectUnresolvedCount = (state: SentryState): number =>
-  state.issues.filter((i) => i.status === 'unresolved').length;
+export const selectUnresolvedCount = (state: SentryState): number => {
+  // If Sentry isn't configured for this workspace, ignore any stale persisted
+  // issues data that may still be in localStorage from a different workspace.
+  if (!state.isConfigured) return 0;
+  return state.issues.filter((i) => i.status === 'unresolved').length;
+};
 
 export const selectFilteredIssues = (state: SentryState): SentryIssue[] => {
   if (state.statusFilter === 'all') {

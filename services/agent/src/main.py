@@ -77,13 +77,28 @@ class ServiceManager:
         await cls._task_worker.start()
         logger.info("Task worker started")
 
-        # Initialize context manager with settings from Redis cache
+        # Initialize context manager with settings from Redis cache.
+        # The context manager requires an explicit model to be provided by the
+        # calling service (API) rather than inferring one from local settings.
+        # For now, if no model is configured, we start without a global context
+        # manager so the agent service can still run and callers can provide
+        # a model-specific manager in the future.
         llm_provider = LLMProvider()
-        cls._context_manager = await create_context_manager_with_settings(
-            llm_provider=llm_provider,
-        )
-        set_context_manager(cls._context_manager)
-        logger.info("Context manager initialized")
+        try:
+            cls._context_manager = await create_context_manager_with_settings(
+                llm_provider=llm_provider,
+                model=None,
+            )
+            set_context_manager(cls._context_manager)
+            logger.info("Context manager initialized")
+        except ValueError as e:
+            # This typically indicates that no model was provided to the
+            # context manager. Log and continue without global context management.
+            cls._context_manager = None
+            logger.warning(
+                "Context manager not initialized - model must be provided by API service",
+                error=str(e),
+            )
 
         # Initialize skill registry and load skills from API (with retry)
         skill_registry = SkillRegistryHolder.get()

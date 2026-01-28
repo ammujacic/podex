@@ -196,19 +196,6 @@ class TestStartCommand:
             mock_client.assert_called_once()
             assert isinstance(mock_client.call_args[0][0], LocalPodConfig)
 
-    def test_start_with_max_workspaces(self, cli_runner):
-        """Test start command with max-workspaces option."""
-        with patch("podex_local_pod.main.LocalPodClient") as mock_client:
-            mock_client_instance = MagicMock()
-            mock_client_instance.run = AsyncMock()
-            mock_client_instance.shutdown = AsyncMock()
-            mock_client.return_value = mock_client_instance
-
-            cli_runner.invoke(cli, ["start", "--token", "pdx_pod_test", "--max-workspaces", "5"])
-            call_args = mock_client.call_args[0][0]
-            assert call_args.max_workspaces == 5
-
-
 class TestCheckCommand:
     """Test 'check' command."""
 
