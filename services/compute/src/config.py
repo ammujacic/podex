@@ -63,7 +63,7 @@ class Settings(BaseSettings):
 
     # Workspace servers configuration (JSON array)
     # Each server: {"server_id", "host", "docker_port", "tls_enabled", "cert_path", ...}
-    workspace_servers_json: str = Field(default="[]", alias="workspace_servers")
+    workspace_servers_json: str = Field(default="[]", validation_alias="COMPUTE_WORKSPACE_SERVERS")
 
     # Workspace settings
     max_workspaces: int = 10  # Max workspaces per server (soft limit)

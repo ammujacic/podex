@@ -128,8 +128,7 @@ class InstalledExtensionResponse(BaseModel):
     settings: dict[str, Any] | None = None
     installed_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ExtensionSettingsUpdate(BaseModel):

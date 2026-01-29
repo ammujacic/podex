@@ -6,7 +6,7 @@ from datetime import datetime  # noqa: TC003
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,8 +40,7 @@ class DataExportRequestResponse(BaseModel):
     completed_at: datetime | None
     download_expires_at: datetime | None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 async def get_current_user_id(request: Request) -> str:

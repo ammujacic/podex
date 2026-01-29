@@ -480,9 +480,6 @@ clean:
 	@# Clean up any dangling workspace volumes
 	@echo "$(CYAN)Cleaning up volumes...$(NC)"
 	-docker volume ls -q --filter "name=podex" 2>/dev/null | xargs -r docker volume rm 2>/dev/null || true
-	@# Clean up local workspace storage
-	@echo "$(CYAN)Cleaning up local workspace storage...$(NC)"
-	rm -rf /tmp/podex-storage
 	@# Remove build artifacts
 	@echo "$(CYAN)Removing build artifacts...$(NC)"
 	rm -rf .turbo apps/*/.next

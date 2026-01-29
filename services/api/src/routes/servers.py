@@ -391,11 +391,22 @@ async def server_heartbeat(
     """Report server heartbeat with current resource usage.
 
     Called periodically by workspace servers to report health.
+    The server_id can be either a UUID or a hostname.
     """
     # This endpoint can be called by the server itself, not just admins
     # In production, should verify server authentication token
 
-    result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
+    # Try to find server by UUID first, then by hostname
+    # This allows compute service to use either the DB id or the hostname
+    try:
+        # Check if it's a valid UUID
+        uuid.UUID(server_id)
+        result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
+    except ValueError:
+        # Not a UUID, try hostname
+        result = await db.execute(
+            select(WorkspaceServer).where(WorkspaceServer.hostname == server_id)
+        )
     server = result.scalar_one_or_none()
 
     if not server:

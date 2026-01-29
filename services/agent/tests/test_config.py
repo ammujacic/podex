@@ -51,33 +51,59 @@ class TestSettingsClass:
 
 
 class TestDefaultModels:
-    """Test default model settings."""
+    """Test default model settings.
 
-    def test_default_architect_model(self):
-        """Test default architect model."""
-        from src.config import settings
-        assert settings.DEFAULT_ARCHITECT_MODEL is not None
-        assert "claude" in settings.DEFAULT_ARCHITECT_MODEL
+    Note: Default models are now admin-controlled via the database.
+    The agent service uses platform settings from Redis cache.
+    These tests verify the fallback model configuration exists.
+    """
 
-    def test_default_coder_model(self):
-        """Test default coder model."""
-        from src.config import settings
-        assert settings.DEFAULT_CODER_MODEL is not None
+    def test_fallback_vision_capable_models_exist(self):
+        """Test fallback vision-capable models are defined."""
+        from src.config import _FALLBACK_VISION_CAPABLE_MODELS
 
-    def test_default_reviewer_model(self):
-        """Test default reviewer model."""
-        from src.config import settings
-        assert settings.DEFAULT_REVIEWER_MODEL is not None
+        assert _FALLBACK_VISION_CAPABLE_MODELS is not None
+        assert len(_FALLBACK_VISION_CAPABLE_MODELS) > 0
+        # Should include at least one Claude model
+        assert any("claude" in m for m in _FALLBACK_VISION_CAPABLE_MODELS)
 
-    def test_default_tester_model(self):
-        """Test default tester model."""
-        from src.config import settings
-        assert settings.DEFAULT_TESTER_MODEL is not None
+    def test_fallback_thinking_capable_models_exist(self):
+        """Test fallback thinking-capable models are defined."""
+        from src.config import _FALLBACK_THINKING_CAPABLE_MODELS
 
-    def test_default_chat_model(self):
-        """Test default chat model."""
-        from src.config import settings
-        assert settings.DEFAULT_CHAT_MODEL is not None
+        assert _FALLBACK_THINKING_CAPABLE_MODELS is not None
+        assert len(_FALLBACK_THINKING_CAPABLE_MODELS) > 0
+
+    def test_default_thinking_budget_constants(self):
+        """Test default thinking budget constants are defined."""
+        from src.config import (
+            DEFAULT_THINKING_BUDGET,
+            MAX_THINKING_BUDGET,
+            MIN_THINKING_BUDGET,
+        )
+
+        assert DEFAULT_THINKING_BUDGET > 0
+        assert MIN_THINKING_BUDGET > 0
+        assert MAX_THINKING_BUDGET > MIN_THINKING_BUDGET
+        assert MIN_THINKING_BUDGET <= DEFAULT_THINKING_BUDGET <= MAX_THINKING_BUDGET
+
+    def test_supports_vision_function(self):
+        """Test supports_vision function works with fallback."""
+        from src.config import supports_vision
+
+        # Should return True for known vision-capable models
+        assert supports_vision("claude-opus-4-5") is True
+        # Should return False for unknown models
+        assert supports_vision("unknown-model") is False
+
+    def test_supports_thinking_function(self):
+        """Test supports_thinking function works with fallback."""
+        from src.config import supports_thinking
+
+        # Should return True for known thinking-capable models
+        assert supports_thinking("claude-opus-4-5") is True
+        # Should return False for unknown models
+        assert supports_thinking("unknown-model") is False
 
 
 class TestToolExecutionLimits:
@@ -190,18 +216,32 @@ class TestLLMProviderSettings:
         assert settings.OLLAMA_MODEL is not None
 
 
-class TestGCPSettings:
-    """Test GCP settings."""
+class TestModelCapabilitiesCache:
+    """Test ModelCapabilitiesCache class.
 
-    def test_gcp_region(self):
-        """Test GCP region setting."""
-        from src.config import settings
-        assert settings.GCP_REGION is not None
+    Note: GCP settings (GCP_REGION, GCS_BUCKET) have been removed.
+    Model capabilities are now managed via Redis cache with API fallback.
+    """
 
-    def test_gcs_bucket(self):
-        """Test GCS bucket setting."""
-        from src.config import settings
-        assert settings.GCS_BUCKET is not None
+    def test_model_capabilities_cache_exists(self):
+        """Test ModelCapabilitiesCache class exists."""
+        from src.config import ModelCapabilitiesCache
+
+        assert ModelCapabilitiesCache is not None
+
+    def test_model_capabilities_cache_key_defined(self):
+        """Test MODEL_CAPABILITIES_CACHE_KEY is defined."""
+        from src.config import MODEL_CAPABILITIES_CACHE_KEY
+
+        assert MODEL_CAPABILITIES_CACHE_KEY is not None
+        assert isinstance(MODEL_CAPABILITIES_CACHE_KEY, str)
+
+    def test_platform_settings_cache_key_defined(self):
+        """Test PLATFORM_SETTINGS_CACHE_KEY is defined."""
+        from src.config import PLATFORM_SETTINGS_CACHE_KEY
+
+        assert PLATFORM_SETTINGS_CACHE_KEY is not None
+        assert isinstance(PLATFORM_SETTINGS_CACHE_KEY, str)
 
 
 class TestSentrySettings:

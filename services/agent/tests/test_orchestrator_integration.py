@@ -806,7 +806,7 @@ class TestOrchestratorDelegateToAgents:
         agents = [
             {"id": "agent-1", "role": "architect", "model": "claude-3-5-sonnet"},
             {"id": "agent-2", "role": "coder", "model": "claude-3-5-sonnet"},
-            {"id": "agent-3", "role": "reviewer"},
+            {"id": "agent-3", "role": "reviewer", "model": "claude-3-5-sonnet"},
         ]
 
         task_ids = await orchestrator.delegate_to_agents(
@@ -829,8 +829,8 @@ class TestOrchestratorDelegateToAgents:
         assert task1.context["role"] == "architect"
 
     async def test_delegate_to_agents_default_values(self, orchestrator: AgentOrchestrator):
-        """Test delegation with default role and model."""
-        agents = [{"id": "agent-1"}]
+        """Test delegation with default role (model is required)."""
+        agents = [{"id": "agent-1", "model": "claude-3-5-sonnet"}]
 
         task_ids = await orchestrator.delegate_to_agents(
             session_id="session-123",
@@ -840,7 +840,7 @@ class TestOrchestratorDelegateToAgents:
 
         task = orchestrator.tasks[task_ids[0]]
         assert task.context["role"] == "coder"  # Default role
-        assert "claude" in task.context["model"].lower()  # Default model
+        assert task.context["model"] == "claude-3-5-sonnet"  # Model as provided
 
 
 class TestOrchestratorCleanupSession:

@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,8 +33,7 @@ class PlatformSettingResponse(BaseModel):
     description: str | None
     category: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class LLMProviderResponse(BaseModel):
@@ -55,8 +54,7 @@ class LLMProviderResponse(BaseModel):
     supports_tools: bool
     supports_vision: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PlatformConfigResponse(BaseModel):

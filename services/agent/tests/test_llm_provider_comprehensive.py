@@ -232,15 +232,17 @@ class TestLLMProviderClientCreation:
                 api_key="ollama",
             )
 
-    def test_vertex_provider_created_on_demand(self, provider: LLMProvider):
-        """Test that Vertex provider is created on demand."""
-        assert provider._vertex_provider is None
+    def test_openrouter_client_created_on_demand(self, provider: LLMProvider):
+        """Test that OpenRouter client is created on demand."""
+        assert provider._openrouter_client is None
 
-        with patch("src.providers.llm.VertexAIProvider") as mock_provider:
-            mock_provider.return_value = MagicMock()
-            _ = provider.vertex_provider
+        with patch("src.providers.llm.AsyncOpenAI") as mock_client, \
+             patch("src.providers.llm.settings") as mock_settings:
+            mock_settings.OPENROUTER_API_KEY = "test-key"
+            mock_client.return_value = MagicMock()
+            _ = provider.openrouter_client
 
-            mock_provider.assert_called_once()
+            mock_client.assert_called_once()
 
     def test_get_anthropic_client_with_custom_key(self, provider: LLMProvider):
         """Test getting Anthropic client with custom API key."""
@@ -509,9 +511,9 @@ class TestDetermineUsageSource:
         result = provider._determine_usage_source("lmstudio", None)
         assert result == "local"
 
-    def test_vertex_is_included(self, provider: LLMProvider):
-        """Test Vertex AI returns 'included' source."""
-        result = provider._determine_usage_source("vertex", None)
+    def test_openrouter_is_included(self, provider: LLMProvider):
+        """Test OpenRouter returns 'included' source (platform-provided)."""
+        result = provider._determine_usage_source("openrouter", None)
         assert result == "included"
 
     def test_anthropic_with_user_key_is_external(self, provider: LLMProvider):
@@ -549,23 +551,23 @@ class TestCompleteMethod:
         with pytest.raises(ValueError, match="Unknown provider"):
             await provider.complete(request)
 
-    async def test_complete_dispatches_to_vertex(self, provider: LLMProvider):
-        """Test completion dispatches to Vertex AI."""
-        provider.provider = "vertex"
+    async def test_complete_dispatches_to_openrouter(self, provider: LLMProvider):
+        """Test completion dispatches to OpenRouter."""
+        provider.provider = "openrouter"
         request = CompletionRequest(
             model="claude-3-5-sonnet",
             messages=[{"role": "user", "content": "hello"}],
         )
 
-        with patch.object(provider, "_complete_vertex", new_callable=AsyncMock) as mock:
+        with patch.object(provider, "_complete_openrouter", new_callable=AsyncMock) as mock:
             mock.return_value = {
-                "content": "Hello from Vertex",
+                "content": "Hello from OpenRouter",
                 "tool_calls": [],
                 "usage": {"input_tokens": 10, "output_tokens": 5},
             }
             result = await provider.complete(request)
             mock.assert_called_once()
-            assert result["content"] == "Hello from Vertex"
+            assert result["content"] == "Hello from OpenRouter"
 
     async def test_complete_tracks_usage_with_user_id(self, provider: LLMProvider):
         """Test that usage is tracked when user_id provided."""
@@ -785,31 +787,40 @@ class TestCompleteOpenAIMethod:
         assert result["tool_calls"][0]["name"] == "read_file"
 
 
-class TestCompleteVertexMethod:
-    """Test _complete_vertex method."""
+class TestCompleteOpenRouterMethod:
+    """Test _complete_openrouter method."""
 
     @pytest.fixture
     def provider(self) -> LLMProvider:
         """Create test provider."""
         return LLMProvider()
 
-    async def test_complete_vertex_delegates_to_provider(self, provider: LLMProvider):
-        """Test Vertex completion delegates to VertexAIProvider."""
-        mock_vertex = MagicMock()
-        mock_vertex.complete = AsyncMock(return_value={
-            "content": "Hello from Vertex",
-            "tool_calls": [],
-            "usage": {"input_tokens": 10, "output_tokens": 5},
-        })
-        provider._vertex_provider = mock_vertex
+    @pytest.fixture
+    def mock_openrouter_response(self) -> MagicMock:
+        """Create mock OpenRouter response."""
+        response = MagicMock()
+        response.choices = [
+            MagicMock(
+                message=MagicMock(content="Hello from OpenRouter", tool_calls=None),
+                finish_reason="stop",
+            )
+        ]
+        response.usage = MagicMock(prompt_tokens=100, completion_tokens=50, total_tokens=150)
+        return response
 
-        result = await provider._complete_vertex(
-            model="claude-3-5-sonnet",
+    async def test_complete_openrouter_basic(self, provider: LLMProvider, mock_openrouter_response: MagicMock):
+        """Test basic OpenRouter completion."""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_openrouter_response)
+        provider._openrouter_client = mock_client
+
+        result = await provider._complete_openrouter(
+            model="claude-sonnet-4-5",
             messages=[{"role": "user", "content": "Hello"}],
         )
 
-        assert result["content"] == "Hello from Vertex"
-        mock_vertex.complete.assert_called_once()
+        assert result["content"] == "Hello from OpenRouter"
+        assert result["usage"]["input_tokens"] == 100
 
 
 class TestCompleteOllamaMethod:
@@ -963,9 +974,9 @@ class TestCompleteStreamMethod:
 
             assert len(events) == 2
 
-    async def test_complete_stream_dispatches_to_vertex(self, provider: LLMProvider):
-        """Test streaming dispatches to Vertex."""
-        provider.provider = "vertex"
+    async def test_complete_stream_dispatches_to_openrouter(self, provider: LLMProvider):
+        """Test streaming dispatches to OpenRouter."""
+        provider.provider = "openrouter"
         request = CompletionRequest(
             model="claude",
             messages=[{"role": "user", "content": "hello"}],
@@ -975,7 +986,7 @@ class TestCompleteStreamMethod:
             yield StreamEvent(type="token", content="Hello")
             yield StreamEvent(type="done")
 
-        with patch.object(provider, "_stream_vertex", mock_stream):
+        with patch.object(provider, "_stream_openrouter", mock_stream):
             events = []
             async for event in provider.complete_stream(request):
                 events.append(event)
@@ -1420,99 +1431,86 @@ class TestStreamOpenAIMethod:
         assert tool_end[0].tool_input == {}  # Invalid JSON returns empty dict
 
 
-class TestStreamVertexMethod:
-    """Test _stream_vertex method."""
+class TestStreamOpenRouterMethod:
+    """Test _stream_openrouter method."""
 
     @pytest.fixture
     def provider(self) -> LLMProvider:
         """Create test provider."""
         return LLMProvider()
 
-    async def test_stream_vertex_converts_events(self, provider: LLMProvider):
-        """Test Vertex streaming converts events properly."""
+    async def test_stream_openrouter_basic_text(self, provider: LLMProvider):
+        """Test basic text streaming from OpenRouter."""
+        chunks = [
+            MagicMock(choices=[MagicMock(delta=MagicMock(content="Hello", tool_calls=None), finish_reason=None)], usage=None),
+            MagicMock(choices=[MagicMock(delta=MagicMock(content=" world", tool_calls=None), finish_reason=None)], usage=None),
+            MagicMock(choices=[MagicMock(delta=MagicMock(content=None, tool_calls=None), finish_reason="stop")], usage=None),
+            MagicMock(choices=[], usage=MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)),
+        ]
 
-        async def mock_vertex_stream(*args, **kwargs):
-            yield MagicMock(
-                type="token",
-                content="Hello",
-                tool_call_id=None,
-                tool_name=None,
-                tool_input=None,
-                usage=None,
-                stop_reason=None,
-                error=None,
-            )
-            yield MagicMock(
-                type="done",
-                content=None,
-                tool_call_id=None,
-                tool_name=None,
-                tool_input=None,
-                usage={"input_tokens": 10, "output_tokens": 5},
-                stop_reason="end_turn",
-                error=None,
-            )
+        async def mock_stream():
+            for chunk in chunks:
+                yield chunk
 
-        mock_vertex = MagicMock()
-        mock_vertex.stream = mock_vertex_stream
-        provider._vertex_provider = mock_vertex
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_stream())
+        provider._openrouter_client = mock_client
 
         results = []
-        async for event in provider._stream_vertex(
-            model="claude-3-5-sonnet",
+        async for event in provider._stream_openrouter(
+            model="claude-sonnet-4-5",
             messages=[{"role": "user", "content": "Hello"}],
         ):
             results.append(event)
 
-        assert len(results) == 2
-        assert results[0].type == "token"
-        assert results[0].content == "Hello"
-        assert results[1].type == "done"
-        assert results[1].usage["input_tokens"] == 10
+        token_events = [e for e in results if e.type == "token"]
+        assert len(token_events) == 2
+        assert token_events[0].content == "Hello"
+        assert token_events[1].content == " world"
 
-    async def test_stream_vertex_with_tool_call(self, provider: LLMProvider):
-        """Test Vertex streaming with tool call events."""
+        done_events = [e for e in results if e.type == "done"]
+        assert len(done_events) == 1
+        assert done_events[0].usage["input_tokens"] == 10
 
-        async def mock_vertex_stream(*args, **kwargs):
-            yield MagicMock(
-                type="tool_call_start",
-                content=None,
-                tool_call_id="tc-1",
-                tool_name="read_file",
-                tool_input=None,
-                usage=None,
-                stop_reason=None,
-                error=None,
-            )
-            yield MagicMock(
-                type="tool_call_end",
-                content=None,
-                tool_call_id="tc-1",
-                tool_name="read_file",
-                tool_input={"path": "/test.py"},
-                usage=None,
-                stop_reason=None,
-                error=None,
-            )
-            yield MagicMock(
-                type="done",
-                content=None,
-                tool_call_id=None,
-                tool_name=None,
-                tool_input=None,
-                usage={"input_tokens": 10, "output_tokens": 5},
-                stop_reason="tool_use",
-                error=None,
-            )
+    async def test_stream_openrouter_with_tool_calls(self, provider: LLMProvider):
+        """Test OpenRouter streaming with tool calls."""
+        func1 = MagicMock()
+        func1.name = "read_file"
+        func1.arguments = '{"path":'
 
-        mock_vertex = MagicMock()
-        mock_vertex.stream = mock_vertex_stream
-        provider._vertex_provider = mock_vertex
+        func2 = MagicMock()
+        func2.name = None
+        func2.arguments = '"/test.py"}'
+
+        tc1 = MagicMock()
+        tc1.index = 0
+        tc1.id = "tc-1"
+        tc1.function = func1
+
+        tc2 = MagicMock()
+        tc2.index = 0
+        tc2.id = None
+        tc2.function = func2
+
+        chunks = [
+            MagicMock(choices=[MagicMock(delta=MagicMock(content=None, tool_calls=[tc1]), finish_reason=None)], usage=None),
+            MagicMock(choices=[MagicMock(delta=MagicMock(content=None, tool_calls=[tc2]), finish_reason=None)], usage=None),
+            MagicMock(choices=[MagicMock(delta=MagicMock(content=None, tool_calls=None), finish_reason="tool_calls")], usage=None),
+            MagicMock(choices=[], usage=MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)),
+        ]
+
+        async def mock_stream():
+            for chunk in chunks:
+                yield chunk
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_stream())
+        provider._openrouter_client = mock_client
 
         results = []
-        async for event in provider._stream_vertex(
-            model="claude-3-5-sonnet",
-            messages=[{"role": "user", "content": "Read"}],
+        async for event in provider._stream_openrouter(
+            model="claude-sonnet-4-5",
+            messages=[{"role": "user", "content": "Read file"}],
         ):
             results.append(event)
 
@@ -1524,35 +1522,30 @@ class TestStreamVertexMethod:
         assert len(tool_end) == 1
         assert tool_end[0].tool_input == {"path": "/test.py"}
 
-    async def test_stream_vertex_with_error(self, provider: LLMProvider):
-        """Test Vertex streaming handles errors."""
+    async def test_stream_openrouter_model_mapping(self, provider: LLMProvider):
+        """Test OpenRouter streaming maps models correctly."""
+        chunks = [
+            MagicMock(choices=[MagicMock(delta=MagicMock(content="Hi", tool_calls=None), finish_reason="stop")], usage=None),
+            MagicMock(choices=[], usage=MagicMock(prompt_tokens=5, completion_tokens=1, total_tokens=6)),
+        ]
 
-        async def mock_vertex_stream(*args, **kwargs):
-            yield MagicMock(
-                type="error",
-                content=None,
-                tool_call_id=None,
-                tool_name=None,
-                tool_input=None,
-                usage=None,
-                stop_reason=None,
-                error="Vertex API Error",
-            )
+        async def mock_stream():
+            for chunk in chunks:
+                yield chunk
 
-        mock_vertex = MagicMock()
-        mock_vertex.stream = mock_vertex_stream
-        provider._vertex_provider = mock_vertex
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_stream())
+        provider._openrouter_client = mock_client
 
         results = []
-        async for event in provider._stream_vertex(
-            model="claude-3-5-sonnet",
-            messages=[{"role": "user", "content": "Hello"}],
+        async for event in provider._stream_openrouter(
+            model="claude-sonnet-4-5",  # Should map to anthropic/claude-sonnet-4-5
+            messages=[{"role": "user", "content": "Hi"}],
         ):
             results.append(event)
 
-        assert len(results) == 1
-        assert results[0].type == "error"
-        assert results[0].error == "Vertex API Error"
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["model"] == "anthropic/claude-sonnet-4-5"
 
 
 class TestStreamOllamaMethod:

@@ -165,6 +165,9 @@ class TestContextSummarizerModule:
         from src.context.summarizer import ConversationSummarizer
 
         mock_llm = MagicMock()
-        summarizer = ConversationSummarizer(llm_provider=mock_llm)
+        summarizer = ConversationSummarizer(
+            llm_provider=mock_llm,
+            model="claude-3-5-sonnet-20241022",
+        )
 
         assert summarizer._llm == mock_llm

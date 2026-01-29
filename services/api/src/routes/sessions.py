@@ -244,6 +244,19 @@ class SessionListResponse(BaseModel):
     next_cursor: str | None = None
 
 
+class StandbySettingsRequest(BaseModel):
+    """Request to update standby settings."""
+
+    timeout_minutes: int | None = None
+
+
+class StandbySettingsResponse(BaseModel):
+    """Response for standby settings."""
+
+    timeout_minutes: int | None = None
+    source: str  # "session", "user_default", or "platform_default"
+
+
 def build_session_response(
     session: "SessionModel",
     workspace_status: str | None = None,

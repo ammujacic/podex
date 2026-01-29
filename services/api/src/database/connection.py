@@ -28,6 +28,7 @@ from src.database.models import (
     SkillTemplate,
     SubscriptionPlan,
     SystemSkill,
+    WorkspaceServer,
 )
 
 logger = structlog.get_logger()
@@ -222,6 +223,7 @@ async def seed_database() -> None:
         DEFAULT_SETTINGS,
         DEFAULT_SKILL_TEMPLATES,
         DEFAULT_SYSTEM_SKILLS,
+        DEV_WORKSPACE_SERVERS,
         OFFICIAL_TEMPLATES,
     )
 
@@ -241,6 +243,7 @@ async def seed_database() -> None:
                 "skill_templates": 0,
                 "default_mcp_servers": 0,
                 "health_checks": 0,
+                "workspace_servers": 0,
             }
 
             # Seed subscription plans
@@ -463,6 +466,18 @@ async def seed_database() -> None:
                     )
                     totals["health_checks"] += 1
 
+            # Seed local development workspace servers (development only)
+            if settings.ENVIRONMENT == "development":
+                for server_data in DEV_WORKSPACE_SERVERS:
+                    result = await db.execute(
+                        select(WorkspaceServer).where(
+                            WorkspaceServer.hostname == server_data["hostname"]
+                        )
+                    )
+                    if not result.scalar_one_or_none():
+                        db.add(WorkspaceServer(**server_data))
+                        totals["workspace_servers"] += 1
+
             await db.commit()
 
             if any(totals.values()):
@@ -481,6 +496,7 @@ async def seed_database() -> None:
                     skill_templates=totals["skill_templates"],
                     default_mcp_servers=totals["default_mcp_servers"],
                     health_checks=totals["health_checks"],
+                    workspace_servers=totals["workspace_servers"],
                 )
 
         except Exception as e:

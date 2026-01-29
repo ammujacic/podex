@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -406,8 +406,7 @@ class AgentResponse(BaseModel):
     conversation_session_id: str | None = None  # ID of attached conversation session
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AgentModeUpdate(BaseModel):
@@ -611,8 +610,7 @@ class MessageResponse(BaseModel):
     images: list[dict[str, Any]] | None = None  # Image attachments if any
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 @dataclass

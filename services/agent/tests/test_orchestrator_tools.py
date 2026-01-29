@@ -185,6 +185,7 @@ class TestCreateCustomAgent:
             name="Test Agent",
             system_prompt="You are a test agent",
             tools=["invalid_tool"],
+            model="claude-3-5-sonnet",
         )
 
         assert result["success"] is False
@@ -206,6 +207,7 @@ class TestCreateCustomAgent:
                 name="Test Agent",
                 system_prompt="You are a test agent",
                 tools=["read_file", "write_file"],
+                model="claude-3-5-sonnet",
             )
 
             assert result["success"] is True
@@ -228,6 +230,7 @@ class TestCreateCustomAgent:
                 name="Test Agent",
                 system_prompt="You are a test agent",
                 tools=["read_file"],
+                model="claude-3-5-sonnet",
             )
 
             assert result["success"] is False
@@ -256,6 +259,7 @@ class TestCreateCustomAgent:
                 name="Test Agent",
                 system_prompt="You are a test agent",
                 tools=valid_tools,
+                model="claude-3-5-sonnet",
             )
 
             assert result["success"] is True

@@ -188,8 +188,7 @@ services:
     image: docker:27-dind
     container_name: ws-local-1
     privileged: true
-    environment:
-      DOCKER_TLS_CERTDIR: ""  # Disable TLS for local development
+    command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--tls=false"]
     expose:
       - "2375"
     volumes:
@@ -206,8 +205,7 @@ services:
     image: docker:27-dind
     container_name: ws-local-2
     privileged: true
-    environment:
-      DOCKER_TLS_CERTDIR: ""
+    command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--tls=false"]
     expose:
       - "2375"
     volumes:
