@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 class UserConfig(Base):
-    """User configuration and dotfiles model."""
+    """User configuration model."""
 
     __tablename__ = "user_configs"
 
@@ -28,21 +28,11 @@ class UserConfig(Base):
         unique=True,
     )
 
-    # Dotfiles sync configuration
-    sync_dotfiles: Mapped[bool] = mapped_column(Boolean, default=True)
-    dotfiles_repo: Mapped[str | None] = mapped_column(Text)  # Optional git repo for dotfiles
-    dotfiles_branch: Mapped[str | None] = mapped_column(String(100))  # Git branch for dotfiles
-    dotfiles_files: Mapped[list[str] | None] = mapped_column(JSONB)  # Specific files to sync
-    dotfiles_paths: Mapped[list[str] | None] = mapped_column(JSONB)  # Specific paths to sync
-    dotfiles_last_sync: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )  # Last sync time
-
     # Default shell and editor
     default_shell: Mapped[str] = mapped_column(String(50), default="zsh")
     default_editor: Mapped[str] = mapped_column(String(50), default="vscode")
 
-    # Git configuration (synced to pods)
+    # Git configuration (synced to workspaces)
     git_name: Mapped[str | None] = mapped_column(String(255))
     git_email: Mapped[str | None] = mapped_column(String(255))
 
@@ -55,9 +45,6 @@ class UserConfig(Base):
     # Theme preferences
     theme: Mapped[str] = mapped_column(String(50), default="dark")
     editor_theme: Mapped[str] = mapped_column(String(100), default="vs-dark")
-
-    # S3 path for user's dotfiles
-    s3_dotfiles_path: Mapped[str | None] = mapped_column(Text)
 
     # Completed onboarding tours (for cross-device persistence)
     completed_tours: Mapped[list[str] | None] = mapped_column(JSONB, default=list)

@@ -23,7 +23,6 @@ build:
 	cd services/api && uv sync --active --dev --quiet
 	cd services/agent && uv sync --active --dev --quiet
 	cd services/compute && uv sync --active --dev --quiet
-	cd infrastructure && uv sync --active --dev --quiet
 	@echo "$(CYAN)Building workspace base image (podex/workspace:latest)...$(NC)"
 	@# Build the dedicated workspace-base image explicitly so compute workspaces always have it available
 	docker-compose build workspace-base
@@ -144,9 +143,6 @@ test:
 	cd services/local-pod && uv run pytest --cov=src --cov-report=term-missing --cov-report=html -v || TEST_FAILED=1; \
 	echo "$(GREEN)Local-pod service tests passed ✓$(NC)"; \
 	echo ""; \
-	echo "$(CYAN)=== Infrastructure Tests ===$(NC)"; \
-	cd infrastructure && uv run pytest tests/ -v --tb=short || TEST_FAILED=1; \
-	echo ""; \
 	echo "$(CYAN)Cleaning up test infrastructure...$(NC)"; \
 	$(MAKE) test-clean; \
 	echo ""; \
@@ -266,12 +262,6 @@ test-agent:
 	@echo ""
 	@echo "$(GREEN)Agent integration tests complete!$(NC)"
 
-## Run infrastructure tests only
-test-infra:
-	@echo "$(CYAN)Running infrastructure tests...$(NC)"
-	cd infrastructure && uv run pytest tests/ -v --tb=short
-	@echo "$(GREEN)Infrastructure tests complete!$(NC)"
-
 ## Run all package tests with coverage
 test-packages:
 	@echo "$(CYAN)Running all package tests with coverage...$(NC)"
@@ -327,8 +317,6 @@ sync-venvs:
 	@cd services/compute && uv sync --extra dev --quiet
 	@echo "$(CYAN)  services/local-pod$(NC)"
 	@cd services/local-pod && uv sync --extra dev --quiet
-	@echo "$(CYAN)  infrastructure$(NC)"
-	@cd infrastructure && uv sync --extra dev --quiet
 	@echo "$(GREEN)All venvs synced! Pre-commit will now match CI.$(NC)"
 
 # ============================================
@@ -519,7 +507,6 @@ help:
 	@echo "  $(GREEN)make test-clean$(NC)        Clean up test infrastructure (containers, volumes, networks)"
 	@echo "  $(GREEN)make test-compute$(NC)      Run compute service tests with docker-compose"
 	@echo "  $(GREEN)make test-compute-local$(NC) Run compute tests locally (requires Redis on port 6379)"
-	@echo "  $(GREEN)make test-infra$(NC)        Run infrastructure tests only"
 	@echo "  $(GREEN)make test-packages$(NC)     Run all frontend package tests with coverage"
 	@echo "  $(GREEN)make test-agent$(NC)        Run comprehensive agent integration tests (local only)"
 	@echo ""

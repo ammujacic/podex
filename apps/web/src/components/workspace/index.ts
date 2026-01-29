@@ -88,7 +88,6 @@ export type { Diagnostic, FileDiagnostics } from './ProblemsPanel';
 export { DiagnosticSeverity } from './ProblemsPanel';
 
 // Planning components
-export { PlanningModelSelector } from './PlanningModelSelector';
 export { ParallelPlansPanel } from './ParallelPlansPanel';
 export { PlanComparisonView } from './PlanComparisonView';
 

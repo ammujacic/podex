@@ -146,6 +146,9 @@ from .platform import (
     ProjectHealthScore,
 )
 
+# Server models (multi-server orchestration)
+from .server import ServerStatus, WorkspaceServer
+
 # Tunnel models (Cloudflare external exposure)
 from .tunnels import WorkspaceTunnel
 
@@ -254,6 +257,8 @@ __all__ = [
     "WikiDocument",
     "Workspace",
     "WorkspaceExtension",
+    "WorkspaceServer",
     "WorkspaceTunnel",
+    "ServerStatus",
     "_generate_uuid",
 ]

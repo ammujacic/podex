@@ -1,4 +1,4 @@
-"""User configuration and dotfiles routes."""
+"""User configuration routes."""
 
 import re
 from datetime import UTC, datetime
@@ -26,9 +26,6 @@ DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 # Mapping of request field names to config attribute names
 CONFIG_FIELD_MAP = [
-    "sync_dotfiles",
-    "dotfiles_repo",
-    "dotfiles_paths",
     "default_shell",
     "default_editor",
     "git_name",
@@ -56,14 +53,6 @@ def _apply_config_updates(
             setattr(config, field, value)
 
 
-# Valid git URL pattern for dotfiles repos (only allow GitHub for now)
-DOTFILES_REPO_PATTERN = re.compile(
-    r"^https://github\.com/[a-zA-Z0-9][-a-zA-Z0-9]*/[a-zA-Z0-9._-]+/?$",
-)
-
-# Valid dotfiles path pattern (prevent path traversal and dangerous paths)
-DOTFILES_PATH_PATTERN = re.compile(r"^\.?[a-zA-Z0-9][a-zA-Z0-9._/-]*$")
-
 # Maximum tour ID length
 MAX_TOUR_ID_LENGTH = 50
 
@@ -77,91 +66,12 @@ LLM_API_KEY_PATTERNS = {
     "lmstudio": re.compile(r"^.{0,200}$"),  # LM Studio typically uses no key or custom
 }
 
-# Paths that should never be synced (security sensitive)
-FORBIDDEN_DOTFILE_PATHS = {
-    ".ssh/id_rsa",
-    ".ssh/id_ed25519",
-    ".ssh/id_ecdsa",
-    ".ssh/id_dsa",
-    ".gnupg",
-    ".aws/credentials",
-    ".netrc",
-}
-
-
-def validate_dotfiles_repo(repo_url: str) -> None:
-    """Validate dotfiles repository URL.
-
-    Raises:
-        HTTPException: If the URL is invalid or not allowed.
-    """
-    if not repo_url:
-        return
-
-    if not DOTFILES_REPO_PATTERN.match(repo_url):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid dotfiles repository URL. Only GitHub repositories are supported.",
-        )
-
-
-def validate_dotfiles_paths(paths: list[str]) -> None:
-    """Validate dotfiles paths.
-
-    Raises:
-        HTTPException: If any path is invalid or forbidden.
-    """
-    if not paths:
-        return
-
-    for path in paths:
-        # Check for path traversal
-        if ".." in path or path.startswith("/"):
-            msg = f"Invalid dotfile path: {path}. Cannot contain '..' or start with '/'"
-            raise HTTPException(status_code=400, detail=msg)
-
-        # Check pattern
-        if not DOTFILES_PATH_PATTERN.match(path):
-            msg = f"Invalid dotfile path: {path}. Only alphanumeric, dot, _, / allowed"
-            raise HTTPException(status_code=400, detail=msg)
-
-        # Check forbidden paths
-        if path in FORBIDDEN_DOTFILE_PATHS or any(
-            path.startswith(forbidden) for forbidden in FORBIDDEN_DOTFILE_PATHS
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Forbidden dotfile path: {path}. This path contains sensitive data.",
-            )
-
-
-# Default dotfiles paths to sync
-DEFAULT_DOTFILES = [
-    ".bashrc",
-    ".zshrc",
-    ".gitconfig",
-    ".npmrc",
-    ".vimrc",
-    ".profile",
-    ".config/starship.toml",
-    ".ssh/config",  # Only the config, not keys
-    # CLI agent config directories
-    ".claude",
-    ".claude.json",
-    ".codex",
-    ".gemini",
-    ".opencode",
-]
-
 
 class UserConfigResponse(BaseModel):
     """User config response."""
 
     id: str
     user_id: str
-    sync_dotfiles: bool
-    dotfiles_repo: str | None
-    dotfiles_paths: list[str] | None
     default_shell: str
     default_editor: str
     git_name: str | None
@@ -180,9 +90,6 @@ class UserConfigResponse(BaseModel):
 class UpdateUserConfigRequest(BaseModel):
     """Request to update user config."""
 
-    sync_dotfiles: bool | None = None
-    dotfiles_repo: str | None = None
-    dotfiles_paths: list[str] | None = None
     default_shell: str | None = None
     default_editor: str | None = None
     git_name: str | None = None
@@ -231,11 +138,7 @@ async def get_user_config(
                 detail="Invalid authentication token - user not found",
             )
 
-        config = UserConfig(
-            user_id=user_id,
-            dotfiles_paths=DEFAULT_DOTFILES,
-            s3_dotfiles_path=f"users/{user_id}/dotfiles",
-        )
+        config = UserConfig(user_id=user_id)
         db.add(config)
         await db.commit()
         await db.refresh(config)
@@ -243,9 +146,6 @@ async def get_user_config(
     config_response = UserConfigResponse(
         id=config.id,
         user_id=config.user_id,
-        sync_dotfiles=config.sync_dotfiles,
-        dotfiles_repo=config.dotfiles_repo,
-        dotfiles_paths=config.dotfiles_paths,
         default_shell=config.default_shell,
         default_editor=config.default_editor,
         git_name=config.git_name,
@@ -294,18 +194,8 @@ async def update_user_config(
                 detail="Invalid authentication token - user not found",
             )
 
-        config = UserConfig(
-            user_id=user_id,
-            dotfiles_paths=DEFAULT_DOTFILES,
-            s3_dotfiles_path=f"users/{user_id}/dotfiles",
-        )
+        config = UserConfig(user_id=user_id)
         db.add(config)
-
-    # Validate dotfiles inputs before updating
-    if request_data.dotfiles_repo is not None:
-        validate_dotfiles_repo(request_data.dotfiles_repo)
-    if request_data.dotfiles_paths is not None:
-        validate_dotfiles_paths(request_data.dotfiles_paths)
 
     # Update fields using helper function
     _apply_config_updates(config, request_data)
@@ -319,9 +209,6 @@ async def update_user_config(
     config_response = UserConfigResponse(
         id=config.id,
         user_id=config.user_id,
-        sync_dotfiles=config.sync_dotfiles,
-        dotfiles_repo=config.dotfiles_repo,
-        dotfiles_paths=config.dotfiles_paths,
         default_shell=config.default_shell,
         default_editor=config.default_editor,
         git_name=config.git_name,
@@ -401,8 +288,6 @@ async def complete_tour(
     if not config:
         config = UserConfig(
             user_id=user_id,
-            dotfiles_paths=DEFAULT_DOTFILES,
-            s3_dotfiles_path=f"users/{user_id}/dotfiles",
             completed_tours=[tour_id],
         )
         db.add(config)
@@ -581,8 +466,6 @@ async def set_llm_api_key(
         # Create config with the API key
         config = UserConfig(
             user_id=user_id,
-            dotfiles_paths=DEFAULT_DOTFILES,
-            s3_dotfiles_path=f"users/{user_id}/dotfiles",
             llm_api_keys={provider_lower: data.api_key},
         )
         db.add(config)

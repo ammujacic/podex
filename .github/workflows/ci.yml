@@ -498,41 +498,6 @@ jobs:
           retention-days: 30
 
   # ==========================================
-  # Infrastructure Checks
-  # ==========================================
-  infra-check:
-    name: Infrastructure Check
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: infrastructure
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: uv sync --extra dev
-
-      - name: Run Ruff check
-        run: uv run ruff check .
-
-      - name: Run Ruff format check
-        run: uv run ruff format --check .
-
-      - name: Run mypy
-        run: uv run mypy .
-
-      - name: Run tests
-        run: uv run pytest tests/ -x --tb=short
-
-  # ==========================================
   # Security Scanning
   # ==========================================
   security-scan:
@@ -627,7 +592,6 @@ jobs:
       - frontend-build
       - docker-build
       - security-scan
-      - infra-check
     steps:
       - name: All tests passed
         run: echo "All tests passed successfully!"

@@ -24,7 +24,6 @@ import {
 import { useSessionStore } from '@/stores/session';
 import { useEditorStore } from '@/stores/editor';
 import { useUIStore } from '@/stores/ui';
-import { useConfigStore } from '@/stores/config';
 import { cn } from '@/lib/utils';
 import { NoFilesEmptyState, ErrorEmptyState } from '@/components/ui/EmptyState';
 import { useIsMobile } from '@/hooks/useIsMobile';
@@ -40,7 +39,6 @@ import {
   clearWorkspaceError,
   type FileNode,
 } from '@/lib/api';
-import { getUserConfig, updateUserConfig } from '@/lib/api/user-config';
 import { MobileFileItem } from './MobileFileItem';
 import { MobileFileActionsSheet } from './MobileFileActionsSheet';
 import { DirectoryBrowser } from './DirectoryBrowser';
@@ -92,13 +90,10 @@ const NON_SYNCED_SEGMENTS = [
 const SYNCED_PREFIXES = ['projects/', 'projects'];
 
 /**
- * Create a sync info function based on user's dotfiles_paths
+ * Create a sync info function for project files.
+ * Projects directory is always synced, other files are workspace-local.
  */
-function createSyncInfoGetter(dotfilesPaths: string[]): (path: string) => SyncInfo {
-  // Separate directories (ending with /) from files
-  const directories = dotfilesPaths.filter((p) => p.endsWith('/'));
-  const files = dotfilesPaths.filter((p) => !p.endsWith('/'));
-
+function createSyncInfoGetter(): (path: string) => SyncInfo {
   return (path: string): SyncInfo => {
     const segments = path.split('/').filter(Boolean);
 
@@ -116,21 +111,7 @@ function createSyncInfoGetter(dotfilesPaths: string[]): (path: string) => SyncIn
       return { isSynced: true, syncType: 'session' };
     }
 
-    // Check if path is a synced directory or inside one
-    const isInSyncedDirectory = directories.some((dir) => {
-      const dirWithoutSlash = dir.slice(0, -1);
-      return (
-        path === dirWithoutSlash || path.startsWith(dir) || path.startsWith(dirWithoutSlash + '/')
-      );
-    });
-
-    // Check if path is a synced file
-    const isSyncedFile = files.some((file) => path === file);
-
-    if (isInSyncedDirectory || isSyncedFile) {
-      return { isSynced: true, syncType: 'user' };
-    }
-
+    // All other files are workspace-local (not synced)
     return { isSynced: false, syncType: null };
   };
 }
@@ -630,27 +611,8 @@ export function FilesPanel({ sessionId, localPodId, workingDir }: FilesPanelProp
   const [rootMenuPosition, setRootMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const rootContainerRef = useRef<HTMLDivElement | null>(null);
 
-  // Get default dotfiles from ConfigStore (config is guaranteed to be loaded by ConfigGate)
-  const defaultDotfiles = useConfigStore((state) => state.getDefaultDotfiles())!;
-
-  // User's dotfiles sync configuration
-  const [userDotfilesPaths, setUserDotfilesPaths] = useState<string[]>(defaultDotfiles);
-
-  // Fetch user config on mount
-  useEffect(() => {
-    getUserConfig()
-      .then((config) => {
-        if (config?.dotfiles_paths && config.dotfiles_paths.length > 0) {
-          setUserDotfilesPaths(config.dotfiles_paths);
-        }
-      })
-      .catch(() => {
-        // Use defaults if config fetch fails
-      });
-  }, []);
-
-  // Create sync info getter based on user's settings
-  const getSyncInfo = useMemo(() => createSyncInfoGetter(userDotfilesPaths), [userDotfilesPaths]);
+  // Create sync info getter (projects directory is always synced)
+  const getSyncInfo = useMemo(() => createSyncInfoGetter(), []);
 
   const loadRootFiles = useCallback(async () => {
     setFilesLoading(true);
@@ -841,38 +803,6 @@ export function FilesPanel({ sessionId, localPodId, workingDir }: FilesPanelProp
     }
   }, []);
 
-  // Toggle sync status for a file/folder
-  const handleToggleSync = useCallback(
-    async (path: string) => {
-      const syncInfo = getSyncInfo(path);
-      if (syncInfo.syncType === 'session') {
-        // Can't toggle session files - they're always synced
-        return;
-      }
-
-      const isCurrentlySynced = syncInfo.isSynced;
-      const newPaths = isCurrentlySynced
-        ? userDotfilesPaths.filter((p) => {
-            // Remove exact match or directory match
-            if (p === path) return false;
-            if (p.endsWith('/')) {
-              const dirPath = p.slice(0, -1);
-              return !(path === dirPath || path.startsWith(dirPath + '/'));
-            }
-            return true;
-          })
-        : [...userDotfilesPaths, path];
-
-      try {
-        await updateUserConfig({ dotfiles_paths: newPaths });
-        setUserDotfilesPaths(newPaths);
-      } catch (err) {
-        console.error('Failed to update sync configuration:', err);
-      }
-    },
-    [getSyncInfo, userDotfilesPaths]
-  );
-
   // Handle open from actions sheet
   const handleOpenFromSheet = useCallback(
     (path: string) => {
@@ -1053,8 +983,7 @@ export function FilesPanel({ sessionId, localPodId, workingDir }: FilesPanelProp
                   emptyFolders={emptyFolders}
                   showHiddenFiles={showHiddenFiles}
                   getSyncInfo={getSyncInfo}
-                  onToggleSync={handleToggleSync}
-                />
+                                  />
               ))
           ) : (
             // Desktop: Use regular file tree
@@ -1075,8 +1004,7 @@ export function FilesPanel({ sessionId, localPodId, workingDir }: FilesPanelProp
                   emptyFolders={emptyFolders}
                   showHiddenFiles={showHiddenFiles}
                   getSyncInfo={getSyncInfo}
-                  onToggleSync={handleToggleSync}
-                />
+                                  />
               ))
           )}
         </div>
@@ -1126,8 +1054,7 @@ export function FilesPanel({ sessionId, localPodId, workingDir }: FilesPanelProp
           sessionId={sessionId}
           onOpen={handleOpenFromSheet}
           onCopyPath={handleCopyPath}
-          onToggleSync={handleToggleSync}
-          getSyncInfo={getSyncInfo}
+                    getSyncInfo={getSyncInfo}
         />
       )}
     </div>

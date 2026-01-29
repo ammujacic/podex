@@ -1,10 +1,17 @@
-"""Voice API routes for speech-to-text and text-to-speech."""
+"""Voice API routes for speech-to-text and text-to-speech.
+
+Supports multiple voice providers:
+- local: pyttsx3 for TTS, whisper for STT (no cloud dependency)
+- openai: OpenAI TTS and Whisper API (requires OPENAI_API_KEY)
+- google: Google Cloud TTS and Speech-to-Text (requires GCP credentials)
+"""
 
 import base64
 import contextlib
 import logging
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -181,6 +188,197 @@ def _get_speech_client() -> SpeechClient:
     return get_speech_client(use_mock=use_mock)
 
 
+def _get_voice_provider() -> str:
+    """Get the configured voice provider."""
+    return getattr(settings, "VOICE_PROVIDER", "local").lower()
+
+
+# ============== OpenAI Voice Service Helpers ==============
+
+
+class OpenAITTSResponse(BaseModel):
+    """Response for OpenAI TTS synthesis."""
+
+    audio_b64: str
+    duration_ms: int
+    content_type: str
+    voice_used: str
+
+
+async def _openai_tts_synthesize(
+    text: str,
+    voice_id: str | None = None,
+    output_format: str = "mp3",
+) -> OpenAITTSResponse:
+    """Synthesize speech using OpenAI TTS API.
+
+    Args:
+        text: Text to synthesize
+        voice_id: Voice ID (alloy, echo, fable, onyx, nova, shimmer)
+        output_format: Output format (mp3, opus, aac, flac)
+
+    Returns:
+        OpenAITTSResponse with audio data
+    """
+    api_key = getattr(settings, "OPENAI_API_KEY", None)
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="OpenAI API key not configured. Set OPENAI_API_KEY in environment.",
+        )
+
+    voice = voice_id or getattr(settings, "DEFAULT_TTS_VOICE_ID", "alloy")
+    model = getattr(settings, "OPENAI_TTS_MODEL", "tts-1")
+
+    # Valid OpenAI voices
+    valid_voices = {"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
+    if voice not in valid_voices:
+        voice = "alloy"
+
+    # Map format to response_format
+    format_map = {
+        "mp3": "mp3",
+        "wav": "pcm",  # OpenAI returns PCM for wav-like output
+        "ogg": "opus",
+        "opus": "opus",
+        "aac": "aac",
+        "flac": "flac",
+    }
+    response_format = format_map.get(output_format, "mp3")
+
+    content_type_map = {
+        "mp3": "audio/mpeg",
+        "pcm": "audio/wav",
+        "opus": "audio/ogg",
+        "aac": "audio/aac",
+        "flac": "audio/flac",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=TTS_SYNTHESIS_TIMEOUT) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/audio/speech",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "input": text,
+                    "voice": voice,
+                    "response_format": response_format,
+                },
+            )
+            response.raise_for_status()
+
+            audio_data = response.content
+            audio_b64 = base64.b64encode(audio_data).decode("utf-8")
+
+            # Estimate duration (~60ms per character)
+            duration_ms = len(text) * 60
+
+            return OpenAITTSResponse(
+                audio_b64=audio_b64,
+                duration_ms=duration_ms,
+                content_type=content_type_map.get(response_format, "audio/mpeg"),
+                voice_used=voice,
+            )
+
+    except httpx.HTTPStatusError as e:
+        logger.exception("OpenAI TTS API error")
+        raise HTTPException(
+            status_code=503,
+            detail=f"OpenAI TTS error: {e.response.text}",
+        ) from e
+    except Exception as e:
+        logger.exception("OpenAI TTS synthesis failed")
+        raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {e}") from e
+
+
+class OpenAISTTResponse(BaseModel):
+    """Response for OpenAI Whisper API transcription."""
+
+    text: str
+    language: str
+    confidence: float
+
+
+async def _openai_whisper_transcribe(
+    audio_bytes: bytes,
+    language: str | None = None,
+    audio_format: str = "webm",
+) -> OpenAISTTResponse:
+    """Transcribe audio using OpenAI Whisper API.
+
+    Args:
+        audio_bytes: Audio data
+        language: Optional language hint (ISO 639-1 code)
+        audio_format: Audio format (webm, mp3, wav, etc.)
+
+    Returns:
+        OpenAISTTResponse with transcription
+    """
+    api_key = getattr(settings, "OPENAI_API_KEY", None)
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="OpenAI API key not configured. Set OPENAI_API_KEY in environment.",
+        )
+
+    # Map format to file extension
+    ext_map = {
+        "webm": "webm",
+        "mp3": "mp3",
+        "wav": "wav",
+        "ogg": "ogg",
+        "m4a": "m4a",
+        "flac": "flac",
+    }
+    file_ext = ext_map.get(audio_format.lower(), "webm")
+
+    try:
+        # Build multipart form data
+        files = {
+            "file": (f"audio.{file_ext}", audio_bytes, f"audio/{file_ext}"),
+        }
+        data: dict[str, str] = {
+            "model": "whisper-1",
+        }
+        if language:
+            # OpenAI expects ISO 639-1 codes (e.g., "en", not "en-US")
+            data["language"] = language.split("-")[0]
+
+        async with httpx.AsyncClient(timeout=WHISPER_TRANSCRIPTION_TIMEOUT) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/audio/transcriptions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                },
+                files=files,
+                data=data,
+            )
+            response.raise_for_status()
+
+            result = response.json()
+            text = result.get("text", "").strip()
+
+            return OpenAISTTResponse(
+                text=text,
+                language=language or "en",
+                confidence=0.95,  # OpenAI doesn't provide confidence scores
+            )
+
+    except httpx.HTTPStatusError as e:
+        logger.exception("OpenAI Whisper API error")
+        raise HTTPException(
+            status_code=503,
+            detail=f"OpenAI transcription error: {e.response.text}",
+        ) from e
+    except Exception as e:
+        logger.exception("OpenAI Whisper transcription failed")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {e}") from e
+
+
 # ============== Voice List Endpoints ==============
 
 
@@ -191,22 +389,105 @@ async def list_voices(
     response: Response,  # noqa: ARG001
     language: str | None = None,
 ) -> list[VoiceInfoResponse]:
-    """List available TTS voices from Google Cloud TTS."""
+    """List available TTS voices based on configured provider.
+
+    Returns voices from the configured VOICE_PROVIDER:
+    - local: System voices via pyttsx3
+    - openai: OpenAI TTS voices (alloy, echo, fable, onyx, nova, shimmer)
+    - google: Google Cloud TTS voices
+    """
     get_current_user_id(request)
 
-    tts = _get_tts_client()
-    voices = await tts.list_voices(language_code=language)
+    provider = _get_voice_provider()
 
+    # OpenAI TTS voices
+    if provider == "openai":
+        openai_voices = [
+            VoiceInfoResponse(
+                id="alloy",
+                name="Alloy",
+                language_code="en",
+                language_name="English",
+                gender="Neutral",
+                engine="openai-tts",
+            ),
+            VoiceInfoResponse(
+                id="echo",
+                name="Echo",
+                language_code="en",
+                language_name="English",
+                gender="Male",
+                engine="openai-tts",
+            ),
+            VoiceInfoResponse(
+                id="fable",
+                name="Fable",
+                language_code="en",
+                language_name="English",
+                gender="Neutral",
+                engine="openai-tts",
+            ),
+            VoiceInfoResponse(
+                id="onyx",
+                name="Onyx",
+                language_code="en",
+                language_name="English",
+                gender="Male",
+                engine="openai-tts",
+            ),
+            VoiceInfoResponse(
+                id="nova",
+                name="Nova",
+                language_code="en",
+                language_name="English",
+                gender="Female",
+                engine="openai-tts",
+            ),
+            VoiceInfoResponse(
+                id="shimmer",
+                name="Shimmer",
+                language_code="en",
+                language_name="English",
+                gender="Female",
+                engine="openai-tts",
+            ),
+        ]
+        # Filter by language if requested
+        if language:
+            lang_prefix = language.split("-")[0].lower()
+            # OpenAI voices support all languages, but we show English as primary
+            if lang_prefix != "en":
+                # Still return all voices as they support multiple languages
+                return openai_voices
+        return openai_voices
+
+    # Google Cloud TTS voices
+    if provider == "google":
+        tts = _get_tts_client()
+        voices = await tts.list_voices(language_code=language)
+        return [
+            VoiceInfoResponse(
+                id=v.id,
+                name=v.name,
+                language_code=v.language_code,
+                language_name=v.language_name,
+                gender=v.gender,
+                engine="neural",
+            )
+            for v in voices
+        ]
+
+    # Local voices (pyttsx3) - redirect to /voices/local endpoint
+    # Return mock voices for API compatibility
     return [
         VoiceInfoResponse(
-            id=v.id,
-            name=v.name,
-            language_code=v.language_code,
-            language_name=v.language_name,
-            gender=v.gender,
-            engine="neural",  # GCP TTS uses neural by default
-        )
-        for v in voices
+            id="system-default",
+            name="System Default",
+            language_code="en",
+            language_name="English",
+            gender="Neutral",
+            engine="local",
+        ),
     ]
 
 
@@ -355,18 +636,22 @@ async def transcribe_audio(
     response: Response,  # noqa: ARG001
     data: TranscribeRequest,
 ) -> TranscribeResponse:
-    """Transcribe audio to text using Google Cloud Speech-to-Text.
+    """Transcribe audio to text.
 
-    Uses synchronous transcription for low-latency responses.
-    For short audio (< 60 seconds), this typically completes within seconds.
+    Supports multiple providers based on VOICE_PROVIDER setting:
+    - local: Uses OpenAI Whisper model running locally
+    - openai: Uses OpenAI Whisper API (cloud)
+    - google: Uses Google Cloud Speech-to-Text
     """
     get_current_user_id(request)
 
     # Decode and validate audio
     audio_data = _decode_audio_data(data.audio_b64)
 
-    # Use local Whisper in development mode
-    if settings.ENVIRONMENT == "development":
+    provider = _get_voice_provider()
+
+    # Local Whisper (runs on-device)
+    if provider == "local":
         try:
             result = await _whisper_transcribe(audio_data, data.language)
             return TranscribeResponse(
@@ -385,32 +670,63 @@ async def transcribe_audio(
             logger.exception("Whisper transcription failed")
             raise HTTPException(status_code=500, detail=f"Transcription failed: {e}") from e
 
-    # Production: Use Google Cloud Speech-to-Text (synchronous transcription)
-    speech = _get_speech_client()
+    # OpenAI Whisper API (cloud)
+    if provider == "openai":
+        try:
+            result = await _openai_whisper_transcribe(
+                audio_bytes=audio_data,
+                language=data.language,
+                audio_format=data.format,
+            )
+            return TranscribeResponse(
+                text=result.text,
+                confidence=result.confidence,
+                duration_ms=len(audio_data) // 16,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("OpenAI Whisper transcription failed")
+            raise HTTPException(status_code=500, detail=f"Transcription failed: {e}") from e
 
-    # Transcribe audio directly (GCP Speech supports synchronous transcription)
-    try:
-        result = await speech.transcribe(  # type: ignore[attr-defined]
-            audio_data=audio_data,
-            encoding=data.format.upper(),
-            language_code=data.language or "en-US",
+    # Google Cloud Speech-to-Text
+    if provider == "google":
+        speech = _get_speech_client()
+        try:
+            result = await speech.transcribe(  # type: ignore[attr-defined]
+                audio_data=audio_data,
+                encoding=data.format.upper(),
+                language_code=data.language or "en-US",
+            )
+
+            text = result.transcript
+            avg_confidence = result.confidence
+            duration_ms = int(result.duration_seconds * 1000) if result.duration_seconds else 0
+        except Exception as e:
+            logger.exception("GCP Speech transcription failed")
+            raise HTTPException(status_code=500, detail=f"Transcription failed: {e}") from e
+
+        if not text:
+            raise HTTPException(status_code=500, detail="No transcript generated")
+
+        return TranscribeResponse(
+            text=text,
+            confidence=avg_confidence,
+            duration_ms=duration_ms,
         )
 
-        text = result.transcript
-        avg_confidence = result.confidence
-        duration_ms = int(result.duration_seconds * 1000) if result.duration_seconds else 0
+    # Unknown provider - fall back to local
+    logger.warning(f"Unknown voice provider '{provider}', falling back to local")
+    try:
+        result = await _whisper_transcribe(audio_data, data.language)
+        return TranscribeResponse(
+            text=result.text,
+            confidence=result.confidence,
+            duration_ms=len(audio_data) // 16,
+        )
     except Exception as e:
-        logger.exception("GCP Speech transcription failed")
+        logger.exception("Fallback transcription failed")
         raise HTTPException(status_code=500, detail=f"Transcription failed: {e}") from e
-
-    if not text:
-        raise HTTPException(status_code=500, detail="No transcript generated")
-
-    return TranscribeResponse(
-        text=text,
-        confidence=avg_confidence,
-        duration_ms=duration_ms,
-    )
 
 
 # ============== Synthesis Endpoints ==============
@@ -429,8 +745,10 @@ async def synthesize_speech(
 ) -> SynthesizeResponse:
     """Synthesize text to speech.
 
-    Uses pyttsx3 (local system voices) in development mode,
-    Google Cloud TTS in production.
+    Supports multiple providers based on VOICE_PROVIDER setting:
+    - local: Uses pyttsx3 (system voices - espeak on Linux, SAPI on Windows, etc.)
+    - openai: Uses OpenAI TTS API (alloy, echo, fable, onyx, nova, shimmer voices)
+    - google: Uses Google Cloud Text-to-Speech
     """
     get_current_user_id(request)
 
@@ -443,10 +761,13 @@ async def synthesize_speech(
             detail=f"Text too long for neural voice (max {MAX_NEURAL_VOICE_TEXT_LENGTH} chars)",
         )
 
-    # Use local pyttsx3 in development mode
-    if settings.ENVIRONMENT == "development":
+    provider = _get_voice_provider()
+    voice_id = data.voice_id or settings.DEFAULT_TTS_VOICE_ID
+
+    # Local pyttsx3 (system voices)
+    if provider == "local":
         try:
-            result = await _pyttsx3_synthesize(text=data.text, voice_id=data.voice_id)
+            result = await _pyttsx3_synthesize(text=data.text, voice_id=voice_id)
             return SynthesizeResponse(
                 audio_url="",
                 audio_b64=result.audio_b64,
@@ -455,7 +776,6 @@ async def synthesize_speech(
             )
         except ImportError:
             logger.warning("pyttsx3 not available, falling back to mock")
-            # Return empty audio with warning
             return SynthesizeResponse(
                 audio_url="",
                 audio_b64="",
@@ -466,28 +786,58 @@ async def synthesize_speech(
             logger.exception("pyttsx3 synthesis failed")
             raise HTTPException(status_code=500, detail=f"Synthesis failed: {e}") from e
 
-    # Production: Use Google Cloud TTS
-    tts = _get_tts_client()
-    voice_id = data.voice_id or settings.DEFAULT_TTS_VOICE_ID
+    # OpenAI TTS API
+    if provider == "openai":
+        try:
+            result = await _openai_tts_synthesize(
+                text=data.text,
+                voice_id=voice_id,
+                output_format=data.format,
+            )
+            return SynthesizeResponse(
+                audio_url="",
+                audio_b64=result.audio_b64,
+                duration_ms=result.duration_ms,
+                content_type=result.content_type,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("OpenAI TTS synthesis failed")
+            raise HTTPException(status_code=500, detail=f"Synthesis failed: {e}") from e
 
-    tts_result = await tts.synthesize_speech(  # type: ignore[call-arg]
-        text=data.text,
-        voice_name=voice_id,
-        audio_encoding=data.format.upper(),
-    )
+    # Google Cloud TTS
+    if provider == "google":
+        tts = _get_tts_client()
+        tts_result = await tts.synthesize_speech(  # type: ignore[call-arg]
+            text=data.text,
+            voice_name=voice_id,
+            audio_encoding=data.format.upper(),
+        )
 
-    # Encode audio as base64 for direct response
-    audio_b64 = base64.b64encode(tts_result.audio_data).decode("utf-8")
+        audio_b64 = base64.b64encode(tts_result.audio_data).decode("utf-8")
+        duration_ms = len(data.text) * 60
 
-    # Estimate duration (~60ms per character for natural speech)
-    duration_ms = len(data.text) * 60
+        return SynthesizeResponse(
+            audio_url="",
+            audio_b64=audio_b64,
+            duration_ms=duration_ms,
+            content_type=tts_result.content_type,
+        )
 
-    return SynthesizeResponse(
-        audio_url="",  # Would be GCS URL in production
-        audio_b64=audio_b64,
-        duration_ms=duration_ms,
-        content_type=tts_result.content_type,
-    )
+    # Unknown provider - fall back to local
+    logger.warning(f"Unknown voice provider '{provider}', falling back to local")
+    try:
+        result = await _pyttsx3_synthesize(text=data.text, voice_id=voice_id)
+        return SynthesizeResponse(
+            audio_url="",
+            audio_b64=result.audio_b64,
+            duration_ms=result.duration_ms,
+            content_type=result.content_type,
+        )
+    except Exception as e:
+        logger.exception("Fallback synthesis failed")
+        raise HTTPException(status_code=500, detail=f"Synthesis failed: {e}") from e
 
 
 @router.post(
@@ -565,8 +915,10 @@ async def synthesize_message(
     default_voice = settings.DEFAULT_TTS_VOICE_ID
     voice_id = voice_config.get("voice_id", default_voice) if voice_config else default_voice
 
-    # Use local pyttsx3 in development mode
-    if settings.ENVIRONMENT == "development":
+    provider = _get_voice_provider()
+
+    # Local pyttsx3 (system voices)
+    if provider == "local":
         try:
             local_result = await _pyttsx3_synthesize(text=text_to_speak, voice_id=voice_id)
             return SynthesizeResponse(
@@ -587,23 +939,58 @@ async def synthesize_message(
             logger.exception("pyttsx3 message synthesis failed")
             raise HTTPException(status_code=500, detail=f"Synthesis failed: {e}") from e
 
-    # Production: Use Google Cloud TTS
-    tts = _get_tts_client()
-    tts_result = await tts.synthesize_speech(  # type: ignore[call-arg]
-        text=text_to_speak,
-        voice_name=voice_id,
-        audio_encoding="MP3",
-    )
+    # OpenAI TTS API
+    if provider == "openai":
+        try:
+            result = await _openai_tts_synthesize(
+                text=text_to_speak,
+                voice_id=voice_id,
+                output_format="mp3",
+            )
+            return SynthesizeResponse(
+                audio_url="",
+                audio_b64=result.audio_b64,
+                duration_ms=result.duration_ms,
+                content_type=result.content_type,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("OpenAI TTS message synthesis failed")
+            raise HTTPException(status_code=500, detail=f"Synthesis failed: {e}") from e
 
-    audio_b64 = base64.b64encode(tts_result.audio_data).decode("utf-8")
-    duration_ms = len(text_to_speak) * 60
+    # Google Cloud TTS
+    if provider == "google":
+        tts = _get_tts_client()
+        tts_result = await tts.synthesize_speech(  # type: ignore[call-arg]
+            text=text_to_speak,
+            voice_name=voice_id,
+            audio_encoding="MP3",
+        )
 
-    return SynthesizeResponse(
-        audio_url="",
-        audio_b64=audio_b64,
-        duration_ms=duration_ms,
-        content_type=tts_result.content_type,
-    )
+        audio_b64 = base64.b64encode(tts_result.audio_data).decode("utf-8")
+        duration_ms = len(text_to_speak) * 60
+
+        return SynthesizeResponse(
+            audio_url="",
+            audio_b64=audio_b64,
+            duration_ms=duration_ms,
+            content_type=tts_result.content_type,
+        )
+
+    # Unknown provider - fall back to local
+    logger.warning(f"Unknown voice provider '{provider}', falling back to local")
+    try:
+        local_result = await _pyttsx3_synthesize(text=text_to_speak, voice_id=voice_id)
+        return SynthesizeResponse(
+            audio_url="",
+            audio_b64=local_result.audio_b64,
+            duration_ms=local_result.duration_ms,
+            content_type=local_result.content_type,
+        )
+    except Exception as e:
+        logger.exception("Fallback message synthesis failed")
+        raise HTTPException(status_code=500, detail=f"Synthesis failed: {e}") from e
 
 
 # ============== Voice Command Endpoints ==============

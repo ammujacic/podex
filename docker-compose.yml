@@ -6,14 +6,13 @@ services:
       - "5432:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-podex}
-      POSTGRES_USER: ${POSTGRES_USER:-dev}
-      # NOTE: For local development only. In production, use AWS Secrets Manager.
+      POSTGRES_USER: ${POSTGRES_USER:-podex}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdev_change_in_prod}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/db-init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dev -d podex"]
+      test: ["CMD-SHELL", "pg_isready -U podex -d podex"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -31,7 +30,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # === LOCAL LLM (Ollama) ===
+  # === LOCAL LLM (Ollama) - Optional ===
   ollama:
     image: ollama/ollama:latest
     ports:
@@ -69,16 +68,17 @@ services:
     environment:
       ENVIRONMENT: development
       PORT: 3001
-      DATABASE_URL: postgresql+asyncpg://dev:devpass@postgres:5432/podex
+      DATABASE_URL: postgresql+asyncpg://podex:${POSTGRES_PASSWORD:-localdev_change_in_prod}@postgres:5432/podex
       REDIS_URL: redis://redis:6379
-      # GCP Configuration
-      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-podex-dev}
-      GCP_REGION: ${GCP_REGION:-us-east1}
-      GOOGLE_APPLICATION_CREDENTIALS: /app/service-account.json
-      # LLM Provider: vertex (GCP), anthropic (API), ollama (local)
-      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      # LLM Provider: openrouter (default), anthropic, openai, ollama
+      LLM_PROVIDER: ${LLM_PROVIDER:-openrouter}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:14b}
+      # Voice Provider: local (pyttsx3/whisper), openai, google
+      VOICE_PROVIDER: ${VOICE_PROVIDER:-local}
       # CORS
       CORS_ORIGINS: ${CORS_ORIGINS:-'["http://localhost:3000"]'}
       # Auth
@@ -91,7 +91,7 @@ services:
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       # Email (console logging for dev)
       EMAIL_BACKEND: console
-      # Admin user credentials (for seeding) - NOTE: Change in production!ot
+      # Admin user credentials (for seeding)
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@podex.dev}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-LocalDev_Change_In_Prod_123!}
       # Internal service URLs
@@ -109,13 +109,11 @@ services:
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-1.0}
       SENTRY_PROFILES_SAMPLE_RATE: ${SENTRY_PROFILES_SAMPLE_RATE:-1.0}
       # Auth Cookies (httpOnly cookies for XSS protection)
-      COOKIE_SECURE: "false"  # Set to "true" if using HTTPS locally
+      COOKIE_SECURE: "false"
       COOKIE_SAMESITE: "lax"
-      # Redis Encryption (optional - leave empty to disable)
+      # Redis Encryption (optional)
       REDIS_ENCRYPTION_KEY: ${REDIS_ENCRYPTION_KEY:-}
       # Push Notifications (VAPID keys for Web Push)
-      # SECURITY: Generate unique keys with: npx web-push generate-vapid-keys
-      # Never use default/example keys in production
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_EMAIL: ${VAPID_EMAIL:-}
@@ -123,7 +121,6 @@ services:
       - ./services/api/src:/app/services/api/src
       - ./services/api/migrations:/app/services/api/migrations
       - ./services/shared/src:/app/services/shared/src
-      - ./service-account.json:/app/service-account.json:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -154,20 +151,15 @@ services:
     environment:
       ENVIRONMENT: development
       PORT: 3002
-      # Database
-      DATABASE_URL: postgresql+asyncpg://dev:devpass@postgres:5432/podex
-      # Redis
+      DATABASE_URL: postgresql+asyncpg://podex:${POSTGRES_PASSWORD:-localdev_change_in_prod}@postgres:5432/podex
       REDIS_URL: redis://redis:6379
-      # GCP Configuration
-      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-podex-dev}
-      GCP_REGION: ${GCP_REGION:-us-east1}
-      GOOGLE_APPLICATION_CREDENTIALS: /app/service-account.json
-      # LLM Provider: vertex (GCP), anthropic (API), ollama (local)
-      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
-      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:14b}
+      # LLM Provider: openrouter (default), anthropic, openai, ollama
+      LLM_PROVIDER: ${LLM_PROVIDER:-openrouter}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:14b}
       # Sentry
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-1.0}
@@ -183,7 +175,6 @@ services:
     volumes:
       - ./services/agent/src:/app/services/agent/src
       - ./services/shared/src:/app/services/shared/src
-      - ./service-account.json:/app/service-account.json:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -208,6 +199,7 @@ services:
       COMPUTE_MODE: docker
       # Docker settings
       COMPUTE_DOCKER_HOST: unix:///var/run/docker.sock
+      COMPUTE_DOCKER_RUNTIME: ${COMPUTE_DOCKER_RUNTIME:-runc}  # Use 'runsc' for gVisor in production
       COMPUTE_WARM_POOL_SIZE: 2
       COMPUTE_MAX_WORKSPACES: 10
       COMPUTE_WORKSPACE_TIMEOUT: 3600
@@ -215,11 +207,8 @@ services:
       COMPUTE_DOCKER_NETWORK: podex-dev
       # Redis
       COMPUTE_REDIS_URL: redis://redis:6379
-      # GCP Configuration
-      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-podex-dev}
-      GCP_REGION: ${GCP_REGION:-us-east1}
-      # Local storage for workspaces (mounted to containers as volumes)
-      # GCS is only used in production via Cloud Run volume mounts
+      # Local storage for workspaces (persistent volumes)
+      COMPUTE_WORKSPACE_STORAGE: /var/lib/podex/workspaces
       # Internal API key (for secure inter-service communication)
       COMPUTE_INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
       # CORS
@@ -227,7 +216,7 @@ services:
       # API Service (for usage tracking)
       COMPUTE_API_BASE_URL: http://api:3001
       COMPUTE_INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-service-token}
-      # Sentry (uses SENTRY_ prefix, not COMPUTE_)
+      # Sentry
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-1.0}
       SENTRY_PROFILES_SAMPLE_RATE: ${SENTRY_PROFILES_SAMPLE_RATE:-1.0}
@@ -235,8 +224,8 @@ services:
       - ./services/compute/src:/app/services/compute/src
       - ./services/shared/src:/app/services/shared/src
       - /var/run/docker.sock:/var/run/docker.sock
-      # Shared storage for workspace volume mounts (compute creates dirs, workspaces mount them)
-      - /tmp/podex-storage:/tmp/podex-storage
+      # Persistent workspace storage
+      - workspace_data:/var/lib/podex/workspaces
     depends_on:
       redis:
         condition: service_healthy
@@ -249,7 +238,7 @@ services:
   # === USER WORKSPACE IMAGE (build only) ===
   workspace-base:
     build:
-      context: ./infrastructure/docker/workspace
+      context: ./docker/workspace
       dockerfile: Dockerfile
     image: podex/workspace:latest
     profiles:
@@ -278,7 +267,7 @@ services:
       SENTRY_ORG: ${SENTRY_ORG:-}
       SENTRY_PROJECT: ${SENTRY_PROJECT:-}
       SENTRY_AUTH_TOKEN: ${SENTRY_AUTH_TOKEN:-}
-      # Push Notifications (requires VAPID_PUBLIC_KEY to be set)
+      # Push Notifications
       NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
     volumes:
       - ./apps/web/src:/app/apps/web/src
@@ -290,6 +279,7 @@ volumes:
   postgres_data:
   redis_data:
   ollama_data:
+  workspace_data:
 
 networks:
   default:

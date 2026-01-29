@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func, quoted_name
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func, quoted_name
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -431,6 +431,27 @@ class Workspace(Base):
         index=True,
     )
 
+    # Multi-server orchestration: Which server hosts this workspace
+    server_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("workspace_servers.id", ondelete="SET NULL"),
+        index=True,
+    )
+
+    # Container/volume tracking for Docker workspaces
+    container_name: Mapped[str | None] = mapped_column(String(255))
+    volume_name: Mapped[str | None] = mapped_column(String(255))
+
+    # Resource allocation
+    assigned_cpu: Mapped[float | None] = mapped_column(Float)
+    assigned_memory_mb: Mapped[int | None] = mapped_column(Integer)
+    assigned_disk_gb: Mapped[int | None] = mapped_column(Integer)
+
+    # Networking
+    internal_ip: Mapped[str | None] = mapped_column(String(45))  # IPv6-safe length
+    workspace_ssh_port: Mapped[int | None] = mapped_column(Integer)
+    workspace_http_port: Mapped[int | None] = mapped_column(Integer)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -446,6 +467,10 @@ class Workspace(Base):
     # Relationships
     session: Mapped["Session | None"] = relationship("Session", back_populates="workspace")
     local_pod: Mapped["LocalPod | None"] = relationship("LocalPod")
+    server: Mapped["WorkspaceServer | None"] = relationship(  # type: ignore[name-defined]  # noqa: F821
+        "WorkspaceServer",
+        back_populates="workspaces",
+    )
     file_changes: Mapped[list["FileChange"]] = relationship(
         "FileChange",
         back_populates="workspace",

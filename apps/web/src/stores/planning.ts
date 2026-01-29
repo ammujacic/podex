@@ -273,10 +273,3 @@ export function transformBackgroundTask(data: any): BackgroundPlanTask {
   };
 }
 
-// Available models for planning
-export const AVAILABLE_MODELS = [
-  { id: 'claude-opus-4-5', name: 'Claude Opus 4.5', tier: 'premium' },
-  { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', tier: 'standard' },
-  { id: 'gpt-4o', name: 'GPT-4o', tier: 'premium' },
-  { id: 'gpt-4o-mini', name: 'GPT-4o Mini', tier: 'standard' },
-] as const;

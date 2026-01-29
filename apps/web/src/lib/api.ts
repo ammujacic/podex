@@ -1397,9 +1397,6 @@ export async function deleteTemplate(templateId: string): Promise<void> {
 export interface UserConfig {
   id: string;
   user_id: string;
-  sync_dotfiles: boolean;
-  dotfiles_repo: string | null;
-  dotfiles_paths: string[] | null;
   default_shell: string;
   default_editor: string;
   git_name: string | null;
@@ -1410,9 +1407,6 @@ export interface UserConfig {
 }
 
 export interface UpdateUserConfigRequest {
-  sync_dotfiles?: boolean;
-  dotfiles_repo?: string | null;
-  dotfiles_paths?: string[];
   default_shell?: string;
   default_editor?: string;
   git_name?: string | null;

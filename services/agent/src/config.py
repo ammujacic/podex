@@ -31,22 +31,15 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
 
-    # GCS Storage
-    GCS_BUCKET: str = "podex-workspaces"
-    GCS_ENDPOINT_URL: str | None = None  # For emulator: http://localhost:4443
-
     # LLM Providers
-    LLM_PROVIDER: str = "vertex"  # vertex (default), anthropic, openai, ollama
-    ANTHROPIC_API_KEY: str | None = None
-    OPENAI_API_KEY: str | None = None
+    LLM_PROVIDER: str = "openrouter"  # openrouter (default), anthropic, openai, ollama
+    OPENROUTER_API_KEY: str | None = None  # For Podex-hosted models via OpenRouter
+    ANTHROPIC_API_KEY: str | None = None  # For users with own API keys
+    OPENAI_API_KEY: str | None = None  # For users with own API keys
 
     # Ollama (local LLM)
     OLLAMA_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen2.5-coder:14b"  # Best local coding model
-
-    # GCP (for Vertex AI - Podex Native)
-    GCP_PROJECT_ID: str | None = None
-    GCP_REGION: str = "us-east1"  # Region where Claude models are available
 
     # Default models by role (fallback only - actual defaults come from database)
     # Workspace configuration
@@ -105,7 +98,7 @@ class Settings(BaseSettings):
 
 
 # ==========================================
-# Vertex AI Model Configuration (Fallback Only)
+# Model Configuration (Fallback Only)
 # ==========================================
 # NOTE: All model configuration is admin-controlled via the database.
 # These hardcoded values are ONLY used as fallback when the API service

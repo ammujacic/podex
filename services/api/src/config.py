@@ -61,15 +61,6 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
 
-    # GCP
-    GCP_PROJECT_ID: str | None = None
-    GCP_REGION: str = "us-east1"
-
-    # GCS Storage
-    GCS_BUCKET: str = "podex-workspaces"
-    GCS_WORKSPACE_PREFIX: str = "workspaces"
-    GCS_ENDPOINT_URL: str | None = None  # For local emulator
-
     # Auth
     JWT_SECRET_KEY: str = _DEV_JWT_SECRET
     JWT_ALGORITHM: str = "HS256"
@@ -160,18 +151,16 @@ class Settings(BaseSettings):
     CLOUDFLARE_ZONE_ID: str | None = None  # Zone for tunnel.podex.dev
     TUNNEL_DOMAIN: str = "tunnel.podex.dev"  # Base domain for public URLs
 
-    # Voice/Audio settings (Google Cloud TTS and Speech)
-    DEFAULT_TTS_VOICE_ID: str = "en-US-Neural2-F"  # GCP TTS voice
+    # Voice/Audio settings
+    # Voice provider: "local" (pyttsx3/whisper), "openai", "google" (GCP)
+    VOICE_PROVIDER: str = "local"
+    DEFAULT_TTS_VOICE_ID: str = "alloy"  # OpenAI TTS voice (alloy, echo, fable, onyx, nova, shimmer)
     DEFAULT_TTS_LANGUAGE: str = "en-US"
     DEFAULT_SPEECH_LANGUAGE: str = "en-US"
-    VOICE_AUDIO_GCS_PREFIX: str = "audio/voice"
-
-    # AWS Polly settings (for voice synthesis)
-    DEFAULT_POLLY_VOICE_ID: str = "Joanna"
-    DEFAULT_POLLY_ENGINE: str = "neural"
-
-    # AWS Transcribe settings (for speech-to-text)
-    DEFAULT_TRANSCRIBE_LANGUAGE: str = "en-US"
+    # OpenAI TTS model: "tts-1" (faster) or "tts-1-hd" (higher quality)
+    OPENAI_TTS_MODEL: str = "tts-1"
+    # Whisper model for local STT: "tiny", "base", "small", "medium", "large"
+    WHISPER_MODEL: str = "base"
 
     # Cache settings
     CACHE_TTL_TEMPLATES: int = 3600  # 1 hour for templates
@@ -211,9 +200,10 @@ class Settings(BaseSettings):
     VAPID_EMAIL: str = "mailto:admin@podex.io"
 
     # AI/LLM providers
-    LLM_PROVIDER: str = "vertex"  # vertex (default), anthropic, openai, ollama
-    ANTHROPIC_API_KEY: str | None = None
-    OPENAI_API_KEY: str | None = None
+    LLM_PROVIDER: str = "openrouter"  # openrouter (default), anthropic, openai, ollama
+    OPENROUTER_API_KEY: str | None = None  # For Podex-hosted models via OpenRouter
+    ANTHROPIC_API_KEY: str | None = None  # For users with own API keys
+    OPENAI_API_KEY: str | None = None  # For users with own API keys
     OLLAMA_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen2.5-coder:14b"
 

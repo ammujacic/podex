@@ -11,7 +11,6 @@ from openai import AsyncOpenAI
 
 from podex_shared import TokenUsageParams, get_usage_tracker
 from src.config import settings
-from src.providers.vertex import VertexAIProvider
 
 logger = structlog.get_logger()
 
@@ -83,7 +82,7 @@ class LLMProvider:
         self._anthropic_client: AsyncAnthropic | None = None
         self._openai_client: AsyncOpenAI | None = None
         self._ollama_client: AsyncOpenAI | None = None
-        self._vertex_provider: VertexAIProvider | None = None
+        self._openrouter_client: AsyncOpenAI | None = None
 
     def _estimate_tokens(self, text: str) -> int:
         """Estimate token count from text length.
@@ -127,11 +126,15 @@ class LLMProvider:
         return self._ollama_client
 
     @property
-    def vertex_provider(self) -> VertexAIProvider:
-        """Get or create Vertex AI provider."""
-        if self._vertex_provider is None:
-            self._vertex_provider = VertexAIProvider()
-        return self._vertex_provider
+    def openrouter_client(self) -> AsyncOpenAI:
+        """Get or create OpenRouter client (using OpenAI-compatible API)."""
+        if self._openrouter_client is None:
+            # OpenRouter uses OpenAI-compatible API
+            self._openrouter_client = AsyncOpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=settings.OPENROUTER_API_KEY,
+            )
+        return self._openrouter_client
 
     def _get_anthropic_client(self, api_key: str | None = None) -> AsyncAnthropic:
         """Get Anthropic client, optionally with user-provided API key.
@@ -340,14 +343,14 @@ class LLMProvider:
         if llm_api_keys and provider in llm_api_keys:
             return "external"
 
-        # Vertex AI is our platform provider - counts as included
-        if provider == "vertex":
+        # OpenRouter is our platform provider - counts as included
+        if provider == "openrouter":
             return "included"
 
         # For anthropic/openai without user keys, check if we're using platform keys
-        # If using platform API keys (not Vertex), this is external since user is
+        # If using platform API keys (not OpenRouter), this is external since user is
         # consuming their own quota on those providers
-        # NOTE: In current architecture, only Vertex is "included" (platform-provided)
+        # NOTE: In current architecture, only OpenRouter is "included" (platform-provided)
         # Direct anthropic/openai through platform keys is still "external"
         return "external"
 
@@ -389,8 +392,8 @@ class LLMProvider:
                 temperature=request.temperature,
                 api_key=user_key,
             )
-        elif resolved_provider == "vertex":
-            result = await self._complete_vertex(
+        elif resolved_provider == "openrouter":
+            result = await self._complete_openrouter(
                 model=request.model,
                 messages=request.messages,
                 tools=request.tools,
@@ -471,8 +474,8 @@ class LLMProvider:
                     api_key=user_key,
                 ):
                     yield event
-            elif resolved_provider == "vertex":
-                async for event in self._stream_vertex(
+            elif resolved_provider == "openrouter":
+                async for event in self._stream_openrouter(
                     model=request.model,
                     messages=request.messages,
                     tools=request.tools,
@@ -695,7 +698,7 @@ class LLMProvider:
             "stop_reason": choice.finish_reason,
         }
 
-    async def _complete_vertex(
+    async def _complete_openrouter(
         self,
         model: str,
         messages: list[dict[str, str]],
@@ -703,14 +706,101 @@ class LLMProvider:
         max_tokens: int = 4096,
         temperature: float = 0.7,
     ) -> dict[str, Any]:
-        """Complete using Google Cloud Vertex AI (Claude models via Anthropic partnership)."""
-        return await self.vertex_provider.complete(
-            model=model,
-            messages=messages,
-            tools=tools,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        """Complete using OpenRouter API (unified access to multiple LLM providers)."""
+        # Map internal model IDs to OpenRouter model identifiers
+        openrouter_model = self._map_to_openrouter_model(model)
+
+        # Convert Anthropic-style tools to OpenAI format
+        openai_tools = None
+        if tools:
+            openai_tools = []
+            for tool in tools:
+                openai_tools.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool["name"],
+                            "description": tool["description"],
+                            "parameters": tool["input_schema"],
+                        },
+                    },
+                )
+
+        # Build request parameters
+        request_params: dict[str, Any] = {
+            "model": openrouter_model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
+        if openai_tools:
+            request_params["tools"] = openai_tools
+            request_params["tool_choice"] = "auto"
+
+        # Make API call
+        response = await self.openrouter_client.chat.completions.create(**request_params)
+
+        # Extract content and tool calls
+        content = ""
+        tool_calls = []
+
+        choice = response.choices[0]
+        message = choice.message
+
+        if message.content:
+            content = message.content
+
+        if message.tool_calls:
+            for tc in message.tool_calls:
+                tool_calls.append(
+                    {
+                        "id": tc.id,
+                        "name": tc.function.name,
+                        "arguments": json.loads(tc.function.arguments),
+                    },
+                )
+
+        return {
+            "content": content,
+            "tool_calls": tool_calls,
+            "usage": {
+                "input_tokens": response.usage.prompt_tokens if response.usage else 0,
+                "output_tokens": response.usage.completion_tokens if response.usage else 0,
+                "total_tokens": response.usage.total_tokens if response.usage else 0,
+            },
+            "stop_reason": choice.finish_reason,
+        }
+
+    def _map_to_openrouter_model(self, model: str) -> str:
+        """Map internal model IDs to OpenRouter model identifiers.
+
+        Args:
+            model: Internal model identifier
+
+        Returns:
+            OpenRouter model identifier (e.g., "anthropic/claude-sonnet-4-5")
+        """
+        # OpenRouter uses provider/model format
+        model_mapping = {
+            # Claude 4.5 family
+            "claude-opus-4-5": "anthropic/claude-opus-4-5",
+            "claude-sonnet-4-5": "anthropic/claude-sonnet-4-5",
+            "claude-haiku-4-5": "anthropic/claude-haiku-4-5",
+            # Short aliases
+            "opus": "anthropic/claude-opus-4-5",
+            "sonnet": "anthropic/claude-sonnet-4-5",
+            "haiku": "anthropic/claude-haiku-4-5",
+            # Gemini models
+            "gemini-2.0-flash": "google/gemini-2.0-flash-001",
+            "gemini-2.5-pro-preview": "google/gemini-2.5-pro-preview-05-06",
+            # OpenAI models
+            "gpt-4o": "openai/gpt-4o",
+            "gpt-4o-mini": "openai/gpt-4o-mini",
+            "o1": "openai/o1",
+            "o1-mini": "openai/o1-mini",
+        }
+        return model_mapping.get(model, model)
 
     async def _complete_ollama(
         self,
@@ -1064,7 +1154,7 @@ class LLMProvider:
             stop_reason=finish_reason or "stop",
         )
 
-    async def _stream_vertex(
+    async def _stream_openrouter(
         self,
         model: str,
         messages: list[dict[str, str]],
@@ -1072,25 +1162,110 @@ class LLMProvider:
         max_tokens: int = 4096,
         temperature: float = 0.7,
     ) -> AsyncGenerator[StreamEvent, None]:
-        """Stream completion using Google Cloud Vertex AI."""
-        async for vertex_event in self.vertex_provider.stream(
-            model=model,
-            messages=messages,
-            tools=tools,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        ):
-            # Convert VertexStreamEvent to StreamEvent
+        """Stream completion using OpenRouter API."""
+        # Map internal model IDs to OpenRouter model identifiers
+        openrouter_model = self._map_to_openrouter_model(model)
+
+        # Convert Anthropic-style tools to OpenAI format
+        openai_tools = None
+        if tools:
+            openai_tools = []
+            for tool in tools:
+                openai_tools.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool["name"],
+                            "description": tool["description"],
+                            "parameters": tool["input_schema"],
+                        },
+                    },
+                )
+
+        # Build request parameters
+        request_params: dict[str, Any] = {
+            "model": openrouter_model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+
+        if openai_tools:
+            request_params["tools"] = openai_tools
+            request_params["tool_choice"] = "auto"
+
+        # Track tool calls being built
+        tool_calls_building: dict[int, dict[str, Any]] = {}
+        usage_data: dict[str, int] = {}
+        finish_reason: str | None = None
+
+        stream = await self.openrouter_client.chat.completions.create(**request_params)
+
+        async for chunk in stream:
+            if not chunk.choices and chunk.usage:
+                # Final chunk with usage
+                usage_data = {
+                    "input_tokens": chunk.usage.prompt_tokens,
+                    "output_tokens": chunk.usage.completion_tokens,
+                    "total_tokens": chunk.usage.total_tokens,
+                }
+                continue
+
+            if not chunk.choices:
+                continue
+
+            choice = chunk.choices[0]
+            delta = choice.delta
+
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+
+            # Handle text content
+            if delta.content:
+                yield StreamEvent(type="token", content=delta.content)
+
+            # Handle tool calls
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in tool_calls_building:
+                        # New tool call starting
+                        tool_calls_building[idx] = {
+                            "id": tc.id or "",
+                            "name": tc.function.name if tc.function else "",
+                            "arguments": "",
+                        }
+                        if tc.function and tc.function.name:
+                            yield StreamEvent(
+                                type="tool_call_start",
+                                tool_call_id=tc.id,
+                                tool_name=tc.function.name,
+                            )
+
+                    # Accumulate arguments
+                    if tc.function and tc.function.arguments:
+                        tool_calls_building[idx]["arguments"] += tc.function.arguments
+
+        # Emit tool call ends
+        for tc_data in tool_calls_building.values():
+            try:
+                tool_input = json.loads(tc_data["arguments"]) if tc_data["arguments"] else {}
+            except json.JSONDecodeError:
+                tool_input = {}
             yield StreamEvent(
-                type=vertex_event.type,  # type: ignore[arg-type]
-                content=vertex_event.content,
-                tool_call_id=vertex_event.tool_call_id,
-                tool_name=vertex_event.tool_name,
-                tool_input=vertex_event.tool_input,
-                usage=vertex_event.usage,
-                stop_reason=vertex_event.stop_reason,
-                error=vertex_event.error,
+                type="tool_call_end",
+                tool_call_id=tc_data["id"],
+                tool_name=tc_data["name"],
+                tool_input=tool_input,
             )
+
+        yield StreamEvent(
+            type="done",
+            usage=usage_data,
+            stop_reason=finish_reason or "stop",
+        )
 
     async def _stream_ollama(
         self,

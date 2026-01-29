@@ -24,10 +24,7 @@ class Settings(BaseSettings):
     # CORS - allowed origins for API access
     cors_origins: list[str] = ["http://localhost:3000"]
 
-    # Compute mode: docker for local, gcp for production
-    compute_mode: Literal["docker", "gcp"] = "docker"
-
-    # Docker settings (local development)
+    # Docker settings
     docker_host: str = "unix:///var/run/docker.sock"
     max_workspaces: int = 10
     workspace_timeout: int = 3600  # 1 hour idle timeout
@@ -35,36 +32,22 @@ class Settings(BaseSettings):
     workspace_image: str = "podex/workspace:latest"
     docker_network: str = "podex-dev"
 
-    # GCP settings
-    gcp_project_id: str | None = None
-    gcp_region: str = "us-east1"
+    # Multi-server Docker settings
+    docker_tls_enabled: bool = False  # Enable TLS for remote Docker API
+    docker_cert_path: str = "/etc/docker/certs"  # Path to TLS certificates
 
-    # Container images for different architectures (GCP production)
-    # These are GCR/Artifact Registry image URIs
-    workspace_image_x86: str = "podex/workspace:latest-amd64"
-    workspace_image_gpu: str = "podex/workspace:latest-gpu"  # x86 + CUDA
-
-    # GKE cluster settings
-    gke_cluster_name: str = "podex-workspaces"
-    gke_namespace: str = "workspaces"
-
-    # Cloud Run settings (for serverless workspaces)
-    cloud_run_service_account: str | None = None
+    # Container runtime for workspace isolation
+    docker_runtime: str = "runsc"  # gVisor runtime for security isolation
 
     # Redis for state management
     redis_url: str = "redis://localhost:6379"
 
-    # GCS storage for workspace files
-    gcs_bucket: str = "podex-workspaces"
-    gcs_prefix: str = "workspaces"
-    gcs_sync_interval: int = 30  # Seconds between background syncs
+    # Local storage for workspace files (Docker volumes)
+    workspace_volume_base: str = "/var/lib/podex/workspaces"
 
-    # Local storage for Docker development (per-user bucket emulation)
-    # Each user gets a directory: {local_storage_path}/{user_id}/
-    local_storage_path: str = "/tmp/podex-storage"  # noqa: S108
-
-    # GCS emulator endpoint (for local development)
-    gcs_emulator_host: str | None = None
+    # Workspace container images for different architectures
+    workspace_image_arm64: str = "podex/workspace:latest-arm64"
+    workspace_image_amd64: str = "podex/workspace:latest-amd64"
 
     # Workspace communication security
     # When enabled, workspace containers are accessed via HTTPS with token auth

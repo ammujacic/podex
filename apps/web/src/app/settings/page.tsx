@@ -12,8 +12,6 @@ import {
   Loader2,
   ChevronLeft,
   ChevronRight,
-  Plus,
-  Trash2,
   Check,
   Box,
   RotateCcw,
@@ -36,7 +34,7 @@ import { ExternalAgentSettings } from '@/components/settings/ExternalAgentSettin
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { cn } from '@/lib/utils';
 
-type TabId = 'general' | 'dotfiles' | 'git' | 'templates' | 'external-agents';
+type TabId = 'general' | 'shell' | 'git' | 'templates' | 'external-agents';
 
 interface Tab {
   id: TabId;
@@ -46,7 +44,7 @@ interface Tab {
 
 const tabs: Tab[] = [
   { id: 'general', label: 'General', icon: <Settings className="w-4 h-4" /> },
-  { id: 'dotfiles', label: 'Shell & Dotfiles', icon: <Terminal className="w-4 h-4" /> },
+  { id: 'shell', label: 'Shell', icon: <Terminal className="w-4 h-4" /> },
   { id: 'git', label: 'Git Config', icon: <GitBranch className="w-4 h-4" /> },
   { id: 'templates', label: 'Pod Templates', icon: <FileCode className="w-4 h-4" /> },
   { id: 'external-agents', label: 'External Agents', icon: <Box className="w-4 h-4" /> },
@@ -85,16 +83,6 @@ function TemplateIcon({ icon, iconUrl }: { icon: string | null; iconUrl?: string
   }
   return <Box className="w-5 h-5 text-text-muted" />;
 }
-
-const defaultDotfilePaths = [
-  '.bashrc',
-  '.zshrc',
-  '.gitconfig',
-  '.npmrc',
-  '.vimrc',
-  '.config/starship.toml',
-  '.ssh/config',
-];
 
 interface GitHubConnectionStatus {
   connected: boolean;
@@ -145,9 +133,6 @@ export default function SettingsPage() {
         setConfig(configData);
         setTemplates(templatesData);
         setFormData({
-          sync_dotfiles: configData.sync_dotfiles,
-          dotfiles_repo: configData.dotfiles_repo,
-          dotfiles_paths: configData.dotfiles_paths || defaultDotfilePaths,
           default_shell: configData.default_shell,
           default_editor: configData.default_editor,
           git_name: configData.git_name,
@@ -201,25 +186,6 @@ export default function SettingsPage() {
 
   const updateFormData = (key: keyof UpdateUserConfigRequest, value: unknown) => {
     setFormData((prev) => ({ ...prev, [key]: value }));
-  };
-
-  const addDotfilePath = () => {
-    const paths = formData.dotfiles_paths || [];
-    updateFormData('dotfiles_paths', [...paths, '']);
-  };
-
-  const removeDotfilePath = (index: number) => {
-    const paths = formData.dotfiles_paths || [];
-    updateFormData(
-      'dotfiles_paths',
-      paths.filter((_, i) => i !== index)
-    );
-  };
-
-  const updateDotfilePath = (index: number, value: string) => {
-    const paths = [...(formData.dotfiles_paths || [])];
-    paths[index] = value;
-    updateFormData('dotfiles_paths', paths);
   };
 
   const handleResetTutorial = () => {
@@ -517,13 +483,13 @@ export default function SettingsPage() {
               </div>
             )}
 
-            {/* Dotfiles Tab */}
-            {effectiveTab === 'dotfiles' && (
+            {/* Shell Tab */}
+            {effectiveTab === 'shell' && (
               <div className="space-y-6">
                 <div>
-                  <h2 className="text-lg font-medium text-text-primary mb-1">Shell & Dotfiles</h2>
+                  <h2 className="text-lg font-medium text-text-primary mb-1">Shell Configuration</h2>
                   <p className="text-sm text-text-secondary">
-                    Configure your shell and sync dotfiles across pods.
+                    Configure your default shell for workspaces.
                   </p>
                 </div>
 
@@ -543,77 +509,10 @@ export default function SettingsPage() {
                         </option>
                       ))}
                     </select>
+                    <p className="text-xs text-text-muted mt-1">
+                      The shell used when opening terminals in workspaces
+                    </p>
                   </div>
-
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-text-primary">Sync Dotfiles</p>
-                      <p className="text-xs text-text-muted">
-                        Automatically sync shell configs between pods
-                      </p>
-                    </div>
-                    <button
-                      onClick={() => updateFormData('sync_dotfiles', !formData.sync_dotfiles)}
-                      className={`relative w-11 h-6 rounded-full transition-colors ${
-                        formData.sync_dotfiles ? 'bg-accent-primary' : 'bg-overlay'
-                      }`}
-                    >
-                      <span
-                        className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-transform ${
-                          formData.sync_dotfiles ? 'left-6' : 'left-1'
-                        }`}
-                      />
-                    </button>
-                  </div>
-
-                  {formData.sync_dotfiles && (
-                    <>
-                      <div>
-                        <label className="block text-sm font-medium text-text-primary mb-1">
-                          Dotfiles Repository (Optional)
-                        </label>
-                        <Input
-                          value={formData.dotfiles_repo || ''}
-                          onChange={(e) => updateFormData('dotfiles_repo', e.target.value || null)}
-                          placeholder="https://github.com/username/dotfiles"
-                        />
-                        <p className="text-xs text-text-muted mt-1">
-                          Clone dotfiles from a git repository on pod startup
-                        </p>
-                      </div>
-
-                      <div>
-                        <div className="flex items-center justify-between mb-2">
-                          <label className="text-sm font-medium text-text-primary">
-                            Files to Sync
-                          </label>
-                          <Button variant="ghost" size="sm" onClick={addDotfilePath}>
-                            <Plus className="w-4 h-4 mr-1" />
-                            Add
-                          </Button>
-                        </div>
-                        <div className="space-y-2">
-                          {(formData.dotfiles_paths || []).map((path, index) => (
-                            <div key={index} className="flex gap-2">
-                              <Input
-                                value={path}
-                                onChange={(e) => updateDotfilePath(index, e.target.value)}
-                                placeholder=".bashrc"
-                                className="flex-1"
-                              />
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => removeDotfilePath(index)}
-                              >
-                                <Trash2 className="w-4 h-4 text-accent-error" />
-                              </Button>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </>
-                  )}
                 </div>
               </div>
             )}
