@@ -1503,6 +1503,8 @@ export interface CreateSessionRequest {
   local_pod_id?: string;
   // Mount path for local pod workspace (optional)
   mount_path?: string;
+  // Region preference for workspace placement
+  region_preference?: string;
 }
 
 export async function createSession(data: CreateSessionRequest): Promise<Session> {
@@ -1610,6 +1612,28 @@ export async function scaleWorkspace(
   return api.post<WorkspaceScaleResponse>(`/api/sessions/${sessionId}/scale-workspace`, {
     new_tier: newTier,
   });
+}
+
+// ==================== Workspace Resource Metrics ====================
+
+export interface WorkspaceResourceMetrics {
+  cpu_percent: number;
+  cpu_limit_cores: number;
+  memory_used_mb: number;
+  memory_limit_mb: number;
+  memory_percent: number;
+  disk_read_mb: number;
+  disk_write_mb: number;
+  network_rx_mb: number;
+  network_tx_mb: number;
+  collected_at: string | null;
+  container_uptime_seconds: number;
+}
+
+export async function getWorkspaceResources(
+  workspaceId: string
+): Promise<WorkspaceResourceMetrics> {
+  return api.get<WorkspaceResourceMetrics>(`/compute/workspaces/${workspaceId}/resources`);
 }
 
 // ==================== Git ====================
@@ -2697,6 +2721,7 @@ export interface HardwareSpecResponse {
   gpu_count: number;
   storage_gb_default: number;
   storage_gb_max: number;
+  bandwidth_mbps: number | null; // Network bandwidth allocation in Mbps
   hourly_rate: number; // Base cost (provider cost)
   is_available: boolean;
   requires_subscription: string | null;
@@ -3267,14 +3292,6 @@ export async function toggleAdminMCPServer(serverId: string): Promise<AdminDefau
 // ==================== Local Pods (Self-Hosted Compute) ====================
 
 export type LocalPodStatus = 'offline' | 'online' | 'busy' | 'error';
-export type LocalPodMode = 'docker' | 'native';
-export type LocalPodSecurity = 'allowlist' | 'unrestricted';
-
-export interface MountConfig {
-  path: string;
-  mode: 'rw' | 'ro';
-  label: string | null;
-}
 
 export interface LocalPod {
   id: string;
@@ -3286,16 +3303,10 @@ export interface LocalPod {
   last_error: string | null;
   os_info: string | null;
   architecture: string | null;
-  docker_version: string | null;
   total_memory_mb: number | null;
   total_cpu_cores: number | null;
   current_workspaces: number;
   labels: Record<string, string> | null;
-  // Execution mode and mount configuration
-  mode: LocalPodMode;
-  native_security: LocalPodSecurity | null;
-  native_workspace_dir: string | null;
-  mounts: MountConfig[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -6193,4 +6204,26 @@ export async function getProductivitySummary(days: number = 30): Promise<Product
  */
 export async function getProductivityTrends(days: number = 30): Promise<ProductivityTrends> {
   return api.get<ProductivityTrends>(`/api/productivity/trends?days=${days}`);
+}
+
+// ============================================================================
+// Region Capacity (for workspace placement)
+// ============================================================================
+
+export interface TierCapacity {
+  available: boolean;
+  slots: number;
+}
+
+export interface RegionCapacityResponse {
+  region: string;
+  tiers: Record<string, TierCapacity>;
+}
+
+/**
+ * Get available capacity per tier for a specific region.
+ * Used to show which hardware tiers are available in the selected region.
+ */
+export async function getRegionCapacity(region: string): Promise<RegionCapacityResponse> {
+  return api.get<RegionCapacityResponse>(`/api/servers/capacity/${region}`);
 }
