@@ -73,10 +73,7 @@ export function ModelFilters({
     <div
       role="group"
       aria-label="Filter by category"
-      className={cn(
-        'flex items-center gap-2 overflow-x-auto scrollbar-hide',
-        className
-      )}
+      className={cn('flex items-center gap-2 overflow-x-auto scrollbar-hide', className)}
     >
       {/* Category chips */}
       <div className="flex items-center gap-2 flex-shrink-0">

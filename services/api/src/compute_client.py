@@ -420,6 +420,23 @@ class ComputeClient:
             else:
                 raise
 
+    async def get_scale_options(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        """Get available scaling options for a workspace.
+
+        Returns which tiers the workspace can scale to based on current
+        server capacity (same-server only).
+        """
+        result: dict[str, Any] = await self._request(
+            "GET",
+            f"/workspaces/{workspace_id}/scale-options",
+            user_id=user_id,
+        )
+        return result
+
     async def scale_workspace(
         self,
         workspace_id: str,

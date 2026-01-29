@@ -1,4 +1,12 @@
-import type { Agent, AgentMessage, Session, User, Plan, Subscription } from '@/stores/sessionTypes';
+import type {
+  Agent,
+  AgentMessage,
+  ConversationSession,
+  Session,
+  User,
+  Plan,
+  Subscription,
+} from '@/stores/sessionTypes';
 import type {
   SubscriptionPlan,
   Subscription as BillingSubscription,
@@ -44,31 +52,18 @@ export const mockAgent: Agent = {
   model: 'claude-opus-4-5-20251101',
   status: 'idle' as const,
   color: '#7C3AED',
-  messages: [],
+  conversationSessionId: null,
   position: { x: 0, y: 0, width: 400, height: 600, zIndex: 1 },
   gridSpan: { colSpan: 1, rowSpan: 1 },
   mode: 'ask',
 };
 
-export const mockAgentWithMessages: Agent = {
+export const mockAgentWithConversation: Agent = {
   ...mockAgent,
   id: 'agent-2',
   name: 'Developer',
   role: 'coder',
-  messages: [
-    {
-      id: 'msg-1',
-      role: 'user' as const,
-      content: 'Hello, can you help me?',
-      timestamp: new Date(Date.now() - 60000),
-    },
-    {
-      id: 'msg-2',
-      role: 'assistant' as const,
-      content: "Of course! I'd be happy to help.",
-      timestamp: new Date(Date.now() - 30000),
-    },
-  ],
+  conversationSessionId: 'conv-1',
 };
 
 // Message fixtures
@@ -86,34 +81,68 @@ export const mockAssistantMessage: AgentMessage = {
   timestamp: new Date(),
 };
 
+// Conversation Session fixtures
+export const mockConversationSession = {
+  id: 'conv-1',
+  name: 'Test Conversation',
+  messages: [
+    {
+      id: 'msg-1',
+      role: 'user' as const,
+      content: 'Hello, can you help me?',
+      timestamp: new Date(Date.now() - 60000),
+    },
+    {
+      id: 'msg-2',
+      role: 'assistant' as const,
+      content: "Of course! I'd be happy to help.",
+      timestamp: new Date(Date.now() - 30000),
+    },
+  ],
+  attachedToAgentId: 'agent-2',
+  attachedAgentIds: ['agent-2'],
+  messageCount: 2,
+  lastMessageAt: new Date(Date.now() - 30000).toISOString(),
+  createdAt: new Date(Date.now() - 60000).toISOString(),
+  updatedAt: new Date(Date.now() - 30000).toISOString(),
+};
+
+export const mockEmptyConversationSession = {
+  id: 'conv-empty',
+  name: 'Empty Conversation',
+  messages: [],
+  attachedToAgentId: null,
+  attachedAgentIds: [],
+  messageCount: 0,
+  lastMessageAt: null,
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+};
+
 // Session fixtures
 export const mockSession: Session = {
   id: 'session-1',
   name: 'Test Session',
   agents: [],
+  conversationSessions: [],
   workspaceId: 'workspace-1',
   viewMode: 'grid',
-  createdAt: '2024-01-01T00:00:00Z',
-  updatedAt: '2024-01-01T00:00:00Z',
   activeAgentId: null,
   filePreviews: [],
-  editorGridCard: null,
-  previewGridCard: null,
+  editorGridCardId: null,
+  previewGridCardId: null,
   workspaceStatus: 'stopped',
   workspaceStatusChecking: false,
   workspaceError: null,
-  standbyAt: null,
-  standbySettings: null,
-  branch: null,
-  gitUrl: null,
-  tier: null,
+  branch: 'main',
 };
 
 export const mockSessionWithMultipleAgents: Session = {
   ...mockSession,
   id: 'session-2',
   name: 'Multi-Agent Session',
-  agents: [mockAgent, mockAgentWithMessages],
+  agents: [mockAgent, mockAgentWithConversation],
+  conversationSessions: [mockConversationSession],
 };
 
 // Plan fixtures

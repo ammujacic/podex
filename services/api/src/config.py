@@ -154,7 +154,9 @@ class Settings(BaseSettings):
     # Voice/Audio settings
     # Voice provider: "local" (pyttsx3/whisper), "openai", "google" (GCP)
     VOICE_PROVIDER: str = "local"
-    DEFAULT_TTS_VOICE_ID: str = "alloy"  # OpenAI TTS voice (alloy, echo, fable, onyx, nova, shimmer)
+    DEFAULT_TTS_VOICE_ID: str = (
+        "alloy"  # OpenAI TTS voice (alloy, echo, fable, onyx, nova, shimmer)
+    )
     DEFAULT_TTS_LANGUAGE: str = "en-US"
     DEFAULT_SPEECH_LANGUAGE: str = "en-US"
     # OpenAI TTS model: "tts-1" (faster) or "tts-1-hd" (higher quality)
@@ -180,9 +182,9 @@ class Settings(BaseSettings):
 
     # Email configuration
     EMAIL_BACKEND: str = "console"  # console, smtp, sendgrid
-    EMAIL_FROM_ADDRESS: str = "noreply@podex.dev"
+    EMAIL_FROM_ADDRESS: str = "podex@podex.dev"
     EMAIL_FROM_NAME: str = "Podex"
-    EMAIL_REPLY_TO: str = "support@podex.dev"
+    EMAIL_REPLY_TO: str = "podex@podex.dev"
 
     # SMTP settings (when EMAIL_BACKEND=smtp)
     SMTP_HOST: str = "localhost"
@@ -206,6 +208,10 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str | None = None  # For users with own API keys
     OLLAMA_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen2.5-coder:14b"
+
+    # GCP/Vertex AI Configuration (for Claude via Vertex AI)
+    GCP_PROJECT_ID: str | None = None
+    GCP_REGION: str = "us-east5"
 
     # Internal Service Authentication
     # REQUIRED in all environments - set a dev token for local development

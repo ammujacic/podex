@@ -762,7 +762,7 @@ _lsp_manager: LSPManager | None = None
 
 def get_lsp_manager() -> LSPManager:
     """Get or create the LSP manager singleton."""
-    global _lsp_manager  # noqa: PLW0603
+    global _lsp_manager
     if _lsp_manager is None:
         _lsp_manager = LSPManager()
     return _lsp_manager

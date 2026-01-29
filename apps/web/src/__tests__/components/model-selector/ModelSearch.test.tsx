@@ -120,9 +120,7 @@ describe('ModelSearch', () => {
   });
 
   it('applies custom className', () => {
-    const { container } = render(
-      <ModelSearch {...defaultProps} className="custom-search-class" />
-    );
+    const { container } = render(<ModelSearch {...defaultProps} className="custom-search-class" />);
 
     const wrapper = container.firstChild;
     expect(wrapper).toHaveClass('custom-search-class');

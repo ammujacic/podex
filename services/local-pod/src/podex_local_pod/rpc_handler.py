@@ -2,7 +2,7 @@
 
 Handles workspace management commands from Podex cloud.
 
-For native mode, operations are STATELESS - the backend passes working_dir
+Operations are STATELESS - the backend passes working_dir
 with each call and the pod doesn't need to track workspace state.
 """
 
@@ -33,9 +33,7 @@ TERMINAL_FIFO_DIR = "/tmp/podex-terminals"  # Directory for terminal FIFOs
 class RPCHandler:
     """Handles RPC requests from Podex cloud.
 
-    For native mode, most operations are stateless and use working_dir
-    passed from the backend. The manager's _workspaces dict is only
-    used for Docker mode where we need to track container IDs.
+    All operations are stateless and use working_dir passed from the backend.
     """
 
     def __init__(
@@ -47,8 +45,8 @@ class RPCHandler:
         """Initialize the handler.
 
         Args:
-            manager: Workspace manager (Docker or Native) for workspace operations
-            config: Local pod configuration for security settings
+            manager: Workspace manager for workspace operations
+            config: Local pod configuration
             sio: Socket.IO client for emitting events to cloud
         """
         self.manager = manager
@@ -64,7 +62,7 @@ class RPCHandler:
 
         # Method dispatch table
         self._handlers: dict[str, Any] = {
-            # Workspace lifecycle (mostly for Docker mode)
+            # Workspace lifecycle (mostly no-ops for stateless mode)
             "workspace.create": self._create_workspace,
             "workspace.stop": self._stop_workspace,
             "workspace.delete": self._delete_workspace,
@@ -172,28 +170,17 @@ class RPCHandler:
         if cleaned > 0:
             logger.info("Cleaned orphaned FIFOs on startup", count=cleaned)
 
-    def _is_native_mode(self) -> bool:
-        """Check if running in native mode."""
-        return self.config is not None and self.config.is_native_mode()
-
     def _get_working_dir(self, params: dict[str, Any]) -> str:
-        """Get working directory from params, workspace, or default.
+        """Get working directory from params or default to home.
 
-        For native mode, prefers working_dir from params (passed by backend).
-        Falls back to workspace lookup for Docker mode or legacy calls.
+        Args:
+            params: RPC parameters containing working_dir
+
+        Returns:
+            Working directory path
         """
-        # First try: working_dir from params (stateless approach)
         if params.get("working_dir"):
             return str(params["working_dir"])
-
-        # Second try: look up workspace (for Docker mode or legacy)
-        workspace_id = params.get("workspace_id")
-        if workspace_id:
-            workspace = self.manager.workspaces.get(workspace_id)
-            if workspace:
-                return str(workspace.get("working_dir", os.path.expanduser("~")))
-
-        # Default: home directory
         return os.path.expanduser("~")
 
     async def handle(self, method: str, params: dict[str, Any]) -> Any:
@@ -216,7 +203,7 @@ class RPCHandler:
         logger.debug("Handling RPC", method=method)
         return await handler(params)
 
-    # ==================== Workspace Lifecycle (mostly for Docker mode) ====================
+    # ==================== Workspace Lifecycle (no-ops for stateless mode) ====================
 
     async def _create_workspace(self, params: dict[str, Any]) -> dict[str, Any]:
         """Create a new workspace."""
@@ -269,24 +256,13 @@ class RPCHandler:
     async def _exec_command(self, params: dict[str, Any]) -> dict[str, Any]:
         """Execute command in workspace.
 
-        For native mode, uses working_dir from params (stateless).
-        For Docker mode, looks up container from workspace.
+        Uses working_dir from params (stateless).
         """
         working_dir = self._get_working_dir(params)
         command = params["command"]
         timeout = params.get("timeout", 30)
 
-        if self._is_native_mode():
-            # Stateless execution - just run in the directory
-            return await self._exec_native(command, working_dir, timeout)
-
-        # Docker mode - delegate to manager (needs workspace for container ID)
-        return await self.manager.exec_command(
-            workspace_id=params["workspace_id"],
-            command=command,
-            working_dir=working_dir,
-            timeout=timeout,
-        )
+        return await self._exec_native(command, working_dir, timeout)
 
     async def _exec_native(
         self, command: str, working_dir: str, timeout: int = 30
@@ -407,10 +383,8 @@ class RPCHandler:
 
     async def _get_active_ports(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         """Get active ports in workspace."""
-        # For native mode, return empty - ports are on localhost
-        if self._is_native_mode():
-            return []
-        return await self.manager.get_active_ports(params["workspace_id"])
+        # Native mode - ports are on localhost, return empty
+        return []
 
     async def _proxy_request(self, params: dict[str, Any]) -> dict[str, Any]:
         """Proxy HTTP request to workspace."""
@@ -430,7 +404,7 @@ class RPCHandler:
         """Health check."""
         return {
             "status": "healthy",
-            "mode": "native" if self._is_native_mode() else "docker",
+            "mode": "native",
             "workspaces": len(self.manager.workspaces),
         }
 
@@ -440,7 +414,7 @@ class RPCHandler:
         """Browse host filesystem directory.
 
         Returns directory contents for workspace selection.
-        Respects security settings (allowlist vs unrestricted).
+        No security restrictions - full filesystem access.
 
         Args:
             params: Must contain 'path' (directory to list)
@@ -455,31 +429,6 @@ class RPCHandler:
             requested_path = os.path.expanduser(requested_path)
 
         path = Path(requested_path).resolve()
-
-        # Security check for allowlist mode
-        if self.config and self.config.native.security == "allowlist":
-            # Only allow browsing within configured mount paths
-            allowed_paths = []
-            if self.config.mounts:
-                allowed_paths = [Path(m.path).resolve() for m in self.config.mounts]
-
-            # Also allow browsing parent directories of mounts (to navigate to them)
-            # and home directory as a starting point
-            home = Path.home()
-            is_allowed = path == home or any(
-                path == mp or mp.is_relative_to(path) or path.is_relative_to(mp)
-                for mp in allowed_paths
-            )
-
-            if not is_allowed:
-                logger.warning("Access denied to path", path=str(path))
-                return {
-                    "path": str(path),
-                    "parent": str(path.parent) if path.parent != path else None,
-                    "entries": [],
-                    "error": "Access denied - path not in allowlist",
-                    "allowed_paths": [str(p) for p in allowed_paths],
-                }
 
         # Check if path exists and is a directory
         if not path.exists():
@@ -1011,12 +960,17 @@ class RPCHandler:
     async def _tunnel_start(self, params: dict[str, Any]) -> dict[str, Any]:
         """Start cloudflared for a workspace tunnel.
 
-        Params: workspace_id, config { token, port, hostname }.
+        Params: workspace_id, config { token, port, hostname, service_type }.
+
+        For HTTP tunnels (default): Uses --url flag with http://localhost:{port}
+        For SSH tunnels (service_type="ssh"): Uses API-managed config (no --url)
+            because the Cloudflare API config has the ssh:// service type.
         """
         workspace_id = params["workspace_id"]
         cfg = params.get("config") or {}
         token = cfg.get("token")
         port = cfg.get("port")
+        service_type = cfg.get("service_type", "http")  # "http" or "ssh"
         if not token or port is None:
             raise ValueError("tunnel config must include token and port")
 
@@ -1030,15 +984,30 @@ class RPCHandler:
         from .cloudflared_bundle import get_cloudflared_path
 
         cloudflared = get_cloudflared_path()
-        cmd = [
-            cloudflared,
-            "tunnel",
-            "run",
-            "--token",
-            token,
-            "--url",
-            f"http://localhost:{port}",
-        ]
+
+        # Build command based on service type
+        if service_type == "ssh":
+            # SSH tunnels: Use only --token, config is managed via Cloudflare API
+            # The API config has ssh://localhost:22 as the service URL
+            cmd = [
+                cloudflared,
+                "tunnel",
+                "run",
+                "--token",
+                token,
+            ]
+        else:
+            # HTTP tunnels: Use --url flag for local service
+            cmd = [
+                cloudflared,
+                "tunnel",
+                "run",
+                "--token",
+                token,
+                "--url",
+                f"http://localhost:{port}",
+            ]
+
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -1054,7 +1023,11 @@ class RPCHandler:
 
         self._tunnel_processes[key] = proc
         logger.info(
-            "Started cloudflared tunnel", workspace_id=workspace_id, port=port, pid=proc.pid
+            "Started cloudflared tunnel",
+            workspace_id=workspace_id,
+            port=port,
+            service_type=service_type,
+            pid=proc.pid,
         )
         return {"status": "running", "pid": proc.pid}
 

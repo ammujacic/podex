@@ -306,13 +306,8 @@ class UsageHistoryRequest(BaseModel):
     page_size: int = 50
 
 
-# Model pricing configuration
-# NOTE: Model pricing is now loaded dynamically from the database via the pricing service.
-# Use src.services.pricing in the API for database-backed pricing.
-
-# Default pricing for unknown models (used as fallback)
-DEFAULT_INPUT_PRICE_PER_MILLION = Decimal("3.00")
-DEFAULT_OUTPUT_PRICE_PER_MILLION = Decimal("15.00")
+# NOTE: Model pricing is loaded from the database. All models must be registered
+# in the database via seeds/models.py. There are no fallback prices for unknown models.
 
 
 class ModelPricing(BaseModel):

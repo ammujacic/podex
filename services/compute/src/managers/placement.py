@@ -8,12 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import structlog
-
-if TYPE_CHECKING:
-    pass
 
 logger = structlog.get_logger()
 
@@ -34,8 +31,10 @@ class ResourceRequirements:
     cpu: float  # CPU cores (can be fractional)
     memory_mb: int  # Memory in MB
     disk_gb: int  # Disk in GB
+    bandwidth_mbps: int = 100  # Network bandwidth in Mbps (default: starter tier)
     gpu_required: bool = False
     gpu_type: str | None = None
+    gpu_count: int = 0  # Number of GPUs required (0 = none, 1+ = specific count)
     architecture: str | None = None  # arm64, amd64
 
 
@@ -48,9 +47,11 @@ class ServerCapacity:
     total_cpu: int
     total_memory_mb: int
     total_disk_gb: int
+    total_bandwidth_mbps: int  # Total network bandwidth capacity
     used_cpu: float
     used_memory_mb: int
     used_disk_gb: int
+    used_bandwidth_mbps: int  # Currently allocated bandwidth
     active_workspaces: int
     has_gpu: bool
     gpu_type: str | None
@@ -76,6 +77,11 @@ class ServerCapacity:
         return max(0, self.total_disk_gb - self.used_disk_gb)
 
     @property
+    def available_bandwidth_mbps(self) -> int:
+        """Get available bandwidth in Mbps."""
+        return max(0, self.total_bandwidth_mbps - self.used_bandwidth_mbps)
+
+    @property
     def cpu_utilization(self) -> float:
         """Get CPU utilization as a percentage (0-100)."""
         if self.total_cpu == 0:
@@ -89,6 +95,13 @@ class ServerCapacity:
             return 100
         return (self.used_memory_mb / self.total_memory_mb) * 100
 
+    @property
+    def bandwidth_utilization(self) -> float:
+        """Get bandwidth utilization as a percentage (0-100)."""
+        if self.total_bandwidth_mbps == 0:
+            return 100
+        return (self.used_bandwidth_mbps / self.total_bandwidth_mbps) * 100
+
     def can_fit(self, requirements: ResourceRequirements) -> bool:
         """Check if server can fit the workspace requirements."""
         if self.status != "active":
@@ -101,6 +114,9 @@ class ServerCapacity:
             return False
 
         if self.available_disk_gb < requirements.disk_gb:
+            return False
+
+        if self.available_bandwidth_mbps < requirements.bandwidth_mbps:
             return False
 
         if requirements.gpu_required:
@@ -151,7 +167,7 @@ class PlacementService:
         requirements: ResourceRequirements,
         strategy: PlacementStrategy | None = None,
         affinity_server_id: str | None = None,
-        preferred_region: str | None = None,
+        required_region: str | None = None,
     ) -> PlacementResult:
         """Find the best server for workspace placement.
 
@@ -160,7 +176,7 @@ class PlacementService:
             requirements: Resource requirements for the workspace
             strategy: Placement strategy (uses default if not specified)
             affinity_server_id: Preferred server for AFFINITY strategy
-            preferred_region: Preferred region for placement
+            required_region: Required region for placement (strict enforcement)
 
         Returns:
             PlacementResult with selected server or failure reason
@@ -186,11 +202,17 @@ class PlacementService:
                 reason="No server has sufficient resources",
             )
 
-        # Apply region preference if specified
-        if preferred_region:
-            regional = [s for s in eligible if s.region == preferred_region]
-            if regional:
-                eligible = regional
+        # Apply strict region enforcement if specified
+        if required_region:
+            regional = [s for s in eligible if s.region == required_region]
+            if not regional:
+                return PlacementResult(
+                    server_id=None,
+                    hostname=None,
+                    success=False,
+                    reason=f"No capacity available in {required_region} region",
+                )
+            eligible = regional
 
         # Apply placement strategy
         if strategy == PlacementStrategy.SPREAD:
@@ -221,7 +243,9 @@ class PlacementService:
         for server in servers:
             # Calculate utilization after placement
             new_cpu_util = ((server.used_cpu + requirements.cpu) / server.total_cpu) * 100
-            new_mem_util = ((server.used_memory_mb + requirements.memory_mb) / server.total_memory_mb) * 100
+            new_mem_util = (
+                (server.used_memory_mb + requirements.memory_mb) / server.total_memory_mb
+            ) * 100
 
             # Lower utilization = better (higher score)
             avg_util = (new_cpu_util + new_mem_util) / 2
@@ -266,8 +290,12 @@ class PlacementService:
             remaining_mem = server.available_memory_mb - requirements.memory_mb
 
             # Normalize to percentages
-            remaining_cpu_pct = (remaining_cpu / server.total_cpu) * 100 if server.total_cpu else 100
-            remaining_mem_pct = (remaining_mem / server.total_memory_mb) * 100 if server.total_memory_mb else 100
+            remaining_cpu_pct = (
+                (remaining_cpu / server.total_cpu) * 100 if server.total_cpu else 100
+            )
+            remaining_mem_pct = (
+                (remaining_mem / server.total_memory_mb) * 100 if server.total_memory_mb else 100
+            )
 
             # Lower remaining = better (higher score for best fit)
             avg_remaining = (remaining_cpu_pct + remaining_mem_pct) / 2
@@ -402,7 +430,9 @@ class PlacementService:
             # Calculate score based on strategy
             if strategy == PlacementStrategy.SPREAD:
                 new_cpu_util = ((server.used_cpu + requirements.cpu) / server.total_cpu) * 100
-                new_mem_util = ((server.used_memory_mb + requirements.memory_mb) / server.total_memory_mb) * 100
+                new_mem_util = (
+                    (server.used_memory_mb + requirements.memory_mb) / server.total_memory_mb
+                ) * 100
                 score = 100 - (new_cpu_util + new_mem_util) / 2
             elif strategy == PlacementStrategy.BEST_FIT:
                 remaining_cpu = server.available_cpu - requirements.cpu
@@ -421,7 +451,9 @@ class PlacementService:
                     "score": round(score, 2),
                     "cpu_utilization": round(server.cpu_utilization, 2),
                     "memory_utilization": round(server.memory_utilization, 2),
+                    "bandwidth_utilization": round(server.bandwidth_utilization, 2),
                     "active_workspaces": server.active_workspaces,
+                    "region": server.region,
                 }
             )
 

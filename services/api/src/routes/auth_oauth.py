@@ -48,7 +48,6 @@ from src.routes.auth import (
     set_auth_cookies,
 )
 from src.routes.billing import sync_quotas_from_plan
-from src.routes.user_config import DEFAULT_DOTFILES
 
 logger = structlog.get_logger()
 
@@ -454,8 +453,6 @@ async def _update_git_config_from_github(
         # Create config if it doesn't exist
         config = UserConfig(
             user_id=user_id,
-            dotfiles_paths=DEFAULT_DOTFILES,
-            s3_dotfiles_path=f"users/{user_id}/dotfiles",
             git_name=github_name,
             git_email=github_email,
         )

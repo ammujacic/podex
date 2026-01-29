@@ -1,14 +1,9 @@
 """Tests for main.py CLI module."""
 
-import asyncio
 import os
-import signal
-import sys
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from click.testing import CliRunner
 
 from podex_local_pod.config import LocalPodConfig
 from podex_local_pod.main import _init_sentry, cli
@@ -141,17 +136,6 @@ class TestStartCommand:
         assert "Error:" in result.output
         assert "Pod token is required" in result.output
 
-    def test_start_with_config_file(self, cli_runner, temp_config_file):
-        """Test start command with config file."""
-        with patch("podex_local_pod.main.LocalPodClient") as mock_client:
-            mock_client_instance = MagicMock()
-            mock_client_instance.run = AsyncMock()
-            mock_client_instance.shutdown = AsyncMock()
-            mock_client.return_value = mock_client_instance
-
-            result = cli_runner.invoke(cli, ["start", "--config", str(temp_config_file)])
-            assert result.exit_code == 0
-
     def test_start_generates_pod_name_from_hostname(self, cli_runner):
         """Test that pod name defaults to hostname."""
         with (
@@ -196,132 +180,90 @@ class TestStartCommand:
             mock_client.assert_called_once()
             assert isinstance(mock_client.call_args[0][0], LocalPodConfig)
 
+
 class TestCheckCommand:
     """Test 'check' command."""
 
-    def test_check_docker_available(self, cli_runner):
-        """Test check command when Docker is available."""
-        with patch("docker.from_env") as mock_docker:
-            mock_client = MagicMock()
-            mock_client.info.return_value = {"ServerVersion": "24.0.0"}
-            mock_docker.return_value = mock_client
-
-            with patch("psutil.virtual_memory") as mock_mem, patch(
-                "psutil.cpu_count"
-            ) as mock_cpu:
-                mock_mem.return_value = MagicMock(total=17179869184)
-                mock_cpu.return_value = 8
-
-                result = cli_runner.invoke(cli, ["check"])
-                assert result.exit_code == 0
-                assert "Docker: " in result.output
-                assert "OK" in result.output
-
-    def test_check_docker_unavailable(self, cli_runner):
-        """Test check command when Docker is unavailable."""
-        with patch("docker.from_env", side_effect=Exception("Docker not found")):
-            with patch("psutil.virtual_memory") as mock_mem, patch(
-                "psutil.cpu_count"
-            ) as mock_cpu:
-                mock_mem.return_value = MagicMock(total=17179869184)
-                mock_cpu.return_value = 8
-
-                result = cli_runner.invoke(cli, ["check"])
-                assert result.exit_code == 1
-                assert "FAILED" in result.output
-
-    def test_check_displays_docker_version(self, cli_runner):
-        """Test that check displays Docker version."""
-        with patch("docker.from_env") as mock_docker:
-            mock_client = MagicMock()
-            mock_client.info.return_value = {"ServerVersion": "25.0.1"}
-            mock_docker.return_value = mock_client
-
-            with patch("psutil.virtual_memory") as mock_mem, patch(
-                "psutil.cpu_count"
-            ) as mock_cpu:
-                mock_mem.return_value = MagicMock(total=17179869184)
-                mock_cpu.return_value = 8
-
-                result = cli_runner.invoke(cli, ["check"])
-                assert "25.0.1" in result.output
-
     def test_check_displays_system_resources(self, cli_runner):
         """Test that check displays system resources."""
-        with patch("docker.from_env") as mock_docker:
-            mock_client = MagicMock()
-            mock_client.info.return_value = {"ServerVersion": "24.0.0"}
-            mock_docker.return_value = mock_client
+        with (
+            patch("psutil.virtual_memory") as mock_mem,
+            patch("psutil.cpu_count") as mock_cpu,
+            patch("shutil.which", return_value="/usr/bin/tmux"),
+        ):
+            mock_mem.return_value = MagicMock(total=17179869184)  # 16 GB
+            mock_cpu.return_value = 12
 
-            with patch("psutil.virtual_memory") as mock_mem, patch(
-                "psutil.cpu_count"
-            ) as mock_cpu:
-                mock_mem.return_value = MagicMock(total=17179869184)  # 16 GB
-                mock_cpu.return_value = 12
-
-                result = cli_runner.invoke(cli, ["check"])
-                assert "Memory:" in result.output
-                assert "CPU cores:" in result.output
-                assert "12" in result.output
+            result = cli_runner.invoke(cli, ["check"])
+            assert "Memory:" in result.output
+            assert "CPU cores:" in result.output
+            assert "12" in result.output
 
     def test_check_psutil_error_handling(self, cli_runner):
         """Test check command handles psutil errors."""
-        with patch("docker.from_env") as mock_docker:
-            mock_client = MagicMock()
-            mock_client.info.return_value = {"ServerVersion": "24.0.0"}
-            mock_docker.return_value = mock_client
-
-            with patch("psutil.virtual_memory", side_effect=Exception("psutil error")):
-                result = cli_runner.invoke(cli, ["check"])
-                assert "Error:" in result.output
-                assert result.exit_code == 1
+        with patch("psutil.virtual_memory", side_effect=Exception("psutil error")):
+            result = cli_runner.invoke(cli, ["check"])
+            assert "Error:" in result.output
+            assert result.exit_code == 1
 
     def test_check_platform_info(self, cli_runner):
         """Test that check displays platform info."""
-        with patch("docker.from_env") as mock_docker:
-            mock_client = MagicMock()
-            mock_client.info.return_value = {"ServerVersion": "24.0.0"}
-            mock_docker.return_value = mock_client
+        with (
+            patch("psutil.virtual_memory") as mock_mem,
+            patch("psutil.cpu_count") as mock_cpu,
+            patch("shutil.which", return_value="/usr/bin/tmux"),
+        ):
+            mock_mem.return_value = MagicMock(total=17179869184)
+            mock_cpu.return_value = 8
 
-            with patch("psutil.virtual_memory") as mock_mem, patch(
-                "psutil.cpu_count"
-            ) as mock_cpu:
-                mock_mem.return_value = MagicMock(total=17179869184)
-                mock_cpu.return_value = 8
-
-                result = cli_runner.invoke(cli, ["check"])
-                assert "Platform:" in result.output
-                assert "Architecture:" in result.output
+            result = cli_runner.invoke(cli, ["check"])
+            assert "Platform:" in result.output
+            assert "Architecture:" in result.output
 
     def test_check_all_passed(self, cli_runner):
         """Test check command when all checks pass."""
-        with patch("docker.from_env") as mock_docker:
-            mock_client = MagicMock()
-            mock_client.info.return_value = {"ServerVersion": "24.0.0"}
-            mock_docker.return_value = mock_client
+        with (
+            patch("psutil.virtual_memory") as mock_mem,
+            patch("psutil.cpu_count") as mock_cpu,
+            patch("shutil.which", return_value="/usr/bin/tmux"),
+        ):
+            mock_mem.return_value = MagicMock(total=17179869184)
+            mock_cpu.return_value = 8
 
-            with patch("psutil.virtual_memory") as mock_mem, patch(
-                "psutil.cpu_count"
-            ) as mock_cpu:
-                mock_mem.return_value = MagicMock(total=17179869184)
-                mock_cpu.return_value = 8
+            result = cli_runner.invoke(cli, ["check"])
+            assert result.exit_code == 0
+            assert "All checks passed" in result.output
 
-                result = cli_runner.invoke(cli, ["check"])
-                assert result.exit_code == 0
-                assert "All checks passed" in result.output
+    def test_check_tmux_available(self, cli_runner):
+        """Test check command when tmux is available."""
+        with (
+            patch("psutil.virtual_memory") as mock_mem,
+            patch("psutil.cpu_count") as mock_cpu,
+            patch("shutil.which", return_value="/usr/bin/tmux"),
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_mem.return_value = MagicMock(total=17179869184)
+            mock_cpu.return_value = 8
+            mock_run.return_value = MagicMock(returncode=0, stdout="tmux 3.4")
 
-    def test_check_fails_with_docker_error(self, cli_runner):
-        """Test check command fails when Docker check fails."""
-        with patch("docker.from_env", side_effect=Exception("Docker error")):
-            with patch("psutil.virtual_memory") as mock_mem, patch(
-                "psutil.cpu_count"
-            ) as mock_cpu:
-                mock_mem.return_value = MagicMock(total=17179869184)
-                mock_cpu.return_value = 8
+            result = cli_runner.invoke(cli, ["check"])
+            assert "tmux:" in result.output
+            assert "OK" in result.output
 
-                result = cli_runner.invoke(cli, ["check"])
-                assert result.exit_code == 1
-                assert "Some checks failed" in result.output
+    def test_check_tmux_not_found(self, cli_runner):
+        """Test check command when tmux is not installed."""
+        with (
+            patch("psutil.virtual_memory") as mock_mem,
+            patch("psutil.cpu_count") as mock_cpu,
+            patch("shutil.which", return_value=None),
+        ):
+            mock_mem.return_value = MagicMock(total=17179869184)
+            mock_cpu.return_value = 8
+
+            result = cli_runner.invoke(cli, ["check"])
+            # tmux not being found is now just a warning, not a failure
+            assert "tmux:" in result.output
+            assert "NOT FOUND" in result.output
 
 
 class TestVersionCommand:

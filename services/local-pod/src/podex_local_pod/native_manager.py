@@ -1,29 +1,26 @@
 """Native execution manager for workspace management.
 
-STATELESS: For native mode, the local pod doesn't track workspace state.
+STATELESS: The local pod doesn't track workspace state.
 The backend is the source of truth - it passes working_dir with each RPC call.
-This manager provides configuration, path validation, and proxy support.
+This manager provides proxy support and API compatibility stubs.
 """
 
-from pathlib import Path
 from typing import Any
 
 import structlog
 
 from .config import LocalPodConfig
-from .security import PathValidator
 
 logger = structlog.get_logger()
 
 
 class NativeManager:
-    """Manages native mode configuration and services.
+    """Manages native mode execution.
 
     STATELESS: Doesn't track workspace state. All operations use working_dir
     passed from the backend. This manager provides:
-    - Configuration access
-    - Path validation
     - Proxy request handling
+    - API compatibility stubs for workspace lifecycle methods
     """
 
     def __init__(self, config: LocalPodConfig) -> None:
@@ -36,13 +33,6 @@ class NativeManager:
         # Empty dict - native mode is stateless, workspace state comes from backend
         self._workspaces: dict[str, dict[str, Any]] = {}
 
-        # Create path validator from config
-        self._validator = PathValidator(
-            mounts=config.get_mounts_as_dicts(),
-            security=config.native.security,
-            workspace_dir=config.native.workspace_dir,
-        )
-
     @property
     def workspaces(self) -> dict[str, dict[str, Any]]:
         """Get current workspaces (empty for stateless native mode)."""
@@ -50,15 +40,7 @@ class NativeManager:
 
     async def initialize(self) -> None:
         """Initialize the native manager."""
-        logger.info(
-            "Initializing native manager (stateless mode)",
-            workspace_dir=self.config.native.workspace_dir,
-            security=self.config.native.security,
-        )
-
-        # Ensure workspace directory exists (for default workspace creation)
-        workspace_dir = Path(self.config.native.workspace_dir)
-        workspace_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("Initializing native manager (stateless mode)")
 
     # ==================== Workspace Lifecycle (No-ops for stateless mode) ====================
     # These methods exist for API compatibility but are essentially no-ops.
@@ -72,16 +54,13 @@ class NativeManager:
         config: dict[str, Any],
     ) -> dict[str, Any]:
         """Create workspace - returns config info without tracking state."""
-        mount_path = config.get("mount_path") or str(
-            Path(self.config.native.workspace_dir) / (workspace_id or "default")
-        )
+        working_dir = config.get("working_dir") or config.get("mount_path")
         return {
             "id": workspace_id,
             "user_id": user_id,
             "session_id": session_id,
             "status": "running",
-            "working_dir": mount_path,
-            "mount_path": mount_path,
+            "working_dir": working_dir,
         }
 
     async def stop_workspace(self, workspace_id: str) -> None:
@@ -129,28 +108,28 @@ class NativeManager:
         working_dir: str | None = None,
         timeout: int = 30,
     ) -> dict[str, Any]:
-        """Execute command - handled by RPCHandler for native mode."""
-        raise NotImplementedError("exec_command is handled by RPCHandler in native mode")
+        """Execute command - handled by RPCHandler."""
+        raise NotImplementedError("exec_command is handled by RPCHandler")
 
     # ==================== File Operations (handled by RPCHandler) ====================
 
     async def read_file(self, workspace_id: str, path: str) -> str:
-        """Read file - handled by RPCHandler for native mode."""
-        raise NotImplementedError("read_file is handled by RPCHandler in native mode")
+        """Read file - handled by RPCHandler."""
+        raise NotImplementedError("read_file is handled by RPCHandler")
 
     async def write_file(self, workspace_id: str, path: str, content: str) -> None:
-        """Write file - handled by RPCHandler for native mode."""
-        raise NotImplementedError("write_file is handled by RPCHandler in native mode")
+        """Write file - handled by RPCHandler."""
+        raise NotImplementedError("write_file is handled by RPCHandler")
 
     async def list_files(self, workspace_id: str, path: str = ".") -> list[dict[str, Any]]:
-        """List files - handled by RPCHandler for native mode."""
-        raise NotImplementedError("list_files is handled by RPCHandler in native mode")
+        """List files - handled by RPCHandler."""
+        raise NotImplementedError("list_files is handled by RPCHandler")
 
     # ==================== Terminal (handled by RPCHandler) ====================
 
     async def terminal_write(self, workspace_id: str, data: str) -> None:
-        """Terminal write - handled by RPCHandler for native mode."""
-        raise NotImplementedError("terminal_write is handled by RPCHandler in native mode")
+        """Terminal write - handled by RPCHandler."""
+        raise NotImplementedError("terminal_write is handled by RPCHandler")
 
     # ==================== Proxy Support ====================
 

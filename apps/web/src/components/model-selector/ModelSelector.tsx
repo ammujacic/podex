@@ -139,10 +139,7 @@ export function ModelSelector({
         className="flex flex-col h-full"
       >
         {/* Tab list */}
-        <Tabs.List
-          className="flex border-b border-border px-2"
-          aria-label="Model source tabs"
-        >
+        <Tabs.List className="flex border-b border-border px-2" aria-label="Model source tabs">
           <Tabs.Trigger
             value="podex"
             className={cn(
@@ -185,10 +182,7 @@ export function ModelSelector({
         </Tabs.List>
 
         {/* Podex Tab Content */}
-        <Tabs.Content
-          value="podex"
-          className="flex-1 flex flex-col min-h-0 outline-none"
-        >
+        <Tabs.Content value="podex" className="flex-1 flex flex-col min-h-0 outline-none">
           {/* Search */}
           <div className="px-3 py-2">
             <ModelSearch
@@ -223,10 +217,7 @@ export function ModelSelector({
         </Tabs.Content>
 
         {/* Your Keys Tab Content */}
-        <Tabs.Content
-          value="your-keys"
-          className="flex-1 flex flex-col min-h-0 outline-none"
-        >
+        <Tabs.Content value="your-keys" className="flex-1 flex flex-col min-h-0 outline-none">
           {userKeyModels.length > 0 ? (
             <>
               {/* Search */}
@@ -260,10 +251,7 @@ export function ModelSelector({
         </Tabs.Content>
 
         {/* Local Tab Content */}
-        <Tabs.Content
-          value="local"
-          className="flex-1 flex flex-col min-h-0 outline-none"
-        >
+        <Tabs.Content value="local" className="flex-1 flex flex-col min-h-0 outline-none">
           {/* Search and refresh header */}
           <div className="px-3 py-2 flex items-center gap-2">
             <div className="flex-1">
@@ -314,7 +302,12 @@ export function ModelSelector({
               /* Empty state - connected but no models */
               <div className="flex items-center justify-center h-full p-6">
                 <div className="text-center text-muted-foreground max-w-sm">
-                  <p>No local models found. Pull models with <code className="text-foreground bg-muted px-1 rounded">ollama pull &lt;model&gt;</code></p>
+                  <p>
+                    No local models found. Pull models with{' '}
+                    <code className="text-foreground bg-muted px-1 rounded">
+                      ollama pull &lt;model&gt;
+                    </code>
+                  </p>
                 </div>
               </div>
             ) : (

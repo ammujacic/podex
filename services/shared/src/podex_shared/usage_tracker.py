@@ -18,8 +18,6 @@ import structlog
 from pydantic import BaseModel, Field
 
 from podex_shared.models.billing import (
-    DEFAULT_INPUT_PRICE_PER_MILLION,
-    DEFAULT_OUTPUT_PRICE_PER_MILLION,
     UsageType,
     calculate_token_cost_with_pricing,
 )
@@ -284,12 +282,17 @@ class UsageTracker:
         total_tokens = params.input_tokens + params.output_tokens
         usage_source = params.usage_source or "included"
 
-        # Only calculate cost for "included" (platform/Vertex) usage
+        # Only calculate cost for "included" (platform) usage
         # External and local usage is tracked but with $0 cost
         if usage_source == "included":
-            # Use provided pricing or fall back to defaults
-            input_price = params.input_price_per_million or DEFAULT_INPUT_PRICE_PER_MILLION
-            output_price = params.output_price_per_million or DEFAULT_OUTPUT_PRICE_PER_MILLION
+            # Prices must be provided - no fallbacks, all models must be in database
+            if not params.input_price_per_million or not params.output_price_per_million:
+                raise ValueError(
+                    f"Model pricing not found for model {params.model}. "
+                    "All models must be registered in the database."
+                )
+            input_price = params.input_price_per_million
+            output_price = params.output_price_per_million
 
             # Calculate cost using explicit pricing
             total_cost = calculate_token_cost_with_pricing(

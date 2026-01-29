@@ -1,8 +1,18 @@
 'use client';
 
 import { useState } from 'react';
-import { Copy, ExternalLink, Loader2, Trash2 } from 'lucide-react';
+import {
+  Copy,
+  ExternalLink,
+  Loader2,
+  Trash2,
+  Terminal,
+  Check,
+  ChevronDown,
+  ChevronUp,
+} from 'lucide-react';
 import { useTunnels } from '@/hooks/useTunnels';
+import { useSSHTunnel } from '@/hooks/useSSHTunnel';
 import { cn } from '@/lib/utils';
 
 interface TunnelWidgetProps {
@@ -11,9 +21,19 @@ interface TunnelWidgetProps {
 
 export function TunnelWidget({ workspaceId }: TunnelWidgetProps) {
   const { tunnels, loading, error, exposePort, unexposePort } = useTunnels(workspaceId);
+  const {
+    sshTunnel,
+    loading: sshLoading,
+    error: sshError,
+    enable: enableSSH,
+    disable: disableSSH,
+    enabling,
+    disabling,
+  } = useSSHTunnel(workspaceId);
   const [portInput, setPortInput] = useState('');
   const [exposing, setExposing] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  const [showSSHConfig, setShowSSHConfig] = useState(false);
 
   const handleExpose = async () => {
     const port = parseInt(portInput, 10);
@@ -37,6 +57,16 @@ export function TunnelWidget({ workspaceId }: TunnelWidgetProps) {
     }
   };
 
+  const copyText = async (text: string, id: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(id);
+      setTimeout(() => setCopied(null), 2000);
+    } catch {
+      /* ignore */
+    }
+  };
+
   if (!workspaceId) {
     return (
       <div className="h-full flex items-center justify-center px-4 py-6 text-center">
@@ -49,13 +79,172 @@ export function TunnelWidget({ workspaceId }: TunnelWidgetProps) {
 
   return (
     <div className="flex h-full flex-col gap-4 p-4 overflow-auto">
+      {/* Error messages */}
       {error && (
         <div className="flex items-start gap-2 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-accent-error">
           <span className="mt-0.5 h-1.5 w-1.5 rounded-full bg-accent-error" />
           <p className="flex-1">{error}</p>
         </div>
       )}
+      {sshError && (
+        <div className="flex items-start gap-2 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-accent-error">
+          <span className="mt-0.5 h-1.5 w-1.5 rounded-full bg-accent-error" />
+          <p className="flex-1">{sshError}</p>
+        </div>
+      )}
 
+      {/* VS Code Remote-SSH Section */}
+      <div className="space-y-3 border-b border-border-subtle pb-4">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Terminal className="h-4 w-4 text-text-muted" />
+            <div>
+              <h3 className="text-xs font-medium uppercase tracking-wide text-text-muted">
+                VS Code Remote-SSH
+              </h3>
+              <p className="mt-0.5 text-xs text-text-tertiary">
+                Connect via SSH from your local VS Code.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {sshLoading ? (
+          <div className="flex items-center justify-center py-4">
+            <Loader2 className="h-4 w-4 animate-spin text-text-muted" />
+          </div>
+        ) : sshTunnel?.enabled ? (
+          <div className="space-y-3">
+            <div className="flex flex-col gap-2 rounded-lg border border-border-subtle bg-overlay/60 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-text-primary">SSH Tunnel</span>
+                <span
+                  className={cn(
+                    'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
+                    sshTunnel.status === 'running'
+                      ? 'bg-green-500/10 text-accent-success'
+                      : sshTunnel.status === 'starting'
+                        ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                        : 'bg-text-muted/15 text-text-muted'
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'h-1.5 w-1.5 rounded-full',
+                      sshTunnel.status === 'running'
+                        ? 'bg-accent-success'
+                        : sshTunnel.status === 'starting'
+                          ? 'bg-amber-500'
+                          : 'bg-text-muted'
+                    )}
+                  />
+                  {sshTunnel.status || 'enabled'}
+                </span>
+              </div>
+
+              {/* Connection command */}
+              <div className="flex items-center gap-1.5">
+                <code className="min-w-0 flex-1 truncate text-xs text-text-secondary font-mono bg-surface px-2 py-1 rounded">
+                  {sshTunnel.connection_string || `ssh podex@${sshTunnel.hostname}`}
+                </code>
+                <button
+                  type="button"
+                  onClick={() =>
+                    copyText(
+                      sshTunnel.connection_string || `ssh podex@${sshTunnel.hostname}`,
+                      'ssh-cmd'
+                    )
+                  }
+                  className="shrink-0 rounded p-1 text-text-muted hover:bg-overlay hover:text-text-primary"
+                  title="Copy command"
+                >
+                  {copied === 'ssh-cmd' ? (
+                    <Check className="h-4 w-4 text-accent-success" />
+                  ) : (
+                    <Copy className="h-4 w-4" />
+                  )}
+                </button>
+              </div>
+
+              {/* SSH Config toggle */}
+              <button
+                type="button"
+                onClick={() => setShowSSHConfig(!showSSHConfig)}
+                className="flex items-center gap-1 text-xs text-accent-primary hover:underline"
+              >
+                {showSSHConfig ? (
+                  <ChevronUp className="h-3 w-3" />
+                ) : (
+                  <ChevronDown className="h-3 w-3" />
+                )}
+                SSH Config
+              </button>
+
+              {showSSHConfig && sshTunnel.ssh_config_snippet && (
+                <div className="relative">
+                  <pre className="text-[10px] text-text-muted font-mono bg-surface p-2 rounded overflow-x-auto whitespace-pre">
+                    {sshTunnel.ssh_config_snippet}
+                  </pre>
+                  <button
+                    type="button"
+                    onClick={() => copyText(sshTunnel.ssh_config_snippet!, 'ssh-config')}
+                    className="absolute top-1 right-1 rounded p-1 text-text-muted hover:bg-overlay hover:text-text-primary"
+                    title="Copy config"
+                  >
+                    {copied === 'ssh-config' ? (
+                      <Check className="h-3 w-3 text-accent-success" />
+                    ) : (
+                      <Copy className="h-3 w-3" />
+                    )}
+                  </button>
+                </div>
+              )}
+
+              {/* Disable button */}
+              <button
+                type="button"
+                onClick={disableSSH}
+                disabled={disabling}
+                className="mt-1 flex items-center justify-center gap-1.5 rounded px-2 py-1.5 text-xs text-accent-error hover:bg-red-500/10 disabled:opacity-50"
+              >
+                {disabling ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3 w-3" />
+                )}
+                Disable SSH
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-border-subtle/70 bg-surface-hover/40 px-3 py-4 text-center">
+            <p className="text-sm font-medium text-text-secondary">SSH not enabled</p>
+            <p className="mt-1 text-xs text-text-muted">
+              Enable SSH to connect with VS Code Remote-SSH.
+            </p>
+            <button
+              type="button"
+              onClick={enableSSH}
+              disabled={enabling}
+              className="mt-3 inline-flex items-center justify-center gap-1.5 rounded-lg bg-accent-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-primary/90 disabled:opacity-50"
+            >
+              {enabling ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Enabling...
+                </>
+              ) : (
+                <>
+                  <Terminal className="h-4 w-4" />
+                  Enable SSH
+                </>
+              )}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* HTTP Port Tunnels Section */}
       {tunnels.length > 0 ? (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">

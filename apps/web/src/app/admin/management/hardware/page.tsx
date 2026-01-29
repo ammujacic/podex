@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import { Plus, Edit2, Cpu, MemoryStick, HardDrive, Zap, Check, X } from 'lucide-react';
+import { Plus, Edit2, Cpu, MemoryStick, HardDrive, Zap, Check, X, Wifi } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAdminStore, type AdminHardwareSpec } from '@/stores/admin';
 
@@ -93,6 +93,20 @@ function HardwareCard({ spec, onEdit, onToggleAvailable }: HardwareCardProps) {
             </p>
           </div>
         </div>
+
+        {spec.bandwidth_mbps && (
+          <div className="flex items-center gap-3">
+            <Wifi className="h-4 w-4 text-text-muted" />
+            <div className="flex-1">
+              <p className="text-sm text-text-secondary">
+                {spec.bandwidth_mbps >= 1000
+                  ? `${spec.bandwidth_mbps / 1000} Gbps`
+                  : `${spec.bandwidth_mbps} Mbps`}{' '}
+                Network
+              </p>
+            </div>
+          </div>
+        )}
 
         {spec.gpu_type && (
           <div className="flex items-center gap-3">

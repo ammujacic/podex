@@ -9,22 +9,21 @@ via docker_manager._mock_container to customize behavior.
 from __future__ import annotations
 
 import asyncio
+import tempfile
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, AsyncGenerator
+from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import docker
 import pytest
-from docker.models.containers import Container
 
 from src.managers.docker_manager import DockerComputeManager
 from src.models.workspace import (
     WorkspaceConfig,
-    WorkspaceExecResponse,
-    WorkspaceScaleResponse,
     WorkspaceStatus,
-    WorkspaceTier,
 )
 
 if TYPE_CHECKING:
@@ -35,12 +34,14 @@ if TYPE_CHECKING:
 async def create_mock_docker_manager(
     workspace_store: WorkspaceStore,
     mock_container: MagicMock | None = None,
+    local_storage_path: Path | None = None,
 ) -> AsyncGenerator[tuple[DockerComputeManager, MagicMock], None]:
     """Create a DockerComputeManager with mocked Docker client.
 
     Args:
         workspace_store: The workspace store to use
         mock_container: Optional pre-configured mock container
+        local_storage_path: Optional path for local storage (uses temp dir if not provided)
 
     Yields:
         Tuple of (manager, mock_docker_client)
@@ -58,6 +59,11 @@ async def create_mock_docker_manager(
 
     with patch("docker.from_env", return_value=mock_docker_client):
         manager = DockerComputeManager(workspace_store=workspace_store)
+        # Use provided path or create temp directory to avoid /var/lib/podex permission issues
+        if local_storage_path:
+            manager._local_storage_path = local_storage_path
+        else:
+            manager._local_storage_path = Path(tempfile.mkdtemp()) / "workspaces"
         manager._mock_docker_client = mock_docker_client
         manager._mock_container = mock_container
 
@@ -110,7 +116,7 @@ def create_mock_container(
 async def test_create_workspace_basic(docker_manager, test_user_id):
     """Test basic workspace creation with mocked Docker client."""
     config = WorkspaceConfig(
-        tier=WorkspaceTier.STARTER,
+        tier="starter_arm",
         git_email="test@example.com",
         git_name="Test User",
     )
@@ -132,17 +138,17 @@ async def test_create_workspace_basic(docker_manager, test_user_id):
     assert workspace.user_id == test_user_id
     assert workspace.session_id == "session-1"
     assert workspace.status == WorkspaceStatus.RUNNING
-    assert workspace.tier == WorkspaceTier.STARTER
+    assert workspace.tier == "starter_arm"
     assert workspace.container_id == "container123"
     docker_manager._mock_docker_client.containers.run.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_create_workspace_with_tier_resources(workspace_store, test_user_id):
+async def test_create_workspace_with_tier_resources(workspace_store, test_user_id, tmp_path):
     """Test workspace creation with different tier resources."""
     from src.managers.docker_manager import DockerComputeManager
 
-    config = WorkspaceConfig(tier=WorkspaceTier.PRO)
+    config = WorkspaceConfig(tier="pro_arm")
 
     mock_docker_client = MagicMock()
     mock_container = MagicMock()  # Don't use spec=Container to allow attrs
@@ -172,6 +178,8 @@ async def test_create_workspace_with_tier_resources(workspace_store, test_user_i
 
     with patch("docker.from_env", return_value=mock_docker_client):
         manager = DockerComputeManager(workspace_store=workspace_store)
+        # Use temp path to avoid /var/lib/podex permission issues
+        manager._local_storage_path = tmp_path / "workspaces"
 
         await manager.create_workspace(
             user_id=test_user_id,
@@ -191,7 +199,7 @@ async def test_create_workspace_max_limit_reached(workspace_store, workspace_fac
     # Set a low max_workspaces limit for testing
     monkeypatch.setattr("src.config.settings.max_workspaces", 2)
 
-    config = WorkspaceConfig(tier=WorkspaceTier.STARTER)
+    config = WorkspaceConfig(tier="starter_arm")
 
     async with create_mock_docker_manager(workspace_store) as (manager, mock_client):
         # Create max workspaces to hit the limit using the manager's store
@@ -224,7 +232,7 @@ async def test_stop_workspace(workspace_store, workspace_factory, test_user_id):
             user_id=test_user_id,
             status=WorkspaceStatus.RUNNING,
             container_id="container123",
-            tier=WorkspaceTier.STARTER,
+            tier="starter_arm",
         )
         await manager._workspace_store.save(workspace)
 
@@ -677,7 +685,7 @@ async def test_track_running_workspaces_usage(docker_manager, workspace_factory)
         workspace_id="ws-1",
         user_id="user-1",
         status=WorkspaceStatus.RUNNING,
-        tier=WorkspaceTier.PRO,
+        tier="pro_arm",
     )
     ws1.metadata["last_billing_timestamp"] = last_billing_1
 
@@ -685,7 +693,7 @@ async def test_track_running_workspaces_usage(docker_manager, workspace_factory)
         workspace_id="ws-2",
         user_id="user-2",
         status=WorkspaceStatus.RUNNING,
-        tier=WorkspaceTier.STARTER,
+        tier="starter_arm",
     )
     ws2.metadata["last_billing_timestamp"] = last_billing_2
 
@@ -773,7 +781,7 @@ async def test_scale_workspace_tier_upgrade(
         workspace_id="test-ws-1",
         user_id=test_user_id,
         status=WorkspaceStatus.RUNNING,
-        tier=WorkspaceTier.STARTER,
+        tier="starter_arm",
         container_id="container123",
     )
     await docker_manager._workspace_store.save(workspace)
@@ -791,14 +799,14 @@ async def test_scale_workspace_tier_upgrade(
     docker_manager._mock_docker_client.containers.get.return_value = mock_old_container
     docker_manager._mock_docker_client.containers.run.return_value = mock_new_container
 
-    response = await docker_manager.scale_workspace("test-ws-1", WorkspaceTier.PRO)
+    response = await docker_manager.scale_workspace("test-ws-1", "pro_arm")
 
     assert response.success is True
-    assert response.new_tier == WorkspaceTier.PRO
+    assert response.new_tier == "pro_arm"
 
     # Verify workspace updated in store
     updated = await docker_manager._workspace_store.get("test-ws-1")
-    assert updated.tier == WorkspaceTier.PRO
+    assert updated.tier == "pro_arm"
     assert updated.container_id == "container456"
 
 

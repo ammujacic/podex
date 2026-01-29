@@ -80,11 +80,13 @@ from src.routes import (
     project_health,
     project_init,
     push,
+    servers,
     sessions,
     sharing,
     skill_repositories,
     skill_templates,
     skills,
+    ssh_keys,
     subagents,
     templates,
     uploads,
@@ -1920,6 +1922,7 @@ api_v1.include_router(workspaces.router, prefix="/workspaces", tags=["workspaces
 api_v1.include_router(preview.router, prefix="/preview", tags=["preview"])
 api_v1.include_router(templates.router, prefix="/templates", tags=["templates"])
 api_v1.include_router(user_config.router, prefix="/user/config", tags=["user-config"])
+api_v1.include_router(ssh_keys.router, prefix="/ssh-keys", tags=["ssh-keys"])
 api_v1.include_router(agent_templates.router, prefix="/agent-templates", tags=["agent-templates"])
 api_v1.include_router(completion.router, prefix="/completion", tags=["completion"])
 api_v1.include_router(knowledge.router)  # Already has prefix
@@ -1939,6 +1942,7 @@ api_v1.include_router(billing.router, tags=["billing"])
 api_v1.include_router(cost_insights.router, tags=["cost-insights"])
 api_v1.include_router(webhooks.router, tags=["webhooks"])
 api_v1.include_router(admin.router, tags=["admin"])
+api_v1.include_router(servers.router, prefix="/servers", tags=["servers"])
 api_v1.include_router(models_public_router, prefix="/models", tags=["models"])
 api_v1.include_router(agent_roles_public_router, prefix="/agent-roles", tags=["agent-roles"])
 api_v1.include_router(agent_tools_public_router, prefix="/agent-tools", tags=["agent-tools"])

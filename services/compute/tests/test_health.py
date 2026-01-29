@@ -36,4 +36,3 @@ def test_root_endpoint(client: TestClient) -> None:
     data = response.json()
     assert data["service"] == "podex-compute"
     assert "version" in data
-    assert "mode" in data

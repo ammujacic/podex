@@ -789,7 +789,7 @@ class MultiServerDockerManager:
         Returns:
             Parsed metrics dict matching WorkspaceResourceMetrics fields
         """
-        from datetime import UTC, datetime
+        from datetime import UTC, datetime  # noqa: PLC0415
 
         result: dict[str, Any] = {
             "cpu_percent": 0.0,
@@ -1127,6 +1127,343 @@ class MultiServerDockerManager:
                 volume_name=name,
                 error=str(e),
             )
+            return False
+
+    async def update_container(
+        self,
+        server_id: str,
+        container_id: str,
+        cpu_limit: float | None = None,
+        memory_limit_mb: int | None = None,
+    ) -> bool:
+        """Update resource limits on a running container.
+
+        This uses docker update to change CPU/memory limits without restart.
+
+        Args:
+            server_id: Server identifier
+            container_id: Container ID or name
+            cpu_limit: New CPU limit (cores)
+            memory_limit_mb: New memory limit in MB
+
+        Returns:
+            True if successful, False otherwise
+        """
+        client = self.get_client(server_id)
+        if not client:
+            return False
+
+        loop = asyncio.get_event_loop()
+
+        def _update() -> bool:
+            container = client.containers.get(container_id)
+            update_kwargs: dict[str, Any] = {}
+
+            if cpu_limit is not None:
+                update_kwargs["nano_cpus"] = int(cpu_limit * 1e9)
+
+            if memory_limit_mb is not None:
+                update_kwargs["mem_limit"] = memory_limit_mb * 1024 * 1024
+
+            if update_kwargs:
+                container.update(**update_kwargs)
+
+            return True
+
+        try:
+            result = await loop.run_in_executor(None, _update)
+            logger.info(
+                "Updated container resources",
+                server_id=server_id,
+                container_id=container_id[:12],
+                cpu_limit=cpu_limit,
+                memory_limit_mb=memory_limit_mb,
+            )
+            return result
+        except Exception as e:
+            logger.exception(
+                "Failed to update container",
+                server_id=server_id,
+                container_id=container_id,
+                error=str(e),
+            )
+            return False
+
+    async def setup_workspace_directory(
+        self,
+        server_id: str,
+        workspace_id: str,
+        storage_gb: int,
+    ) -> bool:
+        """Create workspace directory with XFS quota on the server.
+
+        In production, creates directory and sets XFS project quota.
+        In development, only creates directory (no quota enforcement).
+
+        Args:
+            server_id: Server identifier
+            workspace_id: Workspace ID
+            storage_gb: Storage quota in GB
+
+        Returns:
+            True if successful, False otherwise
+        """
+        conn = self._connections.get(server_id)
+        if not conn:
+            logger.error("Server not found", server_id=server_id)
+            return False
+
+        data_path = settings.workspace_data_path
+        workspace_path = f"{data_path}/{workspace_id}"
+
+        # In development, we can create the directory via docker exec on DinD
+        if settings.environment == "development":
+            client = self.get_client(server_id)
+            if not client:
+                return False
+
+            # For DinD, create directory inside the DinD container's filesystem
+            # The DinD container has /data/workspaces mounted
+            loop = asyncio.get_event_loop()
+
+            def _create_dir() -> bool:
+                # Run mkdir in the DinD server using docker exec
+                # DinD container name matches server_id
+                import docker as docker_lib  # noqa: PLC0415
+
+                local_client = docker_lib.from_env()
+                try:
+                    dind_container = local_client.containers.get(server_id)
+                    result = dind_container.exec_run(
+                        f"mkdir -p {workspace_path}/home && chown -R 1000:1000 {workspace_path}",
+                        user="root",
+                    )
+                    return result.exit_code == 0
+                except Exception:
+                    # Fallback: assume directory exists or will be created
+                    return True
+
+            try:
+                return await loop.run_in_executor(None, _create_dir)
+            except Exception as e:
+                logger.warning(
+                    "Failed to create workspace directory in dev",
+                    error=str(e),
+                )
+                return True  # Continue anyway in dev
+
+        # Production: SSH to server
+        loop = asyncio.get_event_loop()
+
+        def _ssh_setup() -> bool:
+            # Create directory
+            mkdir_cmd = [
+                "ssh",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "BatchMode=yes",
+                f"root@{conn.ip_address}",
+                f"mkdir -p {workspace_path}/home && chown -R 1000:1000 {workspace_path}",
+            ]
+            result = subprocess.run(mkdir_cmd, capture_output=True, timeout=30, check=False)  # noqa: S603
+            if result.returncode != 0:
+                logger.error("Failed to create directory", stderr=result.stderr.decode())
+                return False
+
+            # Set XFS quota if enabled
+            if settings.xfs_quotas_enabled:
+                project_id = abs(hash(workspace_id)) % 65536
+                quota_cmds = [
+                    f'echo "{project_id}:{workspace_path}" >> /etc/projects',
+                    f'echo "ws_{workspace_id}:{project_id}" >> /etc/projid',
+                    f'xfs_quota -x -c "project -s ws_{workspace_id}" {data_path}',
+                    f'xfs_quota -x -c "limit -p bhard={storage_gb}g ws_{workspace_id}" {data_path}',
+                ]
+                quota_cmd = " && ".join(quota_cmds)
+                ssh_cmd = [
+                    "ssh",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    "-o",
+                    "BatchMode=yes",
+                    f"root@{conn.ip_address}",
+                    quota_cmd,
+                ]
+                result = subprocess.run(ssh_cmd, capture_output=True, timeout=30, check=False)  # noqa: S603
+                if result.returncode != 0:
+                    logger.warning(
+                        "Failed to set XFS quota",
+                        stderr=result.stderr.decode(),
+                    )
+                    # Continue anyway - directory exists
+
+            return True
+
+        try:
+            success = await loop.run_in_executor(None, _ssh_setup)
+            if success:
+                logger.info(
+                    "Created workspace directory",
+                    server_id=server_id,
+                    workspace_id=workspace_id[:12],
+                    storage_gb=storage_gb,
+                )
+            return success
+        except Exception as e:
+            logger.exception(
+                "Failed to setup workspace directory",
+                server_id=server_id,
+                workspace_id=workspace_id,
+                error=str(e),
+            )
+            return False
+
+    async def update_xfs_quota(
+        self,
+        server_id: str,
+        workspace_id: str,
+        storage_gb: int,
+    ) -> bool:
+        """Update XFS quota for a workspace (live, no restart needed).
+
+        Args:
+            server_id: Server identifier
+            workspace_id: Workspace ID
+            storage_gb: New storage quota in GB
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not settings.xfs_quotas_enabled:
+            logger.debug("XFS quotas disabled, skipping update")
+            return True
+
+        if settings.environment == "development":
+            logger.debug("Skipping XFS quota update in development")
+            return True
+
+        conn = self._connections.get(server_id)
+        if not conn:
+            return False
+
+        data_path = settings.workspace_data_path
+        loop = asyncio.get_event_loop()
+
+        def _update_quota() -> bool:
+            quota_cmd = (
+                f'xfs_quota -x -c "limit -p bhard={storage_gb}g ws_{workspace_id}" {data_path}'
+            )
+            ssh_cmd = [
+                "ssh",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "BatchMode=yes",
+                f"root@{conn.ip_address}",
+                quota_cmd,
+            ]
+            result = subprocess.run(ssh_cmd, capture_output=True, timeout=30, check=False)  # noqa: S603
+            return result.returncode == 0
+
+        try:
+            success = await loop.run_in_executor(None, _update_quota)
+            if success:
+                logger.info(
+                    "Updated XFS quota",
+                    workspace_id=workspace_id[:12],
+                    storage_gb=storage_gb,
+                )
+            return success
+        except Exception as e:
+            logger.exception("Failed to update XFS quota", error=str(e))
+            return False
+
+    async def remove_workspace_directory(
+        self,
+        server_id: str,
+        workspace_id: str,
+    ) -> bool:
+        """Remove workspace directory and clean up XFS quota entries.
+
+        Args:
+            server_id: Server identifier
+            workspace_id: Workspace ID
+
+        Returns:
+            True if successful, False otherwise
+        """
+        conn = self._connections.get(server_id)
+        if not conn:
+            return False
+
+        data_path = settings.workspace_data_path
+        workspace_path = f"{data_path}/{workspace_id}"
+
+        if settings.environment == "development":
+            # In dev, remove via docker exec
+            client = self.get_client(server_id)
+            if client:
+                loop = asyncio.get_event_loop()
+
+                def _remove_dir() -> bool:
+                    import docker as docker_lib  # noqa: PLC0415
+
+                    try:
+                        local_client = docker_lib.from_env()
+                        dind_container = local_client.containers.get(server_id)
+                        dind_container.exec_run(f"rm -rf {workspace_path}", user="root")
+                        return True
+                    except Exception:
+                        return True  # Ignore errors in dev
+
+                await loop.run_in_executor(None, _remove_dir)
+            return True
+
+        # Production: SSH to remove
+        loop = asyncio.get_event_loop()
+
+        def _ssh_remove() -> bool:
+            rm_cmd = [
+                "ssh",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "BatchMode=yes",
+                f"root@{conn.ip_address}",
+                f"rm -rf {workspace_path}",
+            ]
+            subprocess.run(rm_cmd, capture_output=True, timeout=30, check=False)  # noqa: S603
+
+            # Clean up quota entries
+            if settings.xfs_quotas_enabled:
+                sed_cmd = (
+                    f"sed -i '/ws_{workspace_id}/d' /etc/projects; "
+                    f"sed -i '/ws_{workspace_id}/d' /etc/projid"
+                )
+                cleanup_cmd = [
+                    "ssh",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    "-o",
+                    "BatchMode=yes",
+                    f"root@{conn.ip_address}",
+                    sed_cmd,
+                ]
+                subprocess.run(cleanup_cmd, capture_output=True, timeout=30, check=False)  # noqa: S603
+
+            return True
+
+        try:
+            await loop.run_in_executor(None, _ssh_remove)
+            logger.info(
+                "Removed workspace directory",
+                server_id=server_id,
+                workspace_id=workspace_id[:12],
+            )
+            return True
+        except Exception as e:
+            logger.exception("Failed to remove workspace directory", error=str(e))
             return False
 
     async def close_all(self) -> None:

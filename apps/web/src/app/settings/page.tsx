@@ -487,7 +487,9 @@ export default function SettingsPage() {
             {effectiveTab === 'shell' && (
               <div className="space-y-6">
                 <div>
-                  <h2 className="text-lg font-medium text-text-primary mb-1">Shell Configuration</h2>
+                  <h2 className="text-lg font-medium text-text-primary mb-1">
+                    Shell Configuration
+                  </h2>
                   <p className="text-sm text-text-secondary">
                     Configure your default shell for workspaces.
                   </p>

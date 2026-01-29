@@ -51,14 +51,6 @@ class LocalPodUpdate(BaseModel):
     labels: dict[str, str] | None = None
 
 
-class MountConfig(BaseModel):
-    """Mount configuration for local pod."""
-
-    path: str
-    mode: str = "rw"  # "rw" or "ro"
-    label: str | None = None
-
-
 class LocalPodResponse(BaseModel):
     """Local pod response (without token)."""
 
@@ -71,16 +63,10 @@ class LocalPodResponse(BaseModel):
     last_error: str | None
     os_info: str | None
     architecture: str | None
-    docker_version: str | None
     total_memory_mb: int | None
     total_cpu_cores: int | None
     current_workspaces: int
     labels: dict[str, Any] | None
-    # New fields for mode and mounts
-    mode: str  # "docker" or "native"
-    native_security: str | None  # "allowlist" or "unrestricted"
-    native_workspace_dir: str | None
-    mounts: list[MountConfig] | None
     created_at: str
     updated_at: str
 
@@ -152,7 +138,6 @@ class BrowseDirectoryResponse(BaseModel):
     entries: list[DirectoryEntry]
     is_home: bool = False
     error: str | None = None
-    allowed_paths: list[str] | None = None
 
 
 # ============== Helper Functions ==============
@@ -179,11 +164,6 @@ def _generate_pod_token() -> tuple[str, str, str]:
 
 def _pod_to_response(pod: LocalPod) -> LocalPodResponse:
     """Convert pod model to response."""
-    # Convert mounts from JSONB to MountConfig list
-    mounts = None
-    if pod.mounts:
-        mounts = [MountConfig(**m) for m in pod.mounts]
-
     return LocalPodResponse(
         id=pod.id,
         user_id=pod.user_id,
@@ -194,15 +174,10 @@ def _pod_to_response(pod: LocalPod) -> LocalPodResponse:
         last_error=pod.last_error,
         os_info=pod.os_info,
         architecture=pod.architecture,
-        docker_version=pod.docker_version,
         total_memory_mb=pod.total_memory_mb,
         total_cpu_cores=pod.total_cpu_cores,
         current_workspaces=pod.current_workspaces,
         labels=pod.labels,
-        mode=pod.mode,
-        native_security=pod.native_security,
-        native_workspace_dir=pod.native_workspace_dir,
-        mounts=mounts,
         created_at=pod.created_at.isoformat(),
         updated_at=pod.updated_at.isoformat(),
     )
@@ -503,7 +478,6 @@ async def browse_host_directory(
                 entries=[DirectoryEntry(**e) for e in result.get("entries", [])],
                 is_home=result.get("is_home", False),
                 error=result.get("error"),
-                allowed_paths=result.get("allowed_paths"),
             )
 
         raise HTTPException(status_code=500, detail="Invalid response from pod")  # noqa: TRY301
@@ -584,35 +558,21 @@ async def update_pod_capabilities(
     db: AsyncSession,
     pod_id: str,
     capabilities: dict[str, Any],
-    config: dict[str, Any] | None = None,
 ) -> None:
-    """Update pod capabilities and config. Called when pod reports its system info.
+    """Update pod capabilities. Called when pod reports its system info.
 
     Args:
         db: Database session.
         pod_id: Pod ID to update.
         capabilities: System capabilities (os_info, architecture, etc.).
-        config: Pod configuration (mode, mounts, native settings).
     """
     values: dict[str, Any] = {
         "os_info": capabilities.get("os_info"),
         "architecture": capabilities.get("architecture"),
-        "docker_version": capabilities.get("docker_version"),
         "total_memory_mb": capabilities.get("total_memory_mb"),
         "total_cpu_cores": capabilities.get("cpu_cores"),
         "updated_at": datetime.now(UTC),
     }
-
-    # Update config fields if provided
-    if config:
-        if "mode" in config:
-            values["mode"] = config["mode"]
-        if "mounts" in config:
-            values["mounts"] = config["mounts"]
-        if "native_security" in config:
-            values["native_security"] = config["native_security"]
-        if "native_workspace_dir" in config:
-            values["native_workspace_dir"] = config["native_workspace_dir"]
 
     await db.execute(
         update(LocalPod).where(LocalPod.id == pod_id).values(**values),

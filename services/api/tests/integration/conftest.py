@@ -6,6 +6,7 @@ Tests are isolated using database transactions with automatic rollback.
 """
 
 import asyncio
+import contextlib
 import os
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -248,16 +249,12 @@ async def integration_db(integration_engine: AsyncEngine) -> AsyncGenerator[Asyn
 
             await session.commit()
         except Exception:
-            try:
+            with contextlib.suppress(Exception):
                 await session.rollback()
-            except Exception:
-                pass
         finally:
             # Close the session properly
-            try:
+            with contextlib.suppress(Exception):
                 await session.close()
-            except Exception:
-                pass
 
 
 @pytest_asyncio.fixture
@@ -466,10 +463,8 @@ async def test_client(
         try:
             yield session
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 await session.close()
-            except Exception:
-                pass
             if session in _active_sessions:
                 _active_sessions.remove(session)
 
@@ -494,10 +489,8 @@ async def test_client(
 
         # 1. Close the HTTP client - this waits for all requests to complete
         if client is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await client.aclose()
-            except Exception:
-                pass
 
         # 2. Wait for any lingering middleware tasks to finish
         # This is critical - middleware can spawn background tasks
@@ -505,23 +498,17 @@ async def test_client(
 
         # 3. Close any remaining active sessions
         for session in _active_sessions:
-            try:
+            with contextlib.suppress(Exception):
                 await session.close()
-            except Exception:
-                pass
         _active_sessions.clear()
 
         # 4. Stop the mock patcher
-        try:
+        with contextlib.suppress(Exception):
             patcher.stop()
-        except Exception:
-            pass
 
         # 5. Dispose the client engine - this closes all connections in THIS event loop
-        try:
+        with contextlib.suppress(Exception):
             await client_engine.dispose()
-        except Exception:
-            pass
 
         # 6. Give asyncpg time to clean up connection resources
         await asyncio.sleep(0.05)
@@ -530,10 +517,8 @@ async def test_client(
         app.dependency_overrides = original_overrides
 
         # 8. Expire all database objects in integration_db to prevent stale references
-        try:
+        with contextlib.suppress(Exception):
             integration_db.expire_all()
-        except Exception:
-            pass
 
 
 # Helper functions for creating test data

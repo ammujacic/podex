@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from src.models.workspace import WorkspaceStatus, WorkspaceTier
+from src.models.workspace import WorkspaceStatus
 from src.storage.workspace_store import (
     WORKSPACE_TTL_SECONDS,
     WorkspaceStore,
@@ -16,7 +16,6 @@ from src.storage.workspace_store import (
     _user_set_key,
     _workspace_key,
 )
-
 
 # ============================================
 # CRUD Operations Tests
@@ -31,7 +30,7 @@ async def test_save_and_get_workspace(workspace_store: WorkspaceStore, workspace
         user_id="user-1",
         session_id="session-1",
         status=WorkspaceStatus.RUNNING,
-        tier=WorkspaceTier.STARTER,
+        tier="starter_arm",
     )
 
     await workspace_store.save(workspace)

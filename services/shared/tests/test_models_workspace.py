@@ -1,6 +1,6 @@
 """Comprehensive tests for workspace models."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 
 from podex_shared.models.workspace import (

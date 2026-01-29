@@ -591,9 +591,11 @@ class HardwareSpec(Base):
     is_gpu: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     requires_gke: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
-    # Storage limits
-    storage_gb_default: Mapped[int] = mapped_column(Integer, default=20, nullable=False)
-    storage_gb_max: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    # Storage limit (fixed per tier, enforced via XFS project quotas)
+    storage_gb: Mapped[int] = mapped_column(Integer, default=20, nullable=False)
+
+    # Network bandwidth (Mbps) - allocated per workspace
+    bandwidth_mbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Pricing (cents per hour)
     hourly_rate_cents: Mapped[int] = mapped_column(Integer, nullable=False)

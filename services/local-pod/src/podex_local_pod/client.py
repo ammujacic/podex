@@ -11,7 +11,6 @@ import socketio
 import structlog
 
 from .config import LocalPodConfig
-from .docker_manager import LocalDockerManager
 from .native_manager import NativeManager
 from .rpc_handler import RPCHandler
 
@@ -19,7 +18,7 @@ logger = structlog.get_logger()
 
 
 class WorkspaceManager(Protocol):
-    """Protocol for workspace managers (Docker or Native)."""
+    """Protocol for workspace managers."""
 
     @property
     def workspaces(self) -> dict[str, dict[str, Any]]: ...
@@ -101,13 +100,9 @@ class LocalPodClient:
             engineio_logger=False,
         )
 
-        # Initialize appropriate manager based on mode
-        if config.is_native_mode():
-            self.manager: WorkspaceManager = NativeManager(config)
-            logger.info("Using native execution mode")
-        else:
-            self.manager = LocalDockerManager(config)
-            logger.info("Using Docker execution mode")
+        # Always use native manager (stateless execution)
+        self.manager: WorkspaceManager = NativeManager(config)
+        logger.info("Using native execution mode (stateless)")
 
         # Pass sio to RPCHandler for terminal output streaming
         self.rpc_handler = RPCHandler(self.manager, config, sio=self.sio)
@@ -198,49 +193,21 @@ class LocalPodClient:
                 await self.manager.terminal_write(workspace_id, input_data)
 
     async def _send_capabilities(self) -> None:
-        """Send system capabilities and configuration to cloud."""
-        # Get Docker version if in Docker mode
-        docker_version: str | None = None
-        if self.config.is_docker_mode():
-            try:
-                import docker
-
-                docker_client = docker.from_env()
-                docker_info = docker_client.info()
-                docker_version = docker_info.get("ServerVersion", "unknown")
-            except Exception:
-                docker_version = "unavailable"
-
+        """Send system capabilities to cloud."""
         capabilities = {
             "os_info": f"{platform.system()} {platform.release()}",
             "architecture": platform.machine(),
-            "docker_version": docker_version,
             "total_memory_mb": psutil.virtual_memory().total // (1024 * 1024),
             "cpu_cores": psutil.cpu_count(),
             "pod_version": "0.1.0",
         }
 
-        # Include mode and mount configuration
-        pod_config: dict[str, Any] = {
-            "mode": self.config.mode,
-            "mounts": self.config.get_mounts_as_dicts(),
-        }
-
-        # Include native settings if in native mode
-        if self.config.is_native_mode():
-            pod_config["native_security"] = self.config.native.security
-            pod_config["native_workspace_dir"] = self.config.native.workspace_dir
-
         await self.sio.emit(
             "capabilities",
-            {"capabilities": capabilities, "config": pod_config},
+            {"capabilities": capabilities},
             namespace="/local-pod",
         )
-        logger.info(
-            "Capabilities sent",
-            mode=self.config.mode,
-            mounts=len(self.config.mounts),
-        )
+        logger.info("Capabilities sent")
 
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats to cloud."""

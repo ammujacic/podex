@@ -279,28 +279,6 @@ def check_llm_providers() -> list[LLMProviderStatus]:
         )
     )
 
-    # Google Cloud Vertex AI
-    vertex_configured = bool(settings.GCP_PROJECT_ID)
-    providers.append(
-        LLMProviderStatus(
-            provider="vertex",
-            configured=vertex_configured,
-            active=settings.LLM_PROVIDER == "vertex",
-            model="claude-sonnet-4-20250514" if vertex_configured else None,
-            details={
-                "project_id": settings.GCP_PROJECT_ID,
-                "region": settings.GCP_REGION,
-                "supported_models": [
-                    "claude-sonnet-4-20250514",
-                    "claude-3-5-sonnet-v2@20241022",
-                    "claude-3-5-haiku@20241022",
-                    "gemini-1.5-pro",
-                    "gemini-1.5-flash",
-                ],
-            },
-        )
-    )
-
     # Ollama local model provider
     providers.append(
         LLMProviderStatus(

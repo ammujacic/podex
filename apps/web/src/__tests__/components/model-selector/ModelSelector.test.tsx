@@ -222,7 +222,10 @@ describe('ModelSelector', () => {
       render(<ModelSelector {...defaultProps} defaultTab="your-keys" />);
 
       await waitFor(() => {
-        expect(screen.getByRole('tab', { name: 'Your Keys' })).toHaveAttribute('data-state', 'active');
+        expect(screen.getByRole('tab', { name: 'Your Keys' })).toHaveAttribute(
+          'data-state',
+          'active'
+        );
       });
       expect(screen.getByRole('tab', { name: 'Podex' })).toHaveAttribute('data-state', 'inactive');
     });
@@ -291,7 +294,9 @@ describe('ModelSelector', () => {
 
       await waitFor(() => {
         expect(
-          screen.getByText('Configure your API keys in Settings to use models with your own billing.')
+          screen.getByText(
+            'Configure your API keys in Settings to use models with your own billing.'
+          )
         ).toBeInTheDocument();
       });
     });
@@ -329,7 +334,10 @@ describe('ModelSelector', () => {
 
       // Wait for tab switch, then verify filter buttons are not shown
       await waitFor(() => {
-        expect(screen.getByRole('tab', { name: 'Your Keys' })).toHaveAttribute('data-state', 'active');
+        expect(screen.getByRole('tab', { name: 'Your Keys' })).toHaveAttribute(
+          'data-state',
+          'active'
+        );
       });
 
       // The Podex filters should not be visible when on Your Keys tab
@@ -350,9 +358,7 @@ describe('ModelSelector', () => {
       await user.click(screen.getByRole('tab', { name: 'Local' }));
 
       await waitFor(() => {
-        expect(
-          screen.getByText(/Could not connect to Ollama/i)
-        ).toBeInTheDocument();
+        expect(screen.getByText(/Could not connect to Ollama/i)).toBeInTheDocument();
       });
     });
 
@@ -482,7 +488,9 @@ describe('ModelSelector', () => {
 
       // Find and click a model card
       await waitFor(() => {
-        expect(screen.getByRole('button', { name: /Select Claude 3\.5 Sonnet/i })).toBeInTheDocument();
+        expect(
+          screen.getByRole('button', { name: /Select Claude 3\.5 Sonnet/i })
+        ).toBeInTheDocument();
       });
 
       const modelCard = screen.getByRole('button', { name: /Select Claude 3\.5 Sonnet/i });
@@ -492,9 +500,7 @@ describe('ModelSelector', () => {
     });
 
     it('selected model is highlighted', async () => {
-      render(
-        <ModelSelector {...defaultProps} selectedModelId="anthropic/claude-3.5-sonnet" />
-      );
+      render(<ModelSelector {...defaultProps} selectedModelId="anthropic/claude-3.5-sonnet" />);
 
       await waitFor(() => {
         const modelCard = screen.getByRole('button', { name: /Select Claude 3\.5 Sonnet/i });
@@ -503,9 +509,7 @@ describe('ModelSelector', () => {
     });
 
     it('non-selected models are not highlighted', async () => {
-      render(
-        <ModelSelector {...defaultProps} selectedModelId="anthropic/claude-3.5-sonnet" />
-      );
+      render(<ModelSelector {...defaultProps} selectedModelId="anthropic/claude-3.5-sonnet" />);
 
       await waitFor(() => {
         const gptCard = screen.getByRole('button', { name: /Select GPT-4o/i });

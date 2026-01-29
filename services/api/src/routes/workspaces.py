@@ -15,7 +15,6 @@ from src.config import settings
 from src.database.connection import get_db
 from src.database.models import PodTemplate, Session, SessionShare, Workspace
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, RATE_LIMIT_UPLOAD, limiter
-from src.storage.gcs import S3Storage, get_storage
 
 logger = structlog.get_logger()
 
@@ -91,7 +90,6 @@ def validate_file_path(path: str, workspace_root: str = "/workspace") -> str:
 
 # Type aliases for dependencies
 DbSession = Annotated[AsyncSession, Depends(get_db)]
-Storage = Annotated[S3Storage, Depends(get_storage)]
 
 
 async def verify_workspace_access(
@@ -904,29 +902,16 @@ async def list_files(
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
-    storage: Storage,
     path: str = "/workspace",
 ) -> list[FileNode]:
     """List files in workspace directory."""
     # SECURITY: Validate path to prevent traversal attacks
-    validated_path = validate_file_path(path)
+    validate_file_path(path)
 
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
 
-    # Use S3 storage if configured (non-default bucket or custom endpoint)
-    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
-        try:
-            tree = await storage.get_file_tree(workspace_id, validated_path)
-            return [FileNode(**node) for node in tree]
-        except Exception:
-            # Fall back to demo data on error
-            logger.debug(
-                "Failed to get file tree from storage, using demo data",
-                workspace_id=workspace_id,
-            )
-
-    # Get template-specific demo files
+    # Get template-specific demo files (actual file ops via workspace containers)
     template_slug = await get_template_slug_for_workspace(workspace_id, db)
     return get_demo_file_tree(template_slug)
 
@@ -968,7 +953,6 @@ async def get_file_content(
     response: Response,  # noqa: ARG001
     path: str,
     db: DbSession,
-    storage: Storage,
 ) -> FileContent:
     """Get file content."""
     # SECURITY: Validate path to prevent traversal attacks
@@ -977,26 +961,7 @@ async def get_file_content(
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
 
-    # Try S3 storage first if configured (non-default bucket or custom endpoint)
-    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
-        try:
-            content = await storage.get_file_text(workspace_id, validated_path)
-            return FileContent(
-                path=validated_path,
-                content=content,
-                language=get_language_from_path(validated_path),
-            )
-        except FileNotFoundError as e:
-            raise HTTPException(status_code=404, detail="File not found") from e
-        except Exception:
-            # Fall back to demo data on error
-            logger.debug(
-                "Failed to get file content from storage, using demo data",
-                workspace_id=workspace_id,
-                path=validated_path,
-            )
-
-    # Fall back to template-specific demo data
+    # Use template-specific demo data (actual file ops via workspace containers)
     template_slug = await get_template_slug_for_workspace(workspace_id, db)
     demo_contents = get_demo_contents(template_slug)
     demo_content = demo_contents.get(validated_path)
@@ -1024,22 +989,17 @@ async def update_file_content(
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
-    storage: Storage,
 ) -> FileContent:
-    """Update file content."""
+    """Update file content.
+
+    Note: File operations are handled by workspace containers.
+    This endpoint validates access and returns the updated content.
+    """
     # SECURITY: Validate path to prevent traversal attacks
     validated_path = validate_file_path(path)
 
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
-
-    # Save to S3 if configured
-    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
-        try:
-            await storage.put_file(workspace_id, validated_path, body.content)
-        except Exception:
-            logger.exception("Failed to save file", workspace_id=workspace_id, path=validated_path)
-            raise HTTPException(status_code=500, detail="Failed to save file") from None
 
     return FileContent(
         path=validated_path,
@@ -1076,29 +1036,17 @@ async def create_file(
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
-    storage: Storage,
 ) -> FileContent:
-    """Create a new file."""
+    """Create a new file.
+
+    Note: File operations are handled by workspace containers.
+    This endpoint validates access and returns the file content.
+    """
     # SECURITY: Validate path to prevent traversal attacks
     validated_path = validate_file_path(body.path)
 
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
-
-    # Create in S3 if configured
-    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
-        # Check if file already exists before try block
-        file_exists = await storage.file_exists(workspace_id, validated_path)
-        if file_exists:
-            raise HTTPException(status_code=409, detail="File already exists")
-
-        try:
-            await storage.put_file(workspace_id, validated_path, body.content)
-        except Exception:
-            logger.exception(
-                "Failed to create file", workspace_id=workspace_id, path=validated_path
-            )
-            raise HTTPException(status_code=500, detail="Failed to create file") from None
 
     return FileContent(
         path=validated_path,
@@ -1115,40 +1063,17 @@ async def delete_file(
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
-    storage: Storage,
 ) -> dict[str, str]:
-    """Delete a file or directory."""
+    """Delete a file or directory.
+
+    Note: File operations are handled by workspace containers.
+    This endpoint validates access and confirms deletion.
+    """
     # SECURITY: Validate path to prevent traversal attacks
     validated_path = validate_file_path(path)
 
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
-
-    # Delete from S3 if configured
-    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
-        # Check file existence before try block
-        file_exists = await storage.file_exists(workspace_id, validated_path)
-
-        if file_exists:
-            try:
-                await storage.delete_file(workspace_id, validated_path)
-            except Exception:
-                logger.exception(
-                    "Failed to delete file", workspace_id=workspace_id, path=validated_path
-                )
-                raise HTTPException(status_code=500, detail="Failed to delete file") from None
-        else:
-            # Try as directory
-            try:
-                deleted = await storage.delete_directory(workspace_id, validated_path)
-            except Exception:
-                logger.exception(
-                    "Failed to delete directory", workspace_id=workspace_id, path=validated_path
-                )
-                raise HTTPException(status_code=500, detail="Failed to delete file") from None
-
-            if deleted == 0:
-                raise HTTPException(status_code=404, detail="File or directory not found")
 
     return {"deleted": validated_path}
 
@@ -1161,28 +1086,18 @@ async def move_file(
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
-    storage: Storage,
 ) -> dict[str, str]:
-    """Move or rename a file."""
+    """Move or rename a file.
+
+    Note: File operations are handled by workspace containers.
+    This endpoint validates access and confirms the move.
+    """
     # SECURITY: Validate both paths to prevent traversal attacks
     validated_source = validate_file_path(body.source_path)
     validated_dest = validate_file_path(body.dest_path)
 
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
-
-    # Move in S3 if configured
-    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
-        # Check source file existence before try block
-        source_exists = await storage.file_exists(workspace_id, validated_source)
-        if not source_exists:
-            raise HTTPException(status_code=404, detail="Source file not found")
-
-        try:
-            await storage.move_file(workspace_id, validated_source, validated_dest)
-        except Exception:
-            logger.exception("Failed to move file", workspace_id=workspace_id)
-            raise HTTPException(status_code=500, detail="Failed to move file") from None
 
     return {
         "source": validated_source,
@@ -1197,27 +1112,20 @@ async def initialize_workspace_files(
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
-    storage: Storage,
 ) -> dict[str, Any]:
-    """Initialize workspace with template files."""
+    """Initialize workspace with template files.
+
+    Note: Workspace initialization is handled by workspace containers.
+    This endpoint validates access and confirms initialization.
+    """
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
 
-    # Initialize with template-specific demo files if S3 is configured
-    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
-        try:
-            template_slug = await get_template_slug_for_workspace(workspace_id, db)
-            demo_contents = get_demo_contents(template_slug)
-            # Convert paths to relative paths
-            template_files = {
-                path.replace("/workspace/", ""): content for path, content in demo_contents.items()
-            }
-            return await storage.initialize_workspace(workspace_id, template_files)
-        except Exception:
-            logger.exception("Failed to initialize workspace", workspace_id=workspace_id)
-            raise HTTPException(status_code=500, detail="Failed to initialize workspace") from None
-
-    return {"workspace_id": workspace_id, "files_created": 0, "message": "S3 not configured"}
+    return {
+        "workspace_id": workspace_id,
+        "files_created": 0,
+        "message": "Initialization handled by container",
+    }
 
 
 # ==================== Standby/Pause Routes ====================
@@ -1850,6 +1758,145 @@ async def get_tunnel_status(
         status=out.get("status", "unknown"),
         connected=out.get("connected", False),
         error=out.get("error"),
+    )
+
+
+# ==================== SSH Tunnel (VS Code Remote-SSH) ====================
+
+
+class SSHTunnelResponse(BaseModel):
+    """SSH tunnel info for VS Code Remote-SSH access."""
+
+    enabled: bool
+    hostname: str | None = None
+    public_url: str | None = None
+    status: str | None = None
+    connection_string: str | None = None
+    proxy_command: str | None = None
+    ssh_config_snippet: str | None = None
+
+
+class SSHTunnelEnableRequest(BaseModel):
+    """Request to enable SSH tunnel."""
+
+    # No parameters needed - SSH always uses port 22
+
+
+@router.post("/{workspace_id}/ssh-tunnel", response_model=SSHTunnelResponse, status_code=201)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def enable_ssh_tunnel(
+    workspace_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> SSHTunnelResponse:
+    """Enable SSH tunnel for VS Code Remote-SSH access.
+
+    Creates a Cloudflare tunnel with SSH service type (ssh://localhost:22).
+    Users connect via cloudflared ProxyCommand in their SSH config.
+
+    Only supported for workspaces on a local pod with sshd running.
+    """
+    from src.services.tunnel_manager import (
+        create_ssh_tunnel_for_workspace,
+        get_ssh_tunnel,
+    )
+    from src.websocket.local_pod_hub import PodNotConnectedError
+
+    await verify_workspace_access(workspace_id, request, db)
+
+    # Check if SSH tunnel already exists
+    existing = await get_ssh_tunnel(db, workspace_id)
+    if existing:
+        return _build_ssh_tunnel_response(existing)
+
+    try:
+        rec = await create_ssh_tunnel_for_workspace(db, workspace_id)
+    except PodNotConnectedError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Local pod not connected: {e.pod_id}",
+        ) from e
+    except RuntimeError as e:
+        logger.warning("SSH tunnel create failed", workspace_id=workspace_id, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    return _build_ssh_tunnel_response(rec)
+
+
+@router.delete("/{workspace_id}/ssh-tunnel", status_code=204)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def disable_ssh_tunnel(
+    workspace_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> None:
+    """Disable SSH tunnel for a workspace.
+
+    Stops the cloudflared daemon, removes DNS record, and deletes the tunnel.
+    """
+    from src.services.tunnel_manager import delete_ssh_tunnel_for_workspace, get_ssh_tunnel
+
+    await verify_workspace_access(workspace_id, request, db)
+
+    # Check if SSH tunnel exists
+    existing = await get_ssh_tunnel(db, workspace_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="No SSH tunnel for this workspace")
+
+    await delete_ssh_tunnel_for_workspace(db, workspace_id)
+
+
+@router.get("/{workspace_id}/ssh-tunnel", response_model=SSHTunnelResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def get_ssh_tunnel_info(
+    workspace_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> SSHTunnelResponse:
+    """Get SSH tunnel status and connection info for VS Code Remote-SSH.
+
+    Returns:
+        - enabled: Whether SSH tunnel is active
+        - hostname: The SSH tunnel hostname (e.g., workspace-ssh.tunnel.podex.dev)
+        - connection_string: SSH connection command for users
+        - proxy_command: cloudflared command for SSH config
+        - ssh_config_snippet: Ready-to-use SSH config block
+    """
+    from src.services.tunnel_manager import get_ssh_tunnel
+
+    await verify_workspace_access(workspace_id, request, db)
+
+    rec = await get_ssh_tunnel(db, workspace_id)
+    if not rec:
+        return SSHTunnelResponse(enabled=False)
+
+    return _build_ssh_tunnel_response(rec)
+
+
+def _build_ssh_tunnel_response(rec: Any) -> SSHTunnelResponse:
+    """Build SSH tunnel response with connection info."""
+    hostname = rec.public_url  # For SSH, public_url is the hostname
+    # Default username in workspace containers is 'podex'
+    username = "podex"
+    connection_string = f"ssh {username}@{hostname}"
+    proxy_command = f"cloudflared access ssh --hostname {hostname}"
+    ssh_config_snippet = f"""Host {hostname}
+    User {username}
+    ProxyCommand cloudflared access ssh --hostname %h
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null"""
+
+    return SSHTunnelResponse(
+        enabled=True,
+        hostname=hostname,
+        public_url=hostname,
+        status=rec.status,
+        connection_string=connection_string,
+        proxy_command=proxy_command,
+        ssh_config_snippet=ssh_config_snippet,
     )
 
 

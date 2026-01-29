@@ -1,6 +1,6 @@
 #!/bin/bash
 # Podex Workspace Entrypoint Script
-# Handles workspace initialization, git config sync, and process management.
+# Handles workspace initialization, storage setup, git config, and process management.
 
 set -e
 
@@ -22,23 +22,49 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Set up storage mount and symlinks
+setup_storage() {
+    # Check if storage is mounted
+    if [ -d "/mnt/storage" ]; then
+        log_info "Storage mount detected at /mnt/storage"
+
+        # Get workspace ID from environment
+        if [ -n "$WORKSPACE_ID" ]; then
+            WORKSPACE_DIR="/mnt/storage/workspaces/$WORKSPACE_ID"
+
+            # Ensure workspace directory exists
+            mkdir -p "$WORKSPACE_DIR"
+
+            # Remove existing projects directory/symlink and create symlink to storage
+            rm -rf "$HOME/projects"
+            ln -sf "$WORKSPACE_DIR" "$HOME/projects"
+            log_info "Created projects symlink: $HOME/projects -> $WORKSPACE_DIR"
+        else
+            log_warn "WORKSPACE_ID not set, using local projects directory"
+        fi
+
+        # Set up dotfiles directory symlink if it exists in storage
+        if [ -d "/mnt/storage/dotfiles" ]; then
+            # Merge dotfiles into home directory
+            log_info "Dotfiles directory found in storage"
+        fi
+    else
+        log_info "No storage mount, using local projects directory"
+        mkdir -p "$HOME/projects"
+    fi
+}
+
 # Initialize workspace directories
 init_workspace() {
     log_info "Initializing workspace..."
 
-    # Ensure projects directory exists
-    mkdir -p /workspace/projects
-    mkdir -p /workspace/.config
+    # Set up storage mounts and symlinks
+    setup_storage
 
-    # Link config directories if not already linked
-    if [ ! -L "$HOME/.config" ] && [ -d "/workspace/.config" ]; then
-        # Backup existing config if any
-        if [ -d "$HOME/.config" ]; then
-            cp -rn "$HOME/.config/"* /workspace/.config/ 2>/dev/null || true
-            rm -rf "$HOME/.config"
-        fi
-        ln -sf /workspace/.config "$HOME/.config"
-    fi
+    # Ensure config directories exist
+    mkdir -p "$HOME/.config"
+    mkdir -p "$HOME/.local/bin"
+    mkdir -p "$HOME/.cache"
 }
 
 # Configure Git from environment variables
@@ -77,6 +103,34 @@ configure_ssh() {
     fi
 }
 
+# Start SSH server if running in container mode with SSH enabled
+# This enables VS Code Remote-SSH access via Cloudflare tunnels
+start_sshd() {
+    if [ -n "$ENABLE_SSHD" ] && [ "$ENABLE_SSHD" = "true" ]; then
+        log_info "Starting SSH server..."
+
+        # Ensure .ssh directory exists with correct permissions
+        mkdir -p "$HOME/.ssh"
+        chmod 700 "$HOME/.ssh"
+
+        # Write authorized_keys from environment if provided
+        if [ -n "$SSH_AUTHORIZED_KEYS" ]; then
+            echo "$SSH_AUTHORIZED_KEYS" > "$HOME/.ssh/authorized_keys"
+            chmod 600 "$HOME/.ssh/authorized_keys"
+            log_info "SSH authorized_keys configured"
+        fi
+
+        # Generate host keys if they don't exist (first run)
+        if [ ! -f /etc/ssh/ssh_host_rsa_key ]; then
+            sudo ssh-keygen -A
+        fi
+
+        # Start sshd (requires root, use sudo)
+        sudo /usr/sbin/sshd
+        log_info "SSH server started on port 22"
+    fi
+}
+
 # Set shell preference
 configure_shell() {
     local shell="${WORKSPACE_SHELL:-zsh}"
@@ -97,11 +151,11 @@ configure_shell() {
 
 # Apply custom environment variables
 apply_custom_env() {
-    # Source custom environment file if exists
-    if [ -f "/workspace/.config/workspace.env" ]; then
+    # Source custom environment file if exists in storage
+    if [ -f "/mnt/storage/dotfiles/workspace.env" ]; then
         log_info "Loading custom environment from workspace.env"
         set -a
-        source /workspace/.config/workspace.env
+        source /mnt/storage/dotfiles/workspace.env
         set +a
     fi
 }
@@ -111,10 +165,12 @@ main() {
     log_info "Starting Podex Workspace..."
     log_info "User: $(whoami) (UID: $(id -u))"
     log_info "Hostname: $(hostname)"
+    [ -n "$WORKSPACE_ID" ] && log_info "Workspace ID: $WORKSPACE_ID"
 
     init_workspace
     configure_git
     configure_ssh
+    start_sshd
     configure_shell
     apply_custom_env
 

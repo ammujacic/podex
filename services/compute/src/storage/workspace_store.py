@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
@@ -334,6 +334,6 @@ class WorkspaceStore:
         if not data:
             return None
         try:
-            return json.loads(data)
+            return cast("dict[str, Any]", json.loads(data))
         except json.JSONDecodeError:
             return None

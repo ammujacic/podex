@@ -66,7 +66,9 @@ vi.mock('@/lib/model-utils', () => ({
 // Create mock store functions that we can spy on
 const mockStoreState = {
   sessions: {},
-  addAgentMessage: vi.fn(),
+  addConversationMessage: vi.fn(),
+  getConversationForAgent: vi.fn(),
+  handleConversationEvent: vi.fn(),
   updateAgent: vi.fn(),
   handleAutoModeSwitch: vi.fn(),
   startStreamingMessage: vi.fn(),
@@ -74,7 +76,6 @@ const mockStoreState = {
   appendThinkingToken: vi.fn(),
   finalizeStreamingMessage: vi.fn(),
   setWorkspaceStatus: vi.fn(),
-  updateMessageId: vi.fn(),
 };
 
 // Mock Zustand stores

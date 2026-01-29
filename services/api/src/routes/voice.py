@@ -673,14 +673,14 @@ async def transcribe_audio(
     # OpenAI Whisper API (cloud)
     if provider == "openai":
         try:
-            result = await _openai_whisper_transcribe(
+            openai_stt_result = await _openai_whisper_transcribe(
                 audio_bytes=audio_data,
                 language=data.language,
                 audio_format=data.format,
             )
             return TranscribeResponse(
-                text=result.text,
-                confidence=result.confidence,
+                text=openai_stt_result.text,
+                confidence=openai_stt_result.confidence,
                 duration_ms=len(audio_data) // 16,
             )
         except HTTPException:
@@ -716,7 +716,7 @@ async def transcribe_audio(
         )
 
     # Unknown provider - fall back to local
-    logger.warning(f"Unknown voice provider '{provider}', falling back to local")
+    logger.warning("Unknown voice provider '%s', falling back to local", provider)
     try:
         result = await _whisper_transcribe(audio_data, data.language)
         return TranscribeResponse(
@@ -789,16 +789,16 @@ async def synthesize_speech(
     # OpenAI TTS API
     if provider == "openai":
         try:
-            result = await _openai_tts_synthesize(
+            openai_tts_result = await _openai_tts_synthesize(
                 text=data.text,
                 voice_id=voice_id,
                 output_format=data.format,
             )
             return SynthesizeResponse(
                 audio_url="",
-                audio_b64=result.audio_b64,
-                duration_ms=result.duration_ms,
-                content_type=result.content_type,
+                audio_b64=openai_tts_result.audio_b64,
+                duration_ms=openai_tts_result.duration_ms,
+                content_type=openai_tts_result.content_type,
             )
         except HTTPException:
             raise
@@ -826,7 +826,7 @@ async def synthesize_speech(
         )
 
     # Unknown provider - fall back to local
-    logger.warning(f"Unknown voice provider '{provider}', falling back to local")
+    logger.warning("Unknown voice provider '%s', falling back to local", provider)
     try:
         result = await _pyttsx3_synthesize(text=data.text, voice_id=voice_id)
         return SynthesizeResponse(
@@ -942,16 +942,16 @@ async def synthesize_message(
     # OpenAI TTS API
     if provider == "openai":
         try:
-            result = await _openai_tts_synthesize(
+            openai_msg_result = await _openai_tts_synthesize(
                 text=text_to_speak,
                 voice_id=voice_id,
                 output_format="mp3",
             )
             return SynthesizeResponse(
                 audio_url="",
-                audio_b64=result.audio_b64,
-                duration_ms=result.duration_ms,
-                content_type=result.content_type,
+                audio_b64=openai_msg_result.audio_b64,
+                duration_ms=openai_msg_result.duration_ms,
+                content_type=openai_msg_result.content_type,
             )
         except HTTPException:
             raise
@@ -979,7 +979,7 @@ async def synthesize_message(
         )
 
     # Unknown provider - fall back to local
-    logger.warning(f"Unknown voice provider '{provider}', falling back to local")
+    logger.warning("Unknown voice provider '%s', falling back to local", provider)
     try:
         local_result = await _pyttsx3_synthesize(text=text_to_speak, voice_id=voice_id)
         return SynthesizeResponse(

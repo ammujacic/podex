@@ -17,6 +17,16 @@
 #
 # Environment variables (optional):
 #   DOCKER_TLS_CERT_PATH - Path to store TLS certificates (default: /etc/docker/certs)
+#   WORKSPACE_VOLUME_DEVICE - Block device for workspace storage (e.g., /dev/sdb)
+#                             If set, creates XFS filesystem with project quota support
+#                             Required for production disk quota enforcement
+#
+# SSH Access:
+#   This script automatically adds the platform server's SSH public key to
+#   /root/.ssh/authorized_keys, allowing the compute service to SSH in for
+#   XFS quota management operations (create/update/remove quotas).
+#   Override with PLATFORM_SSH_PUBLIC_KEY env var for custom deployments.
+#   Set to empty string to skip SSH key setup entirely.
 
 set -euo pipefail
 
@@ -42,7 +52,12 @@ fi
 PLATFORM_SERVER_IP="${PLATFORM_SERVER_IP:-}"
 SERVER_NAME="${SERVER_NAME:-ws-$(hostname)}"
 DOCKER_TLS_CERT_PATH="${DOCKER_TLS_CERT_PATH:-/etc/docker/certs}"
-WORKSPACE_STORAGE_PATH="/var/lib/podex/workspaces"
+# Workspace storage with XFS project quotas
+WORKSPACE_STORAGE_PATH="/data/workspaces"
+# Hetzner volume device (attach a volume and set this, e.g., /dev/sdb)
+WORKSPACE_VOLUME_DEVICE="${WORKSPACE_VOLUME_DEVICE:-}"
+# Starting project ID for XFS quotas (each workspace gets a unique ID)
+XFS_PROJECT_ID_START=1000
 
 if [ -z "$PLATFORM_SERVER_IP" ]; then
     log_warn "PLATFORM_SERVER_IP not set. Docker TLS will be configured but not connected to platform."
@@ -79,7 +94,9 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
     jq \
     unzip \
     net-tools \
-    openssl
+    openssl \
+    xfsprogs \
+    iproute2
 
 # ============================================
 # DOCKER INSTALLATION
@@ -237,13 +254,10 @@ systemctl restart docker
 log_success "Docker daemon configured with TLS and gVisor"
 
 # ============================================
-# WORKSPACE STORAGE SETUP
+# PODEX USER SETUP
 # ============================================
 
-log_info "Setting up workspace storage..."
-
-mkdir -p "${WORKSPACE_STORAGE_PATH}"
-chmod 755 "${WORKSPACE_STORAGE_PATH}"
+log_info "Setting up podex user..."
 
 # Create podex user
 if ! id "podex" &>/dev/null; then
@@ -251,9 +265,39 @@ if ! id "podex" &>/dev/null; then
     usermod -aG docker podex
 fi
 
-chown -R podex:podex "${WORKSPACE_STORAGE_PATH}"
+log_success "Podex user configured"
 
-log_success "Workspace storage configured at ${WORKSPACE_STORAGE_PATH}"
+# ============================================
+# PLATFORM SERVER SSH ACCESS
+# ============================================
+
+log_info "Configuring SSH access for platform server..."
+
+# Create root .ssh directory if it doesn't exist
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+
+# Platform server public key for XFS quota management
+# This allows the compute service to SSH in and manage workspace quotas
+# Can be overridden via PLATFORM_SSH_PUBLIC_KEY env var for custom deployments
+PLATFORM_SSH_KEY="${PLATFORM_SSH_PUBLIC_KEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEKyUmK9C0pHHxnM1Q0xnHxkD4WokmeEQU0t8wM/VcJe root@podex-dev}"
+
+# Add to authorized_keys if key is provided
+if [ -n "$PLATFORM_SSH_KEY" ]; then
+    # Extract key identifier (last field) for duplicate check
+    KEY_ID=$(echo "$PLATFORM_SSH_KEY" | awk '{print $NF}')
+
+    if ! grep -q "$KEY_ID" /root/.ssh/authorized_keys 2>/dev/null; then
+        echo "$PLATFORM_SSH_KEY" >> /root/.ssh/authorized_keys
+        chmod 600 /root/.ssh/authorized_keys
+        log_success "Platform server SSH key added ($KEY_ID)"
+    else
+        log_info "Platform server SSH key already present ($KEY_ID)"
+    fi
+else
+    log_warn "No PLATFORM_SSH_PUBLIC_KEY provided - skipping SSH key setup"
+    log_warn "Platform server won't be able to manage XFS quotas via SSH"
+fi
 
 # ============================================
 # FIREWALL CONFIGURATION
@@ -338,6 +382,217 @@ fi
 log_success "Swap configured"
 
 # ============================================
+# XFS VOLUME SETUP (for workspace disk quotas)
+# ============================================
+
+log_info "Setting up XFS volume for workspace storage..."
+
+# Create mount point
+mkdir -p "${WORKSPACE_STORAGE_PATH}"
+
+if [ -n "$WORKSPACE_VOLUME_DEVICE" ]; then
+    # Check if device exists
+    if [ ! -b "$WORKSPACE_VOLUME_DEVICE" ]; then
+        log_error "Volume device $WORKSPACE_VOLUME_DEVICE does not exist"
+        log_error "Please attach a Hetzner volume and set WORKSPACE_VOLUME_DEVICE"
+        exit 1
+    fi
+
+    # Check if already formatted as XFS
+    FSTYPE=$(blkid -s TYPE -o value "$WORKSPACE_VOLUME_DEVICE" 2>/dev/null || echo "")
+
+    if [ "$FSTYPE" != "xfs" ]; then
+        log_info "Formatting $WORKSPACE_VOLUME_DEVICE as XFS..."
+        # Format with XFS (crc=1 enables reflink, ftype=1 required for overlay2)
+        mkfs.xfs -f -m crc=1,finobt=1 "$WORKSPACE_VOLUME_DEVICE"
+    else
+        log_info "Device $WORKSPACE_VOLUME_DEVICE is already XFS formatted"
+    fi
+
+    # Check if already mounted
+    if ! mountpoint -q "${WORKSPACE_STORAGE_PATH}"; then
+        log_info "Mounting XFS volume with project quota support..."
+        mount -o pquota "$WORKSPACE_VOLUME_DEVICE" "${WORKSPACE_STORAGE_PATH}"
+    fi
+
+    # Add to fstab if not already present
+    if ! grep -q "$WORKSPACE_VOLUME_DEVICE" /etc/fstab; then
+        log_info "Adding XFS mount to /etc/fstab..."
+        # Get UUID for reliable mounting
+        UUID=$(blkid -s UUID -o value "$WORKSPACE_VOLUME_DEVICE")
+        echo "UUID=${UUID} ${WORKSPACE_STORAGE_PATH} xfs defaults,pquota 0 2" >> /etc/fstab
+    fi
+
+    # Verify pquota is enabled
+    if mount | grep "${WORKSPACE_STORAGE_PATH}" | grep -q "pquota"; then
+        log_success "XFS mounted with project quota support"
+    else
+        log_error "XFS mounted but pquota not enabled - remounting..."
+        umount "${WORKSPACE_STORAGE_PATH}"
+        mount -o pquota "$WORKSPACE_VOLUME_DEVICE" "${WORKSPACE_STORAGE_PATH}"
+    fi
+
+    # Set up projects and projid files for XFS quota management
+    log_info "Setting up XFS project quota configuration..."
+
+    # /etc/projects maps project IDs to directories
+    # Format: project_id:directory_path
+    touch /etc/projects
+
+    # /etc/projid maps project names to IDs
+    # Format: project_name:project_id
+    touch /etc/projid
+
+    # Create helper script for managing workspace quotas
+    cat > /usr/local/bin/podex-quota << 'QUOTA_SCRIPT'
+#!/bin/bash
+# Podex workspace quota management helper
+# Usage:
+#   podex-quota create <workspace_id> <size_gb>  - Create quota for workspace
+#   podex-quota update <workspace_id> <size_gb>  - Update quota
+#   podex-quota remove <workspace_id>            - Remove quota
+#   podex-quota list                             - List all quotas
+#   podex-quota usage <workspace_id>             - Show usage for workspace
+
+set -euo pipefail
+
+WORKSPACE_PATH="/data/workspaces"
+PROJECT_ID_START=1000
+
+get_project_id() {
+    local workspace_id=$1
+    # Check if workspace already has a project ID
+    local existing_id=$(grep "^${workspace_id}:" /etc/projid 2>/dev/null | cut -d: -f2)
+    if [ -n "$existing_id" ]; then
+        echo "$existing_id"
+        return
+    fi
+    # Find next available project ID
+    local max_id=$(cut -d: -f2 /etc/projid 2>/dev/null | sort -n | tail -1)
+    if [ -z "$max_id" ] || [ "$max_id" -lt "$PROJECT_ID_START" ]; then
+        echo "$PROJECT_ID_START"
+    else
+        echo $((max_id + 1))
+    fi
+}
+
+case "${1:-}" in
+    create)
+        workspace_id=$2
+        size_gb=$3
+        workspace_dir="${WORKSPACE_PATH}/${workspace_id}"
+
+        # Create directory structure
+        mkdir -p "${workspace_dir}/home"
+
+        # Get or create project ID
+        project_id=$(get_project_id "$workspace_id")
+
+        # Add to projects file if not exists
+        if ! grep -q "^${project_id}:${workspace_dir}" /etc/projects 2>/dev/null; then
+            echo "${project_id}:${workspace_dir}" >> /etc/projects
+        fi
+
+        # Add to projid file if not exists
+        if ! grep -q "^${workspace_id}:" /etc/projid 2>/dev/null; then
+            echo "${workspace_id}:${project_id}" >> /etc/projid
+        fi
+
+        # Set up the project on the directory
+        xfs_quota -x -c "project -s ${workspace_id}" "${WORKSPACE_PATH}"
+
+        # Set the quota limit
+        xfs_quota -x -c "limit -p bhard=${size_gb}g ${workspace_id}" "${WORKSPACE_PATH}"
+
+        # Set ownership for workspace user (UID 1000 in container)
+        chown -R 1000:1000 "${workspace_dir}/home"
+
+        echo "Created quota for ${workspace_id}: ${size_gb}GB"
+        ;;
+
+    update)
+        workspace_id=$2
+        size_gb=$3
+
+        # Check workspace exists
+        if ! grep -q "^${workspace_id}:" /etc/projid 2>/dev/null; then
+            echo "Error: Workspace ${workspace_id} not found"
+            exit 1
+        fi
+
+        # Update quota limit
+        xfs_quota -x -c "limit -p bhard=${size_gb}g ${workspace_id}" "${WORKSPACE_PATH}"
+
+        echo "Updated quota for ${workspace_id}: ${size_gb}GB"
+        ;;
+
+    remove)
+        workspace_id=$2
+        workspace_dir="${WORKSPACE_PATH}/${workspace_id}"
+
+        # Get project ID
+        project_id=$(grep "^${workspace_id}:" /etc/projid 2>/dev/null | cut -d: -f2)
+
+        if [ -n "$project_id" ]; then
+            # Remove quota
+            xfs_quota -x -c "limit -p bhard=0 ${workspace_id}" "${WORKSPACE_PATH}" 2>/dev/null || true
+
+            # Remove from projects file
+            sed -i "/^${project_id}:/d" /etc/projects
+
+            # Remove from projid file
+            sed -i "/^${workspace_id}:/d" /etc/projid
+        fi
+
+        # Remove directory
+        if [ -d "$workspace_dir" ]; then
+            rm -rf "$workspace_dir"
+        fi
+
+        echo "Removed quota and directory for ${workspace_id}"
+        ;;
+
+    list)
+        echo "Workspace Quotas:"
+        echo "================"
+        xfs_quota -x -c "report -p -h" "${WORKSPACE_PATH}" 2>/dev/null || echo "No quotas configured"
+        ;;
+
+    usage)
+        workspace_id=$2
+        xfs_quota -x -c "quota -p ${workspace_id}" "${WORKSPACE_PATH}" 2>/dev/null || echo "Workspace not found"
+        ;;
+
+    *)
+        echo "Usage: podex-quota {create|update|remove|list|usage} [args]"
+        echo ""
+        echo "Commands:"
+        echo "  create <workspace_id> <size_gb>  - Create quota for workspace"
+        echo "  update <workspace_id> <size_gb>  - Update quota limit"
+        echo "  remove <workspace_id>            - Remove quota and directory"
+        echo "  list                             - List all quotas"
+        echo "  usage <workspace_id>             - Show usage for workspace"
+        exit 1
+        ;;
+esac
+QUOTA_SCRIPT
+    chmod +x /usr/local/bin/podex-quota
+
+    log_success "XFS project quota system configured"
+
+else
+    log_warn "WORKSPACE_VOLUME_DEVICE not set - using local filesystem without quotas"
+    log_warn "For production, attach a Hetzner volume and set WORKSPACE_VOLUME_DEVICE"
+
+    # Still create the directory for local development
+    mkdir -p "${WORKSPACE_STORAGE_PATH}"
+    chmod 755 "${WORKSPACE_STORAGE_PATH}"
+fi
+
+# Set proper permissions
+chown -R podex:podex "${WORKSPACE_STORAGE_PATH}" 2>/dev/null || true
+
+# ============================================
 # KERNEL OPTIMIZATIONS
 # ============================================
 
@@ -403,10 +658,17 @@ echo "Resource Usage:"
 docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}" 2>/dev/null | head -10 || echo "No containers"
 echo ""
 echo "Disk Usage:"
-df -h /var/lib/docker /var/lib/podex 2>/dev/null | grep -v "^Filesystem"
+df -h /var/lib/docker /data/workspaces 2>/dev/null | grep -v "^Filesystem"
+echo ""
+echo "XFS Quota Status:"
+if command -v xfs_quota &>/dev/null && mountpoint -q /data/workspaces; then
+    xfs_quota -x -c "report -p -h" /data/workspaces 2>/dev/null || echo "No quotas configured"
+else
+    echo "XFS quotas not available (local dev mode)"
+fi
 echo ""
 echo "Workspace Storage:"
-du -sh /var/lib/podex/workspaces/* 2>/dev/null | head -10 || echo "No workspaces"
+du -sh /data/workspaces/* 2>/dev/null | head -10 || echo "No workspaces"
 EOF
 
 chmod +x /usr/local/bin/podex-workspace-status
@@ -457,6 +719,8 @@ echo "   docker --tlsverify \\
 echo ""
 echo -e "${CYAN}Quick Commands:${NC}"
 echo "  podex-workspace-status  - Check server status"
+echo "  podex-quota list        - List all workspace quotas"
+echo "  podex-quota usage <id>  - Show quota usage for workspace"
 echo "  docker stats            - Live container metrics"
 echo "  journalctl -u docker    - Docker logs"
 echo ""
@@ -464,6 +728,19 @@ echo -e "${YELLOW}Security Notes:${NC}"
 echo "- Docker API is TLS-secured and requires client certificates"
 echo "- gVisor (runsc) is the default runtime for all containers"
 echo "- Firewall restricts Docker port to platform server only"
+echo ""
+if [ -n "$WORKSPACE_VOLUME_DEVICE" ]; then
+    echo -e "${CYAN}XFS Quota Configuration:${NC}"
+    echo "- Workspace storage: ${WORKSPACE_STORAGE_PATH}"
+    echo "- Volume device: ${WORKSPACE_VOLUME_DEVICE}"
+    echo "- Project quotas: ENABLED"
+    echo "- Quota management: Use 'podex-quota' command"
+else
+    echo -e "${YELLOW}XFS Quota Warning:${NC}"
+    echo "- No volume device configured - running without disk quotas"
+    echo "- For production, attach a Hetzner volume and re-run with:"
+    echo "  WORKSPACE_VOLUME_DEVICE=/dev/sdX ./workspace-server-init.sh"
+fi
 echo ""
 echo -e "${CYAN}Docker Runtime Info:${NC}"
 docker info 2>/dev/null | grep -E "Default Runtime|Runtimes"

@@ -534,7 +534,7 @@ def should_inject_script(content_type: str | None) -> bool:
     return "text/html" in content_type_lower or "application/xhtml" in content_type_lower
 
 
-def inject_devtools_script(html_content: bytes, content_type: str | None) -> bytes:  # noqa: PLR0911
+def inject_devtools_script(html_content: bytes, content_type: str | None) -> bytes:
     """Inject DevTools bridge script into HTML content.
 
     The script is injected at the beginning of the <head> tag, or after the

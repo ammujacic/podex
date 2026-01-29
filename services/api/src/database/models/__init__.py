@@ -229,6 +229,7 @@ __all__ = [
     "ProductivityMetric",
     "ProjectHealthScore",
     "PushSubscription",
+    "ServerStatus",
     "Session",
     "SessionBudget",
     "SessionCollaborator",
@@ -259,6 +260,5 @@ __all__ = [
     "WorkspaceExtension",
     "WorkspaceServer",
     "WorkspaceTunnel",
-    "ServerStatus",
     "_generate_uuid",
 ]

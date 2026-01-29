@@ -1,9 +1,9 @@
 """Workspace server models for multi-server Docker orchestration."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -33,11 +33,20 @@ class WorkspaceServer(Base):
     total_memory_mb: Mapped[int] = mapped_column(Integer, nullable=False)
     total_disk_gb: Mapped[int] = mapped_column(Integer, nullable=False)
 
+    # Bandwidth capacity (Mbps)
+    total_bandwidth_mbps: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1000
+    )  # 1 Gbps
+
     # Usage (updated by heartbeat service)
     used_cpu: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     used_memory_mb: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     used_disk_gb: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    used_bandwidth_mbps: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     active_workspaces: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Limits
+    max_workspaces: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
 
     # Status
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
@@ -99,6 +108,11 @@ class WorkspaceServer(Base):
         return max(0, self.total_disk_gb - self.used_disk_gb)
 
     @property
+    def available_bandwidth_mbps(self) -> int:
+        """Get available bandwidth in Mbps."""
+        return max(0, self.total_bandwidth_mbps - self.used_bandwidth_mbps)
+
+    @property
     def cpu_utilization(self) -> float:
         """Get CPU utilization as a percentage (0-100)."""
         if self.total_cpu == 0:
@@ -120,6 +134,13 @@ class WorkspaceServer(Base):
         return (self.used_disk_gb / self.total_disk_gb) * 100
 
     @property
+    def bandwidth_utilization(self) -> float:
+        """Get bandwidth utilization as a percentage (0-100)."""
+        if self.total_bandwidth_mbps == 0:
+            return 0
+        return (self.used_bandwidth_mbps / self.total_bandwidth_mbps) * 100
+
+    @property
     def is_healthy(self) -> bool:
         """Check if server is healthy (active status and recent heartbeat)."""
         if self.status != "active":
@@ -127,9 +148,8 @@ class WorkspaceServer(Base):
         if self.last_heartbeat is None:
             return False
         # Consider unhealthy if no heartbeat in last 2 minutes
-        from datetime import timezone
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         time_since_heartbeat = (now - self.last_heartbeat).total_seconds()
         return time_since_heartbeat < 120
 
@@ -138,6 +158,7 @@ class WorkspaceServer(Base):
         cpu: float,
         memory_mb: int,
         disk_gb: int,
+        bandwidth_mbps: int = 100,
     ) -> bool:
         """Check if server can fit a workspace with the given requirements."""
         return (
@@ -145,6 +166,7 @@ class WorkspaceServer(Base):
             and self.available_cpu >= cpu
             and self.available_memory_mb >= memory_mb
             and self.available_disk_gb >= disk_gb
+            and self.available_bandwidth_mbps >= bandwidth_mbps
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -159,13 +181,16 @@ class WorkspaceServer(Base):
             "total_cpu": self.total_cpu,
             "total_memory_mb": self.total_memory_mb,
             "total_disk_gb": self.total_disk_gb,
+            "total_bandwidth_mbps": self.total_bandwidth_mbps,
             "used_cpu": self.used_cpu,
             "used_memory_mb": self.used_memory_mb,
             "used_disk_gb": self.used_disk_gb,
+            "used_bandwidth_mbps": self.used_bandwidth_mbps,
             "active_workspaces": self.active_workspaces,
             "available_cpu": self.available_cpu,
             "available_memory_mb": self.available_memory_mb,
             "available_disk_gb": self.available_disk_gb,
+            "available_bandwidth_mbps": self.available_bandwidth_mbps,
             "status": self.status,
             "last_heartbeat": self.last_heartbeat.isoformat() if self.last_heartbeat else None,
             "last_error": self.last_error,
@@ -181,6 +206,7 @@ class WorkspaceServer(Base):
             "cpu_utilization": self.cpu_utilization,
             "memory_utilization": self.memory_utilization,
             "disk_utilization": self.disk_utilization,
+            "bandwidth_utilization": self.bandwidth_utilization,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }

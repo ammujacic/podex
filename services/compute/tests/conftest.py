@@ -4,23 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import os
+import tempfile
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import docker
-import httpx
 import pytest
 import respx
 from fastapi.testclient import TestClient
-from httpx import AsyncClient, Response
+from httpx import Response
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Generator
 
     from src.managers.docker_manager import DockerComputeManager
-    from src.managers.gcp_manager import GCPComputeManager
     from src.storage.workspace_store import WorkspaceStore
 
 from podex_shared.redis_client import RedisClient, get_redis_client
@@ -29,9 +29,7 @@ from src.models.workspace import (
     WorkspaceConfig,
     WorkspaceInfo,
     WorkspaceStatus,
-    WorkspaceTier,
 )
-
 
 # ============================================
 # Redis Fixtures
@@ -216,7 +214,7 @@ def mock_container() -> MagicMock:
 
 @pytest.fixture
 async def docker_manager(
-    mock_workspace_store: MockWorkspaceStore, mock_container: MagicMock
+    mock_workspace_store: MockWorkspaceStore, mock_container: MagicMock, tmp_path: Path
 ) -> AsyncGenerator[DockerComputeManager, None]:
     """DockerComputeManager with mocked Docker client for unit tests.
 
@@ -225,8 +223,10 @@ async def docker_manager(
     that captures method references at call time.
 
     Uses MockWorkspaceStore to avoid Redis dependency.
+    Uses tmp_path for local storage to avoid permission issues with /var/lib/podex.
     """
     from unittest.mock import patch
+
     from src.managers.docker_manager import DockerComputeManager
 
     mock_docker_client = MagicMock()
@@ -237,6 +237,8 @@ async def docker_manager(
 
     with patch("docker.from_env", return_value=mock_docker_client):
         manager = DockerComputeManager(workspace_store=mock_workspace_store)
+        # Override local storage path to use temp directory (avoids /var/lib/podex permission issues)
+        manager._local_storage_path = tmp_path / "workspaces"
         # Store the mock client for tests that need to customize behavior
         manager._mock_docker_client = mock_docker_client
         manager._mock_container = mock_container
@@ -245,71 +247,6 @@ async def docker_manager(
         # Close HTTP client if it exists
         if manager._http_client and not manager._http_client.is_closed:
             await manager._http_client.aclose()
-
-
-@pytest.fixture
-def mock_gcp_run_client() -> MagicMock:
-    """Mock google.cloud.run_v2.JobsAsyncClient."""
-    mock = MagicMock()
-    mock.create_job = AsyncMock()
-    mock.get_job = AsyncMock()
-    mock.delete_job = AsyncMock()
-    mock.list_jobs = AsyncMock(return_value=[])
-    return mock
-
-
-@pytest.fixture
-def mock_gcp_executions_client() -> MagicMock:
-    """Mock google.cloud.run_v2.ExecutionsAsyncClient."""
-    mock = MagicMock()
-    mock.create_execution = AsyncMock()
-    mock.get_execution = AsyncMock()
-    mock.delete_execution = AsyncMock()
-    mock.list_executions = AsyncMock(return_value=[])
-    return mock
-
-
-@pytest.fixture
-def mock_gcp_storage_client() -> MagicMock:
-    """Mock google.cloud.storage.Client."""
-    mock = MagicMock()
-    mock.bucket = MagicMock()
-    mock.create_bucket = MagicMock()
-    return mock
-
-
-@pytest.fixture
-async def gcp_manager(
-    mock_workspace_store: MockWorkspaceStore,
-    mock_gcp_run_client: MagicMock,
-    mock_gcp_executions_client: MagicMock,
-    mock_gcp_storage_client: MagicMock,
-    monkeypatch: pytest.MonkeyPatch,
-) -> AsyncGenerator[GCPComputeManager, None]:
-    """GCPComputeManager with mocked GCP SDK.
-
-    Uses MockWorkspaceStore to avoid Redis dependency.
-    Skips tests if GCP SDK is not installed.
-    """
-    from src.managers.gcp_manager import GCPComputeManager, run_v2
-
-    # Skip if GCP SDK not installed
-    if run_v2 is None:
-        pytest.skip("GCP SDK (google-cloud-run) not installed")
-
-    # Mock GCP clients
-    monkeypatch.setattr("src.managers.gcp_manager.run_v2.JobsAsyncClient", lambda: mock_gcp_run_client)
-    monkeypatch.setattr(
-        "src.managers.gcp_manager.run_v2.ExecutionsAsyncClient", lambda: mock_gcp_executions_client
-    )
-    monkeypatch.setattr("src.managers.gcp_manager.storage.Client", lambda: mock_gcp_storage_client)
-
-    manager = GCPComputeManager(workspace_store=mock_workspace_store)
-    yield manager
-
-    # Close HTTP client if it exists
-    if manager._http_client and not manager._http_client.is_closed:
-        await manager._http_client.aclose()
 
 
 # ============================================
@@ -410,7 +347,7 @@ class WorkspaceFactory:
         user_id: str = "test-user-123",
         session_id: str = "test-session-456",
         status: WorkspaceStatus = WorkspaceStatus.RUNNING,
-        tier: WorkspaceTier = WorkspaceTier.STARTER,
+        tier: str = "starter_arm",
         host: str = "127.0.0.1",
         port: int = 3000,
         **kwargs: Any,
@@ -433,7 +370,7 @@ class WorkspaceFactory:
 
     @staticmethod
     def create_config(
-        tier: WorkspaceTier = WorkspaceTier.STARTER,
+        tier: str = "starter_arm",
         base_image: str | None = None,
         git_email: str | None = None,
         git_name: str | None = None,

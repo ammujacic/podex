@@ -7,7 +7,7 @@ from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 import structlog
-from anthropic import AsyncAnthropic, AsyncAnthropicVertex
+from anthropic import AsyncAnthropic
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
@@ -188,7 +188,7 @@ class CompletionResult:
         input_tokens: int = 0,
         output_tokens: int = 0,
         model: str = "",
-        provider: str = "vertex",
+        provider: str = "anthropic",
     ) -> None:
         self.text = text
         self.input_tokens = input_tokens
@@ -201,8 +201,8 @@ class CompletionResult:
         """Determine usage source for billing."""
         if self.provider in ("ollama", "lmstudio"):
             return "local"
-        if self.provider == "vertex":
-            return "included"
+        if self.provider == "openrouter":
+            return "included"  # Platform-provided via OpenRouter
         # Direct anthropic/openai API usage is "external"
         return "external"
 
@@ -212,7 +212,7 @@ class CompletionProvider:
 
     _anthropic_client: AsyncAnthropic | None = None
     _ollama_client: AsyncOpenAI | None = None
-    _vertex_client: AsyncAnthropicVertex | None = None
+    _openrouter_client: AsyncOpenAI | None = None
 
     @classmethod
     def get_anthropic_client(cls) -> AsyncAnthropic:
@@ -232,21 +232,14 @@ class CompletionProvider:
         return cls._ollama_client
 
     @classmethod
-    def get_vertex_client(cls) -> AsyncAnthropicVertex:
-        """Get or create Vertex AI client for Claude models."""
-        if cls._vertex_client is None:
-            if not settings.GCP_PROJECT_ID:
-
-                class GCPProjectIDRequiredError(ValueError):
-                    def __init__(self) -> None:
-                        super().__init__("GCP_PROJECT_ID required for Vertex AI")
-
-                raise GCPProjectIDRequiredError
-            cls._vertex_client = AsyncAnthropicVertex(
-                project_id=settings.GCP_PROJECT_ID,
-                region=settings.GCP_REGION,
+    def get_openrouter_client(cls) -> AsyncOpenAI:
+        """Get or create OpenRouter client (OpenAI-compatible API)."""
+        if cls._openrouter_client is None:
+            cls._openrouter_client = AsyncOpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=settings.OPENROUTER_API_KEY or "",
             )
-        return cls._vertex_client
+        return cls._openrouter_client
 
     @classmethod
     async def complete(
@@ -269,12 +262,13 @@ class CompletionProvider:
 
         Returns (provider, model_name) tuple.
         Model ID formats:
-        - None or empty: use default LLM_PROVIDER
+        - None or empty: use default LLM_PROVIDER (openrouter)
         - "ollama:model-name": use Ollama with specified model
         - "lmstudio:model-name": use LMStudio with specified model
         - "anthropic:model-name": use direct Anthropic API
         - "openai:model-name": use OpenAI API
-        - Other: platform model via Vertex AI
+        - "openrouter:model-name": use OpenRouter API
+        - Other: use OpenRouter with model
         """
         if not model_id:
             return settings.LLM_PROVIDER, None
@@ -291,9 +285,11 @@ class CompletionProvider:
                 return "anthropic", model_name
             if provider_prefix == "openai":
                 return "openai", model_name
+            if provider_prefix == "openrouter":
+                return "openrouter", model_name
 
-        # No prefix - assume it's a platform model (Vertex AI)
-        return "vertex", model_id
+        # No prefix - use OpenRouter (platform default)
+        return "openrouter", model_id
 
     @classmethod
     async def complete_with_usage(
@@ -316,7 +312,6 @@ class CompletionProvider:
                 - "ollama:model": use Ollama with model
                 - "lmstudio:model": use LMStudio with model
                 - "anthropic:model": use direct Anthropic API
-                - "model-name": use Vertex AI with model
         """
         provider, model_name = cls._parse_model_id(model_id)
         logger.debug(
@@ -327,10 +322,6 @@ class CompletionProvider:
         )
 
         try:
-            if provider == "vertex":
-                return await cls._complete_vertex_with_usage(
-                    prompt, system_prompt, max_tokens, temperature, model_name
-                )
             if provider in ("ollama", "lmstudio"):
                 return await cls._complete_ollama_with_usage(
                     prompt, system_prompt, max_tokens, temperature, model_name, provider
@@ -339,9 +330,13 @@ class CompletionProvider:
                 return await cls._complete_anthropic_with_usage(
                     prompt, system_prompt, max_tokens, temperature, model_name
                 )
-            # Fallback to vertex for unknown provider
-            logger.warning("Unknown LLM provider, falling back to vertex", provider=provider)
-            return await cls._complete_vertex_with_usage(
+            if provider == "openrouter":
+                return await cls._complete_openrouter_with_usage(
+                    prompt, system_prompt, max_tokens, temperature, model_name
+                )
+            # Fallback to openrouter for unknown provider (platform default)
+            logger.warning("Unknown LLM provider, falling back to openrouter", provider=provider)
+            return await cls._complete_openrouter_with_usage(
                 prompt, system_prompt, max_tokens, temperature, model_name
             )
         except Exception as e:
@@ -360,57 +355,6 @@ class CompletionProvider:
                     logger.exception("Ollama fallback also failed", error=str(fallback_error))
                     raise e from fallback_error
             raise
-
-    @classmethod
-    async def _complete_vertex(
-        cls,
-        prompt: str,
-        system_prompt: str,
-        max_tokens: int,
-        temperature: float,
-    ) -> str:
-        """Complete using Google Cloud Vertex AI with Claude Haiku."""
-        result = await cls._complete_vertex_with_usage(
-            prompt, system_prompt, max_tokens, temperature
-        )
-        return result.text
-
-    @classmethod
-    async def _complete_vertex_with_usage(
-        cls,
-        prompt: str,
-        system_prompt: str,
-        max_tokens: int,
-        temperature: float,
-        model_name: str | None = None,
-    ) -> CompletionResult:
-        """Complete using Google Cloud Vertex AI with Claude (with usage tracking)."""
-        # Use specified model or default to Claude 3.5 Haiku
-        model_id = model_name or "claude-3-5-haiku-20241022"
-
-        client = cls.get_vertex_client()
-        response = await client.messages.create(
-            model=model_id,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            system=system_prompt,
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        # Extract text from Anthropic format response
-        text = ""
-        for block in response.content:
-            if block.type == "text":
-                text = block.text.strip()
-                break
-
-        return CompletionResult(
-            text=text,
-            input_tokens=response.usage.input_tokens if response.usage else 0,
-            output_tokens=response.usage.output_tokens if response.usage else 0,
-            model=model_id,
-            provider="vertex",
-        )
 
     @classmethod
     async def _complete_ollama(
@@ -511,6 +455,42 @@ class CompletionProvider:
             output_tokens=response.usage.output_tokens if response.usage else 0,
             model=model_id,
             provider="anthropic",
+        )
+
+    @classmethod
+    async def _complete_openrouter_with_usage(
+        cls,
+        prompt: str,
+        system_prompt: str,
+        max_tokens: int,
+        temperature: float,
+        model_name: str | None = None,
+    ) -> CompletionResult:
+        """Complete using OpenRouter (OpenAI-compatible API) with usage tracking."""
+        client = cls.get_openrouter_client()
+        # Use specified model or default to a fast, capable model
+        model = model_name or "anthropic/claude-3-5-haiku"
+
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+        text = ""
+        if response.choices and response.choices[0].message.content:
+            text = response.choices[0].message.content.strip()
+
+        return CompletionResult(
+            text=text,
+            input_tokens=response.usage.prompt_tokens if response.usage else 0,
+            output_tokens=response.usage.completion_tokens if response.usage else 0,
+            model=model,
+            provider="openrouter",
         )
 
 

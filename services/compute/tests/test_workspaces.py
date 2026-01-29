@@ -11,7 +11,6 @@ from src.models.workspace import (
     WorkspaceConfig,
     WorkspaceInfo,
     WorkspaceStatus,
-    WorkspaceTier,
 )
 from src.routes.workspaces import verify_workspace_ownership
 
@@ -27,7 +26,7 @@ class TestVerifyWorkspaceOwnership:
             user_id="user_456",
             session_id="sess_789",
             status=WorkspaceStatus.RUNNING,
-            tier=WorkspaceTier.STARTER,
+            tier="starter_arm",
             host="localhost",
             port=3000,
             created_at=datetime.now(UTC),
@@ -96,7 +95,7 @@ class TestWorkspaceInfoModel:
             user_id="user_456",
             session_id="sess_789",
             status=WorkspaceStatus.RUNNING,
-            tier=WorkspaceTier.PRO,
+            tier="pro_arm",
             host="172.17.0.2",
             port=3000,
             created_at=datetime.now(UTC),
@@ -104,7 +103,7 @@ class TestWorkspaceInfoModel:
             container_id="abc123def456",
         )
         assert info.container_id == "abc123def456"
-        assert info.tier == WorkspaceTier.PRO
+        assert info.tier == "pro_arm"
 
     def test_workspace_status_transitions(self) -> None:
         """Test all workspace status values."""
@@ -121,7 +120,7 @@ class TestWorkspaceInfoModel:
                 user_id="user_456",
                 session_id="sess_789",
                 status=status,
-                tier=WorkspaceTier.STARTER,
+                tier="starter_arm",
                 host="localhost",
                 port=3000,
                 created_at=datetime.now(UTC),
@@ -136,7 +135,7 @@ class TestWorkspaceConfigValidation:
     def test_config_with_repos(self) -> None:
         """Test config with multiple repos."""
         config = WorkspaceConfig(
-            tier=WorkspaceTier.POWER,
+            tier="power_arm",
             repos=[
                 "https://github.com/user/repo1",
                 "https://github.com/user/repo2",
@@ -157,6 +156,7 @@ class TestWorkspaceConfigValidation:
 
     def test_config_all_tiers(self) -> None:
         """Test config with all tier values."""
-        for tier in WorkspaceTier:
+        # Tiers are now strings, not enums - test the main tier names
+        for tier in ["starter_arm", "pro_arm", "power_arm", "enterprise_arm", "starter", "pro", "power", "enterprise"]:
             config = WorkspaceConfig(tier=tier)
             assert config.tier == tier

@@ -1,10 +1,31 @@
 /**
  * Tests for AgentCard component
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { AgentCard } from '@/components/workspace/AgentCard';
 import type { Agent } from '@/stores/session';
+
+// Create a mock conversation session for testing
+const mockConversationSession = {
+  id: 'conv-1',
+  name: 'Test Conversation',
+  messages: [],
+  attachedToAgentId: 'agent-123',
+  attachedAgentIds: ['agent-123'],
+  messageCount: 0,
+  lastMessageAt: null,
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+};
+
+// Store mock for controlling conversation messages
+let currentMockMessages: Array<{
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: Date;
+}> = [];
 
 // Mock dependencies
 vi.mock('@/stores/session', async () => {
@@ -15,6 +36,12 @@ vi.mock('@/stores/session', async () => {
       removeAgent: vi.fn(),
       updateAgent: vi.fn(),
       addAgentMessage: vi.fn(),
+      addConversationMessage: vi.fn(),
+      deleteConversationMessage: vi.fn(),
+      getConversationForAgent: () => ({
+        ...mockConversationSession,
+        messages: currentMockMessages,
+      }),
     }),
   };
 });
@@ -22,6 +49,34 @@ vi.mock('@/stores/session', async () => {
 vi.mock('@/stores/streaming', () => ({
   useStreamingStore: () => ({
     streamingMessages: {},
+  }),
+}));
+
+vi.mock('@/stores/editor', () => ({
+  useEditorStore: () => ({
+    openFile: vi.fn(),
+  }),
+}));
+
+vi.mock('@/stores/worktrees', () => ({
+  useWorktreesStore: () => ({
+    getAgentWorktree: () => null,
+  }),
+}));
+
+vi.mock('@/stores/checkpoints', () => ({
+  useCheckpointsStore: () => ({
+    getAgentCheckpoints: () => [],
+    restoringCheckpointId: null,
+  }),
+}));
+
+vi.mock('@/stores/approvals', () => ({
+  useApprovalsStore: () => ({
+    approvalsByAgent: {},
+    setApproval: vi.fn(),
+    clearApproval: vi.fn(),
+    getAgentApprovals: () => [],
   }),
 }));
 
@@ -71,6 +126,7 @@ vi.mock('@/lib/api', async (importOriginal) => {
       limits: {},
     }),
     getAgentRoleConfigs: vi.fn().mockResolvedValue([]),
+    getLocalLLMConfig: vi.fn().mockResolvedValue(null),
   };
 });
 
@@ -80,16 +136,22 @@ describe('AgentCard', () => {
     name: 'Architect',
     role: 'architect',
     model: 'claude-opus-4-5-20251101',
+    modelDisplayName: 'Opus 4.5',
     status: 'idle',
     color: 'agent-1',
-    messages: [],
     mode: 'auto',
+    conversationSessionId: 'conv-1',
   };
 
   const defaultProps = {
     agent: mockAgent,
     sessionId: 'session-123',
   };
+
+  beforeEach(() => {
+    // Reset the mock messages before each test
+    currentMockMessages = [];
+  });
 
   it('renders the agent card', () => {
     render(<AgentCard {...defaultProps} />);
@@ -132,24 +194,22 @@ describe('AgentCard', () => {
   });
 
   it('displays messages when present', () => {
-    const agentWithMessages = {
-      ...mockAgent,
-      messages: [
-        {
-          id: 'msg-1',
-          role: 'user' as const,
-          content: 'Hello!',
-          timestamp: new Date(),
-        },
-        {
-          id: 'msg-2',
-          role: 'assistant' as const,
-          content: 'Hi there!',
-          timestamp: new Date(),
-        },
-      ],
-    };
-    render(<AgentCard {...defaultProps} agent={agentWithMessages} />);
+    // Set up mock messages in the conversation session
+    currentMockMessages = [
+      {
+        id: 'msg-1',
+        role: 'user' as const,
+        content: 'Hello!',
+        timestamp: new Date(),
+      },
+      {
+        id: 'msg-2',
+        role: 'assistant' as const,
+        content: 'Hi there!',
+        timestamp: new Date(),
+      },
+    ];
+    render(<AgentCard {...defaultProps} />);
     expect(screen.getByText('Hello!')).toBeInTheDocument();
     expect(screen.getByText('Hi there!')).toBeInTheDocument();
   });

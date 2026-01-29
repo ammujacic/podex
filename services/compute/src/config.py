@@ -1,9 +1,46 @@
 """Compute service configuration."""
 
-from typing import Literal
+import json
+from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
+
+
+class WorkspaceServerConfig:
+    """Configuration for a single workspace server."""
+
+    def __init__(
+        self,
+        server_id: str,
+        host: str,
+        docker_port: int = 2375,
+        tls_enabled: bool = False,
+        cert_path: str | None = None,
+        max_cpu: float = 8.0,
+        max_memory_mb: int = 16384,
+        max_workspaces: int = 50,
+        labels: dict[str, str] | None = None,
+        architecture: str = "amd64",
+        # GPU configuration
+        has_gpu: bool = False,
+        gpu_type: str | None = None,
+        gpu_count: int = 0,
+    ):
+        self.server_id = server_id
+        self.host = host
+        self.docker_port = docker_port
+        self.tls_enabled = tls_enabled
+        self.cert_path = cert_path
+        self.max_cpu = max_cpu
+        self.max_memory_mb = max_memory_mb
+        self.max_workspaces = max_workspaces
+        self.labels = labels or {}
+        self.architecture = architecture
+        # GPU
+        self.has_gpu = has_gpu
+        self.gpu_type = gpu_type
+        self.gpu_count = gpu_count
 
 
 class Settings(BaseSettings):
@@ -24,30 +61,68 @@ class Settings(BaseSettings):
     # CORS - allowed origins for API access
     cors_origins: list[str] = ["http://localhost:3000"]
 
-    # Docker settings
-    docker_host: str = "unix:///var/run/docker.sock"
-    max_workspaces: int = 10
+    # Workspace servers configuration (JSON array)
+    # Each server: {"server_id", "host", "docker_port", "tls_enabled", "cert_path", ...}
+    workspace_servers_json: str = Field(default="[]", alias="workspace_servers")
+
+    # Workspace settings
+    max_workspaces: int = 10  # Max workspaces per server (soft limit)
     workspace_timeout: int = 3600  # 1 hour idle timeout
     shutdown_timeout: int = 60  # Max seconds for graceful shutdown before forcing exit
     workspace_image: str = "podex/workspace:latest"
-    docker_network: str = "podex-dev"
 
-    # Multi-server Docker settings
-    docker_tls_enabled: bool = False  # Enable TLS for remote Docker API
-    docker_cert_path: str = "/etc/docker/certs"  # Path to TLS certificates
+    # Container runtime for workspace isolation (runsc for gVisor, runc for standard)
+    docker_runtime: str | None = "runsc"  # Set to None to use server default
 
-    # Container runtime for workspace isolation
-    docker_runtime: str = "runsc"  # gVisor runtime for security isolation
+    @field_validator("workspace_servers_json", mode="before")
+    @classmethod
+    def parse_workspace_servers(cls, v: Any) -> str:
+        """Ensure workspace_servers is a string (JSON)."""
+        if isinstance(v, list):
+            return json.dumps(v)
+        return v or "[]"
+
+    @property
+    def workspace_servers(self) -> list[WorkspaceServerConfig]:
+        """Parse workspace servers from JSON config."""
+        try:
+            servers_data = json.loads(self.workspace_servers_json)
+            return [
+                WorkspaceServerConfig(
+                    server_id=s.get("server_id", s.get("name", f"server-{i}")),
+                    host=s.get("host", "localhost"),
+                    docker_port=s.get("docker_port", 2375),
+                    tls_enabled=s.get("tls_enabled", False),
+                    cert_path=s.get("cert_path"),
+                    max_cpu=s.get("max_cpu", 8.0),
+                    max_memory_mb=s.get("max_memory_mb", 16384),
+                    max_workspaces=s.get("max_workspaces", 50),
+                    labels=s.get("labels", {}),
+                    architecture=s.get("architecture", "amd64"),
+                    # GPU configuration
+                    has_gpu=s.get("has_gpu", False),
+                    gpu_type=s.get("gpu_type"),
+                    gpu_count=s.get("gpu_count", 0),
+                )
+                for i, s in enumerate(servers_data)
+            ]
+        except (json.JSONDecodeError, TypeError):
+            return []
 
     # Redis for state management
     redis_url: str = "redis://localhost:6379"
 
-    # Local storage for workspace files (Docker volumes)
-    workspace_volume_base: str = "/var/lib/podex/workspaces"
+    # Workspace data storage (bind mounts with XFS quotas in production)
+    workspace_data_path: str = "/data/workspaces"
+    # Enable XFS project quotas for disk limits (requires XFS with pquota mount option)
+    xfs_quotas_enabled: bool = False  # Set to True in production
 
     # Workspace container images for different architectures
     workspace_image_arm64: str = "podex/workspace:latest-arm64"
     workspace_image_amd64: str = "podex/workspace:latest-amd64"
+    workspace_image_gpu: str = (
+        "podex/workspace:latest-cuda"  # CUDA-enabled image for GPU workspaces
+    )
 
     # Workspace communication security
     # When enabled, workspace containers are accessed via HTTPS with token auth

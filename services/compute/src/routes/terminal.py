@@ -19,6 +19,7 @@ from src.managers.base import (
     ComputeManager,  # noqa: TC001 - FastAPI needs this at runtime for Depends()
 )
 from src.models.workspace import WorkspaceStatus
+from src.validation import ValidationError, validate_workspace_id
 
 logger = structlog.get_logger()
 
@@ -570,12 +571,19 @@ class TmuxTerminalSession:
         return self._running
 
 
-async def _validate_workspace_for_terminal(  # noqa: PLR0911
+async def _validate_workspace_for_terminal(
     compute: ComputeManager,
     websocket: WebSocket,
     workspace_id: str,
 ) -> tuple[bool, str | None]:
     """Validate workspace exists and is running. Returns (valid, container_id)."""
+    # Validate workspace_id to prevent path traversal and injection attacks
+    try:
+        validate_workspace_id(workspace_id)
+    except ValidationError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid workspace ID")
+        return False, None
+
     # First try to get workspace from compute manager's registry
     workspace = await compute.get_workspace(workspace_id)
     if workspace:
@@ -641,7 +649,7 @@ async def _validate_workspace_for_terminal(  # noqa: PLR0911
 
 
 @router.websocket("/{workspace_id}")
-async def terminal_websocket(  # noqa: PLR0915
+async def terminal_websocket(
     websocket: WebSocket,
     workspace_id: str,
     compute: Annotated[ComputeManager, Depends(get_compute_manager)],

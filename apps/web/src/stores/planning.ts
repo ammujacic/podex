@@ -272,4 +272,3 @@ export function transformBackgroundTask(data: any): BackgroundPlanTask {
     error: data.error,
   };
 }
-

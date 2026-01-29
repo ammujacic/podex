@@ -402,6 +402,7 @@ run:
 	@echo "$(GREEN)Ollama is running with models available$(NC)"
 	@echo ""
 	@echo "$(CYAN)Starting development environment...$(NC)"
+	@echo "$(CYAN)This includes workspace servers (ws-local-1, ws-local-2)$(NC)"
 	@# Detect host IP for mobile access
 	@HOST_IP=$$(ipconfig getifaddr en0 2>/dev/null || hostname -I 2>/dev/null | awk '{print $$1}' || echo "localhost"); \
 	echo "$(CYAN)Detected host IP: $$HOST_IP$(NC)"; \
@@ -412,9 +413,11 @@ run:
 	@echo ""
 	@HOST_IP=$$(ipconfig getifaddr en0 2>/dev/null || echo "localhost"); \
 	echo "$(GREEN)Services started!$(NC)"; \
-	echo "  Web:    http://localhost:3000 (or http://$$HOST_IP:3000 from mobile)"; \
-	echo "  API:    http://localhost:3001 (or http://$$HOST_IP:3001 from mobile)"; \
-	echo "  Ollama: http://localhost:11434"
+	echo "  Web:               http://localhost:3000 (or http://$$HOST_IP:3000 from mobile)"; \
+	echo "  API:               http://localhost:3001 (or http://$$HOST_IP:3001 from mobile)"; \
+	echo "  Compute:           http://localhost:3003"; \
+	echo "  Workspace Servers: ws-local-1, ws-local-2 (internal Docker-in-Docker)"; \
+	echo "  Ollama:            http://localhost:11434"
 	@echo ""
 	@echo "$(CYAN)To view logs: make logs$(NC)"
 	@echo "$(CYAN)To stop: make stop$(NC)"

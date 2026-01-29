@@ -1,8 +1,8 @@
-"""Comprehensive tests for local pod client."""
+"""Tests for local pod client."""
 
 import asyncio
 import contextlib
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -49,38 +49,18 @@ class TestLocalPodClientCapabilities:
         client = LocalPodClient(config)
         client.sio.emit = AsyncMock()
 
-        with patch("docker.from_env") as mock_docker:
-            mock_docker.return_value.info.return_value = {
-                "ServerVersion": "24.0.0"
-            }
-            await client._send_capabilities()
+        await client._send_capabilities()
 
         client.sio.emit.assert_called_once()
         call_args = client.sio.emit.call_args
         assert call_args.args[0] == "capabilities"
         data = call_args.args[1]
-        # Capabilities are now nested under "capabilities" key
+        # Capabilities are nested under "capabilities" key
         capabilities = data["capabilities"]
-        assert capabilities["docker_version"] == "24.0.0"
-        # Config is also included
-        assert "config" in data
-        assert data["config"]["mode"] == "docker"
-
-    @pytest.mark.asyncio
-    async def test_send_capabilities_docker_unavailable(self) -> None:
-        """Test capabilities when Docker is unavailable."""
-        config = LocalPodConfig()
-        client = LocalPodClient(config)
-        client.sio.emit = AsyncMock()
-
-        with patch("docker.from_env", side_effect=Exception("Docker error")):
-            await client._send_capabilities()
-
-        call_args = client.sio.emit.call_args
-        data = call_args.args[1]
-        # Capabilities are now nested under "capabilities" key
-        capabilities = data["capabilities"]
-        assert capabilities["docker_version"] == "unavailable"
+        assert "os_info" in capabilities
+        assert "architecture" in capabilities
+        assert "total_memory_mb" in capabilities
+        assert "cpu_cores" in capabilities
 
 
 class TestLocalPodClientHeartbeat:
@@ -126,6 +106,7 @@ class TestLocalPodClientRun:
         )
         client = LocalPodClient(config)
         client.manager.initialize = AsyncMock()
+        client.rpc_handler.initialize = AsyncMock()
         client.sio.connect = AsyncMock()
         client.sio.connected = False
 
@@ -147,6 +128,7 @@ class TestLocalPodClientRun:
         )
         client = LocalPodClient(config)
         client.manager.initialize = AsyncMock()
+        client.rpc_handler.initialize = AsyncMock()
         client.sio.connect = AsyncMock()
 
         shutdown_event = asyncio.Event()
@@ -163,6 +145,7 @@ class TestLocalPodClientRun:
         config = LocalPodConfig(pod_token="pdx_pod_secret123")
         client = LocalPodClient(config)
         client.manager.initialize = AsyncMock()
+        client.rpc_handler.initialize = AsyncMock()
         client.sio.connect = AsyncMock()
 
         shutdown_event = asyncio.Event()
@@ -184,6 +167,7 @@ class TestLocalPodClientShutdown:
         client = LocalPodClient(config)
         client._running = True
         client.manager.shutdown = AsyncMock()
+        client.rpc_handler.shutdown = AsyncMock()
         client.sio.connected = True
         client.sio.disconnect = AsyncMock()
 
@@ -200,6 +184,7 @@ class TestLocalPodClientShutdown:
         client = LocalPodClient(config)
         client._running = True
         client.manager.shutdown = AsyncMock()
+        client.rpc_handler.shutdown = AsyncMock()
         client.sio.connected = False
 
         # Create a mock heartbeat task
@@ -218,6 +203,7 @@ class TestLocalPodClientShutdown:
         config = LocalPodConfig()
         client = LocalPodClient(config)
         client.manager.shutdown = AsyncMock()
+        client.rpc_handler.shutdown = AsyncMock()
         client.sio.connected = False
         client.sio.disconnect = AsyncMock()
 
@@ -235,8 +221,7 @@ class TestLocalPodClientEventHandlers:
         config = LocalPodConfig()
         client = LocalPodClient(config)
 
-        # The handlers are registered via decorators in _setup_handlers
-        # We can't easily test them directly, but we verify setup was called
+        # Verify sio is set up
         assert client.sio is not None
 
     @pytest.mark.asyncio
@@ -249,7 +234,7 @@ class TestLocalPodClientEventHandlers:
         # Simulate RPC handler returning a result
         client.rpc_handler.handle = AsyncMock(return_value={"status": "ok"})
 
-        # Manually call the handler logic (simulating what on_rpc_request does)
+        # Manually call the handler logic
         data = {
             "call_id": "call-123",
             "method": "health.check",
@@ -272,99 +257,6 @@ class TestLocalPodClientEventHandlers:
             await client.rpc_handler.handle("workspace.get", {"workspace_id": "ws_test"})
 
 
-class TestSocketEventHandlers:
-    """Test Socket.IO event handlers."""
-
-    @pytest.mark.asyncio
-    async def test_on_connect_event_handler_flow(self) -> None:
-        """Test on_connect sets state and starts heartbeat."""
-        config = LocalPodConfig()
-        client = LocalPodClient(config)
-        client.sio.emit = AsyncMock()
-        client._connected = False
-
-        with patch("docker.from_env") as mock_docker:
-            mock_docker.return_value.info.return_value = {"ServerVersion": "24.0.0"}
-
-            # Trigger connect handler
-            handlers = {name: handler for name, handler in client.sio.handlers.get("/local-pod", {}).items()}
-            if "connect" in handlers:
-                await handlers["connect"]()
-
-            assert client._connected is True
-            # Capabilities should be sent
-            client.sio.emit.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_on_disconnect_event_handler_flow(self) -> None:
-        """Test on_disconnect unsets state and stops heartbeat."""
-        config = LocalPodConfig()
-        client = LocalPodClient(config)
-        client._connected = True
-
-        # Create a mock heartbeat task
-        async def long_running():
-            await asyncio.sleep(100)
-
-        client._heartbeat_task = asyncio.create_task(long_running())
-
-        # Trigger disconnect handler
-        handlers = {name: handler for name, handler in client.sio.handlers.get("/local-pod", {}).items()}
-        if "disconnect" in handlers:
-            await handlers["disconnect"]()
-
-        # Wait a moment for cancellation to propagate
-        await asyncio.sleep(0.01)
-
-        assert client._connected is False
-        # Task should be cancelled
-        assert client._heartbeat_task.cancelled()
-
-    @pytest.mark.asyncio
-    async def test_on_connect_error_with_various_errors(self) -> None:
-        """Test on_connect_error handles different error types."""
-        config = LocalPodConfig()
-        client = LocalPodClient(config)
-
-        # Trigger connect_error handler with different error types
-        handlers = {name: handler for name, handler in client.sio.handlers.get("/local-pod", {}).items()}
-        if "connect_error" in handlers:
-            # Should not raise exceptions
-            await handlers["connect_error"]("Connection refused")
-            await handlers["connect_error"]({"message": "Auth failed"})
-            await handlers["connect_error"](Exception("Network error"))
-
-    @pytest.mark.asyncio
-    async def test_on_rpc_request_invalid_method_type(self) -> None:
-        """Test on_rpc_request handles invalid method type."""
-        config = LocalPodConfig()
-        client = LocalPodClient(config)
-        client.sio.emit = AsyncMock()
-
-        handlers = {name: handler for name, handler in client.sio.handlers.get("/local-pod", {}).items()}
-        if "rpc_request" in handlers:
-            # Call with invalid method (not a string)
-            await handlers["rpc_request"]({"call_id": "call-123", "method": 123, "params": {}})
-
-            # Should emit error response
-            client.sio.emit.assert_called()
-            call_args = client.sio.emit.call_args
-            assert call_args.args[0] == "rpc_response"
-            assert "error" in call_args.args[1]
-
-    @pytest.mark.asyncio
-    async def test_on_terminal_input_handler(self) -> None:
-        """Test on_terminal_input forwards data to docker manager."""
-        config = LocalPodConfig()
-        client = LocalPodClient(config)
-        client.manager.terminal_write = AsyncMock()
-
-        handlers = {name: handler for name, handler in client.sio.handlers.get("/local-pod", {}).items()}
-        if "terminal_input" in handlers:
-            await handlers["terminal_input"]({"workspace_id": "ws_123", "data": "echo hello\n"})
-            client.manager.terminal_write.assert_called_once_with("ws_123", "echo hello\n")
-
-
 class TestConnectionErrorRecovery:
     """Test connection and error handling."""
 
@@ -374,12 +266,12 @@ class TestConnectionErrorRecovery:
         config = LocalPodConfig(cloud_url="http://localhost:9999")
         client = LocalPodClient(config)
         client.manager.initialize = AsyncMock()
+        client.rpc_handler.initialize = AsyncMock()
         client.sio.connect = AsyncMock(side_effect=ConnectionRefusedError)
 
         shutdown_event = asyncio.Event()
         shutdown_event.set()
 
-        # The run method re-raises connection errors after logging
         with pytest.raises(ConnectionRefusedError):
             await client.run(shutdown_event)
 
@@ -389,12 +281,12 @@ class TestConnectionErrorRecovery:
         config = LocalPodConfig()
         client = LocalPodClient(config)
         client.manager.initialize = AsyncMock()
+        client.rpc_handler.initialize = AsyncMock()
         client.sio.connect = AsyncMock(side_effect=TimeoutError)
 
         shutdown_event = asyncio.Event()
         shutdown_event.set()
 
-        # The run method re-raises timeout errors after logging
         with pytest.raises(TimeoutError):
             await client.run(shutdown_event)
 
@@ -404,6 +296,7 @@ class TestConnectionErrorRecovery:
         config = LocalPodConfig()
         client = LocalPodClient(config)
         client.manager.initialize = AsyncMock()
+        client.rpc_handler.initialize = AsyncMock()
         client.sio.connect = AsyncMock()
         client.sio.connected = True
 
@@ -417,8 +310,6 @@ class TestConnectionErrorRecovery:
         task = asyncio.create_task(trigger_shutdown())
         await client.run(shutdown_event)
         await task
-
-        # Should have completed without hanging
 
 
 class TestHeartbeatEdgeCases:

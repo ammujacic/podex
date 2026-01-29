@@ -35,10 +35,7 @@ function formatContextWindow(contextWindow: number): string {
  * Format pricing for display
  * e.g., input=3, output=15 -> "$3 / $15 per 1M"
  */
-function formatPricing(
-  inputCost: number | null,
-  outputCost: number | null
-): string {
+function formatPricing(inputCost: number | null, outputCost: number | null): string {
   if (inputCost === null && outputCost === null) {
     return 'Free';
   }
@@ -119,22 +116,14 @@ export function ModelCard({
       const info = getCategoryInfo(categoryId);
       if (!info) return null;
       return (
-        <span
-          key={categoryId}
-          className="text-sm"
-          title={info.description}
-          aria-label={info.label}
-        >
+        <span key={categoryId} className="text-sm" title={info.description} aria-label={info.label}>
           {info.icon}
         </span>
       );
     });
   }, [model.categories]);
 
-  const pricing = formatPricing(
-    model.input_cost_per_million,
-    model.output_cost_per_million
-  );
+  const pricing = formatPricing(model.input_cost_per_million, model.output_cost_per_million);
 
   const contextWindow = formatContextWindow(model.context_window);
 
@@ -158,19 +147,13 @@ export function ModelCard({
       <div className="flex items-center gap-2">
         {/* Featured indicator */}
         {model.is_featured && (
-          <span
-            className="text-yellow-500"
-            title="Featured model"
-            aria-label="Featured"
-          >
+          <span className="text-yellow-500" title="Featured model" aria-label="Featured">
             &#11088;
           </span>
         )}
 
         {/* Model display name */}
-        <span className="font-medium text-foreground flex-1 truncate">
-          {model.display_name}
-        </span>
+        <span className="font-medium text-foreground flex-1 truncate">{model.display_name}</span>
 
         {/* Favorite toggle */}
         {showFavoriteToggle && (
@@ -200,9 +183,7 @@ export function ModelCard({
       </div>
 
       {/* Model ID / slug */}
-      <div className="text-sm text-muted-foreground truncate">
-        {model.model_id}
-      </div>
+      <div className="text-sm text-muted-foreground truncate">{model.model_id}</div>
 
       {/* Bottom row: Context window, pricing, recommended badge */}
       <div className="flex items-center gap-2 flex-wrap text-sm text-muted-foreground">

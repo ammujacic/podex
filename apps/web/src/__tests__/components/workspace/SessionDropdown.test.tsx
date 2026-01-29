@@ -11,6 +11,7 @@ describe('SessionDropdown', () => {
       name: 'Base',
       messages: [],
       attachedAgentIds: [],
+      attachedToAgentId: null, // Legacy field - must be null for unattached sessions
       messageCount: 0,
       lastMessageAt: null,
       createdAt: new Date().toISOString(),
@@ -33,8 +34,8 @@ describe('SessionDropdown', () => {
           model: 'test-model',
           status: 'idle',
           color: 'agent-1',
-          messages: [],
           mode: 'auto',
+          conversationSessionId: 'conv-current',
         },
         {
           id: 'agent-2',
@@ -43,8 +44,8 @@ describe('SessionDropdown', () => {
           model: 'test-model',
           status: 'idle',
           color: 'agent-2',
-          messages: [],
           mode: 'auto',
+          conversationSessionId: 'conv-attached-other',
         },
       ],
       conversationSessions: [
@@ -97,16 +98,13 @@ describe('SessionDropdown', () => {
     // Open the dropdown
     await user.click(screen.getByRole('button', { name: /current session/i }));
 
-    // The old section labels should not exist anymore
-    expect(screen.queryByText('Attached Sessions')).not.toBeInTheDocument();
-    expect(screen.queryByText('Available Sessions')).not.toBeInTheDocument();
-
-    // Both attached-to-other and free sessions (with messages) should be visible under "Sessions"
-    expect(await screen.findByText('Sessions')).toBeInTheDocument();
+    // Section labels for attached and available sessions
+    expect(await screen.findByText('Attached Sessions')).toBeInTheDocument();
+    expect(screen.getByText('Available Sessions')).toBeInTheDocument();
     expect(screen.getByText('Attached Elsewhere')).toBeInTheDocument();
     expect(screen.getByText('Free Session')).toBeInTheDocument();
-    // Empty sessions (0 messages) should not appear in the dropdown
-    expect(screen.queryByText('Empty Session')).not.toBeInTheDocument();
+    // Empty sessions also appear in the dropdown (no filtering by message count)
+    expect(screen.getByText('Empty Session')).toBeInTheDocument();
 
     // Clicking a session attached to another agent should trigger onAttach
     await user.click(screen.getByText('Attached Elsewhere'));

@@ -8,8 +8,10 @@ from fastapi import Depends, Header, HTTPException, status
 
 from src.config import settings
 from src.managers.base import ComputeManager
-from src.managers.docker_manager import DockerComputeManager
-from src.managers.gcp_manager import GCPComputeManager
+from src.managers.multi_server_compute_manager import MultiServerComputeManager
+from src.managers.multi_server_docker import MultiServerDockerManager
+from src.managers.placement import PlacementService
+from src.managers.workspace_orchestrator import WorkspaceOrchestrator
 from src.storage.workspace_store import WorkspaceStore
 
 logger = structlog.get_logger()
@@ -22,22 +24,17 @@ def validate_internal_auth(
     """Validate internal service-to-service authentication.
 
     Supports two authentication modes:
-    - Production (GCP Cloud Run): GCP ID token via Authorization header
-      The token is already validated by Cloud Run's IAM layer before reaching here.
-      We only check that the header is present.
-    - Development (Docker): API key via X-Internal-API-Key header
+    - Bearer token: Authorization header with Bearer token
+    - API key: X-Internal-API-Key header
 
     Args:
-        x_internal_api_key: API key header (development mode)
-        authorization: Bearer token header (production mode)
+        x_internal_api_key: API key header
+        authorization: Bearer token header
     """
     if settings.environment == "production":
-        # In production, Cloud Run validates the ID token via IAM
-        # The request only reaches here if IAM allowed it
-        # We check for the Authorization header to confirm it went through IAM
+        # In production, check for Bearer token first
         if authorization and authorization.startswith("Bearer "):
-            # Token already validated by Cloud Run IAM - allow request
-            logger.debug("Request authenticated via GCP IAM")
+            logger.debug("Request authenticated via Bearer token")
             return
 
         # No bearer token - check if API key is present as fallback
@@ -82,8 +79,8 @@ def verify_internal_auth(
     """Verify internal service-to-service authentication.
 
     Supports dual-mode authentication:
-    - Production (GCP): ID token in Authorization header (validated by Cloud Run IAM)
-    - Development (Docker): API key in X-Internal-API-Key header
+    - Bearer token in Authorization header
+    - API key in X-Internal-API-Key header
     """
     validate_internal_auth(x_internal_api_key, authorization)
 
@@ -123,11 +120,14 @@ AuthenticatedUser = Annotated[str, Depends(get_user_id)]
 InternalAuth = Annotated[None, Depends(verify_internal_auth)]
 
 
-class ComputeManagerSingleton:
-    """Singleton holder for the compute manager instance."""
+class OrchestratorSingleton:
+    """Singleton holder for the workspace orchestrator instance."""
 
-    _instance: ComputeManager | None = None
+    _orchestrator: WorkspaceOrchestrator | None = None
+    _docker_manager: MultiServerDockerManager | None = None
     _workspace_store: WorkspaceStore | None = None
+    _placement_service: PlacementService | None = None
+    _compute_manager: MultiServerComputeManager | None = None
 
     @classmethod
     def get_workspace_store(cls) -> WorkspaceStore:
@@ -137,84 +137,142 @@ class ComputeManagerSingleton:
         return cls._workspace_store
 
     @classmethod
-    def get_instance(cls) -> ComputeManager:
-        """Get or create the compute manager instance."""
-        if cls._instance is None:
-            workspace_store = cls.get_workspace_store()
-            if settings.compute_mode == "docker":
-                cls._instance = DockerComputeManager(workspace_store=workspace_store)
-            else:
-                cls._instance = GCPComputeManager(workspace_store=workspace_store)
-        return cls._instance
+    def get_docker_manager(cls) -> MultiServerDockerManager:
+        """Get or create the multi-server Docker manager."""
+        if cls._docker_manager is None:
+            cls._docker_manager = MultiServerDockerManager()
+        return cls._docker_manager
+
+    @classmethod
+    def get_placement_service(cls) -> PlacementService:
+        """Get or create the placement service."""
+        if cls._placement_service is None:
+            cls._placement_service = PlacementService()
+        return cls._placement_service
+
+    @classmethod
+    def get_orchestrator(cls) -> WorkspaceOrchestrator:
+        """Get or create the workspace orchestrator."""
+        if cls._orchestrator is None:
+            cls._orchestrator = WorkspaceOrchestrator(
+                docker_manager=cls.get_docker_manager(),
+                workspace_store=cls.get_workspace_store(),
+                placement_service=cls.get_placement_service(),
+            )
+        return cls._orchestrator
+
+    @classmethod
+    def get_compute_manager(cls) -> MultiServerComputeManager:
+        """Get or create the multi-server compute manager.
+
+        This provides the ComputeManager interface expected by routes,
+        backed by the orchestrator for multi-server support.
+        """
+        if cls._compute_manager is None:
+            cls._compute_manager = MultiServerComputeManager(
+                orchestrator=cls.get_orchestrator(),
+                docker_manager=cls.get_docker_manager(),
+                workspace_store=cls.get_workspace_store(),
+            )
+        return cls._compute_manager
 
     @classmethod
     def clear_instance(cls) -> None:
-        """Clear the singleton instance."""
-        cls._instance = None
-        # Note: WorkspaceStore disconnect is handled in cleanup_compute_manager
+        """Clear the singleton instances."""
+        cls._orchestrator = None
+        cls._docker_manager = None
         cls._workspace_store = None
+        cls._placement_service = None
+        cls._compute_manager = None
+
+
+def get_orchestrator() -> WorkspaceOrchestrator:
+    """Get the workspace orchestrator instance."""
+    return OrchestratorSingleton.get_orchestrator()
+
+
+def get_docker_manager() -> MultiServerDockerManager:
+    """Get the multi-server Docker manager instance."""
+    return OrchestratorSingleton.get_docker_manager()
 
 
 def get_compute_manager() -> ComputeManager:
     """Get the compute manager instance.
 
-    Returns DockerComputeManager for local development,
-    GCPComputeManager for production.
+    Returns a ComputeManager that uses the multi-server orchestrator backend.
+    This is the primary interface used by workspace routes.
     """
-    return ComputeManagerSingleton.get_instance()
+    return OrchestratorSingleton.get_compute_manager()
 
 
 async def init_compute_manager() -> None:
-    """Initialize the compute manager on startup.
+    """Initialize the compute service on startup.
 
-    Uses volume mounts for file persistence - no FileSync needed.
+    Connects to Redis and registers all configured workspace servers.
     """
     # Initialize WorkspaceStore (connects to Redis)
-    workspace_store = ComputeManagerSingleton.get_workspace_store()
+    workspace_store = OrchestratorSingleton.get_workspace_store()
     await workspace_store._get_client()
     logger.info("WorkspaceStore initialized", redis_url=settings.redis_url)
 
-    # Get compute manager (uses volume mounts for storage)
-    get_compute_manager()
+    # Get Docker manager and register servers from config
+    docker_manager = OrchestratorSingleton.get_docker_manager()
+
+    servers = settings.workspace_servers
+    if not servers:
+        logger.warning(
+            "No workspace servers configured. "
+            "Set COMPUTE_WORKSPACE_SERVERS env var with JSON array of servers."
+        )
+    else:
+        for server in servers:
+            success = await docker_manager.add_server(
+                server_id=server.server_id,
+                hostname=server.host,
+                ip_address=server.host,  # hostname and ip_address are the same for Docker
+                docker_port=server.docker_port,
+                architecture=server.architecture,
+                tls_enabled=server.tls_enabled,
+                cert_path=server.cert_path,
+            )
+            if success:
+                logger.info(
+                    "Registered workspace server",
+                    server_id=server.server_id,
+                    host=server.host,
+                    port=server.docker_port,
+                    tls=server.tls_enabled,
+                )
+            else:
+                logger.error(
+                    "Failed to register workspace server",
+                    server_id=server.server_id,
+                    host=server.host,
+                )
+
+    # Initialize orchestrator
+    OrchestratorSingleton.get_orchestrator()
     logger.info(
-        "ComputeManager initialized with volume mounts",
-        compute_mode=settings.compute_mode,
-        local_storage_path=settings.local_storage_path,
+        "WorkspaceOrchestrator initialized",
+        servers_registered=len(docker_manager.get_healthy_servers()),
+        total_servers=len(servers) if servers else 0,
     )
 
 
 async def cleanup_compute_manager() -> None:
-    """Cleanup compute manager on shutdown.
+    """Cleanup compute service on shutdown."""
+    docker_manager = OrchestratorSingleton._docker_manager
+    if docker_manager is not None:
+        await docker_manager.close_all()
+        logger.info("Closed all Docker server connections")
 
-    With volume mounts, files are automatically persisted - no sync needed.
-    """
-    instance = ComputeManagerSingleton._instance
-    if instance is not None:
-        workspaces = await instance.list_workspaces()
-        running_workspaces = [w for w in workspaces if w.status.value == "running"]
+    # Disconnect WorkspaceStore
+    workspace_store = OrchestratorSingleton._workspace_store
+    if workspace_store and workspace_store._client:
+        try:
+            await workspace_store._client.disconnect()
+        except Exception as e:
+            logger.warning("Error disconnecting WorkspaceStore", error=str(e))
 
-        logger.info(
-            "Starting workspace cleanup during shutdown",
-            total_workspaces=len(workspaces),
-            running_workspaces=len(running_workspaces),
-        )
-
-        # With volume mounts, all files are already persisted
-        if running_workspaces:
-            logger.info(
-                "Volume mounts active - all files already persisted",
-                count=len(running_workspaces),
-            )
-
-        # Cleanup idle workspaces
-        await instance.cleanup_idle_workspaces(0)
-
-        # Disconnect WorkspaceStore
-        workspace_store = ComputeManagerSingleton._workspace_store
-        if workspace_store and workspace_store._client:
-            try:
-                await workspace_store._client.disconnect()
-            except Exception as e:
-                logger.warning("Error disconnecting WorkspaceStore", error=str(e))
-
-        ComputeManagerSingleton.clear_instance()
+    OrchestratorSingleton.clear_instance()
+    logger.info("Compute service cleanup complete")

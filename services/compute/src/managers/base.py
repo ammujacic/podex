@@ -17,7 +17,6 @@ from src.models.workspace import (
     WorkspaceInfo,
     WorkspaceScaleResponse,
     WorkspaceStatus,
-    WorkspaceTier,
 )
 
 if TYPE_CHECKING:
@@ -55,8 +54,7 @@ class ComputeManager(ABC):
     """Abstract compute manager interface.
 
     Implemented by:
-    - DockerComputeManager: Local development using Docker containers
-    - GCPComputeManager: Production using Cloud Run / GKE
+    - DockerComputeManager: Docker-based workspace containers
 
     Subclasses must initialize:
     - self._workspace_store: WorkspaceStore | None
@@ -134,8 +132,7 @@ class ComputeManager(ABC):
 
         Args:
             workspace_id: The workspace ID to delete
-            preserve_files: If True, sync files to GCS before deletion.
-                          If False, also delete the GCS files.
+            preserve_files: If True, keep files on disk. If False, delete workspace files.
         """
 
     @abstractmethod
@@ -220,13 +217,13 @@ class ComputeManager(ABC):
     async def scale_workspace(
         self,
         workspace_id: str,
-        new_tier: WorkspaceTier,
+        new_tier: str,
     ) -> WorkspaceScaleResponse:
         """Scale a workspace to a new compute tier.
 
         Args:
             workspace_id: The workspace ID to scale
-            new_tier: The new compute tier to scale to
+            new_tier: The new compute tier name (e.g., "starter_arm", "pro", "gpu_starter")
 
         Returns:
             WorkspaceScaleResponse with scaling result

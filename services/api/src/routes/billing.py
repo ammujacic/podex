@@ -391,8 +391,10 @@ class HardwareSpecResponse(BaseModel):
     gpu_type: str | None
     gpu_memory_gb: int | None
     gpu_count: int
-    storage_gb_default: int
-    storage_gb_max: int
+    is_gpu: bool  # Whether this tier has GPU/accelerator hardware
+    requires_gke: bool  # Whether this tier requires GKE (for compute routing)
+    storage_gb: int
+    bandwidth_mbps: int | None = None  # Network bandwidth allocation in Mbps
     hourly_rate: float  # Base cost (provider cost)
     is_available: bool
     requires_subscription: str | None
@@ -3045,8 +3047,10 @@ async def list_hardware_specs(
                 gpu_type=spec.gpu_type,
                 gpu_memory_gb=spec.gpu_memory_gb,
                 gpu_count=spec.gpu_count,
-                storage_gb_default=spec.storage_gb_default,
-                storage_gb_max=spec.storage_gb_max,
+                is_gpu=spec.is_gpu,
+                requires_gke=spec.requires_gke,
+                storage_gb=spec.storage_gb,
+                bandwidth_mbps=spec.bandwidth_mbps,
                 hourly_rate=base_rate,
                 is_available=spec.is_available,
                 requires_subscription=spec.requires_subscription,
@@ -3098,8 +3102,10 @@ async def get_hardware_spec(
         gpu_type=spec.gpu_type,
         gpu_memory_gb=spec.gpu_memory_gb,
         gpu_count=spec.gpu_count,
-        storage_gb_default=spec.storage_gb_default,
-        storage_gb_max=spec.storage_gb_max,
+        is_gpu=spec.is_gpu,
+        requires_gke=spec.requires_gke,
+        storage_gb=spec.storage_gb,
+        bandwidth_mbps=spec.bandwidth_mbps,
         hourly_rate=base_rate,
         is_available=spec.is_available,
         requires_subscription=spec.requires_subscription,

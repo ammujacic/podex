@@ -1,8 +1,6 @@
-"""Storage services for file management."""
+"""Storage services placeholder.
 
-from src.storage.gcs import S3Storage, get_storage
+Note: GCS storage has been removed. Storage functionality now handled by local workspace containers.
+"""
 
-# Proper GCS naming
-GCSStorage = S3Storage
-
-__all__ = ["GCSStorage", "S3Storage", "get_storage"]
+__all__: list[str] = []

@@ -47,8 +47,7 @@ function UtilizationBar({
   showPercentage = true,
 }: UtilizationBarProps) {
   const percent = limit > 0 ? (value / limit) * 100 : 0;
-  const color =
-    percent > 90 ? 'bg-red-500' : percent > 70 ? 'bg-yellow-500' : 'bg-accent-primary';
+  const color = percent > 90 ? 'bg-red-500' : percent > 70 ? 'bg-yellow-500' : 'bg-accent-primary';
 
   return (
     <div className="space-y-1">
@@ -158,10 +157,7 @@ export function ResourceUsageWidget({ sessionId, isVisible = true }: ResourceUsa
       <div className="flex flex-col items-center justify-center h-32 text-center px-4">
         <Cpu className="h-8 w-8 text-red-500 mb-2" />
         <p className="text-xs text-red-500">{error}</p>
-        <button
-          onClick={fetchMetrics}
-          className="mt-2 text-xs text-accent-primary hover:underline"
-        >
+        <button onClick={fetchMetrics} className="mt-2 text-xs text-accent-primary hover:underline">
           Retry
         </button>
       </div>
@@ -228,10 +224,12 @@ export function ResourceUsageWidget({ sessionId, isVisible = true }: ResourceUsa
       {/* Footer */}
       <div className="px-3 py-2 border-t border-border-subtle text-[10px] text-text-muted flex items-center justify-between">
         <span>
-          Uptime: {metrics?.container_uptime_seconds ? formatUptime(metrics.container_uptime_seconds) : '-'}
+          Uptime:{' '}
+          {metrics?.container_uptime_seconds ? formatUptime(metrics.container_uptime_seconds) : '-'}
         </span>
         <span>
-          Updated {lastUpdated ? `${Math.floor((Date.now() - lastUpdated.getTime()) / 1000)}s ago` : '-'}
+          Updated{' '}
+          {lastUpdated ? `${Math.floor((Date.now() - lastUpdated.getTime()) / 1000)}s ago` : '-'}
         </span>
       </div>
     </div>

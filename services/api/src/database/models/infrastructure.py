@@ -94,25 +94,12 @@ class LocalPod(Base):
     # Capabilities reported by pod on connection
     os_info: Mapped[str | None] = mapped_column(String(100))  # e.g., "Linux 5.15.0-ubuntu22.04"
     architecture: Mapped[str | None] = mapped_column(String(20))  # x86_64
-    docker_version: Mapped[str | None] = mapped_column(String(50))
     total_memory_mb: Mapped[int | None] = mapped_column(Integer)
     total_cpu_cores: Mapped[int | None] = mapped_column(Integer)
 
     # Workspace limits
     max_workspaces: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     current_workspaces: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-
-    # Execution mode: "docker" or "native"
-    mode: Mapped[str] = mapped_column(String(20), default="docker", nullable=False)
-
-    # Native mode settings (only used when mode="native")
-    native_security: Mapped[str | None] = mapped_column(String(20))  # "allowlist" or "unrestricted"
-    native_workspace_dir: Mapped[str | None] = mapped_column(
-        String(500)
-    )  # Default workspace directory
-
-    # Allowed mounts - list of {"path": str, "mode": "rw"|"ro", "label": str}
-    mounts: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
 
     # Labels for workspace routing (e.g., {"gpu": true, "region": "home"})
     labels: Mapped[dict[str, Any] | None] = mapped_column(JSONB)

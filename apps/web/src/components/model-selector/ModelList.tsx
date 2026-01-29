@@ -126,9 +126,7 @@ export function ModelList({
       {/* Favorites section (pinned, not virtualized) */}
       {favoritedModels.length > 0 && (
         <div className="flex-shrink-0 border-b border-border pb-2 mb-2">
-          <h3 className="text-sm font-medium text-muted-foreground px-2 mb-2">
-            Favorites
-          </h3>
+          <h3 className="text-sm font-medium text-muted-foreground px-2 mb-2">Favorites</h3>
           <div className="flex flex-col gap-2 px-2" role="group" aria-label="Favorite models">
             {favoritedModels.map((model) => (
               <ModelCard

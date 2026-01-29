@@ -8,14 +8,13 @@ from src.models.workspace import (
     WorkspaceExecRequest,
     WorkspaceInfo,
     WorkspaceStatus,
-    WorkspaceTier,
 )
 
 
 def test_workspace_config_defaults() -> None:
     """Test WorkspaceConfig default values."""
     config = WorkspaceConfig()
-    assert config.tier == WorkspaceTier.STARTER
+    assert config.tier == "starter_arm"
     assert config.repos == []
     assert config.environment == {}
     assert config.git_credentials is None
@@ -24,11 +23,11 @@ def test_workspace_config_defaults() -> None:
 def test_workspace_config_with_values() -> None:
     """Test WorkspaceConfig with custom values."""
     config = WorkspaceConfig(
-        tier=WorkspaceTier.PRO,
+        tier="pro_arm",
         repos=["https://github.com/user/repo"],
         environment={"NODE_ENV": "development"},
     )
-    assert config.tier == WorkspaceTier.PRO
+    assert config.tier == "pro_arm"
     assert len(config.repos) == 1
     assert config.environment["NODE_ENV"] == "development"
 
@@ -41,7 +40,7 @@ def test_workspace_info() -> None:
         user_id="user_456",
         session_id="sess_789",
         status=WorkspaceStatus.RUNNING,
-        tier=WorkspaceTier.STARTER,
+        tier="starter_arm",
         host="localhost",
         port=3000,
         created_at=now,
@@ -56,7 +55,7 @@ def test_workspace_create_request() -> None:
     """Test WorkspaceCreateRequest model."""
     request = WorkspaceCreateRequest(session_id="sess_123")
     assert request.session_id == "sess_123"
-    assert request.config.tier == WorkspaceTier.STARTER
+    assert request.config.tier == "starter_arm"
 
 
 def test_workspace_exec_request() -> None:
@@ -68,11 +67,21 @@ def test_workspace_exec_request() -> None:
 
 
 def test_workspace_tier_values() -> None:
-    """Test WorkspaceTier enum values."""
-    assert WorkspaceTier.STARTER.value == "starter"
-    assert WorkspaceTier.PRO.value == "pro"
-    assert WorkspaceTier.POWER.value == "power"
-    assert WorkspaceTier.ENTERPRISE.value == "enterprise"
+    """Test that tier is now a string (no longer an enum).
+
+    Tiers are loaded from the database. Common tiers include:
+    - starter_arm, pro_arm, power_arm, enterprise_arm (ARM)
+    - starter, pro, power, enterprise (x86)
+    - gpu_starter, gpu_pro (GPU)
+    """
+    # Tier is now a string, just verify the default works
+    config = WorkspaceConfig()
+    assert isinstance(config.tier, str)
+    assert config.tier == "starter_arm"
+
+    # Can set any tier string
+    config = WorkspaceConfig(tier="gpu_starter")
+    assert config.tier == "gpu_starter"
 
 
 def test_workspace_status_values() -> None:

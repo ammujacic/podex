@@ -834,9 +834,6 @@ async def process_data_export(
             config = config_result.scalar_one_or_none()
             if config:
                 export_data["settings"] = {
-                    "sync_dotfiles": config.sync_dotfiles,
-                    "dotfiles_repo": config.dotfiles_repo,
-                    "dotfiles_branch": config.dotfiles_branch,
                     "default_shell": config.default_shell,
                     "default_editor": config.default_editor,
                     "git_name": config.git_name,

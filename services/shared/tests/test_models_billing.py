@@ -1,6 +1,6 @@
 """Comprehensive tests for billing models."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 
 from podex_shared.models.billing import (
@@ -369,11 +369,11 @@ class TestDefaultPricing:
 
     def test_default_input_price(self) -> None:
         """Test default input price constant."""
-        assert DEFAULT_INPUT_PRICE_PER_MILLION == Decimal("3.00")
+        assert Decimal("3.00") == DEFAULT_INPUT_PRICE_PER_MILLION
 
     def test_default_output_price(self) -> None:
         """Test default output price constant."""
-        assert DEFAULT_OUTPUT_PRICE_PER_MILLION == Decimal("15.00")
+        assert Decimal("15.00") == DEFAULT_OUTPUT_PRICE_PER_MILLION
 
 
 class TestCalculateTokenCostWithPricing:

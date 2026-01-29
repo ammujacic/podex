@@ -181,6 +181,45 @@ services:
       api:
         condition: service_healthy
 
+  # === WORKSPACE SERVERS (Docker-in-Docker) ===
+  # These simulate remote workspace servers for local development.
+  # In production, these would be separate Hetzner servers with TLS.
+  ws-local-1:
+    image: docker:27-dind
+    container_name: ws-local-1
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""  # Disable TLS for local development
+    expose:
+      - "2375"
+    volumes:
+      - ws-local-1-data:/var/lib/docker
+      - ws-local-1-workspaces:/var/lib/podex/workspaces
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  ws-local-2:
+    image: docker:27-dind
+    container_name: ws-local-2
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    expose:
+      - "2375"
+    volumes:
+      - ws-local-2-data:/var/lib/docker
+      - ws-local-2-workspaces:/var/lib/podex/workspaces
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   # === COMPUTE SERVICE ===
   compute:
     build:
@@ -196,19 +235,40 @@ services:
           cpus: '1.0'
     environment:
       COMPUTE_ENVIRONMENT: development
-      COMPUTE_MODE: docker
-      # Docker settings
-      COMPUTE_DOCKER_HOST: unix:///var/run/docker.sock
-      COMPUTE_DOCKER_RUNTIME: ${COMPUTE_DOCKER_RUNTIME:-runc}  # Use 'runsc' for gVisor in production
-      COMPUTE_WARM_POOL_SIZE: 2
+      # Workspace servers configuration (JSON array)
+      # Each DinD container exposes Docker API on port 2375 (HTTP)
+      COMPUTE_WORKSPACE_SERVERS: >-
+        [
+          {
+            "server_id": "ws-local-1",
+            "host": "ws-local-1",
+            "docker_port": 2375,
+            "tls_enabled": false,
+            "max_cpu": 4.0,
+            "max_memory_mb": 8192,
+            "max_workspaces": 10,
+            "architecture": "amd64",
+            "labels": {"zone": "local-1"}
+          },
+          {
+            "server_id": "ws-local-2",
+            "host": "ws-local-2",
+            "docker_port": 2375,
+            "tls_enabled": false,
+            "max_cpu": 4.0,
+            "max_memory_mb": 8192,
+            "max_workspaces": 10,
+            "architecture": "amd64",
+            "labels": {"zone": "local-2"}
+          }
+        ]
+      # Container runtime (null for DinD default, 'runsc' for gVisor in production)
+      COMPUTE_DOCKER_RUNTIME: ${COMPUTE_DOCKER_RUNTIME:-}
       COMPUTE_MAX_WORKSPACES: 10
       COMPUTE_WORKSPACE_TIMEOUT: 3600
       COMPUTE_WORKSPACE_IMAGE: podex/workspace:latest
-      COMPUTE_DOCKER_NETWORK: podex-dev
       # Redis
       COMPUTE_REDIS_URL: redis://redis:6379
-      # Local storage for workspaces (persistent volumes)
-      COMPUTE_WORKSPACE_STORAGE: /var/lib/podex/workspaces
       # Internal API key (for secure inter-service communication)
       COMPUTE_INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
       # CORS
@@ -223,11 +283,13 @@ services:
     volumes:
       - ./services/compute/src:/app/services/compute/src
       - ./services/shared/src:/app/services/shared/src
-      - /var/run/docker.sock:/var/run/docker.sock
-      # Persistent workspace storage
-      - workspace_data:/var/lib/podex/workspaces
+      # Note: No docker.sock mount - we connect to workspace servers over the network
     depends_on:
       redis:
+        condition: service_healthy
+      ws-local-1:
+        condition: service_healthy
+      ws-local-2:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
@@ -279,7 +341,11 @@ volumes:
   postgres_data:
   redis_data:
   ollama_data:
-  workspace_data:
+  # Workspace server volumes (DinD)
+  ws-local-1-data:
+  ws-local-1-workspaces:
+  ws-local-2-data:
+  ws-local-2-workspaces:
 
 networks:
   default:

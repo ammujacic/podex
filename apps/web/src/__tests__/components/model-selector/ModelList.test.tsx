@@ -171,12 +171,7 @@ describe('ModelList', () => {
   });
 
   it('shows favorites section when favorites exist', () => {
-    render(
-      <ModelList
-        {...defaultProps}
-        favorites={['anthropic/claude-3.5-sonnet']}
-      />
-    );
+    render(<ModelList {...defaultProps} favorites={['anthropic/claude-3.5-sonnet']} />);
 
     // Check for favorites header
     expect(screen.getByText('Favorites')).toBeInTheDocument();
@@ -216,13 +211,7 @@ describe('ModelList', () => {
   });
 
   it('handles empty models array with custom empty message', () => {
-    render(
-      <ModelList
-        {...defaultProps}
-        models={[]}
-        emptyMessage="No matching models"
-      />
-    );
+    render(<ModelList {...defaultProps} models={[]} emptyMessage="No matching models" />);
 
     expect(screen.getByText('No matching models')).toBeInTheDocument();
   });
@@ -258,11 +247,7 @@ describe('ModelList', () => {
 
   it('passes correct isSelected prop to ModelCard in favorites', () => {
     render(
-      <ModelList
-        {...defaultProps}
-        selectedModelId="openai/gpt-4o"
-        favorites={['openai/gpt-4o']}
-      />
+      <ModelList {...defaultProps} selectedModelId="openai/gpt-4o" favorites={['openai/gpt-4o']} />
     );
 
     // Check that the selected model has aria-pressed="true" (may appear multiple times)
@@ -287,12 +272,7 @@ describe('ModelList', () => {
   });
 
   it('shows favorite toggle by default in favorites section', () => {
-    render(
-      <ModelList
-        {...defaultProps}
-        favorites={['anthropic/claude-3.5-sonnet']}
-      />
-    );
+    render(<ModelList {...defaultProps} favorites={['anthropic/claude-3.5-sonnet']} />);
 
     // At least the favorite model's toggle should be visible
     const favoriteButtons = screen.queryAllByLabelText(/favorites/i);
@@ -300,9 +280,7 @@ describe('ModelList', () => {
   });
 
   it('applies custom className', () => {
-    const { container } = render(
-      <ModelList {...defaultProps} className="custom-class" />
-    );
+    const { container } = render(<ModelList {...defaultProps} className="custom-class" />);
 
     // The root element should have the custom class
     expect(container.firstChild).toHaveClass('custom-class');
@@ -319,12 +297,7 @@ describe('ModelList', () => {
 
     // Should render without throwing
     expect(() => {
-      render(
-        <ModelList
-          {...defaultProps}
-          models={largeModelList}
-        />
-      );
+      render(<ModelList {...defaultProps} models={largeModelList} />);
     }).not.toThrow();
 
     // The listbox should be present
@@ -346,10 +319,7 @@ describe('ModelList', () => {
 
   it('handles multiple favorites in favorites section', () => {
     render(
-      <ModelList
-        {...defaultProps}
-        favorites={['anthropic/claude-3.5-sonnet', 'openai/gpt-4o']}
-      />
+      <ModelList {...defaultProps} favorites={['anthropic/claude-3.5-sonnet', 'openai/gpt-4o']} />
     );
 
     // Both should appear in favorites section
@@ -359,12 +329,7 @@ describe('ModelList', () => {
   });
 
   it('renders favorite models in favorites section', () => {
-    render(
-      <ModelList
-        {...defaultProps}
-        favorites={['anthropic/claude-3.5-sonnet']}
-      />
-    );
+    render(<ModelList {...defaultProps} favorites={['anthropic/claude-3.5-sonnet']} />);
 
     // Model should appear in favorites section
     const favoritesSection = screen.getByRole('group', { name: 'Favorite models' });
@@ -377,10 +342,7 @@ describe('ModelList', () => {
 
   it('does not render empty favorites section when favorites do not match models', () => {
     render(
-      <ModelList
-        {...defaultProps}
-        favorites={['nonexistent/model-1', 'nonexistent/model-2']}
-      />
+      <ModelList {...defaultProps} favorites={['nonexistent/model-1', 'nonexistent/model-2']} />
     );
 
     // Should not show favorites section since no favorites match models

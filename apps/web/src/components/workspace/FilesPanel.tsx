@@ -983,7 +983,7 @@ export function FilesPanel({ sessionId, localPodId, workingDir }: FilesPanelProp
                   emptyFolders={emptyFolders}
                   showHiddenFiles={showHiddenFiles}
                   getSyncInfo={getSyncInfo}
-                                  />
+                />
               ))
           ) : (
             // Desktop: Use regular file tree
@@ -1004,7 +1004,7 @@ export function FilesPanel({ sessionId, localPodId, workingDir }: FilesPanelProp
                   emptyFolders={emptyFolders}
                   showHiddenFiles={showHiddenFiles}
                   getSyncInfo={getSyncInfo}
-                                  />
+                />
               ))
           )}
         </div>
@@ -1054,7 +1054,7 @@ export function FilesPanel({ sessionId, localPodId, workingDir }: FilesPanelProp
           sessionId={sessionId}
           onOpen={handleOpenFromSheet}
           onCopyPath={handleCopyPath}
-                    getSyncInfo={getSyncInfo}
+          getSyncInfo={getSyncInfo}
         />
       )}
     </div>

@@ -175,7 +175,7 @@ DEFAULT_SETTINGS = [
     {
         "key": "feature_flags",
         "value": {
-            "registration_enabled": True,
+            "registration_enabled": False,
             "voice_enabled": True,
             "collaboration_enabled": True,
             "custom_agents_enabled": True,
@@ -307,30 +307,6 @@ DEFAULT_SETTINGS = [
         "description": "Backend context window limits and thresholds",
         "category": "context",
         "is_public": False,
-    },
-    # ===================
-    # DOTFILES SYNC
-    # ===================
-    {
-        "key": "default_dotfiles",
-        "value": [
-            ".bashrc",
-            ".zshrc",
-            ".gitconfig",
-            ".npmrc",
-            ".vimrc",
-            ".profile",
-            ".config/starship.toml",
-            ".ssh/config",
-            ".claude/",
-            ".claude.json",
-            ".codex/",
-            ".gemini/",
-            ".opencode/",
-        ],
-        "description": "Default dotfiles to sync for new users",
-        "category": "dotfiles",
-        "is_public": True,
     },
     # ===================
     # AI FEATURES

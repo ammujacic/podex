@@ -6,21 +6,20 @@ including registration, health monitoring, and capacity management.
 
 from __future__ import annotations
 
-import logging
+import uuid
 from datetime import UTC, datetime
-from typing import Any
 
+import structlog
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
-from src.database.models import ServerStatus, WorkspaceServer
+from src.database.models import HardwareSpec, ServerStatus, Workspace, WorkspaceServer
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 from src.routes.dependencies import DbSession, get_current_user_id
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 router = APIRouter()
 
 
@@ -37,6 +36,7 @@ class ServerRegisterRequest(BaseModel):
     total_cpu: int = Field(..., ge=1)
     total_memory_mb: int = Field(..., ge=512)
     total_disk_gb: int = Field(..., ge=1)
+    total_bandwidth_mbps: int = Field(default=1000, ge=1)  # 1 Gbps default
     architecture: str = Field(default="amd64", pattern=r"^(amd64|arm64)$")
     region: str | None = None
     labels: dict[str, str] = Field(default_factory=dict)
@@ -66,12 +66,15 @@ class ServerResponse(BaseModel):
     total_cpu: int
     total_memory_mb: int
     total_disk_gb: int
+    total_bandwidth_mbps: int
     used_cpu: float
     used_memory_mb: int
     used_disk_gb: int
+    used_bandwidth_mbps: int
     available_cpu: float
     available_memory_mb: int
     available_disk_gb: int
+    available_bandwidth_mbps: int
     active_workspaces: int
     max_workspaces: int
     architecture: str
@@ -83,6 +86,7 @@ class ServerResponse(BaseModel):
     created_at: str
     last_heartbeat: str | None
     is_healthy: bool
+    bandwidth_utilization: float
 
 
 class ServerHealthResponse(BaseModel):
@@ -95,6 +99,7 @@ class ServerHealthResponse(BaseModel):
     cpu_utilization: float
     memory_utilization: float
     disk_utilization: float
+    bandwidth_utilization: float
     active_workspaces: int
 
 
@@ -129,12 +134,15 @@ def _server_to_response(server: WorkspaceServer) -> ServerResponse:
         total_cpu=server.total_cpu,
         total_memory_mb=server.total_memory_mb,
         total_disk_gb=server.total_disk_gb,
+        total_bandwidth_mbps=server.total_bandwidth_mbps,
         used_cpu=server.used_cpu,
         used_memory_mb=server.used_memory_mb,
         used_disk_gb=server.used_disk_gb,
+        used_bandwidth_mbps=server.used_bandwidth_mbps,
         available_cpu=server.available_cpu,
         available_memory_mb=server.available_memory_mb,
         available_disk_gb=server.available_disk_gb,
+        available_bandwidth_mbps=server.available_bandwidth_mbps,
         active_workspaces=server.active_workspaces,
         max_workspaces=server.max_workspaces,
         architecture=server.architecture,
@@ -146,6 +154,7 @@ def _server_to_response(server: WorkspaceServer) -> ServerResponse:
         created_at=server.created_at.isoformat(),
         last_heartbeat=server.last_heartbeat.isoformat() if server.last_heartbeat else None,
         is_healthy=server.is_healthy,
+        bandwidth_utilization=server.bandwidth_utilization,
     )
 
 
@@ -159,8 +168,7 @@ def _require_admin(request: Request) -> str:
     # TODO: Add proper admin role check
     # For now, allow any authenticated user in development
     if settings.ENVIRONMENT != "development":
-        # In production, check admin role
-        # raise HTTPException(status_code=403, detail="Admin access required")
+        # TODO: In production, check admin role
         pass
     return user_id
 
@@ -220,8 +228,6 @@ async def register_server(
         )
 
     # Create new server
-    import uuid
-
     server = WorkspaceServer(
         id=str(uuid.uuid4()),
         name=data.name,
@@ -232,9 +238,11 @@ async def register_server(
         total_cpu=data.total_cpu,
         total_memory_mb=data.total_memory_mb,
         total_disk_gb=data.total_disk_gb,
+        total_bandwidth_mbps=data.total_bandwidth_mbps,
         used_cpu=0.0,
         used_memory_mb=0,
         used_disk_gb=0,
+        used_bandwidth_mbps=0,
         active_workspaces=0,
         architecture=data.architecture,
         region=data.region,
@@ -271,9 +279,7 @@ async def get_server(
     """Get a specific workspace server."""
     _require_admin(request)
 
-    result = await db.execute(
-        select(WorkspaceServer).where(WorkspaceServer.id == server_id)
-    )
+    result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
     server = result.scalar_one_or_none()
 
     if not server:
@@ -294,9 +300,7 @@ async def update_server(
     """Update a workspace server."""
     _require_admin(request)
 
-    result = await db.execute(
-        select(WorkspaceServer).where(WorkspaceServer.id == server_id)
-    )
+    result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
     server = result.scalar_one_or_none()
 
     if not server:
@@ -341,9 +345,7 @@ async def delete_server(
     """
     _require_admin(request)
 
-    result = await db.execute(
-        select(WorkspaceServer).where(WorkspaceServer.id == server_id)
-    )
+    result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
     server = result.scalar_one_or_none()
 
     if not server:
@@ -353,7 +355,10 @@ async def delete_server(
     if server.active_workspaces > 0 and not force:
         raise HTTPException(
             status_code=400,
-            detail=f"Server has {server.active_workspaces} active workspaces. Use force=true to delete anyway.",
+            detail=(
+                f"Server has {server.active_workspaces} active workspaces. "
+                "Use force=true to delete anyway."
+            ),
         )
 
     await db.delete(server)
@@ -374,12 +379,13 @@ async def delete_server(
 @limiter.limit("60/minute")  # Allow more frequent heartbeats
 async def server_heartbeat(
     server_id: str,
-    request: Request,
+    request: Request,  # noqa: ARG001 - Required for rate limiter
     response: Response,  # noqa: ARG001
     db: DbSession,
     used_cpu: float = 0.0,
     used_memory_mb: int = 0,
     used_disk_gb: int = 0,
+    used_bandwidth_mbps: int = 0,
     active_workspaces: int = 0,
 ) -> ServerHealthResponse:
     """Report server heartbeat with current resource usage.
@@ -389,9 +395,7 @@ async def server_heartbeat(
     # This endpoint can be called by the server itself, not just admins
     # In production, should verify server authentication token
 
-    result = await db.execute(
-        select(WorkspaceServer).where(WorkspaceServer.id == server_id)
-    )
+    result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
     server = result.scalar_one_or_none()
 
     if not server:
@@ -401,6 +405,7 @@ async def server_heartbeat(
     server.used_cpu = used_cpu
     server.used_memory_mb = used_memory_mb
     server.used_disk_gb = used_disk_gb
+    server.used_bandwidth_mbps = used_bandwidth_mbps
     server.active_workspaces = active_workspaces
     server.last_heartbeat = datetime.now(UTC)
 
@@ -413,8 +418,15 @@ async def server_heartbeat(
 
     # Calculate utilization
     cpu_util = (server.used_cpu / server.total_cpu * 100) if server.total_cpu else 0
-    mem_util = (server.used_memory_mb / server.total_memory_mb * 100) if server.total_memory_mb else 0
+    mem_util = (
+        (server.used_memory_mb / server.total_memory_mb * 100) if server.total_memory_mb else 0
+    )
     disk_util = (server.used_disk_gb / server.total_disk_gb * 100) if server.total_disk_gb else 0
+    bw_util = (
+        (server.used_bandwidth_mbps / server.total_bandwidth_mbps * 100)
+        if server.total_bandwidth_mbps
+        else 0
+    )
 
     return ServerHealthResponse(
         server_id=server.id,
@@ -424,6 +436,7 @@ async def server_heartbeat(
         cpu_utilization=round(cpu_util, 2),
         memory_utilization=round(mem_util, 2),
         disk_utilization=round(disk_util, 2),
+        bandwidth_utilization=round(bw_util, 2),
         active_workspaces=server.active_workspaces,
     )
 
@@ -439,9 +452,7 @@ async def get_server_health(
     """Get health status for a specific server."""
     _require_admin(request)
 
-    result = await db.execute(
-        select(WorkspaceServer).where(WorkspaceServer.id == server_id)
-    )
+    result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
     server = result.scalar_one_or_none()
 
     if not server:
@@ -449,8 +460,15 @@ async def get_server_health(
 
     # Calculate utilization
     cpu_util = (server.used_cpu / server.total_cpu * 100) if server.total_cpu else 0
-    mem_util = (server.used_memory_mb / server.total_memory_mb * 100) if server.total_memory_mb else 0
+    mem_util = (
+        (server.used_memory_mb / server.total_memory_mb * 100) if server.total_memory_mb else 0
+    )
     disk_util = (server.used_disk_gb / server.total_disk_gb * 100) if server.total_disk_gb else 0
+    bw_util = (
+        (server.used_bandwidth_mbps / server.total_bandwidth_mbps * 100)
+        if server.total_bandwidth_mbps
+        else 0
+    )
 
     return ServerHealthResponse(
         server_id=server.id,
@@ -460,6 +478,7 @@ async def get_server_health(
         cpu_utilization=round(cpu_util, 2),
         memory_utilization=round(mem_util, 2),
         disk_utilization=round(disk_util, 2),
+        bandwidth_utilization=round(bw_util, 2),
         active_workspaces=server.active_workspaces,
     )
 
@@ -479,9 +498,7 @@ async def drain_server(
     """
     _require_admin(request)
 
-    result = await db.execute(
-        select(WorkspaceServer).where(WorkspaceServer.id == server_id)
-    )
+    result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
     server = result.scalar_one_or_none()
 
     if not server:
@@ -512,9 +529,7 @@ async def activate_server(
     """Activate a server for workspace placement."""
     _require_admin(request)
 
-    result = await db.execute(
-        select(WorkspaceServer).where(WorkspaceServer.id == server_id)
-    )
+    result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
     server = result.scalar_one_or_none()
 
     if not server:
@@ -563,8 +578,17 @@ async def get_cluster_status(
     server_health: list[ServerHealthResponse] = []
     for server in servers:
         cpu_util = (server.used_cpu / server.total_cpu * 100) if server.total_cpu else 0
-        mem_util = (server.used_memory_mb / server.total_memory_mb * 100) if server.total_memory_mb else 0
-        disk_util = (server.used_disk_gb / server.total_disk_gb * 100) if server.total_disk_gb else 0
+        mem_util = (
+            (server.used_memory_mb / server.total_memory_mb * 100) if server.total_memory_mb else 0
+        )
+        disk_util = (
+            (server.used_disk_gb / server.total_disk_gb * 100) if server.total_disk_gb else 0
+        )
+        bw_util = (
+            (server.used_bandwidth_mbps / server.total_bandwidth_mbps * 100)
+            if server.total_bandwidth_mbps
+            else 0
+        )
 
         server_health.append(
             ServerHealthResponse(
@@ -575,6 +599,7 @@ async def get_cluster_status(
                 cpu_utilization=round(cpu_util, 2),
                 memory_utilization=round(mem_util, 2),
                 disk_utilization=round(disk_util, 2),
+                bandwidth_utilization=round(bw_util, 2),
                 active_workspaces=server.active_workspaces,
             )
         )
@@ -591,4 +616,180 @@ async def get_cluster_status(
         memory_utilization=round((used_memory / total_memory * 100) if total_memory else 0, 2),
         total_workspaces=total_workspaces,
         servers=server_health,
+    )
+
+
+# ============== Capacity Check Endpoints ==============
+
+
+class TierCapacity(BaseModel):
+    """Capacity info for a single tier."""
+
+    available: bool
+    slots: int  # How many workspaces of this tier can fit
+
+
+class RegionCapacityResponse(BaseModel):
+    """Response containing capacity per tier for a region."""
+
+    region: str
+    tiers: dict[str, TierCapacity]
+
+
+@router.get("/capacity/{region}", response_model=RegionCapacityResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def get_region_capacity(
+    region: str,
+    request: Request,  # noqa: ARG001 - Required for rate limiter
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> RegionCapacityResponse:
+    """Get available capacity per tier for a specific region.
+
+    Used by frontend to show which plans are available in the selected region.
+    This endpoint is public (no admin required) so users can see capacity.
+    """
+    # Get all active servers in the region
+    result = await db.execute(
+        select(WorkspaceServer).where(
+            WorkspaceServer.region == region,
+            WorkspaceServer.status == ServerStatus.ACTIVE,
+        )
+    )
+    servers = list(result.scalars().all())
+
+    # Get all hardware specs
+    specs_result = await db.execute(select(HardwareSpec).where(HardwareSpec.is_available.is_(True)))
+    specs = {s.tier: s for s in specs_result.scalars().all()}
+
+    # Calculate capacity per tier
+    tiers: dict[str, TierCapacity] = {}
+
+    for tier, spec in specs.items():
+        slots = 0
+        for server in servers:
+            # Check if server can fit this tier's requirements
+            # Consider CPU, memory, disk, and bandwidth
+            bandwidth_required = spec.bandwidth_mbps or 100  # Default to 100 if not set
+
+            # Calculate how many of this tier could fit on the server
+            cpu_slots = int(server.available_cpu / spec.vcpu) if spec.vcpu else 0
+            mem_slots = int(server.available_memory_mb / spec.memory_mb) if spec.memory_mb else 0
+            disk_slots = int(server.available_disk_gb / spec.storage_gb) if spec.storage_gb else 0
+            bw_slots = (
+                int(server.available_bandwidth_mbps / bandwidth_required)
+                if bandwidth_required
+                else 0
+            )
+
+            # The limiting factor determines slots
+            server_slots = min(cpu_slots, mem_slots, disk_slots, bw_slots)
+
+            # Also check architecture if specified in spec
+            if spec.architecture and server.architecture != spec.architecture:
+                server_slots = 0
+
+            # Check GPU requirements
+            gpu_mismatch = spec.gpu_type and server.gpu_type != spec.gpu_type
+            if spec.is_gpu and (not server.has_gpu or gpu_mismatch):
+                server_slots = 0
+
+            slots += server_slots
+
+        tiers[tier] = TierCapacity(available=slots > 0, slots=slots)
+
+    return RegionCapacityResponse(region=region, tiers=tiers)
+
+
+# ============== Server Workspaces Endpoints ==============
+
+
+class ServerWorkspaceInfo(BaseModel):
+    """Info about a workspace on a server."""
+
+    workspace_id: str
+    user_id: str
+    user_email: str | None
+    tier: str | None
+    status: str
+    assigned_cpu: float | None
+    assigned_memory_mb: int | None
+    assigned_bandwidth_mbps: int | None
+    created_at: str
+    last_activity: str | None
+
+
+class ServerWorkspacesResponse(BaseModel):
+    """Response containing all workspaces on a server."""
+
+    server_id: str
+    server_name: str
+    region: str | None
+    workspaces: list[ServerWorkspaceInfo]
+    total_count: int
+
+
+@router.get("/{server_id}/workspaces", response_model=ServerWorkspacesResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def get_server_workspaces(
+    server_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> ServerWorkspacesResponse:
+    """Get all workspaces running on a specific server.
+
+    Admin endpoint for viewing which users/workspaces are on a server.
+    """
+    _require_admin(request)
+
+    # Get server
+    server_result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
+    server = server_result.scalar_one_or_none()
+
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    # Get all workspaces on this server with user info
+    # Use selectinload to eagerly load relationships
+    workspaces_result = await db.execute(
+        select(Workspace)
+        .where(Workspace.server_id == server_id)
+        .order_by(Workspace.created_at.desc())
+    )
+    workspaces = list(workspaces_result.scalars().all())
+
+    # Gather user emails (need separate query since workspace->session->user)
+    workspace_infos: list[ServerWorkspaceInfo] = []
+    for ws in workspaces:
+        # Get user email via session relationship
+        user_email = None
+        tier = None
+        if ws.session:
+            if ws.session.owner:
+                user_email = ws.session.owner.email
+            # Tier can be derived from assigned resources; for now, set to None
+            tier = None
+
+        workspace_infos.append(
+            ServerWorkspaceInfo(
+                workspace_id=ws.id,
+                user_id=ws.session.owner_id if ws.session else "unknown",
+                user_email=user_email,
+                tier=tier,
+                status=ws.status,
+                assigned_cpu=ws.assigned_cpu,
+                assigned_memory_mb=ws.assigned_memory_mb,
+                assigned_bandwidth_mbps=ws.assigned_bandwidth_mbps,
+                created_at=ws.created_at.isoformat(),
+                last_activity=ws.last_activity.isoformat() if ws.last_activity else None,
+            )
+        )
+
+    return ServerWorkspacesResponse(
+        server_id=server.id,
+        server_name=server.name,
+        region=server.region,
+        workspaces=workspace_infos,
+        total_count=len(workspace_infos),
     )

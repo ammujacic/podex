@@ -3,7 +3,17 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func, quoted_name
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    func,
+    quoted_name,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -37,6 +47,10 @@ class User(Base):
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     mfa_secret: Mapped[str | None] = mapped_column(String(255))  # Encrypted TOTP secret
     mfa_backup_codes: Mapped[list[str] | None] = mapped_column(JSONB)  # Hashed backup codes
+
+    # SSH public keys for VS Code Remote-SSH and other SSH clients
+    # List of dicts with: name, key (public key string), fingerprint, created_at
+    ssh_public_keys: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
 
     # Organization billing context
     # When user joins an org, personal billing is suspended (not canceled)
@@ -446,6 +460,10 @@ class Workspace(Base):
     assigned_cpu: Mapped[float | None] = mapped_column(Float)
     assigned_memory_mb: Mapped[int | None] = mapped_column(Integer)
     assigned_disk_gb: Mapped[int | None] = mapped_column(Integer)
+    assigned_bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
+
+    # Region preference (user-selected region for compliance)
+    region_preference: Mapped[str | None] = mapped_column(String(50))  # "eu", "us"
 
     # Networking
     internal_ip: Mapped[str | None] = mapped_column(String(45))  # IPv6-safe length

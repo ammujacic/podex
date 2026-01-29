@@ -49,8 +49,7 @@ class CreateHardwareSpecRequest(BaseModel):
     )
 
     # Storage
-    storage_gb_default: int = Field(default=20, ge=5, le=1000)
-    storage_gb_max: int = Field(default=100, ge=10, le=10000)
+    storage_gb: int = Field(default=20, ge=5, le=1000)
 
     # Pricing
     hourly_rate_cents: int = Field(ge=0)
@@ -72,8 +71,7 @@ class UpdateHardwareSpecRequest(BaseModel):
     gpu_count: int | None = Field(default=None, ge=0, le=8)
     is_gpu: bool | None = None
     requires_gke: bool | None = None
-    storage_gb_default: int | None = Field(default=None, ge=5, le=1000)
-    storage_gb_max: int | None = Field(default=None, ge=10, le=10000)
+    storage_gb: int | None = Field(default=None, ge=5, le=1000)
     hourly_rate_cents: int | None = Field(default=None, ge=0)
     is_available: bool | None = None
     requires_subscription: str | None = None
@@ -94,8 +92,7 @@ class AdminHardwareSpecResponse(BaseModel):
     gpu_count: int
     is_gpu: bool
     requires_gke: bool
-    storage_gb_default: int
-    storage_gb_max: int
+    storage_gb: int
     hourly_rate_cents: int
     is_available: bool
     requires_subscription: str | None
@@ -155,8 +152,7 @@ async def list_hardware_specs(
                 gpu_count=spec.gpu_count,
                 is_gpu=spec.is_gpu,
                 requires_gke=spec.requires_gke,
-                storage_gb_default=spec.storage_gb_default,
-                storage_gb_max=spec.storage_gb_max,
+                storage_gb=spec.storage_gb,
                 hourly_rate_cents=spec.hourly_rate_cents,
                 is_available=spec.is_available,
                 requires_subscription=spec.requires_subscription,
@@ -199,8 +195,7 @@ async def create_hardware_spec(
         gpu_count=data.gpu_count,
         is_gpu=data.is_gpu,
         requires_gke=data.requires_gke,
-        storage_gb_default=data.storage_gb_default,
-        storage_gb_max=data.storage_gb_max,
+        storage_gb=data.storage_gb,
         hourly_rate_cents=data.hourly_rate_cents,
         is_available=data.is_available,
         requires_subscription=data.requires_subscription,
@@ -225,8 +220,7 @@ async def create_hardware_spec(
         gpu_count=spec.gpu_count,
         is_gpu=spec.is_gpu,
         requires_gke=spec.requires_gke,
-        storage_gb_default=spec.storage_gb_default,
-        storage_gb_max=spec.storage_gb_max,
+        storage_gb=spec.storage_gb,
         hourly_rate_cents=spec.hourly_rate_cents,
         is_available=spec.is_available,
         requires_subscription=spec.requires_subscription,
@@ -271,8 +265,7 @@ async def get_hardware_spec(
         gpu_count=spec.gpu_count,
         is_gpu=spec.is_gpu,
         requires_gke=spec.requires_gke,
-        storage_gb_default=spec.storage_gb_default,
-        storage_gb_max=spec.storage_gb_max,
+        storage_gb=spec.storage_gb,
         hourly_rate_cents=spec.hourly_rate_cents,
         is_available=spec.is_available,
         requires_subscription=spec.requires_subscription,

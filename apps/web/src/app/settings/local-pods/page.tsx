@@ -26,16 +26,6 @@ import {
   Zap,
   Info,
   Key,
-  Container,
-  MonitorSmartphone,
-  Folder,
-  Lock,
-  Shield,
-  ShieldOff,
-  Box,
-  Home,
-  FolderPlus,
-  ArrowLeft,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useLocalPodsStore, selectIsDeleting, selectIsRegenerating } from '@/stores/localPods';
@@ -139,16 +129,8 @@ function TokenDisplay({ token, onDismiss }: TokenDisplayProps) {
 }
 
 // ============================================================================
-// ADD POD MODAL - Wizard with configuration builder
+// ADD POD MODAL - Simple name-only form
 // ============================================================================
-
-interface MountEntry {
-  path: string;
-  mode: 'rw' | 'ro';
-  label: string;
-}
-
-type WizardStep = 'basics' | 'config' | 'complete';
 
 interface AddPodModalProps {
   onSubmit: (data: CreateLocalPodRequest) => Promise<void>;
@@ -157,47 +139,15 @@ interface AddPodModalProps {
 }
 
 function AddPodModal({ onSubmit, onClose, isLoading }: AddPodModalProps) {
-  // Wizard step
-  const [wizardStep, setWizardStep] = useState<WizardStep>('basics');
-
-  // Basic info
   const [name, setName] = useState('');
-  const [selectedMode, setSelectedMode] = useState<'docker' | 'native'>('docker');
-
-  // Native mode config
-  const [security, setSecurity] = useState<'allowlist' | 'unrestricted'>('allowlist');
-  const [workspaceDir, setWorkspaceDir] = useState('');
-  const [mounts, setMounts] = useState<MountEntry[]>([]);
-  const [newMountPath, setNewMountPath] = useState('');
-  const [newMountMode, setNewMountMode] = useState<'rw' | 'ro'>('rw');
-  const [newMountLabel, setNewMountLabel] = useState('');
-
   const [error, setError] = useState<string | null>(null);
+  const [showComplete, setShowComplete] = useState(false);
 
   // Token from store (after creation)
   const { newToken, clearNewToken } = useLocalPodsStore();
 
-  // Copy states for command
+  // Copy state for command
   const [copiedCommand, setCopiedCommand] = useState(false);
-
-  const handleAddMount = () => {
-    if (!newMountPath.trim()) return;
-    setMounts([
-      ...mounts,
-      {
-        path: newMountPath.trim(),
-        mode: newMountMode,
-        label: newMountLabel.trim() || newMountPath.split('/').pop() || 'Mount',
-      },
-    ]);
-    setNewMountPath('');
-    setNewMountLabel('');
-    setNewMountMode('rw');
-  };
-
-  const handleRemoveMount = (index: number) => {
-    setMounts(mounts.filter((_, i) => i !== index));
-  };
 
   const handleSubmit = async () => {
     if (!name.trim()) {
@@ -207,7 +157,7 @@ function AddPodModal({ onSubmit, onClose, isLoading }: AddPodModalProps) {
 
     try {
       await onSubmit({ name: name.trim() });
-      setWizardStep('complete');
+      setShowComplete(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create pod');
     }
@@ -225,82 +175,39 @@ function AddPodModal({ onSubmit, onClose, isLoading }: AddPodModalProps) {
     onClose();
   };
 
-  // Generate single setup command using config init with all flags
-  const generateCommand = (token: string) => {
-    let cmd = `podex-local-pod config init --token ${token} --mode ${selectedMode}`;
-
-    if (selectedMode === 'native') {
-      cmd += ` --security ${security}`;
-      if (workspaceDir.trim()) {
-        cmd += ` --workspace-dir "${workspaceDir.trim()}"`;
-      }
-    }
-
-    // Add mounts (format: "path:mode:label")
-    for (const mount of mounts) {
-      cmd += ` --mount "${mount.path}:${mount.mode}:${mount.label}"`;
-    }
-
-    // Auto-confirm to skip interactive prompts
-    cmd += ' -y';
-
-    return cmd;
-  };
-
   const handleCopyCommand = async () => {
     if (!newToken) return;
-    const command = generateCommand(newToken.token);
+    const command = `podex-local-pod start --token ${newToken.token}`;
     await navigator.clipboard.writeText(command);
     setCopiedCommand(true);
     toast.success('Command copied to clipboard');
     setTimeout(() => setCopiedCommand(false), 2000);
   };
 
-  const canProceedFromBasics = name.trim() !== '';
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-void/80">
-      <div className="w-full max-w-xl mx-4 rounded-lg border border-border-default bg-surface shadow-xl max-h-[90vh] overflow-y-auto">
+      <div className="w-full max-w-md mx-4 rounded-lg border border-border-default bg-surface shadow-xl">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border-subtle sticky top-0 bg-surface z-10">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border-subtle">
           <div className="flex items-center gap-2">
             <Laptop className="h-5 w-5 text-accent-primary" />
             <h3 className="text-lg font-semibold text-text-primary">
-              {wizardStep === 'complete' ? 'Setup Complete' : 'Add Local Pod'}
+              {showComplete ? 'Setup Complete' : 'Add Local Pod'}
             </h3>
           </div>
-          <div className="flex items-center gap-3">
-            {wizardStep !== 'complete' && (
-              <div className="flex items-center gap-1">
-                {['basics', 'config'].map((s, i) => (
-                  <div
-                    key={s}
-                    className={cn(
-                      'w-2 h-2 rounded-full transition-colors',
-                      wizardStep === s
-                        ? 'bg-accent-primary'
-                        : i < ['basics', 'config'].indexOf(wizardStep)
-                          ? 'bg-accent-primary/50'
-                          : 'bg-overlay'
-                    )}
-                  />
-                ))}
-              </div>
-            )}
-            <button
-              onClick={handleClose}
-              className="p-1 rounded hover:bg-overlay text-text-muted hover:text-text-primary"
-            >
-              <X className="h-5 w-5" />
-            </button>
-          </div>
+          <button
+            onClick={handleClose}
+            className="p-1 rounded hover:bg-overlay text-text-muted hover:text-text-primary"
+          >
+            <X className="h-5 w-5" />
+          </button>
         </div>
 
         {/* Content */}
         <div className="p-4">
-          {/* Step 1: Basics - Name and Mode Selection */}
-          {wizardStep === 'basics' && (
-            <div className="space-y-5">
+          {/* Create form */}
+          {!showComplete && (
+            <div className="space-y-4">
               {/* Info banner */}
               <div className="p-3 rounded-lg bg-accent-primary/5 border border-accent-primary/20">
                 <p className="text-sm text-text-secondary">
@@ -320,7 +227,7 @@ function AddPodModal({ onSubmit, onClose, isLoading }: AddPodModalProps) {
 
               {/* Pod Name */}
               <div>
-                <label className="text-sm font-medium text-text-secondary">Pod Name *</label>
+                <label className="text-sm font-medium text-text-secondary">Pod Name</label>
                 <input
                   type="text"
                   value={name}
@@ -328,97 +235,11 @@ function AddPodModal({ onSubmit, onClose, isLoading }: AddPodModalProps) {
                   placeholder="e.g., My MacBook Pro"
                   className="w-full mt-1 px-3 py-2 text-sm rounded bg-void border border-border-default text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:ring-1 focus:ring-accent-primary"
                   autoFocus
+                  onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
                 />
                 <p className="text-xs text-text-muted mt-1">
                   A friendly name to identify this machine
                 </p>
-              </div>
-
-              {/* Mode Selection */}
-              <div>
-                <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
-                  Execution Mode
-                </p>
-                <div className="grid grid-cols-2 gap-3">
-                  {/* Docker Mode */}
-                  <button
-                    type="button"
-                    onClick={() => setSelectedMode('docker')}
-                    className={cn(
-                      'p-4 rounded-xl border-2 text-left transition-all',
-                      selectedMode === 'docker'
-                        ? 'border-info bg-info/5 shadow-lg shadow-info/10'
-                        : 'border-border-default hover:border-border-hover bg-elevated'
-                    )}
-                  >
-                    {selectedMode === 'docker' && (
-                      <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-info flex items-center justify-center">
-                        <Check className="w-3 h-3 text-white" />
-                      </div>
-                    )}
-                    <div className="flex items-center gap-2 mb-2">
-                      <div
-                        className={cn(
-                          'p-1.5 rounded',
-                          selectedMode === 'docker' ? 'bg-info/20' : 'bg-overlay'
-                        )}
-                      >
-                        <Box
-                          className={cn(
-                            'h-4 w-4',
-                            selectedMode === 'docker' ? 'text-info' : 'text-text-muted'
-                          )}
-                        />
-                      </div>
-                      <span className="text-sm font-semibold text-text-primary">Docker</span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-info/20 text-info">
-                        Recommended
-                      </span>
-                    </div>
-                    <p className="text-xs text-text-muted leading-relaxed">
-                      Isolated containers with pre-configured templates. Best for security and
-                      reproducibility.
-                    </p>
-                  </button>
-
-                  {/* Native Mode */}
-                  <button
-                    type="button"
-                    onClick={() => setSelectedMode('native')}
-                    className={cn(
-                      'p-4 rounded-xl border-2 text-left transition-all',
-                      selectedMode === 'native'
-                        ? 'border-warning bg-warning/5 shadow-lg shadow-warning/10'
-                        : 'border-border-default hover:border-border-hover bg-elevated'
-                    )}
-                  >
-                    {selectedMode === 'native' && (
-                      <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-warning flex items-center justify-center">
-                        <Check className="w-3 h-3 text-void" />
-                      </div>
-                    )}
-                    <div className="flex items-center gap-2 mb-2">
-                      <div
-                        className={cn(
-                          'p-1.5 rounded',
-                          selectedMode === 'native' ? 'bg-warning/20' : 'bg-overlay'
-                        )}
-                      >
-                        <Terminal
-                          className={cn(
-                            'h-4 w-4',
-                            selectedMode === 'native' ? 'text-warning' : 'text-text-muted'
-                          )}
-                        />
-                      </div>
-                      <span className="text-sm font-semibold text-text-primary">Native</span>
-                    </div>
-                    <p className="text-xs text-text-muted leading-relaxed">
-                      Direct execution on your machine. Mount project folders with your existing
-                      tools.
-                    </p>
-                  </button>
-                </div>
               </div>
 
               {/* Footer */}
@@ -432,261 +253,8 @@ function AddPodModal({ onSubmit, onClose, isLoading }: AddPodModalProps) {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setWizardStep('config')}
-                  disabled={!canProceedFromBasics}
-                  className="px-4 py-2 text-sm font-medium rounded bg-accent-primary text-void hover:bg-accent-primary/90 disabled:opacity-50 flex items-center gap-2"
-                >
-                  Continue
-                  <ChevronRight className="h-4 w-4" />
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Step 2: Configuration (different for Docker vs Native) */}
-          {wizardStep === 'config' && (
-            <div className="space-y-5">
-              {/* Mode indicator */}
-              <div
-                className={cn(
-                  'p-3 rounded-lg flex items-center gap-3',
-                  selectedMode === 'docker'
-                    ? 'bg-info/10 border border-info/20'
-                    : 'bg-warning/10 border border-warning/20'
-                )}
-              >
-                {selectedMode === 'docker' ? (
-                  <Box className="h-5 w-5 text-info" />
-                ) : (
-                  <Terminal className="h-5 w-5 text-warning" />
-                )}
-                <div>
-                  <p
-                    className={cn(
-                      'text-sm font-medium',
-                      selectedMode === 'docker' ? 'text-info' : 'text-warning'
-                    )}
-                  >
-                    {selectedMode === 'docker' ? 'Docker Mode' : 'Native Mode'}
-                  </p>
-                  <p className="text-xs text-text-muted">
-                    {selectedMode === 'docker'
-                      ? 'Workspaces run in isolated containers'
-                      : 'Workspaces run directly on your machine'}
-                  </p>
-                </div>
-              </div>
-
-              {error && (
-                <div className="p-3 rounded bg-error/10 border border-error/30 text-error text-sm flex items-center gap-2">
-                  <AlertCircle className="h-4 w-4" />
-                  {error}
-                </div>
-              )}
-
-              {/* Docker mode - simple, just proceed */}
-              {selectedMode === 'docker' && (
-                <div className="p-4 rounded-lg border border-border-subtle bg-elevated">
-                  <div className="flex items-start gap-3">
-                    <div className="p-2 rounded-lg bg-info/20">
-                      <Check className="h-4 w-4 text-info" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-text-primary">Ready to go!</p>
-                      <p className="text-xs text-text-muted mt-1">
-                        Docker mode uses sensible defaults. You can customize settings later with{' '}
-                        <code className="px-1 py-0.5 rounded bg-void font-mono text-[10px]">
-                          podex-local-pod config
-                        </code>
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Native mode - configure security and mounts */}
-              {selectedMode === 'native' && (
-                <>
-                  {/* Security Mode */}
-                  <div>
-                    <div className="flex items-center gap-2 mb-3">
-                      <Shield className="h-4 w-4 text-text-muted" />
-                      <p className="text-xs font-medium text-text-muted uppercase tracking-wider">
-                        Security Mode
-                      </p>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <button
-                        type="button"
-                        onClick={() => setSecurity('allowlist')}
-                        className={cn(
-                          'p-3 rounded-lg border text-left transition-all',
-                          security === 'allowlist'
-                            ? 'border-success bg-success/5'
-                            : 'border-border-subtle hover:border-border-default bg-elevated'
-                        )}
-                      >
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-sm font-medium text-text-primary">Allowlist</span>
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-success/20 text-success">
-                            Recommended
-                          </span>
-                        </div>
-                        <p className="text-xs text-text-muted">
-                          Only access workspace and mounted paths
-                        </p>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSecurity('unrestricted')}
-                        className={cn(
-                          'p-3 rounded-lg border text-left transition-all',
-                          security === 'unrestricted'
-                            ? 'border-error bg-error/5'
-                            : 'border-border-subtle hover:border-border-default bg-elevated'
-                        )}
-                      >
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-sm font-medium text-text-primary">
-                            Unrestricted
-                          </span>
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-error/20 text-error">
-                            Advanced
-                          </span>
-                        </div>
-                        <p className="text-xs text-text-muted">
-                          Full filesystem access (use with caution)
-                        </p>
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Workspace Directory */}
-                  <div>
-                    <div className="flex items-center gap-2 mb-2">
-                      <Home className="h-4 w-4 text-text-muted" />
-                      <label className="text-xs font-medium text-text-muted uppercase tracking-wider">
-                        Workspace Directory
-                      </label>
-                    </div>
-                    <input
-                      type="text"
-                      value={workspaceDir}
-                      onChange={(e) => setWorkspaceDir(e.target.value)}
-                      placeholder="~/podex-workspaces (default)"
-                      className="w-full px-3 py-2 text-sm rounded bg-void border border-border-default text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:ring-1 focus:ring-accent-primary font-mono"
-                    />
-                    <p className="text-xs text-text-muted mt-1">
-                      Where new workspaces are created (leave empty for default)
-                    </p>
-                  </div>
-
-                  {/* Mounts */}
-                  <div>
-                    <div className="flex items-center gap-2 mb-3">
-                      <FolderPlus className="h-4 w-4 text-text-muted" />
-                      <p className="text-xs font-medium text-text-muted uppercase tracking-wider">
-                        Allowed Mounts
-                      </p>
-                    </div>
-
-                    {/* Existing mounts */}
-                    {mounts.length > 0 && (
-                      <div className="space-y-2 mb-3">
-                        {mounts.map((mount, i) => (
-                          <div
-                            key={i}
-                            className="flex items-center gap-2 p-2 rounded-lg bg-void border border-border-subtle"
-                          >
-                            <FolderPlus className="h-4 w-4 text-accent-primary flex-shrink-0" />
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-text-primary truncate">
-                                {mount.label}
-                              </p>
-                              <p className="text-xs text-text-muted font-mono truncate">
-                                {mount.path}
-                              </p>
-                            </div>
-                            <span
-                              className={cn(
-                                'text-[10px] px-1.5 py-0.5 rounded flex-shrink-0',
-                                mount.mode === 'rw'
-                                  ? 'bg-success/20 text-success'
-                                  : 'bg-warning/20 text-warning'
-                              )}
-                            >
-                              {mount.mode === 'rw' ? 'read-write' : 'read-only'}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveMount(i)}
-                              className="p-1 rounded hover:bg-error/20 text-text-muted hover:text-error transition-colors"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Add mount form */}
-                    <div className="p-3 rounded-lg border border-dashed border-border-default bg-elevated">
-                      <p className="text-xs text-text-muted mb-2">
-                        Add a folder to allow as workspace mount:
-                      </p>
-                      <div className="space-y-2">
-                        <input
-                          type="text"
-                          value={newMountPath}
-                          onChange={(e) => setNewMountPath(e.target.value)}
-                          placeholder="/path/to/your/project"
-                          className="w-full px-3 py-2 text-sm rounded bg-void border border-border-default text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:ring-1 focus:ring-accent-primary font-mono"
-                        />
-                        <div className="flex gap-2">
-                          <input
-                            type="text"
-                            value={newMountLabel}
-                            onChange={(e) => setNewMountLabel(e.target.value)}
-                            placeholder="Label (optional)"
-                            className="flex-1 px-3 py-2 text-sm rounded bg-void border border-border-default text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:ring-1 focus:ring-accent-primary"
-                          />
-                          <select
-                            value={newMountMode}
-                            onChange={(e) => setNewMountMode(e.target.value as 'rw' | 'ro')}
-                            className="px-3 py-2 text-sm rounded bg-void border border-border-default text-text-primary"
-                          >
-                            <option value="rw">Read-Write</option>
-                            <option value="ro">Read-Only</option>
-                          </select>
-                          <button
-                            type="button"
-                            onClick={handleAddMount}
-                            disabled={!newMountPath.trim()}
-                            className="px-3 py-2 text-sm font-medium rounded bg-accent-primary text-void hover:bg-accent-primary/90 disabled:opacity-50"
-                          >
-                            Add
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* Footer */}
-              <div className="flex items-center justify-between pt-2">
-                <button
-                  type="button"
-                  onClick={() => setWizardStep('basics')}
-                  className="px-4 py-2 text-sm font-medium rounded bg-overlay text-text-secondary hover:text-text-primary flex items-center gap-2"
-                >
-                  <ArrowLeft className="h-4 w-4" />
-                  Back
-                </button>
-                <button
-                  type="button"
                   onClick={handleSubmit}
-                  disabled={isLoading}
+                  disabled={isLoading || !name.trim()}
                   className="px-4 py-2 text-sm font-medium rounded bg-accent-primary text-void hover:bg-accent-primary/90 disabled:opacity-50 flex items-center gap-2"
                 >
                   {isLoading && <Loader2 className="h-4 w-4 animate-spin" />}
@@ -696,8 +264,8 @@ function AddPodModal({ onSubmit, onClose, isLoading }: AddPodModalProps) {
             </div>
           )}
 
-          {/* Step 3: Complete - Show token and full setup command */}
-          {wizardStep === 'complete' && newToken && (
+          {/* Complete - Show token and setup command */}
+          {showComplete && newToken && (
             <div className="space-y-5">
               {/* Success header */}
               <div className="flex items-center gap-3 p-4 rounded-xl bg-gradient-to-r from-success/20 to-success/5 border border-success/30">
@@ -709,7 +277,7 @@ function AddPodModal({ onSubmit, onClose, isLoading }: AddPodModalProps) {
                     Pod &quot;{name}&quot; created!
                   </p>
                   <p className="text-sm text-text-muted">
-                    Run the command below to complete setup.
+                    Run the command below to start your pod.
                   </p>
                 </div>
               </div>
@@ -729,16 +297,14 @@ function AddPodModal({ onSubmit, onClose, isLoading }: AddPodModalProps) {
                   </div>
                 </div>
 
-                {/* Step 2: Configure with commands */}
+                {/* Step 2: Start */}
                 <div className="flex gap-3">
                   <div className="flex-shrink-0 w-6 h-6 rounded-full bg-accent-primary/20 text-accent-primary text-xs font-bold flex items-center justify-center">
                     2
                   </div>
                   <div className="flex-1">
                     <div className="flex items-center justify-between mb-1">
-                      <p className="text-sm font-medium text-text-primary">
-                        Configure with your settings
-                      </p>
+                      <p className="text-sm font-medium text-text-primary">Start the pod</p>
                       <button
                         onClick={handleCopyCommand}
                         className={cn(
@@ -756,68 +322,15 @@ function AddPodModal({ onSubmit, onClose, isLoading }: AddPodModalProps) {
                         {copiedCommand ? 'Copied!' : 'Copy'}
                       </button>
                     </div>
-                    <code className="block text-xs text-accent-primary font-mono px-3 py-2 bg-void rounded-lg border border-accent-primary/30 overflow-x-auto whitespace-pre-wrap break-all">
-                      {generateCommand(newToken.token)}
+                    <code className="block text-xs text-accent-primary font-mono px-3 py-2 bg-void rounded-lg border border-accent-primary/30 overflow-x-auto">
+                      podex-local-pod start --token {newToken.token}
                     </code>
                     <p className="text-xs text-text-muted mt-2">
-                      Run this command to configure your pod with all settings.
-                    </p>
-                  </div>
-                </div>
-
-                {/* Step 3: Start */}
-                <div className="flex gap-3">
-                  <div className="flex-shrink-0 w-6 h-6 rounded-full bg-accent-primary/20 text-accent-primary text-xs font-bold flex items-center justify-center">
-                    3
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-text-primary mb-1">Start the agent</p>
-                    <code className="block text-xs text-text-secondary font-mono px-3 py-2 bg-void rounded-lg border border-border-subtle">
-                      podex-local-pod start
-                    </code>
-                    <p className="text-xs text-text-muted mt-1">
                       Your pod will appear as{' '}
                       <span className="text-success font-medium">&quot;Online&quot;</span> once
                       connected!
                     </p>
                   </div>
-                </div>
-              </div>
-
-              {/* Configuration Summary */}
-              <div className="p-3 rounded-lg bg-overlay border border-border-subtle">
-                <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">
-                  Configuration Summary
-                </p>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div>
-                    <span className="text-text-muted">Mode:</span>{' '}
-                    <span className={selectedMode === 'docker' ? 'text-info' : 'text-warning'}>
-                      {selectedMode === 'docker' ? 'Docker' : 'Native'}
-                    </span>
-                  </div>
-                  {selectedMode === 'native' && (
-                    <>
-                      <div>
-                        <span className="text-text-muted">Security:</span>{' '}
-                        <span className={security === 'allowlist' ? 'text-success' : 'text-error'}>
-                          {security}
-                        </span>
-                      </div>
-                      {workspaceDir && (
-                        <div className="col-span-2">
-                          <span className="text-text-muted">Workspace:</span>{' '}
-                          <span className="text-text-primary font-mono">{workspaceDir}</span>
-                        </div>
-                      )}
-                      {mounts.length > 0 && (
-                        <div className="col-span-2">
-                          <span className="text-text-muted">Mounts:</span>{' '}
-                          <span className="text-text-primary">{mounts.length} configured</span>
-                        </div>
-                      )}
-                    </>
-                  )}
                 </div>
               </div>
 
@@ -936,42 +449,6 @@ function PodCard({ pod, isExpanded, onToggleExpand, onDelete, onRegenerateToken 
               )}
             </div>
 
-            {/* Mode badge */}
-            <div className="flex items-center gap-2 mt-2">
-              <span
-                className={cn(
-                  'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium',
-                  pod.mode === 'native'
-                    ? 'bg-info/20 text-info'
-                    : 'bg-accent-primary/20 text-accent-primary'
-                )}
-              >
-                {pod.mode === 'native' ? (
-                  <MonitorSmartphone className="h-3 w-3" />
-                ) : (
-                  <Container className="h-3 w-3" />
-                )}
-                {pod.mode === 'native' ? 'Native' : 'Docker'} Mode
-              </span>
-              {pod.mode === 'native' && pod.native_security && (
-                <span
-                  className={cn(
-                    'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium',
-                    pod.native_security === 'allowlist'
-                      ? 'bg-success/20 text-success'
-                      : 'bg-warning/20 text-warning'
-                  )}
-                >
-                  {pod.native_security === 'allowlist' ? (
-                    <Shield className="h-3 w-3" />
-                  ) : (
-                    <ShieldOff className="h-3 w-3" />
-                  )}
-                  {pod.native_security === 'allowlist' ? 'Allowlist' : 'Unrestricted'}
-                </span>
-              )}
-            </div>
-
             {/* Workspaces */}
             <div className="flex items-center gap-2 mt-2">
               <span className="text-xs text-text-muted">Workspaces: {pod.current_workspaces}</span>
@@ -1013,10 +490,6 @@ function PodCard({ pod, isExpanded, onToggleExpand, onDelete, onRegenerateToken 
                 <p className="text-text-primary font-medium">{pod.architecture || 'Unknown'}</p>
               </div>
               <div>
-                <span className="text-text-muted">Docker Version</span>
-                <p className="text-text-primary font-medium">{pod.docker_version || 'N/A'}</p>
-              </div>
-              <div>
                 <span className="text-text-muted">Token Prefix</span>
                 <p className="text-text-primary font-mono">{pod.token_prefix}...</p>
               </div>
@@ -1030,80 +503,7 @@ function PodCard({ pod, isExpanded, onToggleExpand, onDelete, onRegenerateToken 
                 <span className="text-text-muted">Created</span>
                 <p className="text-text-primary font-medium">{formatDate(pod.created_at)}</p>
               </div>
-              <div>
-                <span className="text-text-muted">Last Updated</span>
-                <p className="text-text-primary font-medium">{formatDate(pod.updated_at)}</p>
-              </div>
             </div>
-
-            {/* Native mode workspace dir */}
-            {pod.mode === 'native' && pod.native_workspace_dir && (
-              <div className="text-xs">
-                <span className="text-text-muted">Workspace Directory</span>
-                <p className="text-text-primary font-mono">{pod.native_workspace_dir}</p>
-              </div>
-            )}
-
-            {/* Allowed Mounts */}
-            {pod.mounts && pod.mounts.length > 0 && (
-              <div className="pt-2 border-t border-border-subtle">
-                <div className="flex items-center gap-2 mb-2">
-                  <Folder className="h-4 w-4 text-text-muted" />
-                  <span className="text-xs font-medium text-text-primary">
-                    Allowed Mounts ({pod.mounts.length})
-                  </span>
-                </div>
-                <div className="space-y-1">
-                  {pod.mounts.map((mount, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-center justify-between px-2 py-1.5 rounded bg-overlay text-xs"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Folder className="h-3 w-3 text-text-muted" />
-                        <span className="font-medium text-text-primary">
-                          {mount.label || mount.path.split('/').pop()}
-                        </span>
-                        <span className="text-text-muted truncate max-w-48">{mount.path}</span>
-                      </div>
-                      <span
-                        className={cn(
-                          'px-1.5 py-0.5 rounded text-[10px] font-medium',
-                          mount.mode === 'rw'
-                            ? 'bg-success/20 text-success'
-                            : 'bg-warning/20 text-warning'
-                        )}
-                      >
-                        {mount.mode === 'rw' ? (
-                          'rw'
-                        ) : (
-                          <span className="flex items-center gap-0.5">
-                            <Lock className="h-2.5 w-2.5" />
-                            ro
-                          </span>
-                        )}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* No mounts message */}
-            {(!pod.mounts || pod.mounts.length === 0) && (
-              <div className="pt-2 border-t border-border-subtle">
-                <div className="flex items-start gap-2 p-2 rounded bg-warning/10 border border-warning/20">
-                  <AlertCircle className="h-4 w-4 text-warning mt-0.5" />
-                  <div className="text-xs">
-                    <p className="text-warning font-medium">No mounts configured</p>
-                    <p className="text-warning/80 mt-0.5">
-                      Add mounts with:{' '}
-                      <code className="font-mono">podex-local-pod mounts add ~/projects</code>
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
 
             {/* Actions */}
             <div className="flex items-center gap-2 pt-2 border-t border-border-subtle">
@@ -1167,7 +567,7 @@ export default function LocalPodsSettingsPage() {
 
   const handleCreatePod = async (data: CreateLocalPodRequest) => {
     await createPod(data);
-    // Don't close modal - wizard will show completion step with setup command
+    // Don't close modal - will show completion step with setup command
   };
 
   const handleModalClose = () => {
@@ -1396,73 +796,15 @@ export default function LocalPodsSettingsPage() {
                       2
                     </span>
                     <div>
-                      <p className="text-sm text-text-primary font-medium">Configure your pod</p>
-                      <code className="text-xs text-text-muted font-mono block mt-1 p-2 rounded bg-void">
-                        podex-local-pod config init
-                      </code>
-                    </div>
-                  </div>
-                  <div className="flex items-start gap-3">
-                    <span className="flex items-center justify-center w-6 h-6 rounded-full bg-accent-primary/20 text-accent-primary text-xs font-bold">
-                      3
-                    </span>
-                    <div>
-                      <p className="text-sm text-text-primary font-medium">Add allowed mounts</p>
-                      <code className="text-xs text-text-muted font-mono block mt-1 p-2 rounded bg-void">
-                        podex-local-pod mounts add ~/projects --label &quot;Projects&quot;
-                      </code>
-                    </div>
-                  </div>
-                  <div className="flex items-start gap-3">
-                    <span className="flex items-center justify-center w-6 h-6 rounded-full bg-accent-primary/20 text-accent-primary text-xs font-bold">
-                      4
-                    </span>
-                    <div>
                       <p className="text-sm text-text-primary font-medium">Start the pod</p>
                       <code className="text-xs text-text-muted font-mono block mt-1 p-2 rounded bg-void">
                         podex-local-pod start --token pdx_pod_...
                       </code>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Execution Modes explanation */}
-            {pods.length > 0 && (
-              <div className="border border-border-subtle rounded-lg overflow-hidden">
-                <div className="px-4 py-3 bg-elevated border-b border-border-subtle">
-                  <h3 className="text-sm font-medium text-text-primary flex items-center gap-2">
-                    <Info className="h-4 w-4" />
-                    Execution Modes
-                  </h3>
-                </div>
-                <div className="p-4 space-y-4">
-                  <div className="flex items-start gap-3">
-                    <div className="p-2 rounded-lg bg-accent-primary/10">
-                      <Container className="h-4 w-4 text-accent-primary" />
-                    </div>
-                    <div>
-                      <p className="text-sm text-text-primary font-medium">Docker Mode (Default)</p>
                       <p className="text-xs text-text-muted mt-1">
-                        Workspaces run in isolated containers. Allowed mounts are attached as
-                        volumes. Best for untrusted code and multi-tenant scenarios.
+                        Your pod will appear as{' '}
+                        <span className="text-success font-medium">&quot;Online&quot;</span> once
+                        connected!
                       </p>
-                    </div>
-                  </div>
-                  <div className="flex items-start gap-3">
-                    <div className="p-2 rounded-lg bg-info/10">
-                      <MonitorSmartphone className="h-4 w-4 text-info" />
-                    </div>
-                    <div>
-                      <p className="text-sm text-text-primary font-medium">Native Mode</p>
-                      <p className="text-xs text-text-muted mt-1">
-                        Workspaces run directly on your machine. Faster performance and full access
-                        to local tools. Best for personal development.
-                      </p>
-                      <code className="text-xs text-text-muted font-mono block mt-2 p-2 rounded bg-void">
-                        podex-local-pod mode native --workspace-dir ~/workspaces
-                      </code>
                     </div>
                   </div>
                 </div>

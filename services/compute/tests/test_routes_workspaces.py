@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
 
 from src.models.workspace import (
-    WorkspaceConfig,
     WorkspaceExecResponse,
     WorkspaceScaleResponse,
     WorkspaceStatus,
-    WorkspaceTier,
 )
-
 
 # ============================================
 # Authentication & Authorization Tests
@@ -100,7 +97,7 @@ async def test_create_workspace_success(
             user_id=test_user_id,
             session_id="session-1",
             status=WorkspaceStatus.RUNNING,
-            tier=WorkspaceTier.STARTER,
+            tier="starter_arm",
         )
         mock_create.return_value = mock_workspace
 
@@ -138,7 +135,7 @@ async def test_create_workspace_with_repos(fastapi_client: TestClient, test_user
             user_id=test_user_id,
             session_id="session-1",
             status=WorkspaceStatus.RUNNING,
-            tier=WorkspaceTier.PRO,
+            tier="pro_arm",
             repos=["https://github.com/test/repo1", "https://github.com/test/repo2"],
         )
         mock_create.return_value = mock_workspace
@@ -711,7 +708,7 @@ async def test_scale_workspace_success(
     workspace = workspace_factory.create_info(
         workspace_id="test-ws-1",
         user_id=test_user_id,
-        tier=WorkspaceTier.STARTER,
+        tier="starter_arm",
     )
     await docker_manager._workspace_store.save(workspace)
 
@@ -722,7 +719,7 @@ async def test_scale_workspace_success(
         mock_scale.return_value = WorkspaceScaleResponse(
             success=True,
             message="Workspace scaled successfully",
-            new_tier=WorkspaceTier.PRO,
+            new_tier="pro_arm",
         )
 
         response = fastapi_client.post(
@@ -745,7 +742,7 @@ async def test_scale_workspace_same_tier(
     workspace = workspace_factory.create_info(
         workspace_id="test-ws-1",
         user_id=test_user_id,
-        tier=WorkspaceTier.PRO,
+        tier="pro_arm",
     )
     await docker_manager._workspace_store.save(workspace)
 

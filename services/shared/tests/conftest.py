@@ -1,7 +1,8 @@
 """Pytest configuration for shared service tests."""
 
 import os
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -172,7 +173,6 @@ def mock_gcs_client() -> MagicMock:
 @pytest.fixture
 def mock_speech_client() -> MagicMock:
     """Mock Google Cloud Speech client."""
-    from google.cloud import speech
 
     client = MagicMock()
 

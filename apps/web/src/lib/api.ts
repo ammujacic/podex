@@ -1578,6 +1578,30 @@ export async function getTunnelStatus(workspaceId: string): Promise<TunnelStatus
   return api.get<TunnelStatusResponse>(`/api/workspaces/${workspaceId}/tunnel-status`);
 }
 
+// ==================== SSH Tunnel (VS Code Remote-SSH) ====================
+
+export interface SSHTunnelResponse {
+  enabled: boolean;
+  hostname: string | null;
+  public_url: string | null;
+  status: string | null;
+  connection_string: string | null;
+  proxy_command: string | null;
+  ssh_config_snippet: string | null;
+}
+
+export async function getSSHTunnel(workspaceId: string): Promise<SSHTunnelResponse> {
+  return api.get<SSHTunnelResponse>(`/api/workspaces/${workspaceId}/ssh-tunnel`);
+}
+
+export async function enableSSHTunnel(workspaceId: string): Promise<SSHTunnelResponse> {
+  return api.post<SSHTunnelResponse>(`/api/workspaces/${workspaceId}/ssh-tunnel`, {});
+}
+
+export async function disableSSHTunnel(workspaceId: string): Promise<void> {
+  return api.delete(`/api/workspaces/${workspaceId}/ssh-tunnel`);
+}
+
 export interface WorkspaceExecRequest {
   command: string;
   working_dir?: string | null;

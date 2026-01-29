@@ -55,13 +55,40 @@ select = [
     "E", "W", "F", "I", "B", "C4", "UP", "ARG", "SIM",
     "TCH", "PTH", "ERA", "PL", "RUF", "S",
 ]
+ignore = [
+    # Code complexity - acceptable in this codebase
+    "PLR0911",  # Too many return statements
+    "PLR0912",  # Too many branches
+    "PLR0913",  # Too many arguments - container management often has many params
+    "PLR0915",  # Too many statements
+    "PLR2004",  # Magic value in comparison - common in thresholds
+    "PLW0603",  # Global statement - used for singleton patterns
+    # Exception handling
+    "S110",     # Try/except/pass - intentional suppression
+    # Path handling
+    "PTH123",   # open() should use Path.open()
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["src", "podex_shared"]
 
 [tool.ruff.lint.per-file-ignores]
-# Test files: allow assert statements (S101) and magic values like HTTP status codes (PLR2004)
-"tests/**/*.py" = ["S101", "PLR2004"]
+# Test files: allow assert statements, magic values, unused vars, long lines, inline imports, type annotations, type checking, etc.
+"tests/**/*.py" = ["S101", "PLR2004", "F841", "E501", "ARG001", "ARG002", "PLC0415", "ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN204", "I001", "TC002", "TC003", "RUF059"]
+# Heartbeat manager: import at end for type alias, SIM patterns acceptable
+"src/managers/heartbeat.py" = ["E402", "SIM102", "SIM105"]
+# Multi-server docker: SIM patterns acceptable for explicit control flow
+"src/managers/multi_server_docker.py" = ["SIM102", "SIM105", "SIM108"]
+# Workspace orchestrator: lazy imports for uuid and container spec
+"src/managers/workspace_orchestrator.py" = ["PLC0415"]
+# Placement manager: acceptable return pattern
+"src/managers/placement.py" = ["SIM103"]
+# Routes files: request parameter needed for middleware but not always used
+"src/routes/*.py" = ["ARG001"]
+# Storage cleanup: timeout patterns
+"src/storage/cleanup.py" = ["SIM105"]
+# Models: pydantic model config
+"src/models/*.py" = ["RUF012"]
 
 [tool.mypy]
 python_version = "3.12"

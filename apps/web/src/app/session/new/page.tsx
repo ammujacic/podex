@@ -43,11 +43,13 @@ import {
   getLocalPodPricing,
   getGitHubLinkURL,
   getGitHubBranches,
+  getRegionCapacity,
   type PodTemplate,
   type UserConfig,
   type HardwareSpecResponse,
   type LocalPod,
   type LocalPodPricing,
+  type RegionCapacityResponse,
 } from '@/lib/api';
 import { useUser } from '@/stores/auth';
 import { useLocalPodsStore } from '@/stores/localPods';
@@ -56,7 +58,6 @@ import { HardwareSelector } from '@/components/billing/HardwareSelector';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { cn } from '@/lib/utils';
 import { getGitHubStatus, getGitHubRepos } from '@/lib/api';
-import { MountPicker } from '@/components/workspace/MountPicker';
 import { DirectoryBrowser } from '@/components/workspace/DirectoryBrowser';
 
 // Template icon configuration with CDN URLs (Simple Icons)
@@ -918,6 +919,8 @@ export default function NewSessionPage() {
   const [useCustomBranch, setUseCustomBranch] = useState(false);
 
   // Pod configuration state
+  const [selectedRegion, setSelectedRegion] = useState<string>('eu');
+  const [regionCapacity, setRegionCapacity] = useState<RegionCapacityResponse | null>(null);
   const [selectedTier, setSelectedTier] = useState<string>('starter');
   const [selectedPythonVersion, setSelectedPythonVersion] = useState<string>('3.12');
   const [selectedNodeVersion, setSelectedNodeVersion] = useState<string>('20');
@@ -977,6 +980,26 @@ export default function NewSessionPage() {
 
     loadData();
   }, [user, router]);
+
+  // Fetch region capacity when region changes (only for cloud compute)
+  useEffect(() => {
+    if (computeTarget !== 'cloud') {
+      setRegionCapacity(null);
+      return;
+    }
+
+    async function fetchCapacity() {
+      try {
+        const capacity = await getRegionCapacity(selectedRegion);
+        setRegionCapacity(capacity);
+      } catch (err) {
+        console.error('Failed to fetch region capacity:', err);
+        setRegionCapacity(null);
+      }
+    }
+
+    fetchCapacity();
+  }, [selectedRegion, computeTarget]);
 
   const fetchGitHubRepos = useCallback(async () => {
     setGithubReposLoading(true);
@@ -1085,11 +1108,11 @@ export default function NewSessionPage() {
     setSelectedTemplate(template);
   };
 
-  // Check if selected local pod is in native mode (no template needed)
+  // Check if using a local pod (all local pods are native mode)
   const isNativeMode = () => {
     if (computeTarget === 'cloud') return false;
-    const selectedPod = localPods.find((p) => p.id === computeTarget);
-    return selectedPod?.mode === 'native';
+    // All local pods are native mode now
+    return localPods.some((p) => p.id === computeTarget);
   };
 
   // Get total steps based on mode (native mode skips template)
@@ -1188,6 +1211,8 @@ export default function NewSessionPage() {
         local_pod_id: computeTarget !== 'cloud' ? computeTarget : undefined,
         // Mount path for local pod workspace
         mount_path: computeTarget !== 'cloud' ? (selectedMountPath ?? undefined) : undefined,
+        // Region preference for cloud workspaces
+        region_preference: computeTarget === 'cloud' ? selectedRegion : undefined,
       });
 
       clearInterval(progressInterval);
@@ -1446,24 +1471,7 @@ export default function NewSessionPage() {
                           Online
                         </span>
                       </div>
-                      {/* Mode and config info */}
-                      <div className="flex items-center gap-2 mb-2">
-                        <span
-                          className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border ${
-                            pod.mode === 'native'
-                              ? 'bg-accent-primary/20 text-accent-primary border-accent-primary/30'
-                              : 'bg-info/20 text-info border-info/30'
-                          }`}
-                        >
-                          {pod.mode === 'native' ? 'Native Mode' : 'Docker Mode'}
-                        </span>
-                        {pod.mode === 'native' && pod.mounts && pod.mounts.length > 0 && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-overlay text-text-muted">
-                            {pod.mounts.length} mount{pod.mounts.length > 1 ? 's' : ''}
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-3 text-xs text-text-muted">
+                      <div className="flex items-center gap-3 text-xs text-text-muted mt-2">
                         {pod.total_cpu_cores && (
                           <span className="flex items-center gap-1">
                             <Cpu className="w-3 h-3" />
@@ -1757,46 +1765,81 @@ export default function NewSessionPage() {
                 </p>
               </div>
 
-              {/* Mount/Directory Selection for Local Pods */}
+              {/* Directory Selection for Local Pods */}
               {computeTarget !== 'cloud' &&
                 (() => {
                   const selectedPod = localPods.find((p) => p.id === computeTarget);
                   if (!selectedPod) return null;
 
-                  // If pod has pre-configured mounts, show MountPicker
-                  if (selectedPod.mounts && selectedPod.mounts.length > 0) {
-                    return (
-                      <div className="mb-8">
-                        <h2 className="text-sm font-medium text-text-muted uppercase tracking-wider mb-4">
-                          Workspace Mount
-                        </h2>
-                        <MountPicker
-                          pod={selectedPod}
-                          selectedPath={selectedMountPath}
-                          onSelect={setSelectedMountPath}
-                        />
-                      </div>
-                    );
-                  }
-
-                  // For native mode without mounts, show directory browser
-                  if (selectedPod.mode === 'native') {
-                    return (
-                      <div className="mb-8">
-                        <h2 className="text-sm font-medium text-text-muted uppercase tracking-wider mb-4">
-                          Workspace Directory
-                        </h2>
-                        <DirectoryBrowser
-                          podId={selectedPod.id}
-                          selectedPath={selectedMountPath}
-                          onSelect={setSelectedMountPath}
-                        />
-                      </div>
-                    );
-                  }
-
-                  return null;
+                  // All local pods are native mode - show directory browser
+                  return (
+                    <div className="mb-8">
+                      <h2 className="text-sm font-medium text-text-muted uppercase tracking-wider mb-4">
+                        Workspace Directory
+                      </h2>
+                      <DirectoryBrowser
+                        podId={selectedPod.id}
+                        selectedPath={selectedMountPath}
+                        onSelect={setSelectedMountPath}
+                      />
+                    </div>
+                  );
                 })()}
+
+              {/* Region Selection - Only for cloud pods */}
+              {computeTarget === 'cloud' && (
+                <div className="mb-8">
+                  <h2 className="text-sm font-medium text-text-muted uppercase tracking-wider mb-4">
+                    Region
+                  </h2>
+                  <div className="grid grid-cols-2 gap-4">
+                    <button
+                      onClick={() => setSelectedRegion('eu')}
+                      className={cn(
+                        'relative p-4 rounded-xl border-2 text-left transition-all',
+                        selectedRegion === 'eu'
+                          ? 'border-accent-primary bg-accent-primary/5'
+                          : 'border-border-default hover:border-text-muted bg-surface'
+                      )}
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="text-2xl">🇪🇺</span>
+                        <div>
+                          <p className="font-medium text-text-primary">Europe</p>
+                          <p className="text-sm text-text-muted">Germany (Falkenstein)</p>
+                        </div>
+                      </div>
+                      {selectedRegion === 'eu' && (
+                        <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-accent-primary flex items-center justify-center">
+                          <Check className="w-3 h-3 text-white" />
+                        </div>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setSelectedRegion('us')}
+                      className={cn(
+                        'relative p-4 rounded-xl border-2 text-left transition-all',
+                        selectedRegion === 'us'
+                          ? 'border-accent-primary bg-accent-primary/5'
+                          : 'border-border-default hover:border-text-muted bg-surface'
+                      )}
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="text-2xl">🇺🇸</span>
+                        <div>
+                          <p className="font-medium text-text-primary">United States</p>
+                          <p className="text-sm text-text-muted">Virginia (Ashburn)</p>
+                        </div>
+                      </div>
+                      {selectedRegion === 'us' && (
+                        <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-accent-primary flex items-center justify-center">
+                          <Check className="w-3 h-3 text-white" />
+                        </div>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Hardware Tier Selection - Only for cloud pods */}
               {!isNativeMode() && (
@@ -1818,12 +1861,18 @@ export default function NewSessionPage() {
                         gpuMemoryGb: spec.gpu_memory_gb ?? undefined,
                         storageGbDefault: spec.storage_gb_default,
                         storageGbMax: spec.storage_gb_max,
+                        bandwidthMbps: spec.bandwidth_mbps ?? undefined,
                         hourlyRate: spec.hourly_rate,
                         isAvailable: spec.is_available,
                         requiresSubscription: spec.requires_subscription ?? undefined,
                       }))}
                       selectedTier={selectedTier}
                       onSelect={setSelectedTier}
+                      regionCapacity={
+                        computeTarget === 'cloud' && regionCapacity
+                          ? regionCapacity.tiers
+                          : undefined
+                      }
                     />
                   ) : (
                     <div className="text-center py-8 border border-border-default rounded-xl bg-surface">

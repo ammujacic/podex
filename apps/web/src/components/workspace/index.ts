@@ -115,3 +115,6 @@ export type { FileChange, ChangeType } from './FileTreeChangeIndicator';
 export { SessionCostCounter, MiniCostCounter } from './SessionCostCounter';
 export { AgentCostBreakdown } from './AgentCostBreakdown';
 export { BudgetAlertDialog, AlertBell, AlertList } from './BudgetAlertDialog';
+
+// Resource monitoring components
+export { ResourceUsageWidget } from './ResourceUsageWidget';

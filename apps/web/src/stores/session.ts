@@ -1444,6 +1444,11 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
       const conversation = session.conversationSessions[conversationIndex];
       if (!conversation) return state; // Guard for TypeScript
 
+      // Deduplication: check if message already exists by ID
+      if (conversation.messages.some((m) => m.id === messageId)) {
+        return state;
+      }
+
       const newMessage: AgentMessage = {
         id: messageId,
         role: 'assistant',
@@ -1518,12 +1523,12 @@ const persistedSessionStore = persist(sessionStoreCreator, {
           agents: session.agents,
           // Limit messages per conversation for persistence (for offline/quick load)
           // But backend fetch always replaces this with fresh data
-          conversationSessions: session.conversationSessions.map((conv) => ({
+          conversationSessions: (session.conversationSessions ?? []).map((conv) => ({
             ...conv,
             messages: conv.messages.slice(-MAX_MESSAGES_PER_CONVERSATION),
           })),
           // Limit file previews (don't persist content, just metadata)
-          filePreviews: session.filePreviews.slice(0, 20).map((fp) => ({
+          filePreviews: (session.filePreviews ?? []).slice(0, 20).map((fp) => ({
             ...fp,
             content: '', // Don't persist file content
           })),

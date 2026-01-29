@@ -1,7 +1,7 @@
 """Workspace management routes."""
 
 from collections.abc import AsyncGenerator
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -325,6 +325,153 @@ async def check_workspace_health(
     return {
         "healthy": is_healthy,
         "status": workspace.status.value if workspace else "unknown",
+    }
+
+
+@router.get("/{workspace_id}/scale-options")
+async def get_scale_options(
+    workspace_id: str,
+    user_id: AuthenticatedUser,
+    _auth: InternalAuth,
+    compute: Annotated[ComputeManager, Depends(get_compute_manager)],
+) -> dict[str, Any]:
+    """Get available scaling options for a workspace.
+
+    Returns which tiers the workspace can scale to based on current
+    server capacity. Only same-server scaling is supported.
+    """
+    # Lazy imports to avoid circular dependencies
+    from src.managers.hardware_specs_provider import get_hardware_specs_provider  # noqa: PLC0415
+    from src.managers.multi_server_compute_manager import MultiServerComputeManager  # noqa: PLC0415
+    from src.managers.workspace_orchestrator import get_tier_requirements  # noqa: PLC0415
+
+    logger = structlog.get_logger()
+    workspace = await verify_workspace_ownership(workspace_id, user_id, compute)
+
+    current_tier = workspace.tier
+    server_id = workspace.server_id
+
+    if not server_id:
+        return {
+            "current_tier": current_tier,
+            "server_id": None,
+            "available_tiers": [],
+            "error": "Workspace has no server assignment",
+        }
+
+    # Get current requirements
+    current_requirements = await get_tier_requirements(current_tier)
+
+    # Get server capacity
+    if isinstance(compute, MultiServerComputeManager):
+        capacities = await compute._orchestrator.get_server_capacities()
+        server_capacity = next((c for c in capacities if c.server_id == server_id), None)
+    else:
+        server_capacity = None
+
+    if not server_capacity:
+        return {
+            "current_tier": current_tier,
+            "server_id": server_id,
+            "available_tiers": [],
+            "error": "Server not found or unhealthy",
+        }
+
+    # Get all hardware specs
+    provider = get_hardware_specs_provider()
+    all_specs = await provider.get_all_specs()
+
+    # Get current spec for architecture comparison
+    current_spec = all_specs.get(current_tier)
+    current_architecture = current_spec.architecture if current_spec else "x86_64"  # noqa: F841
+
+    available_tiers = []
+    for tier_name, spec in all_specs.items():
+        if not spec.is_available:
+            continue
+
+        # Skip current tier
+        if tier_name == current_tier:
+            continue
+
+        # Filter by architecture - must match server architecture
+        if spec.architecture != server_capacity.architecture:
+            continue
+
+        # Filter by GPU - can only scale to GPU tier if server has GPU
+        if spec.is_gpu and not server_capacity.has_gpu:
+            continue
+
+        # Filter by GPU type if both require GPU
+        if (
+            spec.is_gpu
+            and spec.gpu_type
+            and server_capacity.gpu_type
+            and spec.gpu_type != server_capacity.gpu_type
+        ):
+            continue
+
+        # Get requirements for this tier
+        tier_requirements = await get_tier_requirements(tier_name)
+
+        # Calculate delta needed
+        delta_cpu = tier_requirements.cpu - current_requirements.cpu
+        delta_memory = tier_requirements.memory_mb - current_requirements.memory_mb
+        delta_disk = tier_requirements.disk_gb - current_requirements.disk_gb
+
+        # Check if server can fit the delta
+        can_scale = (
+            server_capacity.available_cpu >= delta_cpu
+            and server_capacity.available_memory_mb >= delta_memory
+            and server_capacity.available_disk_gb >= delta_disk
+        )
+
+        # Determine reason if can't scale
+        reason = None
+        if not can_scale:
+            avail = server_capacity
+            if avail.available_cpu < delta_cpu:
+                reason = f"Insufficient CPU (need {delta_cpu:.1f}, have {avail.available_cpu:.1f})"
+            elif avail.available_memory_mb < delta_memory:
+                reason = (
+                    f"Insufficient memory (need {delta_memory}MB, "
+                    f"have {avail.available_memory_mb}MB)"
+                )
+            elif avail.available_disk_gb < delta_disk:
+                reason = (
+                    f"Insufficient disk (need {delta_disk}GB, have {avail.available_disk_gb}GB)"
+                )
+
+        available_tiers.append(
+            {
+                "tier": tier_name,
+                "display_name": spec.display_name,
+                "can_scale": can_scale,
+                "reason": reason,
+                "cpu": spec.vcpu,
+                "memory_mb": spec.memory_mb,
+                "storage_gb": spec.storage_gb,
+                "bandwidth_mbps": spec.bandwidth_mbps,
+                "hourly_rate_cents": spec.hourly_rate_cents,
+                "is_gpu": spec.is_gpu,
+                "gpu_type": spec.gpu_type,
+            }
+        )
+
+    # Sort by sort_order (approximated by hourly_rate)
+    available_tiers.sort(key=lambda x: cast("int", x["hourly_rate_cents"]))
+
+    logger.info(
+        "Calculated scale options",
+        workspace_id=workspace_id[:12],
+        current_tier=current_tier,
+        available_count=sum(1 for t in available_tiers if t["can_scale"]),
+    )
+
+    return {
+        "current_tier": current_tier,
+        "server_id": server_id,
+        "available_tiers": available_tiers,
     }
 
 

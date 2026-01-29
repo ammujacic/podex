@@ -1,35 +1,20 @@
-"""Configuration for Podex Local Pod agent."""
+"""Configuration for Podex Local Pod agent.
 
-from pathlib import Path
-from typing import Any, Literal
+Simplified configuration - the local pod runs in native unrestricted mode,
+executing commands at whatever working_dir the backend provides.
+"""
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class MountConfig(BaseModel):
-    """Configuration for an allowed filesystem mount."""
-
-    path: str = Field(description="Absolute path to the mount")
-    mode: Literal["rw", "ro"] = Field(default="rw", description="Read-write or read-only")
-    label: str | None = Field(default=None, description="Friendly name for the mount")
-
-
-class NativeConfig(BaseModel):
-    """Configuration for native execution mode."""
-
-    workspace_dir: str = Field(
-        default=str(Path.home() / "podex-workspaces"),
-        description="Directory for workspace files in native mode",
-    )
-    security: Literal["allowlist", "unrestricted"] = Field(
-        default="allowlist",
-        description="Security mode: 'allowlist' restricts to configured mounts, 'unrestricted' allows full access",
-    )
-
-
 class LocalPodConfig(BaseSettings):
-    """Configuration for the local pod agent."""
+    """Configuration for the local pod agent.
+
+    The local pod is a stateless executor - it receives working_dir with
+    each RPC call and executes commands at that path. No mode selection,
+    no security restrictions, no mount configuration needed.
+    """
 
     model_config = SettingsConfigDict(
         env_prefix="PODEX_",
@@ -56,38 +41,6 @@ class LocalPodConfig(BaseSettings):
         description="Display name for this pod (optional, uses hostname if not set)",
     )
 
-    # Execution mode: "docker" or "native"
-    mode: Literal["docker", "native"] = Field(
-        default="docker",
-        description="Execution mode: 'docker' runs in containers, 'native' runs directly on host",
-    )
-
-    # Native mode configuration
-    native: NativeConfig = Field(
-        default_factory=NativeConfig,
-        description="Native mode settings",
-    )
-
-    # Allowed mounts (used for docker volumes and native path restrictions)
-    mounts: list[MountConfig] = Field(
-        default_factory=list,
-        description="List of allowed filesystem mounts",
-    )
-
-    # Docker configuration
-    docker_host: str = Field(
-        default="unix:///var/run/docker.sock",
-        description="Docker daemon socket",
-    )
-    docker_network: str = Field(
-        default="podex-local",
-        description="Docker network for workspaces",
-    )
-    workspace_image: str = Field(
-        default="podex/workspace:latest",
-        description="Docker image for workspaces",
-    )
-
     # Heartbeat interval (seconds)
     heartbeat_interval: int = Field(
         default=30,
@@ -112,56 +65,16 @@ class LocalPodConfig(BaseSettings):
         description="Log level (DEBUG, INFO, WARNING, ERROR)",
     )
 
-    def get_mounts_as_dicts(self) -> list[dict[str, Any]]:
-        """Get mounts as list of dictionaries for serialization."""
-        return [m.model_dump() for m in self.mounts]
 
-    def is_native_mode(self) -> bool:
-        """Check if running in native mode."""
-        return self.mode == "native"
+def load_config() -> LocalPodConfig:
+    """Load configuration from environment variables.
 
-    def is_docker_mode(self) -> bool:
-        """Check if running in docker mode."""
-        return self.mode == "docker"
-
-
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "podex" / "local-pod.toml"
-
-
-def load_config(config_file: str | Path | None = None) -> LocalPodConfig:
-    """Load configuration from config file, with environment variable overrides.
-
-    Priority (highest to lowest):
+    Configuration is loaded from:
     1. Environment variables (PODEX_*)
-    2. Provided config file
-    3. Default config file (~/.config/podex/local-pod.toml)
-    4. Default values
-
-    Args:
-        config_file: Optional path to a config file
+    2. .env file (if present)
+    3. Default values
 
     Returns:
         Loaded configuration
     """
-    import tomllib
-
-    # Determine config file path
-    config_path = Path(config_file) if config_file else DEFAULT_CONFIG_PATH
-
-    # Load from file if it exists
-    file_config: dict[str, Any] = {}
-    if config_path.exists():
-        with open(config_path, "rb") as f:
-            data = tomllib.load(f)
-            file_config = data.get("podex", {})
-
-            # Handle nested native config
-            if "native" in data:
-                file_config["native"] = NativeConfig(**data["native"])
-
-            # Handle mounts list
-            if "mounts" in data:
-                file_config["mounts"] = [MountConfig(**m) for m in data["mounts"]]
-
-    # Create config - environment variables will override file values
-    return LocalPodConfig(**file_config)
+    return LocalPodConfig()

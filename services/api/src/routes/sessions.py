@@ -207,6 +207,7 @@ class SessionCreate(BaseModel):
     tier: str | None = None  # Hardware tier (starter, pro, etc.)
     local_pod_id: str | None = None  # If set, use local pod instead of cloud compute
     mount_path: str | None = None  # Optional mount path for local pod workspace
+    region_preference: str | None = None  # Preferred region (eu, us) for workspace placement
 
 
 class SessionResponse(BaseModel):
@@ -399,7 +400,7 @@ async def build_workspace_config(
     Returns:
         Workspace configuration dict for the compute service
     """
-    from src.database.models import UserConfig
+    from src.database.models import User, UserConfig
 
     def is_github_repo_url(repo_url: str) -> bool:
         if repo_url.startswith("git@github.com:"):
@@ -433,10 +434,25 @@ async def build_workspace_config(
                 config["git_name"] = user_config.git_name
             if user_config.git_email:
                 config["git_email"] = user_config.git_email
-            # Dotfiles sync configuration
-            config["sync_dotfiles"] = user_config.sync_dotfiles
-            if user_config.dotfiles_paths:
-                config["dotfiles_paths"] = user_config.dotfiles_paths
+
+        # Fetch user's SSH public keys for VS Code Remote-SSH access
+        user_result = await db.execute(select(User).where(User.id == user_id))
+        user = user_result.scalar_one_or_none()
+        if user and user.ssh_public_keys:
+            # Combine all public keys into authorized_keys format (one per line)
+            authorized_keys = "\n".join(
+                key.get("public_key", "") for key in user.ssh_public_keys if key.get("public_key")
+            )
+            if authorized_keys:
+                if "environment" not in config:
+                    config["environment"] = {}
+                config["environment"]["SSH_AUTHORIZED_KEYS"] = authorized_keys
+                config["environment"]["ENABLE_SSHD"] = "true"
+                logger.debug(
+                    "Injecting SSH keys into workspace",
+                    user_id=user_id,
+                    key_count=len(user.ssh_public_keys),
+                )
 
         # Fetch GitHub integration to inject token for git commands
         result = await db.execute(
@@ -557,6 +573,7 @@ async def create_session(
     workspace = WorkspaceModel(
         status="pending",
         local_pod_id=data.local_pod_id if data.local_pod_id else None,
+        region_preference=data.region_preference if not data.local_pod_id else None,
     )
     db.add(workspace)
     await db.flush()
@@ -598,6 +615,10 @@ async def create_session(
     # Add mount_path to config if provided (for local pods)
     if data.mount_path and data.local_pod_id:
         workspace_config["mount_path"] = data.mount_path
+
+    # Add region_preference to config for cloud workspaces (strict placement)
+    if data.region_preference and not data.local_pod_id:
+        workspace_config["region_preference"] = data.region_preference
 
     # Provision workspace - either on local pod or cloud compute
     if data.local_pod_id:
@@ -940,6 +961,48 @@ async def unarchive_session(
     await invalidate_user_sessions(user_id)
 
     return build_session_response(session)
+
+
+@router.get("/{session_id}/scale-options")
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def get_session_scale_options(
+    session_id: str,
+    req: Request,
+    response: Response,
+    db: DbSession,
+) -> dict[str, Any]:
+    """Get available scaling options for a session's workspace.
+
+    Returns which tiers the workspace can scale to based on current
+    server capacity, architecture, and GPU requirements.
+    """
+    query = select(SessionModel).where(SessionModel.id == session_id)
+    result = await db.execute(query)
+    session = result.scalar_one_or_none()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    user_id = get_current_user_id(req)
+    if session.owner_id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not session.workspace_id:
+        raise HTTPException(status_code=400, detail="Session does not have a workspace")
+
+    try:
+        return await compute_client.get_scale_options(
+            workspace_id=session.workspace_id,
+            user_id=user_id,
+        )
+    except ComputeClientError as e:
+        logger.exception(
+            "Failed to get scale options",
+            session_id=session_id,
+            workspace_id=session.workspace_id,
+            error=str(e),
+        )
+        raise HTTPException(status_code=500, detail=f"Failed to get scale options: {e}") from e
 
 
 @router.post("/{session_id}/scale-workspace", response_model=WorkspaceScaleResponse)

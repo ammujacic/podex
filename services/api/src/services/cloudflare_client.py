@@ -79,16 +79,32 @@ async def update_tunnel_config(
     tunnel_id: str,
     hostname: str,
     service_url: str,
+    service_type: str = "http",
 ) -> None:
-    """Set tunnel ingress config: hostname -> service URL."""
+    """Set tunnel ingress config: hostname -> service URL.
+
+    Args:
+        tunnel_id: The Cloudflare tunnel ID.
+        hostname: Public hostname for the tunnel.
+        service_url: Internal service URL (e.g., "localhost:22" or "localhost:3000").
+        service_type: Service type - "http" for HTTP proxy, "ssh" for TCP passthrough.
+    """
     aid = settings.CLOUDFLARE_ACCOUNT_ID
     if not aid or not settings.CLOUDFLARE_API_TOKEN:
         msg = "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must be set"
         raise RuntimeError(msg)
 
+    # For SSH, use ssh:// protocol; for HTTP, use http://
+    if service_type == "ssh":
+        full_service_url = f"ssh://{service_url}"
+    elif service_url.startswith(("http://", "https://")):
+        full_service_url = service_url
+    else:
+        full_service_url = f"http://{service_url}"
+
     config = {
         "ingress": [
-            {"hostname": hostname, "service": service_url},
+            {"hostname": hostname, "service": full_service_url},
             {"service": "http_status:404"},
         ],
     }
@@ -104,7 +120,8 @@ async def update_tunnel_config(
             "Updated tunnel config",
             tunnel_id=tunnel_id,
             hostname=hostname,
-            service=service_url,
+            service=full_service_url,
+            service_type=service_type,
         )
 
 

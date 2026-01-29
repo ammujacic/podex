@@ -339,7 +339,7 @@ describe('useModelLoading', () => {
       expect(info.tier).toBe('fast');
     });
 
-    it('should generate short name by removing prefixes', async () => {
+    it('should generate short name from display name', async () => {
       const { result } = renderHook(() => useModelLoading());
 
       await waitFor(() => {
@@ -347,7 +347,8 @@ describe('useModelLoading', () => {
       });
 
       const info = result.current.backendModelToInfo(mockPremiumModel);
-      expect(info.shortName).toBe('Opus 4.5');
+      // shortName preserves vendor prefix, only strips ' (User API)' suffix
+      expect(info.shortName).toBe('Claude Opus 4.5');
     });
 
     it('should set thinking status correctly', async () => {
@@ -453,7 +454,7 @@ describe('useModelLoading', () => {
       expect(info.tier).toBe('fast');
     });
 
-    it('should remove (Direct) suffix from short name', async () => {
+    it('should generate short name from display name', async () => {
       const { result } = renderHook(() => useModelLoading());
 
       await waitFor(() => {
@@ -461,7 +462,8 @@ describe('useModelLoading', () => {
       });
 
       const info = result.current.userModelToInfo(mockUserModel);
-      expect(info.shortName).not.toContain('(Direct)');
+      // shortName preserves the display name, only strips ' (User API)' suffix
+      expect(info.shortName).toBe('Claude Opus (Direct)');
     });
 
     it('should handle models without vision capability', async () => {
@@ -563,9 +565,10 @@ describe('useModelLoading', () => {
         expect(result.current.isLoading).toBe(false);
       });
 
+      // Returns agentDisplayName directly without modification
       const name = result.current.getModelDisplayName('any-model', 'Claude Custom Agent');
 
-      expect(name).toBe('Custom Agent');
+      expect(name).toBe('Claude Custom Agent');
     });
 
     it('should return formatted name for user model', async () => {
@@ -577,10 +580,10 @@ describe('useModelLoading', () => {
         expect(result.current.isLoading).toBe(false);
       });
 
+      // Returns display_name with only ' (User API)' suffix stripped
       const name = result.current.getModelDisplayName('user-claude-opus');
 
-      expect(name).not.toContain('Claude ');
-      expect(name).not.toContain('(Direct)');
+      expect(name).toBe('Claude Opus (Direct)');
     });
 
     it('should return formatted name for backend model', async () => {
@@ -592,9 +595,10 @@ describe('useModelLoading', () => {
         expect(result.current.isLoading).toBe(false);
       });
 
+      // Returns backend model's display_name directly
       const name = result.current.getModelDisplayName('claude-opus-4-5');
 
-      expect(name).toBe('Opus 4.5');
+      expect(name).toBe('Claude Opus 4.5');
     });
 
     it('should return modelId for unknown model', async () => {
@@ -609,7 +613,7 @@ describe('useModelLoading', () => {
       expect(name).toBe('unknown-model-id');
     });
 
-    it('should remove Llama prefix', async () => {
+    it('should return display name with vendor prefix for non-Anthropic models', async () => {
       const llamaModel: PublicModel = {
         ...mockLowModel,
         model_id: 'llama-3-8b',
@@ -624,9 +628,10 @@ describe('useModelLoading', () => {
         expect(result.current.isLoading).toBe(false);
       });
 
+      // Returns display_name directly, preserving vendor prefix
       const name = result.current.getModelDisplayName('llama-3-8b');
 
-      expect(name).toBe('3 8B');
+      expect(name).toBe('Llama 3 8B');
     });
   });
 

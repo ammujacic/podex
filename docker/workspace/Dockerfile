@@ -41,6 +41,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     vim \
     nano \
     less \
+    # SSH server for VS Code Remote-SSH access
+    openssh-server \
     # System utilities
     htop \
     procps \
@@ -73,6 +75,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     locales \
     tzdata \
     && rm -rf /var/lib/apt/lists/*
+
+# Configure SSH server for VS Code Remote-SSH access
+# - Password authentication disabled (SSH keys only)
+# - Root login disabled
+# - Public key authentication enabled
+RUN mkdir -p /var/run/sshd \
+    && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config \
+    && sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config \
+    && sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config \
+    && echo "AuthorizedKeysFile .ssh/authorized_keys" >> /etc/ssh/sshd_config
 
 # Generate locale
 RUN locale-gen en_US.UTF-8

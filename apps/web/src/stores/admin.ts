@@ -186,6 +186,7 @@ export interface AdminHardwareSpec {
   gpu_count: number;
   storage_gb_default: number;
   storage_gb_max: number;
+  bandwidth_mbps: number | null;
   hourly_rate_cents: number;
   is_available: boolean;
   requires_subscription: string | null;
@@ -249,6 +250,80 @@ export interface AdminLLMProvider {
   updated_at: string;
 }
 
+export interface AdminWorkspaceServer {
+  id: string;
+  name: string;
+  hostname: string;
+  ip_address: string;
+  docker_port: number;
+  status: 'active' | 'draining' | 'maintenance' | 'offline' | 'error';
+  total_cpu: number;
+  total_memory_mb: number;
+  total_disk_gb: number;
+  total_bandwidth_mbps: number;
+  used_cpu: number;
+  used_memory_mb: number;
+  used_disk_gb: number;
+  used_bandwidth_mbps: number;
+  available_cpu: number;
+  available_memory_mb: number;
+  available_disk_gb: number;
+  available_bandwidth_mbps: number;
+  active_workspaces: number;
+  max_workspaces: number;
+  architecture: string;
+  region: string | null;
+  labels: Record<string, string>;
+  has_gpu: boolean;
+  gpu_type: string | null;
+  gpu_count: number;
+  created_at: string;
+  last_heartbeat: string | null;
+  is_healthy: boolean;
+  bandwidth_utilization: number;
+}
+
+export interface ClusterStatus {
+  total_servers: number;
+  active_servers: number;
+  healthy_servers: number;
+  total_cpu: number;
+  used_cpu: number;
+  cpu_utilization: number;
+  total_memory_mb: number;
+  used_memory_mb: number;
+  memory_utilization: number;
+  total_workspaces: number;
+  servers: Array<{
+    server_id: string;
+    status: string;
+    is_healthy: boolean;
+    last_heartbeat: string | null;
+    cpu_utilization: number;
+    memory_utilization: number;
+    disk_utilization: number;
+    bandwidth_utilization: number;
+    active_workspaces: number;
+  }>;
+}
+
+export interface CreateServerRequest {
+  name: string;
+  hostname: string;
+  ip_address: string;
+  docker_port?: number;
+  total_cpu: number;
+  total_memory_mb: number;
+  total_disk_gb: number;
+  total_bandwidth_mbps?: number;
+  architecture?: string;
+  region?: string;
+  labels?: Record<string, string>;
+  has_gpu?: boolean;
+  gpu_type?: string;
+  gpu_count?: number;
+}
+
 // ============================================================================
 // State
 // ============================================================================
@@ -294,6 +369,12 @@ interface AdminState {
   // MCP Servers (Default Catalog)
   mcpServers: AdminDefaultMCPServer[];
   mcpServersLoading: boolean;
+
+  // Workspace Servers (Compute Infrastructure)
+  workspaceServers: AdminWorkspaceServer[];
+  workspaceServersLoading: boolean;
+  clusterStatus: ClusterStatus | null;
+  clusterStatusLoading: boolean;
 
   // Error
   error: string | null;
@@ -362,6 +443,14 @@ interface AdminState {
     amountCents: number,
     reason: string
   ) => Promise<AwardCreditsResponse>;
+  // Workspace Servers (Compute Infrastructure)
+  fetchWorkspaceServers: (status?: string, region?: string) => Promise<void>;
+  fetchClusterStatus: () => Promise<void>;
+  createWorkspaceServer: (data: CreateServerRequest) => Promise<AdminWorkspaceServer>;
+  updateWorkspaceServer: (serverId: string, data: Partial<AdminWorkspaceServer>) => Promise<void>;
+  deleteWorkspaceServer: (serverId: string, force?: boolean) => Promise<void>;
+  drainWorkspaceServer: (serverId: string) => Promise<void>;
+  activateWorkspaceServer: (serverId: string) => Promise<void>;
   clearError: () => void;
 }
 
@@ -396,6 +485,10 @@ export const useAdminStore = create<AdminState>()(
       providersLoading: false,
       mcpServers: [],
       mcpServersLoading: false,
+      workspaceServers: [],
+      workspaceServersLoading: false,
+      clusterStatus: null,
+      clusterStatusLoading: false,
       error: null,
 
       // Actions
@@ -746,6 +839,90 @@ export const useAdminStore = create<AdminState>()(
         }
       },
 
+      // Workspace Servers (Compute Infrastructure)
+      fetchWorkspaceServers: async (status?: string, region?: string) => {
+        set({ workspaceServersLoading: true, error: null });
+        try {
+          const params = new URLSearchParams();
+          if (status) params.set('status', status);
+          if (region) params.set('region', region);
+          const queryString = params.toString();
+          const path = queryString ? `/api/servers?${queryString}` : '/api/servers';
+          const servers = await api.get<AdminWorkspaceServer[]>(path);
+          set({ workspaceServers: servers, workspaceServersLoading: false });
+        } catch (err) {
+          set({ error: (err as Error).message, workspaceServersLoading: false });
+        }
+      },
+
+      fetchClusterStatus: async () => {
+        set({ clusterStatusLoading: true, error: null });
+        try {
+          const status = await api.get<ClusterStatus>('/api/servers/cluster/status');
+          set({ clusterStatus: status, clusterStatusLoading: false });
+        } catch (err) {
+          set({ error: (err as Error).message, clusterStatusLoading: false });
+        }
+      },
+
+      createWorkspaceServer: async (data: CreateServerRequest) => {
+        set({ error: null });
+        try {
+          const result = await api.post<AdminWorkspaceServer>('/api/servers', data);
+          await get().fetchWorkspaceServers();
+          await get().fetchClusterStatus();
+          return result;
+        } catch (err) {
+          set({ error: (err as Error).message });
+          throw err;
+        }
+      },
+
+      updateWorkspaceServer: async (serverId: string, data: Partial<AdminWorkspaceServer>) => {
+        set({ error: null });
+        try {
+          await api.patch(`/api/servers/${serverId}`, data);
+          await get().fetchWorkspaceServers();
+        } catch (err) {
+          set({ error: (err as Error).message });
+          throw err;
+        }
+      },
+
+      deleteWorkspaceServer: async (serverId: string, force = false) => {
+        set({ error: null });
+        try {
+          await api.delete(`/api/servers/${serverId}?force=${force}`);
+          await get().fetchWorkspaceServers();
+          await get().fetchClusterStatus();
+        } catch (err) {
+          set({ error: (err as Error).message });
+          throw err;
+        }
+      },
+
+      drainWorkspaceServer: async (serverId: string) => {
+        set({ error: null });
+        try {
+          await api.post(`/api/servers/${serverId}/drain`, {});
+          await get().fetchWorkspaceServers();
+        } catch (err) {
+          set({ error: (err as Error).message });
+          throw err;
+        }
+      },
+
+      activateWorkspaceServer: async (serverId: string) => {
+        set({ error: null });
+        try {
+          await api.post(`/api/servers/${serverId}/activate`, {});
+          await get().fetchWorkspaceServers();
+        } catch (err) {
+          set({ error: (err as Error).message });
+          throw err;
+        }
+      },
+
       // User sponsorship and credits actions
       sponsorUser: async (userId: string, planId: string, reason?: string) => {
         set({ error: null });
@@ -814,4 +991,6 @@ export const useAdminTemplates = () => useAdminStore((state) => state.templates)
 export const useAdminSettings = () => useAdminStore((state) => state.settings);
 export const useAdminProviders = () => useAdminStore((state) => state.providers);
 export const useAdminMCPServers = () => useAdminStore((state) => state.mcpServers);
+export const useAdminWorkspaceServers = () => useAdminStore((state) => state.workspaceServers);
+export const useAdminClusterStatus = () => useAdminStore((state) => state.clusterStatus);
 export const useAdminError = () => useAdminStore((state) => state.error);
