@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import ssl
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -34,6 +35,8 @@ class ServerConnection:
     ip_address: str
     docker_port: int
     architecture: str
+    tls_enabled: bool = False  # Per-server TLS setting
+    cert_path: str | None = None  # Path to TLS certs for this server
     client: DockerClient | None = None
     last_error: str | None = None
     is_healthy: bool = False
@@ -47,13 +50,19 @@ class ContainerSpec:
     image: str
     cpu_limit: float  # Number of CPUs (can be fractional)
     memory_limit_mb: int
-    disk_limit_gb: int
+    disk_limit_gb: int = 10
+    bandwidth_limit_mbps: int = 100  # Network bandwidth limit in Mbps
     environment: dict[str, str] = field(default_factory=dict)
     volumes: dict[str, dict[str, str]] = field(default_factory=dict)
     ports: dict[str, int | None] = field(default_factory=dict)
     labels: dict[str, str] = field(default_factory=dict)
     network: str | None = None
-    runtime: str = "runsc"  # gVisor runtime for isolation
+    network_mode: str | None = None  # e.g., "bridge", "host", "none"
+    runtime: str | None = None  # Container runtime (e.g., "runsc" for gVisor, "nvidia" for GPU)
+    # GPU configuration
+    gpu_enabled: bool = False
+    gpu_count: int = 0  # 0 = all available GPUs when gpu_enabled, specific count otherwise
+    gpu_type: str | None = None  # e.g., "NVIDIA RTX 4000 SFF Ada"
 
 
 class MultiServerDockerManager:
@@ -68,22 +77,31 @@ class MultiServerDockerManager:
         self._connections: dict[str, ServerConnection] = {}
         self._lock = asyncio.Lock()
 
+    @property
+    def servers(self) -> dict[str, ServerConnection]:
+        """Get all server connections."""
+        return self._connections
+
     async def add_server(
         self,
         server_id: str,
         hostname: str,
         ip_address: str,
-        docker_port: int = 2376,
-        architecture: str = "arm64",
+        docker_port: int = 2375,
+        architecture: str = "amd64",
+        tls_enabled: bool = False,
+        cert_path: str | None = None,
     ) -> bool:
         """Add a server to the pool and establish connection.
 
         Args:
             server_id: Unique server identifier
             hostname: Server hostname
-            ip_address: Server IP address
-            docker_port: Docker API port (default 2376 for TLS)
+            ip_address: Server IP address (or Docker hostname for local dev)
+            docker_port: Docker API port (2375 for HTTP, 2376 for TLS)
             architecture: Server architecture (arm64, amd64)
+            tls_enabled: Whether to use TLS for this server
+            cert_path: Path to TLS certificates (required if tls_enabled)
 
         Returns:
             True if connection successful, False otherwise
@@ -95,10 +113,17 @@ class MultiServerDockerManager:
                 ip_address=ip_address,
                 docker_port=docker_port,
                 architecture=architecture,
+                tls_enabled=tls_enabled,
+                cert_path=cert_path,
             )
 
             try:
-                client = await self._create_docker_client(ip_address, docker_port)
+                client = await self._create_docker_client(
+                    ip_address=ip_address,
+                    docker_port=docker_port,
+                    tls_enabled=tls_enabled,
+                    cert_path=cert_path,
+                )
                 conn.client = client
                 conn.is_healthy = True
                 self._connections[server_id] = conn
@@ -108,6 +133,7 @@ class MultiServerDockerManager:
                     server_id=server_id,
                     hostname=hostname,
                     ip_address=ip_address,
+                    tls_enabled=tls_enabled,
                 )
                 return True
 
@@ -141,43 +167,78 @@ class MultiServerDockerManager:
                 del self._connections[server_id]
                 logger.info("Removed server from pool", server_id=server_id)
 
+    async def ping_server(self, server_id: str) -> bool:
+        """Ping a server to check if it's alive.
+
+        Args:
+            server_id: Server identifier
+
+        Returns:
+            True if server responds, False otherwise
+        """
+        client = self.get_client(server_id)
+        if not client:
+            return False
+
+        loop = asyncio.get_event_loop()
+
+        def _ping() -> bool:
+            try:
+                client.ping()
+                return True
+            except Exception:
+                return False
+
+        try:
+            return await loop.run_in_executor(None, _ping)
+        except Exception:
+            return False
+
     async def _create_docker_client(
         self,
         ip_address: str,
         docker_port: int,
+        tls_enabled: bool = False,
+        cert_path: str | None = None,
     ) -> DockerClient:
         """Create a Docker client connection.
 
         Args:
-            ip_address: Server IP address
+            ip_address: Server IP address or hostname
             docker_port: Docker API port
+            tls_enabled: Whether to use TLS for this connection
+            cert_path: Path to TLS certificates (required if tls_enabled)
 
         Returns:
             Docker client instance
 
         Raises:
             DockerException: If connection fails
+            ValueError: If TLS enabled but no cert_path provided
         """
         loop = asyncio.get_event_loop()
 
         def _connect() -> DockerClient:
-            if settings.docker_tls_enabled:
-                # TLS-secured connection
-                cert_path = Path(settings.docker_cert_path)
+            if tls_enabled:
+                # TLS-secured connection (production)
+                if not cert_path:
+                    raise ValueError(f"cert_path required for TLS connection to {ip_address}")
+                certs = Path(cert_path)
                 tls_config = TLSConfig(
                     client_cert=(
-                        str(cert_path / "cert.pem"),
-                        str(cert_path / "key.pem"),
+                        str(certs / "cert.pem"),
+                        str(certs / "key.pem"),
                     ),
-                    ca_cert=str(cert_path / "ca.pem"),
+                    ca_cert=str(certs / "ca.pem"),
                     verify=True,
-                    ssl_version=ssl.PROTOCOL_TLS_CLIENT,
+                    ssl_version=ssl.PROTOCOL_TLS_CLIENT,  # type: ignore[call-arg]
                 )
                 base_url = f"https://{ip_address}:{docker_port}"
                 return docker.DockerClient(base_url=base_url, tls=tls_config)
             else:
-                # Local Docker socket (development)
-                return docker.from_env()
+                # HTTP connection (local development with DinD servers)
+                base_url = f"tcp://{ip_address}:{docker_port}"
+                return docker.DockerClient(base_url=base_url)
 
         return await loop.run_in_executor(None, _connect)
 
@@ -270,12 +331,13 @@ class MultiServerDockerManager:
         loop = asyncio.get_event_loop()
 
         def _create() -> Container:
-            # Select image based on architecture
+            # Select image based on architecture (GPU workspaces use x86_64)
             image = spec.image
-            if conn.architecture == "arm64" and hasattr(settings, "workspace_image_arm64"):
-                image = settings.workspace_image_arm64
-            elif conn.architecture == "amd64" and hasattr(settings, "workspace_image_amd64"):
-                image = settings.workspace_image_amd64
+            if not spec.gpu_enabled:
+                if conn.architecture == "arm64" and hasattr(settings, "workspace_image_arm64"):
+                    image = settings.workspace_image_arm64
+                elif conn.architecture == "amd64" and hasattr(settings, "workspace_image_amd64"):
+                    image = settings.workspace_image_amd64
 
             # Convert CPU limit to nano-CPUs (1 CPU = 1e9 nano-CPUs)
             nano_cpus = int(spec.cpu_limit * 1e9)
@@ -283,19 +345,57 @@ class MultiServerDockerManager:
             # Convert memory to bytes
             mem_limit = f"{spec.memory_limit_mb}m"
 
-            container = client.containers.create(
-                image=image,
-                name=spec.name,
-                detach=True,
-                environment=spec.environment,
-                volumes=spec.volumes,
-                ports=spec.ports,
-                labels=spec.labels,
-                nano_cpus=nano_cpus,
-                mem_limit=mem_limit,
-                network=spec.network,
-                runtime=spec.runtime if settings.docker_runtime else None,
-            )
+            # Build container kwargs
+            create_kwargs: dict[str, Any] = {
+                "image": image,
+                "name": spec.name,
+                "detach": True,
+                "environment": spec.environment,
+                "volumes": spec.volumes,
+                "ports": spec.ports,
+                "labels": spec.labels,
+                "nano_cpus": nano_cpus,
+                "mem_limit": mem_limit,
+            }
+
+            # Add network if specified
+            if spec.network:
+                create_kwargs["network"] = spec.network
+            elif spec.network_mode:
+                create_kwargs["network_mode"] = spec.network_mode
+
+            # Configure GPU access if enabled
+            if spec.gpu_enabled:
+                # Use NVIDIA Container Runtime for GPU workspaces
+                create_kwargs["runtime"] = "nvidia"
+
+                # Configure GPU device requests
+                # count=-1 means all GPUs, count=N means specific number
+                gpu_count = -1 if spec.gpu_count == 0 else spec.gpu_count
+                create_kwargs["device_requests"] = [
+                    docker.types.DeviceRequest(
+                        count=gpu_count,
+                        capabilities=[["gpu"]],
+                    )
+                ]
+
+                # Add NVIDIA environment variables for CUDA support
+                env = spec.environment.copy()
+                env.setdefault("NVIDIA_VISIBLE_DEVICES", "all")
+                env.setdefault("NVIDIA_DRIVER_CAPABILITIES", "compute,utility")
+                create_kwargs["environment"] = env
+
+                logger.info(
+                    "Configuring GPU container",
+                    container_name=spec.name,
+                    gpu_count=gpu_count,
+                    gpu_type=spec.gpu_type,
+                )
+            elif spec.runtime:
+                # Add runtime only if specified (e.g., runsc for gVisor)
+                create_kwargs["runtime"] = spec.runtime
+
+            container = client.containers.create(**create_kwargs)
             return container
 
         try:
@@ -304,7 +404,7 @@ class MultiServerDockerManager:
                 "Created container",
                 server_id=server_id,
                 container_name=spec.name,
-                container_id=container.id[:12] if container else None,
+                container_id=container.id[:12] if container and container.id else None,
             )
             return container
         except Exception as e:
@@ -342,6 +442,162 @@ class MultiServerDockerManager:
         except Exception as e:
             logger.exception(
                 "Failed to start container",
+                server_id=server_id,
+                container_id=container_id,
+                error=str(e),
+            )
+            return False
+
+    async def apply_bandwidth_limit(
+        self,
+        server_id: str,
+        container_id: str,
+        bandwidth_mbps: int,
+        ssh_host: str | None = None,
+        ssh_port: int = 22,
+        ssh_user: str = "root",
+    ) -> bool:
+        """Apply bandwidth limit to a container using tc (traffic control) from the host.
+
+        This applies the limit on the HOST side of the container's veth interface,
+        which the user cannot bypass since they don't have host access.
+
+        Args:
+            server_id: Server identifier
+            container_id: Container ID or name
+            bandwidth_mbps: Bandwidth limit in Mbps
+            ssh_host: SSH host (defaults to server IP from connection)
+            ssh_port: SSH port
+            ssh_user: SSH user (requires root or sudo)
+
+        Returns:
+            True if successful, False otherwise
+
+        Note:
+            For local development (DinD), this may not work as expected since
+            the containers run inside Docker-in-Docker. In production, this runs
+            on actual hosts with direct network namespace access.
+        """
+        client = self.get_client(server_id)
+        if not client:
+            logger.error("No client available for bandwidth limiting", server_id=server_id)
+            return False
+
+        conn = self._connections.get(server_id)
+        if not conn:
+            logger.error("No connection info for server", server_id=server_id)
+            return False
+
+        loop = asyncio.get_event_loop()
+
+        def _apply_tc() -> bool:
+            # Get container PID
+            container = client.containers.get(container_id)
+            pid = container.attrs.get("State", {}).get("Pid")
+
+            if not pid:
+                logger.error("Container PID not found", container_id=container_id)
+                return False
+
+            # Commands to find veth interface and apply tc
+            # Step 1: Get the interface index from inside container's network namespace
+            # Step 2: Find host interface with that index
+            # Step 3: Apply tc rule
+
+            # For local execution on the host (production scenario)
+            # In local dev with DinD, this needs SSH or docker exec into the host container
+
+            host = ssh_host or conn.ip_address
+
+            # Build the tc script that will run on the host
+            # This finds the container's veth and applies bandwidth limiting
+            tc_script = f"""
+                # Get the iflink (interface index) from container's eth0
+                IFLINK=$(nsenter -t {pid} -n cat /sys/class/net/eth0/iflink 2>/dev/null)
+                if [ -z "$IFLINK" ]; then
+                    echo "Failed to get iflink"
+                    exit 1
+                fi
+
+                # Find the host interface with that index
+                VETH=$(ip link | grep "^$IFLINK:" | cut -d':' -f2 | cut -d'@' -f1 | tr -d ' ')
+                if [ -z "$VETH" ]; then
+                    echo "Failed to find veth interface"
+                    exit 1
+                fi
+
+                # Apply tc rule (replace if exists)
+                RATE={bandwidth_mbps}mbit
+                tc qdisc replace dev $VETH root tbf rate $RATE burst 32kbit latency 400ms
+                echo "Applied limit to $VETH for container {container_id[:12]}"
+            """
+
+            # For local development, try to exec into the workspace server (if it's a DinD setup)
+            # For production, SSH to the host
+            if settings.environment == "development":
+                # In development, we might be using Docker-in-Docker
+                # Try to run the command via docker exec on the DinD server container
+                # This is a simplification - in production, we'd SSH to the actual host
+                logger.warning(
+                    "Bandwidth limiting in development mode may not work with DinD",
+                    container_id=container_id[:12],
+                    bandwidth_mbps=bandwidth_mbps,
+                )
+                # For now, just log and return True in development
+                # Real bandwidth limiting requires host-level access
+                return True
+            else:
+                # Production: SSH to the host and run tc commands
+                ssh_cmd = [
+                    "ssh",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    "-o",
+                    "ConnectTimeout=10",
+                    "-p",
+                    str(ssh_port),
+                    f"{ssh_user}@{host}",
+                    tc_script,
+                ]
+
+                result = subprocess.run(  # noqa: S603
+                    ssh_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+
+                if result.returncode != 0:
+                    logger.error(
+                        "Failed to apply bandwidth limit via SSH",
+                        server_id=server_id,
+                        container_id=container_id[:12],
+                        stderr=result.stderr,
+                    )
+                    return False
+
+                logger.info(
+                    "Applied bandwidth limit",
+                    server_id=server_id,
+                    container_id=container_id[:12],
+                    bandwidth_mbps=bandwidth_mbps,
+                    output=result.stdout.strip(),
+                )
+                return True
+
+        try:
+            return await loop.run_in_executor(None, _apply_tc)
+        except subprocess.TimeoutExpired:
+            logger.error(
+                "Timeout applying bandwidth limit",
+                server_id=server_id,
+                container_id=container_id,
+            )
+            return False
+        except Exception as e:
+            logger.exception(
+                "Failed to apply bandwidth limit",
                 server_id=server_id,
                 container_id=container_id,
                 error=str(e),
@@ -386,7 +642,7 @@ class MultiServerDockerManager:
         server_id: str,
         container_id: str,
         force: bool = False,
-        v: bool = False,
+        remove_volumes: bool = False,
     ) -> bool:
         """Remove a container from a server.
 
@@ -394,7 +650,7 @@ class MultiServerDockerManager:
             server_id: Server identifier
             container_id: Container ID or name
             force: Force removal even if running
-            v: Remove associated volumes
+            remove_volumes: Remove associated volumes
 
         Returns:
             True if successful, False otherwise
@@ -407,7 +663,7 @@ class MultiServerDockerManager:
 
         def _remove() -> bool:
             container = client.containers.get(container_id)
-            container.remove(force=force, v=v)
+            container.remove(force=force, v=remove_volumes)
             return True
 
         try:
@@ -476,7 +732,7 @@ class MultiServerDockerManager:
                 loop.run_in_executor(None, _run),
                 timeout=timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return (124, "", "Command timed out")
         except Exception as e:
             logger.exception(
@@ -509,7 +765,9 @@ class MultiServerDockerManager:
 
         def _stats() -> dict[str, Any]:
             container = client.containers.get(container_id)
-            return container.stats(stream=False)
+            stats = container.stats(stream=False)
+            # stats() with stream=False returns a dict, not an iterator
+            return stats  # type: ignore[return-value]
 
         try:
             return await loop.run_in_executor(None, _stats)
@@ -522,14 +780,104 @@ class MultiServerDockerManager:
             )
             return None
 
-    async def get_server_stats(self, server_id: str) -> dict[str, Any] | None:
-        """Get server-level stats (CPU, memory, disk).
+    def parse_container_stats(self, stats: dict[str, Any]) -> dict[str, Any]:
+        """Parse raw Docker stats into resource metrics.
+
+        Args:
+            stats: Raw stats dict from Docker API
+
+        Returns:
+            Parsed metrics dict matching WorkspaceResourceMetrics fields
+        """
+        from datetime import UTC, datetime
+
+        result: dict[str, Any] = {
+            "cpu_percent": 0.0,
+            "cpu_limit_cores": 1.0,
+            "memory_used_mb": 0,
+            "memory_limit_mb": 1024,
+            "memory_percent": 0.0,
+            "disk_read_mb": 0.0,
+            "disk_write_mb": 0.0,
+            "network_rx_mb": 0.0,
+            "network_tx_mb": 0.0,
+            "collected_at": datetime.now(UTC).isoformat(),
+            "container_uptime_seconds": 0,
+        }
+
+        if not stats:
+            return result
+
+        # CPU calculation
+        # Docker stats provides cumulative CPU usage - we need delta between samples
+        cpu_stats = stats.get("cpu_stats", {})
+        precpu_stats = stats.get("precpu_stats", {})
+
+        cpu_usage = cpu_stats.get("cpu_usage", {})
+        precpu_usage = precpu_stats.get("cpu_usage", {})
+
+        cpu_delta = cpu_usage.get("total_usage", 0) - precpu_usage.get("total_usage", 0)
+        system_delta = cpu_stats.get("system_cpu_usage", 0) - precpu_stats.get(
+            "system_cpu_usage", 0
+        )
+        num_cpus = cpu_stats.get("online_cpus", 1) or 1
+
+        if system_delta > 0 and cpu_delta > 0:
+            result["cpu_percent"] = (cpu_delta / system_delta) * num_cpus * 100.0
+
+        result["cpu_limit_cores"] = num_cpus
+
+        # Memory
+        memory_stats = stats.get("memory_stats", {})
+        memory_usage = memory_stats.get("usage", 0)
+        memory_limit = memory_stats.get("limit", 0)
+
+        # Convert to MB
+        result["memory_used_mb"] = memory_usage // (1024 * 1024)
+        result["memory_limit_mb"] = memory_limit // (1024 * 1024) if memory_limit > 0 else 1024
+
+        if memory_limit > 0:
+            result["memory_percent"] = (memory_usage / memory_limit) * 100.0
+
+        # Network (sum all interfaces)
+        networks = stats.get("networks", {})
+        total_rx = 0
+        total_tx = 0
+        for iface_stats in networks.values():
+            total_rx += iface_stats.get("rx_bytes", 0)
+            total_tx += iface_stats.get("tx_bytes", 0)
+
+        # Convert to MB
+        result["network_rx_mb"] = total_rx / (1024 * 1024)
+        result["network_tx_mb"] = total_tx / (1024 * 1024)
+
+        # Disk I/O
+        blkio_stats = stats.get("blkio_stats", {})
+        io_service_bytes = blkio_stats.get("io_service_bytes_recursive") or []
+
+        for entry in io_service_bytes:
+            op = entry.get("op", "").lower()
+            value = entry.get("value", 0)
+            if op == "read":
+                result["disk_read_mb"] += value / (1024 * 1024)
+            elif op == "write":
+                result["disk_write_mb"] += value / (1024 * 1024)
+
+        return result
+
+    async def get_container_status(
+        self,
+        server_id: str,
+        container_id: str,
+    ) -> dict[str, Any] | None:
+        """Get container status information.
 
         Args:
             server_id: Server identifier
+            container_id: Container ID or name
 
         Returns:
-            Stats dict or None if unavailable
+            Dict with status info or None if container not found
         """
         client = self.get_client(server_id)
         if not client:
@@ -537,18 +885,123 @@ class MultiServerDockerManager:
 
         loop = asyncio.get_event_loop()
 
+        def _status() -> dict[str, Any]:
+            container = client.containers.get(container_id)
+            return {
+                "id": container.id,
+                "name": container.name,
+                "status": container.status,
+                "health": container.attrs.get("State", {}).get("Health", {}).get("Status"),
+                "started_at": container.attrs.get("State", {}).get("StartedAt"),
+                "finished_at": container.attrs.get("State", {}).get("FinishedAt"),
+                "exit_code": container.attrs.get("State", {}).get("ExitCode"),
+                "labels": container.labels,
+            }
+
+        try:
+            return await loop.run_in_executor(None, _status)
+        except Exception as e:
+            logger.warning(
+                "Failed to get container status",
+                server_id=server_id,
+                container_id=container_id,
+                error=str(e),
+            )
+            return None
+
+    async def get_server_stats(self, server_id: str) -> dict[str, Any] | None:
+        """Get server-level stats including resource usage from workspace containers.
+
+        Args:
+            server_id: Server identifier
+
+        Returns:
+            Stats dict with total and used resources, or None if unavailable
+        """
+        client = self.get_client(server_id)
+        if not client:
+            return None
+
+        connection = self._connections.get(server_id)
+        loop = asyncio.get_event_loop()
+
         def _server_stats() -> dict[str, Any]:
             info = client.info()
+            total_cpu = info.get("NCPU", 0)
+            total_memory_mb = info.get("MemTotal", 0) // (1024 * 1024)
+
+            # Calculate used resources from workspace containers
+            used_cpu = 0.0
+            used_memory_mb = 0
+            active_workspaces = 0
+
+            # List workspace containers and sum their resource reservations
+            workspace_containers = client.containers.list(filters={"label": "podex.workspace=true"})
+
+            for container in workspace_containers:
+                active_workspaces += 1
+                # Get resource limits from container config
+                host_config = container.attrs.get("HostConfig", {})
+
+                # CPU: NanoCpus is in units of 10^-9 CPUs
+                nano_cpus = host_config.get("NanoCpus", 0)
+                if nano_cpus:
+                    used_cpu += nano_cpus / 1_000_000_000
+
+                # Memory limit in bytes
+                mem_limit = host_config.get("Memory", 0)
+                if mem_limit:
+                    used_memory_mb += mem_limit // (1024 * 1024)
+
+            # Detect GPU support from Docker info
+            # Check if NVIDIA runtime is available (indicates NVIDIA Container Toolkit installed)
+            runtimes = info.get("Runtimes", {})
+            has_nvidia_runtime = "nvidia" in runtimes
+
+            # Try to detect GPU count and type from labels or server metadata
+            # Hetzner GPU servers have specific labels we can check
+            gpu_count = 0
+            gpu_type = None
+
+            if has_nvidia_runtime:
+                # Server has NVIDIA runtime, check for GPU devices
+                # GPU info may be in server labels set during registration
+                server_labels = info.get("Labels", []) or []
+                for label in server_labels:
+                    if isinstance(label, str):
+                        if label.startswith("gpu.count="):
+                            gpu_count = int(label.split("=")[1])
+                        elif label.startswith("gpu.type="):
+                            gpu_type = label.split("=", 1)[1]
+
+                # Default to 1 GPU if nvidia runtime present but no count label
+                if gpu_count == 0:
+                    gpu_count = 1
+
             return {
-                "cpu_count": info.get("NCPU", 0),
-                "memory_total_mb": info.get("MemTotal", 0) // (1024 * 1024),
+                "hostname": connection.hostname if connection else server_id,
+                "total_cpu": total_cpu,
+                "total_memory_mb": total_memory_mb,
+                "total_disk_gb": 100,  # TODO: Get actual disk from Docker
+                "used_cpu": used_cpu,
+                "used_memory_mb": used_memory_mb,
+                "used_disk_gb": 0,  # TODO: Calculate from container volumes
+                "active_workspaces": active_workspaces,
+                "has_gpu": has_nvidia_runtime and gpu_count > 0,
+                "gpu_type": gpu_type,
+                "gpu_count": gpu_count,
+                "architecture": (
+                    connection.architecture if connection else info.get("Architecture", "amd64")
+                ),
+                "region": None,
+                "status": "active" if connection and connection.is_healthy else "unhealthy",
+                "labels": {},
+                # Legacy fields
+                "cpu_count": total_cpu,
+                "memory_total_mb": total_memory_mb,
                 "containers_running": info.get("ContainersRunning", 0),
-                "containers_paused": info.get("ContainersPaused", 0),
-                "containers_stopped": info.get("ContainersStopped", 0),
-                "images": info.get("Images", 0),
                 "server_version": info.get("ServerVersion", ""),
                 "os": info.get("OperatingSystem", ""),
-                "architecture": info.get("Architecture", ""),
             }
 
         try:
@@ -564,7 +1017,7 @@ class MultiServerDockerManager:
     async def list_containers(
         self,
         server_id: str,
-        all: bool = False,  # noqa: A002
+        all: bool = False,
         filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """List containers on a server.
