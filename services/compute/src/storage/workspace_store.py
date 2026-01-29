@@ -39,11 +39,11 @@ def _status_set_key(status: WorkspaceStatus | str) -> str:
 
 
 class WorkspaceStore:
-    """Redis-backed workspace state storage with optional local caching.
+    """Redis-backed workspace state storage.
 
     This store is the source of truth for workspace metadata across compute
-    instances. Compute managers (Docker/GCP) should use it instead of keeping
-    their own in-memory registries.
+    instances. Compute managers should use it instead of keeping their own
+    in-memory registries.
     """
 
     def __init__(self, redis_url: str | None = None) -> None:
@@ -223,7 +223,7 @@ class WorkspaceStore:
         workspace.last_activity = now
         await self._write_workspace(client, workspace, now)
 
-    async def cleanup_stale(self, max_age_seconds: int) -> list[str]:  # noqa: PLR0915
+    async def cleanup_stale(self, max_age_seconds: int) -> list[str]:
         """Remove workspaces whose updated_at is too old.
 
         This is a defensive cleanup on top of key TTLs to handle cases where
@@ -303,3 +303,37 @@ class WorkspaceStore:
             logger.info("Cleaned up stale workspaces in Redis", count=len(removed))
 
         return removed
+
+    async def update_metrics(
+        self,
+        workspace_id: str,
+        metrics: dict[str, Any],
+    ) -> None:
+        """Store resource metrics for a workspace.
+
+        Args:
+            workspace_id: The workspace ID
+            metrics: Metrics dict from parse_container_stats
+        """
+        client = await self._get_client()
+        key = f"workspace:{workspace_id}:metrics"
+        await client.client.set(key, json.dumps(metrics), ex=120)  # 2 min TTL
+
+    async def get_metrics(self, workspace_id: str) -> dict[str, Any] | None:
+        """Get resource metrics for a workspace.
+
+        Args:
+            workspace_id: The workspace ID
+
+        Returns:
+            Metrics dict or None if not found
+        """
+        client = await self._get_client()
+        key = f"workspace:{workspace_id}:metrics"
+        data = await client.client.get(key)
+        if not data:
+            return None
+        try:
+            return json.loads(data)
+        except json.JSONDecodeError:
+            return None
