@@ -22,6 +22,10 @@ DEFAULT_MODELS = [
         "is_enabled": True,
         "is_default": False,  # Only one platform default - using Sonnet 4.5
         "sort_order": 10,
+        "is_featured": True,
+        "display_order": 10,
+        "categories": ["reasoning", "code", "vision"],
+        "short_description": "Most capable model for complex reasoning and analysis",
         "model_metadata": {
             "description": "Most capable model for complex reasoning and analysis",
             "good_for": ["Complex Coding", "Architecture", "Deep Analysis", "Vision Tasks"],
@@ -47,6 +51,10 @@ DEFAULT_MODELS = [
         "is_enabled": True,
         "is_default": True,  # Platform default - best balance of speed/quality/cost
         "sort_order": 20,
+        "is_featured": True,
+        "display_order": 20,
+        "categories": ["reasoning", "code", "vision"],
+        "short_description": "Best balance of speed, quality, and cost for most tasks",
         "model_metadata": {
             "description": "Best balance of speed, quality, and cost for most tasks",
             "good_for": ["Coding", "Agentic Tasks", "Fast Analysis"],
@@ -72,6 +80,10 @@ DEFAULT_MODELS = [
         "is_enabled": True,
         "is_default": False,
         "sort_order": 30,
+        "is_featured": True,
+        "display_order": 30,
+        "categories": ["fast", "budget"],
+        "short_description": "Fast and efficient for simple tasks",
         "model_metadata": {
             "description": "Fast and efficient for simple tasks",
             "good_for": ["Quick Tasks", "Chat", "Efficient Agents"],
@@ -98,6 +110,10 @@ DEFAULT_MODELS = [
         "is_enabled": True,
         "is_default": False,
         "sort_order": 40,
+        "is_featured": True,
+        "display_order": 40,
+        "categories": ["fast", "large_context"],
+        "short_description": "Google's latest fast model with thinking",
         "model_metadata": {
             "description": "Google's latest fast model with thinking",
             "good_for": ["Fast Tasks", "Multimodal", "Long Context"],
@@ -123,6 +139,10 @@ DEFAULT_MODELS = [
         "is_enabled": True,
         "is_default": False,
         "sort_order": 45,
+        "is_featured": True,
+        "display_order": 45,
+        "categories": ["reasoning", "large_context", "vision"],
+        "short_description": "Google's flagship model for complex tasks",
         "model_metadata": {
             "description": "Google's flagship model for complex tasks",
             "good_for": ["Complex Reasoning", "Long Context", "Multimodal"],
@@ -285,6 +305,10 @@ DEFAULT_MODELS = [
         "is_default": False,
         "is_user_key_model": True,
         "sort_order": 200,
+        "is_featured": True,
+        "display_order": 200,
+        "categories": ["reasoning", "code", "vision"],
+        "short_description": "OpenAI's most capable model",
         "model_metadata": {
             "description": "OpenAI's most capable model",
             "good_for": ["Multimodal", "Coding", "Vision"],
@@ -311,6 +335,10 @@ DEFAULT_MODELS = [
         "is_default": False,
         "is_user_key_model": True,
         "sort_order": 210,
+        "is_featured": True,
+        "display_order": 210,
+        "categories": ["fast", "budget"],
+        "short_description": "Fast and affordable GPT-4 variant",
         "model_metadata": {
             "description": "Fast and affordable GPT-4 variant",
             "good_for": ["Fast Tasks", "Budget", "Chat"],

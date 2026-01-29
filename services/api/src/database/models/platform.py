@@ -134,6 +134,11 @@ class LLMModel(Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
     # Additional metadata (release date, description, etc.)
     model_metadata: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB)
+    # Model selector UI fields
+    is_featured: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    categories: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
+    short_description: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
