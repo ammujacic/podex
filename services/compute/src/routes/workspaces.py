@@ -1,7 +1,7 @@
 """Workspace management routes."""
 
 from collections.abc import AsyncGenerator
-from typing import Annotated
+from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -18,6 +18,8 @@ from src.models.workspace import (
     WorkspaceScaleRequest,
     WorkspaceScaleResponse,
 )
+from src.storage.workspace_store import WorkspaceStore
+from src.validation import ValidationError, validate_workspace_id
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
@@ -38,8 +40,17 @@ async def verify_workspace_ownership(
         The workspace info if access is granted.
 
     Raises:
-        HTTPException: If workspace not found or user doesn't own it.
+        HTTPException: If workspace not found, user doesn't own it, or ID is invalid.
     """
+    # Validate workspace_id to prevent path traversal and injection attacks
+    try:
+        validate_workspace_id(workspace_id)
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+
     workspace = await compute.get_workspace(workspace_id)
 
     if not workspace:
@@ -74,6 +85,11 @@ async def create_workspace(
             config=request.config,
             workspace_id=request.workspace_id,
         )
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
     except RuntimeError as e:
         logger.warning(
             "Workspace creation runtime error",
@@ -329,7 +345,7 @@ async def scale_workspace(
     if workspace.tier == request.new_tier:
         return WorkspaceScaleResponse(
             success=False,
-            message=f"Workspace is already on {request.new_tier.value} tier",
+            message=f"Workspace is already on {request.new_tier} tier",
             new_tier=workspace.tier,
         )
 
@@ -339,8 +355,8 @@ async def scale_workspace(
         logger.info(
             "Workspace scaled successfully",
             workspace_id=workspace_id,
-            old_tier=workspace.tier.value,
-            new_tier=request.new_tier.value,
+            old_tier=workspace.tier,
+            new_tier=request.new_tier,
         )
 
         return response
@@ -348,10 +364,46 @@ async def scale_workspace(
         logger.exception(
             "Failed to scale workspace",
             workspace_id=workspace_id,
-            new_tier=request.new_tier.value,
+            new_tier=request.new_tier,
             error=str(e),
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to scale workspace: {e}",
         ) from e
+
+
+@router.get("/{workspace_id}/resources")
+async def get_workspace_resources(
+    workspace_id: str,
+    user_id: AuthenticatedUser,
+    _auth: InternalAuth,
+    compute: Annotated[ComputeManager, Depends(get_compute_manager)],
+) -> dict[str, Any]:
+    """Get current resource usage metrics for a workspace.
+
+    Returns CPU, memory, disk I/O, and network usage statistics
+    collected from the container's Docker stats.
+    """
+    await verify_workspace_ownership(workspace_id, user_id, compute)
+
+    store = WorkspaceStore()
+    metrics = await store.get_metrics(workspace_id)
+
+    if not metrics:
+        # Return default metrics if none collected yet
+        return {
+            "cpu_percent": 0.0,
+            "cpu_limit_cores": 1.0,
+            "memory_used_mb": 0,
+            "memory_limit_mb": 1024,
+            "memory_percent": 0.0,
+            "disk_read_mb": 0.0,
+            "disk_write_mb": 0.0,
+            "network_rx_mb": 0.0,
+            "network_tx_mb": 0.0,
+            "collected_at": None,
+            "container_uptime_seconds": 0,
+        }
+
+    return metrics
