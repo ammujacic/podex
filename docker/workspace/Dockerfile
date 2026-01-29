@@ -13,7 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
 
 # Create non-root user for workspace operations
-ARG WORKSPACE_USER=podex
+ARG WORKSPACE_USER=dev
 ARG WORKSPACE_UID=1000
 ARG WORKSPACE_GID=1000
 
@@ -122,15 +122,19 @@ RUN pip3 install --no-cache-dir --break-system-packages \
     httpie
 
 # Install Rust (for user, not system-wide)
+# Use minimal profile to skip docs and save ~250MB
 ENV RUSTUP_HOME=/opt/rust/rustup
 ENV CARGO_HOME=/opt/rust/cargo
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path \
-    && chmod -R a+rw /opt/rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal \
+    && chmod -R a+rw /opt/rust \
+    && rm -rf /opt/rust/rustup/toolchains/*/share/doc
 ENV PATH="/opt/rust/cargo/bin:${PATH}"
 
-# Install Go
+# Install Go (detect architecture for cross-platform builds)
 ARG GO_VERSION=1.22.0
-RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xzf -
+ARG TARGETARCH
+RUN GO_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") \
+    && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" | tar -C /usr/local -xzf -
 ENV PATH="/usr/local/go/bin:${PATH}"
 ENV GOPATH="/home/${WORKSPACE_USER}/go"
 ENV PATH="${GOPATH}/bin:${PATH}"
@@ -149,6 +153,10 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && apt-get update \
     && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
+
+# Install cloudflared for tunnel support
+RUN curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$(dpkg --print-architecture) -o /usr/local/bin/cloudflared \
+    && chmod +x /usr/local/bin/cloudflared
 
 # Install Oh My Zsh for better shell experience
 USER ${WORKSPACE_USER}
