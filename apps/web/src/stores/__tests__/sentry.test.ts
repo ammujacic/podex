@@ -1200,6 +1200,11 @@ describe('sentryStore', () => {
       it('refreshes server and reloads organizations', async () => {
         const { result } = renderHook(() => useSentryStore());
         vi.mocked(sentryApi.refreshSentryServer).mockResolvedValue();
+        // refreshServer calls checkConfiguration which needs this to return configured
+        vi.mocked(sentryApi.checkSentryConfigured).mockResolvedValue({
+          isConfigured: true,
+          server: mockMCPServer,
+        });
         vi.mocked(sentryApi.getSentryOrganizations).mockResolvedValue([mockSentryOrganization]);
         vi.mocked(sentryApi.getSentryProjects).mockResolvedValue([]);
 
@@ -1478,6 +1483,7 @@ describe('sentryStore', () => {
 
       act(() => {
         useSentryStore.setState({
+          isConfigured: true, // Must be configured for selector to count issues
           issues: [mockSentryIssue, mockSentryIssueFatal, mockSentryIssueWarning],
         });
       });

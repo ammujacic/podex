@@ -967,7 +967,7 @@ async def unarchive_session(
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def get_session_scale_options(
     session_id: str,
-    req: Request,
+    request: Request,
     response: Response,
     db: DbSession,
 ) -> dict[str, Any]:
@@ -983,7 +983,7 @@ async def get_session_scale_options(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    user_id = get_current_user_id(req)
+    user_id = get_current_user_id(request)
     if session.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -1009,8 +1009,8 @@ async def get_session_scale_options(
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def scale_session_workspace(
     session_id: str,
-    request: WorkspaceScaleRequest,
-    req: Request,
+    scale_request: WorkspaceScaleRequest,
+    request: Request,
     response: Response,
     db: DbSession,
 ) -> WorkspaceScaleResponse:
@@ -1022,7 +1022,7 @@ async def scale_session_workspace(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    user_id = get_current_user_id(req)
+    user_id = get_current_user_id(request)
     if session.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -1055,11 +1055,11 @@ async def scale_session_workspace(
         scale_response = await compute_client.scale_workspace(
             workspace_id=session.workspace_id,
             user_id=user_id,
-            new_tier=request.new_tier.value,  # Convert enum to string
+            new_tier=scale_request.new_tier,
         )
 
         # Log the scaling action
-        audit = AuditLogger(db).set_context(request=req, user_id=user_id)
+        audit = AuditLogger(db).set_context(request=request, user_id=user_id)
         await audit.log(
             action=AuditAction.WORKSPACE_SCALED,
             category=AuditCategory.SESSION,
@@ -1070,7 +1070,7 @@ async def scale_session_workspace(
                 "session_id": session_id,
                 "workspace_id": session.workspace_id,
                 "old_tier": scale_response.get("old_tier"),
-                "new_tier": request.new_tier.value,
+                "new_tier": scale_request.new_tier,
             },
         )
 
@@ -1081,7 +1081,7 @@ async def scale_session_workspace(
             "Failed to scale workspace",
             session_id=session_id,
             workspace_id=session.workspace_id,
-            new_tier=request.new_tier.value,
+            new_tier=scale_request.new_tier,
             error=str(e),
         )
         raise HTTPException(status_code=500, detail=f"Failed to scale workspace: {e}") from e

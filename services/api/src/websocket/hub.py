@@ -1473,7 +1473,7 @@ async def cleanup_session_sync() -> None:
 
 
 async def _transcribe_audio_chunks(chunks: list[str], language: str = "en-US") -> dict[str, Any]:
-    """Transcribe audio chunks using Google Cloud Speech-to-Text.
+    """Transcribe audio chunks using OpenAI Whisper API.
 
     Args:
         chunks: List of base64-encoded audio chunks
@@ -1482,7 +1482,7 @@ async def _transcribe_audio_chunks(chunks: list[str], language: str = "en-US") -
     Returns:
         Dict with 'text' and 'confidence' keys
     """
-    from podex_shared.gcp import get_speech_client
+    import httpx
 
     if not chunks:
         return {"text": "", "confidence": 0.0}
@@ -1496,25 +1496,37 @@ async def _transcribe_audio_chunks(chunks: list[str], language: str = "en-US") -
     if len(combined_audio) < 100:
         return {"text": "", "confidence": 0.0}
 
-    try:
-        # Use GCP Speech-to-Text for synchronous transcription
-        use_mock = settings.ENVIRONMENT == "development"
-        speech_client = get_speech_client(use_mock=use_mock)
+    api_key = getattr(settings, "OPENAI_API_KEY", None)
+    if not api_key:
+        logger.warning("OpenAI API key not configured, returning empty transcription")
+        return {"text": "", "confidence": 0.0}
 
-        result = await speech_client.transcribe(  # type: ignore[attr-defined]
-            audio_data=combined_audio,
-            encoding="WEBM_OPUS",
-            language_code=language,
-        )
+    try:
+        # Extract language code (e.g., "en" from "en-US")
+        lang_code = language.split("-")[0] if language else "en"
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                files={"file": ("audio.webm", combined_audio, "audio/webm")},
+                data={
+                    "model": "whisper-1",
+                    "language": lang_code,
+                    "response_format": "verbose_json",
+                },
+            )
+            response.raise_for_status()
+            result = response.json()
+
+        return {
+            "text": result.get("text", ""),
+            "confidence": 0.95,  # Whisper doesn't provide confidence, use high default
+        }
 
     except Exception as e:
-        logger.exception("GCP Speech transcription error", error=str(e))
+        logger.exception("OpenAI Whisper transcription error", error=str(e))
         raise
-    else:
-        return {
-            "text": result.transcript,
-            "confidence": result.confidence,
-        }
 
 
 @sio.event

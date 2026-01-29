@@ -20,7 +20,6 @@ from httpx import Response
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Generator
 
-    from src.managers.docker_manager import DockerComputeManager
     from src.storage.workspace_store import WorkspaceStore
 
 from podex_shared.redis_client import RedisClient, get_redis_client
@@ -212,43 +211,6 @@ def mock_container() -> MagicMock:
     return create_mock_container()
 
 
-@pytest.fixture
-async def docker_manager(
-    mock_workspace_store: MockWorkspaceStore, mock_container: MagicMock, tmp_path: Path
-) -> AsyncGenerator[DockerComputeManager, None]:
-    """DockerComputeManager with mocked Docker client for unit tests.
-
-    This fixture patches docker.from_env BEFORE instantiating the manager,
-    which is required because DockerComputeManager uses asyncio.to_thread()
-    that captures method references at call time.
-
-    Uses MockWorkspaceStore to avoid Redis dependency.
-    Uses tmp_path for local storage to avoid permission issues with /var/lib/podex.
-    """
-    from unittest.mock import patch
-
-    from src.managers.docker_manager import DockerComputeManager
-
-    mock_docker_client = MagicMock()
-    mock_docker_client.containers.run.return_value = mock_container
-    # First get raises NotFound (no existing container), subsequent calls return the container
-    mock_docker_client.containers.get.return_value = mock_container
-    mock_docker_client.containers.list.return_value = []
-
-    with patch("docker.from_env", return_value=mock_docker_client):
-        manager = DockerComputeManager(workspace_store=mock_workspace_store)
-        # Override local storage path to use temp directory (avoids /var/lib/podex permission issues)
-        manager._local_storage_path = tmp_path / "workspaces"
-        # Store the mock client for tests that need to customize behavior
-        manager._mock_docker_client = mock_docker_client
-        manager._mock_container = mock_container
-        yield manager
-
-        # Close HTTP client if it exists
-        if manager._http_client and not manager._http_client.is_closed:
-            await manager._http_client.aclose()
-
-
 # ============================================
 # API Mocking Fixtures
 # ============================================
@@ -290,41 +252,6 @@ def test_internal_api_key(monkeypatch: pytest.MonkeyPatch) -> str:
     # Set the key in settings so auth checks work
     monkeypatch.setattr(settings, "internal_api_key", test_key)
     return test_key
-
-
-@pytest.fixture
-async def fastapi_client(
-    docker_manager: DockerComputeManager,
-    test_user_id: str,
-    test_internal_api_key: str,
-    mock_api_calls: respx.MockRouter,
-) -> AsyncGenerator[TestClient, None]:
-    """FastAPI TestClient with real routes and dependencies.
-
-    Uses mocked workspace store to avoid Redis connection issues in tests.
-    """
-    from src.deps import ComputeManagerSingleton
-    from src.main import app
-
-    # Initialize compute manager singleton with mock store
-    # Setting _workspace_store prevents init_compute_manager from creating a real Redis connection
-    ComputeManagerSingleton._instance = docker_manager
-    # Use the mock workspace store from docker_manager fixture
-    # docker_manager uses mock_workspace_store which doesn't need Redis
-    ComputeManagerSingleton._workspace_store = docker_manager._workspace_store
-
-    # Create test client
-    with TestClient(app) as client:
-        # Set default headers
-        client.headers.update({
-            "X-User-ID": test_user_id,
-            "X-Internal-API-Key": test_internal_api_key,
-        })
-        yield client
-
-    # Clean up singleton state
-    ComputeManagerSingleton._instance = None
-    ComputeManagerSingleton._workspace_store = None
 
 
 # ============================================

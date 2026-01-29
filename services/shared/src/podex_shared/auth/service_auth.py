@@ -231,8 +231,8 @@ def validate_gcp_id_token(
     """
     try:
         # Import google-auth library for token verification
-        from google.auth.transport import requests  # type: ignore[import-untyped]  # noqa: PLC0415
-        from google.oauth2 import id_token  # type: ignore[import-untyped]  # noqa: PLC0415
+        from google.auth.transport import requests  # type: ignore[import-untyped,import-not-found]  # noqa: PLC0415, I001
+        from google.oauth2 import id_token  # type: ignore[import-untyped,import-not-found]  # noqa: PLC0415
 
         # Verify the token using Google's public keys
         request = requests.Request()

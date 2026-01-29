@@ -19,15 +19,12 @@ import {
 import type {
   AgentMessageEvent,
   AgentStatusEvent,
-  AgentAutoModeSwitchEvent,
   AgentStreamStartEvent,
   AgentTokenEvent,
   AgentThinkingTokenEvent,
   AgentStreamEndEvent,
   AgentConfigUpdateEvent,
   WorkspaceStatusEvent,
-  PermissionRequestEvent,
-  NativeApprovalRequestEvent,
 } from '@/lib/socket';
 
 // Mock dependencies
@@ -70,7 +67,6 @@ const mockStoreState = {
   getConversationForAgent: vi.fn(),
   handleConversationEvent: vi.fn(),
   updateAgent: vi.fn(),
-  handleAutoModeSwitch: vi.fn(),
   startStreamingMessage: vi.fn(),
   appendStreamingToken: vi.fn(),
   appendThinkingToken: vi.fn(),
@@ -110,11 +106,13 @@ describe('useAgentSocket', () => {
   let mockSessionStore: ReturnType<typeof useSessionStore>;
   let mockBillingStore: ReturnType<typeof useBillingStore.getState>;
 
+  const mockConversationId = 'conv-001';
+
   beforeEach(() => {
     vi.clearAllMocks();
     resetMockSocket();
 
-    // Reset mock store state
+    // Reset mock store state with conversation-based architecture
     mockStoreState.sessions = {
       [sessionId]: {
         id: sessionId,
@@ -126,12 +124,36 @@ describe('useAgentSocket', () => {
             model: 'claude-opus-4-5-20251101',
             status: 'idle',
             color: 'agent-1',
-            messages: [],
             mode: 'auto',
+            conversationSessionId: mockConversationId,
+          },
+        ],
+        conversationSessions: [
+          {
+            id: mockConversationId,
+            name: 'Test Conversation',
+            messages: [],
+            attachedToAgentId: agentId,
+            attachedAgentIds: [agentId],
+            messageCount: 0,
+            lastMessageAt: null,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
           },
         ],
       } as any,
     };
+
+    // Mock getConversationForAgent to return the conversation
+    mockStoreState.getConversationForAgent = vi.fn((sid: string, aid: string) => {
+      const session = mockStoreState.sessions[sid];
+      if (!session) return null;
+      const agent = session.agents.find((a: any) => a.id === aid);
+      if (!agent?.conversationSessionId) return null;
+      return (
+        session.conversationSessions?.find((c: any) => c.id === agent.conversationSessionId) ?? null
+      );
+    });
 
     mockSessionStore = mockStoreState as any;
 
@@ -197,10 +219,6 @@ describe('useAgentSocket', () => {
       expect(socketLib.onSocketEvent).toHaveBeenCalledWith('agent_message', expect.any(Function));
       expect(socketLib.onSocketEvent).toHaveBeenCalledWith('agent_status', expect.any(Function));
       expect(socketLib.onSocketEvent).toHaveBeenCalledWith(
-        'agent_auto_mode_switch',
-        expect.any(Function)
-      );
-      expect(socketLib.onSocketEvent).toHaveBeenCalledWith(
         'agent_stream_start',
         expect.any(Function)
       );
@@ -221,12 +239,33 @@ describe('useAgentSocket', () => {
         'workspace_status',
         expect.any(Function)
       );
+      // Also verify conversation lifecycle events
       expect(socketLib.onSocketEvent).toHaveBeenCalledWith(
-        'permission_request',
+        'conversation_created',
         expect.any(Function)
       );
       expect(socketLib.onSocketEvent).toHaveBeenCalledWith(
-        'native_approval_request',
+        'conversation_updated',
+        expect.any(Function)
+      );
+      expect(socketLib.onSocketEvent).toHaveBeenCalledWith(
+        'conversation_deleted',
+        expect.any(Function)
+      );
+      expect(socketLib.onSocketEvent).toHaveBeenCalledWith(
+        'conversation_attached',
+        expect.any(Function)
+      );
+      expect(socketLib.onSocketEvent).toHaveBeenCalledWith(
+        'conversation_detached',
+        expect.any(Function)
+      );
+      expect(socketLib.onSocketEvent).toHaveBeenCalledWith(
+        'conversation_message',
+        expect.any(Function)
+      );
+      expect(socketLib.onSocketEvent).toHaveBeenCalledWith(
+        'workspace_billing_standby',
         expect.any(Function)
       );
     });
@@ -253,9 +292,9 @@ describe('useAgentSocket', () => {
       triggerSocketEvent('agent_message', messageEvent);
 
       await waitFor(() => {
-        expect(mockSessionStore.addAgentMessage).toHaveBeenCalledWith(
+        expect(mockSessionStore.addConversationMessage).toHaveBeenCalledWith(
           sessionId,
-          agentId,
+          mockConversationId,
           expect.objectContaining({
             id: 'msg-001',
             role: 'user',
@@ -281,9 +320,9 @@ describe('useAgentSocket', () => {
       triggerSocketEvent('agent_message', messageEvent);
 
       await waitFor(() => {
-        expect(mockSessionStore.addAgentMessage).toHaveBeenCalledWith(
+        expect(mockSessionStore.addConversationMessage).toHaveBeenCalledWith(
           sessionId,
-          agentId,
+          mockConversationId,
           expect.objectContaining({
             id: 'msg-002',
             role: 'assistant',
@@ -318,9 +357,9 @@ describe('useAgentSocket', () => {
       triggerSocketEvent('agent_message', messageEvent);
 
       await waitFor(() => {
-        expect(mockSessionStore.addAgentMessage).toHaveBeenCalledWith(
+        expect(mockSessionStore.addConversationMessage).toHaveBeenCalledWith(
           sessionId,
-          agentId,
+          mockConversationId,
           expect.objectContaining({
             toolCalls: expect.arrayContaining([
               expect.objectContaining({
@@ -349,12 +388,12 @@ describe('useAgentSocket', () => {
       triggerSocketEvent('agent_message', messageEvent);
 
       await waitFor(() => {
-        expect(mockSessionStore.addAgentMessage).not.toHaveBeenCalled();
+        expect(mockSessionStore.addConversationMessage).not.toHaveBeenCalled();
       });
     });
 
     it('should skip duplicate messages by ID', async () => {
-      mockSessionStore.sessions[sessionId].agents[0].messages = [
+      mockSessionStore.sessions[sessionId].conversationSessions[0].messages = [
         {
           id: 'msg-005',
           role: 'user',
@@ -378,12 +417,12 @@ describe('useAgentSocket', () => {
       triggerSocketEvent('agent_message', messageEvent);
 
       await waitFor(() => {
-        expect(mockSessionStore.addAgentMessage).not.toHaveBeenCalled();
+        expect(mockSessionStore.addConversationMessage).not.toHaveBeenCalled();
       });
     });
 
-    it('should replace temp user message with real ID', async () => {
-      mockSessionStore.sessions[sessionId].agents[0].messages = [
+    it('should add message even if temp message exists (store handles deduplication)', async () => {
+      mockSessionStore.sessions[sessionId].conversationSessions[0].messages = [
         {
           id: 'temp-001',
           role: 'user',
@@ -406,18 +445,22 @@ describe('useAgentSocket', () => {
 
       triggerSocketEvent('agent_message', messageEvent);
 
+      // Hook calls addConversationMessage; the store handles deduplication internally
       await waitFor(() => {
-        expect(mockSessionStore.updateMessageId).toHaveBeenCalledWith(
+        expect(mockSessionStore.addConversationMessage).toHaveBeenCalledWith(
           sessionId,
-          agentId,
-          'temp-001',
-          'msg-006'
+          mockConversationId,
+          expect.objectContaining({
+            id: 'msg-006',
+            role: 'user',
+            content: 'Optimistic message',
+          })
         );
       });
     });
 
-    it('should replace streaming message with database ID', async () => {
-      mockSessionStore.sessions[sessionId].agents[0].messages = [
+    it('should add message even if streaming message exists (store handles deduplication)', async () => {
+      mockSessionStore.sessions[sessionId].conversationSessions[0].messages = [
         {
           id: 'stream-001',
           role: 'assistant',
@@ -440,17 +483,21 @@ describe('useAgentSocket', () => {
 
       triggerSocketEvent('agent_message', messageEvent);
 
+      // Hook calls addConversationMessage; the store handles deduplication internally
       await waitFor(() => {
-        expect(mockSessionStore.updateMessageId).toHaveBeenCalledWith(
+        expect(mockSessionStore.addConversationMessage).toHaveBeenCalledWith(
           sessionId,
-          agentId,
-          'stream-001',
-          'msg-007'
+          mockConversationId,
+          expect.objectContaining({
+            id: 'msg-007',
+            role: 'assistant',
+            content: 'Streaming content',
+          })
         );
       });
     });
 
-    it('should handle message when session not yet loaded', async () => {
+    it('should skip message when session not yet loaded', async () => {
       mockSessionStore.sessions = {};
 
       renderHook(() => useAgentSocket({ sessionId, userId, authToken }));
@@ -467,12 +514,12 @@ describe('useAgentSocket', () => {
 
       triggerSocketEvent('agent_message', messageEvent);
 
-      await waitFor(() => {
-        expect(mockSessionStore.addAgentMessage).toHaveBeenCalled();
-      });
+      // Hook guards against missing session - message should NOT be added
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(mockSessionStore.addConversationMessage).not.toHaveBeenCalled();
     });
 
-    it('should handle message when agent not yet in store', async () => {
+    it('should skip message when agent not yet in store', async () => {
       mockSessionStore.sessions[sessionId].agents = [];
 
       renderHook(() => useAgentSocket({ sessionId, userId, authToken }));
@@ -489,9 +536,9 @@ describe('useAgentSocket', () => {
 
       triggerSocketEvent('agent_message', messageEvent);
 
-      await waitFor(() => {
-        expect(mockSessionStore.addAgentMessage).toHaveBeenCalled();
-      });
+      // Hook guards against missing agent - message should NOT be added
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(mockSessionStore.addConversationMessage).not.toHaveBeenCalled();
     });
   });
 
@@ -568,100 +615,6 @@ describe('useAgentSocket', () => {
 
       await waitFor(() => {
         expect(mockSessionStore.updateAgent).not.toHaveBeenCalled();
-      });
-    });
-  });
-
-  // ========================================
-  // Auto Mode Switch Tests
-  // ========================================
-
-  describe('Auto Mode Switch Events', () => {
-    it('should handle mode switch with auto-revert', async () => {
-      renderHook(() => useAgentSocket({ sessionId, userId, authToken }));
-
-      const modeSwitchEvent: AgentAutoModeSwitchEvent = {
-        session_id: sessionId,
-        agent_id: agentId,
-        agent_name: 'Test Agent',
-        old_mode: 'auto',
-        new_mode: 'ask',
-        reason: 'User confirmation needed',
-        trigger_phrase: null,
-        auto_revert: true,
-        timestamp: new Date().toISOString(),
-      };
-
-      triggerSocketEvent('agent_auto_mode_switch', modeSwitchEvent);
-
-      await waitFor(() => {
-        expect(mockSessionStore.handleAutoModeSwitch).toHaveBeenCalledWith(
-          sessionId,
-          agentId,
-          'ask',
-          'auto'
-        );
-        expect(toast.info).toHaveBeenCalledWith(
-          'Test Agent switched to Ask mode',
-          expect.objectContaining({
-            description: 'User confirmation needed',
-          })
-        );
-      });
-    });
-
-    it('should handle mode revert', async () => {
-      renderHook(() => useAgentSocket({ sessionId, userId, authToken }));
-
-      const modeSwitchEvent: AgentAutoModeSwitchEvent = {
-        session_id: sessionId,
-        agent_id: agentId,
-        agent_name: 'Test Agent',
-        old_mode: 'ask',
-        new_mode: 'auto',
-        reason: 'Task completed',
-        trigger_phrase: null,
-        auto_revert: false,
-        timestamp: new Date().toISOString(),
-      };
-
-      triggerSocketEvent('agent_auto_mode_switch', modeSwitchEvent);
-
-      await waitFor(() => {
-        expect(mockSessionStore.handleAutoModeSwitch).toHaveBeenCalledWith(
-          sessionId,
-          agentId,
-          'auto',
-          null
-        );
-        expect(toast.info).toHaveBeenCalledWith(
-          'Test Agent returned to Auto mode',
-          expect.objectContaining({
-            description: 'Task completed',
-          })
-        );
-      });
-    });
-
-    it('should ignore mode switch from different sessions', async () => {
-      renderHook(() => useAgentSocket({ sessionId, userId, authToken }));
-
-      const modeSwitchEvent: AgentAutoModeSwitchEvent = {
-        session_id: 'other-session',
-        agent_id: agentId,
-        agent_name: 'Test Agent',
-        old_mode: 'auto',
-        new_mode: 'ask',
-        reason: 'Test',
-        trigger_phrase: null,
-        auto_revert: true,
-        timestamp: new Date().toISOString(),
-      };
-
-      triggerSocketEvent('agent_auto_mode_switch', modeSwitchEvent);
-
-      await waitFor(() => {
-        expect(mockSessionStore.handleAutoModeSwitch).not.toHaveBeenCalled();
       });
     });
   });
@@ -861,12 +814,6 @@ describe('useAgentSocket', () => {
             model: 'claude-sonnet-4-5-20250929',
           })
         );
-        expect(toast.info).toHaveBeenCalledWith(
-          'Model switched to Sonnet 4.5',
-          expect.objectContaining({
-            description: 'Changed via CLI command',
-          })
-        );
       });
     });
 
@@ -891,12 +838,6 @@ describe('useAgentSocket', () => {
           agentId,
           expect.objectContaining({
             mode: 'plan',
-          })
-        );
-        expect(toast.info).toHaveBeenCalledWith(
-          'Mode changed to plan',
-          expect.objectContaining({
-            description: 'Changed via CLI command',
           })
         );
       });
@@ -1028,213 +969,6 @@ describe('useAgentSocket', () => {
 
       await waitFor(() => {
         expect(mockSessionStore.setWorkspaceStatus).toHaveBeenCalledWith(sessionId, 'stopped');
-      });
-    });
-  });
-
-  // ========================================
-  // Permission Request Tests
-  // ========================================
-
-  describe('Permission Request Events', () => {
-    it('should handle CLI permission request', async () => {
-      renderHook(() => useAgentSocket({ sessionId, userId, authToken }));
-
-      const permissionEvent: PermissionRequestEvent = {
-        session_id: sessionId,
-        agent_id: agentId,
-        request_id: 'req-001',
-        command: 'rm -rf /tmp/files',
-        description: 'Remove temporary files',
-        tool_name: 'bash',
-        attention_id: 'attention-001',
-        action_type: 'command_execute',
-        action_details: {
-          command: 'rm -rf /tmp/files',
-          tool_name: 'bash',
-        },
-        timestamp: new Date().toISOString(),
-      };
-
-      triggerSocketEvent('permission_request', permissionEvent);
-
-      await waitFor(() => {
-        expect(mockSessionStore.updateAgent).toHaveBeenCalledWith(
-          sessionId,
-          agentId,
-          expect.objectContaining({
-            pendingPermission: expect.objectContaining({
-              requestId: 'req-001',
-              command: 'rm -rf /tmp/files',
-              description: 'Remove temporary files',
-              toolName: 'bash',
-              attentionId: 'attention-001',
-            }),
-          })
-        );
-      });
-    });
-
-    it('should use default attention ID if not provided', async () => {
-      renderHook(() => useAgentSocket({ sessionId, userId, authToken }));
-
-      const permissionEvent: PermissionRequestEvent = {
-        session_id: sessionId,
-        agent_id: agentId,
-        request_id: 'req-002',
-        command: 'ls -la',
-        description: 'List files',
-        tool_name: 'bash',
-        action_type: 'command_execute',
-        action_details: {
-          command: 'ls -la',
-          tool_name: 'bash',
-        },
-        timestamp: new Date().toISOString(),
-      };
-
-      triggerSocketEvent('permission_request', permissionEvent);
-
-      await waitFor(() => {
-        expect(mockSessionStore.updateAgent).toHaveBeenCalledWith(
-          sessionId,
-          agentId,
-          expect.objectContaining({
-            pendingPermission: expect.objectContaining({
-              attentionId: 'permission-req-002',
-            }),
-          })
-        );
-      });
-    });
-
-    it('should ignore permission requests from different sessions', async () => {
-      renderHook(() => useAgentSocket({ sessionId, userId, authToken }));
-
-      const permissionEvent: PermissionRequestEvent = {
-        session_id: 'other-session',
-        agent_id: agentId,
-        request_id: 'req-003',
-        command: 'pwd',
-        description: 'Get directory',
-        tool_name: 'bash',
-        action_type: 'command_execute',
-        action_details: {
-          command: 'pwd',
-          tool_name: 'bash',
-        },
-        timestamp: new Date().toISOString(),
-      };
-
-      triggerSocketEvent('permission_request', permissionEvent);
-
-      await waitFor(() => {
-        expect(mockSessionStore.updateAgent).not.toHaveBeenCalled();
-      });
-    });
-  });
-
-  // ========================================
-  // Native Approval Request Tests
-  // ========================================
-
-  describe('Native Approval Request Events', () => {
-    it('should handle native approval request with command', async () => {
-      renderHook(() => useAgentSocket({ sessionId, userId, authToken }));
-
-      const approvalEvent: NativeApprovalRequestEvent = {
-        approval_id: 'approval-001',
-        session_id: sessionId,
-        agent_id: agentId,
-        agent_name: 'Test Agent',
-        action_type: 'command_execute',
-        action_details: {
-          tool_name: 'bash',
-          command: 'git push origin main',
-        },
-        can_add_to_allowlist: true,
-        expires_at: new Date(Date.now() + 60000).toISOString(),
-      };
-
-      triggerSocketEvent('native_approval_request', approvalEvent);
-
-      await waitFor(() => {
-        expect(mockSessionStore.updateAgent).toHaveBeenCalledWith(
-          sessionId,
-          agentId,
-          expect.objectContaining({
-            pendingPermission: expect.objectContaining({
-              requestId: 'approval-001',
-              command: 'git push origin main',
-              description: 'bash: git push origin main',
-              toolName: 'bash',
-              attentionId: 'approval-approval-001',
-            }),
-          })
-        );
-        expect(toast.info).toHaveBeenCalledWith(
-          'Test Agent needs your approval',
-          expect.objectContaining({
-            description: 'bash: git push origin main',
-          })
-        );
-      });
-    });
-
-    it('should handle native approval request with file path', async () => {
-      renderHook(() => useAgentSocket({ sessionId, userId, authToken }));
-
-      const approvalEvent: NativeApprovalRequestEvent = {
-        approval_id: 'approval-002',
-        session_id: sessionId,
-        agent_id: agentId,
-        agent_name: 'Test Agent',
-        action_type: 'file_write',
-        action_details: {
-          tool_name: 'file_write',
-          file_path: '/home/user/config.json',
-        },
-        can_add_to_allowlist: false,
-        expires_at: new Date(Date.now() + 60000).toISOString(),
-      };
-
-      triggerSocketEvent('native_approval_request', approvalEvent);
-
-      await waitFor(() => {
-        expect(mockSessionStore.updateAgent).toHaveBeenCalledWith(
-          sessionId,
-          agentId,
-          expect.objectContaining({
-            pendingPermission: expect.objectContaining({
-              command: '/home/user/config.json',
-              description: 'file_write: /home/user/config.json',
-            }),
-          })
-        );
-      });
-    });
-
-    it('should ignore native approval from different sessions', async () => {
-      renderHook(() => useAgentSocket({ sessionId, userId, authToken }));
-
-      const approvalEvent: NativeApprovalRequestEvent = {
-        approval_id: 'approval-003',
-        session_id: 'other-session',
-        agent_id: agentId,
-        agent_name: 'Test Agent',
-        action_type: 'command_execute',
-        action_details: {
-          tool_name: 'bash',
-          command: 'pwd',
-        },
-        can_add_to_allowlist: true,
-        expires_at: new Date(Date.now() + 60000).toISOString(),
-      };
-
-      triggerSocketEvent('native_approval_request', approvalEvent);
-
-      await waitFor(() => {
-        expect(mockSessionStore.updateAgent).not.toHaveBeenCalled();
       });
     });
   });

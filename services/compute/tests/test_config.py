@@ -28,11 +28,6 @@ class TestSettingsDefaults:
         assert settings.workspace_servers_json == "[]"
         assert len(settings.workspace_servers) == 0
 
-    def test_storage_settings_defaults(self) -> None:
-        """Test default storage settings."""
-        settings = Settings()
-        assert settings.local_storage_path == "/var/lib/podex/workspaces"
-
     def test_redis_settings_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test default Redis settings."""
         # Clear env var that may override the default
@@ -74,12 +69,6 @@ class TestSettingsCustom:
         assert settings.max_workspaces == 20
         assert len(settings.workspace_servers) == 1
         assert settings.workspace_servers[0].server_id == "test-1"
-
-    def test_custom_storage_path(self) -> None:
-        """Test custom storage path."""
-        settings = Settings(local_storage_path="/mnt/data/workspaces")
-        assert settings.local_storage_path == "/mnt/data/workspaces"
-
 
 class TestSettingsSentry:
     """Tests for Sentry configuration."""

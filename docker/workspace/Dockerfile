@@ -17,7 +17,10 @@ ARG WORKSPACE_USER=podex
 ARG WORKSPACE_UID=1000
 ARG WORKSPACE_GID=1000
 
-RUN groupadd --gid ${WORKSPACE_GID} ${WORKSPACE_USER} \
+# Remove any existing user/group with conflicting UID/GID, then create our user
+RUN (getent group ${WORKSPACE_GID} && groupdel $(getent group ${WORKSPACE_GID} | cut -d: -f1) || true) \
+    && (getent passwd ${WORKSPACE_UID} && userdel $(getent passwd ${WORKSPACE_UID} | cut -d: -f1) || true) \
+    && groupadd --gid ${WORKSPACE_GID} ${WORKSPACE_USER} \
     && useradd --uid ${WORKSPACE_UID} --gid ${WORKSPACE_GID} -m -s /bin/zsh ${WORKSPACE_USER}
 
 # Install base system packages

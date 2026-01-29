@@ -165,40 +165,6 @@ repos:
         types: [python]
         pass_filenames: false
 
-  # Infrastructure (Pulumi) - Python linting and type checking
-  - repo: local
-    hooks:
-      - id: ruff-infrastructure
-        name: Ruff Lint (infrastructure)
-        entry: bash -c 'cd infrastructure && uv run ruff check .'
-        language: system
-        files: ^infrastructure/
-        types: [python]
-        pass_filenames: false
-
-      - id: ruff-format-infrastructure
-        name: Ruff Format (infrastructure)
-        entry: bash -c 'cd infrastructure && uv run ruff format .'
-        language: system
-        files: ^infrastructure/
-        types: [python]
-        pass_filenames: false
-
-      - id: mypy-infrastructure
-        name: mypy (infrastructure)
-        entry: bash -c 'cd infrastructure && uv run mypy .'
-        language: system
-        files: ^infrastructure/
-        types: [python]
-        pass_filenames: false
-
-      - id: infrastructure-tests
-        name: Infrastructure Tests
-        entry: bash -c 'cd infrastructure && uv run pytest tests/ -x --tb=short'
-        language: system
-        files: ^infrastructure/
-        pass_filenames: false
-
 # CI configuration
 ci:
   autofix_prs: false

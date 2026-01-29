@@ -41,7 +41,6 @@ from src.database.models import (
     PodTemplate,
     SkillTemplate,
     SystemSkill,
-    TerminalIntegratedAgentType,
 )
 from src.database.seeds import (
     DEFAULT_AGENT_ROLES,
@@ -55,7 +54,6 @@ from src.database.seeds import (
     DEFAULT_SETTINGS,
     DEFAULT_SKILL_TEMPLATES,
     DEFAULT_SYSTEM_SKILLS,
-    DEFAULT_TERMINAL_AGENTS,
     OFFICIAL_TEMPLATES,
 )
 from src.main import app
@@ -182,10 +180,6 @@ async def load_seed_data(engine: AsyncEngine) -> None:
         # Load MCP Servers
         for mcp_data in DEFAULT_MCP_SERVERS:
             session.add(DefaultMCPServer(**mcp_data))
-
-        # Load Terminal Agent Types
-        for agent_data in DEFAULT_TERMINAL_AGENTS:
-            session.add(TerminalIntegratedAgentType(**agent_data))
 
         # Load Skill Templates
         for skill_data in DEFAULT_SKILL_TEMPLATES:

@@ -3,7 +3,6 @@
 Supports multiple voice providers:
 - local: pyttsx3 for TTS, whisper for STT (no cloud dependency)
 - openai: OpenAI TTS and Whisper API (requires OPENAI_API_KEY)
-- google: Google Cloud TTS and Speech-to-Text (requires GCP credentials)
 """
 
 import base64
@@ -18,9 +17,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from podex_shared import generate_tts_summary, get_command_description, parse_voice_command
-from podex_shared.gcp import get_speech_client, get_tts_client
-from podex_shared.gcp.stt import SpeechClient
-from podex_shared.gcp.tts import TTSClient
 from src.config import settings
 from src.database.models import Agent as AgentModel
 from src.database.models import ConversationMessage
@@ -174,18 +170,6 @@ async def verify_session_access(
         raise HTTPException(status_code=403, detail="Access denied")
 
     return session
-
-
-def _get_tts_client() -> TTSClient:
-    """Get Google Cloud TTS client based on environment."""
-    use_mock = settings.ENVIRONMENT == "development"
-    return get_tts_client(use_mock=use_mock)
-
-
-def _get_speech_client() -> SpeechClient:
-    """Get Google Cloud Speech-to-Text client based on environment."""
-    use_mock = settings.ENVIRONMENT == "development"
-    return get_speech_client(use_mock=use_mock)
 
 
 def _get_voice_provider() -> str:
@@ -394,7 +378,6 @@ async def list_voices(
     Returns voices from the configured VOICE_PROVIDER:
     - local: System voices via pyttsx3
     - openai: OpenAI TTS voices (alloy, echo, fable, onyx, nova, shimmer)
-    - google: Google Cloud TTS voices
     """
     get_current_user_id(request)
 
@@ -460,22 +443,6 @@ async def list_voices(
                 # Still return all voices as they support multiple languages
                 return openai_voices
         return openai_voices
-
-    # Google Cloud TTS voices
-    if provider == "google":
-        tts = _get_tts_client()
-        voices = await tts.list_voices(language_code=language)
-        return [
-            VoiceInfoResponse(
-                id=v.id,
-                name=v.name,
-                language_code=v.language_code,
-                language_name=v.language_name,
-                gender=v.gender,
-                engine="neural",
-            )
-            for v in voices
-        ]
 
     # Local voices (pyttsx3) - redirect to /voices/local endpoint
     # Return mock voices for API compatibility
@@ -641,7 +608,6 @@ async def transcribe_audio(
     Supports multiple providers based on VOICE_PROVIDER setting:
     - local: Uses OpenAI Whisper model running locally
     - openai: Uses OpenAI Whisper API (cloud)
-    - google: Uses Google Cloud Speech-to-Text
     """
     get_current_user_id(request)
 
@@ -689,32 +655,6 @@ async def transcribe_audio(
             logger.exception("OpenAI Whisper transcription failed")
             raise HTTPException(status_code=500, detail=f"Transcription failed: {e}") from e
 
-    # Google Cloud Speech-to-Text
-    if provider == "google":
-        speech = _get_speech_client()
-        try:
-            result = await speech.transcribe(  # type: ignore[attr-defined]
-                audio_data=audio_data,
-                encoding=data.format.upper(),
-                language_code=data.language or "en-US",
-            )
-
-            text = result.transcript
-            avg_confidence = result.confidence
-            duration_ms = int(result.duration_seconds * 1000) if result.duration_seconds else 0
-        except Exception as e:
-            logger.exception("GCP Speech transcription failed")
-            raise HTTPException(status_code=500, detail=f"Transcription failed: {e}") from e
-
-        if not text:
-            raise HTTPException(status_code=500, detail="No transcript generated")
-
-        return TranscribeResponse(
-            text=text,
-            confidence=avg_confidence,
-            duration_ms=duration_ms,
-        )
-
     # Unknown provider - fall back to local
     logger.warning("Unknown voice provider '%s', falling back to local", provider)
     try:
@@ -748,7 +688,6 @@ async def synthesize_speech(
     Supports multiple providers based on VOICE_PROVIDER setting:
     - local: Uses pyttsx3 (system voices - espeak on Linux, SAPI on Windows, etc.)
     - openai: Uses OpenAI TTS API (alloy, echo, fable, onyx, nova, shimmer voices)
-    - google: Uses Google Cloud Text-to-Speech
     """
     get_current_user_id(request)
 
@@ -805,25 +744,6 @@ async def synthesize_speech(
         except Exception as e:
             logger.exception("OpenAI TTS synthesis failed")
             raise HTTPException(status_code=500, detail=f"Synthesis failed: {e}") from e
-
-    # Google Cloud TTS
-    if provider == "google":
-        tts = _get_tts_client()
-        tts_result = await tts.synthesize_speech(  # type: ignore[call-arg]
-            text=data.text,
-            voice_name=voice_id,
-            audio_encoding=data.format.upper(),
-        )
-
-        audio_b64 = base64.b64encode(tts_result.audio_data).decode("utf-8")
-        duration_ms = len(data.text) * 60
-
-        return SynthesizeResponse(
-            audio_url="",
-            audio_b64=audio_b64,
-            duration_ms=duration_ms,
-            content_type=tts_result.content_type,
-        )
 
     # Unknown provider - fall back to local
     logger.warning("Unknown voice provider '%s', falling back to local", provider)
@@ -958,25 +878,6 @@ async def synthesize_message(
         except Exception as e:
             logger.exception("OpenAI TTS message synthesis failed")
             raise HTTPException(status_code=500, detail=f"Synthesis failed: {e}") from e
-
-    # Google Cloud TTS
-    if provider == "google":
-        tts = _get_tts_client()
-        tts_result = await tts.synthesize_speech(  # type: ignore[call-arg]
-            text=text_to_speak,
-            voice_name=voice_id,
-            audio_encoding="MP3",
-        )
-
-        audio_b64 = base64.b64encode(tts_result.audio_data).decode("utf-8")
-        duration_ms = len(text_to_speak) * 60
-
-        return SynthesizeResponse(
-            audio_url="",
-            audio_b64=audio_b64,
-            duration_ms=duration_ms,
-            content_type=tts_result.content_type,
-        )
 
     # Unknown provider - fall back to local
     logger.warning("Unknown voice provider '%s', falling back to local", provider)
