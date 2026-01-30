@@ -255,6 +255,10 @@ services:
       - ./services/compute/src:/app/services/compute/src
       - ./services/shared/src:/app/services/shared/src
       # Note: No docker.sock mount - we connect to workspace servers over the network
+      # TLS certificates for secure Docker API connections to workspace servers
+      # This directory must contain client certs (cert.pem, key.pem, ca.pem) for each server
+      # Create empty dir locally: mkdir -p /etc/docker/workspace-certs
+      - /etc/docker/workspace-certs:/etc/docker/workspace-certs:ro
     depends_on:
       api:
         condition: service_healthy

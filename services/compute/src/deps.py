@@ -237,16 +237,15 @@ async def sync_servers() -> int:
 
     registered_count = 0
     for server in servers:
-        # Debug log to verify TLS paths are being received from API
-        if server.get("tls_enabled"):
-            logger.debug(
-                "Server TLS config from API",
-                server_id=server["id"],
-                tls_enabled=server["tls_enabled"],
-                tls_cert_path=server.get("tls_cert_path"),
-                tls_key_path=server.get("tls_key_path"),
-                tls_ca_path=server.get("tls_ca_path"),
-            )
+        # Log server config received from API (info level to ensure visibility)
+        logger.info(
+            "Server config received from API",
+            server_id=server["id"],
+            tls_enabled=server.get("tls_enabled"),
+            tls_cert_path=server.get("tls_cert_path"),
+            tls_key_path=server.get("tls_key_path"),
+            tls_ca_path=server.get("tls_ca_path"),
+        )
         success = await docker_manager.add_server(
             server_id=server["id"],
             hostname=server["hostname"],
