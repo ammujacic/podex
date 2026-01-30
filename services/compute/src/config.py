@@ -63,6 +63,31 @@ class Settings(BaseSettings):
     # CORS - allowed origins for API access
     cors_origins: list[str] = ["http://localhost:3000"]
 
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, v: Any) -> list[str]:
+        """Parse CORS origins from JSON array, comma-separated, or plain string."""
+        if isinstance(v, list):
+            return [str(x) for x in v]
+        if isinstance(v, str):
+            v = v.strip()
+            # Handle empty string
+            if not v:
+                return ["http://localhost:3000"]
+            # Try JSON array first
+            if v.startswith("["):
+                try:
+                    parsed = json.loads(v)
+                    return [str(x) for x in parsed] if isinstance(parsed, list) else [v]
+                except json.JSONDecodeError:
+                    pass
+            # Comma-separated list (e.g., "https://a.com,https://b.com")
+            if "," in v:
+                return [origin.strip() for origin in v.split(",") if origin.strip()]
+            # Single origin
+            return [v]
+        return ["http://localhost:3000"]
+
     # Workspace servers configuration (JSON array)
     # Each server: {"server_id", "host", "docker_port", "tls_enabled", "cert_path", ...}
     workspace_servers_json: str = Field(
