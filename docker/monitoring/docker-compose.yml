@@ -142,7 +142,7 @@ services:
       - "coolify.service=cadvisor"
 
   uptime-kuma:
-    image: louislam/uptime-kuma:1.23.11
+    image: louislam/uptime-kuma:1
     container_name: uptime-kuma
     volumes:
       - uptime_kuma_data:/app/data
