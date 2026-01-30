@@ -60,33 +60,30 @@ class Settings(BaseSettings):
     api_base_url: str = "http://localhost:3001"
     internal_service_token: str | None = None  # Token for service-to-service auth
 
-    # CORS - allowed origins for API access
-    cors_origins: list[str] = ["http://localhost:3000"]
+    # CORS - stored as raw string to avoid pydantic-settings JSON parsing issues
+    cors_origins_raw: str = Field(
+        default='["http://localhost:3000"]',
+        validation_alias=AliasChoices("cors_origins", "COMPUTE_CORS_ORIGINS"),
+    )
 
-    @field_validator("cors_origins", mode="before")
-    @classmethod
-    def parse_cors_origins(cls, v: Any) -> list[str]:
+    @property
+    def cors_origins(self) -> list[str]:
         """Parse CORS origins from JSON array, comma-separated, or plain string."""
-        if isinstance(v, list):
-            return [str(x) for x in v]
-        if isinstance(v, str):
-            v = v.strip()
-            # Handle empty string
-            if not v:
-                return ["http://localhost:3000"]
-            # Try JSON array first
-            if v.startswith("["):
-                try:
-                    parsed = json.loads(v)
-                    return [str(x) for x in parsed] if isinstance(parsed, list) else [v]
-                except json.JSONDecodeError:
-                    pass
-            # Comma-separated list (e.g., "https://a.com,https://b.com")
-            if "," in v:
-                return [origin.strip() for origin in v.split(",") if origin.strip()]
-            # Single origin
-            return [v]
-        return ["http://localhost:3000"]
+        v = self.cors_origins_raw.strip() if self.cors_origins_raw else ""
+        if not v:
+            return ["http://localhost:3000"]
+        # Try JSON array first
+        if v.startswith("["):
+            try:
+                parsed = json.loads(v)
+                return [str(x) for x in parsed] if isinstance(parsed, list) else [v]
+            except json.JSONDecodeError:
+                pass
+        # Comma-separated list (e.g., "https://a.com,https://b.com")
+        if "," in v:
+            return [origin.strip() for origin in v.split(",") if origin.strip()]
+        # Single origin
+        return [v]
 
     # Workspace servers configuration (JSON array)
     # Each server: {"server_id", "host", "docker_port", "tls_enabled", "cert_path", ...}
