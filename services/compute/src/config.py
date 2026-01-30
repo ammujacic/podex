@@ -1,9 +1,48 @@
 """Compute service configuration."""
 
-from typing import Literal
+import json
+from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings
+
+
+class WorkspaceServerConfig:
+    """Configuration for a single workspace server."""
+
+    def __init__(
+        self,
+        server_id: str,
+        host: str,
+        docker_port: int = 2375,
+        tls_enabled: bool = False,
+        cert_path: str | None = None,
+        max_cpu: float = 8.0,
+        max_memory_mb: int = 16384,
+        max_workspaces: int = 50,
+        labels: dict[str, str] | None = None,
+        architecture: str = "amd64",
+        region: str | None = None,
+        # GPU configuration
+        has_gpu: bool = False,
+        gpu_type: str | None = None,
+        gpu_count: int = 0,
+    ):
+        self.server_id = server_id
+        self.host = host
+        self.docker_port = docker_port
+        self.tls_enabled = tls_enabled
+        self.cert_path = cert_path
+        self.max_cpu = max_cpu
+        self.max_memory_mb = max_memory_mb
+        self.max_workspaces = max_workspaces
+        self.labels = labels or {}
+        self.architecture = architecture
+        self.region = region
+        # GPU
+        self.has_gpu = has_gpu
+        self.gpu_type = gpu_type
+        self.gpu_count = gpu_count
 
 
 class Settings(BaseSettings):
@@ -24,47 +63,77 @@ class Settings(BaseSettings):
     # CORS - allowed origins for API access
     cors_origins: list[str] = ["http://localhost:3000"]
 
-    # Compute mode: docker for local, gcp for production
-    compute_mode: Literal["docker", "gcp"] = "docker"
+    # Workspace servers configuration (JSON array)
+    # Each server: {"server_id", "host", "docker_port", "tls_enabled", "cert_path", ...}
+    workspace_servers_json: str = Field(
+        default="[]",
+        validation_alias=AliasChoices("workspace_servers", "COMPUTE_WORKSPACE_SERVERS"),
+    )
 
-    # Docker settings (local development)
-    docker_host: str = "unix:///var/run/docker.sock"
-    max_workspaces: int = 10
+    # Workspace settings
+    max_workspaces: int = 10  # Max workspaces per server (soft limit)
     workspace_timeout: int = 3600  # 1 hour idle timeout
     shutdown_timeout: int = 60  # Max seconds for graceful shutdown before forcing exit
+    # Base workspace image (used as fallback)
     workspace_image: str = "podex/workspace:latest"
-    docker_network: str = "podex-dev"
 
-    # GCP settings
-    gcp_project_id: str | None = None
-    gcp_region: str = "us-east1"
+    # Container runtime for workspace isolation (runsc for gVisor, runc for standard)
+    docker_runtime: str | None = "runsc"  # Set to None to use server default
 
-    # Container images for different architectures (GCP production)
-    # These are GCR/Artifact Registry image URIs
-    workspace_image_x86: str = "podex/workspace:latest-amd64"
-    workspace_image_gpu: str = "podex/workspace:latest-gpu"  # x86 + CUDA
+    @field_validator("workspace_servers_json", mode="before")
+    @classmethod
+    def parse_workspace_servers(cls, v: Any) -> str:
+        """Ensure workspace_servers is a string (JSON)."""
+        if isinstance(v, list):
+            return json.dumps(v)
+        return v or "[]"
 
-    # GKE cluster settings
-    gke_cluster_name: str = "podex-workspaces"
-    gke_namespace: str = "workspaces"
-
-    # Cloud Run settings (for serverless workspaces)
-    cloud_run_service_account: str | None = None
+    @property
+    def workspace_servers(self) -> list[WorkspaceServerConfig]:
+        """Parse workspace servers from JSON config."""
+        try:
+            servers_data = json.loads(self.workspace_servers_json)
+            return [
+                WorkspaceServerConfig(
+                    server_id=s.get("server_id", s.get("name", f"server-{i}")),
+                    host=s.get("host", "localhost"),
+                    docker_port=s.get("docker_port", 2375),
+                    tls_enabled=s.get("tls_enabled", False),
+                    cert_path=s.get("cert_path"),
+                    max_cpu=s.get("max_cpu", 8.0),
+                    max_memory_mb=s.get("max_memory_mb", 16384),
+                    max_workspaces=s.get("max_workspaces", 50),
+                    labels=s.get("labels", {}),
+                    architecture=s.get("architecture", "amd64"),
+                    region=s.get("region"),
+                    # GPU configuration
+                    has_gpu=s.get("has_gpu", False),
+                    gpu_type=s.get("gpu_type"),
+                    gpu_count=s.get("gpu_count", 0),
+                )
+                for i, s in enumerate(servers_data)
+            ]
+        except (json.JSONDecodeError, TypeError):
+            return []
 
     # Redis for state management
     redis_url: str = "redis://localhost:6379"
 
-    # GCS storage for workspace files
-    gcs_bucket: str = "podex-workspaces"
-    gcs_prefix: str = "workspaces"
-    gcs_sync_interval: int = 30  # Seconds between background syncs
+    # Workspace data storage (bind mounts with XFS quotas in production)
+    workspace_data_path: str = "/data/workspaces"
+    # Enable XFS project quotas for disk limits (requires XFS with pquota mount option)
+    xfs_quotas_enabled: bool = False  # Set to True in production
 
-    # Local storage for Docker development (per-user bucket emulation)
-    # Each user gets a directory: {local_storage_path}/{user_id}/
-    local_storage_path: str = "/tmp/podex-storage"  # noqa: S108
-
-    # GCS emulator endpoint (for local development)
-    gcs_emulator_host: str | None = None
+    # Workspace container images for different architectures
+    # For production, set via environment variables:
+    #   COMPUTE_WORKSPACE_IMAGE_ARM64=ghcr.io/yourorg/workspace:latest
+    #   COMPUTE_WORKSPACE_IMAGE_AMD64=ghcr.io/yourorg/workspace:latest
+    # The multi-arch manifest will auto-select the correct architecture
+    workspace_image_arm64: str = "podex/workspace:latest-arm64"
+    workspace_image_amd64: str = "podex/workspace:latest-amd64"
+    workspace_image_gpu: str = (
+        "podex/workspace:latest-cuda"  # CUDA-enabled image for GPU workspaces
+    )
 
     # Workspace communication security
     # When enabled, workspace containers are accessed via HTTPS with token auth

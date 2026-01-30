@@ -110,4 +110,4 @@ export const LazyGitPanel = dynamic(
 );
 
 // Re-export getLanguageFromPath for convenience
-export { getLanguageFromPath } from './CodeEditor';
+export { getLanguageFromPath } from '@/lib/vscode/languageUtils';

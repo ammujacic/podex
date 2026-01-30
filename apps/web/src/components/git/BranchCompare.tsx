@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import {
   GitBranch,
   GitCommit,
@@ -53,6 +53,7 @@ interface Branch {
   name: string;
   current: boolean;
   remote?: string;
+  isRemote?: boolean;
 }
 
 // ============================================================================
@@ -254,6 +255,8 @@ interface BranchCompareProps {
   className?: string;
   onClose?: () => void;
   workingDir?: string;
+  /** Current branch name (e.g., 'main', 'feature-x') */
+  currentBranch?: string;
 }
 
 export function BranchCompare({
@@ -262,15 +265,41 @@ export function BranchCompare({
   className,
   onClose,
   workingDir,
+  currentBranch,
 }: BranchCompareProps) {
+  // Compute smart default for compare branch:
+  // If current branch has a remote tracking branch (origin/{branch}), use that
+  // Otherwise fall back to origin/HEAD
+  const defaultCompareBranch = useMemo(() => {
+    if (currentBranch) {
+      const trackingBranch = `origin/${currentBranch}`;
+      const hasTrackingBranch = branches.some(
+        (b) => b.name === trackingBranch || b.name === `remotes/${trackingBranch}`
+      );
+      if (hasTrackingBranch) {
+        return trackingBranch;
+      }
+    }
+    return 'origin/HEAD';
+  }, [currentBranch, branches]);
+
   const [baseBranch, setBaseBranch] = useState<string>('HEAD');
-  const [compareBranch, setCompareBranch] = useState<string>('origin/HEAD');
+  const [compareBranch, setCompareBranch] = useState<string>(defaultCompareBranch);
+  const hasUserSelectedCompareBranch = useRef(false);
   const [compareResult, setCompareResult] = useState<BranchCompareResult | null>(null);
+
+  // Update compareBranch when branches load (if user hasn't manually selected yet)
+  useEffect(() => {
+    if (!hasUserSelectedCompareBranch.current && defaultCompareBranch !== 'origin/HEAD') {
+      setCompareBranch(defaultCompareBranch);
+    }
+  }, [defaultCompareBranch]);
   const [mergePreview, setMergePreview] = useState<MergePreviewResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isMergeLoading, setIsMergeLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'commits' | 'files'>('commits');
+  const [includeUncommitted, setIncludeUncommitted] = useState(false);
 
   // Auto-load comparison on mount with default values (HEAD vs origin/HEAD)
   useEffect(() => {
@@ -289,14 +318,14 @@ export function BranchCompare({
     setMergePreview(null);
 
     try {
-      const data = await compareBranches(sessionId, base, compare, workingDir);
+      const data = await compareBranches(sessionId, base, compare, workingDir, includeUncommitted);
       setCompareResult(data as BranchCompareResult);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to compare branches');
     } finally {
       setIsLoading(false);
     }
-  }, [baseBranch, compareBranch, sessionId, workingDir]);
+  }, [baseBranch, compareBranch, sessionId, workingDir, includeUncommitted]);
 
   const handlePreviewMerge = useCallback(async () => {
     if (!baseBranch || !compareBranch) return;
@@ -369,7 +398,10 @@ export function BranchCompare({
 
           <select
             value={compareBranch}
-            onChange={(e) => setCompareBranch(e.target.value)}
+            onChange={(e) => {
+              hasUserSelectedCompareBranch.current = true;
+              setCompareBranch(e.target.value);
+            }}
             className="w-40 px-3 py-1.5 text-sm rounded bg-elevated border border-border-subtle text-text-primary focus:outline-none focus:ring-2 focus:ring-brand-500/50"
           >
             <option value="HEAD">HEAD (Local)</option>
@@ -396,6 +428,17 @@ export function BranchCompare({
             <span className="ml-1">Compare</span>
           </Button>
         </div>
+
+        {/* Include uncommitted changes toggle */}
+        <label className="flex items-center gap-2 mt-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={includeUncommitted}
+            onChange={(e) => setIncludeUncommitted(e.target.checked)}
+            className="w-4 h-4 rounded border-border-subtle bg-elevated text-accent-primary focus:ring-accent-primary/50 focus:ring-2"
+          />
+          <span className="text-sm text-text-secondary">Include uncommitted changes</span>
+        </label>
       </div>
 
       {/* Error */}

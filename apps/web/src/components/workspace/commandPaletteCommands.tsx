@@ -5,7 +5,6 @@
 
 import {
   Bot,
-  Clock,
   FileCode,
   GitBranch,
   GitCommit,
@@ -15,7 +14,6 @@ import {
   Maximize2,
   Minimize2,
   Moon,
-  Pause,
   Plus,
   Settings,
   Sun,
@@ -603,32 +601,14 @@ export function buildCommands(deps: CommandDependencies): CommandItem[] {
 
   // Add session-specific commands
   if (currentSession) {
-    baseCommands.push(
-      {
-        id: 'pause-session',
-        label: 'Pause Session (Standby)',
-        icon: <Pause className="h-4 w-4" />,
-        group: 'Session',
-        keywords: ['pause', 'standby', 'stop', 'save'],
-        action: () => openModal('pause-session'),
-      },
-      {
-        id: 'standby-settings',
-        label: 'Configure Auto-Standby',
-        icon: <Clock className="h-4 w-4" />,
-        group: 'Session',
-        keywords: ['standby', 'timeout', 'idle', 'auto', 'settings'],
-        action: () => openModal('standby-settings'),
-      },
-      {
-        id: 'restart-session',
-        label: 'Restart Session',
-        icon: <RefreshCw className="h-4 w-4" />,
-        group: 'Session',
-        keywords: ['restart', 'reload', 'session'],
-        action: () => openModal('restart-session'),
-      }
-    );
+    baseCommands.push({
+      id: 'restart-session',
+      label: 'Restart Session',
+      icon: <RefreshCw className="h-4 w-4" />,
+      group: 'Session',
+      keywords: ['restart', 'reload', 'session'],
+      action: () => openModal('restart-session'),
+    });
   }
 
   return baseCommands;

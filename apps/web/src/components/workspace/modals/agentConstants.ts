@@ -22,7 +22,6 @@ import {
   Sparkles,
   User,
 } from 'lucide-react';
-import { ClaudeIcon, OpenAIIcon, GeminiIcon } from '@/components/icons';
 
 // Icon type that accepts both LucideIcon and custom SVG icons
 type IconComponent =
@@ -40,10 +39,7 @@ export type AgentRole =
   | 'security'
   | 'devops'
   | 'documentator'
-  | 'custom'
-  | 'claude-code'
-  | 'openai-codex'
-  | 'gemini-cli';
+  | 'custom';
 
 export type AgentStatus = 'idle' | 'active' | 'error';
 
@@ -67,9 +63,6 @@ export const ROLE_ICONS: Record<string, IconComponent> = {
   devops: Container,
   documentator: FileText,
   custom: User,
-  'claude-code': ClaudeIcon,
-  'openai-codex': OpenAIIcon,
-  'gemini-cli': GeminiIcon,
 };
 
 /**

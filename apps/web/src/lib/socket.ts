@@ -232,50 +232,6 @@ export interface NativeApprovalDecisionEvent {
   add_to_allowlist: boolean;
 }
 
-// Permission request from Claude Code CLI
-export interface PermissionRequestEvent {
-  session_id: string;
-  agent_id: string;
-  request_id: string;
-  command: string | null;
-  description: string | null;
-  tool_name: string;
-  attention_id?: string;
-  action_type: 'command_execute';
-  action_details: {
-    command: string | null;
-    tool_name: string;
-  };
-  timestamp: string;
-}
-
-export interface PermissionDecisionEvent {
-  session_id: string;
-  agent_id: string;
-  request_id: string;
-  approved: boolean;
-  timestamp: string;
-}
-
-export interface AgentModeUpdateEvent {
-  session_id: string;
-  agent_id: string;
-  mode: 'plan' | 'ask' | 'auto' | 'sovereign';
-  command_allowlist: string[] | null;
-}
-
-export interface AgentAutoModeSwitchEvent {
-  session_id: string;
-  agent_id: string;
-  agent_name: string;
-  old_mode: string;
-  new_mode: string;
-  reason: string;
-  trigger_phrase: string | null;
-  auto_revert: boolean;
-  timestamp: string;
-}
-
 // Context window events
 export interface ContextUsageUpdateEvent {
   agent_id: string;
@@ -530,8 +486,8 @@ export interface SkillCompleteEvent {
 }
 
 /**
- * Event emitted when a CLI agent's configuration changes.
- * Enables bi-directional sync between CLI tools and Podex UI.
+ * Event emitted when an agent's configuration changes.
+ * Enables sync between agents and Podex UI.
  */
 export interface AgentConfigUpdateEvent {
   session_id: string;
@@ -543,31 +499,89 @@ export interface AgentConfigUpdateEvent {
     thinking_budget?: number;
     context_compacted?: boolean;
   };
-  source: 'cli' | 'user' | 'system';
+  source: 'agent' | 'user' | 'system';
   timestamp: string;
 }
 
 /**
- * Event emitted when workspace status changes (running, standby, error, etc.)
+ * Event emitted when workspace status changes (running, stopped, error, etc.)
  */
 export interface WorkspaceStatusEvent {
   workspace_id: string;
-  status: 'pending' | 'running' | 'standby' | 'stopped' | 'error';
-  standby_at?: string;
+  status: 'pending' | 'running' | 'stopped' | 'error' | 'offline';
   error?: string;
 }
 
 /**
- * Event emitted when workspace is moved to standby due to credit exhaustion
+ * Event emitted when workspace is stopped due to credit exhaustion
  */
 export interface WorkspaceBillingStandbyEvent {
   workspace_id: string;
-  status: 'standby';
+  status: 'stopped';
   reason: 'credit_exhaustion';
   message: string;
-  standby_at: string;
   upgrade_url: string;
   add_credits_url: string;
+}
+
+// Conversation session events
+export interface ConversationCreatedEvent {
+  session_id: string;
+  conversation: {
+    id: string;
+    name: string;
+    attached_agent_ids: string[];
+    message_count: number;
+    last_message_at: string | null;
+    created_at: string;
+    updated_at: string;
+  };
+}
+
+export interface ConversationUpdatedEvent {
+  session_id: string;
+  conversation: {
+    id: string;
+    name?: string;
+    attached_agent_ids?: string[];
+    message_count?: number;
+    last_message_at?: string | null;
+    created_at?: string;
+    updated_at?: string;
+  };
+}
+
+export interface ConversationDeletedEvent {
+  session_id: string;
+  conversation_id: string;
+}
+
+export interface ConversationAttachedEvent {
+  session_id: string;
+  conversation_id: string;
+  agent_id: string;
+}
+
+export interface ConversationDetachedEvent {
+  session_id: string;
+  conversation_id: string;
+  previous_agent_id?: string | null;
+}
+
+export interface ConversationMessageEvent {
+  session_id: string;
+  conversation_id: string;
+  message: {
+    id: string;
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    thinking?: string | null;
+    tool_calls?: Record<string, unknown> | null;
+    tool_results?: Record<string, unknown> | null;
+    model?: string | null;
+    stop_reason?: string | null;
+    created_at: string;
+  };
 }
 
 export interface SocketEvents {
@@ -598,11 +612,6 @@ export interface SocketEvents {
   // Native Podex agent approval events
   native_approval_request: (data: NativeApprovalRequestEvent) => void;
   native_approval_decision: (data: NativeApprovalDecisionEvent) => void;
-  // Claude Code CLI permission events
-  permission_request: (data: PermissionRequestEvent) => void;
-  permission_decision: (data: PermissionDecisionEvent) => void;
-  agent_mode_update: (data: AgentModeUpdateEvent) => void;
-  agent_auto_mode_switch: (data: AgentAutoModeSwitchEvent) => void;
   // Context window events
   context_usage_update: (data: ContextUsageUpdateEvent) => void;
   compaction_started: (data: CompactionStartedEvent) => void;
@@ -637,12 +646,19 @@ export interface SocketEvents {
   skill_start: (data: SkillStartEvent) => void;
   skill_step: (data: SkillStepEvent) => void;
   skill_complete: (data: SkillCompleteEvent) => void;
-  // CLI agent config sync events
+  // Agent config sync events
   agent_config_update: (data: AgentConfigUpdateEvent) => void;
   // Workspace status events
   workspace_status: (data: WorkspaceStatusEvent) => void;
   // Billing standby event (credit exhaustion)
   workspace_billing_standby: (data: WorkspaceBillingStandbyEvent) => void;
+  // Conversation session events
+  conversation_created: (data: ConversationCreatedEvent) => void;
+  conversation_updated: (data: ConversationUpdatedEvent) => void;
+  conversation_deleted: (data: ConversationDeletedEvent) => void;
+  conversation_attached: (data: ConversationAttachedEvent) => void;
+  conversation_detached: (data: ConversationDetachedEvent) => void;
+  conversation_message: (data: ConversationMessageEvent) => void;
 }
 
 // Track active session for auto-rejoin on reconnect
@@ -986,28 +1002,6 @@ export function emitNativeApprovalResponse(
     agent_id: agentId,
     approval_id: approvalId,
     approved,
-    add_to_allowlist: addToAllowlist,
-  });
-}
-
-// Claude Code CLI permission response
-export function emitPermissionResponse(
-  sessionId: string,
-  agentId: string,
-  requestId: string,
-  approved: boolean,
-  command: string | null = null,
-  toolName: string | null = null,
-  addToAllowlist: boolean = false
-): void {
-  const sock = getSocket();
-  sock.emit('permission_response', {
-    session_id: sessionId,
-    agent_id: agentId,
-    request_id: requestId,
-    approved,
-    command,
-    tool_name: toolName,
     add_to_allowlist: addToAllowlist,
   });
 }

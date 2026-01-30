@@ -15,7 +15,7 @@ from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -104,8 +104,7 @@ class OrganizationResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class MemberResponse(BaseModel):
@@ -125,8 +124,7 @@ class MemberResponse(BaseModel):
     blocked_reason: str | None
     joined_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class InviteMemberRequest(BaseModel):
@@ -165,8 +163,7 @@ class InvitationResponse(BaseModel):
     expires_at: datetime
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class CreateInviteLinkRequest(BaseModel):
@@ -194,8 +191,7 @@ class InviteLinkResponse(BaseModel):
     expires_at: datetime | None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class JoinOrganizationResponse(BaseModel):

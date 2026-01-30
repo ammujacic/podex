@@ -54,7 +54,7 @@ export { DeployPreviewResult, PreviewStatusResult, E2ETestsResult } from './Depl
 export { StoreMemoryResult, RecallMemoryResult } from './MemoryResults';
 
 // Task results
-export { CreateTaskResult, TaskStatsResult } from './TaskResults';
+export { CreateTaskResult, TaskStatsResult, TodoWriteResult } from './TaskResults';
 
 // Skill results
 export { ExecuteSkillResult, ListSkillsResult } from './SkillResults';

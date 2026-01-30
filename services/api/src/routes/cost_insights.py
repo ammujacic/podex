@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_db
 from src.database.models import LLMModel, UsageRecord
 from src.middleware.auth import get_current_user
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
 router = APIRouter(prefix="/cost-insights", tags=["cost-insights"])
 
@@ -202,7 +203,10 @@ def generate_suggestions(
 
 
 @router.get("/summary", response_model=CostInsightsSummary)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_cost_summary(
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> CostInsightsSummary:
@@ -324,7 +328,10 @@ async def get_cost_summary(
 
 
 @router.get("/suggestions", response_model=list[CostSuggestion])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_suggestions(
+    request: Request,
+    response: Response,
     limit: int = Query(10, ge=1, le=50),
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
@@ -353,7 +360,10 @@ async def get_suggestions(
 
 
 @router.get("/model-comparison", response_model=list[ModelComparison])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_model_comparison(
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> list[ModelComparison]:
@@ -457,7 +467,10 @@ async def get_model_comparison(
 
 
 @router.get("/forecast", response_model=CostForecast)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_cost_forecast(
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> CostForecast:

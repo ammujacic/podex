@@ -4,9 +4,14 @@ FROM python:3.12-slim AS base
 WORKDIR /app
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Bundle cloudflared (tunnel / public URL exposure; plan: "Bundled in podex-local-pod process")
+RUN ARCH=$(dpkg --print-architecture) \
+    && curl -fsSL -o /tmp/cloudflared.deb "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}.deb" \
+    && dpkg -i /tmp/cloudflared.deb \
+    && rm -f /tmp/cloudflared.deb
 
 # Install uv for fast package management
 RUN pip install uv

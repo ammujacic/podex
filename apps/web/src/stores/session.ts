@@ -7,14 +7,15 @@ import {
   type AgentMessage,
   type AgentMode,
   type AgentPosition,
+  type ConversationSession,
   type FilePreview,
   type GridSpan,
   type Session,
-  type StandbySettings,
   type StreamingMessage,
   type ToolCall,
+  deriveSessionName,
   getLanguageFromPath,
-  MAX_MESSAGES_PER_AGENT,
+  MAX_MESSAGES_PER_CONVERSATION,
   MAX_RECENT_FILES,
 } from './sessionTypes';
 import { createDebouncedStorage } from './sessionStorage';
@@ -27,16 +28,18 @@ export type {
   AgentMode,
   AgentPosition,
   AgentRole,
+  ConversationSession,
   FilePreview,
   GridSpan,
-  PendingPermission,
   Session,
-  StandbySettings,
   StreamingMessage,
   ToolCall,
   ViewMode,
   WorkspaceStatus,
 } from './sessionTypes';
+
+// Re-export helpers
+export { deriveSessionName, formatRelativeTime, getAgentDisplayTitle } from './sessionTypes';
 
 // ============================================================================
 // Session State Interface
@@ -59,9 +62,6 @@ interface SessionState {
   removeAgent: (sessionId: string, agentId: string) => void;
   updateAgent: (sessionId: string, agentId: string, updates: Partial<Agent>) => void;
   setActiveAgent: (sessionId: string, agentId: string | null) => void;
-  addAgentMessage: (sessionId: string, agentId: string, message: AgentMessage) => void;
-  deleteAgentMessage: (sessionId: string, agentId: string, messageId: string) => void;
-  updateMessageId: (sessionId: string, agentId: string, oldId: string, newId: string) => void;
   updateAgentPosition: (
     sessionId: string,
     agentId: string,
@@ -70,8 +70,59 @@ interface SessionState {
   updateAgentGridSpan: (sessionId: string, agentId: string, gridSpan: GridSpan) => void;
   bringAgentToFront: (sessionId: string, agentId: string) => void;
 
+  // Conversation session actions
+  createConversationSession: (
+    sessionId: string,
+    options?: { name?: string; firstMessage?: string }
+  ) => ConversationSession;
+  updateConversationSession: (
+    sessionId: string,
+    conversationId: string,
+    updates: Partial<Pick<ConversationSession, 'name'>>
+  ) => void;
+  deleteConversationSession: (sessionId: string, conversationId: string) => void;
+  attachConversationToAgent: (sessionId: string, conversationId: string, agentId: string) => void;
+  detachConversationFromAgent: (sessionId: string, conversationId: string) => void;
+  addConversationMessage: (
+    sessionId: string,
+    conversationId: string,
+    message: AgentMessage
+  ) => void;
+  /**
+   * Atomically merge new messages into a conversation's existing messages.
+   * This is safe from race conditions unlike read-modify-write patterns.
+   */
+  mergeConversationMessages: (
+    sessionId: string,
+    conversationId: string,
+    newMessages: AgentMessage[]
+  ) => void;
+  deleteConversationMessage: (sessionId: string, conversationId: string, messageId: string) => void;
+  updateConversationMessageId: (
+    sessionId: string,
+    conversationId: string,
+    oldId: string,
+    newId: string
+  ) => void;
+  /** Get the conversation attached to an agent, if any */
+  getConversationForAgent: (sessionId: string, agentId: string) => ConversationSession | null;
+  /** Get all available (unattached) conversations for a session */
+  getAvailableConversations: (sessionId: string) => ConversationSession[];
+  /** Handle a WebSocket conversation event (created, updated, deleted, attached, detached) */
+  handleConversationEvent: (
+    sessionId: string,
+    event: string,
+    data: Record<string, unknown>
+  ) => void;
+  /** Replace all conversations for a session from backend source of truth */
+  setConversationSessions: (sessionId: string, conversations: ConversationSession[]) => void;
+
   // File preview actions
-  openFilePreview: (sessionId: string, pathOrPreview: string | FilePreview) => void;
+  openFilePreview: (
+    sessionId: string,
+    pathOrPreview: string | FilePreview,
+    options?: { startLine?: number; endLine?: number }
+  ) => void;
   closeFilePreview: (sessionId: string, previewId: string) => void;
   updateFilePreview: (sessionId: string, previewId: string, updates: Partial<FilePreview>) => void;
   pinFilePreview: (sessionId: string, previewId: string, pinned: boolean) => void;
@@ -98,19 +149,16 @@ interface SessionState {
   setViewMode: (sessionId: string, mode: 'grid' | 'focus' | 'freeform') => void;
 
   // Workspace status actions
-  setWorkspaceStatus: (
-    sessionId: string,
-    status: Session['workspaceStatus'],
-    standbyAt?: string | null
-  ) => void;
+  setWorkspaceStatus: (sessionId: string, status: Session['workspaceStatus']) => void;
   setWorkspaceStatusChecking: (sessionId: string, checking: boolean) => void;
   setWorkspaceError: (sessionId: string, error: string | null) => void;
-  setStandbySettings: (sessionId: string, settings: StandbySettings | null) => void;
   // Update session workspace ID (for syncing from API when stale in localStorage)
   updateSessionWorkspaceId: (sessionId: string, workspaceId: string) => void;
   updateSessionInfo: (
     sessionId: string,
-    updates: Partial<Pick<Session, 'name' | 'branch' | 'gitUrl'>>
+    updates: Partial<
+      Pick<Session, 'name' | 'branch' | 'gitUrl' | 'localPodId' | 'localPodName' | 'mount_path'>
+    >
   ) => void;
   updateSessionWorkspaceTier: (sessionId: string, tier: string) => void;
 
@@ -237,6 +285,20 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
     set((state) => {
       const session = state.sessions[sessionId];
       if (!session) return state;
+
+      // Remove this agent from any conversations' attached list
+      const updatedConversations = session.conversationSessions.map((c) => {
+        const attachedAgentIds = c.attachedAgentIds || [];
+        if (attachedAgentIds.includes(agentId)) {
+          return {
+            ...c,
+            attachedAgentIds: attachedAgentIds.filter((id) => id !== agentId),
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        return c;
+      });
+
       return {
         sessions: {
           ...state.sessions,
@@ -244,6 +306,7 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
             ...session,
             agents: session.agents.filter((a) => a.id !== agentId),
             activeAgentId: session.activeAgentId === agentId ? null : session.activeAgentId,
+            conversationSessions: updatedConversations,
           },
         },
       };
@@ -277,10 +340,33 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
     }),
 
   // ========================================================================
-  // Message Actions (with deduplication)
+  // Conversation Session Actions
   // ========================================================================
 
-  addAgentMessage: (sessionId, agentId, message) =>
+  createConversationSession: (sessionId, options = {}) => {
+    // Use crypto.randomUUID() to generate proper UUIDs that are compatible with the database
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    // Derive name from first message or use provided name or default.
+    // NOTE: We intentionally do NOT seed the first message here.
+    // Messages are added via optimistic updates + WebSocket events to avoid
+    // the first user message appearing twice when the conversation is created.
+    const name = options.firstMessage
+      ? deriveSessionName(options.firstMessage)
+      : options.name || 'New Session';
+
+    const conversation: ConversationSession = {
+      id,
+      name,
+      messages: [],
+      attachedAgentIds: [],
+      messageCount: 0,
+      lastMessageAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
     set((state) => {
       const session = state.sessions[sessionId];
       if (!session) return state;
@@ -289,95 +375,225 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
           ...state.sessions,
           [sessionId]: {
             ...session,
-            agents: session.agents.map((a) => {
-              if (a.id !== agentId) return a;
+            conversationSessions: [...session.conversationSessions, conversation],
+          },
+        },
+      };
+    });
+
+    return conversation;
+  },
+
+  updateConversationSession: (sessionId, conversationId, updates) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            conversationSessions: session.conversationSessions.map((c) =>
+              c.id === conversationId
+                ? { ...c, ...updates, updatedAt: new Date().toISOString() }
+                : c
+            ),
+          },
+        },
+      };
+    }),
+
+  deleteConversationSession: (sessionId, conversationId) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+
+      // Also clear the reference from any agent that had this conversation
+      const updatedAgents = session.agents.map((a) =>
+        a.conversationSessionId === conversationId ? { ...a, conversationSessionId: null } : a
+      );
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            agents: updatedAgents,
+            conversationSessions: session.conversationSessions.filter(
+              (c) => c.id !== conversationId
+            ),
+          },
+        },
+      };
+    }),
+
+  attachConversationToAgent: (sessionId, conversationId, agentId) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+
+      // Update conversation to include agent in attached list
+      const updatedConversations = session.conversationSessions.map((c) => {
+        if (c.id !== conversationId) return c;
+        const attachedAgentIds = c.attachedAgentIds || [];
+        if (!attachedAgentIds.includes(agentId)) {
+          return {
+            ...c,
+            attachedAgentIds: [...attachedAgentIds, agentId],
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        return c;
+      });
+
+      // Update agent to point to conversation
+      const updatedAgents = session.agents.map((a) =>
+        a.id === agentId ? { ...a, conversationSessionId: conversationId } : a
+      );
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            agents: updatedAgents,
+            conversationSessions: updatedConversations,
+          },
+        },
+      };
+    }),
+
+  detachConversationFromAgent: (sessionId, conversationId, agentId?: string) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+
+      const conversation = session.conversationSessions.find((c) => c.id === conversationId);
+      if (!conversation) return state;
+
+      // Determine which agent to detach from - use first attached if not specified
+      const attachedAgentIds = conversation.attachedAgentIds || [];
+      const targetAgentId = agentId || attachedAgentIds[0];
+      if (!targetAgentId) return state;
+
+      // Remove agent from attached list
+      const newAttachedAgentIds = attachedAgentIds.filter((id) => id !== targetAgentId);
+
+      // Update conversation
+      const updatedConversations = session.conversationSessions.map((c) =>
+        c.id === conversationId
+          ? {
+              ...c,
+              attachedAgentIds: newAttachedAgentIds,
+              updatedAt: new Date().toISOString(),
+            }
+          : c
+      );
+
+      // Clear agent's conversation reference if this was its conversation
+      const updatedAgents = session.agents.map((a) =>
+        a.id === targetAgentId && a.conversationSessionId === conversationId
+          ? { ...a, conversationSessionId: null }
+          : a
+      );
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            agents: updatedAgents,
+            conversationSessions: updatedConversations,
+          },
+        },
+      };
+    }),
+
+  addConversationMessage: (sessionId, conversationId, message) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            conversationSessions: session.conversationSessions.map((c) => {
+              if (c.id !== conversationId) return c;
 
               // Deduplication: check if message already exists by ID
-              if (a.messages.some((m) => m.id === message.id)) {
-                return a; // Message already exists, don't add duplicate
+              if (c.messages.some((m) => m.id === message.id)) {
+                return c;
               }
 
-              // Deduplication: for user messages with temp IDs (optimistic updates),
-              // check if a real message with same content already exists
+              // Deduplication: for user messages with temp IDs
               if (message.role === 'user' && message.id.startsWith('temp-')) {
-                const existingRealMessage = a.messages.find(
+                const existingRealMessage = c.messages.find(
                   (m) =>
                     m.role === 'user' && m.content === message.content && !m.id.startsWith('temp-')
                 );
-                if (existingRealMessage) {
-                  return a; // Real message already exists, don't add temp duplicate
-                }
+                if (existingRealMessage) return c;
               }
 
-              // Deduplication: for user messages with real IDs,
-              // check if a temp message with same content exists
+              // Deduplication: replace temp with real for user messages
               if (message.role === 'user' && !message.id.startsWith('temp-')) {
-                const existingTempMessage = a.messages.find(
+                const existingTempMessage = c.messages.find(
                   (m) =>
                     m.role === 'user' && m.content === message.content && m.id.startsWith('temp-')
                 );
                 if (existingTempMessage) {
-                  // Replace temp message with real one
                   return {
-                    ...a,
-                    messages: a.messages.map((m) =>
+                    ...c,
+                    messages: c.messages.map((m) =>
                       m.id === existingTempMessage.id ? { ...m, id: message.id } : m
                     ),
                   };
                 }
               }
 
-              // Deduplication: for assistant messages, check by content within a time window
-              // Only consider duplicates if content matches AND message is recent (within 10 seconds)
+              // Deduplication: for assistant messages by content within time window
               if (message.role === 'assistant') {
                 const now = message.timestamp?.getTime() ?? Date.now();
-                const timeWindow = 10000; // 10 seconds
-                const existingByContent = a.messages.find((m) => {
+                const timeWindow = 10000;
+                const existingByContent = c.messages.find((m) => {
                   if (m.role !== 'assistant' || m.content !== message.content) return false;
                   const msgTime = m.timestamp?.getTime() ?? 0;
                   return Math.abs(now - msgTime) < timeWindow;
                 });
                 if (existingByContent) {
-                  // Update the ID to the real one if different
                   if (existingByContent.id !== message.id) {
                     return {
-                      ...a,
-                      messages: a.messages.map((m) =>
+                      ...c,
+                      messages: c.messages.map((m) =>
                         m.id === existingByContent.id ? { ...m, id: message.id } : m
                       ),
                     };
                   }
-                  return a; // Same content already exists
+                  return c;
                 }
               }
 
-              // Add message and enforce limit to prevent localStorage overflow
-              const newMessages = [...a.messages, message];
+              // Add message and enforce limit
+              const newMessages = [...c.messages, message];
               const limitedMessages =
-                newMessages.length > MAX_MESSAGES_PER_AGENT
-                  ? newMessages.slice(-MAX_MESSAGES_PER_AGENT)
+                newMessages.length > MAX_MESSAGES_PER_CONVERSATION
+                  ? newMessages.slice(-MAX_MESSAGES_PER_CONVERSATION)
                   : newMessages;
-              return { ...a, messages: limitedMessages };
-            }),
-          },
-        },
-      };
-    }),
 
-  deleteAgentMessage: (sessionId, agentId, messageId) =>
-    set((state) => {
-      const session = state.sessions[sessionId];
-      if (!session) return state;
-      return {
-        sessions: {
-          ...state.sessions,
-          [sessionId]: {
-            ...session,
-            agents: session.agents.map((a) => {
-              if (a.id !== agentId) return a;
+              // Update name from first message if still "New Session"
+              const name =
+                c.name === 'New Session' && limitedMessages.length === 1
+                  ? deriveSessionName(message.content)
+                  : c.name;
+
               return {
-                ...a,
-                messages: a.messages.filter((m) => m.id !== messageId),
+                ...c,
+                name,
+                messages: limitedMessages,
+                messageCount: limitedMessages.length,
+                lastMessageAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
               };
             }),
           },
@@ -385,22 +601,286 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
       };
     }),
 
-  updateMessageId: (sessionId, agentId, oldId, newId) =>
+  mergeConversationMessages: (sessionId, conversationId, newMessages) =>
     set((state) => {
       const session = state.sessions[sessionId];
       if (!session) return state;
+
       return {
         sessions: {
           ...state.sessions,
           [sessionId]: {
             ...session,
-            agents: session.agents.map((a) => {
-              if (a.id !== agentId) return a;
+            conversationSessions: session.conversationSessions.map((c) => {
+              if (c.id !== conversationId) return c;
+
+              // Deduplicate within newMessages
+              const seenInBatch = new Set<string>();
+              const dedupedNewMessages = newMessages.filter((m) => {
+                if (!m.id) return true;
+                if (seenInBatch.has(m.id)) return false;
+                seenInBatch.add(m.id);
+                return true;
+              });
+
+              // Filter out existing messages
+              const existingIds = new Set(c.messages.map((m) => m.id).filter(Boolean));
+              const uniqueNewMessages = dedupedNewMessages.filter(
+                (m) => !m.id || !existingIds.has(m.id)
+              );
+
+              if (uniqueNewMessages.length === 0) return c;
+
+              // Merge and sort
+              const merged = [...c.messages, ...uniqueNewMessages];
+              merged.sort((x, y) => {
+                const timeA = x.timestamp
+                  ? new Date(x.timestamp).getTime()
+                  : Number.MAX_SAFE_INTEGER;
+                const timeB = y.timestamp
+                  ? new Date(y.timestamp).getTime()
+                  : Number.MAX_SAFE_INTEGER;
+                return timeA - timeB;
+              });
+
+              // Final dedup pass
+              const finalIds = new Set<string>();
+              const deduped = merged.filter((m) => {
+                if (!m.id) return true;
+                if (finalIds.has(m.id)) return false;
+                finalIds.add(m.id);
+                return true;
+              });
+
+              // Enforce limit
+              const limitedMessages =
+                deduped.length > MAX_MESSAGES_PER_CONVERSATION
+                  ? deduped.slice(-MAX_MESSAGES_PER_CONVERSATION)
+                  : deduped;
+
               return {
-                ...a,
-                messages: a.messages.map((m) => (m.id === oldId ? { ...m, id: newId } : m)),
+                ...c,
+                messages: limitedMessages,
+                messageCount: limitedMessages.length,
+                lastMessageAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
               };
             }),
+          },
+        },
+      };
+    }),
+
+  deleteConversationMessage: (sessionId, conversationId, messageId) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            conversationSessions: session.conversationSessions.map((c) => {
+              if (c.id !== conversationId) return c;
+              const filteredMessages = c.messages.filter((m) => m.id !== messageId);
+              return {
+                ...c,
+                messages: filteredMessages,
+                messageCount: filteredMessages.length,
+                updatedAt: new Date().toISOString(),
+              };
+            }),
+          },
+        },
+      };
+    }),
+
+  updateConversationMessageId: (sessionId, conversationId, oldId, newId) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            conversationSessions: session.conversationSessions.map((c) => {
+              if (c.id !== conversationId) return c;
+              return {
+                ...c,
+                messages: c.messages.map((m) => (m.id === oldId ? { ...m, id: newId } : m)),
+              };
+            }),
+          },
+        },
+      };
+    }),
+
+  getConversationForAgent: (sessionId, agentId) => {
+    const state = useSessionStore.getState();
+    const session = state.sessions[sessionId];
+    if (!session) return null;
+
+    const agent = session.agents.find((a) => a.id === agentId);
+    if (!agent?.conversationSessionId) return null;
+
+    return session.conversationSessions.find((c) => c.id === agent.conversationSessionId) ?? null;
+  },
+
+  getAvailableConversations: (sessionId) => {
+    const state = useSessionStore.getState();
+    const session = state.sessions[sessionId];
+    if (!session) return [];
+
+    // Return conversations that are not attached to any agent
+    return session.conversationSessions.filter(
+      (c) => !c.attachedAgentIds || c.attachedAgentIds.length === 0
+    );
+  },
+
+  handleConversationEvent: (sessionId, event, data) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+
+      switch (event) {
+        case 'conversation_created': {
+          const convData = data.conversation as ConversationSession;
+          // Don't add if already exists
+          if (session.conversationSessions.some((c) => c.id === convData.id)) {
+            return state;
+          }
+          return {
+            sessions: {
+              ...state.sessions,
+              [sessionId]: {
+                ...session,
+                conversationSessions: [
+                  ...session.conversationSessions,
+                  { ...convData, messages: [] },
+                ],
+              },
+            },
+          };
+        }
+
+        case 'conversation_updated': {
+          const convData = data.conversation as Partial<ConversationSession> & { id: string };
+          return {
+            sessions: {
+              ...state.sessions,
+              [sessionId]: {
+                ...session,
+                conversationSessions: session.conversationSessions.map((c) => {
+                  if (c.id !== convData.id) return c;
+                  return {
+                    ...c,
+                    ...convData,
+                    attachedAgentIds: convData.attachedAgentIds ?? c.attachedAgentIds ?? [],
+                  };
+                }),
+              },
+            },
+          };
+        }
+
+        case 'conversation_deleted': {
+          const convId = data.conversation_id as string;
+          return {
+            sessions: {
+              ...state.sessions,
+              [sessionId]: {
+                ...session,
+                agents: session.agents.map((a) =>
+                  a.conversationSessionId === convId ? { ...a, conversationSessionId: null } : a
+                ),
+                conversationSessions: session.conversationSessions.filter((c) => c.id !== convId),
+              },
+            },
+          };
+        }
+
+        case 'conversation_attached': {
+          const convId = data.conversation_id as string;
+          const agentId = data.agent_id as string;
+          return {
+            sessions: {
+              ...state.sessions,
+              [sessionId]: {
+                ...session,
+                agents: session.agents.map((a) =>
+                  a.id === agentId ? { ...a, conversationSessionId: convId } : a
+                ),
+                conversationSessions: session.conversationSessions.map((c) => {
+                  if (c.id !== convId) return c;
+                  // Add agent to attached list if not already present
+                  const attachedAgentIds = c.attachedAgentIds || [];
+                  if (!attachedAgentIds.includes(agentId)) {
+                    return {
+                      ...c,
+                      attachedAgentIds: [...attachedAgentIds, agentId],
+                    };
+                  }
+                  return c;
+                }),
+              },
+            },
+          };
+        }
+
+        case 'conversation_detached': {
+          const convId = data.conversation_id as string;
+          const prevAgentId = data.previous_agent_id as string | undefined;
+          return {
+            sessions: {
+              ...state.sessions,
+              [sessionId]: {
+                ...session,
+                agents: prevAgentId
+                  ? session.agents.map((a) =>
+                      a.id === prevAgentId ? { ...a, conversationSessionId: null } : a
+                    )
+                  : session.agents,
+                conversationSessions: session.conversationSessions.map((c) => {
+                  if (c.id !== convId) return c;
+                  // Remove agent from attached list
+                  const attachedAgentIds = (c.attachedAgentIds || []).filter(
+                    (id) => id !== prevAgentId
+                  );
+                  return {
+                    ...c,
+                    attachedAgentIds: attachedAgentIds,
+                  };
+                }),
+              },
+            },
+          };
+        }
+
+        case 'conversation_message': {
+          // This case is no longer used - WebSocket handlers now call addConversationMessage directly
+          // Keeping for backward compatibility but it does nothing
+          return state;
+        }
+
+        default:
+          return state;
+      }
+    }),
+
+  setConversationSessions: (sessionId, conversations) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            conversationSessions: conversations,
           },
         },
       };
@@ -468,7 +948,7 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
   // File Preview Actions
   // ========================================================================
 
-  openFilePreview: (sessionId, pathOrPreview) =>
+  openFilePreview: (sessionId, pathOrPreview, options) =>
     set((state) => {
       const session = state.sessions[sessionId];
       if (!session) return state;
@@ -484,11 +964,31 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
               pinned: false,
               position: { x: 100, y: 100 },
               docked: session.viewMode !== 'freeform',
+              startLine: options?.startLine,
+              endLine: options?.endLine,
             }
           : pathOrPreview;
 
-      const existing = session.filePreviews.find((p) => p.path === preview.path);
-      if (existing) return state;
+      // If file already exists, update it with new line numbers and return
+      const existingIdx = session.filePreviews.findIndex((p) => p.path === preview.path);
+      if (existingIdx >= 0) {
+        // Update existing preview with new line numbers
+        const updatedPreviews = [...session.filePreviews];
+        updatedPreviews[existingIdx] = {
+          ...updatedPreviews[existingIdx]!,
+          startLine: options?.startLine,
+          endLine: options?.endLine,
+        };
+        return {
+          sessions: {
+            ...state.sessions,
+            [sessionId]: {
+              ...session,
+              filePreviews: updatedPreviews,
+            },
+          },
+        };
+      }
 
       // Add to recent files
       const newRecentFiles = [
@@ -774,7 +1274,7 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
   // Workspace Status Actions
   // ========================================================================
 
-  setWorkspaceStatus: (sessionId, status, standbyAt = null) =>
+  setWorkspaceStatus: (sessionId, status) =>
     set((state) => {
       const session = state.sessions[sessionId];
       if (!session) return state;
@@ -785,7 +1285,6 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
             ...session,
             workspaceStatus: status,
             workspaceStatusChecking: false,
-            standbyAt: standbyAt ?? null,
           },
         },
       };
@@ -817,21 +1316,6 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
           [sessionId]: {
             ...session,
             workspaceError: error,
-          },
-        },
-      };
-    }),
-
-  setStandbySettings: (sessionId, settings) =>
-    set((state) => {
-      const session = state.sessions[sessionId];
-      if (!session) return state;
-      return {
-        sessions: {
-          ...state.sessions,
-          [sessionId]: {
-            ...session,
-            standbySettings: settings,
           },
         },
       };
@@ -944,10 +1428,27 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
     // If no streaming data found, nothing to finalize
     if (!streaming) return;
 
-    // Add the finalized message to the agent's messages
+    // Add the finalized message to the agent's conversation session
     set((state) => {
       const session = state.sessions[streaming.sessionId];
       if (!session) return state;
+
+      // Find the agent and its attached conversation
+      const agent = session.agents.find((a) => a.id === streaming.agentId);
+      if (!agent?.conversationSessionId) return state;
+
+      const conversationIndex = session.conversationSessions.findIndex(
+        (c) => c.id === agent.conversationSessionId
+      );
+      if (conversationIndex === -1) return state;
+
+      const conversation = session.conversationSessions[conversationIndex];
+      if (!conversation) return state; // Guard for TypeScript
+
+      // Deduplication: check if message already exists by ID
+      if (conversation.messages.some((m) => m.id === messageId)) {
+        return state;
+      }
 
       const newMessage: AgentMessage = {
         id: messageId,
@@ -958,21 +1459,31 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
         toolCalls: toolCalls,
       };
 
+      // Enforce message limit per conversation
+      const newMessages = [...conversation.messages, newMessage];
+      const limitedMessages =
+        newMessages.length > MAX_MESSAGES_PER_CONVERSATION
+          ? newMessages.slice(-MAX_MESSAGES_PER_CONVERSATION)
+          : newMessages;
+
+      const now = new Date().toISOString();
+      const updatedConversation: ConversationSession = {
+        ...conversation,
+        messages: limitedMessages,
+        messageCount: limitedMessages.length,
+        lastMessageAt: now,
+        updatedAt: now,
+      };
+
+      const updatedConversationSessions = [...session.conversationSessions];
+      updatedConversationSessions[conversationIndex] = updatedConversation;
+
       return {
         sessions: {
           ...state.sessions,
           [streaming.sessionId]: {
             ...session,
-            agents: session.agents.map((a) => {
-              if (a.id !== streaming.agentId) return a;
-              // Add message and enforce limit
-              const newMessages = [...a.messages, newMessage];
-              const limitedMessages =
-                newMessages.length > MAX_MESSAGES_PER_AGENT
-                  ? newMessages.slice(-MAX_MESSAGES_PER_AGENT)
-                  : newMessages;
-              return { ...a, messages: limitedMessages };
-            }),
+            conversationSessions: updatedConversationSessions,
           },
         },
       };
@@ -999,18 +1510,26 @@ const persistedSessionStore = persist(sessionStoreCreator, {
   partialize: (state) => ({
     currentSessionId: state.currentSessionId,
     // Limit persisted data to prevent localStorage overflow
+    // NOTE: Backend is always the source of truth for agents, conversations, and messages.
+    // localStorage is only used for UI state (viewMode, positions, filePreviews).
+    // When loading a session, we always fetch fresh data from the backend and replace
+    // any localStorage data. WebSocket events keep sessions in sync across windows/tabs.
     sessions: Object.fromEntries(
       Object.entries(state.sessions).map(([id, session]) => [
         id,
         {
           ...session,
-          // Limit messages per agent for persistence
-          agents: session.agents.map((agent) => ({
-            ...agent,
-            messages: agent.messages.slice(-MAX_MESSAGES_PER_AGENT),
+          // Agents no longer have messages - they reference conversation sessions
+          // Backend data (id, name, role, model, status, conversationSessionId) always wins
+          agents: session.agents,
+          // Limit messages per conversation for persistence (for offline/quick load)
+          // But backend fetch always replaces this with fresh data
+          conversationSessions: (session.conversationSessions ?? []).map((conv) => ({
+            ...conv,
+            messages: conv.messages.slice(-MAX_MESSAGES_PER_CONVERSATION),
           })),
           // Limit file previews (don't persist content, just metadata)
-          filePreviews: session.filePreviews.slice(0, 20).map((fp) => ({
+          filePreviews: (session.filePreviews ?? []).slice(0, 20).map((fp) => ({
             ...fp,
             content: '', // Don't persist file content
           })),

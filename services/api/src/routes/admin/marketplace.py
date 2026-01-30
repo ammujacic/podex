@@ -6,14 +6,15 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
 from src.database.models import MarketplaceSkill, SkillExecution, SystemSkill, User
 from src.middleware.admin import require_admin_dependency
+from src.middleware.rate_limit import RATE_LIMIT_ADMIN, limiter
 
 router = APIRouter(prefix="/marketplace", tags=["admin-marketplace"])
 
@@ -51,8 +52,7 @@ class MarketplaceSkillAdminResponse(BaseModel):
     submitter_name: str | None = None
     submitter_email: str | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class MarketplaceListAdminResponse(BaseModel):
@@ -84,7 +84,10 @@ class RejectSkillRequest(BaseModel):
 
 
 @router.get("", response_model=MarketplaceListAdminResponse)
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def list_all_marketplace_skills(
+    request: Request,
+    response: Response,
     status_filter: str | None = Query(None, pattern="^(pending|approved|rejected)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
@@ -146,8 +149,11 @@ async def list_all_marketplace_skills(
 
 
 @router.get("/{skill_id}", response_model=MarketplaceSkillAdminResponse)
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def get_marketplace_skill_admin(
     skill_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     admin: dict[str, str | None] = Depends(require_admin_dependency),
 ) -> MarketplaceSkillAdminResponse:
@@ -177,9 +183,12 @@ async def get_marketplace_skill_admin(
 
 
 @router.post("/{skill_id}/approve", response_model=MarketplaceSkillAdminResponse)
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def approve_marketplace_skill(
     skill_id: str,
-    request: ApproveSkillRequest,
+    request: Request,
+    response: Response,
+    body: ApproveSkillRequest,
     db: AsyncSession = Depends(get_db),
     admin: dict[str, str | None] = Depends(require_admin_dependency),
 ) -> MarketplaceSkillAdminResponse:
@@ -232,8 +241,8 @@ async def approve_marketplace_skill(
             "submitted_by": skill.submitted_by,
         },
         is_active=True,
-        is_default=request.is_default,
-        allowed_plans=request.allowed_plans,
+        is_default=body.is_default,
+        allowed_plans=body.allowed_plans,
         created_at=now,
         created_by=admin_id,
     )
@@ -252,9 +261,12 @@ async def approve_marketplace_skill(
 
 
 @router.post("/{skill_id}/reject", response_model=MarketplaceSkillAdminResponse)
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def reject_marketplace_skill(
     skill_id: str,
-    request: RejectSkillRequest,
+    request: Request,
+    response: Response,
+    body: RejectSkillRequest,
     db: AsyncSession = Depends(get_db),
     admin: dict[str, str | None] = Depends(require_admin_dependency),
 ) -> MarketplaceSkillAdminResponse:
@@ -279,7 +291,7 @@ async def reject_marketplace_skill(
 
     # Update status
     skill.status = "rejected"
-    skill.rejection_reason = request.reason
+    skill.rejection_reason = body.reason
     skill.reviewed_by = admin_id
     skill.reviewed_at = datetime.now(UTC)
 
@@ -290,8 +302,11 @@ async def reject_marketplace_skill(
 
 
 @router.delete("/{skill_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def delete_marketplace_skill(
     skill_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     admin: dict[str, str | None] = Depends(require_admin_dependency),
 ) -> None:
@@ -324,7 +339,10 @@ async def delete_marketplace_skill(
 
 
 @router.get("/analytics/popularity", response_model=dict)
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def get_skill_popularity(
+    request: Request,
+    response: Response,
     days: int = Query(30, ge=1, le=365),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),

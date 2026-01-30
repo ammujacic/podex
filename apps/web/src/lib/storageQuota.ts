@@ -9,29 +9,15 @@
 
 import { useConfigStore } from '@/stores/config';
 
-// Helper functions to get config values (config is guaranteed to be loaded by ConfigGate)
-function getDefaultQuotaBytes(): number {
-  const config = useConfigStore.getState().getStorageQuotaDefaults();
-  if (!config) {
-    throw new Error('ConfigStore not initialized - storage_quota_defaults not available');
-  }
-  return config.defaultQuotaBytes;
+// Helper to check if config is ready
+function isConfigReady(): boolean {
+  return useConfigStore.getState().isInitialized;
 }
 
-function getWarningThreshold(): number {
-  const config = useConfigStore.getState().getStorageQuotaDefaults();
-  if (!config) {
-    throw new Error('ConfigStore not initialized - storage_quota_defaults not available');
-  }
-  return config.warningThreshold;
-}
-
-function getCriticalThreshold(): number {
-  const config = useConfigStore.getState().getStorageQuotaDefaults();
-  if (!config) {
-    throw new Error('ConfigStore not initialized - storage_quota_defaults not available');
-  }
-  return config.criticalThreshold;
+// Helper functions to get config values (returns null if config not ready)
+function getStorageQuotaConfig() {
+  if (!isConfigReady()) return null;
+  return useConfigStore.getState().getStorageQuotaDefaults();
 }
 
 export interface StorageQuota {
@@ -64,10 +50,14 @@ function formatBytes(bytes: number): string {
 
 /**
  * Calculate the current localStorage usage.
+ * Returns null if config is not yet initialized.
  *
  * Note: localStorage uses UTF-16 encoding, so each character = 2 bytes.
  */
-export function getStorageQuota(): StorageQuota {
+export function getStorageQuota(): StorageQuota | null {
+  const config = getStorageQuotaConfig();
+  if (!config) return null; // Config not ready yet
+
   let used = 0;
 
   try {
@@ -81,39 +71,51 @@ export function getStorageQuota(): StorageQuota {
     }
   } catch {
     // localStorage might be inaccessible in some contexts
-    const quotaBytes = getDefaultQuotaBytes();
     return {
       used: 0,
-      total: quotaBytes,
+      total: config.defaultQuotaBytes,
       percentage: 0,
       usedFormatted: '0 B',
-      totalFormatted: formatBytes(quotaBytes),
+      totalFormatted: formatBytes(config.defaultQuotaBytes),
     };
   }
 
-  const quotaBytes = getDefaultQuotaBytes();
   return {
     used,
-    total: quotaBytes,
-    percentage: used / quotaBytes,
+    total: config.defaultQuotaBytes,
+    percentage: used / config.defaultQuotaBytes,
     usedFormatted: formatBytes(used),
-    totalFormatted: formatBytes(quotaBytes),
+    totalFormatted: formatBytes(config.defaultQuotaBytes),
   };
 }
 
 /**
  * Check if localStorage is near its quota limit.
+ * Returns false if config is not yet initialized (safe to proceed with writes).
  */
 export function isNearQuota(threshold?: number): boolean {
-  const effectiveThreshold = threshold ?? getWarningThreshold();
-  return getStorageQuota().percentage >= effectiveThreshold;
+  const config = getStorageQuotaConfig();
+  if (!config) return false; // Config not ready, skip check
+
+  const quota = getStorageQuota();
+  if (!quota) return false;
+
+  const effectiveThreshold = threshold ?? config.warningThreshold;
+  return quota.percentage >= effectiveThreshold;
 }
 
 /**
  * Check if localStorage is critically full.
+ * Returns false if config is not yet initialized (safe to proceed with writes).
  */
 export function isCriticallyFull(): boolean {
-  return getStorageQuota().percentage >= getCriticalThreshold();
+  const config = getStorageQuotaConfig();
+  if (!config) return false; // Config not ready, skip check
+
+  const quota = getStorageQuota();
+  if (!quota) return false;
+
+  return quota.percentage >= config.criticalThreshold;
 }
 
 /**
@@ -165,6 +167,7 @@ type QuotaWarningCallback = (warning: QuotaWarning) => void;
 
 /**
  * Setup periodic monitoring of localStorage quota.
+ * Only starts monitoring once config is initialized.
  *
  * @param onWarning - Callback when quota threshold is exceeded
  * @param intervalMs - Check interval in milliseconds (default: 60 seconds)
@@ -177,11 +180,13 @@ export function setupQuotaMonitoring(
   let lastWarningLevel: 'warning' | 'critical' | null = null;
 
   const check = () => {
-    const quota = getStorageQuota();
-    const criticalThreshold = getCriticalThreshold();
-    const warningThreshold = getWarningThreshold();
+    const config = getStorageQuotaConfig();
+    if (!config) return; // Config not ready, skip check
 
-    if (quota.percentage >= criticalThreshold) {
+    const quota = getStorageQuota();
+    if (!quota) return;
+
+    if (quota.percentage >= config.criticalThreshold) {
       // Only fire callback if level changed or first time
       if (lastWarningLevel !== 'critical') {
         lastWarningLevel = 'critical';
@@ -191,7 +196,7 @@ export function setupQuotaMonitoring(
           quota,
         });
       }
-    } else if (quota.percentage >= warningThreshold) {
+    } else if (quota.percentage >= config.warningThreshold) {
       if (lastWarningLevel !== 'warning') {
         lastWarningLevel = 'warning';
         onWarning({

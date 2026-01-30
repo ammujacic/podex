@@ -14,17 +14,6 @@ import {
   calculateBoundedPosition,
 } from '../ui-utils';
 
-// Mock the model-utils module
-vi.mock('@/lib/model-utils', () => ({
-  parseModelIdToDisplayName: vi.fn((modelId: string) => {
-    // Simple fallback implementation for testing
-    return modelId
-      .split(/[-_]/)
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
-  }),
-}));
-
 describe('getWorkspaceStatusColor', () => {
   it('returns success color for running status', () => {
     expect(getWorkspaceStatusColor('running')).toBe('bg-status-success');
@@ -32,10 +21,6 @@ describe('getWorkspaceStatusColor', () => {
 
   it('returns warning color with pulse for pending status', () => {
     expect(getWorkspaceStatusColor('pending')).toBe('bg-status-warning animate-pulse');
-  });
-
-  it('returns warning color for standby status', () => {
-    expect(getWorkspaceStatusColor('standby')).toBe('bg-status-warning');
   });
 
   it('returns error color for stopped status', () => {
@@ -59,10 +44,6 @@ describe('getWorkspaceStatusText', () => {
 
   it('returns "Starting..." for pending status', () => {
     expect(getWorkspaceStatusText('pending')).toBe('Starting...');
-  });
-
-  it('returns "Standby" for standby status', () => {
-    expect(getWorkspaceStatusText('standby')).toBe('Standby');
   });
 
   it('returns "Stopped" for stopped status', () => {
@@ -170,32 +151,10 @@ describe('getAgentColor', () => {
 });
 
 describe('getModelDisplayName', () => {
-  it('returns mapped name for known Claude models', () => {
-    expect(getModelDisplayName('claude-sonnet-4-20250514')).toBe('Sonnet 4');
-    expect(getModelDisplayName('claude-opus-4-20250514')).toBe('Opus 4');
-    expect(getModelDisplayName('claude-3-5-sonnet-latest')).toBe('Sonnet 3.5');
-    expect(getModelDisplayName('claude-3-5-haiku-latest')).toBe('Haiku 3.5');
-  });
-
-  it('returns mapped name for known GPT models', () => {
-    expect(getModelDisplayName('gpt-4o')).toBe('GPT-4o');
-    expect(getModelDisplayName('gpt-4o-mini')).toBe('GPT-4o Mini');
-  });
-
-  it('returns mapped name for known o-series models', () => {
-    expect(getModelDisplayName('o1')).toBe('o1');
-    expect(getModelDisplayName('o1-mini')).toBe('o1 Mini');
-    expect(getModelDisplayName('o3-mini')).toBe('o3 Mini');
-  });
-
-  it('returns mapped name for known Gemini models', () => {
-    expect(getModelDisplayName('gemini-2.0-flash')).toBe('Gemini 2.0');
-    expect(getModelDisplayName('gemini-1.5-pro')).toBe('Gemini 1.5 Pro');
-  });
-
-  it('falls back to parseModelIdToDisplayName for unknown models', () => {
-    // This will use the mocked parseModelIdToDisplayName
-    expect(getModelDisplayName('unknown-model-name')).toBe('Unknown Model Name');
+  it('returns the raw model ID (no frontend inference)', () => {
+    expect(getModelDisplayName('claude-opus-4-5')).toBe('claude-opus-4-5');
+    expect(getModelDisplayName('gpt-4o')).toBe('gpt-4o');
+    expect(getModelDisplayName('unknown-model-name')).toBe('unknown-model-name');
   });
 });
 

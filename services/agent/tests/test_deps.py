@@ -27,16 +27,22 @@ class TestDepsModule:
 class TestRequireInternalServiceToken:
     """Test require_internal_service_token function."""
 
-    def test_dev_mode_no_token_configured_allows_request(self):
-        """Test dev mode with no token configured allows all requests."""
+    def test_dev_mode_no_token_configured_fails_closed(self):
+        """Test dev mode with no token configured fails closed with 500.
+
+        SECURITY: Even in development, if no token is configured,
+        the service should fail closed (500) rather than allowing access.
+        """
         from src.deps import require_internal_service_token
 
         with patch("src.deps.settings") as mock_settings:
-            mock_settings.ENVIRONMENT = "development"
             mock_settings.INTERNAL_SERVICE_TOKEN = None
 
-            # Should not raise
-            require_internal_service_token(None, None)
+            with pytest.raises(HTTPException) as exc_info:
+                require_internal_service_token(None, None)
+
+            assert exc_info.value.status_code == 500
+            assert "not configured" in exc_info.value.detail
 
     def test_dev_mode_valid_header_token(self):
         """Test dev mode with valid X-Internal-Service-Token header."""
@@ -99,13 +105,13 @@ class TestRequireInternalServiceToken:
             assert exc_info.value.status_code == 401
 
     def test_production_mode_with_bearer_token(self):
-        """Test production mode with Bearer token (IAM validated)."""
+        """Test production mode with valid Bearer token."""
         from src.deps import require_internal_service_token
 
         with patch("src.deps.settings") as mock_settings:
-            mock_settings.ENVIRONMENT = "production"
+            mock_settings.INTERNAL_SERVICE_TOKEN = "gcp-id-token"
 
-            # Should not raise - IAM validated
+            # Should not raise when token matches
             require_internal_service_token(
                 x_internal_service_token=None,
                 authorization="Bearer gcp-id-token",
@@ -126,11 +132,13 @@ class TestRequireInternalServiceToken:
             )
 
     def test_production_mode_missing_auth_raises(self):
-        """Test production mode with missing authentication raises HTTPException."""
+        """Test production mode with missing authentication raises HTTPException.
+
+        SECURITY: When no token is configured, the service fails closed with 500.
+        """
         from src.deps import require_internal_service_token
 
         with patch("src.deps.settings") as mock_settings:
-            mock_settings.ENVIRONMENT = "production"
             mock_settings.INTERNAL_SERVICE_TOKEN = None
 
             with pytest.raises(HTTPException) as exc_info:
@@ -139,4 +147,6 @@ class TestRequireInternalServiceToken:
                     authorization=None,
                 )
 
-            assert exc_info.value.status_code == 401
+            # Fails closed with 500 when token not configured
+            assert exc_info.value.status_code == 500
+            assert "not configured" in exc_info.value.detail

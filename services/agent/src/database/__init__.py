@@ -7,11 +7,19 @@ from src.database.connection import (
     get_db_context,
     init_database,
 )
-from src.database.models import Agent, Message, Session, User, Workspace
+from src.database.models import (
+    Agent,
+    ConversationMessage,
+    ConversationSession,
+    Session,
+    User,
+    Workspace,
+)
 
 __all__ = [
     "Agent",
-    "Message",
+    "ConversationMessage",
+    "ConversationSession",
     "Session",
     "User",
     "Workspace",

@@ -11,9 +11,6 @@ export {
   getInitializationPromise,
 } from './initServices';
 
-export {
-  VSCodeEditor,
-  getLanguageFromPath,
-  type VSCodeEditorProps,
-  type VSCodeEditorRef,
-} from './VSCodeEditor';
+export { getLanguageFromPath } from './languageUtils';
+
+export { VSCodeEditor, type VSCodeEditorProps, type VSCodeEditorRef } from './VSCodeEditor';

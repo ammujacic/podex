@@ -1,15 +1,17 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Send, Mic, Paperclip, Loader2, StopCircle, X, LogIn } from 'lucide-react';
+import { Send, Mic, Paperclip, Loader2, StopCircle, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { useSessionStore, type AgentMessage } from '@/stores/session';
+import { useUIStore } from '@/stores/ui';
+import { getFileContent } from '@/lib/api';
+import { getLanguageFromPath } from '@/lib/vscode/languageUtils';
 import { useStreamingStore } from '@/stores/streaming';
-import { sendAgentMessage, abortAgent, isQuotaError } from '@/lib/api';
+import { sendAgentMessage, abortAgent, isQuotaError, attachConversation } from '@/lib/api';
 import { useSwipeGesture } from '@/hooks/useGestures';
 import { useVoiceCapture } from '@/hooks/useVoiceCapture';
-import { isCliAgentRole, getCliAgentType, useCliAgentAuth } from '@/hooks/useCliAgentCommands';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { CreditExhaustedBanner } from './CreditExhaustedBanner';
 import { MobileAgentToolbar } from './MobileAgentToolbar';
@@ -46,56 +48,42 @@ export function MobileAgentView({
   const isUserAtBottomRef = useRef(true);
 
   const session = useSessionStore((state) => state.sessions[sessionId]);
+  const getConversationForAgent = useSessionStore((state) => state.getConversationForAgent);
+  const createConversationSession = useSessionStore((state) => state.createConversationSession);
+  const attachConversationToAgent = useSessionStore((state) => state.attachConversationToAgent);
+  const addConversationMessage = useSessionStore((state) => state.addConversationMessage);
   const streamingMessages = useStreamingStore((state) => state.streamingMessages);
   const agent = session?.agents?.find((a) => a.id === agentId);
 
-  // Get finalized messages with deduplication (safety net for race conditions and stale localStorage)
-  // Uses O(n) Set-based approach for efficiency
+  // Get conversation session for this agent
+  const conversationSession = getConversationForAgent(sessionId, agentId);
+  const messages = useMemo(
+    () => conversationSession?.messages ?? [],
+    [conversationSession?.messages]
+  );
+
+  // Get finalized messages with deduplication (safety net for race conditions)
+  // Only dedupes by exact ID - does NOT dedupe by content to allow duplicate messages
   const finalizedMessages = useMemo(() => {
-    const messages = agent?.messages ?? [];
     if (messages.length === 0) return messages;
 
     const seenIds = new Set<string>();
-    const contentToRealId = new Map<string, string>(); // content key -> real (non-temp) message id
-    const result: typeof messages = [];
+    const result: AgentMessage[] = [];
 
-    // Single pass: track content keys and prefer real IDs over temp IDs
     for (const msg of messages) {
-      // Skip exact ID duplicates
-      if (seenIds.has(msg.id)) continue;
-      seenIds.add(msg.id);
+      // Skip messages without valid ID
+      const msgId = msg.id ?? '';
+      if (!msgId) continue;
 
-      const contentKey = `${msg.role}:${msg.content}`;
-      const existingRealId = contentToRealId.get(contentKey);
-      const isTemp = msg.id.startsWith('temp-');
+      // Skip exact ID duplicates only
+      if (seenIds.has(msgId)) continue;
+      seenIds.add(msgId);
 
-      if (existingRealId) {
-        // Content already added with a real ID, skip this duplicate
-        continue;
-      }
-
-      if (!isTemp) {
-        // This is a real ID - mark this content as having a real ID
-        contentToRealId.set(contentKey, msg.id);
-      }
-
-      // Check if we already added a temp version of this content
-      const existingTempIndex = result.findIndex(
-        (m) => m.id.startsWith('temp-') && `${m.role}:${m.content}` === contentKey
-      );
-
-      if (existingTempIndex !== -1 && !isTemp) {
-        // Replace temp message with real one (maintains position)
-        result[existingTempIndex] = msg;
-      } else if (existingTempIndex === -1) {
-        // No existing message with this content, add it
-        result.push(msg);
-      }
-      // else: temp message exists and this is also temp, skip
+      result.push(msg);
     }
 
     return result;
-  }, [agent?.messages]);
+  }, [messages]);
 
   // Find active streaming message for this agent
   const streamingMessage = useMemo(() => {
@@ -106,20 +94,6 @@ export function MobileAgentView({
 
   // Check if agent is processing
   const isProcessing = !!streamingMessage;
-
-  // CLI agent auth check
-  const isCliAgent = agent ? isCliAgentRole(agent.role) : false;
-  const cliAgentType = agent ? getCliAgentType(agent.role) : null;
-  const { authStatus: cliAuthStatus } = useCliAgentAuth(
-    cliAgentType ?? 'claude-code',
-    isCliAgent ? agentId : undefined
-  );
-
-  // Check if CLI agent needs authentication (blocks input until authenticated)
-  const cliNeedsAuth =
-    isCliAgent &&
-    (agent?.messages ?? []).length === 0 &&
-    (cliAuthStatus === null || cliAuthStatus?.needsAuth);
 
   // Voice capture integration
   const { isRecording, currentTranscript, startRecording, stopRecording, cancelRecording } =
@@ -167,32 +141,29 @@ export function MobileAgentView({
     }
   }, [finalizedMessages, streamingMessage?.content]);
 
-  const addAgentMessage = useSessionStore((state) => state.addAgentMessage);
+  const updateAgent = useSessionStore((state) => state.updateAgent);
+  const openMobileFile = useUIStore((state) => state.openMobileFile);
 
-  // Handle CLI agent login
-  const handleCliLogin = useCallback(async () => {
-    if (isSubmitting || !agent) return;
+  // File link click handler - opens mobile file viewer sheet
+  const handleFileClick = useCallback(
+    async (path: string, _startLine?: number, _endLine?: number) => {
+      try {
+        // Fetch file content first
+        const fileContent = await getFileContent(sessionId, path);
 
-    setIsSubmitting(true);
-    const loginMessage = '/login';
-
-    const userMessage: AgentMessage = {
-      id: generateTempId(),
-      role: 'user',
-      content: loginMessage,
-      timestamp: new Date(),
-    };
-    addAgentMessage(sessionId, agentId, userMessage);
-
-    try {
-      await sendAgentMessage(sessionId, agentId, loginMessage);
-    } catch (error) {
-      console.error('Failed to send login command:', error);
-      toast.error('Failed to initiate login. Please try again.');
-    } finally {
-      setIsSubmitting(false);
-    }
-  }, [isSubmitting, agent, sessionId, agentId, addAgentMessage]);
+        // Open in mobile file viewer sheet
+        openMobileFile(
+          fileContent.path,
+          fileContent.content,
+          fileContent.language || getLanguageFromPath(path)
+        );
+      } catch (err) {
+        console.error('Failed to load file content:', err);
+        toast.error('Failed to open file');
+      }
+    },
+    [sessionId, openMobileFile]
+  );
 
   const handleSubmit = useCallback(async () => {
     const trimmedInput = input.trim();
@@ -216,6 +187,22 @@ export function MobileAgentView({
       inputRef.current.style.height = 'auto';
     }
 
+    // Create or get conversation session for this agent
+    let conversationId = conversationSession?.id;
+    if (!conversationId) {
+      // Create a new conversation session and attach to this agent
+      const newConversation = createConversationSession(sessionId, { firstMessage: trimmedInput });
+      conversationId = newConversation.id;
+      // Optimistically update local state
+      attachConversationToAgent(sessionId, conversationId, agentId);
+      // Call API to attach (don't await - let it happen in background)
+      // Backend will handle detaching old conversation if needed
+      attachConversation(sessionId, conversationId, agentId).catch((error) => {
+        console.error('Failed to attach conversation:', error);
+        // WebSocket event will sync state if API call fails
+      });
+    }
+
     // Add optimistic user message to store (with temp ID that will be updated by WebSocket)
     const userMessage: AgentMessage = {
       id: generateTempId(),
@@ -223,7 +210,8 @@ export function MobileAgentView({
       content: trimmedInput,
       timestamp: new Date(),
     };
-    addAgentMessage(sessionId, agentId, userMessage);
+    addConversationMessage(sessionId, conversationId, userMessage);
+    updateAgent(sessionId, agentId, { status: 'active' });
 
     try {
       await sendAgentMessage(sessionId, agentId, trimmedInput);
@@ -234,11 +222,22 @@ export function MobileAgentView({
       } else {
         toast.error('Failed to send message');
       }
-      // Note: We don't restore input on error since the optimistic message is already shown
+      updateAgent(sessionId, agentId, { status: 'error' });
     } finally {
       setIsSubmitting(false);
     }
-  }, [input, isSubmitting, agent, sessionId, agentId, addAgentMessage]);
+  }, [
+    input,
+    isSubmitting,
+    agent,
+    sessionId,
+    agentId,
+    conversationSession,
+    createConversationSession,
+    attachConversationToAgent,
+    addConversationMessage,
+    updateAgent,
+  ]);
 
   // Handle voice recording toggle
   const handleVoiceToggle = useCallback(async () => {
@@ -294,6 +293,21 @@ export function MobileAgentView({
         inputRef.current.style.height = 'auto';
       }
 
+      // Create or get conversation session for this agent
+      let conversationId = conversationSession?.id;
+      if (!conversationId) {
+        const newConversation = createConversationSession(sessionId, { firstMessage: transcript });
+        conversationId = newConversation.id;
+        // Optimistically update local state
+        attachConversationToAgent(sessionId, conversationId, agentId);
+        // Call API to attach (don't await - let it happen in background)
+        // Backend will handle detaching old conversation if needed
+        attachConversation(sessionId, conversationId, agentId).catch((error) => {
+          console.error('Failed to attach conversation:', error);
+          // WebSocket event will sync state if API call fails
+        });
+      }
+
       // Add optimistic user message to store
       const userMessage: AgentMessage = {
         id: generateTempId(),
@@ -301,7 +315,8 @@ export function MobileAgentView({
         content: transcript,
         timestamp: new Date(),
       };
-      addAgentMessage(sessionId, agentId, userMessage);
+      addConversationMessage(sessionId, conversationId, userMessage);
+      updateAgent(sessionId, agentId, { status: 'active' });
 
       try {
         await sendAgentMessage(sessionId, agentId, transcript);
@@ -312,11 +327,24 @@ export function MobileAgentView({
         } else {
           toast.error('Failed to send message');
         }
+        updateAgent(sessionId, agentId, { status: 'error' });
       } finally {
         setIsSubmitting(false);
       }
     }
-  }, [currentTranscript, stopRecording, isSubmitting, agent, sessionId, agentId, addAgentMessage]);
+  }, [
+    currentTranscript,
+    stopRecording,
+    isSubmitting,
+    agent,
+    sessionId,
+    agentId,
+    conversationSession,
+    createConversationSession,
+    attachConversationToAgent,
+    addConversationMessage,
+    updateAgent,
+  ]);
 
   const handleAbort = useCallback(async () => {
     try {
@@ -327,30 +355,6 @@ export function MobileAgentView({
       toast.error('Failed to stop agent');
     }
   }, [sessionId, agentId]);
-
-  // Handler for sending commands from toolbar (used for CLI agents)
-  const handleSendCommand = useCallback(
-    async (command: string) => {
-      if (!agent || isSubmitting) return;
-
-      // Add optimistic user message to store
-      const userMessage: AgentMessage = {
-        id: generateTempId(),
-        role: 'user',
-        content: command,
-        timestamp: new Date(),
-      };
-      addAgentMessage(sessionId, agentId, userMessage);
-
-      try {
-        await sendAgentMessage(sessionId, agentId, command);
-      } catch (error) {
-        console.error('Failed to send command:', error);
-        toast.error('Failed to send command');
-      }
-    },
-    [agent, isSubmitting, sessionId, agentId, addAgentMessage]
-  );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -393,7 +397,7 @@ export function MobileAgentView({
 
       {/* Agent toolbar - always visible at top */}
       <div className="flex-none">
-        <MobileAgentToolbar sessionId={sessionId} agent={agent} onSendCommand={handleSendCommand} />
+        <MobileAgentToolbar sessionId={sessionId} agent={agent} />
       </div>
 
       {/* Messages area - scrollable middle section */}
@@ -402,53 +406,16 @@ export function MobileAgentView({
         onScroll={handleMessagesScroll}
         className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-4"
       >
-        {/* CLI Agent Login Prompt - shown when auth is needed or unknown and no messages yet */}
-        {isCliAgent &&
-        finalizedMessages.length === 0 &&
-        !streamingMessage &&
-        (cliAuthStatus === null || cliAuthStatus?.needsAuth) ? (
-          <div className="flex h-full items-center justify-center">
-            <div className="text-center space-y-4 max-w-sm px-4">
-              <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-accent-primary/10">
-                <LogIn className="h-7 w-7 text-accent-primary" />
-              </div>
-              <div>
-                <h3 className="text-base font-medium text-text-primary mb-1">
-                  Authentication Required
-                </h3>
-                <p className="text-sm text-text-muted">
-                  {agent.role === 'claude-code'
-                    ? 'Sign in with your Anthropic account to use Claude Code.'
-                    : agent.role === 'openai-codex'
-                      ? 'Sign in with your OpenAI account to use Codex.'
-                      : 'Sign in to use this CLI agent.'}
-                </p>
-              </div>
-              <button
-                onClick={handleCliLogin}
-                disabled={isSubmitting}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-accent-primary text-text-inverse text-sm font-medium hover:bg-accent-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px]"
-              >
-                {isSubmitting ? (
-                  <>
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                    Connecting...
-                  </>
-                ) : (
-                  <>
-                    <LogIn className="h-5 w-5" />
-                    Sign In
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        ) : finalizedMessages.length === 0 && !streamingMessage ? (
+        {finalizedMessages.length === 0 && !streamingMessage ? (
           <NoMessagesEmptyState agentName={agent.name} />
         ) : (
           <div className="space-y-4">
             {finalizedMessages.map((message) => (
-              <MobileMessageBubble key={message.id} message={message} />
+              <MobileMessageBubble
+                key={message.id}
+                message={message}
+                onFileClick={handleFileClick}
+              />
             ))}
             {/* Streaming message or thinking indicator */}
             {isProcessing && (
@@ -457,7 +424,10 @@ export function MobileAgentView({
                   <>
                     <div className="max-w-[85%] rounded-2xl px-4 py-2.5 bg-[#1a1a2e] border border-border-subtle text-text-primary rounded-bl-md">
                       <div className="text-sm">
-                        <MarkdownRenderer content={streamingMessage.content} />
+                        <MarkdownRenderer
+                          content={streamingMessage.content}
+                          onFileClick={handleFileClick}
+                        />
                       </div>
                     </div>
                     <div className="flex items-center gap-1.5 mt-1 px-1">
@@ -565,14 +535,12 @@ export function MobileAgentView({
                 onKeyDown={handleKeyDown}
                 placeholder="Message..."
                 rows={1}
-                disabled={cliNeedsAuth}
                 className={cn(
                   'w-full px-4 py-2.5 rounded-xl resize-none',
                   'bg-surface-hover border border-border-subtle',
                   'text-base text-text-primary placeholder:text-text-tertiary',
                   'focus:outline-none focus:ring-2 focus:ring-accent-primary/50',
-                  'overflow-y-auto',
-                  cliNeedsAuth && 'opacity-50 cursor-not-allowed'
+                  'overflow-y-auto'
                 )}
                 style={{
                   minHeight: '44px',
@@ -598,7 +566,7 @@ export function MobileAgentView({
             ) : input.trim() ? (
               <button
                 onClick={handleSubmit}
-                disabled={isSubmitting || cliNeedsAuth}
+                disabled={isSubmitting}
                 className={cn(
                   'p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg',
                   'bg-accent-primary text-text-inverse',
@@ -617,12 +585,10 @@ export function MobileAgentView({
             ) : (
               <button
                 onClick={handleVoiceToggle}
-                disabled={cliNeedsAuth}
                 className={cn(
                   'p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg',
                   'hover:bg-surface-hover active:bg-surface-active',
-                  'transition-colors touch-manipulation',
-                  cliNeedsAuth && 'opacity-50 cursor-not-allowed'
+                  'transition-colors touch-manipulation'
                 )}
                 aria-label="Voice input"
               >

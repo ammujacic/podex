@@ -17,36 +17,22 @@ from src.database.seeds.settings import DEFAULT_SETTINGS
 from src.database.seeds.skill_templates import DEFAULT_SKILL_TEMPLATES
 from src.database.seeds.skills import DEFAULT_SYSTEM_SKILLS
 from src.database.seeds.templates import OFFICIAL_TEMPLATES
-from src.database.seeds.terminal_agents import DEFAULT_TERMINAL_AGENTS, TerminalAgentData
+from src.database.seeds.workspace_servers import DEV_WORKSPACE_SERVERS
 
 __all__ = [
-    # Agent Role Configurations
     "DEFAULT_AGENT_ROLES",
-    # Agent Tools
     "DEFAULT_AGENT_TOOLS",
-    # Global Slash Commands
     "DEFAULT_GLOBAL_COMMANDS",
-    # Hardware Specifications
     "DEFAULT_HARDWARE_SPECS",
-    # Health Checks
     "DEFAULT_HEALTH_CHECKS",
-    # MCP Servers
     "DEFAULT_MCP_SERVERS",
-    # LLM Models
     "DEFAULT_MODELS",
-    # Subscription Plans
     "DEFAULT_PLANS",
-    # LLM Providers
     "DEFAULT_PROVIDERS",
-    # Platform Settings
     "DEFAULT_SETTINGS",
-    # Skill Templates
     "DEFAULT_SKILL_TEMPLATES",
-    # System Skills
     "DEFAULT_SYSTEM_SKILLS",
-    # Terminal-Integrated Agents
-    "DEFAULT_TERMINAL_AGENTS",
-    # Pod Templates
+    "DEV_WORKSPACE_SERVERS",
     "OFFICIAL_TEMPLATES",
     "AgentRoleData",
     "AgentToolData",
@@ -54,5 +40,4 @@ __all__ = [
     "HealthCheckData",
     "LLMProviderData",
     "MCPCategory",
-    "TerminalAgentData",
 ]

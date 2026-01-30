@@ -7,7 +7,6 @@ import os
 import signal
 import socket
 import sys
-from pathlib import Path
 
 import click
 import sentry_sdk
@@ -18,7 +17,7 @@ from sentry_sdk.integrations.logging import LoggingIntegration
 
 from . import __version__
 from .client import LocalPodClient
-from .config import LocalPodConfig, load_config
+from .config import load_config
 
 
 def _init_sentry() -> bool:
@@ -100,50 +99,43 @@ def cli() -> None:
 @click.option(
     "--url",
     envvar="PODEX_CLOUD_URL",
-    default="https://api.podex.dev",
+    default=None,
     help="Podex cloud API URL",
 )
 @click.option(
     "--name",
     envvar="PODEX_POD_NAME",
     default=None,
-    help="Display name for this pod (uses hostname if not set)",
-)
-@click.option(
-    "--max-workspaces",
-    envvar="PODEX_MAX_WORKSPACES",
-    default=3,
-    type=click.IntRange(1, 10),
-    help="Maximum concurrent workspaces",
-)
-@click.option(
-    "--config",
-    "config_file",
-    type=click.Path(exists=True, path_type=Path),
-    help="Path to config file",
+    help="Display name for this pod",
 )
 def start(
     token: str | None,
-    url: str,
+    url: str | None,
     name: str | None,
-    max_workspaces: int,
-    config_file: Path | None,
 ) -> None:
     """Start the Podex local pod agent.
 
     Connects to Podex cloud and waits for workspace commands.
     The pod will automatically reconnect if the connection is lost.
+
+    Configuration is loaded from:
+    1. Command line arguments
+    2. Environment variables (PODEX_*)
     """
-    # Load configuration
-    if config_file:
-        config = load_config(config_file)
-    else:
-        config = LocalPodConfig(
-            pod_token=token or "",
-            cloud_url=url,
-            pod_name=name or socket.gethostname(),
-            max_workspaces=max_workspaces,
-        )
+    # Load config from environment
+    config = load_config()
+
+    # Override with CLI arguments if explicitly provided
+    if token:
+        config = config.model_copy(update={"pod_token": token})
+    if url:
+        config = config.model_copy(update={"cloud_url": url})
+    if name:
+        config = config.model_copy(update={"pod_name": name})
+
+    # Use hostname if pod_name still not set
+    if not config.pod_name:
+        config = config.model_copy(update={"pod_name": socket.gethostname()})
 
     if not config.pod_token:
         click.echo(
@@ -164,7 +156,18 @@ def start(
     )
     click.echo(f"  Name: {config.pod_name}")
     click.echo(f"  Cloud: {config.cloud_url}")
-    click.echo(f"  Max workspaces: {config.max_workspaces}")
+
+    # Check tmux availability (required for terminal features)
+    import shutil
+
+    if not shutil.which("tmux"):
+        click.echo()
+        click.echo(
+            click.style("Warning: ", fg="yellow", bold=True)
+            + "tmux is not installed. Terminal features will not work properly without tmux.\n"
+            "Install it with: brew install tmux (macOS) or apt install tmux (Linux)"
+        )
+
     click.echo()
 
     # Create client
@@ -202,31 +205,15 @@ def start(
 def check() -> None:
     """Check system requirements for running a local pod.
 
-    Verifies Docker is available and shows system resources.
+    Verifies tmux is available and shows system resources.
     """
     import platform
+    import shutil
 
     click.echo(click.style("System Check", fg="cyan", bold=True))
     click.echo()
 
     all_ok = True
-
-    # Check Docker
-    try:
-        import docker
-
-        client = docker.from_env()
-        info = client.info()
-        click.echo(
-            click.style("  Docker: ", bold=True)
-            + click.style("OK", fg="green")
-            + f" (v{info['ServerVersion']})"
-        )
-    except Exception as e:
-        click.echo(
-            click.style("  Docker: ", bold=True) + click.style("FAILED", fg="red") + f" ({e})"
-        )
-        all_ok = False
 
     # Check resources
     try:
@@ -241,6 +228,30 @@ def check() -> None:
     except Exception as e:
         click.echo(click.style("  Resources: ", bold=True) + f"Error: {e}")
         all_ok = False
+
+    # Check tmux (required for terminal agent integration)
+    tmux_path = shutil.which("tmux")
+    if tmux_path:
+        import subprocess
+
+        try:
+            result = subprocess.run(["tmux", "-V"], capture_output=True, text=True, timeout=5)
+            version = result.stdout.strip() if result.returncode == 0 else "unknown"
+            click.echo(
+                click.style("  tmux: ", bold=True) + click.style("OK", fg="green") + f" ({version})"
+            )
+        except Exception:
+            click.echo(
+                click.style("  tmux: ", bold=True)
+                + click.style("OK", fg="green")
+                + f" (found at {tmux_path})"
+            )
+    else:
+        click.echo(
+            click.style("  tmux: ", bold=True)
+            + click.style("NOT FOUND", fg="yellow")
+            + " (required for terminal agents)"
+        )
 
     # Platform info
     click.echo(click.style("  Platform: ", bold=True) + f"{platform.system()} {platform.release()}")

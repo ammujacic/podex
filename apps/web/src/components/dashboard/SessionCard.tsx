@@ -1,5 +1,6 @@
 'use client';
 
+import { memo } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { motion } from 'framer-motion';
@@ -65,7 +66,7 @@ const templateIconConfig: Record<string, { url: string; color: string }> = {
   layers: { url: 'https://cdn.simpleicons.org/stackblitz/1389FD', color: '#1389FD' },
 };
 
-export function TemplateIcon({
+export const TemplateIcon = memo(function TemplateIcon({
   icon,
   iconUrl,
   size = 'md',
@@ -93,7 +94,7 @@ export function TemplateIcon({
   }
 
   return <Box className={`${sizeClasses[size]} text-text-muted`} />;
-}
+});
 
 // Date formatting utility
 export function formatDate(dateStr: string) {
@@ -147,7 +148,7 @@ export interface SessionCardProps {
   variant?: 'default' | 'pinned';
 }
 
-export function SessionCard({
+export const SessionCard = memo(function SessionCard({
   session,
   template,
   index = 0,
@@ -234,4 +235,4 @@ export function SessionCard({
       </Link>
     </motion.div>
   );
-}
+});

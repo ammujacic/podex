@@ -4,7 +4,6 @@ import { useState, useRef, useEffect } from 'react';
 import {
   AlertCircle,
   Bell,
-  Clock,
   GitBranch,
   Grid3X3,
   Layout,
@@ -12,9 +11,11 @@ import {
   LogOut,
   Mic,
   Move,
-  Pause,
+  Server,
   Settings,
+  Square,
   Users,
+  WifiOff,
   X,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
@@ -35,7 +36,14 @@ interface WorkspaceHeaderProps {
   sessionId: string;
 }
 
-type WorkspaceStatus = 'pending' | 'running' | 'standby' | 'stopped' | 'error' | undefined;
+type WorkspaceStatus =
+  | 'pending'
+  | 'running'
+  | 'standby'
+  | 'stopped'
+  | 'error'
+  | 'offline'
+  | undefined;
 
 // Cache for hardware specs to avoid refetching
 let hardwareSpecsCache: HardwareSpec[] | null = null;
@@ -65,7 +73,17 @@ function useHardwareSpecs() {
   return specs;
 }
 
-function PodStatusIndicator({ status, tier }: { status: WorkspaceStatus; tier?: string }) {
+function PodStatusIndicator({
+  status,
+  tier,
+  isLocalPod,
+  localPodName,
+}: {
+  status?: WorkspaceStatus;
+  tier?: string;
+  isLocalPod?: boolean;
+  localPodName?: string | null;
+}) {
   const { openModal } = useUIStore();
   const hardwareSpecs = useHardwareSpecs();
 
@@ -80,10 +98,10 @@ function PodStatusIndicator({ status, tier }: { status: WorkspaceStatus; tier?: 
       icon: null,
     },
     standby: {
-      color: 'text-yellow-400',
-      bgColor: 'bg-yellow-500',
-      label: 'Standby',
-      icon: <Pause className="h-3 w-3" />,
+      color: 'text-gray-400',
+      bgColor: 'bg-gray-500',
+      label: 'Stopped',
+      icon: <Square className="h-3 w-3" />,
     },
     pending: {
       color: 'text-blue-400',
@@ -95,7 +113,7 @@ function PodStatusIndicator({ status, tier }: { status: WorkspaceStatus; tier?: 
       color: 'text-gray-400',
       bgColor: 'bg-gray-500',
       label: 'Stopped',
-      icon: <Pause className="h-3 w-3" />,
+      icon: <Square className="h-3 w-3" />,
     },
     error: {
       color: 'text-red-400',
@@ -103,11 +121,38 @@ function PodStatusIndicator({ status, tier }: { status: WorkspaceStatus; tier?: 
       label: 'Error',
       icon: <AlertCircle className="h-3 w-3" />,
     },
+    offline: {
+      color: 'text-red-400',
+      bgColor: 'bg-red-500',
+      label: 'Offline',
+      icon: <WifiOff className="h-3 w-3" />,
+    },
   };
 
   if (!status) return null;
 
   const config = statusConfig[status];
+
+  // For local pods, show local pod name instead of tier (scaling not available)
+  if (isLocalPod) {
+    return (
+      <div className="flex items-center gap-2">
+        <div className="h-4 w-px bg-border-subtle" />
+        <div className={`flex items-center gap-1.5 ${config.color}`}>
+          <div className={`w-2 h-2 rounded-full ${config.bgColor}`} />
+          <span className="text-xs">{config.label}</span>
+          {config.icon}
+        </div>
+        <div
+          className="flex items-center gap-1.5 text-xs px-2 py-0.5 rounded bg-surface-hover text-text-secondary border border-border-subtle"
+          title={`Local pod: ${localPodName || 'Unknown'}`}
+        >
+          <Server className="h-3 w-3 text-accent-secondary" />
+          <span className="truncate max-w-[100px]">{localPodName || 'Local Pod'}</span>
+        </div>
+      </div>
+    );
+  }
 
   // Get display name from hardware specs, fallback to tier name with capitalization
   const spec = hardwareSpecs.find((s) => s.tier === tier);
@@ -136,12 +181,15 @@ function PodStatusIndicator({ status, tier }: { status: WorkspaceStatus; tier?: 
 
 export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
   const router = useRouter();
-  const { openCommandPalette, openModal } = useUIStore();
+  const { openCommandPalette } = useUIStore();
   const { sessions, setViewMode } = useSessionStore();
   const { getUnreadCount, openPanel } = useAttentionStore();
   const unreadCount = getUnreadCount(sessionId);
   const session = sessions[sessionId];
   const viewMode = session?.viewMode ?? 'grid';
+  const localPodId = session?.localPodId;
+  const localPodName = session?.localPodName;
+  const mountPath = session?.mount_path;
   const [showGitPanel, setShowGitPanel] = useState(false);
   const [showCollaborators, setShowCollaborators] = useState(false);
   const { users } = usePresenceStore();
@@ -206,7 +254,7 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
 
   return (
     <header
-      className="flex h-12 items-center justify-between border-b border-border-subtle bg-surface px-4"
+      className="relative flex h-12 items-center border-b border-border-subtle bg-surface px-4"
       data-tour="workspace-header"
     >
       {/* Left section */}
@@ -249,19 +297,16 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
                   </button>
                 </div>
                 <div className="max-h-96 overflow-y-auto">
-                  <GitPanel sessionId={sessionId} />
+                  <GitPanel sessionId={sessionId} localPodId={localPodId} mountPath={mountPath} />
                 </div>
               </div>
             )}
           </div>
-
-          {/* Pod Status Indicator */}
-          <PodStatusIndicator status={session?.workspaceStatus} tier={session?.workspaceTier} />
         </div>
       </div>
 
-      {/* Center section - View mode toggle and grid config */}
-      <div className="flex items-center gap-2">
+      {/* Center section - View mode toggle and grid config (absolutely centered) */}
+      <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2">
         <div
           className="flex items-center gap-1 rounded-lg border border-border-default bg-elevated p-1"
           role="tablist"
@@ -274,8 +319,8 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
             aria-label="Grid view - show agents in a grid layout"
             className={`flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors ${
               viewMode === 'grid'
-                ? 'bg-accent-primary text-text-inverse shadow-sm hover:bg-accent-primary/90'
-                : 'bg-overlay text-text-secondary hover:text-text-primary'
+                ? 'bg-accent-primary text-text-inverse shadow-sm'
+                : 'text-text-secondary hover:text-text-primary hover:bg-surface'
             }`}
           >
             <Grid3X3 className="h-4 w-4" aria-hidden="true" />
@@ -288,8 +333,8 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
             aria-label="Focus view - show one agent at a time"
             className={`flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors ${
               viewMode === 'focus'
-                ? 'bg-accent-primary text-text-inverse shadow-sm hover:bg-accent-primary/90'
-                : 'bg-overlay text-text-secondary hover:text-text-primary'
+                ? 'bg-accent-primary text-text-inverse shadow-sm'
+                : 'text-text-secondary hover:text-text-primary hover:bg-surface'
             }`}
           >
             <Layout className="h-4 w-4" aria-hidden="true" />
@@ -302,8 +347,8 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
             aria-label="Freeform view - freely position agents"
             className={`flex items-center gap-1.5 rounded px-3 py-1 text-sm transition-colors ${
               viewMode === 'freeform'
-                ? 'bg-accent-primary text-text-inverse shadow-sm hover:bg-accent-primary/90'
-                : 'bg-overlay text-text-secondary hover:text-text-primary'
+                ? 'bg-accent-primary text-text-inverse shadow-sm'
+                : 'text-text-secondary hover:text-text-primary hover:bg-surface'
             }`}
           >
             <Move className="h-4 w-4" aria-hidden="true" />
@@ -316,7 +361,18 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
       </div>
 
       {/* Right section */}
-      <div className="flex items-center gap-2" role="toolbar" aria-label="Workspace actions">
+      <div
+        className="ml-auto flex items-center gap-2"
+        role="toolbar"
+        aria-label="Workspace actions"
+      >
+        {/* Pod Status Indicator */}
+        <PodStatusIndicator
+          status={session?.workspaceStatus}
+          tier={session?.workspaceTier}
+          isLocalPod={!!localPodId}
+          localPodName={localPodName}
+        />
         {/* Voice command button */}
         <div className="relative">
           <button
@@ -441,28 +497,6 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
             </div>
           )}
         </div>
-
-        {/* Pause/Resume Session */}
-        {session?.workspaceStatus === 'running' && (
-          <button
-            onClick={() => openModal('pause-session')}
-            aria-label="Pause session"
-            className="rounded-md p-2 text-text-secondary hover:bg-overlay hover:text-yellow-400"
-            title="Pause session (enter standby)"
-          >
-            <Pause className="h-4 w-4" aria-hidden="true" />
-          </button>
-        )}
-
-        {/* Auto-Standby Settings */}
-        <button
-          onClick={() => openModal('standby-settings')}
-          aria-label="Configure auto-standby timeout"
-          className="rounded-md p-2 text-text-secondary hover:bg-overlay hover:text-text-primary"
-          title="Configure auto-standby timeout"
-        >
-          <Clock className="h-4 w-4" aria-hidden="true" />
-        </button>
 
         {/* Settings */}
         <button

@@ -7,11 +7,12 @@ from datetime import datetime
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from src.database.models import Session as SessionModel
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 from src.routes.dependencies import DbSession, get_current_user_id
 
 logger = structlog.get_logger()
@@ -275,9 +276,11 @@ def _count_deletions(hunks: list[DiffHunk]) -> int:
 
 
 @router.get("/sessions/{session_id}/changes", response_model=list[ChangeSetResponse])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_session_change_sets(
     session_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
     status: str | None = None,
 ) -> list[ChangeSetResponse]:
@@ -345,9 +348,11 @@ async def get_session_change_sets(
 
 
 @router.get("/sessions/{session_id}/changes/aggregated", response_model=AggregatedChangesResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_aggregated_changes(
     session_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> AggregatedChangesResponse:
     """Get aggregated pending changes across all agents."""
@@ -436,9 +441,11 @@ async def get_aggregated_changes(
 
 
 @router.post("/sessions/{session_id}/changes", response_model=ChangeSetResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def create_change_set(
     session_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
     body: CreateChangeSetRequest,
 ) -> ChangeSetResponse:
@@ -484,9 +491,11 @@ async def create_change_set(
 
 
 @router.post("/changes/{change_set_id}/files", response_model=FileChangeResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def add_file_to_change_set(
     change_set_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
     body: AddFileChangeRequest,
 ) -> FileChangeResponse:
@@ -552,9 +561,11 @@ async def add_file_to_change_set(
 
 
 @router.patch("/changes/{change_set_id}/hunks")
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def update_hunk_status(
     change_set_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
     body: UpdateHunkStatusRequest,
 ) -> dict[str, str]:
@@ -591,9 +602,11 @@ async def update_hunk_status(
 
 
 @router.post("/changes/{change_set_id}/apply")
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def apply_change_set(
     change_set_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
     body: ApplyChangeSetRequest,
 ) -> dict[str, Any]:
@@ -647,9 +660,11 @@ async def apply_change_set(
 
 
 @router.post("/changes/{change_set_id}/reject")
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def reject_change_set(
     change_set_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> dict[str, str]:
     """Reject an entire change set."""

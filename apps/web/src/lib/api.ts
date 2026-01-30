@@ -120,9 +120,8 @@ import {
   SentryErrorReporter,
   ZustandAuthProvider,
 } from '@/lib/api-adapters';
-import { getApiBaseUrl, getApiBaseUrlSync } from '@/lib/api-url';
+import { getApiBaseUrlSync } from '@/lib/api-url';
 
-// Initialize with sync URL (will be updated if in Electron)
 const API_BASE_URL = getApiBaseUrlSync();
 
 // Create and export the API client singleton
@@ -132,21 +131,6 @@ export const api = new PodexApiClient({
   authProvider: new ZustandAuthProvider(),
   errorReporter: new SentryErrorReporter(),
 });
-
-// Update API URL from Electron if available (async, non-blocking)
-if (typeof window !== 'undefined') {
-  getApiBaseUrl()
-    .then((url) => {
-      if (url !== API_BASE_URL) {
-        // Update the baseUrl on the client instance
-        api.setBaseUrl(url);
-        // API URL updated from Electron settings - silent in production
-      }
-    })
-    .catch((error) => {
-      console.warn('Failed to update API URL from Electron:', error);
-    });
-}
 
 // Export the request cache for direct access
 export const requestCache = api.getCache();
@@ -633,29 +617,6 @@ export async function handleGitHubLinkCallback(
   return api.post<GitHubLinkResponse>('/api/oauth/github/link-callback', { code, state });
 }
 
-// Terminal Agents methods
-export interface CreateTerminalAgentRequest {
-  workspace_id: string;
-  agent_type_id: string;
-}
-
-export interface TerminalAgentSessionResponse {
-  id: string;
-  user_id: string;
-  workspace_id: string;
-  agent_type_id: string;
-  env_profile_id: string | null;
-  status: string;
-  created_at: string;
-  last_heartbeat_at: string;
-}
-
-export async function createTerminalAgent(
-  data: CreateTerminalAgentRequest
-): Promise<TerminalAgentSessionResponse> {
-  return api.post<TerminalAgentSessionResponse>('/api/v1/terminal-agents', data);
-}
-
 // Marketplace methods
 
 // Skills methods
@@ -793,10 +754,7 @@ export interface AgentCreateRequest {
     | 'security'
     | 'devops'
     | 'documentator'
-    | 'custom'
-    | 'claude-code'
-    | 'openai-codex'
-    | 'gemini-cli';
+    | 'custom';
   model?: string; // Optional - uses role default from platform settings if not provided
   config?: Record<string, unknown>;
   template_id?: string; // Reference to custom agent template
@@ -813,6 +771,7 @@ export interface AgentResponse {
   mode?: 'plan' | 'ask' | 'auto' | 'sovereign';
   config?: Record<string, unknown>;
   template_id?: string | null;
+  conversation_session_id?: string | null; // Reference to attached conversation session
   created_at: string;
 }
 
@@ -825,6 +784,39 @@ export interface MessageResponse {
   created_at: string;
 }
 
+// Conversation session API types
+export interface ConversationSummary {
+  id: string;
+  name: string;
+  attached_agent_ids: string[];
+  message_count: number;
+  last_message_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConversationMessage {
+  id: string;
+  role: string;
+  content: string;
+  thinking?: string | null;
+  tool_calls?: Record<string, unknown> | null;
+  tool_results?: Record<string, unknown> | null;
+  model?: string | null;
+  stop_reason?: string | null;
+  usage?: Record<string, unknown> | null;
+  audio_url?: string | null;
+  audio_duration_ms?: number | null;
+  input_type?: string;
+  transcription_confidence?: number | null;
+  tts_summary?: string | null;
+  created_at: string;
+}
+
+export interface ConversationWithMessages extends ConversationSummary {
+  messages: ConversationMessage[];
+}
+
 // Agent API methods
 export async function createAgent(
   sessionId: string,
@@ -835,6 +827,55 @@ export async function createAgent(
 
 export async function listAgents(sessionId: string): Promise<AgentResponse[]> {
   return api.get<AgentResponse[]>(`/api/sessions/${sessionId}/agents`);
+}
+
+export async function listConversations(sessionId: string): Promise<ConversationSummary[]> {
+  return api.get<ConversationSummary[]>(`/api/sessions/${sessionId}/conversations`);
+}
+
+export interface CreateConversationRequest {
+  name?: string;
+  first_message?: string;
+}
+
+export async function createConversation(
+  sessionId: string,
+  data?: CreateConversationRequest
+): Promise<ConversationSummary> {
+  return api.post<ConversationSummary>(
+    `/api/sessions/${sessionId}/conversations`,
+    data ?? { name: 'New Session' }
+  );
+}
+
+export async function getConversation(
+  sessionId: string,
+  conversationId: string
+): Promise<ConversationWithMessages> {
+  return api.get<ConversationWithMessages>(
+    `/api/sessions/${sessionId}/conversations/${conversationId}`
+  );
+}
+
+export async function attachConversation(
+  sessionId: string,
+  conversationId: string,
+  agentId: string
+): Promise<ConversationSummary> {
+  return api.post(`/api/sessions/${sessionId}/conversations/${conversationId}/attach`, {
+    agent_id: agentId,
+  }) as Promise<ConversationSummary>;
+}
+
+export async function detachConversation(
+  sessionId: string,
+  conversationId: string,
+  agentId?: string
+): Promise<ConversationSummary> {
+  return api.post(
+    `/api/sessions/${sessionId}/conversations/${conversationId}/detach`,
+    agentId ? { agent_id: agentId } : {}
+  ) as Promise<ConversationSummary>;
 }
 
 // ==================== Agent Role Configuration ====================
@@ -857,9 +898,6 @@ export interface AgentRoleConfig {
   features: string[] | null;
   example_prompts: string[] | null;
   requires_subscription: string | null;
-  default_model: string | null;
-  default_temperature: number | null;
-  default_max_tokens: number | null;
   sort_order: number;
   is_enabled: boolean;
   is_system: boolean;
@@ -1371,9 +1409,6 @@ export async function deleteTemplate(templateId: string): Promise<void> {
 export interface UserConfig {
   id: string;
   user_id: string;
-  sync_dotfiles: boolean;
-  dotfiles_repo: string | null;
-  dotfiles_paths: string[] | null;
   default_shell: string;
   default_editor: string;
   git_name: string | null;
@@ -1384,9 +1419,6 @@ export interface UserConfig {
 }
 
 export interface UpdateUserConfigRequest {
-  sync_dotfiles?: boolean;
-  dotfiles_repo?: string | null;
-  dotfiles_paths?: string[];
   default_shell?: string;
   default_editor?: string;
   git_name?: string | null;
@@ -1431,6 +1463,15 @@ export async function resetAllTours(): Promise<CompletedToursResponse> {
 
 // ==================== Sessions ====================
 
+/**
+ * Session: one "pod" / dev environment the user has.
+ *
+ * Status fields (they are not the same):
+ * - status: Session lifecycle (active, creating, stopped, error). "Is this session in use?"
+ * - workspace_status: Compute/container lifecycle (running, stopped, pending, error, etc.).
+ *   "Is the actual container running?" Can be stale in DB until someone calls GET workspace status
+ *   (which syncs from compute) or compute pushes a sync.
+ */
 export interface Session {
   id: string;
   name: string;
@@ -1438,7 +1479,7 @@ export interface Session {
   workspace_id: string | null;
   branch: string;
   status: 'active' | 'stopped' | 'creating' | 'error';
-  workspace_status: 'running' | 'standby' | 'stopped' | 'pending' | 'error' | null;
+  workspace_status: 'running' | 'standby' | 'stopped' | 'pending' | 'error' | 'offline' | null;
   template_id: string | null;
   git_url: string | null;
   created_at: string;
@@ -1446,6 +1487,10 @@ export interface Session {
   pinned?: boolean;
   active_agents?: number;
   total_tokens?: number;
+  // Local pod info (null = cloud workspace)
+  local_pod_id?: string | null;
+  local_pod_name?: string | null;
+  mount_path?: string | null;
 }
 
 export interface SessionListResponse {
@@ -1468,6 +1513,10 @@ export interface CreateSessionRequest {
   os_version?: string;
   // Local pod (for self-hosted compute)
   local_pod_id?: string;
+  // Mount path for local pod workspace (optional)
+  mount_path?: string;
+  // Region preference for workspace placement
+  region_preference?: string;
 }
 
 export async function createSession(data: CreateSessionRequest): Promise<Session> {
@@ -1486,30 +1535,102 @@ export async function deleteSession(sessionId: string): Promise<void> {
   await api.delete(`/api/sessions/${sessionId}`);
 }
 
-// ==================== Workspace Standby ====================
+// ==================== Workspace Status ====================
 
 export interface WorkspaceStatusResponse {
   id: string;
-  status: 'pending' | 'running' | 'standby' | 'stopped' | 'error';
-  standby_at: string | null;
+  status: 'pending' | 'running' | 'stopped' | 'error';
   last_activity: string | null;
 }
 
-export interface StandbySettingsResponse {
-  timeout_minutes: number | null; // null = Never
-  source: 'session' | 'user_default';
-}
-
-export async function pauseWorkspace(workspaceId: string): Promise<WorkspaceStatusResponse> {
-  return api.post<WorkspaceStatusResponse>(`/api/workspaces/${workspaceId}/pause`, {});
-}
-
-export async function resumeWorkspace(workspaceId: string): Promise<WorkspaceStatusResponse> {
-  return api.post<WorkspaceStatusResponse>(`/api/workspaces/${workspaceId}/resume`, {});
+export async function startWorkspace(workspaceId: string): Promise<WorkspaceStatusResponse> {
+  return api.post<WorkspaceStatusResponse>(`/api/workspaces/${workspaceId}/start`, {});
 }
 
 export async function getWorkspaceStatus(workspaceId: string): Promise<WorkspaceStatusResponse> {
   return api.get<WorkspaceStatusResponse>(`/api/workspaces/${workspaceId}/status`);
+}
+
+// ==================== Tunnels (Cloudflare external exposure) ====================
+
+export interface TunnelItem {
+  id: string;
+  workspace_id: string;
+  port: number;
+  public_url: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TunnelListResponse {
+  tunnels: TunnelItem[];
+  total: number;
+}
+
+export interface TunnelStatusResponse {
+  status: string;
+  connected: boolean;
+  error: string | null;
+}
+
+export async function listTunnels(workspaceId: string): Promise<TunnelListResponse> {
+  return api.get<TunnelListResponse>(`/api/workspaces/${workspaceId}/tunnels`);
+}
+
+export async function exposePort(workspaceId: string, port: number): Promise<TunnelItem> {
+  return api.post<TunnelItem>(`/api/workspaces/${workspaceId}/tunnels`, { port });
+}
+
+export async function unexposePort(workspaceId: string, port: number): Promise<void> {
+  return api.delete(`/api/workspaces/${workspaceId}/tunnels/${port}`);
+}
+
+export async function getTunnelStatus(workspaceId: string): Promise<TunnelStatusResponse> {
+  return api.get<TunnelStatusResponse>(`/api/workspaces/${workspaceId}/tunnel-status`);
+}
+
+// ==================== SSH Tunnel (VS Code Remote-SSH) ====================
+
+export interface SSHTunnelResponse {
+  enabled: boolean;
+  hostname: string | null;
+  public_url: string | null;
+  status: string | null;
+  connection_string: string | null;
+  proxy_command: string | null;
+  ssh_config_snippet: string | null;
+}
+
+export async function getSSHTunnel(workspaceId: string): Promise<SSHTunnelResponse> {
+  return api.get<SSHTunnelResponse>(`/api/workspaces/${workspaceId}/ssh-tunnel`);
+}
+
+export async function enableSSHTunnel(workspaceId: string): Promise<SSHTunnelResponse> {
+  return api.post<SSHTunnelResponse>(`/api/workspaces/${workspaceId}/ssh-tunnel`, {});
+}
+
+export async function disableSSHTunnel(workspaceId: string): Promise<void> {
+  return api.delete(`/api/workspaces/${workspaceId}/ssh-tunnel`);
+}
+
+export interface WorkspaceExecRequest {
+  command: string;
+  working_dir?: string | null;
+  timeout?: number;
+}
+
+export interface WorkspaceExecResponse {
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+}
+
+export async function runWorkspaceCommand(
+  workspaceId: string,
+  body: WorkspaceExecRequest
+): Promise<WorkspaceExecResponse> {
+  return api.post<WorkspaceExecResponse>(`/api/workspaces/${workspaceId}/exec`, body);
 }
 
 export interface WorkspaceScaleResponse {
@@ -1529,21 +1650,26 @@ export async function scaleWorkspace(
   });
 }
 
-export async function getStandbySettings(sessionId: string): Promise<StandbySettingsResponse> {
-  return api.get<StandbySettingsResponse>(`/api/sessions/${sessionId}/standby-settings`);
+// ==================== Workspace Resource Metrics ====================
+
+export interface WorkspaceResourceMetrics {
+  cpu_percent: number;
+  cpu_limit_cores: number;
+  memory_used_mb: number;
+  memory_limit_mb: number;
+  memory_percent: number;
+  disk_read_mb: number;
+  disk_write_mb: number;
+  network_rx_mb: number;
+  network_tx_mb: number;
+  collected_at: string | null;
+  container_uptime_seconds: number;
 }
 
-export async function updateStandbySettings(
-  sessionId: string,
-  timeoutMinutes: number | null
-): Promise<StandbySettingsResponse> {
-  return api.patch<StandbySettingsResponse>(`/api/sessions/${sessionId}/standby-settings`, {
-    timeout_minutes: timeoutMinutes,
-  });
-}
-
-export async function clearStandbySettings(sessionId: string): Promise<StandbySettingsResponse> {
-  return api.delete(`/api/sessions/${sessionId}/standby-settings`);
+export async function getWorkspaceResources(
+  workspaceId: string
+): Promise<WorkspaceResourceMetrics> {
+  return api.get<WorkspaceResourceMetrics>(`/compute/workspaces/${workspaceId}/resources`);
 }
 
 // ==================== Git ====================
@@ -1556,6 +1682,7 @@ export interface GitStatus {
   staged: Array<{ path: string; status: string }>;
   unstaged: Array<{ path: string; status: string }>;
   untracked: string[];
+  working_dir?: string | null; // The actual working directory used for git commands
 }
 
 export interface GitBranch {
@@ -1713,13 +1840,17 @@ export async function compareBranches(
   sessionId: string,
   base: string,
   compare: string,
-  workingDir?: string
+  workingDir?: string,
+  includeUncommitted?: boolean
 ): Promise<BranchCompareResponse> {
   const params = new URLSearchParams();
   params.append('base', base);
   params.append('compare', compare);
   if (workingDir) {
     params.append('working_dir', workingDir);
+  }
+  if (includeUncommitted) {
+    params.append('include_uncommitted', 'true');
   }
   return api.get<BranchCompareResponse>(
     `/api/sessions/${sessionId}/git/compare?${params.toString()}`
@@ -1756,6 +1887,39 @@ export interface FileContent {
 
 export async function listFiles(sessionId: string, path = '.'): Promise<FileNode[]> {
   return api.get<FileNode[]>(`/api/sessions/${sessionId}/files?path=${encodeURIComponent(path)}`);
+}
+
+export interface UpdateWorkspaceResponse {
+  success: boolean;
+  working_dir?: string | null;
+  error?: string | null;
+}
+
+export interface WorkspaceInfoResponse {
+  working_dir?: string | null;
+  mount_path?: string | null;
+  status?: string | null;
+}
+
+/**
+ * Get workspace info including working directory.
+ * Useful for local pods where the working_dir might not be stored in session.
+ */
+export async function getWorkspaceInfo(sessionId: string): Promise<WorkspaceInfoResponse> {
+  return api.get<WorkspaceInfoResponse>(`/api/sessions/${sessionId}/workspace/info`);
+}
+
+/**
+ * Update workspace configuration (e.g., working directory).
+ * Only supported for local pod workspaces.
+ */
+export async function updateWorkspaceConfig(
+  sessionId: string,
+  workingDir: string
+): Promise<UpdateWorkspaceResponse> {
+  return api.patch<UpdateWorkspaceResponse>(`/api/sessions/${sessionId}/workspace`, {
+    working_dir: workingDir,
+  });
 }
 
 export async function getFileContent(sessionId: string, path: string): Promise<FileContent> {
@@ -1920,6 +2084,7 @@ export async function downloadFolder(sessionId: string, path: string): Promise<v
 export interface GridSpanLayout {
   col_span: number;
   row_span: number;
+  col_start?: number;
 }
 
 export interface PositionLayout {
@@ -2590,8 +2755,8 @@ export interface HardwareSpecResponse {
   gpu_type: string | null;
   gpu_memory_gb: number | null;
   gpu_count: number;
-  storage_gb_default: number;
-  storage_gb_max: number;
+  storage_gb: number;
+  bandwidth_mbps: number | null; // Network bandwidth allocation in Mbps
   hourly_rate: number; // Base cost (provider cost)
   is_available: boolean;
   requires_subscription: string | null;
@@ -3173,10 +3338,8 @@ export interface LocalPod {
   last_error: string | null;
   os_info: string | null;
   architecture: string | null;
-  docker_version: string | null;
   total_memory_mb: number | null;
   total_cpu_cores: number | null;
-  max_workspaces: number;
   current_workspaces: number;
   labels: Record<string, string> | null;
   created_at: string;
@@ -3194,7 +3357,6 @@ export interface LocalPodWithWorkspaces extends LocalPod {
 
 export interface CreateLocalPodRequest {
   name: string;
-  max_workspaces?: number;
   labels?: Record<string, string>;
 }
 
@@ -3205,7 +3367,6 @@ export interface CreateLocalPodResponse {
 
 export interface UpdateLocalPodRequest {
   name?: string;
-  max_workspaces?: number;
   labels?: Record<string, string>;
 }
 
@@ -3259,6 +3420,36 @@ export async function getLocalPodWorkspaces(
 export async function getOnlineLocalPods(): Promise<LocalPod[]> {
   const pods = await listLocalPods();
   return pods.filter((p) => p.status === 'online');
+}
+
+// Host filesystem browsing
+export interface DirectoryEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  is_file: boolean;
+  size: number | null;
+  modified: number | null;
+}
+
+export interface BrowseDirectoryResponse {
+  path: string;
+  parent: string | null;
+  entries: DirectoryEntry[];
+  is_home: boolean;
+  error: string | null;
+  allowed_paths: string[] | null;
+}
+
+export async function browseLocalPodDirectory(
+  podId: string,
+  path: string = '~',
+  showHidden: boolean = false
+): Promise<BrowseDirectoryResponse> {
+  return api.post<BrowseDirectoryResponse>(`/api/local-pods/${podId}/browse`, {
+    path,
+    show_hidden: showHidden,
+  });
 }
 
 // Local Pod Pricing (from platform settings)
@@ -3940,120 +4131,6 @@ export async function getCostAlerts(
 
 export async function acknowledgeCostAlert(alertId: string): Promise<{ success: boolean }> {
   return api.post<{ success: boolean }>(`/api/billing/alerts/${alertId}/acknowledge`, {});
-}
-
-// ============================================================================
-// LSP (Language Server Protocol) APIs
-// ============================================================================
-
-export interface LSPDiagnostic {
-  file_path: string;
-  line: number;
-  column: number;
-  end_line: number;
-  end_column: number;
-  message: string;
-  severity: 'error' | 'warning' | 'information' | 'hint';
-  source: string | null;
-  code: string | null;
-}
-
-export interface DiagnosticsResponse {
-  file_path: string;
-  diagnostics: LSPDiagnostic[];
-  language: string | null;
-}
-
-export interface BatchDiagnosticsResponse {
-  results: DiagnosticsResponse[];
-  total_diagnostics: number;
-}
-
-export interface SupportedLanguage {
-  command: string;
-  installed: boolean;
-  extensions: string[];
-}
-
-export interface SupportedLanguagesResponse {
-  workspace_id: string;
-  languages: Record<string, SupportedLanguage>;
-}
-
-/**
- * Get diagnostics for a single file in a workspace.
- */
-export async function getFileDiagnostics(
-  workspaceId: string,
-  filePath: string
-): Promise<DiagnosticsResponse> {
-  return api.get<DiagnosticsResponse>(
-    `/api/lsp/workspaces/${workspaceId}/diagnostics?file_path=${encodeURIComponent(filePath)}`
-  );
-}
-
-/**
- * Get diagnostics for multiple files in a workspace.
- */
-export async function getBatchDiagnostics(
-  workspaceId: string,
-  filePaths: string[]
-): Promise<BatchDiagnosticsResponse> {
-  return api.post<BatchDiagnosticsResponse>(
-    `/api/lsp/workspaces/${workspaceId}/diagnostics/batch`,
-    { file_paths: filePaths }
-  );
-}
-
-/**
- * Get supported languages and their installation status for a workspace.
- */
-export async function getSupportedLanguages(
-  workspaceId: string
-): Promise<SupportedLanguagesResponse> {
-  return api.get<SupportedLanguagesResponse>(
-    `/api/lsp/workspaces/${workspaceId}/supported-languages`
-  );
-}
-
-// ============================================================================
-// File Watching APIs
-// ============================================================================
-
-export interface WatchStatusResponse {
-  workspace_id: string;
-  watching: boolean;
-  patterns: string[] | null;
-}
-
-export interface StartWatchingRequest {
-  patterns?: string[];
-  debounce_ms?: number;
-}
-
-/**
- * Start watching files for changes in a workspace.
- * When files change, diagnostics will be automatically refreshed.
- */
-export async function startFileWatching(
-  workspaceId: string,
-  options?: StartWatchingRequest
-): Promise<WatchStatusResponse> {
-  return api.post<WatchStatusResponse>(`/api/lsp/workspaces/${workspaceId}/watch`, options || {});
-}
-
-/**
- * Stop watching files for changes in a workspace.
- */
-export async function stopFileWatching(workspaceId: string): Promise<WatchStatusResponse> {
-  return api.delete<WatchStatusResponse>(`/api/lsp/workspaces/${workspaceId}/watch`);
-}
-
-/**
- * Get file watcher status for a workspace.
- */
-export async function getFileWatchStatus(workspaceId: string): Promise<WatchStatusResponse> {
-  return api.get<WatchStatusResponse>(`/api/lsp/workspaces/${workspaceId}/watch/status`);
 }
 
 // ============================================================================
@@ -5561,17 +5638,6 @@ export async function testLLMProvider(
 }
 
 // ============================================================================
-// Terminal Agent Operations
-// ============================================================================
-
-/**
- * Delete a terminal agent by session ID.
- */
-export async function deleteTerminalAgent(terminalSessionId: string): Promise<void> {
-  await api.delete(`/api/v1/terminal-agents/${terminalSessionId}`);
-}
-
-// ============================================================================
 // Workspace Search & Symbols
 // ============================================================================
 
@@ -6059,4 +6125,198 @@ export async function getProductivitySummary(days: number = 30): Promise<Product
  */
 export async function getProductivityTrends(days: number = 30): Promise<ProductivityTrends> {
   return api.get<ProductivityTrends>(`/api/productivity/trends?days=${days}`);
+}
+
+// ============================================================================
+// Region Capacity (for workspace placement)
+// ============================================================================
+
+export interface TierCapacity {
+  available: boolean;
+  slots: number;
+}
+
+export interface RegionCapacityResponse {
+  region: string;
+  tiers: Record<string, TierCapacity>;
+}
+
+/**
+ * Get available capacity per tier for a specific region.
+ * Used to show which hardware tiers are available in the selected region.
+ */
+export async function getRegionCapacity(region: string): Promise<RegionCapacityResponse> {
+  return api.get<RegionCapacityResponse>(`/api/servers/capacity/${region}`);
+}
+
+// ============================================================================
+// Admin Server Workspaces (per-server workspace metrics)
+// ============================================================================
+
+export interface ServerWorkspaceInfo {
+  workspace_id: string;
+  user_id: string;
+  user_email: string | null;
+  tier: string | null;
+  status: string;
+  assigned_cpu: number | null;
+  assigned_memory_mb: number | null;
+  assigned_bandwidth_mbps: number | null;
+  created_at: string;
+  last_activity: string | null;
+}
+
+export interface ServerWorkspacesResponse {
+  server_id: string;
+  server_name: string;
+  region: string | null;
+  workspaces: ServerWorkspaceInfo[];
+  total_count: number;
+}
+
+/**
+ * Get all workspaces running on a specific server.
+ * Admin endpoint for viewing which users/workspaces are on a server.
+ */
+export async function getServerWorkspaces(serverId: string): Promise<ServerWorkspacesResponse> {
+  return api.get<ServerWorkspacesResponse>(`/api/servers/${serverId}/workspaces`);
+}
+
+// ==================== Waitlist API ====================
+
+export interface WaitlistJoinResponse {
+  success: boolean;
+  message: string;
+  position: number | null;
+  already_registered: boolean;
+}
+
+export interface WaitlistEntry {
+  id: string;
+  email: string;
+  status: 'waiting' | 'invited' | 'registered';
+  source: string;
+  referral_code: string | null;
+  position: number | null;
+  created_at: string;
+  invited_at: string | null;
+  invitation_id: string | null;
+}
+
+export interface WaitlistListResponse {
+  items: WaitlistEntry[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_more: boolean;
+  stats: {
+    total: number;
+    waiting: number;
+    invited: number;
+    registered: number;
+  };
+}
+
+export interface SendWaitlistInviteResponse {
+  success: boolean;
+  message: string;
+  invitation_id: string;
+  waitlist_entry: WaitlistEntry;
+}
+
+/**
+ * Join the waitlist (public endpoint).
+ */
+export async function joinWaitlist(
+  email: string,
+  source = 'coming_soon',
+  referralCode?: string
+): Promise<WaitlistJoinResponse> {
+  return api.post<WaitlistJoinResponse>(
+    '/api/waitlist',
+    { email, source, referral_code: referralCode },
+    false // Public endpoint, no auth required
+  );
+}
+
+/**
+ * Check waitlist position (public endpoint).
+ */
+export async function checkWaitlistPosition(email: string): Promise<{
+  email: string;
+  position: number | null;
+  status: string;
+  joined_at: string | null;
+}> {
+  return api.get(`/api/waitlist/position/${encodeURIComponent(email)}`, false);
+}
+
+/**
+ * List waitlist entries (admin only).
+ */
+export async function listWaitlistEntries(
+  page = 1,
+  pageSize = 50,
+  status?: string,
+  search?: string,
+  source?: string
+): Promise<WaitlistListResponse> {
+  const params = new URLSearchParams({
+    page: String(page),
+    page_size: String(pageSize),
+  });
+  if (status) params.append('status', status);
+  if (search) params.append('search', search);
+  if (source) params.append('source', source);
+  return api.get<WaitlistListResponse>(`/api/admin/waitlist?${params}`);
+}
+
+/**
+ * Get a specific waitlist entry (admin only).
+ */
+export async function getWaitlistEntry(entryId: string): Promise<WaitlistEntry> {
+  return api.get<WaitlistEntry>(`/api/admin/waitlist/${entryId}`);
+}
+
+/**
+ * Send invitation to a waitlist entry (admin only).
+ */
+export async function sendWaitlistInvitation(
+  entryId: string,
+  options?: {
+    message?: string;
+    gift_plan_id?: string;
+    gift_months?: number;
+    expires_in_days?: number;
+  }
+): Promise<SendWaitlistInviteResponse> {
+  return api.post<SendWaitlistInviteResponse>(
+    `/api/admin/waitlist/${entryId}/invite`,
+    options ?? {}
+  );
+}
+
+/**
+ * Delete a waitlist entry (admin only).
+ */
+export async function deleteWaitlistEntry(entryId: string): Promise<{ message: string }> {
+  return api.delete(`/api/admin/waitlist/${entryId}`);
+}
+
+/**
+ * Bulk invite waitlist entries (admin only).
+ */
+export async function bulkInviteWaitlist(
+  count = 10,
+  options?: {
+    message?: string;
+    gift_plan_id?: string;
+    gift_months?: number;
+  }
+): Promise<{ message: string; invited: number; skipped: number }> {
+  const params = new URLSearchParams({ count: String(count) });
+  if (options?.message) params.append('message', options.message);
+  if (options?.gift_plan_id) params.append('gift_plan_id', options.gift_plan_id);
+  if (options?.gift_months) params.append('gift_months', String(options.gift_months));
+  return api.post(`/api/admin/waitlist/bulk-invite?${params}`, {});
 }

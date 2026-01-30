@@ -114,8 +114,6 @@ const mockAgentRoles: AgentRoleConfig[] = [
     name: 'Architect',
     description: 'Designs system architecture and makes high-level decisions',
     color: '#7C3AED',
-    default_model: 'claude-opus-4-5-20251101',
-    default_temperature: 0.7,
     suggested_tools: ['read_file', 'search_files', 'list_directory'],
   },
   {
@@ -123,11 +121,9 @@ const mockAgentRoles: AgentRoleConfig[] = [
     name: 'Developer',
     description: 'Writes and modifies code',
     color: '#10B981',
-    default_model: 'claude-sonnet-4-5-20250929',
-    default_temperature: 0.5,
     suggested_tools: ['read_file', 'write_file', 'edit_file'],
   },
-];
+] as AgentRoleConfig[];
 
 const mockWorkspaceDefaults: WorkspaceDefaults = {
   tier: 'basic',
@@ -988,7 +984,7 @@ describe('configStore', () => {
       const role = result.current.getAgentRole('architect');
       expect(role).toBeDefined();
       expect(role?.name).toBe('Architect');
-      expect(role?.default_model).toBe('claude-opus-4-5-20251101');
+      expect(role?.color).toBe('#7C3AED');
     });
 
     it('returns undefined for non-existent agent role', () => {

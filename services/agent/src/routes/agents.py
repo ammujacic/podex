@@ -8,7 +8,7 @@ from sqlalchemy import delete, select
 from src.context.summarizer import ConversationSummarizer
 from src.context.tokenizer import Tokenizer
 from src.database.connection import get_db_context
-from src.database.models import Agent, Message
+from src.database.models import Agent, ConversationMessage
 from src.deps import require_internal_service_token
 from src.orchestrator import AgentOrchestrator, AgentTask
 from src.providers.llm import LLMProvider
@@ -106,16 +106,34 @@ async def compact_agent_context(
     4. Returns compaction statistics
     """
     async with get_db_context() as db:
-        # Verify agent exists
-        result = await db.execute(select(Agent).where(Agent.id == agent_id))
+        # Verify agent exists and load its conversation session
+        from sqlalchemy.orm import selectinload
+
+        result = await db.execute(
+            select(Agent)
+            .options(selectinload(Agent.attached_conversation))
+            .where(Agent.id == agent_id)
+        )
         agent = result.scalar_one_or_none()
 
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
 
-        # Load all messages for this agent
+        # Check if agent has a conversation session
+        if not agent.attached_conversation:
+            return CompactResponse(
+                tokens_before=0,
+                tokens_after=0,
+                messages_removed=0,
+                messages_preserved=0,
+                summary=None,
+            )
+
+        # Load all messages for this agent's conversation session
         messages_result = await db.execute(
-            select(Message).where(Message.agent_id == agent_id).order_by(Message.created_at.asc())
+            select(ConversationMessage)
+            .where(ConversationMessage.conversation_session_id == agent.attached_conversation.id)
+            .order_by(ConversationMessage.created_at.asc())
         )
         messages = list(messages_result.scalars().all())
 
@@ -156,7 +174,7 @@ async def compact_agent_context(
         if messages_to_summarize:
             try:
                 llm_provider = LLMProvider()
-                summarizer = ConversationSummarizer(llm_provider)
+                summarizer = ConversationSummarizer(llm_provider, agent.model)
 
                 messages_to_summarize_dicts = [
                     {"role": msg.role, "content": msg.content} for msg in messages_to_summarize
@@ -178,11 +196,15 @@ async def compact_agent_context(
 
                 # Delete old messages from database
                 message_ids_to_delete = [msg.id for msg in messages_to_summarize]
-                await db.execute(delete(Message).where(Message.id.in_(message_ids_to_delete)))
+                await db.execute(
+                    delete(ConversationMessage).where(
+                        ConversationMessage.id.in_(message_ids_to_delete)
+                    )
+                )
 
                 # Insert summary as a system message at the beginning
-                summary_message = Message(
-                    agent_id=agent_id,
+                summary_message = ConversationMessage(
+                    conversation_session_id=agent.attached_conversation.id,
                     role="system",
                     content=f"[Previous conversation summary]\n{summary_text}",
                 )

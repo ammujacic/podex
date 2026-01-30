@@ -29,29 +29,22 @@ def _get_service_auth() -> ServiceAuthClient:
     """Get or create the service auth client for agent service."""
     global _service_auth
     if _service_auth is None:
+        # Format token with Bearer prefix for Authorization header
+        api_key = settings.INTERNAL_SERVICE_TOKEN
+        if api_key and not api_key.startswith("Bearer "):
+            api_key = f"Bearer {api_key}"
         _service_auth = ServiceAuthClient(
             target_url=settings.AGENT_SERVICE_URL,
-            api_key=settings.INTERNAL_SERVICE_TOKEN,
+            api_key=api_key,
             environment=settings.ENVIRONMENT,
-            api_key_header="Authorization",  # Agent service uses Bearer token format
+            api_key_header="Authorization",
         )
     return _service_auth
 
 
 async def _get_auth_headers() -> dict[str, str]:
-    """Get authentication headers for agent service requests.
-
-    In production (GCP): Uses ID token from metadata server
-    In development (Docker): Uses Bearer token header
-    """
+    """Get authentication headers for agent service requests."""
     auth = _get_service_auth()
-
-    # In development, format the token as Bearer token
-    if not auth.is_production and settings.INTERNAL_SERVICE_TOKEN:
-        return {"Authorization": f"Bearer {settings.INTERNAL_SERVICE_TOKEN}"}
-
-    # In production, the ServiceAuthClient returns proper Bearer token format
-    # Cast needed because podex_shared types are not visible to mypy
     result: dict[str, str] = await auth.get_auth_headers()
     return result
 

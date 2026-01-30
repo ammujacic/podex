@@ -28,7 +28,7 @@ from src.database.models import (
     SkillTemplate,
     SubscriptionPlan,
     SystemSkill,
-    TerminalIntegratedAgentType,
+    WorkspaceServer,
 )
 
 logger = structlog.get_logger()
@@ -154,7 +154,16 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             # Only commit if there are pending changes (new, dirty, or deleted objects)
-            if session.new or session.dirty or session.deleted:
+            # Use a try-except to handle cases where checking session state might trigger
+            # synchronous database access (e.g., lazy loading relationships)
+            try:
+                has_changes = bool(session.new or session.dirty or session.deleted)
+            except Exception:
+                # If checking state fails (e.g., due to lazy loading), commit anyway
+                # SQLAlchemy will only commit if there are actual changes
+                has_changes = True
+
+            if has_changes:
                 await session.commit()
         except Exception:
             await session.rollback()
@@ -175,7 +184,16 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             # Only commit if there are pending changes (new, dirty, or deleted objects)
-            if session.new or session.dirty or session.deleted:
+            # Use a try-except to handle cases where checking session state might trigger
+            # synchronous database access (e.g., lazy loading relationships)
+            try:
+                has_changes = bool(session.new or session.dirty or session.deleted)
+            except Exception:
+                # If checking state fails (e.g., due to lazy loading), commit anyway
+                # SQLAlchemy will only commit if there are actual changes
+                has_changes = True
+
+            if has_changes:
                 await session.commit()
         except Exception:
             await session.rollback()
@@ -205,7 +223,7 @@ async def seed_database() -> None:
         DEFAULT_SETTINGS,
         DEFAULT_SKILL_TEMPLATES,
         DEFAULT_SYSTEM_SKILLS,
-        DEFAULT_TERMINAL_AGENTS,
+        DEV_WORKSPACE_SERVERS,
         OFFICIAL_TEMPLATES,
     )
 
@@ -216,7 +234,6 @@ async def seed_database() -> None:
                 "hardware": 0,
                 "templates": 0,
                 "settings": 0,
-                "terminal_agents": 0,
                 "llm_providers": 0,
                 "llm_models": 0,
                 "global_commands": 0,
@@ -226,6 +243,7 @@ async def seed_database() -> None:
                 "skill_templates": 0,
                 "default_mcp_servers": 0,
                 "health_checks": 0,
+                "workspace_servers": 0,
             }
 
             # Seed subscription plans
@@ -271,32 +289,6 @@ async def seed_database() -> None:
                         )
                     )
                     totals["settings"] += 1
-
-            # Seed terminal-integrated agent types
-            for agent_data in DEFAULT_TERMINAL_AGENTS:
-                result = await db.execute(
-                    select(TerminalIntegratedAgentType).where(
-                        TerminalIntegratedAgentType.slug == agent_data["slug"]
-                    )
-                )
-                if not result.scalar_one_or_none():
-                    db.add(
-                        TerminalIntegratedAgentType(
-                            name=agent_data["name"],
-                            slug=agent_data["slug"],
-                            logo_url=agent_data.get("logo_url"),
-                            description=agent_data.get("description"),
-                            check_installed_command=agent_data.get("check_installed_command"),
-                            version_command=agent_data.get("version_command"),
-                            install_command=agent_data.get("install_command"),
-                            update_command=agent_data.get("update_command"),
-                            run_command=agent_data["run_command"],
-                            default_env_template=agent_data.get("default_env_template", {}),
-                            is_enabled=agent_data.get("is_enabled", True),
-                            created_by_admin_id=None,
-                        )
-                    )
-                    totals["terminal_agents"] += 1
 
             # Seed LLM providers (must come before models)
             for provider_data in DEFAULT_PROVIDERS:
@@ -381,9 +373,6 @@ async def seed_database() -> None:
                             features=role_data.get("features"),
                             example_prompts=role_data.get("example_prompts"),
                             requires_subscription=role_data.get("requires_subscription"),
-                            default_model=role_data.get("default_model"),
-                            default_temperature=role_data.get("default_temperature"),
-                            default_max_tokens=role_data.get("default_max_tokens"),
                             sort_order=role_data.get("sort_order", 0),
                             is_enabled=role_data.get("is_enabled", True),
                             is_system=role_data.get("is_system", True),
@@ -474,6 +463,18 @@ async def seed_database() -> None:
                     )
                     totals["health_checks"] += 1
 
+            # Seed local development workspace servers (development only)
+            if settings.ENVIRONMENT == "development":
+                for server_data in DEV_WORKSPACE_SERVERS:
+                    result = await db.execute(
+                        select(WorkspaceServer).where(
+                            WorkspaceServer.hostname == server_data["hostname"]
+                        )
+                    )
+                    if not result.scalar_one_or_none():
+                        db.add(WorkspaceServer(**server_data))
+                        totals["workspace_servers"] += 1
+
             await db.commit()
 
             if any(totals.values()):
@@ -483,7 +484,6 @@ async def seed_database() -> None:
                     hardware=totals["hardware"],
                     templates=totals["templates"],
                     settings=totals["settings"],
-                    terminal_agents=totals["terminal_agents"],
                     llm_providers=totals["llm_providers"],
                     llm_models=totals["llm_models"],
                     global_commands=totals["global_commands"],
@@ -493,6 +493,7 @@ async def seed_database() -> None:
                     skill_templates=totals["skill_templates"],
                     default_mcp_servers=totals["default_mcp_servers"],
                     health_checks=totals["health_checks"],
+                    workspace_servers=totals["workspace_servers"],
                 )
 
         except Exception as e:

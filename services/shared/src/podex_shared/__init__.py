@@ -1,7 +1,6 @@
 """Podex Shared - Common utilities and models for Podex services."""
 
 from podex_shared.auth.service_auth import ServiceAuthClient, get_service_auth_headers
-from podex_shared.gcp.storage import GCSClient, WorkspaceGCSClient
 from podex_shared.models import (
     AgentLayout,
     AgentState,
@@ -27,7 +26,6 @@ from podex_shared.models import (
     WorkspaceScaleResponse,
     WorkspaceSessionState,
     WorkspaceStatus,
-    WorkspaceTier,
 )
 from podex_shared.redis_client import RedisClient, get_redis_client
 from podex_shared.sentry import (
@@ -76,7 +74,6 @@ __all__ = [
     "CommandType",
     "ComputeUsageParams",
     "FilePreviewLayout",
-    "GCSClient",
     "GridSpan",
     "ParsedCommand",
     "PortInfo",
@@ -102,13 +99,11 @@ __all__ = [
     "WorkspaceExecRequest",
     "WorkspaceExecResponse",
     "WorkspaceFileRequest",
-    "WorkspaceGCSClient",
     "WorkspaceInfo",
     "WorkspaceScaleRequest",
     "WorkspaceScaleResponse",
     "WorkspaceSessionState",
     "WorkspaceStatus",
-    "WorkspaceTier",
     "add_breadcrumb",
     "capture_exception",
     "capture_message",

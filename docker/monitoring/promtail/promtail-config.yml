@@ -1,0 +1,110 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # =================================================================
+  # Docker Container Logs (via Docker socket)
+  # This automatically discovers and labels all containers
+  # =================================================================
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      # Extract container name
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+      # Extract log stream (stdout/stderr)
+      - source_labels: ['__meta_docker_container_log_stream']
+        target_label: 'stream'
+      # Extract compose service name
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: 'service'
+      # Extract compose project name
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        target_label: 'project'
+      # Extract Coolify service label
+      - source_labels: ['__meta_docker_container_label_coolify_service']
+        target_label: 'coolify_service'
+      # Extract image name
+      - source_labels: ['__meta_docker_container_image']
+        target_label: 'image'
+    pipeline_stages:
+      # Parse JSON logs (Docker default format)
+      - json:
+          expressions:
+            log: log
+            timestamp: time
+      # Use the timestamp from the log
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+      # Output the actual log message
+      - output:
+          source: log
+
+  # =================================================================
+  # System Logs
+  # =================================================================
+  - job_name: syslog
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: syslog
+          host: platform
+          __path__: /var/log/syslog
+
+  # =================================================================
+  # Auth Logs (Security Monitoring)
+  # =================================================================
+  - job_name: authlog
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: authlog
+          host: platform
+          __path__: /var/log/auth.log
+    pipeline_stages:
+      # Extract failed login attempts
+      - match:
+          selector: '{job="authlog"}'
+          stages:
+            - regex:
+                expression: 'Failed password for (?P<user>\S+) from (?P<ip>\S+)'
+            - labels:
+                user:
+                ip:
+
+  # =================================================================
+  # Docker Daemon Logs
+  # =================================================================
+  - job_name: docker-daemon
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: docker-daemon
+          host: platform
+          __path__: /var/log/docker.log
+
+  # =================================================================
+  # Coolify Logs
+  # =================================================================
+  - job_name: coolify
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: coolify
+          host: platform
+          __path__: /data/coolify/logs/*.log

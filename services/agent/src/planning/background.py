@@ -132,6 +132,12 @@ class BackgroundPlanner:
         Returns:
             The queued task
         """
+        if not models:
+            raise ValueError(
+                "models are required for background planning. "
+                "Pass explicit planning models derived from DB/role defaults."
+            )
+
         task = BackgroundPlanTask(
             id=str(uuid.uuid4()),
             session_id=session_id,
@@ -139,7 +145,7 @@ class BackgroundPlanner:
             task_description=task_description,
             context=context,
             num_plans=num_plans,
-            models=models or ["claude-sonnet-4-20250514"],
+            models=models,
         )
 
         self._tasks[task.id] = task

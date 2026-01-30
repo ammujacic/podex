@@ -1,6 +1,7 @@
 """Comprehensive tests for usage tracking utilities."""
 
 from datetime import datetime
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -141,11 +142,10 @@ class TestComputeUsageParams:
             duration_seconds=7200,
             session_id="session-456",
             workspace_id="workspace-789",
-            hourly_rate_cents=20,
             metadata={"project": "ml-training"},
         )
         assert params.session_id == "session-456"
-        assert params.hourly_rate_cents == 20
+        assert params.workspace_id == "workspace-789"
         assert params.metadata == {"project": "ml-training"}
 
 
@@ -250,6 +250,9 @@ class TestUsageTrackerRecordTokenUsage:
             input_tokens=1000,
             output_tokens=500,
             session_id="session-456",
+            # Pricing is required for cost calculation
+            input_price_per_million=Decimal("3.00"),
+            output_price_per_million=Decimal("15.00"),
         )
 
         event = await tracker.record_token_usage(params)
@@ -264,23 +267,20 @@ class TestUsageTrackerRecordTokenUsage:
         assert event.total_cost_cents > 0
 
     @pytest.mark.asyncio
-    async def test_record_token_usage_unknown_model(self) -> None:
-        """Test recording token usage with unknown model."""
+    async def test_record_token_usage_unknown_model_raises_error(self) -> None:
+        """Test recording token usage with unknown model raises error when no pricing."""
         tracker = UsageTracker(api_base_url="http://localhost:8000", batch_size=100)
         params = TokenUsageParams(
             user_id="user-123",
             model="unknown-model",
             input_tokens=100,
             output_tokens=50,
+            # No pricing provided - should raise error
         )
 
-        event = await tracker.record_token_usage(params)
-
-        # Unknown models use default pricing and minimum charge applies
-        assert event.model == "unknown-model"
-        assert event.quantity == 150  # total tokens
-        # When no pricing is provided, defaults are used and minimum charge of 1 cent applies
-        assert event.total_cost_cents >= 1
+        # Unknown models without pricing should raise ValueError
+        with pytest.raises(ValueError, match="Model pricing not found"):
+            await tracker.record_token_usage(params)
 
 
 class TestUsageTrackerRecordComputeUsage:
@@ -288,13 +288,16 @@ class TestUsageTrackerRecordComputeUsage:
 
     @pytest.mark.asyncio
     async def test_record_compute_usage(self) -> None:
-        """Test recording compute usage."""
+        """Test recording compute usage.
+
+        Note: Pricing is NOT calculated client-side. The API calculates
+        pricing server-side based on the tier to ensure accurate billing.
+        """
         tracker = UsageTracker(api_base_url="http://localhost:8000", batch_size=100)
         params = ComputeUsageParams(
             user_id="user-123",
             tier="pro",
             duration_seconds=3600,
-            hourly_rate_cents=10,
         )
 
         event = await tracker.record_compute_usage(params)
@@ -305,7 +308,9 @@ class TestUsageTrackerRecordComputeUsage:
         assert event.quantity == 3600
         assert event.unit == "seconds"
         assert event.usage_type == UsageType.COMPUTE_SECONDS
-        assert event.total_cost_cents == 10  # 1 hour at 10 cents/hour
+        # Pricing is calculated server-side by the API, not client-side
+        assert event.total_cost_cents == 0
+        assert event.unit_price_cents == 0
 
 
 class TestUsageTrackerRecordStorageUsage:

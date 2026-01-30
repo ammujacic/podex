@@ -7,7 +7,6 @@ import {
   FolderOpen,
   Trash2,
   Copy,
-  CloudSync,
   ChevronRight,
   ChevronDown,
   Loader2,
@@ -54,14 +53,11 @@ export function MobileFileItem({
   isLoading = false,
   onToggleFolder,
   children,
-  getSyncInfo,
+  getSyncInfo: _getSyncInfo,
   onToggleSync: _onToggleSync,
   isExpandable = true,
 }: MobileFileItemProps) {
   const openMobileFileActions = useUIStore((state) => state.openMobileFileActions);
-  const syncInfo = getSyncInfo
-    ? getSyncInfo(item.path || item.name || '')
-    : { isSynced: false, syncType: null };
   const paddingLeft = 12 + depth * 16;
 
   // Handle swipe gestures
@@ -203,19 +199,6 @@ export function MobileFileItem({
           >
             {item.name}
           </span>
-
-          {/* Sync indicator */}
-          {syncInfo.isSynced && (
-            <CloudSync
-              className={cn(
-                'h-4 w-4 shrink-0 opacity-70',
-                syncInfo.syncType === 'user' ? 'text-blue-500' : 'text-accent-secondary'
-              )}
-              aria-label={
-                syncInfo.syncType === 'user' ? 'Synced to user account' : 'Auto-synced by Podex'
-              }
-            />
-          )}
 
           {/* More actions button */}
           <button

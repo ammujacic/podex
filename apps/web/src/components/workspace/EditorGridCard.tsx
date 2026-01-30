@@ -1,14 +1,20 @@
 'use client';
 
 import { useRef, useCallback, useEffect, useMemo } from 'react';
+import dynamic from 'next/dynamic';
 import { X, Maximize2, Minimize2 } from 'lucide-react';
 import { useEditorStore } from '@/stores/editor';
 import { useSessionStore, type GridSpan } from '@/stores/session';
 import { useUIStore } from '@/stores/ui';
-import { EnhancedCodeEditor } from '@/components/editor/EnhancedCodeEditor';
 import { useOptionalGridContext } from './GridContext';
 import { useGridResize } from '@/hooks/useGridResize';
 import { cn } from '@/lib/utils';
+
+// Dynamic import to prevent Monaco from loading during SSR
+const EnhancedCodeEditor = dynamic(
+  () => import('@/components/editor/EnhancedCodeEditor').then((mod) => mod.EnhancedCodeEditor),
+  { ssr: false }
+);
 
 // ============================================================================
 // Types

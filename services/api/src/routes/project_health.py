@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_db
 from src.database.models import ProjectHealthScore, Session
 from src.middleware.auth import get_current_user
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
 router = APIRouter(prefix="/sessions/{session_id}/health", tags=["project-health"])
 
@@ -273,8 +274,11 @@ async def run_health_analysis(
 
 
 @router.get("", response_model=HealthScoreResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_health_score(
     session_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> HealthScoreResponse:
@@ -361,10 +365,13 @@ async def get_health_score(
 
 
 @router.post("/analyze", response_model=AnalysisStartResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def start_health_analysis(
     session_id: str,
+    request: Request,
+    response: Response,
     background_tasks: BackgroundTasks,
-    request: AnalysisStartRequest | None = None,
+    body: AnalysisStartRequest | None = None,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> AnalysisStartResponse:
@@ -377,7 +384,7 @@ async def start_health_analysis(
     if not user_id_raw:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User ID not found")
     user_id: str = user_id_raw
-    working_directory = request.working_directory if request else None
+    working_directory = body.working_directory if body else None
 
     # Verify session ownership
     session_result = await db.execute(
@@ -446,8 +453,11 @@ async def start_health_analysis(
 
 
 @router.get("/recommendations", response_model=RecommendationsResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_recommendations(
     session_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> RecommendationsResponse:
@@ -511,9 +521,12 @@ class FixResponse(BaseModel):
 
 
 @router.post("/fix/{recommendation_id}", response_model=FixResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def auto_fix_recommendation(
     session_id: str,
     recommendation_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> FixResponse:
@@ -635,8 +648,11 @@ async def auto_fix_recommendation(
 
 
 @router.get("/history", response_model=list[HealthHistoryItem])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_health_history(
     session_id: str,
+    request: Request,
+    response: Response,
     limit: int = 30,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),

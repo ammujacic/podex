@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { ChevronDown, Search, MessageSquare } from 'lucide-react';
+import { Header } from '@/components/layout/Header';
+import { Footer } from '@/components/landing/Footer';
 
 const faqs = [
   {
@@ -77,15 +79,11 @@ const faqs = [
       },
       {
         q: 'Where is my data stored?',
-        a: 'Your data is stored on SOC 2 compliant cloud infrastructure in the United States. Enterprise customers can request specific data residency requirements.',
+        a: 'Your data is stored on secure cloud infrastructure in the United States. Enterprise customers can request specific data residency requirements.',
       },
       {
-        q: 'Do you have a Data Processing Agreement (DPA)?',
-        a: 'Yes, we provide a GDPR-compliant DPA for all customers. You can download our pre-signed DPA or request a custom agreement for enterprise needs.',
-      },
-      {
-        q: 'Is Podex SOC 2 compliant?',
-        a: 'We are currently pursuing SOC 2 Type II certification, expected in Q2 2025. We already follow SOC 2 security practices and use SOC 2 compliant infrastructure providers.',
+        q: 'What security certifications do you have?',
+        a: 'We are actively working towards industry security certifications. See our Security page for details on our current security practices and compliance roadmap.',
       },
     ],
   },
@@ -146,64 +144,72 @@ export default function FaqPage() {
     .filter((category) => category.questions.length > 0);
 
   return (
-    <div className="min-h-screen bg-void py-24 lg:py-32">
-      <div className="mx-auto max-w-3xl px-4 lg:px-8">
-        {/* Header */}
-        <div className="text-center mb-12">
-          <h1 className="text-4xl font-bold text-text-primary mb-4">Frequently Asked Questions</h1>
-          <p className="text-text-secondary mb-8">Find answers to common questions about Podex.</p>
+    <>
+      <Header />
+      <div className="min-h-screen bg-void py-24 lg:py-32">
+        <div className="mx-auto max-w-3xl px-4 lg:px-8">
+          {/* Header */}
+          <div className="text-center mb-12">
+            <h1 className="text-4xl font-bold text-text-primary mb-4">
+              Frequently Asked Questions
+            </h1>
+            <p className="text-text-secondary mb-8">
+              Find answers to common questions about Podex.
+            </p>
 
-          {/* Search */}
-          <div className="relative max-w-md mx-auto">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-text-muted" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search questions..."
-              className="w-full pl-12 pr-4 py-3 rounded-xl bg-surface border border-border-default text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:outline-none"
-            />
+            {/* Search */}
+            <div className="relative max-w-md mx-auto">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-text-muted" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search questions..."
+                className="w-full pl-12 pr-4 py-3 rounded-xl bg-surface border border-border-default text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:outline-none"
+              />
+            </div>
           </div>
-        </div>
 
-        {/* FAQ Categories */}
-        {filteredFaqs.length > 0 ? (
-          <div className="space-y-8">
-            {filteredFaqs.map((category) => (
-              <section key={category.category}>
-                <h2 className="text-lg font-bold text-text-primary mb-4">{category.category}</h2>
-                <div className="rounded-xl bg-surface border border-border-default p-6">
-                  {category.questions.map((faq) => (
-                    <FaqItem key={faq.q} question={faq.q} answer={faq.a} />
-                  ))}
-                </div>
-              </section>
-            ))}
-          </div>
-        ) : (
-          <div className="text-center py-12">
-            <p className="text-text-muted mb-4">No questions found matching your search.</p>
-            <button onClick={() => setSearch('')} className="text-accent-primary hover:underline">
-              Clear search
-            </button>
-          </div>
-        )}
+          {/* FAQ Categories */}
+          {filteredFaqs.length > 0 ? (
+            <div className="space-y-8">
+              {filteredFaqs.map((category) => (
+                <section key={category.category}>
+                  <h2 className="text-lg font-bold text-text-primary mb-4">{category.category}</h2>
+                  <div className="rounded-xl bg-surface border border-border-default p-6">
+                    {category.questions.map((faq) => (
+                      <FaqItem key={faq.q} question={faq.q} answer={faq.a} />
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-12">
+              <p className="text-text-muted mb-4">No questions found matching your search.</p>
+              <button onClick={() => setSearch('')} className="text-accent-primary hover:underline">
+                Clear search
+              </button>
+            </div>
+          )}
 
-        {/* Still Have Questions */}
-        <div className="mt-12 p-8 rounded-2xl bg-gradient-to-r from-accent-primary/10 to-accent-secondary/10 border border-border-default text-center">
-          <MessageSquare className="h-8 w-8 text-accent-primary mx-auto mb-4" />
-          <h3 className="text-xl font-bold text-text-primary mb-2">Still Have Questions?</h3>
-          <p className="text-text-secondary mb-4">
-            Can&apos;t find what you&apos;re looking for? We&apos;re here to help.
-          </p>
-          <Link
-            href="/contact"
-            className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-accent-primary text-text-inverse font-medium hover:shadow-[0_0_30px_rgba(0,229,255,0.4)] transition-all"
-          >
-            Contact Support
-          </Link>
+          {/* Still Have Questions */}
+          <div className="mt-12 p-8 rounded-2xl bg-gradient-to-r from-accent-primary/10 to-accent-secondary/10 border border-border-default text-center">
+            <MessageSquare className="h-8 w-8 text-accent-primary mx-auto mb-4" />
+            <h3 className="text-xl font-bold text-text-primary mb-2">Still Have Questions?</h3>
+            <p className="text-text-secondary mb-4">
+              Can&apos;t find what you&apos;re looking for? We&apos;re here to help.
+            </p>
+            <Link
+              href="/contact"
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-accent-primary text-text-inverse font-medium hover:shadow-[0_0_30px_rgba(0,229,255,0.4)] transition-all"
+            >
+              Contact Support
+            </Link>
+          </div>
         </div>
       </div>
-    </div>
+      <Footer />
+    </>
   );
 }

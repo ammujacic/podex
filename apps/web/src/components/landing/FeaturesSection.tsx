@@ -1,7 +1,7 @@
 'use client';
 
+import { memo, useRef } from 'react';
 import { motion, useInView } from 'framer-motion';
-import { useRef } from 'react';
 import {
   Brain,
   GitBranch,
@@ -142,7 +142,7 @@ const featureCategories = [
   },
 ];
 
-function FeatureCard({
+const FeatureCard = memo(function FeatureCard({
   feature,
   index,
   isInView,
@@ -172,9 +172,9 @@ function FeatureCard({
       <p className="text-sm text-text-secondary leading-relaxed">{feature.description}</p>
     </motion.div>
   );
-}
+});
 
-function CategorySection({
+const CategorySection = memo(function CategorySection({
   category,
   isInView,
   categoryIndex,
@@ -213,7 +213,7 @@ function CategorySection({
       </div>
     </div>
   );
-}
+});
 
 export function FeaturesSection() {
   const ref = useRef(null);

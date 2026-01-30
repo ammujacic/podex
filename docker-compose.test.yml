@@ -80,8 +80,6 @@ services:
       # GCP Configuration
       GCP_PROJECT_ID: podex-test
       GCP_REGION: us-east1
-      # LLM Provider (Vertex AI)
-      LLM_PROVIDER: vertex
       # CORS
       CORS_ORIGINS: '["http://localhost:3000", "http://localhost:3010"]'
       # Auth
@@ -137,8 +135,6 @@ services:
       # GCP Configuration
       GCP_PROJECT_ID: podex-test
       GCP_REGION: us-east1
-      # LLM Provider - use mock for testing
-      LLM_PROVIDER: mock
       # Mock API key for testing
       ANTHROPIC_API_KEY: sk-ant-test-mock-key
       OPENAI_API_KEY: sk-test-mock-key
@@ -252,8 +248,6 @@ services:
       # GCP Configuration
       GCP_PROJECT_ID: podex-test
       GCP_REGION: us-east1
-      # LLM Provider (Vertex AI)
-      LLM_PROVIDER: vertex
       JWT_SECRET_KEY: test-secret-key-for-testing
       STRIPE_SECRET_KEY: sk_test_mock
       STRIPE_API_BASE: http://stripe-mock:12111
@@ -296,7 +290,6 @@ services:
       # GCP Configuration
       GCP_PROJECT_ID: podex-test
       GCP_REGION: us-east1
-      LLM_PROVIDER: mock
       ANTHROPIC_API_KEY: sk-ant-test-mock-key
       # API Service (for usage tracking)
       API_BASE_URL: http://api-test:3001

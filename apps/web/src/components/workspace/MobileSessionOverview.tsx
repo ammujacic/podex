@@ -13,7 +13,7 @@ import {
   ChevronRight,
   Zap,
 } from 'lucide-react';
-import { ClaudeIcon, GeminiIcon, OpenAIIcon, PodexIcon } from '@/components/icons';
+import { PodexIcon } from '@/components/icons';
 import { cn } from '@/lib/utils';
 import { useSessionStore, type Agent } from '@/stores/session';
 import { useStreamingStore } from '@/stores/streaming';
@@ -38,6 +38,7 @@ export function MobileSessionOverview({
   onAddAgent,
 }: MobileSessionOverviewProps) {
   const session = useSessionStore((state) => state.sessions[sessionId]);
+  const getConversationForAgent = useSessionStore((state) => state.getConversationForAgent);
   const streamingMessages = useStreamingStore((state) => state.streamingMessages);
 
   // Attention state
@@ -52,8 +53,11 @@ export function MobileSessionOverview({
     );
   };
 
-  const getLastMessagePreview = (agent: Agent) => {
-    const lastMessage = agent.messages?.[agent.messages.length - 1];
+  const getAgentPreview = (agent: Agent) => {
+    // Get conversation session for this agent
+    const conversation = getConversationForAgent(sessionId, agent.id);
+    const messages = conversation?.messages ?? [];
+    const lastMessage = messages[messages.length - 1];
     if (!lastMessage) return 'No messages yet';
     const content = lastMessage.content || '';
     if (content.length > 60) return content.slice(0, 60) + '...';
@@ -61,9 +65,16 @@ export function MobileSessionOverview({
   };
 
   const getLastMessageTime = (agent: Agent) => {
-    const lastMessage = agent.messages?.[agent.messages.length - 1];
+    const conversation = getConversationForAgent(sessionId, agent.id);
+    const messages = conversation?.messages ?? [];
+    const lastMessage = messages[messages.length - 1];
     if (!lastMessage?.timestamp) return null;
     return formatTime(lastMessage.timestamp);
+  };
+
+  const getAgentMessageCount = (agent: Agent) => {
+    const conversation = getConversationForAgent(sessionId, agent.id);
+    return conversation?.messageCount ?? 0;
   };
 
   return (
@@ -146,7 +157,7 @@ export function MobileSessionOverview({
               const isProcessing = isAgentProcessing(agent.id);
               const color = getAgentColor(agent);
               const lastMessageTime = getLastMessageTime(agent);
-              const messageCount = agent.messages?.length ?? 0;
+              const messageCount = getAgentMessageCount(agent);
 
               // Attention state for this agent
               const agentUnreadCount = getUnreadCountForAgent(sessionId, agent.id);
@@ -191,37 +202,8 @@ export function MobileSessionOverview({
                     {/* Agent info */}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        {/* Claude Code badge */}
-                        {agent.role === 'claude-code' && (
-                          <span
-                            className="flex items-center justify-center w-5 h-5 rounded bg-[#FF6B35]/20 flex-shrink-0"
-                            title="Claude Code"
-                          >
-                            <ClaudeIcon className="h-3 w-3 text-[#FF6B35]" />
-                          </span>
-                        )}
-                        {/* OpenAI Codex badge */}
-                        {agent.role === 'openai-codex' && (
-                          <span
-                            className="flex items-center justify-center w-5 h-5 rounded bg-[#10A37F]/20 flex-shrink-0"
-                            title="OpenAI Codex"
-                          >
-                            <OpenAIIcon className="h-3 w-3 text-[#10A37F]" />
-                          </span>
-                        )}
-                        {/* Gemini CLI badge */}
-                        {agent.role === 'gemini-cli' && (
-                          <span
-                            className="flex items-center justify-center w-5 h-5 rounded bg-[#4285F4]/20 flex-shrink-0"
-                            title="Gemini CLI"
-                          >
-                            <GeminiIcon className="h-3 w-3 text-[#4285F4]" />
-                          </span>
-                        )}
                         {/* Podex native agent badge */}
-                        {!['claude-code', 'openai-codex', 'gemini-cli', 'custom'].includes(
-                          agent.role
-                        ) && (
+                        {!['custom'].includes(agent.role) && (
                           <span
                             className="flex items-center justify-center w-5 h-5 flex-shrink-0"
                             title="Podex Agent"
@@ -254,13 +236,14 @@ export function MobileSessionOverview({
                         )}
                       </div>
                       <p className="text-sm text-text-secondary truncate mt-0.5">
-                        {getLastMessagePreview(agent)}
+                        {getAgentPreview(agent)}
                       </p>
                       <div className="flex items-center gap-3 mt-1 text-xs text-text-tertiary">
                         <span className="flex items-center gap-1">
                           <MessageSquare className="h-3 w-3" aria-hidden="true" />
                           <span>
-                            {messageCount} {messageCount === 1 ? 'message' : 'messages'}
+                            {messageCount >= 100 ? '100+' : messageCount}{' '}
+                            {messageCount === 1 ? 'message' : 'messages'}
                           </span>
                         </span>
                         {lastMessageTime && (

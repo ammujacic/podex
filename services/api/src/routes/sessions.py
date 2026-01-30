@@ -36,11 +36,13 @@ from src.database import (
     PlatformSetting,
     PodTemplate,
     SubscriptionPlan,
+    UserConfig,
     UserSubscription,
 )
 from src.database import Session as SessionModel
 from src.database import Workspace as WorkspaceModel
 from src.database.models import GitHubIntegration
+from src.database.models.platform import LLMModel
 from src.exceptions import ComputeClientError, ComputeServiceHTTPError
 from src.middleware.rate_limit import (
     RATE_LIMIT_STANDARD,
@@ -58,8 +60,86 @@ router = APIRouter()
 DEFAULT_AGENT_COLOR = "#00e5ff"
 
 
-async def _get_default_model_for_role(db: AsyncSession, role: str) -> str:
-    """Get the default model for an agent role from platform settings."""
+async def _user_has_model_access(
+    db: AsyncSession,
+    user_id: str,
+    model_id: str,
+) -> bool:
+    """Check if the user has access to the given model.
+
+    This mirrors the logic in the agents routes to keep behavior consistent
+    when selecting default models for newly created agents.
+    """
+    from src.database.models import UserOAuthToken
+
+    # First, try to resolve as a platform/user-key model
+    result = await db.execute(
+        select(LLMModel).where(
+            LLMModel.model_id == model_id,
+            LLMModel.is_enabled.is_(True),
+        )
+    )
+    model = result.scalar_one_or_none()
+
+    if model:
+        if not model.is_user_key_model:
+            # Platform-provided model, enabled => accessible
+            return True
+
+        # User-key model: require API key or OAuth token
+        config_result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+        config = config_result.scalar_one_or_none()
+
+        api_keys = (config.llm_api_keys or {}) if config and config.llm_api_keys else {}
+        if model.provider in api_keys:
+            return True
+
+        # Check OAuth tokens
+        oauth_result = await db.execute(
+            select(UserOAuthToken).where(
+                UserOAuthToken.user_id == user_id,
+                UserOAuthToken.provider == model.provider,
+                UserOAuthToken.status == "connected",
+            )
+        )
+        oauth_token = oauth_result.scalar_one_or_none()
+        return oauth_token is not None
+
+    # If no LLMModel row, treat as potential local model (ollama/lmstudio)
+    if "/" in model_id:
+        provider, _ = model_id.split("/", 1)
+        if provider in {"ollama", "lmstudio"}:
+            config_result = await db.execute(
+                select(UserConfig).where(UserConfig.user_id == user_id)
+            )
+            config = config_result.scalar_one_or_none()
+            prefs = (config.agent_preferences or {}) if config and config.agent_preferences else {}
+            local_cfg = prefs.get("local_llm_config") or {}
+            provider_cfg = local_cfg.get(provider) or {}
+            models = provider_cfg.get("models") or []
+            return any(m.get("id") == model_id for m in models)
+
+    return False
+
+
+async def _get_default_model_for_role(db: AsyncSession, role: str, user_id: str) -> str:
+    """Get the default model for an agent role, preferring user defaults when accessible."""
+    # First, try user-specific defaults from UserConfig.agent_preferences.model_defaults
+    config_result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+    config = config_result.scalar_one_or_none()
+    if config and config.agent_preferences:
+        prefs = config.agent_preferences or {}
+        model_defaults = prefs.get("model_defaults") or {}
+        if isinstance(model_defaults, dict):
+            user_model_id = model_defaults.get(role)
+            if (
+                isinstance(user_model_id, str)
+                and user_model_id
+                and await _user_has_model_access(db, user_id, user_model_id)
+            ):
+                return user_model_id
+
+    # Fall back to platform-wide defaults from PlatformSetting.agent_model_defaults
     result = await db.execute(
         select(PlatformSetting).where(PlatformSetting.key == "agent_model_defaults")
     )
@@ -126,6 +206,8 @@ class SessionCreate(BaseModel):
     template_id: str | None = None
     tier: str | None = None  # Hardware tier (starter, pro, etc.)
     local_pod_id: str | None = None  # If set, use local pod instead of cloud compute
+    mount_path: str | None = None  # Optional mount path for local pod workspace
+    region_preference: str | None = None  # Preferred region (eu, us) for workspace placement
 
 
 class SessionResponse(BaseModel):
@@ -141,6 +223,8 @@ class SessionResponse(BaseModel):
     template_id: str | None = None
     git_url: str | None = None
     local_pod_id: str | None = None  # ID of local pod hosting this session (null = cloud)
+    local_pod_name: str | None = None  # Name of local pod (for display)
+    mount_path: str | None = None  # Workspace directory on local pod
     archived_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
@@ -158,6 +242,67 @@ class SessionListResponse(BaseModel):
     has_more: bool
     # Cursor for next page (for cursor-based pagination)
     next_cursor: str | None = None
+
+
+class StandbySettingsRequest(BaseModel):
+    """Request to update standby settings."""
+
+    timeout_minutes: int | None = None
+
+
+class StandbySettingsResponse(BaseModel):
+    """Response for standby settings."""
+
+    timeout_minutes: int | None = None
+    source: str  # "session", "user_default", or "platform_default"
+
+
+def build_session_response(
+    session: "SessionModel",
+    workspace_status: str | None = None,
+) -> SessionResponse:
+    """Build a SessionResponse from a Session model with workspace info.
+
+    Args:
+        session: The session model (with workspace and workspace.local_pod loaded)
+        workspace_status: Optional override for workspace status
+
+    Returns:
+        SessionResponse with all fields populated
+    """
+    workspace = session.workspace
+    settings = session.settings or {}
+
+    # Get local pod info if this is a local pod session
+    local_pod_id = workspace.local_pod_id if workspace else None
+    local_pod_name = None
+    mount_path = settings.get("mount_path")
+
+    if workspace and workspace.local_pod:
+        local_pod_name = workspace.local_pod.name
+
+    # Map standby to stopped for backwards compatibility
+    final_workspace_status = workspace_status or (workspace.status if workspace else None)
+    if final_workspace_status == "standby":
+        final_workspace_status = "stopped"
+
+    return SessionResponse(
+        id=session.id,
+        name=session.name,
+        owner_id=session.owner_id,
+        workspace_id=session.workspace_id,
+        branch=session.branch,
+        status=session.status,
+        workspace_status=final_workspace_status,
+        template_id=session.template_id,
+        git_url=session.git_url,
+        local_pod_id=local_pod_id,
+        local_pod_name=local_pod_name,
+        mount_path=mount_path,
+        archived_at=session.archived_at,
+        created_at=session.created_at,
+        updated_at=session.updated_at,
+    )
 
 
 async def check_session_quota(db: AsyncSession, user_id: str) -> None:
@@ -268,7 +413,7 @@ async def build_workspace_config(
     Returns:
         Workspace configuration dict for the compute service
     """
-    from src.database.models import UserConfig
+    from src.database.models import User, UserConfig
 
     def is_github_repo_url(repo_url: str) -> bool:
         if repo_url.startswith("git@github.com:"):
@@ -302,10 +447,25 @@ async def build_workspace_config(
                 config["git_name"] = user_config.git_name
             if user_config.git_email:
                 config["git_email"] = user_config.git_email
-            # Dotfiles sync configuration
-            config["sync_dotfiles"] = user_config.sync_dotfiles
-            if user_config.dotfiles_paths:
-                config["dotfiles_paths"] = user_config.dotfiles_paths
+
+        # Fetch user's SSH public keys for VS Code Remote-SSH access
+        user_result = await db.execute(select(User).where(User.id == user_id))
+        user = user_result.scalar_one_or_none()
+        if user and user.ssh_public_keys:
+            # Combine all public keys into authorized_keys format (one per line)
+            authorized_keys = "\n".join(
+                key.get("public_key", "") for key in user.ssh_public_keys if key.get("public_key")
+            )
+            if authorized_keys:
+                if "environment" not in config:
+                    config["environment"] = {}
+                config["environment"]["SSH_AUTHORIZED_KEYS"] = authorized_keys
+                config["environment"]["ENABLE_SSHD"] = "true"
+                logger.debug(
+                    "Injecting SSH keys into workspace",
+                    user_id=user_id,
+                    key_count=len(user.ssh_public_keys),
+                )
 
         # Fetch GitHub integration to inject token for git commands
         result = await db.execute(
@@ -422,17 +582,11 @@ async def create_session(
                 detail="Local pod is not online. Please start the pod agent first.",
             )
 
-        # Check workspace capacity
-        if local_pod.current_workspaces >= local_pod.max_workspaces:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Local pod has reached its workspace limit ({local_pod.max_workspaces})",
-            )
-
     # Create workspace first (with local_pod_id if using local pod)
     workspace = WorkspaceModel(
         status="pending",
         local_pod_id=data.local_pod_id if data.local_pod_id else None,
+        region_preference=data.region_preference if not data.local_pod_id else None,
     )
     db.add(workspace)
     await db.flush()
@@ -444,6 +598,8 @@ async def create_session(
             settings["tier"] = data.tier
         if data.local_pod_id:
             settings["local_pod_id"] = data.local_pod_id
+        if data.mount_path:
+            settings["mount_path"] = data.mount_path
 
         session = SessionModel(
             name=data.name,
@@ -468,6 +624,14 @@ async def create_session(
     workspace_config = await build_workspace_config(
         db, data.template_id, data.git_url, data.tier, user_id, data.branch
     )
+
+    # Add mount_path to config if provided (for local pods)
+    if data.mount_path and data.local_pod_id:
+        workspace_config["mount_path"] = data.mount_path
+
+    # Add region_preference to config for cloud workspaces (strict placement)
+    if data.region_preference and not data.local_pod_id:
+        workspace_config["region_preference"] = data.region_preference
 
     # Provision workspace - either on local pod or cloud compute
     if data.local_pod_id:
@@ -530,8 +694,12 @@ async def create_session(
                 workspace_id=str(workspace.id),
                 config=workspace_config,
             )
-            # Update workspace status from compute service response
+            # Update workspace status and server_id from compute service response
             workspace.status = workspace_info.get("status", "running")
+            if workspace_info.get("server_id"):
+                workspace.server_id = workspace_info.get("server_id")
+            if workspace_info.get("container_id"):
+                workspace.container_id = workspace_info.get("container_id")
             await db.commit()
         except ComputeClientError as e:
             logger.warning(
@@ -555,7 +723,7 @@ async def create_session(
 
     # Create default Chat agent for the session
     try:
-        default_model = await _get_default_model_for_role(db, "chat")
+        default_model = await _get_default_model_for_role(db, "chat", user_id)
         default_agent = AgentModel(
             session_id=session.id,
             name="Chat",
@@ -585,6 +753,9 @@ async def create_session(
     if workspace:
         workspace_status = workspace.status
 
+    # Get local pod info from the validated local_pod variable (set earlier if local pod is used)
+    session_settings = session.settings or {}
+
     return SessionResponse(
         id=session.id,
         name=session.name,
@@ -596,6 +767,8 @@ async def create_session(
         template_id=session.template_id,
         git_url=session.git_url,
         local_pod_id=workspace.local_pod_id if workspace else None,
+        local_pod_name=local_pod.name if local_pod else None,
+        mount_path=session_settings.get("mount_path"),
         created_at=session.created_at,
         updated_at=session.updated_at,
     )
@@ -634,10 +807,10 @@ async def list_sessions(
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
 
-    # Build query with pagination - eagerly load workspace for status
+    # Build query with pagination - eagerly load workspace and local_pod for status/info
     query = (
         select(SessionModel)
-        .options(selectinload(SessionModel.workspace))
+        .options(selectinload(SessionModel.workspace).selectinload(WorkspaceModel.local_pod))
         .where(*conditions)
         .order_by(SessionModel.updated_at.desc())
     )
@@ -661,24 +834,7 @@ async def list_sessions(
     result = await db.execute(query)
     sessions = result.scalars().all()
 
-    items = [
-        SessionResponse(
-            id=s.id,
-            name=s.name,
-            owner_id=s.owner_id,
-            workspace_id=s.workspace_id,
-            branch=s.branch,
-            status=s.status,
-            workspace_status=s.workspace.status if s.workspace else None,
-            template_id=s.template_id,
-            git_url=s.git_url,
-            archived_at=s.archived_at,
-            created_at=s.created_at,
-            updated_at=s.updated_at,
-            local_pod_id=s.workspace.local_pod_id if s.workspace else None,
-        )
-        for s in sessions
-    ]
+    items = [build_session_response(s) for s in sessions]
 
     # Calculate next cursor
     next_cursor = items[-1].id if len(items) == params.page_size else None
@@ -726,7 +882,7 @@ async def get_session(
 
     query = (
         select(SessionModel)
-        .options(selectinload(SessionModel.workspace))
+        .options(selectinload(SessionModel.workspace).selectinload(WorkspaceModel.local_pod))
         .where(SessionModel.id == session_id)
     )
     result = await db.execute(query)
@@ -738,21 +894,7 @@ async def get_session(
     if session.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    session_response = SessionResponse(
-        id=session.id,
-        name=session.name,
-        owner_id=session.owner_id,
-        workspace_id=session.workspace_id,
-        branch=session.branch,
-        status=session.status,
-        workspace_status=session.workspace.status if session.workspace else None,
-        template_id=session.template_id,
-        git_url=session.git_url,
-        archived_at=session.archived_at,
-        created_at=session.created_at,
-        updated_at=session.updated_at,
-        local_pod_id=session.workspace.local_pod_id if session.workspace else None,
-    )
+    session_response = build_session_response(session)
 
     # Cache the result (note: workspace_status may become stale in cache)
     await cache_set(cache_key, session_response, ttl=settings.CACHE_TTL_SESSIONS)
@@ -771,7 +913,7 @@ async def archive_session(
     """Archive a session."""
     query = (
         select(SessionModel)
-        .options(selectinload(SessionModel.workspace))
+        .options(selectinload(SessionModel.workspace).selectinload(WorkspaceModel.local_pod))
         .where(SessionModel.id == session_id)
     )
     result = await db.execute(query)
@@ -796,21 +938,7 @@ async def archive_session(
     await cache_delete(session_key(session_id))
     await invalidate_user_sessions(user_id)
 
-    return SessionResponse(
-        id=session.id,
-        name=session.name,
-        owner_id=session.owner_id,
-        workspace_id=session.workspace_id,
-        branch=session.branch,
-        status=session.status,
-        workspace_status=session.workspace.status if session.workspace else None,
-        template_id=session.template_id,
-        git_url=session.git_url,
-        archived_at=session.archived_at,
-        created_at=session.created_at,
-        updated_at=session.updated_at,
-        local_pod_id=session.workspace.local_pod_id if session.workspace else None,
-    )
+    return build_session_response(session)
 
 
 @router.post("/{session_id}/unarchive")
@@ -824,7 +952,7 @@ async def unarchive_session(
     """Unarchive a session."""
     query = (
         select(SessionModel)
-        .options(selectinload(SessionModel.workspace))
+        .options(selectinload(SessionModel.workspace).selectinload(WorkspaceModel.local_pod))
         .where(SessionModel.id == session_id)
     )
     result = await db.execute(query)
@@ -849,29 +977,57 @@ async def unarchive_session(
     await cache_delete(session_key(session_id))
     await invalidate_user_sessions(user_id)
 
-    return SessionResponse(
-        id=session.id,
-        name=session.name,
-        owner_id=session.owner_id,
-        workspace_id=session.workspace_id,
-        branch=session.branch,
-        status=session.status,
-        workspace_status=session.workspace.status if session.workspace else None,
-        template_id=session.template_id,
-        git_url=session.git_url,
-        archived_at=session.archived_at,
-        created_at=session.created_at,
-        updated_at=session.updated_at,
-        local_pod_id=session.workspace.local_pod_id if session.workspace else None,
-    )
+    return build_session_response(session)
+
+
+@router.get("/{session_id}/scale-options")
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def get_session_scale_options(
+    session_id: str,
+    request: Request,
+    response: Response,
+    db: DbSession,
+) -> dict[str, Any]:
+    """Get available scaling options for a session's workspace.
+
+    Returns which tiers the workspace can scale to based on current
+    server capacity, architecture, and GPU requirements.
+    """
+    query = select(SessionModel).where(SessionModel.id == session_id)
+    result = await db.execute(query)
+    session = result.scalar_one_or_none()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    user_id = get_current_user_id(request)
+    if session.owner_id != user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not session.workspace_id:
+        raise HTTPException(status_code=400, detail="Session does not have a workspace")
+
+    try:
+        return await compute_client.get_scale_options(
+            workspace_id=session.workspace_id,
+            user_id=user_id,
+        )
+    except ComputeClientError as e:
+        logger.exception(
+            "Failed to get scale options",
+            session_id=session_id,
+            workspace_id=session.workspace_id,
+            error=str(e),
+        )
+        raise HTTPException(status_code=500, detail=f"Failed to get scale options: {e}") from e
 
 
 @router.post("/{session_id}/scale-workspace", response_model=WorkspaceScaleResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def scale_session_workspace(
     session_id: str,
-    request: WorkspaceScaleRequest,
-    req: Request,
+    scale_request: WorkspaceScaleRequest,
+    request: Request,
     response: Response,
     db: DbSession,
 ) -> WorkspaceScaleResponse:
@@ -883,7 +1039,7 @@ async def scale_session_workspace(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    user_id = get_current_user_id(req)
+    user_id = get_current_user_id(request)
     if session.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -916,11 +1072,11 @@ async def scale_session_workspace(
         scale_response = await compute_client.scale_workspace(
             workspace_id=session.workspace_id,
             user_id=user_id,
-            new_tier=request.new_tier.value,  # Convert enum to string
+            new_tier=scale_request.new_tier,
         )
 
         # Log the scaling action
-        audit = AuditLogger(db).set_context(request=req, user_id=user_id)
+        audit = AuditLogger(db).set_context(request=request, user_id=user_id)
         await audit.log(
             action=AuditAction.WORKSPACE_SCALED,
             category=AuditCategory.SESSION,
@@ -931,7 +1087,7 @@ async def scale_session_workspace(
                 "session_id": session_id,
                 "workspace_id": session.workspace_id,
                 "old_tier": scale_response.get("old_tier"),
-                "new_tier": request.new_tier.value,
+                "new_tier": scale_request.new_tier,
             },
         )
 
@@ -942,7 +1098,7 @@ async def scale_session_workspace(
             "Failed to scale workspace",
             session_id=session_id,
             workspace_id=session.workspace_id,
-            new_tier=request.new_tier.value,
+            new_tier=scale_request.new_tier,
             error=str(e),
         )
         raise HTTPException(status_code=500, detail=f"Failed to scale workspace: {e}") from e
@@ -1209,133 +1365,6 @@ async def update_editor_layout(
     }
 
 
-# ==================== Standby Settings Routes ====================
-
-
-class StandbySettingsResponse(BaseModel):
-    """Session standby settings response."""
-
-    timeout_minutes: int | None  # None = Never
-    source: str  # "session" or "user_default"
-
-
-class StandbySettingsRequest(BaseModel):
-    """Update session standby settings."""
-
-    timeout_minutes: int | None = None  # None = Never, or 15/30/60/120
-
-
-@router.get("/{session_id}/standby-settings", response_model=StandbySettingsResponse)
-@limiter.limit(RATE_LIMIT_STANDARD)
-async def get_standby_settings(
-    session_id: str,
-    request: Request,
-    response: Response,
-    db: DbSession,
-) -> StandbySettingsResponse:
-    """Get effective standby settings for session."""
-    from src.database.models import UserConfig
-
-    session = await get_session_or_404(session_id, request, db)
-
-    # Check session-level override first
-    settings = session.settings or {}
-    if "standby_timeout_minutes" in settings:
-        return StandbySettingsResponse(
-            timeout_minutes=settings.get("standby_timeout_minutes"),
-            source="session",
-        )
-
-    # Fall back to user default
-    result = await db.execute(select(UserConfig).where(UserConfig.user_id == session.owner_id))
-    user_config = result.scalar_one_or_none()
-
-    timeout = (user_config.default_standby_timeout_minutes if user_config else None) or 60
-
-    return StandbySettingsResponse(
-        timeout_minutes=timeout,
-        source="user_default",
-    )
-
-
-@router.patch("/{session_id}/standby-settings", response_model=StandbySettingsResponse)
-@limiter.limit(RATE_LIMIT_STANDARD)
-async def update_standby_settings(
-    session_id: str,
-    data: StandbySettingsRequest,
-    request: Request,
-    response: Response,
-    db: DbSession,
-) -> StandbySettingsResponse:
-    """Update per-session standby override."""
-    session = await get_session_or_404(session_id, request, db)
-
-    user_id = get_current_user_id(request)
-    if session.owner_id != user_id:
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    # Validate timeout value (must be one of the presets or None)
-    valid_timeouts = {15, 30, 60, 120, None}
-    if data.timeout_minutes not in valid_timeouts:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid timeout. Must be 15, 30, 60, 120, or null (never)",
-        )
-
-    # Update session settings
-    settings = session.settings or {}
-    settings["standby_timeout_minutes"] = data.timeout_minutes
-    session.settings = settings
-    await db.commit()
-
-    # Invalidate session cache
-    await cache_delete(session_key(session_id))
-
-    return StandbySettingsResponse(
-        timeout_minutes=data.timeout_minutes,
-        source="session",
-    )
-
-
-@router.delete("/{session_id}/standby-settings")
-@limiter.limit(RATE_LIMIT_STANDARD)
-async def clear_standby_settings(
-    session_id: str,
-    request: Request,
-    response: Response,
-    db: DbSession,
-) -> StandbySettingsResponse:
-    """Clear per-session standby override (revert to user default)."""
-    from src.database.models import UserConfig
-
-    session = await get_session_or_404(session_id, request, db)
-
-    user_id = get_current_user_id(request)
-    if session.owner_id != user_id:
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    # Remove session-level override
-    settings = session.settings or {}
-    if "standby_timeout_minutes" in settings:
-        del settings["standby_timeout_minutes"]
-        session.settings = settings
-        await db.commit()
-
-    # Invalidate session cache
-    await cache_delete(session_key(session_id))
-
-    # Return user default
-    result = await db.execute(select(UserConfig).where(UserConfig.user_id == session.owner_id))
-    user_config = result.scalar_one_or_none()
-
-    timeout = (user_config.default_standby_timeout_minutes if user_config else None) or 60
-
-    return StandbySettingsResponse(
-        timeout_minutes=timeout,
-        source="user_default",
-    )
-
-
 # ==================== File System Routes ====================
 
 
@@ -1376,12 +1405,13 @@ class MoveFileRequest(BaseModel):
     dest_path: str
 
 
-def validate_file_path(path: str, max_length: int = 4096) -> str:
+def validate_file_path(path: str, max_length: int = 4096, allow_absolute: bool = False) -> str:
     """Validate and normalize a file path to prevent path traversal attacks.
 
     Args:
         path: The file path to validate.
         max_length: Maximum allowed path length (default 4096).
+        allow_absolute: If True, allow absolute paths (for local pod workspaces).
 
     Returns:
         The normalized, safe path.
@@ -1419,10 +1449,17 @@ def validate_file_path(path: str, max_length: int = 4096) -> str:
     normalized = os.path.normpath(clean_path)
 
     # Check for path traversal attempts
-    if normalized.startswith(("..", "/")):
+    # Allow absolute paths for local pod workspaces (user's own filesystem)
+    if normalized.startswith(".."):
         raise HTTPException(
             status_code=400,
-            detail="Invalid path: absolute paths and path traversal are not allowed",
+            detail="Invalid path: path traversal is not allowed",
+        )
+
+    if normalized.startswith("/") and not allow_absolute:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid path: absolute paths are not allowed",
         )
 
     # Check for any remaining .. after normalization
@@ -1630,7 +1667,7 @@ async def ensure_workspace_provisioned(
     user_id: str,
     db: AsyncSession | None = None,
 ) -> None:
-    """Ensure workspace is provisioned in compute service.
+    """Ensure workspace is provisioned in compute service or local pod.
 
     For sessions created before workspace provisioning was added,
     this lazily provisions the workspace on first access.
@@ -1648,6 +1685,69 @@ async def ensure_workspace_provisioned(
 
     workspace_id = str(session.workspace_id)
 
+    # Check if this is a local pod workspace
+    # We need to handle local pod workspaces differently
+    is_local_pod = await workspace_router.is_local_pod_workspace(workspace_id)
+
+    if is_local_pod:
+        # For local pod workspaces, check via workspace_router
+        try:
+            existing = await workspace_router.get_workspace(workspace_id, user_id)
+            if existing:
+                return  # Workspace exists on local pod
+        except Exception as e:
+            # Workspace doesn't exist on local pod - need to re-create it
+            logger.warning(
+                "Local pod workspace not found, will re-provision",
+                workspace_id=workspace_id,
+                error=str(e),
+            )
+
+        # Re-provision the workspace on the local pod
+        # Get workspace record from DB to get local_pod_id
+        if db:
+            result = await db.execute(
+                select(WorkspaceModel).where(WorkspaceModel.id == session.workspace_id)
+            )
+            workspace_record = result.scalar_one_or_none()
+            if workspace_record and workspace_record.local_pod_id:
+                from src.websocket.local_pod_hub import PodNotConnectedError, call_pod
+
+                # Build workspace config
+                workspace_config = {}
+                if session.settings and session.settings.get("mount_path"):
+                    workspace_config["mount_path"] = session.settings.get("mount_path")
+
+                try:
+                    await call_pod(
+                        workspace_record.local_pod_id,
+                        "workspace.create",
+                        {
+                            "workspace_id": workspace_id,
+                            "session_id": str(session.id),
+                            "user_id": user_id,
+                            "config": workspace_config,
+                        },
+                        rpc_timeout=30,
+                    )
+                    logger.info(
+                        "Re-provisioned local pod workspace",
+                        workspace_id=workspace_id,
+                        pod_id=workspace_record.local_pod_id,
+                    )
+                except PodNotConnectedError:
+                    logger.warning(
+                        "Local pod not connected for workspace re-provisioning",
+                        workspace_id=workspace_id,
+                        pod_id=workspace_record.local_pod_id,
+                    )
+                    raise ComputeClientError(
+                        "Local pod is not connected. Please ensure the pod is running.",
+                        status_code=503,
+                    ) from None
+        return
+
+    # Cloud workspace - use existing compute_client flow
     # Check if workspace exists in compute service (fast path, no lock needed)
     try:
         existing = await compute_client.get_workspace(workspace_id, user_id)
@@ -1712,12 +1812,26 @@ async def ensure_workspace_provisioned(
                 has_template=bool(session.template_id),
             )
 
-            await compute_client.create_workspace(
+            workspace_info = await compute_client.create_workspace(
                 session_id=str(session.id),
                 user_id=user_id,
                 workspace_id=workspace_id,
                 config=workspace_config,
             )
+
+            # Update workspace record with server_id if db is available
+            if db and workspace_info:
+                ws_result = await db.execute(
+                    select(WorkspaceModel).where(WorkspaceModel.id == workspace_id)
+                )
+                ws = ws_result.scalar_one_or_none()
+                if ws:
+                    if workspace_info.get("server_id"):
+                        ws.server_id = workspace_info.get("server_id")
+                    if workspace_info.get("container_id"):
+                        ws.container_id = workspace_info.get("container_id")
+                    ws.status = workspace_info.get("status", "running")
+                    await db.commit()
     except RuntimeError as e:
         # Lock acquisition failed - do NOT proceed without lock
         # This prevents race conditions where multiple requests could
@@ -1737,15 +1851,11 @@ async def update_workspace_activity(
     session: SessionModel,
     db: AsyncSession,
 ) -> None:
-    """Update workspace activity timestamp and handle standby->running transition.
+    """Update workspace activity timestamp.
 
-    This function:
-    1. Updates workspace.last_activity to prevent idle detection from triggering
-    2. If workspace was in "standby" state (but container auto-restarted),
-       transitions it back to "running" and notifies connected clients
-
-    Should be called after any successful workspace operation (file access,
-    terminal usage, agent activity, etc.) to keep the workspace alive.
+    This function updates workspace.last_activity to reflect recent usage. We no longer
+    support a separate 'standby' state - workspaces are either 'running' or 'stopped',
+    and transitions are driven by explicit user actions.
     """
     if not session.workspace_id:
         return
@@ -1766,19 +1876,19 @@ async def update_workspace_activity(
     now = datetime.now(UTC)
     workspace.last_activity = now
 
-    # Handle standby -> running transition
-    # This happens when the compute service auto-restarts a stopped container
-    if workspace.status == "standby":
+    # If this is a local-pod workspace and any operation reached this point
+    # successfully, we know the workspace is effectively "running" even if a
+    # previous failure left the status as "error" or "stopped". Auto-heal the
+    # status so the UI reflects reality.
+    status_changed = False
+    if workspace.local_pod_id and workspace.status != "running":
         workspace.status = "running"
         workspace.standby_at = None
+        status_changed = True
 
-        logger.info(
-            "Workspace auto-resumed from standby",
-            workspace_id=str(workspace.id),
-            session_id=str(session.id),
-        )
+    await db.commit()
 
-        # Notify connected clients about the status change
+    if status_changed:
         await emit_to_session(
             str(session.id),
             "workspace_status",
@@ -1790,7 +1900,142 @@ async def update_workspace_activity(
             },
         )
 
-    await db.commit()
+
+class UpdateWorkspaceRequest(BaseModel):
+    """Request to update workspace configuration."""
+
+    working_dir: str
+
+
+class UpdateWorkspaceResponse(BaseModel):
+    """Response from workspace update."""
+
+    success: bool
+    working_dir: str | None = None
+    error: str | None = None
+
+
+class WorkspaceInfoResponse(BaseModel):
+    """Response with workspace info."""
+
+    working_dir: str | None = None
+    mount_path: str | None = None
+    status: str | None = None
+
+
+@router.get("/{session_id}/workspace/info", response_model=WorkspaceInfoResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def get_workspace_info(
+    session_id: str,
+    request: Request,
+    response: Response,
+    db: DbSession,
+) -> WorkspaceInfoResponse:
+    """Get workspace info including working directory.
+
+    This is particularly useful for local pod workspaces where the
+    working_dir might not be stored in session settings.
+    """
+    session = await get_session_or_404(session_id, request, db)
+    user_id = get_current_user_id(request)
+
+    if not session.workspace_id:
+        return WorkspaceInfoResponse()
+
+    try:
+        # Try to get workspace info from workspace router
+        workspace_info = await workspace_router.get_workspace(session.workspace_id, user_id)
+        if workspace_info:
+            working_dir = workspace_info.get("working_dir")
+            mount_path = workspace_info.get("mount_path") or working_dir
+            status = workspace_info.get("status")
+
+            # If we got a working_dir and it's not in session settings, update them
+            settings = dict(session.settings or {})
+            if working_dir and settings.get("mount_path") != working_dir:
+                settings["mount_path"] = working_dir
+                session.settings = settings
+                await db.commit()
+
+            return WorkspaceInfoResponse(
+                working_dir=working_dir,
+                mount_path=mount_path,
+                status=status,
+            )
+    except Exception as e:
+        logger.warning(
+            "Failed to get workspace info",
+            session_id=session_id,
+            error=str(e),
+        )
+
+    # Fall back to session settings
+    settings = session.settings or {}
+    return WorkspaceInfoResponse(
+        mount_path=settings.get("mount_path"),
+    )
+
+
+@router.patch("/{session_id}/workspace", response_model=UpdateWorkspaceResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def update_workspace_config(
+    session_id: str,
+    request: Request,
+    response: Response,
+    db: DbSession,
+    body: UpdateWorkspaceRequest,
+) -> UpdateWorkspaceResponse:
+    """Update workspace configuration (e.g., working directory).
+
+    Currently only supported for local pod workspaces.
+    """
+    session = await get_session_or_404(session_id, request, db)
+    user_id = get_current_user_id(request)
+
+    if not session.workspace_id:
+        return UpdateWorkspaceResponse(
+            success=False,
+            error="Session has no workspace",
+        )
+
+    try:
+        # Ensure workspace is provisioned before updating
+        await ensure_workspace_provisioned(session, user_id, db)
+
+        # Update workspace configuration (only works for local pods)
+        result = await workspace_router.update_workspace(
+            session.workspace_id,
+            user_id,
+            working_dir=body.working_dir,
+        )
+
+        if result:
+            # Also persist mount_path to session settings for future loads
+            updated_working_dir = result.get("working_dir")
+            if updated_working_dir:
+                settings = dict(session.settings or {})
+                settings["mount_path"] = updated_working_dir
+                session.settings = settings
+                await db.commit()
+
+            return UpdateWorkspaceResponse(
+                success=True,
+                working_dir=updated_working_dir,
+            )
+        return UpdateWorkspaceResponse(
+            success=False,
+            error="Workspace update not supported for this workspace type",
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to update workspace config",
+            session_id=session_id,
+            error=str(e),
+        )
+        return UpdateWorkspaceResponse(
+            success=False,
+            error=str(e),
+        )
 
 
 @router.get("/{session_id}/files", response_model=list[FileNode])
@@ -1876,8 +2121,14 @@ async def get_file_content(
     session = await get_session_or_404(session_id, request, db)
     user_id = get_current_user_id(request)
 
+    # Check if this is a local pod workspace (allows absolute paths)
+    is_local_pod = False
+    if session.workspace_id:
+        is_local_pod = await workspace_router.is_local_pod_workspace(str(session.workspace_id))
+
     # Validate path to prevent traversal attacks
-    safe_path = validate_file_path(path)
+    # Allow absolute paths for local pod workspaces (user's own filesystem)
+    safe_path = validate_file_path(path, allow_absolute=is_local_pod)
 
     # Try to fetch from compute service
     if session.workspace_id:
@@ -1979,8 +2230,14 @@ async def update_file_content(
     session = await get_session_or_404(session_id, request, db)
     user_id = get_current_user_id(request)
 
+    # Check if this is a local pod workspace (allows absolute paths)
+    is_local_pod = False
+    if session.workspace_id:
+        is_local_pod = await workspace_router.is_local_pod_workspace(str(session.workspace_id))
+
     # Validate path to prevent traversal attacks
-    safe_path = validate_file_path(path)
+    # Allow absolute paths for local pod workspaces (user's own filesystem)
+    safe_path = validate_file_path(path, allow_absolute=is_local_pod)
 
     # Update file in compute service
     if session.workspace_id:
@@ -2719,8 +2976,12 @@ async def perform_editor_ai_action(
             ),
         )
 
-    # Determine model to use (user override or default)
-    model_id = data.model or "claude-3-5-haiku"
+    # Determine model to use (user override or defaults from DB)
+    if data.model:
+        model_id = data.model
+    else:
+        # Fall back to per-role defaults (coder role) using the shared helper
+        model_id = await _get_default_model_for_role(db, "coder", user_id)
 
     # Build the prompt for the AI action
     system_prompt = """You are an expert software engineer assisting with code tasks.

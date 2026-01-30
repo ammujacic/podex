@@ -183,7 +183,7 @@ async def create_custom_agent(
     name: str,
     system_prompt: str,
     tools: list[str],
-    model: str = "claude-sonnet-4-20250514",
+    model: str,
 ) -> dict[str, Any]:
     """Create a custom agent at runtime.
 
@@ -200,6 +200,12 @@ async def create_custom_agent(
     Returns:
         Dictionary with agent info or error.
     """
+    if not model:
+        return {
+            "success": False,
+            "error": "Model is required to create a custom agent. "
+            "Pass an explicit model or configure role defaults in the platform settings.",
+        }
     try:
         # Validate tools - includes orchestration tools for creating powerful sub-agents
         valid_tools = {

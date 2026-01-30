@@ -6,6 +6,7 @@ Tests are isolated using database transactions with automatic rollback.
 """
 
 import asyncio
+import contextlib
 import os
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -40,7 +41,6 @@ from src.database.models import (
     PodTemplate,
     SkillTemplate,
     SystemSkill,
-    TerminalIntegratedAgentType,
 )
 from src.database.seeds import (
     DEFAULT_AGENT_ROLES,
@@ -54,7 +54,6 @@ from src.database.seeds import (
     DEFAULT_SETTINGS,
     DEFAULT_SKILL_TEMPLATES,
     DEFAULT_SYSTEM_SKILLS,
-    DEFAULT_TERMINAL_AGENTS,
     OFFICIAL_TEMPLATES,
 )
 from src.main import app
@@ -95,7 +94,6 @@ async def integration_engine() -> AsyncGenerator[AsyncEngine, None]:
     await engine.dispose()
 
     # Give asyncpg time to clean up connection resources
-    import asyncio
 
     await asyncio.sleep(0.05)
 
@@ -183,10 +181,6 @@ async def load_seed_data(engine: AsyncEngine) -> None:
         for mcp_data in DEFAULT_MCP_SERVERS:
             session.add(DefaultMCPServer(**mcp_data))
 
-        # Load Terminal Agent Types
-        for agent_data in DEFAULT_TERMINAL_AGENTS:
-            session.add(TerminalIntegratedAgentType(**agent_data))
-
         # Load Skill Templates
         for skill_data in DEFAULT_SKILL_TEMPLATES:
             session.add(SkillTemplate(**skill_data))
@@ -249,16 +243,12 @@ async def integration_db(integration_engine: AsyncEngine) -> AsyncGenerator[Asyn
 
             await session.commit()
         except Exception:
-            try:
+            with contextlib.suppress(Exception):
                 await session.rollback()
-            except Exception:
-                pass
         finally:
             # Close the session properly
-            try:
+            with contextlib.suppress(Exception):
                 await session.close()
-            except Exception:
-                pass
 
 
 @pytest_asyncio.fixture
@@ -406,7 +396,6 @@ async def cleanup_after_test() -> AsyncGenerator[None, None]:
     """
     yield
 
-    import asyncio
     import gc
 
     # Clear app dependency overrides first
@@ -433,7 +422,6 @@ async def test_client(
     The client engine is disposed before this fixture completes to ensure all
     connections are closed in the current event loop.
     """
-    import asyncio
     from unittest.mock import AsyncMock, patch
 
     from src.database.connection import get_db
@@ -469,10 +457,8 @@ async def test_client(
         try:
             yield session
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 await session.close()
-            except Exception:
-                pass
             if session in _active_sessions:
                 _active_sessions.remove(session)
 
@@ -497,34 +483,26 @@ async def test_client(
 
         # 1. Close the HTTP client - this waits for all requests to complete
         if client is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await client.aclose()
-            except Exception:
-                pass
 
         # 2. Wait for any lingering middleware tasks to finish
         # This is critical - middleware can spawn background tasks
         await asyncio.sleep(0.3)
 
         # 3. Close any remaining active sessions
-        for session in list(_active_sessions):
-            try:
+        for session in _active_sessions:
+            with contextlib.suppress(Exception):
                 await session.close()
-            except Exception:
-                pass
         _active_sessions.clear()
 
         # 4. Stop the mock patcher
-        try:
+        with contextlib.suppress(Exception):
             patcher.stop()
-        except Exception:
-            pass
 
         # 5. Dispose the client engine - this closes all connections in THIS event loop
-        try:
+        with contextlib.suppress(Exception):
             await client_engine.dispose()
-        except Exception:
-            pass
 
         # 6. Give asyncpg time to clean up connection resources
         await asyncio.sleep(0.05)
@@ -533,10 +511,8 @@ async def test_client(
         app.dependency_overrides = original_overrides
 
         # 8. Expire all database objects in integration_db to prevent stale references
-        try:
+        with contextlib.suppress(Exception):
             integration_db.expire_all()
-        except Exception:
-            pass
 
 
 # Helper functions for creating test data

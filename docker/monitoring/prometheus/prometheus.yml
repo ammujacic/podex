@@ -1,0 +1,80 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'podex-production'
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+rule_files:
+  - "alerts.yml"
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+
+  # Platform server metrics (node-exporter)
+  - job_name: 'node-platform'
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          server: 'platform'
+          role: 'platform'
+
+  # Container metrics via cAdvisor
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+        labels:
+          server: 'platform'
+
+  # Loki metrics
+  - job_name: 'loki'
+    static_configs:
+      - targets: ['loki:3100']
+
+  # Grafana metrics
+  - job_name: 'grafana'
+    static_configs:
+      - targets: ['grafana:3000']
+
+  # =================================================================
+  # WORKSPACE SERVERS
+  # Uncomment and add your workspace server private IPs here
+  # Each workspace server should run node-exporter on port 9100
+  # =================================================================
+  # - job_name: 'node-workspace'
+  #   static_configs:
+  #     - targets: ['10.0.1.10:9100']
+  #       labels:
+  #         server: 'ws-1'
+  #         role: 'workspace'
+  #     - targets: ['10.0.1.11:9100']
+  #       labels:
+  #         server: 'ws-2'
+  #         role: 'workspace'
+  #     - targets: ['10.0.1.12:9100']
+  #       labels:
+  #         server: 'ws-3'
+  #         role: 'workspace'
+
+  # =================================================================
+  # PODEX SERVICES
+  # Uncomment if your services expose /metrics endpoint
+  # =================================================================
+  # - job_name: 'podex-api'
+  #   static_configs:
+  #     - targets: ['podex-api:3001']
+  #   metrics_path: /metrics
+  #
+  # - job_name: 'podex-compute'
+  #   static_configs:
+  #     - targets: ['podex-compute:3003']
+  #   metrics_path: /metrics

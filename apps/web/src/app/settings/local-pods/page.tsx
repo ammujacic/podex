@@ -129,7 +129,7 @@ function TokenDisplay({ token, onDismiss }: TokenDisplayProps) {
 }
 
 // ============================================================================
-// ADD POD MODAL
+// ADD POD MODAL - Simple name-only form
 // ============================================================================
 
 interface AddPodModalProps {
@@ -140,24 +140,48 @@ interface AddPodModalProps {
 
 function AddPodModal({ onSubmit, onClose, isLoading }: AddPodModalProps) {
   const [name, setName] = useState('');
-  const [maxWorkspaces, setMaxWorkspaces] = useState(3);
   const [error, setError] = useState<string | null>(null);
+  const [showComplete, setShowComplete] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Token from store (after creation)
+  const { newToken, clearNewToken } = useLocalPodsStore();
+
+  // Copy state for command
+  const [copiedCommand, setCopiedCommand] = useState(false);
+
+  const handleSubmit = async () => {
     if (!name.trim()) {
       setError('Name is required');
       return;
     }
 
     try {
-      await onSubmit({
-        name: name.trim(),
-        max_workspaces: maxWorkspaces,
-      });
+      await onSubmit({ name: name.trim() });
+      setShowComplete(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create pod');
     }
+  };
+
+  const handleDone = () => {
+    clearNewToken();
+    onClose();
+  };
+
+  const handleClose = () => {
+    if (newToken) {
+      clearNewToken();
+    }
+    onClose();
+  };
+
+  const handleCopyCommand = async () => {
+    if (!newToken) return;
+    const command = `podex-local-pod start --token ${newToken.token}`;
+    await navigator.clipboard.writeText(command);
+    setCopiedCommand(true);
+    toast.success('Command copied to clipboard');
+    setTimeout(() => setCopiedCommand(false), 2000);
   };
 
   return (
@@ -166,78 +190,162 @@ function AddPodModal({ onSubmit, onClose, isLoading }: AddPodModalProps) {
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border-subtle">
           <div className="flex items-center gap-2">
-            <Server className="h-5 w-5 text-accent-primary" />
-            <h3 className="text-lg font-semibold text-text-primary">Add Local Pod</h3>
+            <Laptop className="h-5 w-5 text-accent-primary" />
+            <h3 className="text-lg font-semibold text-text-primary">
+              {showComplete ? 'Setup Complete' : 'Add Local Pod'}
+            </h3>
           </div>
           <button
-            onClick={onClose}
+            onClick={handleClose}
             className="p-1 rounded hover:bg-overlay text-text-muted hover:text-text-primary"
           >
             <X className="h-5 w-5" />
           </button>
         </div>
 
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="p-4 space-y-4">
-          {error && (
-            <div className="p-3 rounded bg-error/10 border border-error/30 text-error text-sm flex items-center gap-2">
-              <AlertCircle className="h-4 w-4" />
-              {error}
+        {/* Content */}
+        <div className="p-4">
+          {/* Create form */}
+          {!showComplete && (
+            <div className="space-y-4">
+              {/* Info banner */}
+              <div className="p-3 rounded-lg bg-accent-primary/5 border border-accent-primary/20">
+                <p className="text-sm text-text-secondary">
+                  A local pod lets you run workspaces on your own hardware.{' '}
+                  <span className="text-accent-primary font-medium">
+                    Free, private, and fully under your control.
+                  </span>
+                </p>
+              </div>
+
+              {error && (
+                <div className="p-3 rounded bg-error/10 border border-error/30 text-error text-sm flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4" />
+                  {error}
+                </div>
+              )}
+
+              {/* Pod Name */}
+              <div>
+                <label className="text-sm font-medium text-text-secondary">Pod Name</label>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g., My MacBook Pro"
+                  className="w-full mt-1 px-3 py-2 text-sm rounded bg-void border border-border-default text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:ring-1 focus:ring-accent-primary"
+                  autoFocus
+                  onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
+                />
+                <p className="text-xs text-text-muted mt-1">
+                  A friendly name to identify this machine
+                </p>
+              </div>
+
+              {/* Footer */}
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={handleClose}
+                  className="px-4 py-2 text-sm font-medium rounded bg-overlay text-text-secondary hover:text-text-primary"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSubmit}
+                  disabled={isLoading || !name.trim()}
+                  className="px-4 py-2 text-sm font-medium rounded bg-accent-primary text-void hover:bg-accent-primary/90 disabled:opacity-50 flex items-center gap-2"
+                >
+                  {isLoading && <Loader2 className="h-4 w-4 animate-spin" />}
+                  {isLoading ? 'Creating...' : 'Create Pod'}
+                </button>
+              </div>
             </div>
           )}
 
-          <div>
-            <label className="text-sm font-medium text-text-secondary">Pod Name *</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g., My MacBook Pro"
-              className="w-full mt-1 px-3 py-2 text-sm rounded bg-void border border-border-default text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:ring-1 focus:ring-accent-primary"
-              autoFocus
-            />
-            <p className="text-xs text-text-muted mt-1">A friendly name to identify this machine</p>
-          </div>
+          {/* Complete - Show token and setup command */}
+          {showComplete && newToken && (
+            <div className="space-y-5">
+              {/* Success header */}
+              <div className="flex items-center gap-3 p-4 rounded-xl bg-gradient-to-r from-success/20 to-success/5 border border-success/30">
+                <div className="p-2 rounded-full bg-success/20">
+                  <Check className="h-5 w-5 text-success" />
+                </div>
+                <div>
+                  <p className="text-base font-semibold text-text-primary">
+                    Pod &quot;{name}&quot; created!
+                  </p>
+                  <p className="text-sm text-text-muted">
+                    Run the command below to start your pod.
+                  </p>
+                </div>
+              </div>
 
-          <div>
-            <label className="text-sm font-medium text-text-secondary">
-              Max Concurrent Workspaces
-            </label>
-            <select
-              value={maxWorkspaces}
-              onChange={(e) => setMaxWorkspaces(Number(e.target.value))}
-              className="w-full mt-1 px-3 py-2 text-sm rounded bg-void border border-border-default text-text-primary"
-            >
-              {[1, 2, 3, 4, 5, 6, 8, 10].map((n) => (
-                <option key={n} value={n}>
-                  {n} workspace{n > 1 ? 's' : ''}
-                </option>
-              ))}
-            </select>
-            <p className="text-xs text-text-muted mt-1">
-              Limit how many workspaces can run simultaneously on this pod
-            </p>
-          </div>
+              {/* Setup Steps */}
+              <div className="space-y-4">
+                {/* Step 1: Install */}
+                <div className="flex gap-3">
+                  <div className="flex-shrink-0 w-6 h-6 rounded-full bg-accent-primary/20 text-accent-primary text-xs font-bold flex items-center justify-center">
+                    1
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-text-primary mb-1">Install the agent</p>
+                    <code className="block text-xs text-text-secondary font-mono px-3 py-2 bg-void rounded-lg border border-border-subtle">
+                      pip install podex-local-pod
+                    </code>
+                  </div>
+                </div>
 
-          {/* Footer */}
-          <div className="flex items-center justify-end gap-2 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-sm font-medium rounded bg-overlay text-text-secondary hover:text-text-primary"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={isLoading || !name.trim()}
-              className="px-4 py-2 text-sm font-medium rounded bg-accent-primary text-void hover:bg-accent-primary/90 disabled:opacity-50 flex items-center gap-2"
-            >
-              {isLoading && <Loader2 className="h-4 w-4 animate-spin" />}
-              {isLoading ? 'Creating...' : 'Create Pod'}
-            </button>
-          </div>
-        </form>
+                {/* Step 2: Start */}
+                <div className="flex gap-3">
+                  <div className="flex-shrink-0 w-6 h-6 rounded-full bg-accent-primary/20 text-accent-primary text-xs font-bold flex items-center justify-center">
+                    2
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="text-sm font-medium text-text-primary">Start the pod</p>
+                      <button
+                        onClick={handleCopyCommand}
+                        className={cn(
+                          'flex items-center gap-1 px-2 py-1 text-xs font-medium rounded transition-all',
+                          copiedCommand
+                            ? 'bg-success/20 text-success'
+                            : 'bg-overlay hover:bg-accent-primary/20 text-text-muted hover:text-accent-primary'
+                        )}
+                      >
+                        {copiedCommand ? (
+                          <Check className="h-3 w-3" />
+                        ) : (
+                          <Copy className="h-3 w-3" />
+                        )}
+                        {copiedCommand ? 'Copied!' : 'Copy'}
+                      </button>
+                    </div>
+                    <code className="block text-xs text-accent-primary font-mono px-3 py-2 bg-void rounded-lg border border-accent-primary/30 overflow-x-auto">
+                      podex-local-pod start --token {newToken.token}
+                    </code>
+                    <p className="text-xs text-text-muted mt-2">
+                      Your pod will appear as{' '}
+                      <span className="text-success font-medium">&quot;Online&quot;</span> once
+                      connected!
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Done button */}
+              <div className="flex justify-end pt-2">
+                <button
+                  onClick={handleDone}
+                  className="px-5 py-2.5 text-sm font-medium rounded-lg bg-accent-primary text-void hover:bg-accent-primary/90 transition-colors"
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -343,20 +451,7 @@ function PodCard({ pod, isExpanded, onToggleExpand, onDelete, onRegenerateToken 
 
             {/* Workspaces */}
             <div className="flex items-center gap-2 mt-2">
-              <span className="text-xs text-text-muted">
-                Workspaces: {pod.current_workspaces}/{pod.max_workspaces}
-              </span>
-              <div className="flex-1 h-1.5 bg-overlay rounded-full overflow-hidden max-w-24">
-                <div
-                  className={cn(
-                    'h-full rounded-full transition-all',
-                    pod.current_workspaces === pod.max_workspaces
-                      ? 'bg-warning'
-                      : 'bg-accent-primary'
-                  )}
-                  style={{ width: `${(pod.current_workspaces / pod.max_workspaces) * 100}%` }}
-                />
-              </div>
+              <span className="text-xs text-text-muted">Workspaces: {pod.current_workspaces}</span>
             </div>
           </div>
 
@@ -395,10 +490,6 @@ function PodCard({ pod, isExpanded, onToggleExpand, onDelete, onRegenerateToken 
                 <p className="text-text-primary font-medium">{pod.architecture || 'Unknown'}</p>
               </div>
               <div>
-                <span className="text-text-muted">Docker Version</span>
-                <p className="text-text-primary font-medium">{pod.docker_version || 'Unknown'}</p>
-              </div>
-              <div>
                 <span className="text-text-muted">Token Prefix</span>
                 <p className="text-text-primary font-mono">{pod.token_prefix}...</p>
               </div>
@@ -411,10 +502,6 @@ function PodCard({ pod, isExpanded, onToggleExpand, onDelete, onRegenerateToken 
               <div>
                 <span className="text-text-muted">Created</span>
                 <p className="text-text-primary font-medium">{formatDate(pod.created_at)}</p>
-              </div>
-              <div>
-                <span className="text-text-muted">Last Updated</span>
-                <p className="text-text-primary font-medium">{formatDate(pod.updated_at)}</p>
               </div>
             </div>
 
@@ -480,8 +567,13 @@ export default function LocalPodsSettingsPage() {
 
   const handleCreatePod = async (data: CreateLocalPodRequest) => {
     await createPod(data);
+    // Don't close modal - will show completion step with setup command
+  };
+
+  const handleModalClose = () => {
     setIsAddModalOpen(false);
-    toast.success('Local pod created! Save the token shown below.');
+    // Refresh pods list in case a pod was created
+    loadPods();
   };
 
   const handleDeletePod = useCallback(
@@ -708,16 +800,10 @@ export default function LocalPodsSettingsPage() {
                       <code className="text-xs text-text-muted font-mono block mt-1 p-2 rounded bg-void">
                         podex-local-pod start --token pdx_pod_...
                       </code>
-                    </div>
-                  </div>
-                  <div className="flex items-start gap-3">
-                    <span className="flex items-center justify-center w-6 h-6 rounded-full bg-accent-primary/20 text-accent-primary text-xs font-bold">
-                      3
-                    </span>
-                    <div>
-                      <p className="text-sm text-text-primary font-medium">Create a workspace</p>
                       <p className="text-xs text-text-muted mt-1">
-                        Select your local pod when creating a new workspace in Podex
+                        Your pod will appear as{' '}
+                        <span className="text-success font-medium">&quot;Online&quot;</span> once
+                        connected!
                       </p>
                     </div>
                   </div>
@@ -730,11 +816,7 @@ export default function LocalPodsSettingsPage() {
 
       {/* Add pod modal */}
       {isAddModalOpen && (
-        <AddPodModal
-          onSubmit={handleCreatePod}
-          onClose={() => setIsAddModalOpen(false)}
-          isLoading={isCreating}
-        />
+        <AddPodModal onSubmit={handleCreatePod} onClose={handleModalClose} isLoading={isCreating} />
       )}
     </div>
   );

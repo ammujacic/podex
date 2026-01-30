@@ -6,8 +6,8 @@ Allows users to create, update, delete, and test custom health checks.
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,7 @@ from src.database.models import HealthCheck
 from src.database.models import Session as SessionModel
 from src.health.check_runner import CheckRunner
 from src.middleware.auth import get_current_user
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
 logger = structlog.get_logger()
 
@@ -93,8 +94,7 @@ class HealthCheckResponse(BaseModel):
     user_id: str | None
     session_id: str | None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class HealthCheckTestRequest(BaseModel):
@@ -118,7 +118,10 @@ class HealthCheckTestResponse(BaseModel):
 
 
 @router.get("", response_model=list[HealthCheckResponse])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_health_checks(
+    request: Request,
+    response: Response,
     category: str | None = None,
     include_builtin: bool = True,
     session_id: str | None = None,
@@ -159,7 +162,10 @@ async def list_health_checks(
 
 
 @router.get("/defaults", response_model=list[HealthCheckResponse])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_default_checks(
+    request: Request,
+    response: Response,
     category: str | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> list[HealthCheckResponse]:
@@ -181,8 +187,11 @@ async def list_default_checks(
 
 
 @router.get("/{check_id}", response_model=HealthCheckResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_health_check(
     check_id: str,
+    request: Request,
+    response: Response,
     current_user: dict[str, Any] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> HealthCheckResponse:
@@ -201,8 +210,11 @@ async def get_health_check(
 
 
 @router.post("", response_model=HealthCheckResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def create_health_check(
-    request: HealthCheckCreate,
+    request: Request,
+    response: Response,
+    body: HealthCheckCreate,
     current_user: dict[str, Any] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> HealthCheckResponse:
@@ -215,7 +227,7 @@ async def create_health_check(
         "documentation",
         "dependencies",
     ]
-    if request.category not in valid_categories:
+    if body.category not in valid_categories:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid category. Must be one of: {', '.join(valid_categories)}",
@@ -223,16 +235,16 @@ async def create_health_check(
 
     # Validate parse mode
     valid_parse_modes = ["exit_code", "json", "regex", "line_count"]
-    if request.parse_mode not in valid_parse_modes:
+    if body.parse_mode not in valid_parse_modes:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid parse_mode. Must be one of: {', '.join(valid_parse_modes)}",
         )
 
     # Verify session ownership if session_id provided
-    if request.session_id:
+    if body.session_id:
         session_result = await db.execute(
-            select(SessionModel).where(SessionModel.id == request.session_id)
+            select(SessionModel).where(SessionModel.id == body.session_id)
         )
         session = session_result.scalar_one_or_none()
         if not session or session.owner_id != current_user["user_id"]:
@@ -240,21 +252,21 @@ async def create_health_check(
 
     # Create check
     check = HealthCheck(
-        category=request.category,
-        name=request.name,
-        description=request.description,
-        command=request.command,
-        working_directory=request.working_directory,
-        timeout=request.timeout,
-        parse_mode=request.parse_mode,
-        parse_config=request.parse_config,
-        weight=request.weight,
+        category=body.category,
+        name=body.name,
+        description=body.description,
+        command=body.command,
+        working_directory=body.working_directory,
+        timeout=body.timeout,
+        parse_mode=body.parse_mode,
+        parse_config=body.parse_config,
+        weight=body.weight,
         enabled=True,
         is_builtin=False,
-        project_types=request.project_types,
-        fix_command=request.fix_command,
+        project_types=body.project_types,
+        fix_command=body.fix_command,
         user_id=current_user["user_id"],
-        session_id=request.session_id,
+        session_id=body.session_id,
     )
 
     db.add(check)
@@ -273,9 +285,12 @@ async def create_health_check(
 
 
 @router.put("/{check_id}", response_model=HealthCheckResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def update_health_check(
     check_id: str,
-    request: HealthCheckUpdate,
+    request: Request,
+    response: Response,
+    body: HealthCheckUpdate,
     current_user: dict[str, Any] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> HealthCheckResponse:
@@ -295,7 +310,7 @@ async def update_health_check(
 
     # For built-in checks, only allow toggling enabled state
     if check.is_builtin:
-        if request.enabled is not None:
+        if body.enabled is not None:
             # Create a user override for the built-in check
             # For now, we don't support overriding built-in checks
             raise HTTPException(
@@ -305,7 +320,7 @@ async def update_health_check(
         return HealthCheckResponse.model_validate(check)
 
     # Update fields
-    update_data = request.model_dump(exclude_unset=True)
+    update_data = body.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(check, field, value)
 
@@ -322,8 +337,11 @@ async def update_health_check(
 
 
 @router.delete("/{check_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def delete_health_check(
     check_id: str,
+    request: Request,
+    response: Response,
     current_user: dict[str, Any] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> None:
@@ -354,9 +372,12 @@ async def delete_health_check(
 
 
 @router.post("/{check_id}/test", response_model=HealthCheckTestResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def test_health_check(
     check_id: str,
-    request: HealthCheckTestRequest,
+    request: Request,
+    response: Response,
+    body: HealthCheckTestRequest,
     current_user: dict[str, Any] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> HealthCheckTestResponse:
@@ -377,7 +398,7 @@ async def test_health_check(
 
     # Verify session ownership and get workspace
     session_result = await db.execute(
-        select(SessionModel).where(SessionModel.id == request.session_id)
+        select(SessionModel).where(SessionModel.id == body.session_id)
     )
     session = session_result.scalar_one_or_none()
 
@@ -413,7 +434,10 @@ async def test_health_check(
 
 
 @router.post("/test-command", response_model=HealthCheckTestResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def test_custom_command(
+    request: Request,
+    response: Response,
     session_id: str,
     command: str,
     working_directory: str | None = None,

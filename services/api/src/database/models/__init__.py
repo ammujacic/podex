@@ -1,35 +1,36 @@
 """SQLAlchemy models for Podex database.
 
 All models are organized into domain-specific modules:
-- base.py: Base class and utilities
-- core.py: User, Session, Agent, Message, Workspace
-- agent_config.py: AgentTemplate, TerminalIntegratedAgentType, Subagent, AgentWorktree
-- billing.py: SubscriptionPlan, UserSubscription, UsageRecord, Invoice, etc.
-- checkpoints.py: FileCheckpoint, CheckpointFile, PendingChangeSet, ChangeSetFile
-- user_preferences.py: UserConfig, UserHook, CustomCommand
-- context.py: ConversationSummary, Memory, ContextCompactionSettings, CompactionLog
-- infrastructure.py: PodTemplate, LocalPod, MCPServer
-- notifications.py: Notification, PushSubscription, AgentAttention
-- organization.py: Organization, OrganizationMember, OrganizationSubscription, etc.
-- planning.py: ExecutionPlan, TaskProgress
-- knowledge.py: WikiDocument, UserCorrection
-- platform.py: PlatformSetting, LLMModel
-- extensions.py: UserExtension, WorkspaceExtension
+ - base.py: Base class and utilities
+ - core.py: User, Session, Agent, Workspace
+ - conversation.py: ConversationSession, ConversationMessage (portable chat sessions)
+ - agent_config.py: AgentTemplate, Subagent, AgentWorktree, AgentRoleConfig, AgentTool
+ - billing.py: SubscriptionPlan, UserSubscription, UsageRecord, Invoice, etc.
+ - checkpoints.py: FileCheckpoint, CheckpointFile, PendingChangeSet, ChangeSetFile
+ - user_preferences.py: UserConfig, UserHook, CustomCommand
+ - context.py: ConversationSummary, Memory, ContextCompactionSettings, CompactionLog
+ - infrastructure.py: PodTemplate, LocalPod, MCPServer
+ - notifications.py: Notification, PushSubscription, AgentAttention
+ - organization.py: Organization, OrganizationMember, OrganizationSubscription, etc.
+ - planning.py: ExecutionPlan, TaskProgress
+ - knowledge.py: WikiDocument, UserCorrection
+ - platform.py: PlatformSetting, LLMModel
+ - extensions.py: UserExtension, WorkspaceExtension
 """
 
+# ruff: noqa: I001
+
 # Base class and utilities
+from .base import Base, _generate_uuid
+
 # Agent configuration models
 from .agent_config import (
     AgentRoleConfig,
     AgentTemplate,
     AgentTool,
     AgentWorktree,
-    ExternalAgentEnvProfile,
     Subagent,
-    TerminalAgentSession,
-    TerminalIntegratedAgentType,
 )
-from .base import Base, _generate_uuid
 
 # Billing models
 from .billing import (
@@ -55,13 +56,6 @@ from .checkpoints import (
     PendingChangeSet,
 )
 
-# CLI sync models
-from .cli_sync import (
-    CLISyncConflict,
-    CLISyncLog,
-    CLISyncStatus,
-)
-
 # Context management models
 from .context import (
     CompactionLog,
@@ -71,12 +65,17 @@ from .context import (
     UserSkill,
 )
 
+# Conversation models (decoupled from agents)
+from .conversation import (
+    ConversationMessage,
+    ConversationSession,
+)
+
 # Core models
 from .core import (
     Agent,
     AgentPendingApproval,
     FileChange,
-    Message,
     PendingChange,
     Session,
     SessionCollaborator,
@@ -145,7 +144,14 @@ from .platform import (
     PlatformSetting,
     ProductivityMetric,
     ProjectHealthScore,
+    WaitlistEntry,
 )
+
+# Server models (multi-server orchestration)
+from .server import ServerStatus, WorkspaceServer
+
+# Tunnel models (Cloudflare external exposure)
+from .tunnels import WorkspaceTunnel
 
 # Skill management models
 from .skill_sync import (
@@ -164,6 +170,7 @@ from .user_preferences import (
     CustomCommand,
     UserConfig,
     UserHook,
+    UserOAuthToken,
 )
 
 __all__ = [
@@ -178,13 +185,12 @@ __all__ = [
     "AuditLog",
     "Base",
     "BillingEvent",
-    "CLISyncConflict",
-    "CLISyncLog",
-    "CLISyncStatus",
     "ChangeSetFile",
     "CheckpointFile",
     "CompactionLog",
     "ContextCompactionSettings",
+    "ConversationMessage",
+    "ConversationSession",
     "ConversationSummary",
     "CostAlert",
     "CreditBalance",
@@ -195,7 +201,6 @@ __all__ = [
     "DataRetentionPolicy",
     "DefaultMCPServer",
     "ExecutionPlan",
-    "ExternalAgentEnvProfile",
     "FileChange",
     "FileCheckpoint",
     "GitHubIntegration",
@@ -208,7 +213,6 @@ __all__ = [
     "MCPServer",
     "MarketplaceSkill",
     "Memory",
-    "Message",
     "Notification",
     "Organization",
     "OrganizationCreditTransaction",
@@ -226,6 +230,7 @@ __all__ = [
     "ProductivityMetric",
     "ProjectHealthScore",
     "PushSubscription",
+    "ServerStatus",
     "Session",
     "SessionBudget",
     "SessionCollaborator",
@@ -239,8 +244,6 @@ __all__ = [
     "SubscriptionPlan",
     "SystemSkill",
     "TaskProgress",
-    "TerminalAgentSession",
-    "TerminalIntegratedAgentType",
     "UsageQuota",
     "UsageRecord",
     "User",
@@ -250,10 +253,14 @@ __all__ = [
     "UserCorrection",
     "UserExtension",
     "UserHook",
+    "UserOAuthToken",
     "UserSkill",
     "UserSubscription",
+    "WaitlistEntry",
     "WikiDocument",
     "Workspace",
     "WorkspaceExtension",
+    "WorkspaceServer",
+    "WorkspaceTunnel",
     "_generate_uuid",
 ]

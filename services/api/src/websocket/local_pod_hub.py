@@ -71,36 +71,124 @@ async def _update_pod_status(
         await db.commit()
 
 
-async def _update_pod_capabilities(pod_id: str, capabilities: dict[str, Any]) -> None:
-    """Update pod capabilities in database."""
+async def _update_pod_capabilities(
+    pod_id: str,
+    capabilities: dict[str, Any],
+) -> None:
+    """Update pod capabilities in database.
+
+    Args:
+        pod_id: Pod ID to update.
+        capabilities: System capabilities (os_info, architecture, etc.).
+    """
+    values: dict[str, Any] = {
+        "os_info": capabilities.get("os_info"),
+        "architecture": capabilities.get("architecture"),
+        "total_memory_mb": capabilities.get("total_memory_mb"),
+        "total_cpu_cores": capabilities.get("cpu_cores"),
+        "updated_at": datetime.now(UTC),
+    }
+
     async with async_session_factory() as db:
+        await db.execute(
+            update(LocalPod).where(LocalPod.id == pod_id).values(**values),
+        )
+        await db.commit()
+
+
+async def _update_pod_heartbeat(pod_id: str, _reported_workspaces: int) -> None:
+    """Update pod heartbeat in database.
+
+    Note: We count active workspaces from the database rather than using the
+    reported count from the local pod, since native mode pods are stateless
+    and don't track workspace state locally.
+    """
+    from sqlalchemy import func
+
+    from src.database.models import Workspace
+
+    async with async_session_factory() as db:
+        # Count active workspaces on this pod from the database
+        result = await db.execute(
+            select(func.count())
+            .select_from(Workspace)
+            .where(
+                Workspace.local_pod_id == pod_id,
+                Workspace.status.in_(["pending", "running", "starting"]),
+            )
+        )
+        workspace_count = result.scalar() or 0
+
         await db.execute(
             update(LocalPod)
             .where(LocalPod.id == pod_id)
             .values(
-                os_info=capabilities.get("os_info"),
-                architecture=capabilities.get("architecture"),
-                docker_version=capabilities.get("docker_version"),
-                total_memory_mb=capabilities.get("total_memory_mb"),
-                total_cpu_cores=capabilities.get("cpu_cores"),
+                last_heartbeat=datetime.now(UTC),
+                current_workspaces=workspace_count,
                 updated_at=datetime.now(UTC),
             ),
         )
         await db.commit()
 
 
-async def _update_pod_heartbeat(pod_id: str, current_workspaces: int) -> None:
-    """Update pod heartbeat in database."""
+async def _update_local_pod_workspaces_status(pod_id: str, status: str) -> None:
+    """Update status of all workspaces on a local pod and emit events to connected clients.
+
+    Local workspaces should never go to standby - they reflect the pod connection status:
+    - 'running' when pod is connected
+    - 'offline' when pod is disconnected
+
+    Args:
+        pod_id: The local pod ID.
+        status: The new status to set ('running' or 'offline').
+    """
+    from src.database.models import Session, Workspace
+    from src.websocket.hub import emit_to_session
+
     async with async_session_factory() as db:
-        await db.execute(
-            update(LocalPod)
-            .where(LocalPod.id == pod_id)
-            .values(
-                last_heartbeat=datetime.now(UTC),
-                current_workspaces=current_workspaces,
-                updated_at=datetime.now(UTC),
-            ),
+        # Find all workspaces on this pod with their sessions
+        result = await db.execute(
+            select(Workspace, Session)
+            .join(Session, Session.workspace_id == Workspace.id)
+            .where(Workspace.local_pod_id == pod_id)
         )
+        workspace_sessions = result.all()
+
+        for workspace, session in workspace_sessions:
+            old_status = workspace.status
+            # Don't update if already in the target status or if stopped.
+            # IMPORTANT: allow recovering from 'error' back to 'running' when the pod is healthy.
+            if old_status in (status, "stopped"):
+                continue
+
+            # If the pod reports 'offline', keep existing 'error' (it already indicates a problem).
+            # If the pod reports 'running', treat as heartbeat: workspace healthy again,
+            # so we can safely move from 'error' -> 'running'.
+            if status == "offline" and old_status == "error":
+                continue
+
+            workspace.status = status
+            workspace.updated_at = datetime.now(UTC)
+
+            logger.info(
+                "Local pod workspace status changed",
+                workspace_id=workspace.id,
+                session_id=session.id,
+                old_status=old_status,
+                new_status=status,
+                pod_id=pod_id,
+            )
+
+            # Emit workspace status event to connected clients
+            await emit_to_session(
+                session.id,
+                "workspace_status",
+                {
+                    "workspace_id": workspace.id,
+                    "status": status,
+                },
+            )
+
         await db.commit()
 
 
@@ -161,6 +249,10 @@ class LocalPodNamespace(socketio.AsyncNamespace):
         # Update pod status in database
         await _update_pod_status(pod.id, "online")
 
+        # Update all workspaces on this pod to 'running' status
+        # (they may have been 'offline' if pod was disconnected)
+        await _update_local_pod_workspaces_status(pod.id, "running")
+
         # Store pod_id in session for later use
         await self.save_session(sid, {"pod_id": pod.id, "user_id": pod.user_id})
 
@@ -176,6 +268,9 @@ class LocalPodNamespace(socketio.AsyncNamespace):
 
             # Update pod status in database
             await _update_pod_status(pod_id, "offline")
+
+            # Update all workspaces on this pod to 'offline' status
+            await _update_local_pod_workspaces_status(pod_id, "offline")
 
             # Cancel any pending RPC calls to this pod
             for call_id, pending in list(_pending_calls.items()):
@@ -197,13 +292,19 @@ class LocalPodNamespace(socketio.AsyncNamespace):
         """Handle pod capabilities report (sent on connect).
 
         Pods send their system capabilities after connecting.
+        Data format:
+        {
+            "capabilities": {"os_info": ..., "architecture": ..., ...}
+        }
         """
         pod_id = _sid_to_pod.get(sid)
         if not pod_id:
             return
 
-        await _update_pod_capabilities(pod_id, data)
-        logger.info("Local pod capabilities received", pod_id=pod_id, data=data)
+        # Handle both old format (flat capabilities) and new format (nested)
+        capabilities = data.get("capabilities", data)
+        await _update_pod_capabilities(pod_id, capabilities)
+        logger.info("Local pod capabilities received", pod_id=pod_id)
 
     async def on_heartbeat(self, sid: str, data: dict[str, Any]) -> None:
         """Handle pod heartbeat with system stats.
@@ -292,6 +393,90 @@ class LocalPodNamespace(socketio.AsyncNamespace):
                         workspace_id=workspace_id,
                         event_type=event_type,
                     )
+
+    async def on_ping(self, sid: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Simple ping handler to test call() mechanism."""
+        logger.info("ping received", sid=sid, data=data)
+        return {"pong": True, "received": data}
+
+    async def on_terminal_output(self, sid: str, data: dict[str, Any]) -> None:
+        """Handle terminal output from pod.
+
+        Pods stream terminal output for local pod terminals.
+        Forward to the terminal manager which will send to connected clients.
+        """
+        pod_id = _sid_to_pod.get(sid)
+        if not pod_id:
+            logger.warning("terminal_output from unknown pod", sid=sid)
+            return
+
+        session_id = data.get("session_id")
+        workspace_id = data.get("workspace_id")
+        output_data = data.get("data", "")
+        output_type = data.get("type")  # "incremental" or "full"
+
+        logger.info(
+            "Received terminal_output from pod",
+            pod_id=pod_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            output_type=output_type,
+            data_length=len(output_data) if output_data else 0,
+        )
+
+        if not output_data:
+            return
+
+        # Forward to terminal manager which handles client connections
+        from src.terminal.manager import terminal_manager
+
+        # Log available sessions for debugging
+        logger.debug(
+            "Looking up terminal session",
+            session_id=session_id,
+            workspace_id=workspace_id,
+            available_sessions=list(terminal_manager.sessions.keys()),
+        )
+
+        # Try to find session by session_id first, then by workspace_id
+        session = terminal_manager.sessions.get(session_id) if session_id else None
+        if not session and workspace_id:
+            session = terminal_manager.sessions.get(workspace_id)
+
+        if session and session.on_output:
+            try:
+                # Call the output callback (handles both sync and async)
+                # The callback expects workspace_id as first param (for room targeting)
+                import inspect
+
+                # Use workspace_id for the callback (it's used to target the room)
+                callback_id = workspace_id or session.workspace_id
+
+                if inspect.iscoroutinefunction(session.on_output):
+                    await session.on_output(callback_id, output_data)
+                else:
+                    session.on_output(callback_id, output_data)
+
+                logger.info(
+                    "Terminal output forwarded to client",
+                    session_id=session_id,
+                    workspace_id=workspace_id,
+                    output_type=output_type,
+                    data_length=len(output_data),
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to forward terminal output",
+                    session_id=session_id,
+                    error=str(e),
+                )
+        else:
+            logger.warning(
+                "No active terminal session for output",
+                session_id=session_id,
+                workspace_id=workspace_id,
+                available_sessions=list(terminal_manager.sessions.keys()),
+            )
 
 
 # Create namespace instance
@@ -405,6 +590,7 @@ class RPCMethods:
     WORKSPACE_STOP = "workspace.stop"
     WORKSPACE_DELETE = "workspace.delete"
     WORKSPACE_GET = "workspace.get"
+    WORKSPACE_UPDATE = "workspace.update"
     WORKSPACE_LIST = "workspace.list"
     WORKSPACE_HEARTBEAT = "workspace.heartbeat"
 
@@ -428,3 +614,10 @@ class RPCMethods:
 
     # Health
     HEALTH_CHECK = "health.check"
+
+    # Host filesystem browsing
+    HOST_BROWSE = "host.browse"
+
+    TUNNEL_START = "tunnel.start"
+    TUNNEL_STOP = "tunnel.stop"
+    TUNNEL_STATUS = "tunnel.status"

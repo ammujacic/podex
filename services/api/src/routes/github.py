@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,7 @@ from src.github_client import (
     GitHubClient,
     GitHubTokenExpiredError,
 )
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
 router = APIRouter(prefix="/github", tags=["github"])
 
@@ -153,7 +154,10 @@ class TriggerWorkflowRequest(BaseModel):
 
 
 @router.get("/status", response_model=GitHubConnectionStatus)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_connection_status(
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> GitHubConnectionStatus:
@@ -176,7 +180,10 @@ async def get_connection_status(
 
 
 @router.delete("/disconnect")
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def disconnect_github(
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> dict:
@@ -198,7 +205,10 @@ async def disconnect_github(
 
 
 @router.get("/repos", response_model=list[dict])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_repositories(
+    request: Request,
+    response: Response,
     per_page: int = Query(30, ge=1, le=100),
     page: int = Query(1, ge=1),
     db: AsyncSession = Depends(get_db),
@@ -216,9 +226,12 @@ async def list_repositories(
 
 
 @router.get("/repos/{owner}/{repo}", response_model=dict)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_repository(
     owner: str,
     repo: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> dict:
@@ -234,9 +247,12 @@ async def get_repository(
 
 
 @router.get("/repos/{owner}/{repo}/branches", response_model=list[dict])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_branches(
     owner: str,
     repo: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> list[dict]:
@@ -257,9 +273,12 @@ async def list_branches(
 
 
 @router.get("/repos/{owner}/{repo}/pulls", response_model=list[dict])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_pull_requests(
     owner: str,
     repo: str,
+    request: Request,
+    response: Response,
     state: str = Query("open"),
     per_page: int = Query(30, ge=1, le=100),
     page: int = Query(1, ge=1),
@@ -277,10 +296,13 @@ async def list_pull_requests(
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}", response_model=dict)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_pull_request(
     owner: str,
     repo: str,
     number: int,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> dict:
@@ -293,10 +315,13 @@ async def get_pull_request(
 
 
 @router.post("/repos/{owner}/{repo}/pulls", response_model=dict)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def create_pull_request(
     owner: str,
     repo: str,
-    request: CreatePRRequest,
+    request: Request,
+    response: Response,
+    body: CreatePRRequest,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> dict:
@@ -307,21 +332,24 @@ async def create_pull_request(
         pr = await client.create_pull_request(
             owner,
             repo,
-            title=request.title,
-            head=request.head,
-            base=request.base,
-            body=request.body,
-            draft=request.draft,
+            title=body.title,
+            head=body.head,
+            base=body.base,
+            body=body.body,
+            draft=body.draft,
         )
         return pr.model_dump()
 
 
 @router.patch("/repos/{owner}/{repo}/pulls/{number}", response_model=dict)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def update_pull_request(
     owner: str,
     repo: str,
     number: int,
-    request: UpdatePRRequest,
+    request: Request,
+    response: Response,
+    body: UpdatePRRequest,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> dict:
@@ -342,11 +370,14 @@ async def update_pull_request(
 
 
 @router.put("/repos/{owner}/{repo}/pulls/{number}/merge", response_model=dict)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def merge_pull_request(
     owner: str,
     repo: str,
     number: int,
-    request: MergePRRequest,
+    request: Request,
+    response: Response,
+    body: MergePRRequest,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> dict:
@@ -366,10 +397,13 @@ async def merge_pull_request(
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/files", response_model=list[dict])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_pr_files(
     owner: str,
     repo: str,
     number: int,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> list[dict]:
@@ -382,10 +416,13 @@ async def list_pr_files(
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/commits", response_model=list[dict])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_pr_commits(
     owner: str,
     repo: str,
     number: int,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> list[dict]:
@@ -403,10 +440,13 @@ async def list_pr_commits(
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/reviews", response_model=list[dict])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_pr_reviews(
     owner: str,
     repo: str,
     number: int,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> list[dict]:
@@ -419,11 +459,14 @@ async def list_pr_reviews(
 
 
 @router.post("/repos/{owner}/{repo}/pulls/{number}/reviews", response_model=dict)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def create_pr_review(
     owner: str,
     repo: str,
     number: int,
-    request: CreateReviewRequest,
+    request: Request,
+    response: Response,
+    body: CreateReviewRequest,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> dict:
@@ -443,10 +486,13 @@ async def create_pr_review(
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/comments", response_model=list[dict])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_pr_comments(
     owner: str,
     repo: str,
     number: int,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> list[dict]:
@@ -459,11 +505,14 @@ async def list_pr_comments(
 
 
 @router.post("/repos/{owner}/{repo}/pulls/{number}/comments", response_model=dict)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def create_pr_comment(
     owner: str,
     repo: str,
     number: int,
-    request: CreateCommentRequest,
+    request: Request,
+    response: Response,
+    body: CreateCommentRequest,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> dict:
@@ -490,9 +539,12 @@ async def create_pr_comment(
 
 
 @router.get("/repos/{owner}/{repo}/actions/workflows", response_model=list[dict])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_workflows(
     owner: str,
     repo: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> list[dict]:
@@ -505,11 +557,14 @@ async def list_workflows(
 
 
 @router.post("/repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches")
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def trigger_workflow(
     owner: str,
     repo: str,
     workflow_id: str,
-    request: TriggerWorkflowRequest,
+    request: Request,
+    response: Response,
+    body: TriggerWorkflowRequest,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> dict:
@@ -524,9 +579,12 @@ async def trigger_workflow(
 
 
 @router.get("/repos/{owner}/{repo}/actions/runs", response_model=list[dict])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_workflow_runs(
     owner: str,
     repo: str,
+    request: Request,
+    response: Response,
     workflow_id: str | None = Query(None),
     branch: str | None = Query(None),
     run_status: str | None = Query(None, alias="status"),
@@ -552,10 +610,13 @@ async def list_workflow_runs(
 
 
 @router.get("/repos/{owner}/{repo}/actions/runs/{run_id}", response_model=dict)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_workflow_run(
     owner: str,
     repo: str,
     run_id: int,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> dict:
@@ -568,10 +629,13 @@ async def get_workflow_run(
 
 
 @router.get("/repos/{owner}/{repo}/actions/runs/{run_id}/jobs", response_model=list[dict])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_workflow_jobs(
     owner: str,
     repo: str,
     run_id: int,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> list[dict]:
@@ -584,10 +648,13 @@ async def list_workflow_jobs(
 
 
 @router.get("/repos/{owner}/{repo}/actions/jobs/{job_id}/logs")
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_job_logs(
     owner: str,
     repo: str,
     job_id: int,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> dict:
@@ -600,10 +667,13 @@ async def get_job_logs(
 
 
 @router.post("/repos/{owner}/{repo}/actions/runs/{run_id}/cancel")
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def cancel_workflow_run(
     owner: str,
     repo: str,
     run_id: int,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> dict:
@@ -616,10 +686,13 @@ async def cancel_workflow_run(
 
 
 @router.post("/repos/{owner}/{repo}/actions/runs/{run_id}/rerun")
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def rerun_workflow(
     owner: str,
     repo: str,
     run_id: int,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user),
 ) -> dict:

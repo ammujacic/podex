@@ -29,10 +29,6 @@ class AgentRoleData(TypedDict, total=False):
     features: list[str] | None
     example_prompts: list[str] | None
     requires_subscription: str | None
-    # Model settings
-    default_model: str | None
-    default_temperature: float | None
-    default_max_tokens: int | None
     sort_order: int
     is_enabled: bool
     is_system: bool
@@ -414,9 +410,6 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Break down this project into tasks",
         ],
         "requires_subscription": None,
-        "default_model": "claude-sonnet-4-5",
-        "default_temperature": 0.7,
-        "default_max_tokens": 8192,
         "sort_order": 10,
         "is_enabled": True,
         "is_system": True,
@@ -470,9 +463,6 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Add error handling to this code",
         ],
         "requires_subscription": None,
-        "default_model": "claude-sonnet-4-5",
-        "default_temperature": 0.3,
-        "default_max_tokens": 4096,
         "sort_order": 20,
         "is_enabled": True,
         "is_system": True,
@@ -510,9 +500,6 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Suggest improvements for this code",
         ],
         "requires_subscription": None,
-        "default_model": "claude-sonnet-4",
-        "default_temperature": 0.5,
-        "default_max_tokens": 4096,
         "sort_order": 30,
         "is_enabled": True,
         "is_system": True,
@@ -562,9 +549,6 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Improve test coverage",
         ],
         "requires_subscription": None,
-        "default_model": "claude-sonnet-4-5",
-        "default_temperature": 0.3,
-        "default_max_tokens": 4096,
         "sort_order": 40,
         "is_enabled": True,
         "is_system": True,
@@ -605,9 +589,6 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Review authentication implementation",
         ],
         "requires_subscription": None,
-        "default_model": "claude-sonnet-4-5",
-        "default_temperature": 0.3,
-        "default_max_tokens": 4096,
         "sort_order": 50,
         "is_enabled": True,
         "is_system": True,
@@ -669,9 +650,6 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Configure Kubernetes deployment",
         ],
         "requires_subscription": None,
-        "default_model": "claude-sonnet-4-5",
-        "default_temperature": 0.5,
-        "default_max_tokens": 4096,
         "sort_order": 60,
         "is_enabled": True,
         "is_system": True,
@@ -726,9 +704,6 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Create a new API endpoint end-to-end",
         ],
         "requires_subscription": "pro",
-        "default_model": "claude-sonnet-4-5",
-        "default_temperature": 0.5,
-        "default_max_tokens": 8192,
         "sort_order": 70,
         "is_enabled": True,
         "is_system": True,
@@ -756,9 +731,6 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Make an agent for database queries",
         ],
         "requires_subscription": "pro",
-        "default_model": "claude-sonnet-4-5",
-        "default_temperature": 0.5,
-        "default_max_tokens": 8192,
         "sort_order": 80,
         "is_enabled": True,
         "is_system": True,
@@ -799,9 +771,6 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Write API documentation",
         ],
         "requires_subscription": None,
-        "default_model": "claude-sonnet-4",
-        "default_temperature": 0.7,
-        "default_max_tokens": 4096,
         "sort_order": 90,
         "is_enabled": True,
         "is_system": True,
@@ -825,9 +794,6 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "Brainstorm ideas for this feature",
         ],
         "requires_subscription": None,
-        "default_model": "claude-haiku-4-5",
-        "default_temperature": 0.7,
-        "default_max_tokens": 2048,
         "sort_order": 100,
         "is_enabled": True,
         "is_system": True,
@@ -873,85 +839,7 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
             "What's the best approach for this?",
         ],
         "requires_subscription": None,
-        "default_model": "claude-sonnet-4-5",
-        "default_temperature": 0.5,
-        "default_max_tokens": 4096,
         "sort_order": 1000,
-        "is_enabled": True,
-        "is_system": True,
-    },
-    {
-        "role": "claude-code",
-        "name": "Claude Code",
-        "color": "orange",
-        "icon": "Terminal",
-        "description": "Native Claude Code agent with full CLI capabilities",
-        "system_prompt": "",  # Claude Code has its own system prompt
-        "tools": [],  # Tools handled by Claude Code CLI directly
-        "category": "terminal",
-        "gradient_start": "#f97316",
-        "gradient_end": "#c2410c",
-        "features": ["Full CLI access", "File operations", "Git integration"],
-        "example_prompts": [
-            "Fix this bug",
-            "Implement this feature",
-            "Refactor this codebase",
-        ],
-        "requires_subscription": None,
-        "default_model": "sonnet",  # Simple alias for Claude Code CLI
-        "default_temperature": None,  # Managed by Claude Code
-        "default_max_tokens": None,  # Managed by Claude Code
-        "sort_order": 5,  # Show near the top
-        "is_enabled": True,
-        "is_system": True,
-    },
-    {
-        "role": "openai-codex",
-        "name": "OpenAI Codex",
-        "color": "green",
-        "icon": "Terminal",
-        "description": "Native OpenAI Codex CLI agent powered by o3/o4-mini",
-        "system_prompt": "",  # Codex has its own system prompt
-        "tools": [],  # Tools handled by Codex CLI directly
-        "category": "terminal",
-        "gradient_start": "#10a37f",
-        "gradient_end": "#0d8a6a",
-        "features": ["OpenAI models", "CLI tools", "Code generation"],
-        "example_prompts": [
-            "Generate this function",
-            "Complete this code",
-            "Debug this issue",
-        ],
-        "requires_subscription": None,
-        "default_model": "gpt-5",  # Simple alias for Codex CLI
-        "default_temperature": None,  # Managed by Codex
-        "default_max_tokens": None,  # Managed by Codex
-        "sort_order": 6,  # Show near the top after Claude Code
-        "is_enabled": True,
-        "is_system": True,
-    },
-    {
-        "role": "gemini-cli",
-        "name": "Gemini CLI",
-        "color": "blue",
-        "icon": "Terminal",
-        "description": "Native Google Gemini CLI agent with 1M token context",
-        "system_prompt": "",  # Gemini has its own system prompt
-        "tools": [],  # Tools handled by Gemini CLI directly
-        "category": "terminal",
-        "gradient_start": "#4285f4",
-        "gradient_end": "#1a73e8",
-        "features": ["1M context window", "Google models", "CLI tools"],
-        "example_prompts": [
-            "Analyze this large codebase",
-            "Review all these files",
-            "Search and refactor",
-        ],
-        "requires_subscription": None,
-        "default_model": "gemini-2.5-pro",  # Simple alias for Gemini CLI
-        "default_temperature": None,  # Managed by Gemini
-        "default_max_tokens": None,  # Managed by Gemini
-        "sort_order": 7,  # Show near the top after Codex
         "is_enabled": True,
         "is_system": True,
     },

@@ -1,6 +1,8 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { BookOpen } from 'lucide-react';
+import { Header } from '@/components/layout/Header';
+import { Footer } from '@/components/landing/Footer';
 
 export const metadata: Metadata = {
   title: 'Glossary - AI Development Terms',
@@ -158,99 +160,106 @@ const alphabet = Object.keys(groupedTerms).sort();
 
 export default function GlossaryPage() {
   return (
-    <div
-      className="min-h-screen bg-void py-24 lg:py-32"
-      itemScope
-      itemType="https://schema.org/DefinedTermSet"
-    >
-      <div className="mx-auto max-w-4xl px-4 lg:px-8">
-        {/* Header */}
-        <div className="text-center mb-12">
-          <div className="p-4 rounded-2xl bg-accent-primary/10 w-fit mx-auto mb-6">
-            <BookOpen className="h-12 w-12 text-accent-primary" />
+    <>
+      <Header />
+      <div
+        className="min-h-screen bg-void py-24 lg:py-32"
+        itemScope
+        itemType="https://schema.org/DefinedTermSet"
+      >
+        <div className="mx-auto max-w-4xl px-4 lg:px-8">
+          {/* Header */}
+          <div className="text-center mb-12">
+            <div className="p-4 rounded-2xl bg-accent-primary/10 w-fit mx-auto mb-6">
+              <BookOpen className="h-12 w-12 text-accent-primary" />
+            </div>
+            <h1 className="text-4xl font-bold text-text-primary mb-4" itemProp="name">
+              Glossary
+            </h1>
+            <p className="text-xl text-text-secondary max-w-2xl mx-auto" itemProp="description">
+              Definitions of key terms used in Podex and AI-powered development.
+            </p>
           </div>
-          <h1 className="text-4xl font-bold text-text-primary mb-4" itemProp="name">
-            Glossary
-          </h1>
-          <p className="text-xl text-text-secondary max-w-2xl mx-auto" itemProp="description">
-            Definitions of key terms used in Podex and AI-powered development.
-          </p>
-        </div>
 
-        {/* Alphabet Navigation */}
-        <div className="flex flex-wrap justify-center gap-2 mb-12">
-          {alphabet.map((letter) => (
-            <a
-              key={letter}
-              href={`#letter-${letter}`}
-              className="w-10 h-10 rounded-lg bg-surface border border-border-default flex items-center justify-center text-text-primary hover:bg-accent-primary hover:text-text-inverse hover:border-accent-primary transition-all font-medium"
-            >
-              {letter}
-            </a>
-          ))}
-        </div>
-
-        {/* Terms */}
-        <div className="space-y-12">
-          {alphabet.map((letter) => (
-            <section key={letter} id={`letter-${letter}`}>
-              <h2 className="text-3xl font-bold text-accent-primary mb-6 sticky top-4 bg-void py-2">
+          {/* Alphabet Navigation */}
+          <div className="flex flex-wrap justify-center gap-2 mb-12">
+            {alphabet.map((letter) => (
+              <a
+                key={letter}
+                href={`#letter-${letter}`}
+                className="w-10 h-10 rounded-lg bg-surface border border-border-default flex items-center justify-center text-text-primary hover:bg-accent-primary hover:text-text-inverse hover:border-accent-primary transition-all font-medium"
+              >
                 {letter}
-              </h2>
-              <div className="space-y-6">
-                {groupedTerms[letter]?.map((item) => (
-                  <article
-                    key={item.term}
-                    className="p-6 rounded-xl bg-surface border border-border-default"
-                    itemScope
-                    itemProp="hasDefinedTerm"
-                    itemType="https://schema.org/DefinedTerm"
-                  >
-                    <h3
-                      className="text-xl font-bold text-text-primary mb-3"
-                      id={item.term.toLowerCase().replace(/\s+/g, '-')}
-                      itemProp="name"
-                    >
-                      {item.term}
-                    </h3>
-                    <p className="text-text-secondary leading-relaxed mb-4" itemProp="description">
-                      {item.definition}
-                    </p>
-                    {item.related.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        <span className="text-sm text-text-muted">Related:</span>
-                        {item.related.map((rel) => (
-                          <a
-                            key={rel}
-                            href={`#${rel.toLowerCase().replace(/\s+/g, '-')}`}
-                            className="text-sm px-2 py-1 rounded bg-elevated text-accent-primary hover:bg-accent-primary/10 transition-colors"
-                          >
-                            {rel}
-                          </a>
-                        ))}
-                      </div>
-                    )}
-                  </article>
-                ))}
-              </div>
-            </section>
-          ))}
-        </div>
+              </a>
+            ))}
+          </div>
 
-        {/* CTA */}
-        <div className="mt-16 p-8 rounded-2xl bg-gradient-to-r from-accent-primary/10 to-accent-secondary/10 border border-border-default text-center">
-          <h3 className="text-xl font-bold text-text-primary mb-2">Ready to Get Started?</h3>
-          <p className="text-text-secondary mb-4">
-            Now that you know the terminology, try Podex for free.
-          </p>
-          <Link
-            href="/auth/signup"
-            className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-accent-primary text-text-inverse font-medium hover:shadow-[0_0_30px_rgba(0,229,255,0.4)] transition-all"
-          >
-            Start Building Free
-          </Link>
+          {/* Terms */}
+          <div className="space-y-12">
+            {alphabet.map((letter) => (
+              <section key={letter} id={`letter-${letter}`}>
+                <h2 className="text-3xl font-bold text-accent-primary mb-6 sticky top-4 bg-void py-2">
+                  {letter}
+                </h2>
+                <div className="space-y-6">
+                  {groupedTerms[letter]?.map((item) => (
+                    <article
+                      key={item.term}
+                      className="p-6 rounded-xl bg-surface border border-border-default"
+                      itemScope
+                      itemProp="hasDefinedTerm"
+                      itemType="https://schema.org/DefinedTerm"
+                    >
+                      <h3
+                        className="text-xl font-bold text-text-primary mb-3"
+                        id={item.term.toLowerCase().replace(/\s+/g, '-')}
+                        itemProp="name"
+                      >
+                        {item.term}
+                      </h3>
+                      <p
+                        className="text-text-secondary leading-relaxed mb-4"
+                        itemProp="description"
+                      >
+                        {item.definition}
+                      </p>
+                      {item.related.length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          <span className="text-sm text-text-muted">Related:</span>
+                          {item.related.map((rel) => (
+                            <a
+                              key={rel}
+                              href={`#${rel.toLowerCase().replace(/\s+/g, '-')}`}
+                              className="text-sm px-2 py-1 rounded bg-elevated text-accent-primary hover:bg-accent-primary/10 transition-colors"
+                            >
+                              {rel}
+                            </a>
+                          ))}
+                        </div>
+                      )}
+                    </article>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+
+          {/* CTA */}
+          <div className="mt-16 p-8 rounded-2xl bg-gradient-to-r from-accent-primary/10 to-accent-secondary/10 border border-border-default text-center">
+            <h3 className="text-xl font-bold text-text-primary mb-2">Ready to Get Started?</h3>
+            <p className="text-text-secondary mb-4">
+              Now that you know the terminology, try Podex for free.
+            </p>
+            <Link
+              href="/auth/signup"
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-accent-primary text-text-inverse font-medium hover:shadow-[0_0_30px_rgba(0,229,255,0.4)] transition-all"
+            >
+              Start Building Free
+            </Link>
+          </div>
         </div>
       </div>
-    </div>
+      <Footer />
+    </>
   );
 }

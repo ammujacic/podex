@@ -1,13 +1,19 @@
 'use client';
 
 import { useRef, useState, useCallback, useEffect, useMemo } from 'react';
+import dynamic from 'next/dynamic';
 import { motion, useDragControls, useMotionValue } from 'framer-motion';
 import { GripVertical, Maximize2, Minimize2, X } from 'lucide-react';
 import { type AgentPosition, useSessionStore } from '@/stores/session';
 import { useEditorStore } from '@/stores/editor';
-import { EnhancedCodeEditor } from '@/components/editor/EnhancedCodeEditor';
 import { cn } from '@/lib/utils';
 import { useCardDimensions } from '@/hooks/useCardDimensions';
+
+// Dynamic import to prevent Monaco from loading during SSR
+const EnhancedCodeEditor = dynamic(
+  () => import('@/components/editor/EnhancedCodeEditor').then((mod) => mod.EnhancedCodeEditor),
+  { ssr: false }
+);
 
 interface DraggableEditorCardProps {
   sessionId: string;

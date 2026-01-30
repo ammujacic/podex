@@ -45,6 +45,7 @@ import {
   // Tasks
   CreateTaskResult,
   TaskStatsResult,
+  TodoWriteResult,
   // Skills
   ExecuteSkillResult,
   ListSkillsResult,
@@ -121,20 +122,20 @@ export const ToolResultDisplay = React.memo<ToolResultDisplayProps>(function Too
 
     // File tools
     case 'read_file':
-    case 'Read': // Claude Code Read tool
+    case 'Read': // Read tool
       return <ReadFileResult result={parsedResult} />;
     case 'write_file':
-    case 'Write': // Claude Code Write tool
+    case 'Write': // Write tool
       return <WriteFileResult result={parsedResult} />;
     case 'list_directory':
-    case 'Glob': // Claude Code Glob tool
+    case 'Glob': // Glob tool
       return <ListDirectoryResult result={parsedResult} />;
     case 'search_code':
     case 'grep':
     case 'glob_files':
-    case 'Grep': // Claude Code Grep tool
+    case 'Grep': // Grep tool
       return <SearchCodeResult result={parsedResult} />;
-    case 'Edit': // Claude Code Edit tool
+    case 'Edit': // Edit tool
       return <WriteFileResult result={parsedResult} />;
 
     // Git tools
@@ -156,15 +157,15 @@ export const ToolResultDisplay = React.memo<ToolResultDisplayProps>(function Too
     // Command tools
     case 'run_command':
     case 'run_terminal_command':
-    case 'Bash': // Claude Code Bash tool
+    case 'Bash': // Bash tool
       return <RunCommandResult result={parsedResult} />;
 
     // Web tools
     case 'fetch_url':
-    case 'WebFetch': // Claude Code WebFetch tool
+    case 'WebFetch': // WebFetch tool
       return <FetchUrlResult result={parsedResult} />;
     case 'search_web':
-    case 'WebSearch': // Claude Code WebSearch tool
+    case 'WebSearch': // WebSearch tool
       return <SearchWebResult result={parsedResult} />;
     case 'screenshot_page':
       return <ScreenshotResult result={parsedResult} />;
@@ -188,6 +189,8 @@ export const ToolResultDisplay = React.memo<ToolResultDisplayProps>(function Too
       return <CreateTaskResult result={parsedResult} />;
     case 'get_session_task_stats':
       return <TaskStatsResult result={parsedResult} />;
+    case 'TodoWrite': // TodoWrite tool
+      return <TodoWriteResult result={parsedResult} />;
 
     // Skill tools
     case 'execute_skill':

@@ -5,9 +5,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from src.config import Settings
 from src.deps import (
-    ComputeManagerSingleton,
+    OrchestratorSingleton,
     get_compute_manager,
     get_user_id,
     verify_internal_api_key,
@@ -18,23 +17,26 @@ class TestInternalAuth:
     """Tests for internal authentication."""
 
     def test_internal_auth_no_key_configured_dev(self) -> None:
-        """Test no API key in development mode."""
+        """Test no API key in development mode - fails closed with 500.
+
+        SECURITY: Even in development, if no API key is configured,
+        the service should fail closed (500) rather than allowing access.
+        """
         mock_settings = MagicMock()
         mock_settings.internal_api_key = ""
         mock_settings.environment = "development"
 
         with patch("src.deps.settings", mock_settings):
-            # Should not raise in development
-            verify_internal_api_key(None)
+            with pytest.raises(HTTPException) as exc:
+                verify_internal_api_key(None)
+            assert exc.value.status_code == 500
+            assert "not configured" in exc.value.detail
 
     def test_internal_auth_no_key_configured_prod(self) -> None:
-        """Test no API key configured in production returns 401.
+        """Test no API key configured in production returns 500.
 
-        In production mode, authentication is required via:
-        - GCP IAM (Authorization: Bearer token) - primary
-        - API key (X-Internal-API-Key) - fallback
-
-        When neither is provided, it's an auth failure (401), not server error.
+        SECURITY: Fail closed - if no API key is configured, the service
+        returns 500 (misconfiguration) rather than allowing unauthenticated access.
         """
         mock_settings = MagicMock()
         mock_settings.internal_api_key = ""
@@ -43,12 +45,14 @@ class TestInternalAuth:
         with patch("src.deps.settings", mock_settings):
             with pytest.raises(HTTPException) as exc:
                 verify_internal_api_key(None)
-            assert exc.value.status_code == 401
+            assert exc.value.status_code == 500
+            assert "not configured" in exc.value.detail
 
     def test_internal_auth_missing_key(self) -> None:
         """Test missing API key when configured."""
         mock_settings = MagicMock()
         mock_settings.internal_api_key = "correct-key"
+        mock_settings.environment = "development"
 
         with patch("src.deps.settings", mock_settings):
             with pytest.raises(HTTPException) as exc:
@@ -60,6 +64,7 @@ class TestInternalAuth:
         """Test invalid internal API key."""
         mock_settings = MagicMock()
         mock_settings.internal_api_key = "correct-key"
+        mock_settings.environment = "development"
 
         with patch("src.deps.settings", mock_settings):
             with pytest.raises(HTTPException) as exc:
@@ -71,6 +76,7 @@ class TestInternalAuth:
         """Test valid internal API key."""
         mock_settings = MagicMock()
         mock_settings.internal_api_key = "test-api-key-123"
+        mock_settings.environment = "development"
 
         with patch("src.deps.settings", mock_settings):
             verify_internal_api_key("test-api-key-123")
@@ -92,42 +98,35 @@ class TestUserIdExtraction:
         assert "Missing user ID" in exc.value.detail
 
 
-class TestComputeManagerSingleton:
-    """Tests for compute manager singleton."""
+class TestOrchestratorSingleton:
+    """Tests for orchestrator singleton."""
 
     def teardown_method(self) -> None:
         """Clear singleton after each test."""
-        ComputeManagerSingleton.clear_instance()
+        OrchestratorSingleton.clear_instance()
 
-    def test_get_instance_docker_mode(self) -> None:
-        """Test getting Docker manager instance."""
-        mock_settings = MagicMock()
-        mock_settings.compute_mode = "docker"
+    def test_get_orchestrator(self) -> None:
+        """Test getting orchestrator instance."""
+        orchestrator = OrchestratorSingleton.get_orchestrator()
+        assert orchestrator is not None
 
-        with patch("src.deps.settings", mock_settings):
-            manager = ComputeManagerSingleton.get_instance()
-            # In Docker mode, should create DockerComputeManager
-            assert manager is not None
-
-    def test_get_instance_singleton(self) -> None:
+    def test_get_orchestrator_singleton(self) -> None:
         """Test singleton pattern returns same instance."""
-        mock_settings = MagicMock()
-        mock_settings.compute_mode = "docker"
+        orchestrator1 = OrchestratorSingleton.get_orchestrator()
+        orchestrator2 = OrchestratorSingleton.get_orchestrator()
+        assert orchestrator1 is orchestrator2
 
-        with patch("src.deps.settings", mock_settings):
-            manager1 = ComputeManagerSingleton.get_instance()
-            manager2 = ComputeManagerSingleton.get_instance()
-            assert manager1 is manager2
+    def test_get_compute_manager(self) -> None:
+        """Test getting compute manager instance."""
+        manager = OrchestratorSingleton.get_compute_manager()
+        assert manager is not None
 
     def test_clear_instance(self) -> None:
         """Test clearing singleton instance."""
-        mock_settings = MagicMock()
-        mock_settings.compute_mode = "docker"
-
-        with patch("src.deps.settings", mock_settings):
-            ComputeManagerSingleton.get_instance()
-            ComputeManagerSingleton.clear_instance()
-            assert ComputeManagerSingleton._instance is None
+        OrchestratorSingleton.get_orchestrator()
+        OrchestratorSingleton.clear_instance()
+        assert OrchestratorSingleton._orchestrator is None
+        assert OrchestratorSingleton._compute_manager is None
 
 
 class TestGetComputeManager:
@@ -135,27 +134,9 @@ class TestGetComputeManager:
 
     def teardown_method(self) -> None:
         """Clear singleton after each test."""
-        ComputeManagerSingleton.clear_instance()
+        OrchestratorSingleton.clear_instance()
 
     def test_get_compute_manager(self) -> None:
         """Test getting compute manager via dependency."""
-        mock_settings = MagicMock()
-        mock_settings.compute_mode = "docker"
-
-        with patch("src.deps.settings", mock_settings):
-            manager = get_compute_manager()
-            assert manager is not None
-
-
-class TestSettingsComputeMode:
-    """Tests for compute mode settings."""
-
-    def test_settings_compute_mode_docker(self) -> None:
-        """Test settings for docker compute mode."""
-        settings = Settings(compute_mode="docker")
-        assert settings.compute_mode == "docker"
-
-    def test_settings_compute_mode_gcp(self) -> None:
-        """Test settings for gcp compute mode."""
-        settings = Settings(compute_mode="gcp")
-        assert settings.compute_mode == "gcp"
+        manager = get_compute_manager()
+        assert manager is not None

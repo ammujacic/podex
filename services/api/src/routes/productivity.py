@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_db
 from src.database.models import ProductivityMetric
 from src.middleware.auth import get_current_user
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
 router = APIRouter(prefix="/productivity", tags=["productivity"])
 
@@ -148,7 +149,10 @@ class AgentUsageResponse(BaseModel):
 
 
 @router.get("/summary", response_model=ProductivitySummary)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_productivity_summary(
+    request: Request,
+    response: Response,
     days: int = Query(30, ge=1, le=365),
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
@@ -265,7 +269,10 @@ async def get_productivity_summary(
 
 
 @router.get("/daily", response_model=list[DailyMetricResponse])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_daily_metrics(
+    request: Request,
+    response: Response,
     start_date: str | None = Query(None),
     end_date: str | None = Query(None),
     days: int = Query(30, ge=1, le=90),
@@ -315,7 +322,10 @@ async def get_daily_metrics(
 
 
 @router.get("/trends", response_model=ProductivityTrends)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_productivity_trends(
+    request: Request,
+    response: Response,
     days: int = Query(30, ge=7, le=90),
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
@@ -374,7 +384,10 @@ async def get_productivity_trends(
 
 
 @router.get("/time-saved", response_model=TimeSavedResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_time_saved(
+    request: Request,
+    response: Response,
     days: int = Query(30, ge=1, le=365),
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
@@ -426,7 +439,10 @@ async def get_time_saved(
 
 
 @router.get("/agent-usage", response_model=AgentUsageResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_agent_usage(
+    request: Request,
+    response: Response,
     days: int = Query(30, ge=1, le=365),
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),

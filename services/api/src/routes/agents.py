@@ -2,23 +2,27 @@
 
 from __future__ import annotations
 
+# ruff: noqa: I001
+
 import re
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from uuid import uuid4
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from podex_shared import generate_tts_summary
 from src.agent_client import agent_client
 from src.audit_logger import AuditAction, AuditLogger
 from src.config import settings
+from src.cache import cache_delete, user_config_key
 from src.database import Agent as AgentModel
 from src.database import (
     AgentTemplate,
@@ -29,9 +33,9 @@ from src.database import (
     UserConfig,
     UserSubscription,
 )
-from src.database import Message as MessageModel
 from src.database import Session as SessionModel
 from src.database.connection import async_session_factory
+from src.database.models import ConversationMessage, ConversationSession, UserOAuthToken
 from src.exceptions import (
     AgentClientError,
     EmptyMessageContentError,
@@ -41,13 +45,11 @@ from src.exceptions import (
 from src.mcp_config import get_effective_mcp_config
 from src.middleware.rate_limit import RATE_LIMIT_AGENT, RATE_LIMIT_STANDARD, limiter
 from src.routes.dependencies import DbSession, get_current_user_id, verify_session_access
-from src.routes.sessions import ensure_workspace_provisioned, update_workspace_activity
-from src.services.claude_code_config import sync_claude_code_mcp_config
+from src.routes.sessions import update_workspace_activity
 from src.websocket.hub import (
     AgentAttentionInfo,
     emit_agent_attention,
     emit_agent_stream_start,
-    emit_agent_token,
     emit_to_session,
 )
 
@@ -87,18 +89,6 @@ class AgentRole(str, Enum):
     DEVOPS = "devops"
     DOCUMENTATOR = "documentator"
     CUSTOM = "custom"
-    # Native CLI agent roles - these use specialized executors
-    CLAUDE_CODE = "claude-code"  # Native Claude Code agent with CLI capabilities
-    OPENAI_CODEX = "openai-codex"  # Native OpenAI Codex CLI agent
-    GEMINI_CLI = "gemini-cli"  # Native Google Gemini CLI agent
-
-
-# CLI agent roles that use specialized executors instead of the standard agent service
-CLI_AGENT_ROLES = {
-    AgentRole.CLAUDE_CODE.value,
-    AgentRole.OPENAI_CODEX.value,
-    AgentRole.GEMINI_CLI.value,
-}
 
 
 class AgentMode(str, Enum):
@@ -413,10 +403,10 @@ class AgentResponse(BaseModel):
     command_allowlist: list[str] | None = None
     config: dict[str, Any] | None = None
     template_id: str | None = None
+    conversation_session_id: str | None = None  # ID of attached conversation session
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AgentModeUpdate(BaseModel):
@@ -571,6 +561,9 @@ class MessageCreate(BaseModel):
     images: list[ImageAttachment] | None = None  # Optional image attachments
     thinking_config: ThinkingConfigRequest | None = None  # Extended thinking config
     browser_context: BrowserContext | None = None  # Browser debugging context
+    # Claude Code session ID for conversation continuity
+    # Optional: if provided, overrides the agent config value
+    claude_session_id: str | None = None
 
     @field_validator("content")
     @classmethod
@@ -617,8 +610,7 @@ class MessageResponse(BaseModel):
     images: list[dict[str, Any]] | None = None  # Image attachments if any
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 @dataclass
@@ -726,6 +718,11 @@ def _build_agent_response(
     Returns:
         AgentResponse with all fields populated
     """
+    # Get conversation_session_id from the attached_conversation relationship
+    conversation_session_id = None
+    if agent.attached_conversation:
+        conversation_session_id = agent.attached_conversation.id
+
     return AgentResponse(
         id=agent.id,
         session_id=agent.session_id,
@@ -738,8 +735,110 @@ def _build_agent_response(
         command_allowlist=agent.command_allowlist,
         config=agent.config,
         template_id=agent.template_id,
+        conversation_session_id=conversation_session_id,
         created_at=agent.created_at,
     )
+
+
+async def _user_has_model_access(
+    db: AsyncSession,
+    user_id: str,
+    model_id: str,
+) -> bool:
+    """Check if the user has access to the given model.
+
+    Access rules:
+    - Platform models (is_user_key_model=False):
+      - Must be enabled.
+    - User-key models (is_user_key_model=True):
+      - Must be enabled AND
+      - User must have an API key configured for the provider OR
+      - User must have an active OAuth token for the provider.
+    - Local models (ollama/lmstudio):
+      - Identified by model_id starting with "ollama/" or "lmstudio/".
+      - Must exist in UserConfig.agent_preferences["local_llm_config"].
+    """
+    # First, try to resolve as a platform/user-key model
+    result = await db.execute(
+        select(LLMModel).where(
+            LLMModel.model_id == model_id,
+            LLMModel.is_enabled.is_(True),
+        )
+    )
+    model = result.scalar_one_or_none()
+
+    if model:
+        if not model.is_user_key_model:
+            # Platform-provided model, enabled => accessible
+            return True
+
+        # User-key model: require API key or OAuth token
+        config_result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+        config = config_result.scalar_one_or_none()
+
+        api_keys = (config.llm_api_keys or {}) if config and config.llm_api_keys else {}
+        if model.provider in api_keys:
+            return True
+
+        # Check OAuth tokens
+        oauth_result = await db.execute(
+            select(UserOAuthToken).where(
+                UserOAuthToken.user_id == user_id,
+                UserOAuthToken.provider == model.provider,
+                UserOAuthToken.status == "connected",
+            )
+        )
+        oauth_token = oauth_result.scalar_one_or_none()
+        return oauth_token is not None
+
+    # If no LLMModel row, treat as potential local model (ollama/lmstudio)
+    if "/" in model_id:
+        provider, local_id = model_id.split("/", 1)
+        if provider in {"ollama", "lmstudio"}:
+            config_result = await db.execute(
+                select(UserConfig).where(UserConfig.user_id == user_id)
+            )
+            config = config_result.scalar_one_or_none()
+            prefs = (config.agent_preferences or {}) if config and config.agent_preferences else {}
+            local_cfg = prefs.get("local_llm_config") or {}
+            provider_cfg = local_cfg.get(provider) or {}
+            models = provider_cfg.get("models") or []
+            # Stored models use "id" as tag; agent model_id is "provider/name"
+            return any(m.get("id") == local_id for m in models)
+
+    return False
+
+
+async def _get_user_model_default_for_role(
+    db: AsyncSession,
+    user_id: str,
+    role: str,
+) -> str | None:
+    """Get the user's preferred default model for a role, if accessible.
+
+    Reads UserConfig.agent_preferences["model_defaults"][role] and verifies that
+    the user still has access to that model. If not accessible, returns None
+    without mutating the stored preference (so it can be reused if access is restored).
+    """
+    result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+    config = result.scalar_one_or_none()
+    if not config or not config.agent_preferences:
+        return None
+
+    prefs = config.agent_preferences or {}
+    model_defaults = prefs.get("model_defaults") or {}
+    if not isinstance(model_defaults, dict):
+        return None
+
+    model_id = model_defaults.get(role)
+    if not isinstance(model_id, str) or not model_id:
+        return None
+
+    if await _user_has_model_access(db, user_id, model_id):
+        return model_id
+
+    # Preference exists but is no longer accessible - ignore it for this request
+    return None
 
 
 # ==================== Agent Attention Detection ====================
@@ -896,845 +995,6 @@ def get_attention_priority(attention_type: str, _agent_role: str) -> str:
     return "low"
 
 
-# CLI Agent configuration by role
-# Note: Use absolute path /home/dev instead of ~ because exec runs as root
-CLI_AGENT_CONFIG = {
-    "claude-code": {
-        "name": "Claude Code",
-        # Check both system path and user npm-global
-        "check_command": "PATH=/home/dev/.npm-global/bin:$PATH which claude",
-        "credentials_check": "test -f /home/dev/.claude/.credentials.json && echo 'authenticated'",
-        "install_package": "@anthropic-ai/claude-code",
-        "run_command": "claude",
-        "executor_module": "src.routes.claude_code",
-        "executor_function": "execute_claude_code_message",
-        # Note: Streaming uses null byte (\x00) as line separator to avoid SSE newline
-        # conflicts with JSON escape sequences. See execute_claude_code_message_streaming.
-    },
-    "openai-codex": {
-        "name": "OpenAI Codex",
-        # Check both system path and user npm-global
-        "check_command": "PATH=/home/dev/.npm-global/bin:$PATH which codex",
-        "credentials_check": "test -f /home/dev/.codex/config.toml && echo 'authenticated'",
-        "install_package": "@openai/codex",
-        "run_command": "codex",
-        "executor_module": "src.routes.openai_codex",
-        "executor_function": "execute_openai_codex_message",
-    },
-    "gemini-cli": {
-        "name": "Gemini CLI",
-        # Check both system path and user npm-global
-        "check_command": "PATH=/home/dev/.npm-global/bin:$PATH which gemini",
-        "credentials_check": "test -f /home/dev/.gemini/settings.json && echo 'authenticated'",
-        "install_package": "@google/gemini-cli",
-        "run_command": "gemini",
-        "executor_module": "src.routes.gemini_cli",
-        "executor_function": "execute_gemini_cli_message",
-    },
-}
-
-
-async def _process_cli_agent_message(
-    ctx: AgentMessageContext,
-    db: AsyncSession,
-    agent: AgentModel,
-) -> None:
-    """Process a message for a CLI-based agent (Claude Code, OpenAI Codex, Gemini CLI).
-
-    Routes to the appropriate executor based on agent role.
-    Handles installation and authentication checks for each CLI type.
-
-    Args:
-        ctx: The agent message context.
-        db: Database session.
-        agent: The agent model.
-    """
-    from src.compute_client import compute_client
-
-    # Get CLI config for this agent type
-    cli_config = CLI_AGENT_CONFIG.get(agent.role)
-    if not cli_config:
-        logger.error("Unknown CLI agent role: %s", agent.role, agent_id=ctx.agent_id)
-        return
-
-    cli_name = cli_config["name"]
-
-    try:
-        # Update agent status to running
-        agent.status = "running"
-        await db.commit()
-
-        # Get voice config for auto-play
-        voice_config = agent.voice_config or {}
-        auto_play = voice_config.get("auto_play", False)
-
-        # Notify frontend that agent is processing
-        await _notify_agent_status(ctx.session_id, ctx.agent_id, "running")
-
-        # Get workspace_id from session
-        session_query = select(SessionModel).where(SessionModel.id == ctx.session_id)
-        session_result = await db.execute(session_query)
-        session = session_result.scalar_one_or_none()
-
-        if not session or not session.workspace_id:
-            logger.error(
-                "%s agent requires a workspace",
-                cli_name,
-                agent_id=ctx.agent_id,
-                session_id=ctx.session_id,
-            )
-            await _notify_agent_status(
-                ctx.session_id,
-                ctx.agent_id,
-                "error",
-                "No workspace available. Please ensure a workspace is running.",
-            )
-            agent.status = "error"
-            await db.commit()
-            return
-
-        workspace_id = session.workspace_id
-        user_id = ctx.user_id or session.owner_id
-
-        # Generate a message_id for streaming
-        stream_message_id = str(uuid4())
-
-        # Notify frontend that streaming is starting
-        await emit_agent_stream_start(ctx.session_id, ctx.agent_id, stream_message_id)
-
-        # Ensure workspace is provisioned before running any commands
-        try:
-            logger.info(
-                "Provisioning workspace for CLI agent",
-                cli_name=cli_name,
-                workspace_id=workspace_id,
-                agent_id=ctx.agent_id,
-            )
-            await ensure_workspace_provisioned(session, user_id, db)
-            logger.info(
-                "Workspace provisioned successfully",
-                cli_name=cli_name,
-                workspace_id=workspace_id,
-            )
-        except Exception as e:
-            logger.exception(
-                "Failed to provision workspace for %s agent",
-                cli_name,
-                agent_id=ctx.agent_id,
-                workspace_id=workspace_id,
-                error=str(e),
-            )
-            # Send error message to user via the stream
-            error_message = (
-                f"❌ Failed to provision workspace for {cli_name}.\n\n"
-                "Please try again or contact support if the issue persists."
-            )
-            # Finalize the stream with the error content
-            from src.websocket.hub import emit_agent_stream_end
-
-            await emit_agent_stream_end(
-                session_id=ctx.session_id,
-                agent_id=ctx.agent_id,
-                message_id=stream_message_id,
-                full_content=error_message,
-            )
-            # Save to database
-            processing_ctx = ResponseProcessingContext(
-                db=db,
-                ctx=ctx,
-                agent=agent,
-                response_content=error_message,
-                auto_play=auto_play,
-                tool_calls=None,
-                streamed=True,
-                message_id=stream_message_id,
-                tokens_used=0,
-            )
-            await _process_and_emit_response(processing_ctx)
-            return
-
-        if agent.role == AgentRole.CLAUDE_CODE.value:
-            try:
-                await sync_claude_code_mcp_config(db, session, str(user_id))
-            except Exception as e:
-                logger.warning(
-                    "Failed to sync Claude Code MCP config before execution",
-                    agent_id=ctx.agent_id,
-                    user_id=str(user_id),
-                    error=str(e),
-                )
-
-        # Check if CLI is installed
-        try:
-            logger.info(
-                "Checking if CLI is installed",
-                cli_name=cli_name,
-                check_command=cli_config["check_command"],
-                workspace_id=workspace_id,
-            )
-            check_result = await compute_client.exec_command(
-                workspace_id=workspace_id,
-                user_id=user_id,
-                command=cli_config["check_command"],
-                exec_timeout=settings.WORKSPACE_EXEC_TIMEOUT_DEFAULT,
-            )
-            cli_installed = check_result.get("exit_code", 1) == 0
-            logger.info(
-                "CLI check result",
-                cli_name=cli_name,
-                installed=cli_installed,
-                exit_code=check_result.get("exit_code"),
-                stdout=check_result.get("stdout", "")[:200],
-                stderr=check_result.get("stderr", "")[:200],
-            )
-        except Exception as e:
-            logger.exception(
-                "CLI check failed with exception",
-                cli_name=cli_name,
-                workspace_id=workspace_id,
-                error=str(e),
-            )
-            cli_installed = False
-
-        if not cli_installed:
-            # Auto-install the CLI tool
-            logger.info(
-                "Installing %s CLI in workspace",
-                cli_name,
-                agent_id=ctx.agent_id,
-                workspace_id=workspace_id,
-            )
-
-            try:
-                # First verify npm is available
-                npm_check = await compute_client.exec_command(
-                    workspace_id=workspace_id,
-                    user_id=user_id,
-                    command="which npm && npm --version",
-                    exec_timeout=settings.WORKSPACE_EXEC_TIMEOUT_DEFAULT,
-                )
-                logger.info(
-                    "npm check result",
-                    exit_code=npm_check.get("exit_code"),
-                    stdout=npm_check.get("stdout", "")[:200],
-                    stderr=npm_check.get("stderr", "")[:200],
-                )
-
-                if npm_check.get("exit_code", 1) != 0:
-                    error_message = (
-                        "❌ npm is not installed in the workspace.\n\n"
-                        "Please ensure the workspace image has Node.js and npm installed."
-                    )
-                    # Finalize the stream with the error content
-                    from src.websocket.hub import emit_agent_stream_end
-
-                    await emit_agent_stream_end(
-                        session_id=ctx.session_id,
-                        agent_id=ctx.agent_id,
-                        message_id=stream_message_id,
-                        full_content=error_message,
-                    )
-                    # Save to database
-                    processing_ctx = ResponseProcessingContext(
-                        db=db,
-                        ctx=ctx,
-                        agent=agent,
-                        response_content=error_message,
-                        auto_play=auto_play,
-                        tool_calls=None,
-                        streamed=True,
-                        message_id=stream_message_id,
-                        tokens_used=0,
-                    )
-                    await _process_and_emit_response(processing_ctx)
-                    return
-
-                # Now install the CLI to user's home directory (avoids permission issues)
-                # Configure npm to use /home/dev/.npm-global for global packages,
-                # install, and update PATH. Use absolute path /home/dev instead of ~
-                # because exec runs as root
-                install_cmd = (
-                    "mkdir -p /home/dev/.npm-global && "
-                    "npm config set prefix /home/dev/.npm-global && "
-                    f"PATH=/home/dev/.npm-global/bin:$PATH "
-                    f"npm install -g {cli_config['install_package']} && "
-                    # Add to bashrc if not already there for future sessions
-                    "(grep -q 'npm-global' /home/dev/.bashrc 2>/dev/null || "
-                    "echo 'export PATH=/home/dev/.npm-global/bin:$PATH' >> /home/dev/.bashrc)"
-                )
-                logger.info(
-                    "Running npm install command",
-                    command=install_cmd[:150],
-                    workspace_id=workspace_id,
-                )
-
-                install_result = await compute_client.exec_command(
-                    workspace_id=workspace_id,
-                    user_id=user_id,
-                    command=install_cmd,
-                    exec_timeout=settings.WORKSPACE_EXEC_TIMEOUT_INSTALL,
-                )
-
-                logger.info(
-                    "npm install result",
-                    exit_code=install_result.get("exit_code"),
-                    stdout_len=len(install_result.get("stdout", "")),
-                    stderr_len=len(install_result.get("stderr", "")),
-                    stdout_preview=install_result.get("stdout", "")[:500],
-                    stderr_preview=install_result.get("stderr", "")[:500],
-                )
-
-                if install_result.get("exit_code", 1) != 0:
-                    install_error = install_result.get("stderr", "") or install_result.get(
-                        "stdout", "Unknown error"
-                    )
-                    error_message = (
-                        f"❌ Failed to install {cli_name}:\n```\n{install_error[:1000]}\n```\n\n"
-                        "Please try installing manually:\n"
-                        f"```bash\nnpm install -g {cli_config['install_package']}\n```"
-                    )
-                    logger.info(
-                        "CLI installation failed, sending error to chat",
-                        cli_name=cli_name,
-                        error_preview=install_error[:200],
-                    )
-                    # Finalize the stream with the error content
-                    from src.websocket.hub import emit_agent_stream_end
-
-                    await emit_agent_stream_end(
-                        session_id=ctx.session_id,
-                        agent_id=ctx.agent_id,
-                        message_id=stream_message_id,
-                        full_content=error_message,
-                    )
-                    # Save to database
-                    processing_ctx = ResponseProcessingContext(
-                        db=db,
-                        ctx=ctx,
-                        agent=agent,
-                        response_content=error_message,
-                        auto_play=auto_play,
-                        tool_calls=None,
-                        streamed=True,
-                        message_id=stream_message_id,
-                        tokens_used=0,
-                    )
-                    await _process_and_emit_response(processing_ctx)
-                    return
-
-                logger.info(
-                    "%s CLI installed successfully",
-                    cli_name,
-                    agent_id=ctx.agent_id,
-                    workspace_id=workspace_id,
-                )
-            except Exception as e:
-                logger.exception(
-                    "Failed to install %s CLI",
-                    cli_name,
-                    agent_id=ctx.agent_id,
-                    workspace_id=workspace_id,
-                    error=str(e),
-                )
-                error_message = (
-                    f"❌ Failed to install {cli_name}: {type(e).__name__}\n\n"
-                    "Please try installing manually:\n"
-                    f"```bash\nnpm install -g {cli_config['install_package']}\n```"
-                )
-                # Finalize the stream with the error content
-                from src.websocket.hub import emit_agent_stream_end
-
-                await emit_agent_stream_end(
-                    session_id=ctx.session_id,
-                    agent_id=ctx.agent_id,
-                    message_id=stream_message_id,
-                    full_content=error_message,
-                )
-                # Save to database
-                processing_ctx = ResponseProcessingContext(
-                    db=db,
-                    ctx=ctx,
-                    agent=agent,
-                    response_content=error_message,
-                    auto_play=auto_play,
-                    tool_calls=None,
-                    streamed=True,
-                    message_id=stream_message_id,
-                    tokens_used=0,
-                )
-                await _process_and_emit_response(processing_ctx)
-                return
-
-        # Check authentication status
-        try:
-            auth_check = await compute_client.exec_command(
-                workspace_id=workspace_id,
-                user_id=user_id,
-                command=cli_config["credentials_check"],
-                exec_timeout=settings.WORKSPACE_EXEC_TIMEOUT_DEFAULT,
-            )
-            authenticated = "authenticated" in auth_check.get("stdout", "")
-        except Exception as e:
-            logger.debug("CLI authentication check failed", error=str(e))
-            authenticated = False
-
-        if not authenticated:
-            # CLI agents require interactive terminal for OAuth authentication.
-            # Provide clear instructions for users to authenticate.
-
-            # Get the required API key name for this CLI
-            api_key_name = {
-                "claude-code": "ANTHROPIC_API_KEY",
-                "openai-codex": "OPENAI_API_KEY",
-                "gemini-cli": "GOOGLE_API_KEY",
-            }.get(agent.role, "API_KEY")
-
-            auth_message = (
-                f"🔐 **{cli_name} needs authentication**\n\n"
-                f"Choose one of these options:\n\n"
-                f"**Option 1: API Key (Recommended)**\n"
-                f"Set your `{api_key_name}` in the agent's environment variables:\n"
-                f"1. Click the ⚙️ settings icon on this agent\n"
-                f"2. Add `{api_key_name}` with your API key value\n"
-                f"3. Save and try again\n\n"
-                f"**Option 2: OAuth via Terminal**\n"
-                f"1. Open the **Terminal** panel (click terminal icon)\n"
-                f"2. Run: `{cli_config['run_command']}`\n"
-                f"3. Type `/login` and follow the browser prompts\n"
-                f"4. After authenticating, return here and send your message\n"
-            )
-
-            # Emit the auth instructions
-            await emit_agent_token(
-                session_id=ctx.session_id,
-                agent_id=ctx.agent_id,
-                token=auth_message,
-                message_id=stream_message_id,
-            )
-
-            # Finalize the stream
-            from src.websocket.hub import emit_agent_stream_end
-
-            await emit_agent_stream_end(
-                session_id=ctx.session_id,
-                agent_id=ctx.agent_id,
-                message_id=stream_message_id,
-                full_content=auth_message,
-            )
-            # Save to database
-            processing_ctx = ResponseProcessingContext(
-                db=db,
-                ctx=ctx,
-                agent=agent,
-                response_content=auth_message,
-                auto_play=auto_play,
-                tool_calls=None,
-                streamed=True,
-                message_id=stream_message_id,
-                tokens_used=0,
-            )
-            await _process_and_emit_response(processing_ctx)
-            return
-
-        # Import and call the appropriate executor
-        import importlib
-
-        from src.websocket.hub import emit_agent_config_update
-
-        executor_module = importlib.import_module(cli_config["executor_module"])
-
-        # Use streaming executor if available (for real-time thinking/content display)
-        streaming_func_name = cli_config.get("streaming_executor_function")
-        if streaming_func_name and hasattr(executor_module, streaming_func_name):
-            executor_func = getattr(executor_module, streaming_func_name)
-            use_streaming = True
-        else:
-            executor_func = getattr(executor_module, cli_config["executor_function"])
-            use_streaming = False
-
-        # Create callback for config changes from CLI
-        async def handle_config_change(updates: dict[str, Any]) -> None:
-            """Emit config changes to frontend when CLI changes model/mode."""
-            await emit_agent_config_update(
-                session_id=str(ctx.session_id),
-                agent_id=str(ctx.agent_id),
-                updates=updates,
-                source="cli",
-            )
-
-        # Execute the message
-        # Pass images if present (for vision-capable CLI agents)
-        images_param = ctx.images if ctx.images else None
-
-        # Get existing CLI session ID for conversation continuity (Claude Code)
-        cli_session_id = agent.config.get("cli_session_id") if agent.config else None
-
-        logger.info(
-            "CLI session ID retrieval",
-            agent_id=ctx.agent_id,
-            has_config=bool(agent.config),
-            cli_session_id=cli_session_id if cli_session_id else "(none)",
-            config_keys=list(agent.config.keys()) if agent.config else [],
-        )
-
-        # Build common params
-        common_params = {
-            "workspace_id": workspace_id,
-            "user_id": user_id,
-            "message": ctx.user_message,
-            "mode": ctx.agent_mode or "ask",
-            "model": ctx.agent_model,
-            "allowed_tools": ctx.command_allowlist,
-            "denied_tools": None,
-            "max_turns": agent.config.get("max_turns", 50) if agent.config else 50,
-            "thinking_budget": ctx.thinking_config.get("budget_tokens")
-            if ctx.thinking_config
-            else None,
-            "images": images_param,
-            "on_config_change": handle_config_change,
-            "cli_session_id": cli_session_id,  # For conversation continuity
-            # Always pass session_id and agent_id for permission request events
-            "session_id": str(ctx.session_id),
-            "agent_id": str(ctx.agent_id),
-        }
-
-        # Add streaming-specific params
-        if use_streaming:
-            common_params["message_id"] = stream_message_id
-
-        result = await executor_func(**common_params)
-
-        logger.info(
-            "CLI executor returned",
-            cli_name=cli_name,
-            agent_id=ctx.agent_id,
-            result_keys=list(result.keys()) if result else [],
-            content_length=len(result.get("content", "")) if result else 0,
-            content_preview=result.get("content", "")[:200] if result else "(no result)",
-            has_tool_calls=bool(result.get("tool_calls")),
-            exit_code=result.get("exit_code"),
-            success=result.get("success"),
-        )
-
-        # Save CLI session ID for conversation continuity (if returned by executor)
-        returned_session_id = result.get("cli_session_id") if result else None
-        if returned_session_id and returned_session_id != cli_session_id:
-            # Update agent config with the new session ID
-            # Create a new dict to ensure SQLAlchemy detects the change
-            agent_config = dict(agent.config) if agent.config else {}
-            agent_config["cli_session_id"] = returned_session_id
-            agent.config = agent_config
-            # Mark the JSONB field as modified so SQLAlchemy persists it
-            from sqlalchemy.orm import attributes
-
-            attributes.flag_modified(agent, "config")
-            await db.commit()
-            logger.debug(
-                "Saved CLI session ID for conversation continuity",
-                agent_id=ctx.agent_id,
-                cli_session_id=returned_session_id,
-            )
-
-        response_content = result.get("content", "")
-        tool_calls = result.get("tool_calls")
-
-        # Format tool calls for frontend
-        formatted_tool_calls = None
-        if tool_calls:
-            formatted_tool_calls = [
-                {
-                    "id": tc.get("id", f"tc-{i}"),
-                    "name": tc.get("name", "unknown"),
-                    "args": tc.get("args", {}),
-                    "result": tc.get("result"),
-                    "status": tc.get("status", "completed"),
-                }
-                for i, tc in enumerate(tool_calls)
-            ]
-
-        # Finalize the stream with the full content
-        from src.websocket.hub import emit_agent_stream_end
-
-        logger.info(
-            "CLI agent execution completed, emitting stream end",
-            cli_name=cli_name,
-            agent_id=ctx.agent_id,
-            response_length=len(response_content),
-            has_tool_calls=bool(formatted_tool_calls),
-        )
-
-        await emit_agent_stream_end(
-            session_id=ctx.session_id,
-            agent_id=ctx.agent_id,
-            message_id=stream_message_id,
-            full_content=response_content,
-            tool_calls=formatted_tool_calls,
-        )
-
-        # Get tokens used from CLI result for context tracking
-        tokens_used = result.get("tokens_used", 0) if result else 0
-
-        # Process and emit the response
-        processing_ctx = ResponseProcessingContext(
-            db=db,
-            ctx=ctx,
-            agent=agent,
-            response_content=response_content,
-            auto_play=auto_play,
-            tool_calls=formatted_tool_calls,
-            streamed=True,
-            message_id=stream_message_id,
-            tokens_used=tokens_used,
-        )
-        await _process_and_emit_response(processing_ctx)
-
-    except Exception as e:
-        logger.exception(
-            "%s message processing failed",
-            cli_name,
-            agent_id=ctx.agent_id,
-            session_id=ctx.session_id,
-            error=str(e),
-        )
-        try:
-            await db.rollback()
-            agent.status = "error"
-            await db.commit()
-
-            await _notify_agent_status(
-                ctx.session_id,
-                ctx.agent_id,
-                "error",
-                f"{cli_name} processing failed. Please try again.",
-            )
-        except Exception as inner_e:
-            logger.exception(
-                "Failed to update agent error status",
-                agent_id=ctx.agent_id,
-                error=str(inner_e),
-            )
-
-
-async def _process_claude_code_message(
-    ctx: AgentMessageContext,
-    db: AsyncSession,
-    agent: AgentModel,
-) -> None:
-    """Process a message for a Claude Code agent.
-
-    Uses the Claude Code CLI executor to run the message in the workspace container.
-    Handles authentication flow if credentials are not present.
-
-    Args:
-        ctx: The agent message context.
-        db: Database session.
-        agent: The agent model.
-    """
-    from src.compute_client import compute_client
-    from src.routes.claude_code import execute_claude_code_message
-
-    try:
-        # Update agent status to running
-        agent.status = "running"
-        await db.commit()
-
-        # Get voice config for auto-play
-        voice_config = agent.voice_config or {}
-        auto_play = voice_config.get("auto_play", False)
-
-        # Notify frontend that agent is processing
-        await _notify_agent_status(ctx.session_id, ctx.agent_id, "running")
-
-        # Get workspace_id from session
-        session_query = select(SessionModel).where(SessionModel.id == ctx.session_id)
-        session_result = await db.execute(session_query)
-        session = session_result.scalar_one_or_none()
-
-        if not session or not session.workspace_id:
-            logger.error(
-                "Claude Code agent requires a workspace",
-                agent_id=ctx.agent_id,
-                session_id=ctx.session_id,
-            )
-            await _notify_agent_status(
-                ctx.session_id,
-                ctx.agent_id,
-                "error",
-                "No workspace available. Please ensure a workspace is running.",
-            )
-            agent.status = "error"
-            await db.commit()
-            return
-
-        workspace_id = session.workspace_id
-        user_id = ctx.user_id or session.owner_id
-
-        # Generate a message_id for streaming
-        stream_message_id = str(uuid4())
-
-        # Notify frontend that streaming is starting
-        await emit_agent_stream_start(ctx.session_id, ctx.agent_id, stream_message_id)
-
-        # Check if Claude CLI is installed
-        try:
-            check_result = await compute_client.exec_command(
-                workspace_id=workspace_id,
-                user_id=user_id,
-                command="which claude",
-                exec_timeout=settings.WORKSPACE_EXEC_TIMEOUT_DEFAULT,
-            )
-            claude_installed = check_result.get("exit_code", 1) == 0
-        except Exception as e:
-            logger.debug("Claude installation check failed", error=str(e))
-            claude_installed = False
-
-        if not claude_installed:
-            # Claude not installed - emit helpful message
-            install_message = (
-                "Claude Code CLI is not installed in this workspace.\n\n"
-                "To install it, run:\n"
-                "```bash\n"
-                "npm install -g @anthropic-ai/claude-code\n"
-                "```\n\n"
-                "Or use the install button in the agent settings."
-            )
-            processing_ctx = ResponseProcessingContext(
-                db=db,
-                ctx=ctx,
-                agent=agent,
-                response_content=install_message,
-                auto_play=auto_play,
-                tool_calls=None,
-                streamed=True,
-                message_id=stream_message_id,
-                tokens_used=0,
-            )
-            await _process_and_emit_response(processing_ctx)
-            return
-
-        # Check authentication status
-        # Note: Use absolute path /home/dev instead of ~ because exec runs as root
-        try:
-            auth_check = await compute_client.exec_command(
-                workspace_id=workspace_id,
-                user_id=user_id,
-                command="test -f /home/dev/.claude/.credentials.json && echo 'authenticated'",
-                exec_timeout=settings.WORKSPACE_EXEC_TIMEOUT_DEFAULT,
-            )
-            authenticated = "authenticated" in auth_check.get("stdout", "")
-        except Exception as e:
-            logger.debug("CLI authentication check failed", error=str(e))
-            authenticated = False
-
-        if not authenticated:
-            # Need to authenticate - emit auth instructions
-            auth_message = (
-                "Claude Code needs authentication.\n\n"
-                "Please run the following command in a terminal:\n"
-                "```bash\n"
-                "claude\n"
-                "```\n\n"
-                "This will open a browser window to authenticate with your Anthropic account. "
-                "Once authenticated, send your message again."
-            )
-            processing_ctx = ResponseProcessingContext(
-                db=db,
-                ctx=ctx,
-                agent=agent,
-                response_content=auth_message,
-                auto_play=auto_play,
-                tool_calls=None,
-                streamed=True,
-                message_id=stream_message_id,
-                tokens_used=0,
-            )
-            await _process_and_emit_response(processing_ctx)
-            return
-
-        try:
-            await sync_claude_code_mcp_config(db, session, str(user_id))
-        except Exception as e:
-            logger.warning(
-                "Failed to sync Claude Code MCP config before execution",
-                agent_id=ctx.agent_id,
-                user_id=str(user_id),
-                error=str(e),
-            )
-
-        # Execute the message using Claude Code
-        result = await execute_claude_code_message(
-            workspace_id=workspace_id,
-            user_id=user_id,
-            message=ctx.user_message,
-            mode=ctx.agent_mode or "ask",
-            model=ctx.agent_model,  # Should be simple alias like 'sonnet', 'opus', 'haiku'
-            allowed_tools=ctx.command_allowlist,
-            denied_tools=None,
-            max_turns=agent.config.get("max_turns", 50) if agent.config else 50,
-            thinking_budget=ctx.thinking_config.get("budget_tokens")
-            if ctx.thinking_config
-            else None,
-            session_id=ctx.session_id,
-            agent_id=ctx.agent_id,
-        )
-
-        response_content = result.get("content", "")
-        tool_calls = result.get("tool_calls")
-
-        # Format tool calls for frontend
-        formatted_tool_calls = None
-        if tool_calls:
-            formatted_tool_calls = [
-                {
-                    "id": tc.get("id", f"tc-{i}"),
-                    "name": tc.get("name", "unknown"),
-                    "args": tc.get("args", {}),
-                    "result": tc.get("result"),
-                    "status": tc.get("status", "completed"),
-                }
-                for i, tc in enumerate(tool_calls)
-            ]
-
-        # Process and emit the response
-        processing_ctx = ResponseProcessingContext(
-            db=db,
-            ctx=ctx,
-            agent=agent,
-            response_content=response_content,
-            auto_play=auto_play,
-            tool_calls=formatted_tool_calls,
-            streamed=True,
-            message_id=stream_message_id,
-            tokens_used=0,  # Claude Code doesn't report tokens directly
-        )
-        await _process_and_emit_response(processing_ctx)
-
-    except Exception as e:
-        logger.exception(
-            "Claude Code message processing failed",
-            agent_id=ctx.agent_id,
-            session_id=ctx.session_id,
-            error=str(e),
-        )
-        try:
-            await db.rollback()
-            agent.status = "error"
-            await db.commit()
-
-            await _notify_agent_status(
-                ctx.session_id,
-                ctx.agent_id,
-                "error",
-                "Claude Code processing failed. Please try again.",
-            )
-        except Exception as inner_e:
-            logger.exception(
-                "Failed to update agent error status",
-                agent_id=ctx.agent_id,
-                error=str(inner_e),
-            )
-
-
 def _generate_agent_response(agent_role: str, user_message: str) -> str:
     """Generate a simulated agent response based on role.
 
@@ -1793,6 +1053,10 @@ class AgentMessageContext:
     agent_role: str
     agent_model: str
     user_message: str
+    # Conversation session ID for the portable conversation system
+    conversation_session_id: str | None = None
+    # Model's registered provider from database (anthropic, openai, vertex, ollama, etc.)
+    model_provider: str | None = None
     agent_config: dict[str, Any] | None = None
     user_id: str | None = None
     # MCP config will be populated during processing (async DB lookup)
@@ -1810,6 +1074,8 @@ class AgentMessageContext:
     workspace_id: str | None = None
     # Browser context for debugging assistance
     browser_context: dict[str, Any] | None = None
+    # Claude Code session ID for conversation continuity (passed from request)
+    claude_session_id: str | None = None
 
 
 def _build_agent_service_context(
@@ -1821,6 +1087,9 @@ def _build_agent_service_context(
         "role": ctx.agent_role,
         "model": ctx.agent_model,
     }
+    # Pass the model's registered provider from the database
+    if ctx.model_provider:
+        agent_context["model_provider"] = ctx.model_provider
     if ctx.user_id:
         agent_context["user_id"] = ctx.user_id
     if ctx.agent_config and "template_config" in ctx.agent_config:
@@ -1874,7 +1143,7 @@ async def _notify_agent_status(
 
 async def _emit_agent_response(
     ctx: AgentMessageContext,
-    message: MessageModel,
+    message: ConversationMessage,
     response_content: str,
     tts_summary: str | None,
     *,
@@ -1948,14 +1217,36 @@ async def _process_and_emit_response(
     tts_summary = tts_result.summary if tts_result.was_summarized else None
 
     # Use the provided message_id if available (for streaming), otherwise let DB generate one
-    assistant_message = MessageModel(
+    # Messages now belong to conversation sessions, not agents directly
+    if not ctx.conversation_session_id:
+        logger.warning("No conversation session for agent response", agent_id=ctx.agent_id)
+        # Create a conversation session and attach it to the agent
+        conversation = ConversationSession(
+            session_id=ctx.session_id,
+            name="New Session",
+        )
+        db.add(conversation)
+        await db.flush()
+        ctx.conversation_session_id = conversation.id
+        # Attach conversation to agent via the junction table
+        conversation.attached_agents.append(agent)
+
+    assistant_message = ConversationMessage(
         id=processing_ctx.message_id,  # Will be None for non-streaming, triggering auto-generation
-        agent_id=ctx.agent_id,
+        conversation_session_id=ctx.conversation_session_id,
         role="assistant",
         content=response_content,
         tts_summary=tts_summary,
     )
     db.add(assistant_message)
+
+    # Update conversation metadata
+    conv_result = await db.execute(
+        select(ConversationSession).where(ConversationSession.id == ctx.conversation_session_id)
+    )
+    conversation = cast("ConversationSession", conv_result.scalar_one_or_none())
+    conversation.message_count += 1
+    conversation.last_message_at = func.now()
 
     # Update agent status to idle
     agent.status = "idle"
@@ -2066,11 +1357,6 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:
 
             if not agent:
                 logger.warning("Agent not found for message processing", agent_id=ctx.agent_id)
-                return
-
-            # Check if this is a CLI agent - route to specialized handler
-            if agent.role in CLI_AGENT_ROLES:
-                await _process_cli_agent_message(ctx, db, agent)
                 return
 
             agent.status = "running"
@@ -2288,13 +1574,18 @@ async def create_agent(
     # Determine role (custom if using template, otherwise as specified)
     role = "custom" if data.template_id else data.role
 
-    # Determine model: template model > provided model > role default from platform settings
+    # Determine model: template model > provided model > user default > role default from platform
     if template:
         model = template.model
     elif data.model:
         model = data.model
     else:
-        model = await get_default_model_for_role(db, role)
+        # Prefer user's per-role default if accessible; otherwise fall back to platform default
+        user_default_model = await _get_user_model_default_for_role(db, session.owner_id, role)
+        if user_default_model:
+            model = user_default_model
+        else:
+            model = await get_default_model_for_role(db, role)
 
     # Create agent
     agent = AgentModel(
@@ -2332,18 +1623,6 @@ async def create_agent(
         session_id=session_id,
         details={"name": agent.name, "role": agent.role, "model": agent.model, "mode": agent.mode},
     )
-
-    if role == AgentRole.CLAUDE_CODE.value and session.workspace_id:
-        try:
-            await ensure_workspace_provisioned(session, user_id, db)
-            await sync_claude_code_mcp_config(db, session, user_id)
-        except Exception as e:
-            logger.warning(
-                "Failed to sync Claude Code MCP config on agent creation",
-                agent_id=agent.id,
-                user_id=user_id,
-                error=str(e),
-            )
 
     # Look up model display name
     model_display_name = await get_model_display_name(db, agent.model)
@@ -2427,8 +1706,10 @@ async def list_agents(
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
 
+    # Eagerly load conversation_session relationship to get conversation_session_id
     query = (
         select(AgentModel)
+        .options(selectinload(AgentModel.attached_conversation))
         .where(AgentModel.session_id == session_id)
         .order_by(AgentModel.created_at)
     )
@@ -2458,9 +1739,14 @@ async def get_agent(
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
 
-    query = select(AgentModel).where(
-        AgentModel.id == agent_id,
-        AgentModel.session_id == session_id,
+    # Eagerly load conversation_session relationship to get conversation_session_id
+    query = (
+        select(AgentModel)
+        .options(selectinload(AgentModel.attached_conversation))
+        .where(
+            AgentModel.id == agent_id,
+            AgentModel.session_id == session_id,
+        )
     )
     result = await db.execute(query)
     agent = result.scalar_one_or_none()
@@ -2492,10 +1778,14 @@ async def update_agent_mode(
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
 
-    # Get the agent
-    query = select(AgentModel).where(
-        AgentModel.id == agent_id,
-        AgentModel.session_id == session_id,
+    # Get the agent (eager-load conversation_session for _build_agent_response)
+    query = (
+        select(AgentModel)
+        .where(
+            AgentModel.id == agent_id,
+            AgentModel.session_id == session_id,
+        )
+        .options(selectinload(AgentModel.attached_conversation))
     )
     result = await db.execute(query)
     agent = result.scalar_one_or_none()
@@ -2564,10 +1854,14 @@ async def update_agent(
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
 
-    # Get the agent
-    query = select(AgentModel).where(
-        AgentModel.id == agent_id,
-        AgentModel.session_id == session_id,
+    # Get the agent (eager-load conversation_session for _build_agent_response)
+    query = (
+        select(AgentModel)
+        .where(
+            AgentModel.id == agent_id,
+            AgentModel.session_id == session_id,
+        )
+        .options(selectinload(AgentModel.attached_conversation))
     )
     result = await db.execute(query)
     agent = result.scalar_one_or_none()
@@ -2575,11 +1869,47 @@ async def update_agent(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
+    # Track original model to detect changes
+    original_model = agent.model
+
     # Update fields if provided
     if data.name is not None:
         agent.name = data.name
     if data.model is not None:
         agent.model = data.model
+
+    # If the model changed, persist this as the user's per-role default model
+    if data.model is not None and data.model != original_model:
+        user_id = get_current_user_id(request)
+
+        # Load or create UserConfig with minimal initialization
+        config_result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+        config = config_result.scalar_one_or_none()
+
+        if not config:
+            config = UserConfig(
+                user_id=user_id,
+            )
+            db.add(config)
+            await db.flush()
+
+        # Ensure agent_preferences and model_defaults exist as dictionaries
+        if config.agent_preferences is None:
+            config.agent_preferences = {}
+        if not isinstance(config.agent_preferences, dict):
+            config.agent_preferences = {}
+
+        prefs: dict[str, Any] = dict(config.agent_preferences)
+        model_defaults = prefs.get("model_defaults") or {}
+        if not isinstance(model_defaults, dict):
+            model_defaults = {}
+
+        model_defaults[agent.role] = agent.model
+        prefs["model_defaults"] = model_defaults
+        config.agent_preferences = prefs
+
+        # Invalidate cached user config so preferences are reflected immediately
+        await cache_delete(user_config_key(user_id))
 
     await db.commit()
     await db.refresh(agent)
@@ -2711,15 +2041,24 @@ async def delete_agent(
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
 
-    query = select(AgentModel).where(
-        AgentModel.id == agent_id,
-        AgentModel.session_id == session_id,
+    # Load agent with its attached conversation session (if any)
+    query = (
+        select(AgentModel)
+        .options(selectinload(AgentModel.attached_conversation))
+        .where(
+            AgentModel.id == agent_id,
+            AgentModel.session_id == session_id,
+        )
     )
     result = await db.execute(query)
     agent = result.scalar_one_or_none()
 
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+
+    # The junction table has CASCADE delete, so deleting the agent will automatically
+    # remove it from any attached conversations. The conversation itself is preserved.
+    conversation_id = agent.attached_conversation.id if agent.attached_conversation else None
 
     # Capture agent info before deletion for audit log
     agent_name = agent.name
@@ -2738,6 +2077,18 @@ async def delete_agent(
         details={"name": agent_name, "role": agent_role},
     )
 
+    # If there was an attached conversation, emit a detach event so frontends
+    # update their local state and keep the conversation in the pool.
+    if conversation_id:
+        await emit_to_session(
+            session_id,
+            "conversation_detached",
+            {
+                "conversation_id": conversation_id,
+                "previous_agent_id": agent_id,
+            },
+        )
+
     return {"message": "Agent deleted"}
 
 
@@ -2753,9 +2104,15 @@ async def _send_message_impl(
     await update_workspace_activity(session, deps.common.db)
 
     # Validate agent exists
-    agent_query = select(AgentModel).where(
-        AgentModel.id == params.agent_id,
-        AgentModel.session_id == params.session_id,
+    from sqlalchemy.orm import selectinload
+
+    agent_query = (
+        select(AgentModel)
+        .options(selectinload(AgentModel.attached_conversation))
+        .where(
+            AgentModel.id == params.agent_id,
+            AgentModel.session_id == params.session_id,
+        )
     )
     agent_result = await deps.common.db.execute(agent_query)
     agent = agent_result.scalar_one_or_none()
@@ -2784,13 +2141,81 @@ async def _send_message_impl(
             ),
         )
 
-    # Create user message
-    message = MessageModel(
-        agent_id=params.agent_id,
+    # Get or create conversation session for this agent
+    conversation_session_id = None
+    if agent.attached_conversation:
+        conversation_session_id = agent.attached_conversation.id
+    else:
+        # Create a new conversation session and attach it to this agent
+        from src.routes.conversations import derive_session_name
+
+        conversation = ConversationSession(
+            session_id=params.session_id,
+            name=derive_session_name(params.data.content),
+        )
+        deps.common.db.add(conversation)
+        await deps.common.db.flush()
+        # Attach conversation to agent via the junction table
+        conversation.attached_agents.append(agent)
+        conversation_session_id = conversation.id
+
+    # Deduplication: Check if an identical message was recently added to this conversation
+    # This prevents duplicates from double-clicks, race conditions, or retries
+    from datetime import timedelta
+
+    recent_duplicate_check = await deps.common.db.execute(
+        select(ConversationMessage)
+        .where(
+            ConversationMessage.conversation_session_id == conversation_session_id,
+            ConversationMessage.role == "user",
+            ConversationMessage.content == params.data.content,
+            ConversationMessage.created_at >= func.now() - timedelta(seconds=5),
+        )
+        .order_by(ConversationMessage.created_at.desc())
+        .limit(1)
+    )
+    existing_message = recent_duplicate_check.scalar_one_or_none()
+
+    if existing_message:
+        # Message already exists - return the existing one instead of creating duplicate
+        logger.info(
+            "Duplicate message prevented",
+            conversation_session_id=conversation_session_id,
+            message_id=existing_message.id,
+            content_preview=params.data.content[:50],
+        )
+        await deps.common.db.refresh(existing_message)
+        return MessageResponse(
+            id=existing_message.id,
+            agent_id=params.agent_id,
+            role=existing_message.role,
+            content=existing_message.content,
+            tool_calls=existing_message.tool_calls,
+            images=None,
+            created_at=existing_message.created_at,
+        )
+
+    # Create user message in the conversation session
+    message = ConversationMessage(
+        conversation_session_id=conversation_session_id,
         role="user",
         content=params.data.content,
     )
     deps.common.db.add(message)
+
+    # Update conversation metadata
+    conv_result = await deps.common.db.execute(
+        select(ConversationSession).where(ConversationSession.id == conversation_session_id)
+    )
+    conversation = cast("ConversationSession", conv_result.scalar_one_or_none())
+    conversation.message_count += 1
+    conversation.last_message_at = func.now()
+    # Update name from first message if it was "New Session"
+    if conversation.message_count == 1 and conversation.name == "New Session":
+        from src.routes.conversations import derive_session_name
+
+        conversation.name = derive_session_name(params.data.content)
+
     await deps.common.db.commit()
     await deps.common.db.refresh(message)
 
@@ -2831,15 +2256,82 @@ async def _send_message_impl(
             "budget_tokens": params.data.thinking_config.budget_tokens,
         }
 
-    # Load user's LLM API keys if they exist
+    # Load user's LLM API keys (from both static config and OAuth tokens)
     llm_api_keys: dict[str, str] | None = None
     if user_id:
+        # First, get static API keys from user config
         user_config_result = await deps.common.db.execute(
             select(UserConfig).where(UserConfig.user_id == user_id)
         )
         user_config = user_config_result.scalar_one_or_none()
         if user_config and user_config.llm_api_keys:
-            llm_api_keys = user_config.llm_api_keys
+            llm_api_keys = dict(user_config.llm_api_keys)
+
+        # Then, get OAuth tokens and merge them (OAuth tokens take precedence)
+        import time
+
+        oauth_tokens_result = await deps.common.db.execute(
+            select(UserOAuthToken).where(
+                UserOAuthToken.user_id == user_id,
+                UserOAuthToken.status == "connected",
+            )
+        )
+        oauth_tokens = oauth_tokens_result.scalars().all()
+
+        current_time = int(time.time())
+        for token in oauth_tokens:
+            # Skip expired tokens
+            if token.expires_at and token.expires_at <= current_time:
+                logger.debug(
+                    "Skipping expired OAuth token",
+                    provider=token.provider,
+                    expires_at=token.expires_at,
+                    current_time=current_time,
+                )
+                continue
+            # Map provider to API key format
+            if llm_api_keys is None:
+                llm_api_keys = {}
+            llm_api_keys[token.provider] = token.access_token
+            logger.info(
+                "Loaded OAuth token for provider",
+                provider=token.provider,
+                token_prefix=token.access_token[:15] + "..." if token.access_token else None,
+            )
+    else:
+        logger.debug("No user_id available, skipping OAuth token loading")
+
+    # Resolve model provider: check for local provider prefix first, then database
+    model_provider: str | None = None
+    agent_model_for_llm = agent.model  # Model ID to pass to LLM (may strip prefix)
+
+    # Check if model ID has a local provider prefix (e.g., "ollama/qwen2.5-coder:14b")
+    if "/" in agent.model:
+        prefix, local_model_id = agent.model.split("/", 1)
+        if prefix in {"ollama", "lmstudio"}:
+            model_provider = prefix
+            agent_model_for_llm = local_model_id  # Use just the model name for LLM
+            logger.info(
+                "Using local provider from model ID prefix",
+                model=agent.model,
+                provider=model_provider,
+                local_model_id=local_model_id,
+            )
+
+    # If not a local model, look up provider from database
+    if not model_provider:
+        model_result = await deps.common.db.execute(
+            select(LLMModel.provider).where(LLMModel.model_id == agent.model)
+        )
+        model_row = model_result.scalar_one_or_none()
+        if model_row:
+            model_provider = model_row
+            logger.info(
+                "Resolved model provider from database",
+                model=agent.model,
+                provider=model_provider,
+                available_llm_keys=list(llm_api_keys.keys()) if llm_api_keys else [],
+            )
 
     # Schedule background task to process the message and generate agent response
     msg_context = AgentMessageContext(
@@ -2847,8 +2339,9 @@ async def _send_message_impl(
         agent_id=params.agent_id,
         agent_name=agent.name,
         agent_role=agent.role,
-        agent_model=agent.model,
+        agent_model=agent_model_for_llm,  # Use stripped model name for LLM
         user_message=params.data.content,
+        conversation_session_id=conversation_session_id,
         agent_config=agent.config,
         user_id=user_id,
         agent_mode=agent.mode,
@@ -2857,12 +2350,14 @@ async def _send_message_impl(
         thinking_config=thinking_config_data,
         llm_api_keys=llm_api_keys,
         workspace_id=str(session.workspace_id) if session.workspace_id else None,
+        claude_session_id=params.data.claude_session_id,
+        model_provider=model_provider,
     )
     deps.background_tasks.add_task(process_agent_message, msg_context)
 
     return MessageResponse(
         id=message.id,
-        agent_id=message.agent_id,
+        agent_id=params.agent_id,  # Use params since ConversationMessage doesn't have agent_id
         role=message.role,
         content=message.content,
         tool_calls=message.tool_calls,
@@ -2903,24 +2398,39 @@ async def _get_messages_impl(
     # Verify user has access to session
     await verify_session_access(params.session_id, common.request, common.db)
 
-    # Verify agent exists in session
-    agent_query = select(AgentModel).where(
-        AgentModel.id == params.agent_id,
-        AgentModel.session_id == params.session_id,
+    # Verify agent exists and get its conversation session
+    from sqlalchemy.orm import selectinload
+
+    agent_query = (
+        select(AgentModel)
+        .options(selectinload(AgentModel.attached_conversation))
+        .where(
+            AgentModel.id == params.agent_id,
+            AgentModel.session_id == params.session_id,
+        )
     )
     agent_result = await common.db.execute(agent_query)
-    if not agent_result.scalar_one_or_none():
+    agent = agent_result.scalar_one_or_none()
+    if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    # Build base query
-    query = select(MessageModel).where(MessageModel.agent_id == params.agent_id)
+    # If agent has no conversation session, return empty list
+    if not agent.attached_conversation:
+        return []
+
+    conversation_session_id = agent.attached_conversation.id
+
+    # Build base query - messages now come from ConversationMessage
+    query = select(ConversationMessage).where(
+        ConversationMessage.conversation_session_id == conversation_session_id
+    )
 
     # Use cursor-based pagination if cursor provided (more efficient)
     if params.pagination.cursor:
         # First, get the cursor message to find its created_at timestamp
-        cursor_query = select(MessageModel.created_at, MessageModel.id).where(
-            MessageModel.id == params.pagination.cursor,
-            MessageModel.agent_id == params.agent_id,
+        cursor_query = select(ConversationMessage.created_at, ConversationMessage.id).where(
+            ConversationMessage.id == params.pagination.cursor,
+            ConversationMessage.conversation_session_id == conversation_session_id,
         )
         cursor_result = await common.db.execute(cursor_query)
         cursor_row = cursor_result.first()
@@ -2928,15 +2438,19 @@ async def _get_messages_impl(
         if cursor_row:
             cursor_created_at, cursor_id = cursor_row
             # Get messages after the cursor (using composite key for deterministic ordering)
-            # This is efficient as it uses the index on created_at
             query = query.where(
-                (MessageModel.created_at > cursor_created_at)
-                | ((MessageModel.created_at == cursor_created_at) & (MessageModel.id > cursor_id))
+                (ConversationMessage.created_at > cursor_created_at)
+                | (
+                    (ConversationMessage.created_at == cursor_created_at)
+                    & (ConversationMessage.id > cursor_id)
+                )
             )
         # If cursor message not found, ignore and return from start
 
     # Apply ordering and limit
-    query = query.order_by(MessageModel.created_at, MessageModel.id).limit(params.pagination.limit)
+    query = query.order_by(ConversationMessage.created_at, ConversationMessage.id).limit(
+        params.pagination.limit
+    )
 
     # Only apply offset if not using cursor (for backwards compatibility)
     if not params.pagination.cursor:
@@ -2948,7 +2462,7 @@ async def _get_messages_impl(
     return [
         MessageResponse(
             id=m.id,
-            agent_id=m.agent_id,
+            agent_id=params.agent_id,  # Use params since ConversationMessage doesn't have agent_id
             role=m.role,
             content=m.content,
             tool_calls=m.tool_calls,
@@ -3010,10 +2524,16 @@ async def abort_agent(
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
 
-    # Verify agent exists in session
-    agent_query = select(AgentModel).where(
-        AgentModel.id == agent_id,
-        AgentModel.session_id == session_id,
+    # Verify agent exists in session (with conversation session for message creation)
+    from sqlalchemy.orm import selectinload
+
+    agent_query = (
+        select(AgentModel)
+        .options(selectinload(AgentModel.attached_conversation))
+        .where(
+            AgentModel.id == agent_id,
+            AgentModel.session_id == session_id,
+        )
     )
     agent_result = await db.execute(agent_query)
     agent = agent_result.scalar_one_or_none()
@@ -3041,13 +2561,16 @@ async def abort_agent(
     await _notify_agent_status(session_id, agent_id, "idle")
 
     # Add an "Aborted" message if there were tasks cancelled
-    if cancelled_count > 0:
-        aborted_message = MessageModel(
-            agent_id=agent_id,
+    if cancelled_count > 0 and agent.attached_conversation:
+        aborted_message = ConversationMessage(
+            conversation_session_id=agent.attached_conversation.id,
             role="assistant",
             content="Task aborted by user.",
         )
         db.add(aborted_message)
+        # Update conversation metadata
+        agent.attached_conversation.message_count += 1
+        agent.attached_conversation.last_message_at = func.now()
         await db.commit()
         await db.refresh(aborted_message)
 
@@ -3194,10 +2717,16 @@ async def pause_agent(
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
 
-    # Verify agent exists in session
-    agent_query = select(AgentModel).where(
-        AgentModel.id == agent_id,
-        AgentModel.session_id == session_id,
+    # Verify agent exists in session (with conversation session for message creation)
+    from sqlalchemy.orm import selectinload
+
+    agent_query = (
+        select(AgentModel)
+        .options(selectinload(AgentModel.attached_conversation))
+        .where(
+            AgentModel.id == agent_id,
+            AgentModel.session_id == session_id,
+        )
     )
     agent_result = await db.execute(agent_query)
     agent = agent_result.scalar_one_or_none()
@@ -3229,29 +2758,32 @@ async def pause_agent(
     # Notify via WebSocket
     await _notify_agent_status(session_id, agent_id, "paused")
 
-    # Emit system message
-    pause_message = MessageModel(
-        agent_id=agent_id,
-        role="system",
-        content="Agent paused by user. Send a message to resume.",
-    )
-    db.add(pause_message)
-    await db.commit()
-    await db.refresh(pause_message)
+    # Emit system message (only if conversation session exists)
+    if agent.attached_conversation:
+        pause_message = ConversationMessage(
+            conversation_session_id=agent.attached_conversation.id,
+            role="system",
+            content="Agent paused by user. Send a message to resume.",
+        )
+        db.add(pause_message)
+        agent.attached_conversation.message_count += 1
+        agent.attached_conversation.last_message_at = func.now()
+        await db.commit()
+        await db.refresh(pause_message)
 
-    await emit_to_session(
-        session_id,
-        "agent_message",
-        {
-            "id": pause_message.id,
-            "agent_id": agent_id,
-            "agent_name": agent.name,
-            "role": "system",
-            "content": "Agent paused by user. Send a message to resume.",
-            "session_id": session_id,
-            "created_at": pause_message.created_at.isoformat(),
-        },
-    )
+        await emit_to_session(
+            session_id,
+            "agent_message",
+            {
+                "id": pause_message.id,
+                "agent_id": agent_id,
+                "agent_name": agent.name,
+                "role": "system",
+                "content": "Agent paused by user. Send a message to resume.",
+                "session_id": session_id,
+                "created_at": pause_message.created_at.isoformat(),
+            },
+        )
 
     return {
         "success": True,
@@ -3277,10 +2809,16 @@ async def resume_agent(
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
 
-    # Verify agent exists in session
-    agent_query = select(AgentModel).where(
-        AgentModel.id == agent_id,
-        AgentModel.session_id == session_id,
+    # Verify agent exists in session (with conversation session for message creation)
+    from sqlalchemy.orm import selectinload
+
+    agent_query = (
+        select(AgentModel)
+        .options(selectinload(AgentModel.attached_conversation))
+        .where(
+            AgentModel.id == agent_id,
+            AgentModel.session_id == session_id,
+        )
     )
     agent_result = await db.execute(agent_query)
     agent = agent_result.scalar_one_or_none()
@@ -3312,29 +2850,32 @@ async def resume_agent(
     # Notify via WebSocket
     await _notify_agent_status(session_id, agent_id, "running")
 
-    # Emit system message
-    resume_message = MessageModel(
-        agent_id=agent_id,
-        role="system",
-        content="Agent resumed. Continuing from where it left off.",
-    )
-    db.add(resume_message)
-    await db.commit()
-    await db.refresh(resume_message)
+    # Emit system message (only if conversation session exists)
+    if agent.attached_conversation:
+        resume_message = ConversationMessage(
+            conversation_session_id=agent.attached_conversation.id,
+            role="system",
+            content="Agent resumed. Continuing from where it left off.",
+        )
+        db.add(resume_message)
+        agent.attached_conversation.message_count += 1
+        agent.attached_conversation.last_message_at = func.now()
+        await db.commit()
+        await db.refresh(resume_message)
 
-    await emit_to_session(
-        session_id,
-        "agent_message",
-        {
-            "id": resume_message.id,
-            "agent_id": agent_id,
-            "agent_name": agent.name,
-            "role": "system",
-            "content": "Agent resumed. Continuing from where it left off.",
-            "session_id": session_id,
-            "created_at": resume_message.created_at.isoformat(),
-        },
-    )
+        await emit_to_session(
+            session_id,
+            "agent_message",
+            {
+                "id": resume_message.id,
+                "agent_id": agent_id,
+                "agent_name": agent.name,
+                "role": "system",
+                "content": "Agent resumed. Continuing from where it left off.",
+                "session_id": session_id,
+                "created_at": resume_message.created_at.isoformat(),
+            },
+        )
 
     return {
         "success": True,
@@ -3448,10 +2989,16 @@ async def delete_message(
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
 
-    # Verify agent exists in session
-    agent_query = select(AgentModel).where(
-        AgentModel.id == agent_id,
-        AgentModel.session_id == session_id,
+    # Verify agent exists in session and get its conversation session
+    from sqlalchemy.orm import selectinload
+
+    agent_query = (
+        select(AgentModel)
+        .options(selectinload(AgentModel.attached_conversation))
+        .where(
+            AgentModel.id == agent_id,
+            AgentModel.session_id == session_id,
+        )
     )
     agent_result = await db.execute(agent_query)
     agent = agent_result.scalar_one_or_none()
@@ -3459,10 +3006,13 @@ async def delete_message(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    # Get the message
-    message_query = select(MessageModel).where(
-        MessageModel.id == message_id,
-        MessageModel.agent_id == agent_id,
+    if not agent.attached_conversation:
+        raise HTTPException(status_code=404, detail="Agent has no conversation session")
+
+    # Get the message from the conversation session
+    message_query = select(ConversationMessage).where(
+        ConversationMessage.id == message_id,
+        ConversationMessage.conversation_session_id == agent.attached_conversation.id,
     )
     message_result = await db.execute(message_query)
     message = message_result.scalar_one_or_none()
@@ -3470,8 +3020,11 @@ async def delete_message(
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
 
-    # Delete the message
+    # Delete the message and update conversation metadata
     await db.delete(message)
+    agent.attached_conversation.message_count = max(
+        0, agent.attached_conversation.message_count - 1
+    )
     await db.commit()
 
     # Notify via WebSocket

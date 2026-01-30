@@ -1,0 +1,94 @@
+name: Build Workspace Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (defaults to git commit hash)'
+        required: false
+        type: string
+      push:
+        description: 'Push images to registry'
+        required: true
+        type: boolean
+        default: true
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}
+
+jobs:
+  build-workspace-images:
+    name: Build Multi-Arch Workspace Images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        if: ${{ inputs.push }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            echo "version=$INPUT_VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "version=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and push workspace images
+        uses: docker/build-push-action@v5
+        with:
+          context: ./docker/workspace
+          platforms: linux/arm64,linux/amd64
+          push: ${{ inputs.push }}
+          tags: |
+            ${{ env.REGISTRY }}/workspace:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/workspace:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.title=Podex Workspace
+            org.opencontainers.image.description=Podex workspace container for cloud development environments
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PUSH_ENABLED: ${{ inputs.push }}
+          REGISTRY_URL: ${{ env.REGISTRY }}
+        run: |
+          echo "## Workspace Images Built" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** \`$VERSION\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Platforms:** linux/arm64, linux/amd64" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "$PUSH_ENABLED" = "true" ]; then
+            echo "### Pushed Images" >> $GITHUB_STEP_SUMMARY
+            echo "- \`$REGISTRY_URL/workspace:$VERSION\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`$REGISTRY_URL/workspace:latest\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Pull Commands" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+            echo "docker pull $REGISTRY_URL/workspace:latest" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Push:** Disabled (dry run)" >> $GITHUB_STEP_SUMMARY
+          fi

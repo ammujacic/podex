@@ -2,24 +2,48 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
+  Activity,
+  BarChart3,
   Bot,
+  Box,
+  Cable,
   FileCode,
   FolderTree,
   GitBranch,
   Github,
-  Terminal,
   MoreVertical,
-  X,
   PanelLeftClose,
   PanelRightClose,
   Plug,
-  Box,
   Search,
-  AlertTriangle,
-  BarChart3,
+  Terminal,
+  X,
   Zap,
-  Activity,
 } from 'lucide-react';
+
+// Custom OpenClaw icon component using official lobster logo, styled as a monochrome icon
+function OpenClawIcon({ className }: { className?: string }) {
+  return (
+    // Use the SVG as a mask so the icon takes on the current text color,
+    // matching the single-color Lucide style used elsewhere in the sidebar.
+    <span
+      aria-hidden="true"
+      className={cn('inline-block bg-current', className)}
+      style={{
+        WebkitMaskImage:
+          'url(https://mintcdn.com/clawdhub/4rYvG-uuZrMK_URE/assets/pixel-lobster.svg?fit=max&auto=format&n=4rYvG-uuZrMK_URE&q=85&s=da2032e9eac3b5d9bfe7eb96ca6a8a26)',
+        maskImage:
+          'url(https://mintcdn.com/clawdhub/4rYvG-uuZrMK_URE/assets/pixel-lobster.svg?fit=max&auto=format&n=4rYvG-uuZrMK_URE&q=85&s=da2032e9eac3b5d9bfe7eb96ca6a8a26)',
+        WebkitMaskSize: 'contain',
+        maskSize: 'contain',
+        WebkitMaskRepeat: 'no-repeat',
+        maskRepeat: 'no-repeat',
+        WebkitMaskPosition: 'center',
+        maskPosition: 'center',
+      }}
+    />
+  );
+}
 
 // Custom Sentry icon component to match lucide-react API
 function SentryIcon({ className }: { className?: string }) {
@@ -49,15 +73,20 @@ import { GitHubWidget } from './GitHubWidget';
 import { MCPPanel } from './MCPPanel';
 import { ExtensionsPanel } from './ExtensionsPanel';
 import { SearchPanel } from './SearchPanel';
-import { DiagnosticsSidebarPanel } from './DiagnosticsSidebarPanel';
 import { UsageSidebarPanel } from './UsageSidebarPanel';
 import { SentryPanel } from './SentryPanel';
 import { SkillsPanel } from './SkillsPanel';
 import ProjectHealth from './ProjectHealth';
+import { TunnelWidget } from './TunnelWidget';
+import { OpenClawWidget } from './OpenClawWidget';
 
 interface SidebarContainerProps {
   side: SidebarSide;
   sessionId: string;
+  /** If set, this is a local pod workspace */
+  localPodId?: string | null;
+  /** Mount path for local pods */
+  mountPath?: string | null;
 }
 
 const panelConfig: Record<
@@ -72,15 +101,16 @@ const panelConfig: Record<
   mcp: { icon: Plug, label: 'Integrations (MCP)' },
   extensions: { icon: Box, label: 'Extensions' },
   search: { icon: Search, label: 'Search' },
-  problems: { icon: AlertTriangle, label: 'Problems' },
   usage: { icon: BarChart3, label: 'Usage' },
   sentry: { icon: SentryIcon, label: 'Sentry MCP' },
   skills: { icon: Zap, label: 'Skills' },
   health: { icon: Activity, label: 'Health' },
+  tunnels: { icon: Cable, label: 'Tunnels' },
+  openclaw: { icon: OpenClawIcon, label: 'OpenClaw' },
 };
 
 // Left sidebar: traditional coding tools
-const leftPanelIds: PanelId[] = ['files', 'search', 'git', 'github', 'problems', 'health'];
+const leftPanelIds: PanelId[] = ['files', 'search', 'git', 'github', 'health', 'tunnels'];
 
 // Right sidebar: AI-related and utility panels
 const rightPanelIds: PanelId[] = [
@@ -90,11 +120,12 @@ const rightPanelIds: PanelId[] = [
   'sentry',
   'extensions',
   'usage',
+  'openclaw',
   'preview',
 ];
 
 // Panels that show badge counts
-const badgePanelIds: PanelId[] = ['agents', 'mcp', 'problems', 'sentry'];
+const badgePanelIds: PanelId[] = ['agents', 'mcp', 'sentry'];
 
 function SidebarBadge({ count }: { count: number | undefined }) {
   if (!count || count <= 0) return null;
@@ -160,17 +191,29 @@ function PanelHeader({ panelId }: PanelHeaderProps) {
 interface SidebarPanelProps {
   panelId: PanelId;
   sessionId: string;
+  /** If set, this is a local pod workspace */
+  localPodId?: string | null;
+  /** Mount path for local pods */
+  mountPath?: string | null;
+  /** Workspace id for session (if any) */
+  workspaceId: string | null;
 }
 
-function SidebarPanel({ panelId, sessionId }: SidebarPanelProps) {
+function SidebarPanel({
+  panelId,
+  sessionId,
+  localPodId,
+  mountPath,
+  workspaceId,
+}: SidebarPanelProps) {
   const renderContent = () => {
     switch (panelId) {
       case 'files':
-        return <FilesPanel sessionId={sessionId} />;
+        return <FilesPanel sessionId={sessionId} localPodId={localPodId} workingDir={mountPath} />;
       case 'agents':
         return <AgentsPanel sessionId={sessionId} />;
       case 'git':
-        return <GitPanel sessionId={sessionId} />;
+        return <GitPanel sessionId={sessionId} localPodId={localPodId} mountPath={mountPath} />;
       case 'github':
         return <GitHubWidget sessionId={sessionId} />;
       case 'mcp':
@@ -179,11 +222,13 @@ function SidebarPanel({ panelId, sessionId }: SidebarPanelProps) {
         return <ExtensionsPanel sessionId={sessionId} />;
       case 'search':
         return <SearchPanel sessionId={sessionId} />;
-      case 'problems':
-        return <DiagnosticsSidebarPanel sessionId={sessionId} />;
       case 'usage':
         // Usage panel receives isVisible=true since it's only rendered when in the active panels list
         return <UsageSidebarPanel sessionId={sessionId} isVisible={true} />;
+      case 'tunnels':
+        return <TunnelWidget workspaceId={workspaceId} />;
+      case 'openclaw':
+        return <OpenClawWidget workspaceId={workspaceId} localPodId={localPodId ?? null} />;
       case 'preview':
         // Preview is now rendered as a grid card, not a sidebar panel
         // This case should not be reached since handleIconClick returns early for preview
@@ -343,7 +388,12 @@ function HorizontalResizeHandle({ side }: HorizontalResizeHandleProps) {
   );
 }
 
-export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
+export function SidebarContainer({
+  side,
+  sessionId,
+  localPodId,
+  mountPath,
+}: SidebarContainerProps) {
   const { sidebarLayout, toggleSidebar, addPanel, removePanel, toggleTerminal, terminalVisible } =
     useUIStore();
   const { sessions, createPreviewGridCard, removePreviewGridCard } = useSessionStore();
@@ -353,6 +403,7 @@ export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
 
   // Check if preview grid card exists for this session
   const previewGridCardId = sessions[sessionId]?.previewGridCardId;
+  const workspaceId = sessions[sessionId]?.workspaceId ?? null;
 
   const handleIconClick = (panelId: PanelId) => {
     // Special handling for preview panel - creates/removes preview grid card instead of sidebar panel
@@ -552,7 +603,13 @@ export function SidebarContainer({ side, sessionId }: SidebarContainerProps) {
             {config.panels.map((panel, index) => (
               <div key={panel.panelId} className="contents">
                 <div style={{ height: `${panel.height}%` }} className="overflow-hidden min-h-0">
-                  <SidebarPanel panelId={panel.panelId} sessionId={sessionId} />
+                  <SidebarPanel
+                    panelId={panel.panelId}
+                    sessionId={sessionId}
+                    localPodId={localPodId}
+                    mountPath={mountPath}
+                    workspaceId={workspaceId}
+                  />
                 </div>
                 {index < config.panels.length - 1 && (
                   <PanelResizeHandle side={side} panelIndex={index} />

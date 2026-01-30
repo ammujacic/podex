@@ -7,6 +7,7 @@ import {
   mockSession,
   mockUserMessage,
   mockAssistantMessage,
+  mockEmptyConversationSession,
 } from '@/__tests__/fixtures/api-responses';
 
 // Mock the streaming store
@@ -381,109 +382,133 @@ describe('sessionStore', () => {
   });
 
   // ========================================================================
-  // Message Actions
+  // Conversation Session Actions
   // ========================================================================
 
-  describe('Message Management', () => {
-    describe('addAgentMessage', () => {
+  describe('Conversation Session Management', () => {
+    describe('createConversationSession', () => {
+      it('creates a new conversation session', () => {
+        const { result } = renderHook(() => useSessionStore());
+
+        act(() => {
+          result.current.createSession(mockSession);
+          result.current.createConversationSession(mockSession.id, { name: 'New Conversation' });
+        });
+
+        const session = result.current.sessions[mockSession.id];
+        expect(session.conversationSessions).toHaveLength(1);
+        expect(session.conversationSessions[0].name).toBe('New Conversation');
+      });
+
+      it('derives name from first message if provided', () => {
+        const { result } = renderHook(() => useSessionStore());
+
+        act(() => {
+          result.current.createSession(mockSession);
+          result.current.createConversationSession(mockSession.id, {
+            firstMessage: 'Help me write a React component',
+          });
+        });
+
+        const session = result.current.sessions[mockSession.id];
+        expect(session.conversationSessions[0].name).toContain('Help me write');
+      });
+
+      it('creates conversation with empty messages array', () => {
+        const { result } = renderHook(() => useSessionStore());
+
+        act(() => {
+          result.current.createSession(mockSession);
+          result.current.createConversationSession(mockSession.id);
+        });
+
+        const session = result.current.sessions[mockSession.id];
+        expect(session.conversationSessions[0].messages).toEqual([]);
+        expect(session.conversationSessions[0].messageCount).toBe(0);
+      });
+    });
+
+    describe('attachConversationToAgent', () => {
+      it('attaches conversation to agent', () => {
+        const { result } = renderHook(() => useSessionStore());
+
+        act(() => {
+          result.current.createSession(mockSession);
+          result.current.addAgent(mockSession.id, mockAgent);
+          const conv = result.current.createConversationSession(mockSession.id);
+          result.current.attachConversationToAgent(mockSession.id, conv.id, mockAgent.id);
+        });
+
+        const session = result.current.sessions[mockSession.id];
+        const agent = session.agents.find((a) => a.id === mockAgent.id);
+        expect(agent?.conversationSessionId).toBe(session.conversationSessions[0].id);
+      });
+    });
+
+    describe('addConversationMessage', () => {
+      let conversationId: string;
+
       beforeEach(() => {
         const { result } = renderHook(() => useSessionStore());
         act(() => {
           result.current.createSession(mockSession);
           result.current.addAgent(mockSession.id, mockAgent);
+          const conv = result.current.createConversationSession(mockSession.id);
+          conversationId = conv.id;
+          result.current.attachConversationToAgent(mockSession.id, conv.id, mockAgent.id);
         });
       });
 
-      it('adds message to agent', () => {
+      it('adds message to conversation', () => {
         const { result } = renderHook(() => useSessionStore());
-        const message: AgentMessage = {
-          ...mockUserMessage,
-          agentId: mockAgent.id,
-        };
 
         act(() => {
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, message);
+          result.current.addConversationMessage(mockSession.id, conversationId, mockUserMessage);
         });
 
-        const agent = result.current.sessions[mockSession.id].agents.find(
-          (a) => a.id === mockAgent.id
-        );
-        expect(agent?.messages).toHaveLength(1);
-        expect(agent?.messages[0]).toEqual(message);
+        const session = result.current.sessions[mockSession.id];
+        const conv = session.conversationSessions.find((c) => c.id === conversationId);
+        expect(conv?.messages).toHaveLength(1);
+        expect(conv?.messages[0]).toEqual(mockUserMessage);
       });
 
       it('prevents duplicate messages by ID', () => {
         const { result } = renderHook(() => useSessionStore());
-        const message: AgentMessage = {
-          ...mockUserMessage,
-          agentId: mockAgent.id,
-        };
 
         act(() => {
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, message);
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, message);
+          result.current.addConversationMessage(mockSession.id, conversationId, mockUserMessage);
+          result.current.addConversationMessage(mockSession.id, conversationId, mockUserMessage);
         });
 
-        const agent = result.current.sessions[mockSession.id].agents.find(
-          (a) => a.id === mockAgent.id
-        );
-        expect(agent?.messages).toHaveLength(1);
+        const session = result.current.sessions[mockSession.id];
+        const conv = session.conversationSessions.find((c) => c.id === conversationId);
+        expect(conv?.messages).toHaveLength(1);
       });
 
       it('replaces temp message with real message', () => {
         const { result } = renderHook(() => useSessionStore());
         const tempMessage: AgentMessage = {
           id: 'temp-123',
-          agentId: mockAgent.id,
           role: 'user',
           content: 'Hello',
-          timestamp: Date.now(),
+          timestamp: new Date(),
         };
-        const realMessage: AgentMessage = {
-          id: 'real-456',
-          agentId: mockAgent.id,
-          role: 'user',
-          content: 'Hello',
-          timestamp: Date.now(),
-        };
-
-        act(() => {
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, tempMessage);
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, realMessage);
-        });
-
-        const agent = result.current.sessions[mockSession.id].agents.find(
-          (a) => a.id === mockAgent.id
-        );
-        expect(agent?.messages).toHaveLength(1);
-        expect(agent?.messages[0].id).toBe(realMessage.id);
-      });
-
-      it('does not add real message if temp message already exists', () => {
-        const { result } = renderHook(() => useSessionStore());
         const realMessage: AgentMessage = {
           id: 'real-456',
           role: 'user',
           content: 'Hello',
           timestamp: new Date(),
         };
-        const tempMessage: AgentMessage = {
-          id: 'temp-123',
-          role: 'user',
-          content: 'Hello',
-          timestamp: new Date(Date.now() + 100),
-        };
 
         act(() => {
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, realMessage);
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, tempMessage);
+          result.current.addConversationMessage(mockSession.id, conversationId, tempMessage);
+          result.current.addConversationMessage(mockSession.id, conversationId, realMessage);
         });
 
-        const agent = result.current.sessions[mockSession.id].agents.find(
-          (a) => a.id === mockAgent.id
-        );
-        expect(agent?.messages).toHaveLength(1);
-        expect(agent?.messages[0].id).toBe(realMessage.id);
+        const session = result.current.sessions[mockSession.id];
+        const conv = session.conversationSessions.find((c) => c.id === conversationId);
+        expect(conv?.messages).toHaveLength(1);
+        expect(conv?.messages[0].id).toBe(realMessage.id);
       });
 
       it('deduplicates assistant messages within time window', () => {
@@ -502,14 +527,13 @@ describe('sessionStore', () => {
         };
 
         act(() => {
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, message1);
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, message2);
+          result.current.addConversationMessage(mockSession.id, conversationId, message1);
+          result.current.addConversationMessage(mockSession.id, conversationId, message2);
         });
 
-        const agent = result.current.sessions[mockSession.id].agents.find(
-          (a) => a.id === mockAgent.id
-        );
-        expect(agent?.messages).toHaveLength(1);
+        const session = result.current.sessions[mockSession.id];
+        const conv = session.conversationSessions.find((c) => c.id === conversationId);
+        expect(conv?.messages).toHaveLength(1);
       });
 
       it('allows assistant messages with same content outside time window', () => {
@@ -528,24 +552,23 @@ describe('sessionStore', () => {
         };
 
         act(() => {
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, message1);
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, message2);
+          result.current.addConversationMessage(mockSession.id, conversationId, message1);
+          result.current.addConversationMessage(mockSession.id, conversationId, message2);
         });
 
-        const agent = result.current.sessions[mockSession.id].agents.find(
-          (a) => a.id === mockAgent.id
-        );
-        expect(agent?.messages).toHaveLength(2);
+        const session = result.current.sessions[mockSession.id];
+        const conv = session.conversationSessions.find((c) => c.id === conversationId);
+        expect(conv?.messages).toHaveLength(2);
       });
 
-      it('enforces message limit per agent', () => {
+      it('enforces message limit per conversation', () => {
         const { result } = renderHook(() => useSessionStore());
-        const MAX_MESSAGES = 100; // From sessionTypes MAX_MESSAGES_PER_AGENT
+        const MAX_MESSAGES = 100; // From sessionTypes MAX_MESSAGES_PER_CONVERSATION
 
         act(() => {
           // Add more than MAX_MESSAGES
           for (let i = 0; i < MAX_MESSAGES + 10; i++) {
-            result.current.addAgentMessage(mockSession.id, mockAgent.id, {
+            result.current.addConversationMessage(mockSession.id, conversationId, {
               id: `msg-${i}`,
               role: 'user',
               content: `Message ${i}`,
@@ -554,19 +577,18 @@ describe('sessionStore', () => {
           }
         });
 
-        const agent = result.current.sessions[mockSession.id].agents.find(
-          (a) => a.id === mockAgent.id
-        );
-        expect(agent?.messages.length).toBeLessThanOrEqual(MAX_MESSAGES);
+        const session = result.current.sessions[mockSession.id];
+        const conv = session.conversationSessions.find((c) => c.id === conversationId);
+        expect(conv?.messages.length).toBeLessThanOrEqual(MAX_MESSAGES);
       });
 
       it('keeps most recent messages when enforcing limit', () => {
         const { result } = renderHook(() => useSessionStore());
-        const MAX_MESSAGES = 100; // From sessionTypes MAX_MESSAGES_PER_AGENT
+        const MAX_MESSAGES = 100; // From sessionTypes MAX_MESSAGES_PER_CONVERSATION
 
         act(() => {
           for (let i = 0; i < MAX_MESSAGES + 10; i++) {
-            result.current.addAgentMessage(mockSession.id, mockAgent.id, {
+            result.current.addConversationMessage(mockSession.id, conversationId, {
               id: `msg-${i}`,
               role: 'user',
               content: `Message ${i}`,
@@ -575,14 +597,13 @@ describe('sessionStore', () => {
           }
         });
 
-        const agent = result.current.sessions[mockSession.id].agents.find(
-          (a) => a.id === mockAgent.id
-        );
-        // Should have the last MAX_MESSAGES messages (1000)
-        // We added 1010 messages, so we keep messages 10-1009
-        expect(agent?.messages.length).toBe(MAX_MESSAGES);
-        expect(agent?.messages[0]?.content).toBe('Message 10'); // First kept message
-        expect(agent?.messages[agent.messages.length - 1]?.content).toBe(
+        const session = result.current.sessions[mockSession.id];
+        const conv = session.conversationSessions.find((c) => c.id === conversationId);
+        // Should have the last MAX_MESSAGES messages (100)
+        // We added 110 messages, so we keep messages 10-109
+        expect(conv?.messages.length).toBe(MAX_MESSAGES);
+        expect(conv?.messages[0]?.content).toBe('Message 10'); // First kept message
+        expect(conv?.messages[conv.messages.length - 1]?.content).toBe(
           `Message ${MAX_MESSAGES + 9}`
         );
       });
@@ -592,42 +613,55 @@ describe('sessionStore', () => {
 
         expect(() => {
           act(() => {
-            result.current.addAgentMessage('non-existent', mockAgent.id, mockUserMessage);
+            result.current.addConversationMessage('non-existent', conversationId, mockUserMessage);
           });
         }).not.toThrow();
       });
 
-      it('does not affect other agents in the session', () => {
+      it('does not affect other conversations in the session', () => {
         const { result } = renderHook(() => useSessionStore());
-        const agent2: Agent = { ...mockAgent, id: 'agent-2', messages: [] };
+        let conv2Id: string;
 
         act(() => {
-          result.current.addAgent(mockSession.id, agent2);
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, mockUserMessage);
+          const conv2 = result.current.createConversationSession(mockSession.id);
+          conv2Id = conv2.id;
+          result.current.addConversationMessage(mockSession.id, conversationId, mockUserMessage);
         });
 
-        const unchangedAgent = result.current.sessions[mockSession.id].agents.find(
-          (a) => a.id === agent2.id
-        );
-        expect(unchangedAgent?.messages).toHaveLength(0);
+        const session = result.current.sessions[mockSession.id];
+        const unchangedConv = session.conversationSessions.find((c) => c.id === conv2Id!);
+        expect(unchangedConv?.messages).toHaveLength(0);
       });
     });
 
-    describe('deleteAgentMessage', () => {
-      it('removes message from agent', () => {
-        const { result } = renderHook(() => useSessionStore());
+    describe('deleteConversationMessage', () => {
+      let conversationId: string;
 
+      beforeEach(() => {
+        const { result } = renderHook(() => useSessionStore());
         act(() => {
           result.current.createSession(mockSession);
           result.current.addAgent(mockSession.id, mockAgent);
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, mockUserMessage);
-          result.current.deleteAgentMessage(mockSession.id, mockAgent.id, mockUserMessage.id);
+          const conv = result.current.createConversationSession(mockSession.id);
+          conversationId = conv.id;
+        });
+      });
+
+      it('removes message from conversation', () => {
+        const { result } = renderHook(() => useSessionStore());
+
+        act(() => {
+          result.current.addConversationMessage(mockSession.id, conversationId, mockUserMessage);
+          result.current.deleteConversationMessage(
+            mockSession.id,
+            conversationId,
+            mockUserMessage.id
+          );
         });
 
-        const agent = result.current.sessions[mockSession.id].agents.find(
-          (a) => a.id === mockAgent.id
-        );
-        expect(agent?.messages).toHaveLength(0);
+        const session = result.current.sessions[mockSession.id];
+        const conv = session.conversationSessions.find((c) => c.id === conversationId);
+        expect(conv?.messages).toHaveLength(0);
       });
 
       it('only removes specified message', () => {
@@ -638,56 +672,69 @@ describe('sessionStore', () => {
         };
 
         act(() => {
-          result.current.createSession(mockSession);
-          result.current.addAgent(mockSession.id, mockAgent);
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, mockUserMessage);
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, message2);
-          result.current.deleteAgentMessage(mockSession.id, mockAgent.id, mockUserMessage.id);
+          result.current.addConversationMessage(mockSession.id, conversationId, mockUserMessage);
+          result.current.addConversationMessage(mockSession.id, conversationId, message2);
+          result.current.deleteConversationMessage(
+            mockSession.id,
+            conversationId,
+            mockUserMessage.id
+          );
         });
 
-        const agent = result.current.sessions[mockSession.id].agents.find(
-          (a) => a.id === mockAgent.id
-        );
-        expect(agent?.messages).toHaveLength(1);
-        expect(agent?.messages[0].id).toBe(message2.id);
+        const session = result.current.sessions[mockSession.id];
+        const conv = session.conversationSessions.find((c) => c.id === conversationId);
+        expect(conv?.messages).toHaveLength(1);
+        expect(conv?.messages[0].id).toBe(message2.id);
       });
 
       it('handles deleting non-existent message gracefully', () => {
         const { result } = renderHook(() => useSessionStore());
 
-        act(() => {
-          result.current.createSession(mockSession);
-          result.current.addAgent(mockSession.id, mockAgent);
-        });
-
         expect(() => {
           act(() => {
-            result.current.deleteAgentMessage(mockSession.id, mockAgent.id, 'non-existent-msg');
+            result.current.deleteConversationMessage(
+              mockSession.id,
+              conversationId,
+              'non-existent-msg'
+            );
           });
         }).not.toThrow();
       });
     });
 
-    describe('updateMessageId', () => {
+    describe('updateConversationMessageId', () => {
+      let conversationId: string;
+
+      beforeEach(() => {
+        const { result } = renderHook(() => useSessionStore());
+        act(() => {
+          result.current.createSession(mockSession);
+          result.current.addAgent(mockSession.id, mockAgent);
+          const conv = result.current.createConversationSession(mockSession.id);
+          conversationId = conv.id;
+        });
+      });
+
       it('updates message ID', () => {
         const { result } = renderHook(() => useSessionStore());
         const tempMessage: AgentMessage = {
           ...mockUserMessage,
           id: 'temp-123',
-          agentId: mockAgent.id,
         };
 
         act(() => {
-          result.current.createSession(mockSession);
-          result.current.addAgent(mockSession.id, mockAgent);
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, tempMessage);
-          result.current.updateMessageId(mockSession.id, mockAgent.id, 'temp-123', 'real-456');
+          result.current.addConversationMessage(mockSession.id, conversationId, tempMessage);
+          result.current.updateConversationMessageId(
+            mockSession.id,
+            conversationId,
+            'temp-123',
+            'real-456'
+          );
         });
 
-        const agent = result.current.sessions[mockSession.id].agents.find(
-          (a) => a.id === mockAgent.id
-        );
-        expect(agent?.messages[0].id).toBe('real-456');
+        const session = result.current.sessions[mockSession.id];
+        const conv = session.conversationSessions.find((c) => c.id === conversationId);
+        expect(conv?.messages[0].id).toBe('real-456');
       });
 
       it('preserves message content and properties', () => {
@@ -700,17 +747,19 @@ describe('sessionStore', () => {
         };
 
         act(() => {
-          result.current.createSession(mockSession);
-          result.current.addAgent(mockSession.id, mockAgent);
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, tempMessage);
-          result.current.updateMessageId(mockSession.id, mockAgent.id, 'temp-123', 'real-456');
+          result.current.addConversationMessage(mockSession.id, conversationId, tempMessage);
+          result.current.updateConversationMessageId(
+            mockSession.id,
+            conversationId,
+            'temp-123',
+            'real-456'
+          );
         });
 
-        const agent = result.current.sessions[mockSession.id].agents.find(
-          (a) => a.id === mockAgent.id
-        );
-        expect(agent?.messages[0].content).toBe('Test message');
-        expect(agent?.messages[0].role).toBe('user');
+        const session = result.current.sessions[mockSession.id];
+        const conv = session.conversationSessions.find((c) => c.id === conversationId);
+        expect(conv?.messages[0].content).toBe('Test message');
+        expect(conv?.messages[0].role).toBe('user');
       });
 
       it('only updates specified message', () => {
@@ -719,18 +768,54 @@ describe('sessionStore', () => {
         const msg2: AgentMessage = { ...mockAssistantMessage, id: 'msg-2' };
 
         act(() => {
-          result.current.createSession(mockSession);
-          result.current.addAgent(mockSession.id, mockAgent);
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, msg1);
-          result.current.addAgentMessage(mockSession.id, mockAgent.id, msg2);
-          result.current.updateMessageId(mockSession.id, mockAgent.id, 'msg-1', 'updated-1');
+          result.current.addConversationMessage(mockSession.id, conversationId, msg1);
+          result.current.addConversationMessage(mockSession.id, conversationId, msg2);
+          result.current.updateConversationMessageId(
+            mockSession.id,
+            conversationId,
+            'msg-1',
+            'updated-1'
+          );
         });
 
-        const agent = result.current.sessions[mockSession.id].agents.find(
-          (a) => a.id === mockAgent.id
-        );
-        expect(agent?.messages[0].id).toBe('updated-1');
-        expect(agent?.messages[1].id).toBe('msg-2');
+        const session = result.current.sessions[mockSession.id];
+        const conv = session.conversationSessions.find((c) => c.id === conversationId);
+        expect(conv?.messages[0].id).toBe('updated-1');
+        expect(conv?.messages[1].id).toBe('msg-2');
+      });
+    });
+
+    describe('getConversationForAgent', () => {
+      it('returns null when agent has no conversation attached', () => {
+        const { result } = renderHook(() => useSessionStore());
+
+        act(() => {
+          result.current.createSession(mockSession);
+          result.current.addAgent(mockSession.id, mockAgent);
+        });
+
+        const conv = result.current.getConversationForAgent(mockSession.id, mockAgent.id);
+        expect(conv).toBeNull();
+      });
+
+      it('returns conversation when attached to agent', () => {
+        const { result } = renderHook(() => useSessionStore());
+        let convId: string;
+
+        act(() => {
+          result.current.createSession(mockSession);
+          result.current.addAgent(mockSession.id, mockAgent);
+          const conv = result.current.createConversationSession(mockSession.id, {
+            name: 'Test Conv',
+          });
+          convId = conv.id;
+          result.current.attachConversationToAgent(mockSession.id, conv.id, mockAgent.id);
+        });
+
+        const conv = result.current.getConversationForAgent(mockSession.id, mockAgent.id);
+        expect(conv).not.toBeNull();
+        expect(conv?.id).toBe(convId!);
+        expect(conv?.name).toBe('Test Conv');
       });
     });
   });
@@ -957,7 +1042,7 @@ describe('sessionStore', () => {
     });
 
     describe('setWorkspaceStatus', () => {
-      it('sets workspace status', () => {
+      it('sets workspace status to running', () => {
         const { result } = renderHook(() => useSessionStore());
 
         act(() => {
@@ -967,27 +1052,24 @@ describe('sessionStore', () => {
         expect(result.current.sessions[mockSession.id].workspaceStatus).toBe('running');
       });
 
-      it('sets standby timestamp when entering standby', () => {
+      it('sets workspace status to stopped', () => {
         const { result } = renderHook(() => useSessionStore());
-        const now = new Date().toISOString();
 
         act(() => {
-          result.current.setWorkspaceStatus(mockSession.id, 'standby', now);
+          result.current.setWorkspaceStatus(mockSession.id, 'stopped');
         });
 
-        expect(result.current.sessions[mockSession.id].workspaceStatus).toBe('standby');
-        expect(result.current.sessions[mockSession.id].standbyAt).toBe(now);
+        expect(result.current.sessions[mockSession.id].workspaceStatus).toBe('stopped');
       });
 
-      it('clears standby timestamp when leaving standby', () => {
+      it('sets workspace status to error', () => {
         const { result } = renderHook(() => useSessionStore());
 
         act(() => {
-          result.current.setWorkspaceStatus(mockSession.id, 'standby', new Date().toISOString());
-          result.current.setWorkspaceStatus(mockSession.id, 'running', null);
+          result.current.setWorkspaceStatus(mockSession.id, 'error');
         });
 
-        expect(result.current.sessions[mockSession.id].standbyAt).toBeNull();
+        expect(result.current.sessions[mockSession.id].workspaceStatus).toBe('error');
       });
     });
 

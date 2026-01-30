@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from podex_shared import TokenUsageParams, get_usage_tracker
-from src.context.manager import get_context_manager
+from src.context.manager import ContextWindowManager, create_context_manager_with_settings
 from src.database.connection import get_db_context
 from src.database.conversation import (
     MessageData,
@@ -217,6 +217,12 @@ class AgentConfig:
     # Workspace container ID for remote execution
     # When set, file/command/git tools execute on the workspace container
     workspace_id: str | None = None
+    # User-provided LLM API keys (e.g., {"anthropic": "sk-ant-...", "openai": "sk-..."})
+    # These are used when the user wants to use their own API keys instead of platform keys
+    llm_api_keys: dict[str, str] | None = None
+    # Model's registered provider from database (e.g., "anthropic", "openai")
+    # This takes precedence over guessing from model name
+    model_provider: str | None = None
 
 
 class BaseAgent(ABC):
@@ -238,6 +244,9 @@ class BaseAgent(ABC):
         self.previous_mode = config.previous_mode  # For auto-revert tracking
         self.command_allowlist = config.command_allowlist or []
         self.user_id = config.user_id
+        # LLM API keys and model provider for routing to correct provider
+        self.llm_api_keys = config.llm_api_keys
+        self.model_provider = config.model_provider
         self.tools = self._get_all_tools()
         # Build system prompt with mode-specific instructions
         base_prompt = self._get_system_prompt()
@@ -269,7 +278,33 @@ class BaseAgent(ABC):
                 approval_callback=self._handle_approval_request,
                 user_id=config.user_id,
                 workspace_id=config.workspace_id,
+                agent_model=config.model,
             )
+
+        # Context manager for handling conversation trimming/summarization
+        # Created lazily on first use since initialization is async
+        self._context_manager: ContextWindowManager | None = None
+
+    async def _get_context_manager(self) -> ContextWindowManager | None:
+        """Get or create the context manager for this agent.
+
+        Creates a context manager with the agent's model on first call.
+        Returns None if creation fails (settings not available).
+        """
+        if self._context_manager is None:
+            try:
+                self._context_manager = await create_context_manager_with_settings(
+                    llm_provider=self.llm_provider,
+                    model=self.model,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to create context manager",
+                    agent_id=self.agent_id,
+                    model=self.model,
+                    error=str(e),
+                )
+        return self._context_manager
 
     def set_approval_callback(self, callback: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
         """Set the approval callback for Ask/Auto modes.
@@ -848,9 +883,8 @@ Use this context to provide more personalized and consistent responses.
         if persist:
             await self.update_status("active")
 
-        # Save user message to database
-        if persist:
-            await self.save_message("user", message)
+        # NOTE: User messages are saved by the API service before calling the agent.
+        # Do NOT save user messages here to avoid duplicates in the database.
 
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
@@ -868,7 +902,7 @@ Use this context to provide more personalized and consistent responses.
         ]
 
         # Use context manager to prepare messages (handle trimming/summarization)
-        context_manager = get_context_manager()
+        context_manager = await self._get_context_manager()
         if context_manager:
             try:
                 messages, _total_tokens = await context_manager.prepare_context(
@@ -904,6 +938,8 @@ Use this context to provide more personalized and consistent responses.
                 model=self.model,
                 messages=messages,
                 tools=tools_api if tools_api else None,
+                llm_api_keys=self.llm_api_keys,
+                model_provider=self.model_provider,
             )
             response = await self.llm_provider.complete(request)
 
@@ -919,9 +955,9 @@ Use this context to provide more personalized and consistent responses.
                 tracker = get_usage_tracker()
                 if tracker:
                     try:
-                        # Determine usage_source based on provider
+                        # Use model_provider from API (required, no fallback).
                         # vertex = included, ollama/lmstudio = local, anthropic/openai = external
-                        provider = self.llm_provider.provider
+                        provider = self.model_provider or "unknown"
                         if provider in ("ollama", "lmstudio"):
                             usage_source = "local"
                         elif provider == "vertex":
@@ -987,17 +1023,8 @@ Use this context to provide more personalized and consistent responses.
             # Add assistant response to history
             self.conversation_history.append({"role": "assistant", "content": final_content})
 
-            # Save assistant message to database
-            assistant_message_id = None
-            if persist:
-                tool_calls_dict = {"calls": processed_tool_calls} if processed_tool_calls else None
-                assistant_message_id = await self.save_message(
-                    "assistant",
-                    final_content,
-                    tool_calls_dict,
-                    tokens_used,
-                )
-                await self.update_status("idle")
+            # NOTE: Messages are saved by the API service, not here.
+            # The agent service only processes messages; persistence is handled by the API layer.
 
             # Auto-extract memories from the conversation turn
             if self.session_id and self.user_id:
@@ -1028,7 +1055,7 @@ Use this context to provide more personalized and consistent responses.
                 content=final_content,
                 tool_calls=processed_tool_calls,
                 tokens_used=tokens_used,
-                message_id=assistant_message_id,
+                message_id=None,
             )
 
         except Exception as e:
@@ -1069,9 +1096,8 @@ Use this context to provide more personalized and consistent responses.
         if persist:
             await self.update_status("active")
 
-        # Save user message to database
-        if persist:
-            await self.save_message("user", message)
+        # NOTE: User messages are saved by the API service before calling the agent.
+        # Do NOT save user messages here to avoid duplicates in the database.
 
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
@@ -1089,7 +1115,7 @@ Use this context to provide more personalized and consistent responses.
         ]
 
         # Use context manager to prepare messages (handle trimming/summarization)
-        context_manager = get_context_manager()
+        context_manager = await self._get_context_manager()
         if context_manager:
             try:
                 messages, _total_tokens = await context_manager.prepare_context(
@@ -1125,6 +1151,8 @@ Use this context to provide more personalized and consistent responses.
                 model=self.model,
                 messages=messages,
                 tools=tools_api if tools_api else None,
+                llm_api_keys=self.llm_api_keys,
+                model_provider=self.model_provider,
             )
 
             # Emit stream start
@@ -1228,10 +1256,10 @@ Use this context to provide more personalized and consistent responses.
                         tracker = get_usage_tracker()
                         if tracker:
                             try:
-                                # Determine usage_source based on provider:
+                                # Use model_provider from API (required, no fallback).
                                 # vertex = included, ollama/lmstudio = local,
                                 # anthropic/openai = external
-                                provider = self.llm_provider.provider
+                                provider = self.model_provider or "unknown"
                                 if provider in ("ollama", "lmstudio"):
                                     usage_source = "local"
                                 elif provider == "vertex":
@@ -1320,16 +1348,8 @@ Use this context to provide more personalized and consistent responses.
             # Add assistant response to history
             self.conversation_history.append({"role": "assistant", "content": final_content})
 
-            # Save assistant message to database
-            if persist:
-                tool_calls_dict = {"calls": processed_tool_calls} if processed_tool_calls else None
-                await self.save_message(
-                    "assistant",
-                    final_content,
-                    tool_calls_dict,
-                    tokens_used,
-                )
-                await self.update_status("idle")
+            # NOTE: Messages are saved by the API service, not here.
+            # The agent service only processes messages; persistence is handled by the API layer.
 
             # Auto-extract memories from the conversation turn
             if self.session_id and self.user_id:

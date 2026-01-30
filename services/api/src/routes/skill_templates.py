@@ -8,14 +8,15 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
 from src.database.models import SkillTemplate, UserSkill
 from src.middleware.auth import get_current_user
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
 router = APIRouter(prefix="/skill-templates", tags=["skill-templates"])
 
@@ -67,8 +68,7 @@ class SkillTemplateResponse(BaseModel):
     usage_count: int
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SkillTemplateListResponse(BaseModel):
@@ -104,8 +104,7 @@ class SkillFromTemplateResponse(BaseModel):
     steps: list[dict[str, Any]]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ============================================================================
@@ -114,11 +113,14 @@ class SkillFromTemplateResponse(BaseModel):
 
 
 @router.get("", response_model=SkillTemplateListResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_skill_templates(
+    request: Request,
+    response: Response,
     category: str | None = Query(None, description="Filter by category"),
     search: str | None = Query(None, description="Search by name or description"),
     db: AsyncSession = Depends(get_db),
-    user: dict[str, str | None] = Depends(get_current_user),  # noqa: ARG001
+    user: dict[str, str | None] = Depends(get_current_user),
 ) -> SkillTemplateListResponse:
     """List available skill templates."""
     # Build query
@@ -152,10 +154,13 @@ async def list_skill_templates(
 
 
 @router.get("/{slug}", response_model=SkillTemplateResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_skill_template(
     slug: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
-    user: dict[str, str | None] = Depends(get_current_user),  # noqa: ARG001
+    user: dict[str, str | None] = Depends(get_current_user),
 ) -> SkillTemplateResponse:
     """Get a specific skill template by slug."""
     query = select(SkillTemplate).where(SkillTemplate.slug == slug)
@@ -172,9 +177,12 @@ async def get_skill_template(
 
 
 @router.post("/{slug}/create-skill", response_model=SkillFromTemplateResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def create_skill_from_template(
     slug: str,
-    request: CreateSkillFromTemplateRequest,
+    request: Request,
+    response: Response,
+    body: CreateSkillFromTemplateRequest,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> SkillFromTemplateResponse:
@@ -195,33 +203,33 @@ async def create_skill_from_template(
     # Check for duplicate slug
     existing_query = select(UserSkill).where(
         UserSkill.user_id == user_id,
-        UserSkill.slug == request.slug,
+        UserSkill.slug == body.slug,
     )
     existing = (await db.execute(existing_query)).scalar_one_or_none()
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Skill with slug '{request.slug}' already exists",
+            detail=f"Skill with slug '{body.slug}' already exists",
         )
 
     # Prepare steps - apply variable substitution
-    if request.customize_steps and request.custom_steps:
-        steps = request.custom_steps
+    if body.customize_steps and body.custom_steps:
+        steps = body.custom_steps
     else:
-        steps = _apply_variables(template.step_templates or [], request.variables)
+        steps = _apply_variables(template.step_templates or [], body.variables)
 
     # Create skill
     now = datetime.now(UTC)
-    description = request.description or template.description
+    description = body.description or template.description
 
     skill = UserSkill(
         id=str(uuid4()),
         user_id=user_id,
-        name=request.name,
-        slug=request.slug,
+        name=body.name,
+        slug=body.slug,
         description=description,
         version="1.0.0",
-        triggers=_apply_variable_list(template.default_triggers or [], request.variables),
+        triggers=_apply_variable_list(template.default_triggers or [], body.variables),
         tags=template.default_tags or [],
         required_tools=template.required_tools or [],
         steps=steps,
@@ -250,11 +258,14 @@ async def create_skill_from_template(
 
 
 @router.get("/{slug}/preview", response_model=dict)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def preview_skill_from_template(
     slug: str,
+    request: Request,
+    response: Response,
     variables: str | None = Query(None, description="JSON-encoded variables"),
     db: AsyncSession = Depends(get_db),
-    user: dict[str, str | None] = Depends(get_current_user),  # noqa: ARG001
+    user: dict[str, str | None] = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Preview a skill that would be created from a template with given variables."""
     # Get template

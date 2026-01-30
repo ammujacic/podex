@@ -8,7 +8,6 @@ import {
   Network,
   Server,
   Sparkles,
-  Terminal,
   TestTube2,
   Eye,
   Zap,
@@ -35,7 +34,6 @@ export const roleIcons = {
   devops: Server,
   documentator: FileText,
   custom: Bot,
-  'claude-code': Terminal,
 } as const;
 
 export type AgentRole = keyof typeof roleIcons;

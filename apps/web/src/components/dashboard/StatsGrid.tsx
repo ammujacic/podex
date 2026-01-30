@@ -1,5 +1,6 @@
 'use client';
 
+import { memo, useMemo } from 'react';
 import { Bot, Cpu, DollarSign, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { StatsCardSkeleton } from '@/components/ui/Skeleton';
@@ -23,7 +24,57 @@ interface StatsGridProps {
   isLoading?: boolean;
 }
 
+// Format number helper - defined outside component to avoid recreation
+const formatNumber = (num: number): string => {
+  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+  return num.toString();
+};
+
+// Static icon components - defined at module level to prevent recreation
+const TokensIcon = <Zap className="w-5 h-5" />;
+const ApiCallsIcon = <Cpu className="w-5 h-5" />;
+const AgentsIcon = <Bot className="w-5 h-5" />;
+const CostIcon = <DollarSign className="w-5 h-5" />;
+
 export function StatsGrid({ stats, isLoading }: StatsGridProps) {
+  // Memoize stat items to prevent recreation on every render
+  const statItems = useMemo<Stat[]>(() => {
+    if (!stats) return [];
+    return [
+      {
+        label: 'Tokens Used',
+        value: formatNumber(stats.tokensUsed),
+        change: '+12%',
+        changeType: 'neutral',
+        icon: TokensIcon,
+        color: 'text-accent-primary',
+      },
+      {
+        label: 'API Calls',
+        value: formatNumber(stats.apiCalls),
+        change: '+8%',
+        changeType: 'positive',
+        icon: ApiCallsIcon,
+        color: 'text-accent-secondary',
+      },
+      {
+        label: 'Active Agents',
+        value: stats.activeAgents,
+        icon: AgentsIcon,
+        color: 'text-accent-success',
+      },
+      {
+        label: 'Est. Cost',
+        value: `$${stats.estimatedCost.toFixed(2)}`,
+        change: '-5%',
+        changeType: 'positive',
+        icon: CostIcon,
+        color: 'text-accent-warning',
+      },
+    ];
+  }, [stats]);
+
   if (isLoading || !stats) {
     return (
       <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
@@ -35,45 +86,6 @@ export function StatsGrid({ stats, isLoading }: StatsGridProps) {
     );
   }
 
-  const formatNumber = (num: number): string => {
-    if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
-    if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
-    return num.toString();
-  };
-
-  const statItems: Stat[] = [
-    {
-      label: 'Tokens Used',
-      value: formatNumber(stats.tokensUsed),
-      change: '+12%',
-      changeType: 'neutral',
-      icon: <Zap className="w-5 h-5" />,
-      color: 'text-accent-primary',
-    },
-    {
-      label: 'API Calls',
-      value: formatNumber(stats.apiCalls),
-      change: '+8%',
-      changeType: 'positive',
-      icon: <Cpu className="w-5 h-5" />,
-      color: 'text-accent-secondary',
-    },
-    {
-      label: 'Active Agents',
-      value: stats.activeAgents,
-      icon: <Bot className="w-5 h-5" />,
-      color: 'text-accent-success',
-    },
-    {
-      label: 'Est. Cost',
-      value: `$${stats.estimatedCost.toFixed(2)}`,
-      change: '-5%',
-      changeType: 'positive',
-      icon: <DollarSign className="w-5 h-5" />,
-      color: 'text-accent-warning',
-    },
-  ];
-
   return (
     <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
       {statItems.map((stat) => (
@@ -83,7 +95,7 @@ export function StatsGrid({ stats, isLoading }: StatsGridProps) {
   );
 }
 
-function StatCard({ stat }: { stat: Stat }) {
+const StatCard = memo(function StatCard({ stat }: { stat: Stat }) {
   return (
     <div className="bg-surface border border-border-default rounded-xl p-4 hover:border-border-strong transition-colors">
       <div className="flex items-center gap-3">
@@ -109,4 +121,4 @@ function StatCard({ stat }: { stat: Stat }) {
       </div>
     </div>
   );
-}
+});

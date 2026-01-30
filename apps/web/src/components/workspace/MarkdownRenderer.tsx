@@ -1,17 +1,42 @@
 'use client';
 
-import React, { useMemo, useState, useCallback } from 'react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import React, { useMemo, useState, useCallback, useEffect, memo } from 'react';
 import { cn } from '@/lib/utils';
-import { Copy, Check, Save } from 'lucide-react';
+import { Copy, Check, Save, Loader2 } from 'lucide-react';
 import { useSessionStore } from '@/stores/session';
 import { PromptDialog } from '@/components/ui/Dialogs';
 import { createFile } from '@/lib/api';
 
+// Types for lazy-loaded syntax highlighter
+type SyntaxHighlighterType = typeof import('react-syntax-highlighter').Prism;
+type ThemeType = Record<string, React.CSSProperties>;
+
+// Lazy-loaded syntax highlighter state
+let SyntaxHighlighterComponent: SyntaxHighlighterType | null = null;
+let oneDarkTheme: ThemeType | null = null;
+let loadPromise: Promise<void> | null = null;
+
+// Load the syntax highlighter and theme lazily (~200KB total)
+function loadSyntaxHighlighter(): Promise<void> {
+  if (loadPromise) return loadPromise;
+
+  loadPromise = Promise.all([
+    import('react-syntax-highlighter').then((mod) => {
+      SyntaxHighlighterComponent = mod.Prism;
+    }),
+    import('react-syntax-highlighter/dist/esm/styles/prism').then((mod) => {
+      oneDarkTheme = mod.oneDark;
+    }),
+  ]).then(() => {});
+
+  return loadPromise;
+}
+
 interface MarkdownRendererProps {
   content: string;
   className?: string;
+  /** Callback when a file link is clicked (path, line range) */
+  onFileClick?: (path: string, startLine?: number, endLine?: number) => void;
 }
 
 interface NestedListItem {
@@ -19,20 +44,72 @@ interface NestedListItem {
   children?: NestedListItem[];
 }
 
+interface TableCell {
+  content: string;
+  align?: 'left' | 'center' | 'right';
+}
+
+interface TableData {
+  headers: TableCell[];
+  rows: TableCell[][];
+  alignments: ('left' | 'center' | 'right')[];
+}
+
 interface ParsedBlock {
-  type: 'paragraph' | 'code' | 'heading' | 'list' | 'blockquote' | 'hr' | 'tool_call';
+  type: 'paragraph' | 'code' | 'heading' | 'list' | 'blockquote' | 'hr' | 'tool_call' | 'table';
   content: string;
   language?: string;
   level?: number;
   ordered?: boolean;
   items?: string[];
   nestedItems?: NestedListItem[];
+  tableData?: TableData;
+}
+
+/**
+ * Check if a URL is a file path (not a web URL)
+ */
+function isFilePath(url: string): boolean {
+  // Skip web URLs
+  if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('mailto:')) {
+    return false;
+  }
+  // Check for file-like patterns (has extension or looks like a path)
+  return /\.[a-zA-Z0-9]+(?:#|$)/.test(url) || url.includes('/');
+}
+
+/**
+ * Parse file path and optional line numbers from a URL
+ * Supports formats: path/file.ts, path/file.ts#L42, path/file.ts#L42-L51
+ */
+function parseFilePath(url: string): { path: string; startLine?: number; endLine?: number } {
+  const [pathPart, fragment] = url.split('#');
+  const path = pathPart || url;
+
+  if (!fragment) {
+    return { path };
+  }
+
+  // Match L42 or L42-L51 patterns
+  const lineMatch = fragment.match(/^L(\d+)(?:-L(\d+))?$/);
+  if (lineMatch && lineMatch[1]) {
+    return {
+      path,
+      startLine: parseInt(lineMatch[1], 10),
+      endLine: lineMatch[2] ? parseInt(lineMatch[2], 10) : undefined,
+    };
+  }
+
+  return { path };
 }
 
 /**
  * Parses inline markdown elements (bold, italic, code, links)
  */
-function parseInlineMarkdown(text: string): React.ReactNode[] {
+function parseInlineMarkdown(
+  text: string,
+  onFileClick?: (path: string, startLine?: number, endLine?: number) => void
+): React.ReactNode[] {
   const elements: React.ReactNode[] = [];
   let remaining = text;
   let key = 0;
@@ -45,18 +122,18 @@ function parseInlineMarkdown(text: string): React.ReactNode[] {
       render: (match: string) => (
         <code
           key={key++}
-          className="rounded bg-void/50 px-1.5 py-0.5 text-xs font-mono text-accent-primary"
+          className="rounded bg-void/50 px-1.5 py-0.5 text-xs font-mono text-accent-primary break-all"
         >
           {match}
         </code>
       ),
     },
-    // Bold with asterisks
+    // Bold with asterisks - recursively parse content for nested links
     {
       regex: /\*\*([^*]+)\*\*/,
       render: (match: string) => (
         <strong key={key++} className="font-semibold">
-          {match}
+          {parseInlineMarkdown(match, onFileClick)}
         </strong>
       ),
     },
@@ -65,16 +142,16 @@ function parseInlineMarkdown(text: string): React.ReactNode[] {
       regex: /(?<![a-zA-Z0-9])__([^_]+)__(?![a-zA-Z0-9])/,
       render: (match: string) => (
         <strong key={key++} className="font-semibold">
-          {match}
+          {parseInlineMarkdown(match, onFileClick)}
         </strong>
       ),
     },
-    // Italic with asterisks
+    // Italic with asterisks - recursively parse content for nested links
     {
       regex: /\*([^*]+)\*/,
       render: (match: string) => (
         <em key={key++} className="italic">
-          {match}
+          {parseInlineMarkdown(match, onFileClick)}
         </em>
       ),
     },
@@ -84,24 +161,40 @@ function parseInlineMarkdown(text: string): React.ReactNode[] {
       regex: /(?<![a-zA-Z0-9])_([^_]+)_(?![a-zA-Z0-9])/,
       render: (match: string) => (
         <em key={key++} className="italic">
-          {match}
+          {parseInlineMarkdown(match, onFileClick)}
         </em>
       ),
     },
-    // Links
+    // Links - handle file paths specially if callback is provided
     {
       regex: /\[([^\]]+)\]\(([^)]+)\)/,
-      render: (_text: string, url: string) => (
-        <a
-          key={key++}
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-accent-primary hover:underline"
-        >
-          {_text}
-        </a>
-      ),
+      render: (linkText: string, url: string) => {
+        // Check if this is a file path and we have a callback
+        if (onFileClick && isFilePath(url)) {
+          const { path, startLine, endLine } = parseFilePath(url);
+          return (
+            <button
+              key={key++}
+              onClick={() => onFileClick(path, startLine, endLine)}
+              className="text-accent-primary hover:underline hover:text-accent-primary/80 cursor-pointer bg-transparent border-none p-0 font-inherit"
+            >
+              {linkText}
+            </button>
+          );
+        }
+        // Regular external link
+        return (
+          <a
+            key={key++}
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-accent-primary hover:underline"
+          >
+            {linkText}
+          </a>
+        );
+      },
     },
   ];
 
@@ -240,6 +333,112 @@ function parseList(lines: string[], startIndex: number): { list: ParsedList; end
 }
 
 /**
+ * Checks if a line is a valid table separator row (e.g., |---|---|)
+ */
+function isTableSeparator(line: string): boolean {
+  const trimmed = line.trim();
+  // Must start and end with | (or start with |)
+  if (!trimmed.startsWith('|')) return false;
+  // Check for pattern like |---|---| or | --- | --- |
+  const separatorPattern = /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/;
+  return separatorPattern.test(trimmed);
+}
+
+/**
+ * Parses a table row into cells
+ */
+function parseTableRow(line: string): string[] {
+  const trimmed = line.trim();
+  // Remove leading and trailing pipes
+  const content = trimmed.replace(/^\|/, '').replace(/\|$/, '');
+  // Split by | and trim each cell
+  return content.split('|').map((cell) => cell.trim());
+}
+
+/**
+ * Parses alignment from separator row
+ */
+function parseTableAlignments(separatorLine: string): ('left' | 'center' | 'right')[] {
+  const cells = parseTableRow(separatorLine);
+  return cells.map((cell) => {
+    const trimmed = cell.trim();
+    const leftColon = trimmed.startsWith(':');
+    const rightColon = trimmed.endsWith(':');
+    if (leftColon && rightColon) return 'center';
+    if (rightColon) return 'right';
+    return 'left';
+  });
+}
+
+/**
+ * Parses a markdown table
+ */
+function parseTable(
+  lines: string[],
+  startIndex: number
+): { table: TableData; endIndex: number } | null {
+  // Need at least header + separator (2 lines)
+  if (startIndex + 1 >= lines.length) return null;
+
+  const headerLine = lines[startIndex] ?? '';
+  const separatorLine = lines[startIndex + 1] ?? '';
+
+  // Validate header looks like a table row
+  if (!headerLine.trim().includes('|')) return null;
+
+  // Validate separator
+  if (!isTableSeparator(separatorLine)) return null;
+
+  const headers = parseTableRow(headerLine);
+  const alignments = parseTableAlignments(separatorLine);
+
+  // Ensure alignments array matches headers length
+  while (alignments.length < headers.length) {
+    alignments.push('left');
+  }
+
+  const headerCells: TableCell[] = headers.map((content, i) => ({
+    content,
+    align: alignments[i],
+  }));
+
+  const rows: TableCell[][] = [];
+  let i = startIndex + 2;
+
+  // Parse data rows
+  while (i < lines.length) {
+    const line = lines[i] ?? '';
+    const trimmed = line.trim();
+
+    // Empty line or non-table line ends the table
+    if (!trimmed || !trimmed.includes('|')) break;
+
+    const rowCells = parseTableRow(line);
+    const row: TableCell[] = rowCells.map((content, idx) => ({
+      content,
+      align: alignments[idx] || 'left',
+    }));
+
+    // Pad row if needed
+    while (row.length < headers.length) {
+      row.push({ content: '', align: 'left' });
+    }
+
+    rows.push(row);
+    i++;
+  }
+
+  return {
+    table: {
+      headers: headerCells,
+      rows,
+      alignments,
+    },
+    endIndex: i,
+  };
+}
+
+/**
  * Parses markdown content into structured blocks
  */
 function parseMarkdown(content: string): ParsedBlock[] {
@@ -334,12 +533,41 @@ function parseMarkdown(content: string): ParsedBlock[] {
       continue;
     }
 
+    // Tables - check if this line starts a table (contains | and next line is separator)
+    if (trimmedLine.includes('|')) {
+      const tableResult = parseTable(lines, i);
+      if (tableResult) {
+        blocks.push({
+          type: 'table',
+          content: '',
+          tableData: tableResult.table,
+        });
+        i = tableResult.endIndex;
+        continue;
+      }
+    }
+
+    // Check if this line is a standalone code span (insight-style decorative line)
+    // These should be their own paragraphs, not joined with adjacent content
+    const isStandaloneCodeSpan = /^`[^`]+`$/.test(trimmedLine);
+
+    if (isStandaloneCodeSpan) {
+      // Standalone code spans get their own paragraph
+      blocks.push({
+        type: 'paragraph',
+        content: trimmedLine,
+      });
+      i++;
+      continue;
+    }
+
     // Regular paragraph - collect consecutive non-empty lines
     const paragraphLines: string[] = [trimmedLine];
     i++;
     while (i < lines.length) {
       const currentLine = lines[i] ?? '';
       const currentTrimmed = currentLine.trim();
+      // Stop at: empty lines, code blocks, headings, blockquotes, lists, HRs, or standalone code spans
       if (
         currentTrimmed === '' ||
         currentTrimmed.startsWith('```') ||
@@ -347,7 +575,8 @@ function parseMarkdown(content: string): ParsedBlock[] {
         currentTrimmed.startsWith('>') ||
         /^[-*+]\s/.test(currentTrimmed) ||
         /^\d+\.\s/.test(currentTrimmed) ||
-        /^[-*_]{3,}$/.test(currentTrimmed)
+        /^[-*_]{3,}$/.test(currentTrimmed) ||
+        /^`[^`]+`$/.test(currentTrimmed) // Standalone code spans break paragraphs
       ) {
         break;
       }
@@ -367,14 +596,27 @@ function parseMarkdown(content: string): ParsedBlock[] {
 /**
  * Recursively renders list items with their nested children
  */
-function ListItemRenderer({ item, ordered: _ordered }: { item: NestedListItem; ordered: boolean }) {
+function ListItemRenderer({
+  item,
+  ordered: _ordered,
+  onFileClick,
+}: {
+  item: NestedListItem;
+  ordered: boolean;
+  onFileClick?: (path: string, startLine?: number, endLine?: number) => void;
+}) {
   return (
-    <li className="leading-relaxed">
-      {parseInlineMarkdown(item.content)}
+    <li className="leading-relaxed break-words overflow-hidden">
+      {parseInlineMarkdown(item.content, onFileClick)}
       {item.children && item.children.length > 0 && (
         <ul className="pl-4 mt-1 space-y-1 list-disc">
           {item.children.map((child, childIndex) => (
-            <ListItemRenderer key={childIndex} item={child} ordered={false} />
+            <ListItemRenderer
+              key={childIndex}
+              item={child}
+              ordered={false}
+              onFileClick={onFileClick}
+            />
           ))}
         </ul>
       )}
@@ -553,20 +795,50 @@ function SaveToFileButton({ content, language }: { content: string; language: st
 
 /**
  * Renders a code block with syntax highlighting and copy buttons
+ * Uses lazy-loaded syntax highlighter for better performance
  */
-function CodeBlock({ content, language }: { content: string; language: string }) {
+const CodeBlock = memo(function CodeBlock({
+  content,
+  language,
+}: {
+  content: string;
+  language: string;
+}) {
   const normalizedLang = LANGUAGE_MAP[language.toLowerCase()] || language.toLowerCase();
   const lineCount = content.split('\n').length;
+  const [isLoaded, setIsLoaded] = useState(
+    SyntaxHighlighterComponent !== null && oneDarkTheme !== null
+  );
+
+  // Load syntax highlighter on mount if not already loaded
+  useEffect(() => {
+    if (!isLoaded) {
+      loadSyntaxHighlighter().then(() => setIsLoaded(true));
+    }
+  }, [isLoaded]);
 
   // Custom style overrides to match the app theme
-  const customStyle: React.CSSProperties = {
-    margin: 0,
-    padding: '0.75rem',
-    fontSize: '0.75rem',
-    lineHeight: '1.625',
-    borderRadius: 0,
-    background: 'transparent',
-  };
+  const customStyle: React.CSSProperties = useMemo(
+    () => ({
+      margin: 0,
+      padding: '0.75rem',
+      fontSize: '0.75rem',
+      lineHeight: '1.625',
+      borderRadius: 0,
+      background: 'transparent',
+    }),
+    []
+  );
+
+  const lineNumberStyle = useMemo(
+    () => ({
+      minWidth: '2.5em',
+      paddingRight: '1em',
+      color: 'rgb(var(--text-muted))',
+      userSelect: 'none' as const,
+    }),
+    []
+  );
 
   return (
     <div className="relative group my-2 rounded-md overflow-hidden bg-void/80">
@@ -580,21 +852,27 @@ function CodeBlock({ content, language }: { content: string; language: string })
       </div>
 
       {/* Code content with syntax highlighting */}
-      <SyntaxHighlighter
-        language={normalizedLang}
-        style={oneDark}
-        customStyle={customStyle}
-        wrapLongLines
-        showLineNumbers={lineCount > 5}
-        lineNumberStyle={{
-          minWidth: '2.5em',
-          paddingRight: '1em',
-          color: 'rgb(var(--text-muted))',
-          userSelect: 'none',
-        }}
-      >
-        {content}
-      </SyntaxHighlighter>
+      {isLoaded && SyntaxHighlighterComponent && oneDarkTheme ? (
+        <SyntaxHighlighterComponent
+          language={normalizedLang}
+          style={oneDarkTheme}
+          customStyle={customStyle}
+          wrapLongLines
+          showLineNumbers={lineCount > 5}
+          lineNumberStyle={lineNumberStyle}
+        >
+          {content}
+        </SyntaxHighlighterComponent>
+      ) : (
+        // Fallback while syntax highlighter is loading
+        <div className="p-3">
+          <div className="flex items-center gap-2 text-text-muted text-xs mb-2">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            <span>Loading syntax highlighter...</span>
+          </div>
+          <pre className="text-xs font-mono text-text-secondary whitespace-pre-wrap">{content}</pre>
+        </div>
+      )}
 
       {/* Bottom copy/save buttons - only show for longer code blocks */}
       {lineCount > 15 && (
@@ -607,7 +885,7 @@ function CodeBlock({ content, language }: { content: string; language: string })
       )}
     </div>
   );
-}
+});
 
 /**
  * Renders a tool/function call block with special formatting
@@ -646,11 +924,12 @@ function ToolCallBlock({ content, language }: { content: string; language: strin
 export const MarkdownRenderer = React.memo<MarkdownRendererProps>(function MarkdownRenderer({
   content,
   className,
+  onFileClick,
 }) {
   const blocks = useMemo(() => parseMarkdown(content), [content]);
 
   return (
-    <div className={cn('markdown-content space-y-2', className)}>
+    <div className={cn('markdown-content space-y-2 overflow-hidden', className)}>
       {blocks.map((block, index) => {
         switch (block.type) {
           case 'heading': {
@@ -664,7 +943,10 @@ export const MarkdownRenderer = React.memo<MarkdownRendererProps>(function Markd
               6: 'text-xs font-medium text-text-secondary',
             };
             const HeadingElement = ({ children }: { children: React.ReactNode }) => {
-              const className = cn(headingSizes[level], 'mt-3 first:mt-0');
+              const className = cn(
+                headingSizes[level],
+                'mt-3 first:mt-0 break-words overflow-hidden'
+              );
               switch (level) {
                 case 1:
                   return <h1 className={className}>{children}</h1>;
@@ -681,14 +963,16 @@ export const MarkdownRenderer = React.memo<MarkdownRendererProps>(function Markd
               }
             };
             return (
-              <HeadingElement key={index}>{parseInlineMarkdown(block.content)}</HeadingElement>
+              <HeadingElement key={index}>
+                {parseInlineMarkdown(block.content, onFileClick)}
+              </HeadingElement>
             );
           }
 
           case 'paragraph':
             return (
-              <p key={index} className="leading-relaxed">
-                {parseInlineMarkdown(block.content)}
+              <p key={index} className="leading-relaxed break-words overflow-hidden">
+                {parseInlineMarkdown(block.content, onFileClick)}
               </p>
             );
 
@@ -720,6 +1004,7 @@ export const MarkdownRenderer = React.memo<MarkdownRendererProps>(function Markd
                     key={itemIndex}
                     item={typeof item === 'string' ? { content: item } : item}
                     ordered={block.ordered || false}
+                    onFileClick={onFileClick}
                   />
                 ))}
               </ListTag>
@@ -730,11 +1015,72 @@ export const MarkdownRenderer = React.memo<MarkdownRendererProps>(function Markd
             return (
               <blockquote
                 key={index}
-                className="border-l-2 border-accent-primary/50 pl-3 py-1 italic text-text-secondary"
+                className="border-l-2 border-accent-primary/50 pl-3 py-1 italic text-text-secondary break-words overflow-hidden"
               >
-                {parseInlineMarkdown(block.content)}
+                {parseInlineMarkdown(block.content, onFileClick)}
               </blockquote>
             );
+
+          case 'table': {
+            if (!block.tableData) return null;
+            const { headers, rows, alignments } = block.tableData;
+            const getAlignClass = (align: 'left' | 'center' | 'right' | undefined) => {
+              switch (align) {
+                case 'center':
+                  return 'text-center';
+                case 'right':
+                  return 'text-right';
+                default:
+                  return 'text-left';
+              }
+            };
+            return (
+              <div key={index} className="my-2 overflow-x-auto">
+                <table className="min-w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-border-default">
+                      {headers.map((header, colIndex) => (
+                        <th
+                          key={colIndex}
+                          className={cn(
+                            'px-3 py-2 font-semibold text-text-primary bg-surface-elevated/50',
+                            getAlignClass(alignments[colIndex]),
+                            'break-words'
+                          )}
+                        >
+                          {parseInlineMarkdown(header.content, onFileClick)}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row, rowIndex) => (
+                      <tr
+                        key={rowIndex}
+                        className={cn(
+                          'border-b border-border-subtle',
+                          rowIndex % 2 === 1 && 'bg-surface-elevated/20'
+                        )}
+                      >
+                        {row.map((cell, colIndex) => (
+                          <td
+                            key={colIndex}
+                            className={cn(
+                              'px-3 py-2 text-text-secondary',
+                              getAlignClass(alignments[colIndex]),
+                              'break-words'
+                            )}
+                          >
+                            {parseInlineMarkdown(cell.content, onFileClick)}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          }
 
           case 'hr':
             return <hr key={index} className="border-border-subtle my-3" />;

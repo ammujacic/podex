@@ -13,10 +13,6 @@ interface AgentInputAreaProps {
   isSubmitting?: boolean;
   isProcessing?: boolean;
   placeholder?: string;
-  /** For Claude Code agents - callback when "/" is typed at start of input */
-  onSlashCommandStart?: () => void;
-  /** Whether this is a Claude Code agent (enables slash command detection) */
-  isClaudeCodeAgent?: boolean;
 }
 
 /**
@@ -33,8 +29,6 @@ export const AgentInputArea = React.memo<AgentInputAreaProps>(function AgentInpu
   isSubmitting = false,
   isProcessing = false,
   placeholder = 'Message...',
-  onSlashCommandStart,
-  isClaudeCodeAgent = false,
 }) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -49,13 +43,6 @@ export const AgentInputArea = React.memo<AgentInputAreaProps>(function AgentInpu
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       onSubmit();
-    }
-
-    // Detect "/" at start of empty input for Claude Code agents
-    if (isClaudeCodeAgent && onSlashCommandStart && e.key === '/' && value.trim() === '') {
-      e.preventDefault();
-      onChange('/');
-      onSlashCommandStart();
     }
   };
 

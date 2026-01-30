@@ -51,33 +51,34 @@ class TestSettingsClass:
 
 
 class TestDefaultModels:
-    """Test default model settings."""
+    """Test default model settings.
 
-    def test_default_architect_model(self):
-        """Test default architect model."""
-        from src.config import settings
-        assert settings.DEFAULT_ARCHITECT_MODEL is not None
-        assert "claude" in settings.DEFAULT_ARCHITECT_MODEL
+    Note: All model configuration is admin-controlled via the database.
+    The agent service fetches capabilities from the API and caches them in Redis.
+    """
 
-    def test_default_coder_model(self):
-        """Test default coder model."""
-        from src.config import settings
-        assert settings.DEFAULT_CODER_MODEL is not None
+    def test_default_thinking_budget_constants(self):
+        """Test default thinking budget constants are defined."""
+        from src.config import (
+            DEFAULT_THINKING_BUDGET,
+            MAX_THINKING_BUDGET,
+            MIN_THINKING_BUDGET,
+        )
 
-    def test_default_reviewer_model(self):
-        """Test default reviewer model."""
-        from src.config import settings
-        assert settings.DEFAULT_REVIEWER_MODEL is not None
+        assert DEFAULT_THINKING_BUDGET > 0
+        assert MIN_THINKING_BUDGET > 0
+        assert MAX_THINKING_BUDGET > MIN_THINKING_BUDGET
+        assert MIN_THINKING_BUDGET <= DEFAULT_THINKING_BUDGET <= MAX_THINKING_BUDGET
 
-    def test_default_tester_model(self):
-        """Test default tester model."""
-        from src.config import settings
-        assert settings.DEFAULT_TESTER_MODEL is not None
+    def test_async_capability_functions_exist(self):
+        """Test async capability functions are available."""
+        from src.config import supports_thinking_async, supports_vision_async
 
-    def test_default_chat_model(self):
-        """Test default chat model."""
-        from src.config import settings
-        assert settings.DEFAULT_CHAT_MODEL is not None
+        # These should be async functions
+        import inspect
+
+        assert inspect.iscoroutinefunction(supports_vision_async)
+        assert inspect.iscoroutinefunction(supports_thinking_async)
 
 
 class TestToolExecutionLimits:
@@ -174,11 +175,6 @@ class TestServiceURLs:
 class TestLLMProviderSettings:
     """Test LLM provider settings."""
 
-    def test_llm_provider(self):
-        """Test LLM provider setting."""
-        from src.config import settings
-        assert settings.LLM_PROVIDER is not None
-
     def test_ollama_url(self):
         """Test Ollama URL setting."""
         from src.config import settings
@@ -190,18 +186,32 @@ class TestLLMProviderSettings:
         assert settings.OLLAMA_MODEL is not None
 
 
-class TestGCPSettings:
-    """Test GCP settings."""
+class TestModelCapabilitiesCache:
+    """Test ModelCapabilitiesCache class.
 
-    def test_gcp_region(self):
-        """Test GCP region setting."""
-        from src.config import settings
-        assert settings.GCP_REGION is not None
+    Note: GCP settings (GCP_REGION, GCS_BUCKET) have been removed.
+    Model capabilities are now managed via Redis cache with API fallback.
+    """
 
-    def test_gcs_bucket(self):
-        """Test GCS bucket setting."""
-        from src.config import settings
-        assert settings.GCS_BUCKET is not None
+    def test_model_capabilities_cache_exists(self):
+        """Test ModelCapabilitiesCache class exists."""
+        from src.config import ModelCapabilitiesCache
+
+        assert ModelCapabilitiesCache is not None
+
+    def test_model_capabilities_cache_key_defined(self):
+        """Test MODEL_CAPABILITIES_CACHE_KEY is defined."""
+        from src.config import MODEL_CAPABILITIES_CACHE_KEY
+
+        assert MODEL_CAPABILITIES_CACHE_KEY is not None
+        assert isinstance(MODEL_CAPABILITIES_CACHE_KEY, str)
+
+    def test_platform_settings_cache_key_defined(self):
+        """Test PLATFORM_SETTINGS_CACHE_KEY is defined."""
+        from src.config import PLATFORM_SETTINGS_CACHE_KEY
+
+        assert PLATFORM_SETTINGS_CACHE_KEY is not None
+        assert isinstance(PLATFORM_SETTINGS_CACHE_KEY, str)
 
 
 class TestSentrySettings:

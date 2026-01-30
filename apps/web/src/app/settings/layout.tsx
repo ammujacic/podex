@@ -23,6 +23,9 @@ import {
   CreditCard,
   Building2,
   Brain,
+  Link2,
+  KeyRound,
+  Sparkles,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -32,9 +35,12 @@ const settingsNavItems = [
   { href: '/settings/themes', label: 'Themes', icon: Palette },
   { href: '/settings/keybindings', label: 'Keyboard Shortcuts', icon: Keyboard },
   { href: '/settings/agents', label: 'Agents & AI', icon: Bot },
+  { href: '/settings/templates', label: 'Agent Templates', icon: Sparkles },
   { href: '/settings/memory', label: 'Memory', icon: Brain },
   { href: '/settings/voice', label: 'Voice & Audio', icon: Volume2 },
+  { href: '/settings/connections', label: 'AI Subscriptions (API)', icon: Link2 },
   { href: '/settings/local-pods', label: 'Local Pods', icon: Server },
+  { href: '/settings/ssh-keys', label: 'SSH Keys', icon: KeyRound },
   { href: '/settings/integrations', label: 'Integrations (MCP)', icon: Plug },
   { href: '/settings/organization', label: 'Organization', icon: Building2 },
   { href: '/settings/usage', label: 'Usage', icon: BarChart3 },

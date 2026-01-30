@@ -10,7 +10,6 @@ import {
   FolderOpen,
   Loader2,
   RefreshCw,
-  CloudSync,
   Eye,
   EyeOff,
 } from 'lucide-react';
@@ -24,11 +23,10 @@ import {
 import { useSessionStore } from '@/stores/session';
 import { useEditorStore } from '@/stores/editor';
 import { useUIStore } from '@/stores/ui';
-import { useConfigStore } from '@/stores/config';
 import { cn } from '@/lib/utils';
 import { NoFilesEmptyState, ErrorEmptyState } from '@/components/ui/EmptyState';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { getLanguageFromPath } from './CodeEditor';
+import { getLanguageFromPath } from '@/lib/vscode/languageUtils';
 import {
   listFiles,
   getFileContent,
@@ -40,12 +38,17 @@ import {
   clearWorkspaceError,
   type FileNode,
 } from '@/lib/api';
-import { getUserConfig, updateUserConfig } from '@/lib/api/user-config';
 import { MobileFileItem } from './MobileFileItem';
 import { MobileFileActionsSheet } from './MobileFileActionsSheet';
+import { DirectoryBrowser } from './DirectoryBrowser';
+import { updateWorkspaceConfig, getWorkspaceInfo } from '@/lib/api';
 
 interface FilesPanelProps {
   sessionId: string;
+  /** If set, this is a local pod workspace */
+  localPodId?: string | null;
+  /** Current working directory for local pods */
+  workingDir?: string | null;
 }
 
 interface SyncInfo {
@@ -86,13 +89,10 @@ const NON_SYNCED_SEGMENTS = [
 const SYNCED_PREFIXES = ['projects/', 'projects'];
 
 /**
- * Create a sync info function based on user's dotfiles_paths
+ * Create a sync info function for project files.
+ * Projects directory is always synced, other files are workspace-local.
  */
-function createSyncInfoGetter(dotfilesPaths: string[]): (path: string) => SyncInfo {
-  // Separate directories (ending with /) from files
-  const directories = dotfilesPaths.filter((p) => p.endsWith('/'));
-  const files = dotfilesPaths.filter((p) => !p.endsWith('/'));
-
+function createSyncInfoGetter(): (path: string) => SyncInfo {
   return (path: string): SyncInfo => {
     const segments = path.split('/').filter(Boolean);
 
@@ -110,21 +110,7 @@ function createSyncInfoGetter(dotfilesPaths: string[]): (path: string) => SyncIn
       return { isSynced: true, syncType: 'session' };
     }
 
-    // Check if path is a synced directory or inside one
-    const isInSyncedDirectory = directories.some((dir) => {
-      const dirWithoutSlash = dir.slice(0, -1);
-      return (
-        path === dirWithoutSlash || path.startsWith(dir) || path.startsWith(dirWithoutSlash + '/')
-      );
-    });
-
-    // Check if path is a synced file
-    const isSyncedFile = files.some((file) => path === file);
-
-    if (isInSyncedDirectory || isSyncedFile) {
-      return { isSynced: true, syncType: 'user' };
-    }
-
+    // All other files are workspace-local (not synced)
     return { isSynced: false, syncType: null };
   };
 }
@@ -133,9 +119,22 @@ function isHiddenFile(name: string): boolean {
   return name.startsWith('.');
 }
 
+function sortNodes(items: FileNode[]): FileNode[] {
+  return [...items].sort((a, b) => {
+    const aIsDir = a.type === 'directory';
+    const bIsDir = b.type === 'directory';
+
+    if (aIsDir !== bIsDir) {
+      return aIsDir ? -1 : 1;
+    }
+
+    return a.name.localeCompare(b.name);
+  });
+}
+
 function filterFiles(files: FileNode[], showHidden: boolean): FileNode[] {
-  if (showHidden) return files;
-  return files.filter((file) => !isHiddenFile(file.name));
+  const visibleFiles = showHidden ? files : files.filter((file) => !isHiddenFile(file.name));
+  return sortNodes(visibleFiles);
 }
 
 function FileTreeNode({
@@ -153,7 +152,6 @@ function FileTreeNode({
   getSyncInfo,
   onToggleSync,
 }: FileTreeNodeProps) {
-  const syncInfo = getSyncInfo(item.path || item.name || '');
   const isExpanded = expandedFolders.has(item.path);
   const isLoading = loadingFolders.has(item.path);
   const rawChildren = loadedFolders.get(item.path);
@@ -262,17 +260,6 @@ function FileTreeNode({
               >
                 {item.name}
               </span>
-              {syncInfo.isSynced && (
-                <CloudSync
-                  className={cn(
-                    'h-3 w-3 shrink-0 opacity-70',
-                    syncInfo.syncType === 'user' ? 'text-blue-500' : 'text-accent-secondary'
-                  )}
-                  aria-label={
-                    syncInfo.syncType === 'user' ? 'Synced to user account' : 'Auto-synced by Podex'
-                  }
-                />
-              )}
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56">
@@ -308,24 +295,6 @@ function FileTreeNode({
               <Download className="mr-2 h-4 w-4" />
               Download as ZIP
             </DropdownMenuItem>
-            {onToggleSync && (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => onToggleSync(item.path)}>
-                  {syncInfo.isSynced ? (
-                    <>
-                      <CloudSync className="mr-2 h-4 w-4" />
-                      Remove from sync
-                    </>
-                  ) : (
-                    <>
-                      <CloudSync className="mr-2 h-4 w-4" />
-                      Add to user sync
-                    </>
-                  )}
-                </DropdownMenuItem>
-              </>
-            )}
           </DropdownMenuContent>
         </DropdownMenu>
         {isExpanded && children && children.length > 0 && (
@@ -390,17 +359,6 @@ function FileTreeNode({
           >
             {item.name}
           </span>
-          {syncInfo.isSynced && (
-            <CloudSync
-              className={cn(
-                'h-3 w-3 shrink-0 opacity-70',
-                syncInfo.syncType === 'user' ? 'text-blue-500' : 'text-accent-secondary'
-              )}
-              aria-label={
-                syncInfo.syncType === 'user' ? 'Synced to user account' : 'Auto-synced by Podex'
-              }
-            />
-          )}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56">
@@ -438,24 +396,6 @@ function FileTreeNode({
           <Download className="mr-2 h-4 w-4" />
           Download
         </DropdownMenuItem>
-        {onToggleSync && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => onToggleSync(item.path)}>
-              {syncInfo.isSynced ? (
-                <>
-                  <CloudSync className="mr-2 h-4 w-4" />
-                  Remove from sync
-                </>
-              ) : (
-                <>
-                  <CloudSync className="mr-2 h-4 w-4" />
-                  Add to user sync
-                </>
-              )}
-            </DropdownMenuItem>
-          </>
-        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -554,7 +494,7 @@ function MobileFileTreeNode({
   );
 }
 
-export function FilesPanel({ sessionId }: FilesPanelProps) {
+export function FilesPanel({ sessionId, localPodId, workingDir }: FilesPanelProps) {
   const { sessions, createEditorGridCard } = useSessionStore();
   const openTab = useEditorStore((s) => s.openTab);
   const openMobileFile = useUIStore((state) => state.openMobileFile);
@@ -566,6 +506,38 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
   const [filesLoading, setFilesLoading] = useState(false);
   const [filesError, setFilesError] = useState<string | null>(null);
   const [hasLoaded, setHasLoaded] = useState(false);
+
+  // Local pod directory selector state
+  const isLocalPod = !!localPodId;
+  const [showDirSelector, setShowDirSelector] = useState(false);
+  const [currentWorkingDir, setCurrentWorkingDir] = useState<string | null>(workingDir ?? null);
+  const [changingDir, setChangingDir] = useState(false);
+  const updateSessionInfo = useSessionStore((state) => state.updateSessionInfo);
+
+  // Sync currentWorkingDir from prop if it changes externally
+  useEffect(() => {
+    if (workingDir && workingDir !== currentWorkingDir) {
+      setCurrentWorkingDir(workingDir);
+    }
+  }, [workingDir, currentWorkingDir]);
+
+  // Fetch workspace info on mount if local pod and no working dir
+  useEffect(() => {
+    if (isLocalPod && !workingDir && !currentWorkingDir) {
+      getWorkspaceInfo(sessionId)
+        .then((info) => {
+          const dir = info.working_dir || info.mount_path;
+          if (dir) {
+            setCurrentWorkingDir(dir);
+            // Also update session store so it persists
+            updateSessionInfo(sessionId, { mount_path: dir });
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to fetch workspace info:', err);
+        });
+    }
+  }, [isLocalPod, workingDir, currentWorkingDir, sessionId, updateSessionInfo]);
 
   // Tree expansion state
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
@@ -579,27 +551,8 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
   const [rootMenuPosition, setRootMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const rootContainerRef = useRef<HTMLDivElement | null>(null);
 
-  // Get default dotfiles from ConfigStore (config is guaranteed to be loaded by ConfigGate)
-  const defaultDotfiles = useConfigStore((state) => state.getDefaultDotfiles())!;
-
-  // User's dotfiles sync configuration
-  const [userDotfilesPaths, setUserDotfilesPaths] = useState<string[]>(defaultDotfiles);
-
-  // Fetch user config on mount
-  useEffect(() => {
-    getUserConfig()
-      .then((config) => {
-        if (config?.dotfiles_paths && config.dotfiles_paths.length > 0) {
-          setUserDotfilesPaths(config.dotfiles_paths);
-        }
-      })
-      .catch(() => {
-        // Use defaults if config fetch fails
-      });
-  }, []);
-
-  // Create sync info getter based on user's settings
-  const getSyncInfo = useMemo(() => createSyncInfoGetter(userDotfilesPaths), [userDotfilesPaths]);
+  // Create sync info getter (projects directory is always synced)
+  const getSyncInfo = useMemo(() => createSyncInfoGetter(), []);
 
   const loadRootFiles = useCallback(async () => {
     setFilesLoading(true);
@@ -790,38 +743,6 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
     }
   }, []);
 
-  // Toggle sync status for a file/folder
-  const handleToggleSync = useCallback(
-    async (path: string) => {
-      const syncInfo = getSyncInfo(path);
-      if (syncInfo.syncType === 'session') {
-        // Can't toggle session files - they're always synced
-        return;
-      }
-
-      const isCurrentlySynced = syncInfo.isSynced;
-      const newPaths = isCurrentlySynced
-        ? userDotfilesPaths.filter((p) => {
-            // Remove exact match or directory match
-            if (p === path) return false;
-            if (p.endsWith('/')) {
-              const dirPath = p.slice(0, -1);
-              return !(path === dirPath || path.startsWith(dirPath + '/'));
-            }
-            return true;
-          })
-        : [...userDotfilesPaths, path];
-
-      try {
-        await updateUserConfig({ dotfiles_paths: newPaths });
-        setUserDotfilesPaths(newPaths);
-      } catch (err) {
-        console.error('Failed to update sync configuration:', err);
-      }
-    },
-    [getSyncInfo, userDotfilesPaths]
-  );
-
   // Handle open from actions sheet
   const handleOpenFromSheet = useCallback(
     (path: string) => {
@@ -830,33 +751,105 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
     [handleFileClick]
   );
 
+  // Handle working directory change for local pods
+  const handleWorkingDirChange = useCallback(
+    async (newPath: string | null) => {
+      if (!newPath || !isLocalPod) return;
+
+      setChangingDir(true);
+      try {
+        const result = await updateWorkspaceConfig(sessionId, newPath);
+        if (result.success) {
+          const updatedPath = result.working_dir ?? newPath;
+          setCurrentWorkingDir(updatedPath);
+          setShowDirSelector(false);
+          // Update session store so mount_path is persisted
+          updateSessionInfo(sessionId, { mount_path: updatedPath });
+          // Clear loaded data and reload
+          setExpandedFolders(new Set());
+          setLoadedFolders(new Map());
+          setHasLoaded(false);
+          await loadRootFiles();
+        } else {
+          setFilesError(result.error ?? 'Failed to change directory');
+        }
+      } catch (err) {
+        setFilesError(err instanceof Error ? err.message : 'Failed to change directory');
+      } finally {
+        setChangingDir(false);
+      }
+    },
+    [sessionId, isLocalPod, loadRootFiles, updateSessionInfo]
+  );
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="border-b border-border-subtle px-3 py-2 flex items-center justify-between shrink-0">
-        <span className="text-xs font-medium text-text-muted uppercase tracking-wide">
-          Explorer
-        </span>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => setShowHiddenFiles(!showHiddenFiles)}
-            className={cn(
-              'shrink-0 p-1 rounded hover:bg-overlay',
-              showHiddenFiles ? 'text-text-primary' : 'text-text-muted hover:text-text-primary'
-            )}
-            title={showHiddenFiles ? 'Hide hidden files' : 'Show hidden files'}
-          >
-            {showHiddenFiles ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
-          </button>
-          <button
-            onClick={handleRefresh}
-            disabled={filesLoading}
-            className="shrink-0 p-1 rounded text-text-muted hover:text-text-primary hover:bg-overlay disabled:opacity-50"
-            title="Refresh"
-          >
-            <RefreshCw className={cn('h-4 w-4', filesLoading && 'animate-spin')} />
-          </button>
+      <div className="border-b border-border-subtle px-3 py-2 shrink-0">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-text-muted uppercase tracking-wide">
+            Explorer
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setShowHiddenFiles(!showHiddenFiles)}
+              className={cn(
+                'shrink-0 p-1 rounded hover:bg-overlay',
+                showHiddenFiles ? 'text-text-primary' : 'text-text-muted hover:text-text-primary'
+              )}
+              title={showHiddenFiles ? 'Hide hidden files' : 'Show hidden files'}
+            >
+              {showHiddenFiles ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+            </button>
+            <button
+              onClick={handleRefresh}
+              disabled={filesLoading || changingDir}
+              className="shrink-0 p-1 rounded text-text-muted hover:text-text-primary hover:bg-overlay disabled:opacity-50"
+              title="Refresh"
+            >
+              <RefreshCw
+                className={cn('h-4 w-4', (filesLoading || changingDir) && 'animate-spin')}
+              />
+            </button>
+          </div>
         </div>
+
+        {/* Local pod working directory selector */}
+        {isLocalPod && localPodId && (
+          <div className="mt-2">
+            <button
+              onClick={() => setShowDirSelector(!showDirSelector)}
+              className="flex items-center gap-1 w-full text-left px-2 py-1 rounded bg-surface-hover hover:bg-overlay text-xs"
+              title={currentWorkingDir || workingDir || 'Select workspace directory'}
+            >
+              <Folder className="h-3.5 w-3.5 text-accent-primary shrink-0" />
+              <span className="truncate flex-1 text-text-primary font-mono">
+                {currentWorkingDir || workingDir
+                  ? (currentWorkingDir || workingDir || '').split('/').pop() ||
+                    currentWorkingDir ||
+                    workingDir
+                  : '(select directory)'}
+              </span>
+              <ChevronDown
+                className={cn(
+                  'h-3.5 w-3.5 text-text-muted shrink-0 transition-transform',
+                  showDirSelector && 'rotate-180'
+                )}
+              />
+            </button>
+
+            {/* Directory browser dropdown */}
+            {showDirSelector && (
+              <div className="mt-2">
+                <DirectoryBrowser
+                  podId={localPodId}
+                  selectedPath={currentWorkingDir || workingDir || null}
+                  onSelect={handleWorkingDirChange}
+                />
+              </div>
+            )}
+          </div>
+        )}
       </div>
       {/* File tree */}
       <DropdownMenu
@@ -930,7 +923,6 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
                   emptyFolders={emptyFolders}
                   showHiddenFiles={showHiddenFiles}
                   getSyncInfo={getSyncInfo}
-                  onToggleSync={handleToggleSync}
                 />
               ))
           ) : (
@@ -952,7 +944,6 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
                   emptyFolders={emptyFolders}
                   showHiddenFiles={showHiddenFiles}
                   getSyncInfo={getSyncInfo}
-                  onToggleSync={handleToggleSync}
                 />
               ))
           )}
@@ -1003,7 +994,6 @@ export function FilesPanel({ sessionId }: FilesPanelProps) {
           sessionId={sessionId}
           onOpen={handleOpenFromSheet}
           onCopyPath={handleCopyPath}
-          onToggleSync={handleToggleSync}
           getSyncInfo={getSyncInfo}
         />
       )}

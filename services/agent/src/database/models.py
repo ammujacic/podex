@@ -6,11 +6,13 @@ from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
+    Column,
     DateTime,
     Float,
     ForeignKey,
     Integer,
     String,
+    Table,
     Text,
     UniqueConstraint,
     func,
@@ -27,6 +29,28 @@ class Base(DeclarativeBase):
         dict[str, Any]: JSONB,
         list[str]: JSONB,
     }
+
+
+# Junction table for agent-conversation attachments.
+# A conversation can be attached to multiple agents, but an agent can only have one conversation.
+# The unique constraint on agent_id enforces the "agent has one conversation" rule.
+agent_conversation_attachments = Table(
+    "agent_conversation_attachments",
+    Base.metadata,
+    Column(
+        "agent_id",
+        UUID(as_uuid=False),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        primary_key=True,
+        unique=True,  # Agent can only be attached to ONE conversation
+    ),
+    Column(
+        "conversation_session_id",
+        UUID(as_uuid=False),
+        ForeignKey("conversation_sessions.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+)
 
 
 class User(Base):
@@ -154,49 +178,108 @@ class Agent(Base):
     )
 
     session: Mapped["Session"] = relationship("Session", back_populates="agents")
-    messages: Mapped[list["Message"]] = relationship(
-        "Message",
-        back_populates="agent",
-        order_by="Message.created_at",
-    )
     template: Mapped["AgentTemplate | None"] = relationship(
         "AgentTemplate",
         back_populates="agents",
     )
+    # The conversation attached to this agent (via junction table).
+    # An agent can only have ONE conversation attached (unique constraint on junction).
+    attached_conversation: Mapped["ConversationSession | None"] = relationship(
+        "ConversationSession",
+        secondary=agent_conversation_attachments,
+        back_populates="attached_agents",
+        uselist=False,
+    )
 
 
-class Message(Base):
-    """Agent conversation message model."""
+class ConversationSession(Base):
+    """Portable conversation session that can be attached to any agent."""
 
-    __tablename__ = "messages"
+    __tablename__ = "conversation_sessions"
 
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
         primary_key=True,
         default=lambda: str(uuid4()),
     )
-    agent_id: Mapped[str] = mapped_column(
+    session_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
-        ForeignKey("agents.id", ondelete="CASCADE"),
+        ForeignKey("sessions.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    message_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    # Relationships
+    session: Mapped["Session"] = relationship("Session")
+    messages: Mapped[list["ConversationMessage"]] = relationship(
+        "ConversationMessage",
+        back_populates="conversation_session",
+        order_by="ConversationMessage.created_at",
+    )
+    # Agents that have this conversation attached (many-to-many, but agent side is unique)
+    attached_agents: Mapped[list["Agent"]] = relationship(
+        "Agent",
+        secondary=agent_conversation_attachments,
+        back_populates="attached_conversation",
+    )
+
+
+class ConversationMessage(Base):
+    """Message within a conversation session."""
+
+    __tablename__ = "conversation_messages"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        primary_key=True,
+        default=lambda: str(uuid4()),
+    )
+    conversation_session_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("conversation_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     role: Mapped[str] = mapped_column(String(50), nullable=False)  # user, assistant, system
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    thinking: Mapped[str | None] = mapped_column(Text)
     tool_calls: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
-    tokens_used: Mapped[int | None] = mapped_column()
-    # Voice/audio fields (must match API service model)
+    tool_results: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    model: Mapped[str | None] = mapped_column(String(100))
+    stop_reason: Mapped[str | None] = mapped_column(String(50))
+    usage: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # Voice/audio fields
     audio_url: Mapped[str | None] = mapped_column(Text)
     audio_duration_ms: Mapped[int | None] = mapped_column(Integer)
-    input_type: Mapped[str] = mapped_column(String(20), default="text")  # "text" or "voice"
+    input_type: Mapped[str] = mapped_column(String(20), default="text")
     transcription_confidence: Mapped[float | None] = mapped_column(Float)
     tts_summary: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
+        index=True,
     )
 
-    agent: Mapped["Agent"] = relationship("Agent", back_populates="messages")
+    # Relationships
+    conversation_session: Mapped["ConversationSession"] = relationship(
+        "ConversationSession",
+        back_populates="messages",
+    )
 
 
 class Workspace(Base):
@@ -252,7 +335,8 @@ class AgentTemplate(Base):
     # Agent configuration
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
     allowed_tools: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
-    model: Mapped[str] = mapped_column(String(100), default="claude-sonnet-4-20250514")
+    # Default to Claude Sonnet 4.5, the platform's balanced model
+    model: Mapped[str] = mapped_column(String(100), default="claude-sonnet-4-5")
     temperature: Mapped[float | None] = mapped_column(Float)
     max_tokens: Mapped[int | None] = mapped_column(Integer)
 

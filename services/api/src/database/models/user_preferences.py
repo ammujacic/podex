@@ -7,7 +7,7 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Uni
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from src.database.encrypted_types import EncryptedJSON
+from src.database.encrypted_types import EncryptedJSON, EncryptedString
 
 from .base import Base, _generate_uuid
 
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 class UserConfig(Base):
-    """User configuration and dotfiles model."""
+    """User configuration model."""
 
     __tablename__ = "user_configs"
 
@@ -28,21 +28,11 @@ class UserConfig(Base):
         unique=True,
     )
 
-    # Dotfiles sync configuration
-    sync_dotfiles: Mapped[bool] = mapped_column(Boolean, default=True)
-    dotfiles_repo: Mapped[str | None] = mapped_column(Text)  # Optional git repo for dotfiles
-    dotfiles_branch: Mapped[str | None] = mapped_column(String(100))  # Git branch for dotfiles
-    dotfiles_files: Mapped[list[str] | None] = mapped_column(JSONB)  # Specific files to sync
-    dotfiles_paths: Mapped[list[str] | None] = mapped_column(JSONB)  # Specific paths to sync
-    dotfiles_last_sync: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )  # Last sync time
-
     # Default shell and editor
     default_shell: Mapped[str] = mapped_column(String(50), default="zsh")
     default_editor: Mapped[str] = mapped_column(String(50), default="vscode")
 
-    # Git configuration (synced to pods)
+    # Git configuration (synced to workspaces)
     git_name: Mapped[str | None] = mapped_column(String(255))
     git_email: Mapped[str | None] = mapped_column(String(255))
 
@@ -55,9 +45,6 @@ class UserConfig(Base):
     # Theme preferences
     theme: Mapped[str] = mapped_column(String(50), default="dark")
     editor_theme: Mapped[str] = mapped_column(String(100), default="vs-dark")
-
-    # S3 path for user's dotfiles
-    s3_dotfiles_path: Mapped[str | None] = mapped_column(Text)
 
     # Completed onboarding tours (for cross-device persistence)
     completed_tours: Mapped[list[str] | None] = mapped_column(JSONB, default=list)
@@ -87,9 +74,6 @@ class UserConfig(Base):
     # User-provided API keys for external LLM providers (stored encrypted)
     # Format: openai: sk-..., anthropic: sk-ant-..., google: ...
     llm_api_keys: Mapped[dict[str, str] | None] = mapped_column(EncryptedJSON)
-
-    # CLI sync preferences - controls how skills/MCPs sync to CLI wrapper agents
-    cli_sync_preferences: Mapped[dict[str, Any] | None] = mapped_column(JSONB, default=dict)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -197,3 +181,63 @@ class CustomCommand(Base):
 
     # Unique constraint: command name is unique per user (or global)
     __table_args__ = (UniqueConstraint("user_id", "name", name="uq_custom_command_user_name"),)
+
+
+class UserOAuthToken(Base):
+    """OAuth tokens for LLM provider personal plans.
+
+    Stores OAuth credentials for providers that support personal plan authentication
+    (e.g., Anthropic Claude Pro/Max, Google Gemini, GitHub Copilot/Codex).
+
+    Tokens are encrypted at rest and auto-refreshed when expired.
+    """
+
+    __tablename__ = "user_oauth_tokens"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Provider identifier: "anthropic", "google", "github"
+    provider: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+
+    # OAuth tokens (encrypted at rest)
+    access_token: Mapped[str] = mapped_column(EncryptedString, nullable=False)
+    refresh_token: Mapped[str | None] = mapped_column(EncryptedString)
+
+    # Token expiration (Unix timestamp)
+    expires_at: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Scopes granted by the OAuth flow
+    scopes: Mapped[str | None] = mapped_column(Text)
+
+    # Connection status: "connected", "expired", "error", "revoked"
+    status: Mapped[str] = mapped_column(String(20), default="connected", nullable=False)
+
+    # Last error message (if status is "error")
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+    # User profile info from OAuth (email, name, etc.)
+    profile_info: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    # Relationships
+    user: Mapped["User"] = relationship("User")
+
+    # Unique constraint: one token per provider per user
+    __table_args__ = (UniqueConstraint("user_id", "provider", name="uq_user_oauth_provider"),)

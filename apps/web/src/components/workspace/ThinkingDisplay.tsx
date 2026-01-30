@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
 import { cn } from '@/lib/utils';
 import { Brain, ChevronDown, ChevronRight, Loader2, Lightbulb, Clock } from 'lucide-react';
 
@@ -34,10 +34,14 @@ export function ThinkingDisplay({
   // Track displayed content length in ref to avoid stale closure in animation interval
   const displayedLengthRef = useRef(0);
 
-  const blocks = Array.isArray(thinking) ? thinking : thinking ? [thinking] : [];
+  // Memoize derived values to prevent recalculating on every render
+  const blocks = useMemo(
+    () => (Array.isArray(thinking) ? thinking : thinking ? [thinking] : []),
+    [thinking]
+  );
   const hasBlocks = blocks.length > 0;
   const latestBlock = blocks[blocks.length - 1];
-  const totalContent = blocks.map((b) => b.content).join('\n\n');
+  const totalContent = useMemo(() => blocks.map((b) => b.content).join('\n\n'), [blocks]);
 
   // Animate thinking text when active
   useEffect(() => {
@@ -72,11 +76,15 @@ export function ThinkingDisplay({
     }
   }, [displayedContent, isActive]);
 
+  // Memoize total duration calculation
+  const totalDuration = useMemo(
+    () => blocks.reduce((acc, b) => acc + (b.duration || 0), 0),
+    [blocks]
+  );
+
   if (!thinking || blocks.length === 0) {
     return null;
   }
-
-  const totalDuration = blocks.reduce((acc, b) => acc + (b.duration || 0), 0);
 
   return (
     <div
@@ -161,9 +169,14 @@ interface ThinkingBlockItemProps {
   isActive: boolean;
 }
 
-function ThinkingBlockItem({ block: _block, content, isLatest, isActive }: ThinkingBlockItemProps) {
-  // Parse thinking content for structure
-  const sections = parseThinkingContent(content);
+const ThinkingBlockItem = memo(function ThinkingBlockItem({
+  block: _block,
+  content,
+  isLatest,
+  isActive,
+}: ThinkingBlockItemProps) {
+  // Memoize parsed thinking content for structure
+  const sections = useMemo(() => parseThinkingContent(content), [content]);
 
   // Generate stable key for section based on type and content
   const getSectionKey = (section: ThinkingSection, index: number): string => {
@@ -213,7 +226,7 @@ function ThinkingBlockItem({ block: _block, content, isLatest, isActive }: Think
       ))}
     </div>
   );
-}
+});
 
 interface ThinkingSection {
   type: 'heading' | 'list' | 'text' | 'code';

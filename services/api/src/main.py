@@ -1,5 +1,7 @@
 """Podex API Gateway - Main FastAPI application."""
 
+# ruff: noqa: I001
+
 import asyncio
 import contextlib
 import os
@@ -43,35 +45,31 @@ from src.routes import (
     agents,
     attention,
     auth,
+    auth_oauth,
     billing,
     changes,
     checkpoints,
-    claude_code,
-    cli_sync,
     commands,
     completion,
     context,
+    conversations,
     cost_insights,
     dashboard,
     doctor,
     extensions,
-    gemini_cli,
     git,
     github,
     health_checks,
     hooks,
     knowledge,
-    llm_bridge,
     llm_providers,
     local_pods,
-    lsp,
     marketplace,
     mcp,
     memory,
     mfa,
     notifications,
     oauth,
-    openai_codex,
     organizations,
     pending_changes,
     plans,
@@ -81,18 +79,20 @@ from src.routes import (
     project_health,
     project_init,
     push,
+    servers,
     sessions,
     sharing,
     skill_repositories,
     skill_templates,
     skills,
+    ssh_keys,
     subagents,
     templates,
-    terminal_agents,
     uploads,
     user_compliance,
     user_config,
     voice,
+    waitlist,
     webhooks,
     workspaces,
     worktrees,
@@ -161,6 +161,7 @@ class _BackgroundTasks:
     """Container for background tasks to avoid global statement."""
 
     quota_reset: asyncio.Task[None] | None = None
+    oauth_refresh: asyncio.Task[None] | None = None
     standby_check: asyncio.Task[None] | None = None
     workspace_provision: asyncio.Task[None] | None = None
     billing_maintenance: asyncio.Task[None] | None = None
@@ -298,6 +299,128 @@ async def quota_reset_background_task() -> None:
             await asyncio.sleep(60)  # Wait a bit before retrying
 
 
+async def oauth_token_refresh_background_task() -> None:
+    """Background task to periodically refresh OAuth tokens that are expiring soon.
+
+    Runs every 30 minutes to check for OAuth tokens that will expire within 1 hour
+    and proactively refreshes them.
+
+    RELIABILITY: Uses asyncio.wait_for() timeout to prevent connection pool
+    exhaustion from hung operations.
+    """
+    from sqlalchemy import select
+    from src.database.models import UserOAuthToken
+    from src.services.oauth import get_oauth_provider
+
+    while True:
+        try:
+            async for db in get_db():
+                try:
+                    # Find tokens expiring within 1 hour
+                    import time
+
+                    one_hour_from_now = int(time.time()) + 3600
+                    logger.debug(
+                        "Checking for expiring OAuth tokens",
+                        current_time=int(time.time()),
+                        one_hour_from_now=one_hour_from_now,
+                    )
+
+                    result = await db.execute(
+                        select(UserOAuthToken)
+                        .where(
+                            UserOAuthToken.status.in_(["connected", "error"])
+                        )  # Also retry error tokens
+                        .where(UserOAuthToken.expires_at < one_hour_from_now)
+                        .where(UserOAuthToken.refresh_token.isnot(None))
+                    )
+                    expiring_tokens = result.scalars().all()
+
+                    logger.debug(
+                        "Found expiring OAuth tokens"
+                        if expiring_tokens
+                        else "No expiring OAuth tokens found",
+                        count=len(expiring_tokens),
+                    )
+
+                    if not expiring_tokens:
+                        continue
+
+                    logger.info(
+                        "Refreshing expiring OAuth tokens",
+                        count=len(expiring_tokens),
+                    )
+
+                    for token in expiring_tokens:
+                        try:
+                            logger.debug(
+                                "Attempting to refresh token",
+                                provider=token.provider,
+                                refresh_token_prefix=token.refresh_token[:20]
+                                if token.refresh_token
+                                else None,
+                                refresh_token_len=len(token.refresh_token)
+                                if token.refresh_token
+                                else 0,
+                            )
+                            oauth_provider = get_oauth_provider(token.provider)
+                            if not token.refresh_token:
+                                continue
+                            credentials = await asyncio.wait_for(
+                                oauth_provider.refresh_token(token.refresh_token),
+                                timeout=30.0,
+                            )
+
+                            # Update token
+                            token.access_token = credentials.access_token
+                            if credentials.refresh_token:
+                                token.refresh_token = credentials.refresh_token
+                            token.expires_at = credentials.expires_at
+                            token.status = "connected"
+                            token.last_error = None
+
+                            logger.info(
+                                "Refreshed OAuth token",
+                                provider=token.provider,
+                                user_id=token.user_id,
+                            )
+                        except Exception as e:
+                            token.status = "error"
+                            token.last_error = str(e)
+                            logger.warning(
+                                "Failed to refresh OAuth token",
+                                provider=token.provider,
+                                user_id=token.user_id,
+                                error=str(e),
+                            )
+
+                    await asyncio.wait_for(
+                        db.commit(),
+                        timeout=settings.BG_TASK_DB_TIMEOUT,
+                    )
+
+                except TimeoutError:
+                    await db.rollback()
+                    logger.exception("OAuth refresh timed out - possible DB connection issue")
+                    _report_background_error("oauth_refresh", "Database operation timed out")
+                except Exception as e:
+                    await db.rollback()
+                    logger.exception("Failed to refresh OAuth tokens", error=str(e))
+                    _report_background_error("oauth_refresh", str(e), exc=e)
+
+        except asyncio.CancelledError:
+            logger.info("OAuth refresh task cancelled")
+            break
+        except Exception as e:
+            logger.exception("Error in OAuth refresh task", error=str(e))
+            _report_background_error("oauth_refresh", str(e), exc=e)
+            await asyncio.sleep(60)
+            continue
+
+        # Run every 30 minutes
+        await asyncio.sleep(30 * 60)
+
+
 async def billing_maintenance_background_task() -> None:
     """Background task for billing maintenance operations.
 
@@ -397,12 +520,12 @@ async def billing_maintenance_background_task() -> None:
 
 
 async def credit_enforcement_background_task() -> None:
-    """Background task to enforce credit limits by moving workspaces to standby.
+    """Background task to enforce credit limits by stopping cloud workspaces.
 
     Runs every 5 minutes to check for users who have exhausted their compute credits
-    (both plan quota and prepaid credits) and moves their running workspaces to standby.
+    (both plan quota and prepaid credits) and moves their running *compute-backed*
+    workspaces from 'running' to 'stopped'. Local-pod workspaces are not affected.
     """
-    from datetime import UTC, datetime
 
     from sqlalchemy import select
 
@@ -418,7 +541,6 @@ async def credit_enforcement_background_task() -> None:
 
             async for db in get_db():
                 try:
-                    now = datetime.now(UTC)
                     standby_count = 0
 
                     # Get users who have exhausted compute credits
@@ -432,15 +554,16 @@ async def credit_enforcement_background_task() -> None:
                         user_count=len(exhausted_users),
                     )
 
-                    # For each exhausted user, find and standby their running workspaces
+                    # For each exhausted user, find and stop their running compute workspaces
                     for user_id in exhausted_users:
-                        # Find running workspaces owned by this user
+                        # Find running *cloud* workspaces owned by this user
                         query = (
                             select(Workspace, SessionModel)
                             .join(SessionModel, SessionModel.workspace_id == Workspace.id)
                             .where(
                                 SessionModel.owner_id == user_id,
                                 Workspace.status == "running",
+                                Workspace.local_pod_id.is_(None),
                             )
                         )
 
@@ -451,7 +574,7 @@ async def credit_enforcement_background_task() -> None:
                             try:
                                 from src.exceptions import ComputeServiceHTTPError
 
-                                # Stop the container
+                                # Stop the container in the compute service
                                 try:
                                     await compute_client.stop_workspace(workspace.id, user_id)
                                 except ComputeServiceHTTPError as compute_error:
@@ -459,24 +582,24 @@ async def credit_enforcement_background_task() -> None:
                                     if compute_error.status_code != 404:
                                         raise compute_error  # noqa: TRY201
 
-                                # Update database
-                                workspace.status = "standby"
-                                workspace.standby_at = now
+                                # Update database: normalize to explicit 'stopped' state
+                                workspace.status = "stopped"
+                                workspace.standby_at = None
 
-                                # Notify connected clients about billing standby
+                                # Notify connected clients about billing stop
                                 await emit_to_session(
                                     str(session.id),
                                     "workspace_billing_standby",
                                     {
                                         "workspace_id": workspace.id,
-                                        "status": "standby",
+                                        "status": "stopped",
                                         "reason": "credit_exhaustion",
                                         "message": (
-                                            "Your workspace has been paused due to "
-                                            "insufficient credits. Please upgrade your "
+                                            "Your cloud workspace has been stopped due to "
+                                            "insufficient compute credits. Please upgrade your "
                                             "plan or add credits to resume."
                                         ),
-                                        "standby_at": now.isoformat(),
+                                        "standby_at": None,
                                         "upgrade_url": "/settings/plans",
                                         "add_credits_url": "/settings/billing",
                                     },
@@ -484,7 +607,7 @@ async def credit_enforcement_background_task() -> None:
 
                                 standby_count += 1
                                 logger.info(
-                                    "Moved workspace to standby due to credit exhaustion",
+                                    "Stopped workspace due to credit exhaustion",
                                     workspace_id=workspace.id,
                                     session_id=str(session.id),
                                     user_id=user_id,
@@ -717,14 +840,19 @@ async def workspace_provision_background_task() -> None:
                 try:
                     provisioned_count = 0
 
-                    # Find active sessions with workspaces that should be running
-                    # Include pending/running/creating statuses (not stopped/standby)
+                    # Find active *cloud* sessions with workspaces that should be running.
+                    # IMPORTANT: Skip local-pod workspaces entirely - those are managed by the
+                    # local pod connection and should never be auto-provisioned via compute.
+                    # NOTE: Only check "running" status - "pending" and "creating" workspaces
+                    # are still being provisioned by another request, and checking them here
+                    # causes a race condition where we try to create them twice.
                     query = (
                         select(SessionModel, Workspace)
                         .join(Workspace, SessionModel.workspace_id == Workspace.id)
                         .where(
                             SessionModel.status == "active",
-                            Workspace.status.in_(["running", "creating", "pending"]),
+                            Workspace.status == "running",
+                            Workspace.local_pod_id.is_(None),
                         )
                     )
 
@@ -1503,8 +1631,14 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     _tasks.quota_reset = create_monitored_task(quota_reset_background_task(), "quota_reset")
     logger.info("Quota reset background task started")
 
-    _tasks.standby_check = create_monitored_task(standby_background_task(), "standby_check")
-    logger.info("Standby check background task started")
+    # NOTE: Idle standby/auto-pause and long-standby cleanup are disabled. The only
+    # automatic transition away from 'running' is explicit credit enforcement for
+    # cloud workspaces; everything else is user-driven.
+
+    _tasks.credit_enforcement = create_monitored_task(
+        credit_enforcement_background_task(), "credit_enforcement"
+    )
+    logger.info("Credit enforcement background task started")
 
     _tasks.workspace_provision = create_monitored_task(
         workspace_provision_background_task(), "workspace_provision"
@@ -1526,15 +1660,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     )
     logger.info("Container health check background task started")
 
-    _tasks.standby_cleanup = create_monitored_task(
-        standby_cleanup_background_task(), "standby_cleanup"
+    _tasks.oauth_refresh = create_monitored_task(
+        oauth_token_refresh_background_task(), "oauth_refresh"
     )
-    logger.info("Standby cleanup background task started")
-
-    _tasks.credit_enforcement = create_monitored_task(
-        credit_enforcement_background_task(), "credit_enforcement"
-    )
-    logger.info("Credit enforcement background task started")
+    logger.info("OAuth token refresh background task started")
 
     # Start terminal session cleanup task (cleans up stale sessions after 24 hours)
     await terminal_manager.start_cleanup_task()
@@ -1565,10 +1694,6 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     # Stop cost tracker cleanup task
     await get_cost_tracker().stop_cleanup_task()
     logger.info("Cost tracker cleanup task stopped")
-
-    # Close all terminal sessions (terminates PTY processes)
-    await terminal_agents.terminal_session_manager.shutdown()
-    logger.info("Terminal sessions closed")
 
     # Cancel quota reset task
     if _tasks.quota_reset:
@@ -1783,9 +1908,13 @@ api_v1 = APIRouter()
 # Include all routes in v1 router
 api_v1.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_v1.include_router(mfa.router)  # Already has prefix
-api_v1.include_router(oauth.router, prefix="/oauth", tags=["oauth"])
+api_v1.include_router(
+    auth_oauth.router, prefix="/oauth", tags=["oauth"]
+)  # User authentication OAuth
+api_v1.include_router(oauth.router, prefix="/llm-oauth", tags=["llm-oauth"])  # LLM provider OAuth
 api_v1.include_router(sessions.router, prefix="/sessions", tags=["sessions"])
 api_v1.include_router(sharing.router, prefix="/sessions", tags=["sharing"])
+api_v1.include_router(conversations.router, tags=["conversations"])
 api_v1.include_router(agents.router, prefix="/sessions/{session_id}/agents", tags=["agents"])
 api_v1.include_router(
     attention.router, prefix="/sessions/{session_id}/attention", tags=["attention"]
@@ -1796,6 +1925,7 @@ api_v1.include_router(workspaces.router, prefix="/workspaces", tags=["workspaces
 api_v1.include_router(preview.router, prefix="/preview", tags=["preview"])
 api_v1.include_router(templates.router, prefix="/templates", tags=["templates"])
 api_v1.include_router(user_config.router, prefix="/user/config", tags=["user-config"])
+api_v1.include_router(ssh_keys.router, prefix="/ssh-keys", tags=["ssh-keys"])
 api_v1.include_router(agent_templates.router, prefix="/agent-templates", tags=["agent-templates"])
 api_v1.include_router(completion.router, prefix="/completion", tags=["completion"])
 api_v1.include_router(knowledge.router)  # Already has prefix
@@ -1809,17 +1939,18 @@ api_v1.include_router(skill_repositories.router, tags=["skill-repositories"])
 api_v1.include_router(marketplace.router, tags=["marketplace"])
 api_v1.include_router(llm_providers.router, tags=["llm-providers"])
 api_v1.include_router(local_pods.router)  # Already has prefix
-api_v1.include_router(llm_bridge.router, tags=["llm-bridge"])
 api_v1.include_router(voice.router, prefix="/voice", tags=["voice"])
 api_v1.include_router(uploads.router, prefix="/sessions", tags=["uploads"])
 api_v1.include_router(billing.router, tags=["billing"])
 api_v1.include_router(cost_insights.router, tags=["cost-insights"])
 api_v1.include_router(webhooks.router, tags=["webhooks"])
 api_v1.include_router(admin.router, tags=["admin"])
+api_v1.include_router(servers.router, prefix="/servers", tags=["servers"])
 api_v1.include_router(models_public_router, prefix="/models", tags=["models"])
 api_v1.include_router(agent_roles_public_router, prefix="/agent-roles", tags=["agent-roles"])
 api_v1.include_router(agent_tools_public_router, prefix="/agent-tools", tags=["agent-tools"])
 api_v1.include_router(platform_settings.router, tags=["platform"])
+api_v1.include_router(waitlist.router, tags=["waitlist"])  # Public waitlist signup
 api_v1.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 api_v1.include_router(productivity.router, tags=["productivity"])
 api_v1.include_router(project_health.router, tags=["project-health"])
@@ -1834,16 +1965,10 @@ api_v1.include_router(changes.router, prefix="/changes", tags=["changes"])
 api_v1.include_router(pending_changes.router, tags=["pending-changes"])
 api_v1.include_router(subagents.router, tags=["subagents"])
 api_v1.include_router(hooks.router, tags=["hooks"])
-api_v1.include_router(terminal_agents.router, prefix="/terminal-agents", tags=["terminal-agents"])
-api_v1.include_router(lsp.router, tags=["lsp"])
 api_v1.include_router(commands.router, tags=["commands"])
 api_v1.include_router(project_init.router, tags=["init"])
 api_v1.include_router(doctor.router, tags=["doctor"])
 api_v1.include_router(extensions.router, prefix="/extensions", tags=["extensions"])
-api_v1.include_router(claude_code.router, tags=["claude-code"])
-api_v1.include_router(openai_codex.router, tags=["openai-codex"])
-api_v1.include_router(gemini_cli.router, tags=["gemini-cli"])
-api_v1.include_router(cli_sync.router, tags=["cli-sync"])
 api_v1.include_router(user_compliance.router, prefix="/compliance", tags=["compliance"])
 
 # Mount v1 API at /api/v1

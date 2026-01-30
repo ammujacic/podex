@@ -74,7 +74,6 @@ interface ConfigState {
   getCardDimensions: () => CardDimensions | null;
   getContextCompactionDefaults: () => ContextCompactionDefaults | null;
   getContextUsageDefaults: () => ContextUsageDefaults | null;
-  getDefaultDotfiles: () => string[] | null;
   getAICompletionConfig: () => AICompletionConfig | null;
   getCodeGeneratorConfig: () => CodeGeneratorConfig | null;
   getBugDetectorConfig: () => BugDetectorConfig | null;
@@ -215,14 +214,6 @@ export const useConfigStore = create<ConfigState>()(
         const setting = get().settingsMap['context_usage_defaults'];
         if (setting && typeof setting === 'object') {
           return setting as ContextUsageDefaults;
-        }
-        return null;
-      },
-
-      getDefaultDotfiles: () => {
-        const setting = get().settingsMap['default_dotfiles'];
-        if (Array.isArray(setting)) {
-          return setting as string[];
         }
         return null;
       },

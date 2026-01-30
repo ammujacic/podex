@@ -15,7 +15,6 @@ from src.config import settings
 from src.database.connection import get_db
 from src.database.models import PodTemplate, Session, SessionShare, Workspace
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, RATE_LIMIT_UPLOAD, limiter
-from src.storage.gcs import S3Storage, get_storage
 
 logger = structlog.get_logger()
 
@@ -91,7 +90,6 @@ def validate_file_path(path: str, workspace_root: str = "/workspace") -> str:
 
 # Type aliases for dependencies
 DbSession = Annotated[AsyncSession, Depends(get_db)]
-Storage = Annotated[S3Storage, Depends(get_storage)]
 
 
 async def verify_workspace_access(
@@ -904,29 +902,16 @@ async def list_files(
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
-    storage: Storage,
     path: str = "/workspace",
 ) -> list[FileNode]:
     """List files in workspace directory."""
     # SECURITY: Validate path to prevent traversal attacks
-    validated_path = validate_file_path(path)
+    validate_file_path(path)
 
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
 
-    # Use S3 storage if configured (non-default bucket or custom endpoint)
-    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
-        try:
-            tree = await storage.get_file_tree(workspace_id, validated_path)
-            return [FileNode(**node) for node in tree]
-        except Exception:
-            # Fall back to demo data on error
-            logger.debug(
-                "Failed to get file tree from storage, using demo data",
-                workspace_id=workspace_id,
-            )
-
-    # Get template-specific demo files
+    # Get template-specific demo files (actual file ops via workspace containers)
     template_slug = await get_template_slug_for_workspace(workspace_id, db)
     return get_demo_file_tree(template_slug)
 
@@ -968,7 +953,6 @@ async def get_file_content(
     response: Response,  # noqa: ARG001
     path: str,
     db: DbSession,
-    storage: Storage,
 ) -> FileContent:
     """Get file content."""
     # SECURITY: Validate path to prevent traversal attacks
@@ -977,26 +961,7 @@ async def get_file_content(
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
 
-    # Try S3 storage first if configured (non-default bucket or custom endpoint)
-    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
-        try:
-            content = await storage.get_file_text(workspace_id, validated_path)
-            return FileContent(
-                path=validated_path,
-                content=content,
-                language=get_language_from_path(validated_path),
-            )
-        except FileNotFoundError as e:
-            raise HTTPException(status_code=404, detail="File not found") from e
-        except Exception:
-            # Fall back to demo data on error
-            logger.debug(
-                "Failed to get file content from storage, using demo data",
-                workspace_id=workspace_id,
-                path=validated_path,
-            )
-
-    # Fall back to template-specific demo data
+    # Use template-specific demo data (actual file ops via workspace containers)
     template_slug = await get_template_slug_for_workspace(workspace_id, db)
     demo_contents = get_demo_contents(template_slug)
     demo_content = demo_contents.get(validated_path)
@@ -1024,22 +989,17 @@ async def update_file_content(
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
-    storage: Storage,
 ) -> FileContent:
-    """Update file content."""
+    """Update file content.
+
+    Note: File operations are handled by workspace containers.
+    This endpoint validates access and returns the updated content.
+    """
     # SECURITY: Validate path to prevent traversal attacks
     validated_path = validate_file_path(path)
 
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
-
-    # Save to S3 if configured
-    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
-        try:
-            await storage.put_file(workspace_id, validated_path, body.content)
-        except Exception:
-            logger.exception("Failed to save file", workspace_id=workspace_id, path=validated_path)
-            raise HTTPException(status_code=500, detail="Failed to save file") from None
 
     return FileContent(
         path=validated_path,
@@ -1076,29 +1036,17 @@ async def create_file(
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
-    storage: Storage,
 ) -> FileContent:
-    """Create a new file."""
+    """Create a new file.
+
+    Note: File operations are handled by workspace containers.
+    This endpoint validates access and returns the file content.
+    """
     # SECURITY: Validate path to prevent traversal attacks
     validated_path = validate_file_path(body.path)
 
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
-
-    # Create in S3 if configured
-    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
-        # Check if file already exists before try block
-        file_exists = await storage.file_exists(workspace_id, validated_path)
-        if file_exists:
-            raise HTTPException(status_code=409, detail="File already exists")
-
-        try:
-            await storage.put_file(workspace_id, validated_path, body.content)
-        except Exception:
-            logger.exception(
-                "Failed to create file", workspace_id=workspace_id, path=validated_path
-            )
-            raise HTTPException(status_code=500, detail="Failed to create file") from None
 
     return FileContent(
         path=validated_path,
@@ -1115,40 +1063,17 @@ async def delete_file(
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
-    storage: Storage,
 ) -> dict[str, str]:
-    """Delete a file or directory."""
+    """Delete a file or directory.
+
+    Note: File operations are handled by workspace containers.
+    This endpoint validates access and confirms deletion.
+    """
     # SECURITY: Validate path to prevent traversal attacks
     validated_path = validate_file_path(path)
 
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
-
-    # Delete from S3 if configured
-    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
-        # Check file existence before try block
-        file_exists = await storage.file_exists(workspace_id, validated_path)
-
-        if file_exists:
-            try:
-                await storage.delete_file(workspace_id, validated_path)
-            except Exception:
-                logger.exception(
-                    "Failed to delete file", workspace_id=workspace_id, path=validated_path
-                )
-                raise HTTPException(status_code=500, detail="Failed to delete file") from None
-        else:
-            # Try as directory
-            try:
-                deleted = await storage.delete_directory(workspace_id, validated_path)
-            except Exception:
-                logger.exception(
-                    "Failed to delete directory", workspace_id=workspace_id, path=validated_path
-                )
-                raise HTTPException(status_code=500, detail="Failed to delete file") from None
-
-            if deleted == 0:
-                raise HTTPException(status_code=404, detail="File or directory not found")
 
     return {"deleted": validated_path}
 
@@ -1161,28 +1086,18 @@ async def move_file(
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
-    storage: Storage,
 ) -> dict[str, str]:
-    """Move or rename a file."""
+    """Move or rename a file.
+
+    Note: File operations are handled by workspace containers.
+    This endpoint validates access and confirms the move.
+    """
     # SECURITY: Validate both paths to prevent traversal attacks
     validated_source = validate_file_path(body.source_path)
     validated_dest = validate_file_path(body.dest_path)
 
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
-
-    # Move in S3 if configured
-    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
-        # Check source file existence before try block
-        source_exists = await storage.file_exists(workspace_id, validated_source)
-        if not source_exists:
-            raise HTTPException(status_code=404, detail="Source file not found")
-
-        try:
-            await storage.move_file(workspace_id, validated_source, validated_dest)
-        except Exception:
-            logger.exception("Failed to move file", workspace_id=workspace_id)
-            raise HTTPException(status_code=500, detail="Failed to move file") from None
 
     return {
         "source": validated_source,
@@ -1197,27 +1112,20 @@ async def initialize_workspace_files(
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
-    storage: Storage,
 ) -> dict[str, Any]:
-    """Initialize workspace with template files."""
+    """Initialize workspace with template files.
+
+    Note: Workspace initialization is handled by workspace containers.
+    This endpoint validates access and confirms initialization.
+    """
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
 
-    # Initialize with template-specific demo files if S3 is configured
-    if settings.GCS_BUCKET != "podex-workspaces" or settings.GCS_ENDPOINT_URL:
-        try:
-            template_slug = await get_template_slug_for_workspace(workspace_id, db)
-            demo_contents = get_demo_contents(template_slug)
-            # Convert paths to relative paths
-            template_files = {
-                path.replace("/workspace/", ""): content for path, content in demo_contents.items()
-            }
-            return await storage.initialize_workspace(workspace_id, template_files)
-        except Exception:
-            logger.exception("Failed to initialize workspace", workspace_id=workspace_id)
-            raise HTTPException(status_code=500, detail="Failed to initialize workspace") from None
-
-    return {"workspace_id": workspace_id, "files_created": 0, "message": "S3 not configured"}
+    return {
+        "workspace_id": workspace_id,
+        "files_created": 0,
+        "message": "Initialization handled by container",
+    }
 
 
 # ==================== Standby/Pause Routes ====================
@@ -1227,76 +1135,22 @@ class WorkspaceStatusResponse(BaseModel):
     """Workspace status response."""
 
     id: str
-    status: str  # "pending", "running", "standby", "stopped", "error"
-    standby_at: str | None
+    status: str  # "pending", "running", "stopped", "error"
     last_activity: str | None
 
 
-@router.post("/{workspace_id}/pause", response_model=WorkspaceStatusResponse)
+@router.post("/{workspace_id}/start", response_model=WorkspaceStatusResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def pause_workspace(
+async def start_workspace(
     workspace_id: str,
     request: Request,
     response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> WorkspaceStatusResponse:
-    """Pause a workspace (stop Docker container, enter standby mode)."""
-    from datetime import UTC, datetime
+    """Start a stopped workspace (creates new pod with existing storage mounted).
 
-    from src.services.workspace_router import workspace_router
-
-    # Verify user has access to this workspace
-    workspace = await verify_workspace_access(workspace_id, request, db)
-
-    if workspace.status == "standby":
-        raise HTTPException(status_code=400, detail="Workspace is already paused")
-
-    if workspace.status not in ("running", "pending"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot pause workspace in '{workspace.status}' state",
-        )
-
-    try:
-        # Stop the container first
-        user_id: str = getattr(request.state, "user_id", "") or ""
-        await workspace_router.stop_workspace(workspace_id, user_id)
-
-        # Only update DB status after container stop succeeds
-        now = datetime.now(UTC)
-        workspace.status = "standby"
-        workspace.standby_at = now
-        await db.commit()
-        await db.refresh(workspace)
-
-        logger.info("Workspace paused", workspace_id=workspace_id, user_id=user_id)
-
-    except Exception:
-        # Rollback any pending changes on failure
-        await db.rollback()
-        logger.exception("Failed to pause workspace", workspace_id=workspace_id)
-        raise HTTPException(status_code=500, detail="Failed to pause workspace") from None
-
-    return WorkspaceStatusResponse(
-        id=workspace.id,
-        status=workspace.status,
-        standby_at=workspace.standby_at.isoformat() if workspace.standby_at else None,
-        last_activity=workspace.last_activity.isoformat() if workspace.last_activity else None,
-    )
-
-
-@router.post("/{workspace_id}/resume", response_model=WorkspaceStatusResponse)
-@limiter.limit(RATE_LIMIT_STANDARD)
-async def resume_workspace(
-    workspace_id: str,
-    request: Request,
-    response: Response,  # noqa: ARG001
-    db: DbSession,
-) -> WorkspaceStatusResponse:
-    """Resume a paused workspace (restart Docker container).
-
-    If the workspace doesn't exist in the compute service (common after standby),
-    it will be recreated automatically.
+    If the workspace doesn't exist in the compute service,
+    it will be recreated automatically with the GCS bucket mounted.
     """
     from datetime import UTC, datetime
 
@@ -1308,11 +1162,19 @@ async def resume_workspace(
     # Verify user has access to this workspace
     workspace = await verify_workspace_access(workspace_id, request, db)
 
-    if workspace.status != "standby":
+    # Normalize any legacy 'standby' state to 'stopped' - we no longer support standby.
+    if workspace.status == "standby":
+        workspace.status = "stopped"
+        workspace.standby_at = None
+        await db.commit()
+        await db.refresh(workspace)
+
+    # Allow starting only from explicitly stopped state
+    if workspace.status != "stopped":
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot resume workspace in '{workspace.status}' state. "
-            "Only 'standby' workspaces can be resumed.",
+            detail=f"Cannot start workspace in '{workspace.status}' state. "
+            "Only stopped workspaces can be started.",
         )
 
     user_id: str = getattr(request.state, "user_id", "") or ""
@@ -1345,7 +1207,7 @@ async def resume_workspace(
         workspace_info = await workspace_router.get_workspace(workspace_id, user_id)
 
         if workspace_info is not None:
-            # Workspace exists, try to restart it
+            # Workspace exists, try to restart it (routes to local pod or cloud as appropriate)
             logger.info(
                 "Workspace found, restarting",
                 workspace_id=workspace_id,
@@ -1353,11 +1215,13 @@ async def resume_workspace(
             )
             await workspace_router.restart_workspace(workspace_id, user_id)
         else:
-            # Workspace doesn't exist in compute service (removed after standby)
-            # Need to recreate it
+            # Workspace doesn't exist in backend (local pod or compute) and needs to be recreated.
+            # IMPORTANT: Route recreation based on workspace type so local-pod workspaces are never
+            # accidentally provisioned on the cloud/compute service.
             logger.info(
-                "Workspace not found in compute service, recreating",
+                "Workspace not found in backend, recreating",
                 workspace_id=workspace_id,
+                is_local_pod=bool(workspace.local_pod_id),
             )
 
             # Get the session associated with this workspace
@@ -1372,52 +1236,106 @@ async def resume_workspace(
                     detail="Session not found for this workspace",
                 )
 
-            # Determine tier from session settings
-            tier = session.settings.get("tier", "starter") if session.settings else "starter"
+            if workspace.local_pod_id:
+                # Local pod workspace: re-create it on the pod, do NOT fall back to compute.
+                from src.websocket.local_pod_hub import PodNotConnectedError, call_pod
 
-            # Build workspace config
-            workspace_config = await build_workspace_config(
-                db,
-                session.template_id,
-                session.git_url,
-                tier,
-                user_id=user_id,
-            )
+                # Build minimal workspace config for local pod; mount_path from session settings
+                workspace_config: dict[str, Any] = {}
+                if session.settings and session.settings.get("mount_path"):
+                    workspace_config["mount_path"] = session.settings.get("mount_path")
 
-            # Create the workspace in compute service
-            await compute_client.create_workspace(
-                session_id=str(session.id),
-                user_id=user_id,
-                workspace_id=workspace_id,
-                config=workspace_config,
-            )
+                try:
+                    await call_pod(
+                        str(workspace.local_pod_id),
+                        "workspace.create",
+                        {
+                            "workspace_id": workspace_id,
+                            "session_id": str(session.id),
+                            "user_id": user_id,
+                            "config": workspace_config,
+                        },
+                        rpc_timeout=30,
+                    )
+                    logger.info(
+                        "Workspace recreated on local pod during start",
+                        workspace_id=workspace_id,
+                        pod_id=str(workspace.local_pod_id),
+                    )
+                except PodNotConnectedError as e:
+                    logger.warning(
+                        "Local pod not connected while recreating workspace on start",
+                        workspace_id=workspace_id,
+                        pod_id=str(workspace.local_pod_id),
+                        error=str(e),
+                    )
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Local pod is not connected. Please start your local pod.",
+                    ) from None
+                except TimeoutError:
+                    logger.warning(
+                        "Local pod workspace recreation timed out during start",
+                        workspace_id=workspace_id,
+                        pod_id=str(workspace.local_pod_id),
+                    )
+                    raise HTTPException(
+                        status_code=504,
+                        detail="Timed out while recreating workspace on local pod.",
+                    ) from None
+            else:
+                # Cloud/compute-backed workspace: recreate via compute service with storage mounted
+                logger.info(
+                    "Workspace not found in compute service, recreating with storage mounted",
+                    workspace_id=workspace_id,
+                    session_id=str(session.id),
+                )
 
-            logger.info(
-                "Workspace recreated for resume",
-                workspace_id=workspace_id,
-                session_id=str(session.id),
-            )
+                # Determine tier from session settings
+                tier = session.settings.get("tier", "starter") if session.settings else "starter"
+
+                # Build workspace config
+                workspace_config = await build_workspace_config(
+                    db,
+                    session.template_id,
+                    session.git_url,
+                    tier,
+                    user_id=user_id,
+                )
+
+                # Create the workspace in compute service (GCS bucket will be mounted)
+                await compute_client.create_workspace(
+                    session_id=str(session.id),
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                    config=workspace_config,
+                )
+
+                logger.info(
+                    "Workspace recreated with storage mounted",
+                    workspace_id=workspace_id,
+                    session_id=str(session.id),
+                )
 
         # Update DB status after successful restart/recreation
         now = datetime.now(UTC)
         workspace.status = "running"
-        workspace.standby_at = None
         workspace.last_activity = now
         await db.commit()
         await db.refresh(workspace)
 
-        logger.info("Workspace resumed", workspace_id=workspace_id, user_id=user_id)
+        logger.info("Workspace started", workspace_id=workspace_id, user_id=user_id)
 
     except ComputeServiceHTTPError as e:
         await db.rollback()
         logger.exception(
-            "Compute service error during resume",
+            "Compute service error during start",
             workspace_id=workspace_id,
             status_code=e.status_code,
         )
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to resume workspace: compute service error ({e.status_code})",
+            detail=f"Failed to start workspace: compute service error ({e.status_code})",
         ) from None
     except HTTPException:
         # Re-raise HTTP exceptions as-is
@@ -1426,13 +1344,12 @@ async def resume_workspace(
     except Exception:
         # Rollback any pending changes on failure
         await db.rollback()
-        logger.exception("Failed to resume workspace", workspace_id=workspace_id)
-        raise HTTPException(status_code=500, detail="Failed to resume workspace") from None
+        logger.exception("Failed to start workspace", workspace_id=workspace_id)
+        raise HTTPException(status_code=500, detail="Failed to start workspace") from None
 
     return WorkspaceStatusResponse(
         id=workspace.id,
         status=workspace.status,
-        standby_at=None,
         last_activity=workspace.last_activity.isoformat() if workspace.last_activity else None,
     )
 
@@ -1445,14 +1362,34 @@ async def get_workspace_status(
     response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> WorkspaceStatusResponse:
-    """Get current workspace status."""
+    """Get current workspace status, syncing from compute/local pod when possible."""
+    from src.services.workspace_router import workspace_router
+
     # Verify user has access to this workspace
     workspace = await verify_workspace_access(workspace_id, request, db)
+    user_id: str = getattr(request.state, "user_id", "") or ""
+
+    # Sync from compute/local pod so we return actual state (and keep DB in sync)
+    try:
+        info = await workspace_router.get_workspace(workspace_id, user_id)
+        if isinstance(info, dict) and "status" in info:
+            new_status = info["status"]
+            if new_status == "standby":
+                new_status = "stopped"
+            if workspace.status != new_status:
+                workspace.status = new_status
+                await db.commit()
+                await db.refresh(workspace)
+    except Exception as e:
+        logger.debug(
+            "Could not sync workspace status from compute, using DB value",
+            workspace_id=workspace_id,
+            error=str(e),
+        )
 
     return WorkspaceStatusResponse(
         id=workspace.id,
         status=workspace.status,
-        standby_at=workspace.standby_at.isoformat() if workspace.standby_at else None,
         last_activity=workspace.last_activity.isoformat() if workspace.last_activity else None,
     )
 
@@ -1507,7 +1444,8 @@ async def force_stop_workspace(
     ]
     for session_id in sessions_to_close:
         try:
-            await terminal_manager.close_session(session_id)
+            # kill_tmux=True ensures local pod tmux sessions are properly cleaned up
+            await terminal_manager.close_session(session_id, kill_tmux=True)
         except Exception as e:
             logger.warning(
                 "Failed to close terminal session during force-stop",
@@ -1619,6 +1557,346 @@ async def check_workspace_health(
         container_responsive=health.get("healthy", False),
         last_activity=workspace.last_activity.isoformat() if workspace.last_activity else None,
         error=health.get("error"),
+    )
+
+
+# ==================== Workspace Exec (run command in workspace) ====================
+
+
+class WorkspaceExecRequest(BaseModel):
+    """Request to run a command in the workspace."""
+
+    command: str
+    working_dir: str | None = None
+    timeout: int = 120
+
+
+class WorkspaceExecResponse(BaseModel):
+    """Response from workspace exec."""
+
+    exit_code: int
+    stdout: str
+    stderr: str
+
+
+@router.post("/{workspace_id}/exec", response_model=WorkspaceExecResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def exec_in_workspace(
+    workspace_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    body: WorkspaceExecRequest,
+    db: DbSession,
+) -> WorkspaceExecResponse:
+    """Run a shell command in the workspace (e.g. for installs, scripts)."""
+    from src.services.workspace_router import workspace_router
+
+    workspace = await verify_workspace_access(workspace_id, request, db)
+    user_id: str = getattr(request.state, "user_id", "") or ""
+
+    result = await workspace_router.exec_command(
+        workspace_id=workspace.id,
+        user_id=user_id,
+        command=body.command,
+        working_dir=body.working_dir,
+        exec_timeout=body.timeout,
+    )
+    return WorkspaceExecResponse(
+        exit_code=result.get("exit_code", -1),
+        stdout=result.get("stdout", ""),
+        stderr=result.get("stderr", ""),
+    )
+
+
+# ==================== Tunnels (Cloudflare external exposure) ====================
+
+
+class ExposePortRequest(BaseModel):
+    """Request to expose a workspace port via tunnel."""
+
+    port: int
+
+
+class TunnelItem(BaseModel):
+    """Single tunnel record (no token)."""
+
+    id: str
+    workspace_id: str
+    port: int
+    public_url: str
+    status: str
+    created_at: str
+    updated_at: str
+
+
+class TunnelListResponse(BaseModel):
+    """List of tunnels for a workspace."""
+
+    tunnels: list[TunnelItem]
+    total: int
+
+
+class TunnelStatusResponse(BaseModel):
+    """Daemon health for tunnel operations."""
+
+    status: str
+    connected: bool
+    error: str | None = None
+
+
+@router.post("/{workspace_id}/tunnels", response_model=TunnelItem, status_code=201)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def expose_port(
+    workspace_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    body: ExposePortRequest,
+    db: DbSession,
+) -> TunnelItem:
+    """Expose a workspace port to the internet via Cloudflare Tunnel.
+
+    Only supported for workspaces on a local pod. Creates tunnel, DNS, and
+    starts cloudflared on the pod.
+    """
+    from src.services.tunnel_manager import create_tunnel_for_workspace
+    from src.websocket.local_pod_hub import PodNotConnectedError
+
+    await verify_workspace_access(workspace_id, request, db)
+    port = body.port
+    if port < 1 or port > 65535:
+        raise HTTPException(status_code=400, detail="Port must be 1-65535")
+
+    try:
+        rec = await create_tunnel_for_workspace(db, workspace_id, port)
+    except PodNotConnectedError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Local pod not connected: {e.pod_id}",
+        ) from e
+    except RuntimeError as e:
+        logger.warning("Tunnel create failed", workspace_id=workspace_id, port=port, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    return TunnelItem(
+        id=rec.id,
+        workspace_id=rec.workspace_id,
+        port=rec.port,
+        public_url=rec.public_url,
+        status=rec.status,
+        created_at=rec.created_at.isoformat(),
+        updated_at=rec.updated_at.isoformat(),
+    )
+
+
+@router.delete("/{workspace_id}/tunnels/{port}", status_code=204)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def unexpose_port(
+    workspace_id: str,
+    port: int,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> None:
+    """Stop tunnel and remove port exposure."""
+    from src.services.tunnel_manager import delete_tunnel_for_workspace, list_tunnels
+
+    await verify_workspace_access(workspace_id, request, db)
+    if port < 1 or port > 65535:
+        raise HTTPException(status_code=400, detail="Port must be 1-65535")
+
+    tunnels = await list_tunnels(db, workspace_id)
+    if not any(t.port == port for t in tunnels):
+        raise HTTPException(status_code=404, detail="No tunnel for this port")
+
+    await delete_tunnel_for_workspace(db, workspace_id, port)
+
+
+@router.get("/{workspace_id}/tunnels", response_model=TunnelListResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def list_workspace_tunnels(
+    workspace_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> TunnelListResponse:
+    """List active tunnels for a workspace."""
+    from src.services.tunnel_manager import list_tunnels
+
+    await verify_workspace_access(workspace_id, request, db)
+    tunnels = await list_tunnels(db, workspace_id)
+    return TunnelListResponse(
+        tunnels=[
+            TunnelItem(
+                id=t.id,
+                workspace_id=t.workspace_id,
+                port=t.port,
+                public_url=t.public_url,
+                status=t.status,
+                created_at=t.created_at.isoformat(),
+                updated_at=t.updated_at.isoformat(),
+            )
+            for t in tunnels
+        ],
+        total=len(tunnels),
+    )
+
+
+@router.get("/{workspace_id}/tunnel-status", response_model=TunnelStatusResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def get_tunnel_status(
+    workspace_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> TunnelStatusResponse:
+    """Get tunnel daemon health for the workspace's pod."""
+    from src.services.tunnel_manager import get_tunnel_status as _get_status
+
+    await verify_workspace_access(workspace_id, request, db)
+    out = await _get_status(workspace_id)
+    return TunnelStatusResponse(
+        status=out.get("status", "unknown"),
+        connected=out.get("connected", False),
+        error=out.get("error"),
+    )
+
+
+# ==================== SSH Tunnel (VS Code Remote-SSH) ====================
+
+
+class SSHTunnelResponse(BaseModel):
+    """SSH tunnel info for VS Code Remote-SSH access."""
+
+    enabled: bool
+    hostname: str | None = None
+    public_url: str | None = None
+    status: str | None = None
+    connection_string: str | None = None
+    proxy_command: str | None = None
+    ssh_config_snippet: str | None = None
+
+
+class SSHTunnelEnableRequest(BaseModel):
+    """Request to enable SSH tunnel."""
+
+    # No parameters needed - SSH always uses port 22
+
+
+@router.post("/{workspace_id}/ssh-tunnel", response_model=SSHTunnelResponse, status_code=201)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def enable_ssh_tunnel(
+    workspace_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> SSHTunnelResponse:
+    """Enable SSH tunnel for VS Code Remote-SSH access.
+
+    Creates a Cloudflare tunnel with SSH service type (ssh://localhost:22).
+    Users connect via cloudflared ProxyCommand in their SSH config.
+
+    Only supported for workspaces on a local pod with sshd running.
+    """
+    from src.services.tunnel_manager import (
+        create_ssh_tunnel_for_workspace,
+        get_ssh_tunnel,
+    )
+    from src.websocket.local_pod_hub import PodNotConnectedError
+
+    await verify_workspace_access(workspace_id, request, db)
+
+    # Check if SSH tunnel already exists
+    existing = await get_ssh_tunnel(db, workspace_id)
+    if existing:
+        return _build_ssh_tunnel_response(existing)
+
+    try:
+        rec = await create_ssh_tunnel_for_workspace(db, workspace_id)
+    except PodNotConnectedError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Local pod not connected: {e.pod_id}",
+        ) from e
+    except RuntimeError as e:
+        logger.warning("SSH tunnel create failed", workspace_id=workspace_id, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    return _build_ssh_tunnel_response(rec)
+
+
+@router.delete("/{workspace_id}/ssh-tunnel", status_code=204)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def disable_ssh_tunnel(
+    workspace_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> None:
+    """Disable SSH tunnel for a workspace.
+
+    Stops the cloudflared daemon, removes DNS record, and deletes the tunnel.
+    """
+    from src.services.tunnel_manager import delete_ssh_tunnel_for_workspace, get_ssh_tunnel
+
+    await verify_workspace_access(workspace_id, request, db)
+
+    # Check if SSH tunnel exists
+    existing = await get_ssh_tunnel(db, workspace_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="No SSH tunnel for this workspace")
+
+    await delete_ssh_tunnel_for_workspace(db, workspace_id)
+
+
+@router.get("/{workspace_id}/ssh-tunnel", response_model=SSHTunnelResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def get_ssh_tunnel_info(
+    workspace_id: str,
+    request: Request,
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> SSHTunnelResponse:
+    """Get SSH tunnel status and connection info for VS Code Remote-SSH.
+
+    Returns:
+        - enabled: Whether SSH tunnel is active
+        - hostname: The SSH tunnel hostname (e.g., workspace-ssh.tunnel.podex.dev)
+        - connection_string: SSH connection command for users
+        - proxy_command: cloudflared command for SSH config
+        - ssh_config_snippet: Ready-to-use SSH config block
+    """
+    from src.services.tunnel_manager import get_ssh_tunnel
+
+    await verify_workspace_access(workspace_id, request, db)
+
+    rec = await get_ssh_tunnel(db, workspace_id)
+    if not rec:
+        return SSHTunnelResponse(enabled=False)
+
+    return _build_ssh_tunnel_response(rec)
+
+
+def _build_ssh_tunnel_response(rec: Any) -> SSHTunnelResponse:
+    """Build SSH tunnel response with connection info."""
+    hostname = rec.public_url  # For SSH, public_url is the hostname
+    # Default username in workspace containers is 'podex'
+    username = "podex"
+    connection_string = f"ssh {username}@{hostname}"
+    proxy_command = f"cloudflared access ssh --hostname {hostname}"
+    ssh_config_snippet = f"""Host {hostname}
+    User {username}
+    ProxyCommand cloudflared access ssh --hostname %h
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null"""
+
+    return SSHTunnelResponse(
+        enabled=True,
+        hostname=hostname,
+        public_url=hostname,
+        status=rec.status,
+        connection_string=connection_string,
+        proxy_command=proxy_command,
+        ssh_config_snippet=ssh_config_snippet,
     )
 
 
@@ -1750,7 +2028,7 @@ def verify_internal_service_token(request: Request) -> None:
 class WorkspaceStatusSyncRequest(BaseModel):
     """Request to sync workspace status from compute service."""
 
-    status: str  # running, standby, stopped, error
+    status: str  # running, stopped, error
     container_id: str | None = None
 
 
@@ -1816,18 +2094,18 @@ async def sync_workspace_status_from_compute(
     now = datetime.now(UTC)
     updated = False
 
-    # Update status if changed
-    if workspace.status != body.status:
-        workspace.status = body.status
+    # Update status if changed, normalizing any legacy 'standby' input to 'stopped'
+    new_status = "stopped" if body.status == "standby" else body.status
+
+    if workspace.status != new_status:
+        workspace.status = new_status
         updated = True
 
         # Handle specific status transitions
-        if body.status == "running":
+        if new_status == "running":
             workspace.standby_at = None
             workspace.last_activity = now
-        elif body.status == "standby":
-            workspace.standby_at = now
-        elif body.status == "stopped":
+        elif new_status == "stopped":
             workspace.standby_at = None
 
         # Update container_id if provided
@@ -1852,7 +2130,7 @@ async def sync_workspace_status_from_compute(
                 "workspace_status",
                 {
                     "workspace_id": workspace_id,
-                    "status": body.status,
+                    "status": new_status,
                     "standby_at": workspace.standby_at.isoformat()
                     if workspace.standby_at
                     else None,

@@ -1,4 +1,4 @@
-"""User configuration and dotfiles routes."""
+"""User configuration routes."""
 
 import re
 from datetime import UTC, datetime
@@ -14,6 +14,7 @@ from src.cache import cache_delete, cache_get, cache_set, user_config_key
 from src.config import settings
 from src.database.connection import get_db
 from src.database.models import User, UserConfig
+from src.database.models.platform import LLMProvider as LLMProviderModel
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
 logger = structlog.get_logger()
@@ -26,9 +27,6 @@ DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 # Mapping of request field names to config attribute names
 CONFIG_FIELD_MAP = [
-    "sync_dotfiles",
-    "dotfiles_repo",
-    "dotfiles_paths",
     "default_shell",
     "default_editor",
     "git_name",
@@ -56,14 +54,6 @@ def _apply_config_updates(
             setattr(config, field, value)
 
 
-# Valid git URL pattern for dotfiles repos (only allow GitHub for now)
-DOTFILES_REPO_PATTERN = re.compile(
-    r"^https://github\.com/[a-zA-Z0-9][-a-zA-Z0-9]*/[a-zA-Z0-9._-]+/?$",
-)
-
-# Valid dotfiles path pattern (prevent path traversal and dangerous paths)
-DOTFILES_PATH_PATTERN = re.compile(r"^\.?[a-zA-Z0-9][a-zA-Z0-9._/-]*$")
-
 # Maximum tour ID length
 MAX_TOUR_ID_LENGTH = 50
 
@@ -77,91 +67,12 @@ LLM_API_KEY_PATTERNS = {
     "lmstudio": re.compile(r"^.{0,200}$"),  # LM Studio typically uses no key or custom
 }
 
-# Paths that should never be synced (security sensitive)
-FORBIDDEN_DOTFILE_PATHS = {
-    ".ssh/id_rsa",
-    ".ssh/id_ed25519",
-    ".ssh/id_ecdsa",
-    ".ssh/id_dsa",
-    ".gnupg",
-    ".aws/credentials",
-    ".netrc",
-}
-
-
-def validate_dotfiles_repo(repo_url: str) -> None:
-    """Validate dotfiles repository URL.
-
-    Raises:
-        HTTPException: If the URL is invalid or not allowed.
-    """
-    if not repo_url:
-        return
-
-    if not DOTFILES_REPO_PATTERN.match(repo_url):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid dotfiles repository URL. Only GitHub repositories are supported.",
-        )
-
-
-def validate_dotfiles_paths(paths: list[str]) -> None:
-    """Validate dotfiles paths.
-
-    Raises:
-        HTTPException: If any path is invalid or forbidden.
-    """
-    if not paths:
-        return
-
-    for path in paths:
-        # Check for path traversal
-        if ".." in path or path.startswith("/"):
-            msg = f"Invalid dotfile path: {path}. Cannot contain '..' or start with '/'"
-            raise HTTPException(status_code=400, detail=msg)
-
-        # Check pattern
-        if not DOTFILES_PATH_PATTERN.match(path):
-            msg = f"Invalid dotfile path: {path}. Only alphanumeric, dot, _, / allowed"
-            raise HTTPException(status_code=400, detail=msg)
-
-        # Check forbidden paths
-        if path in FORBIDDEN_DOTFILE_PATHS or any(
-            path.startswith(forbidden) for forbidden in FORBIDDEN_DOTFILE_PATHS
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Forbidden dotfile path: {path}. This path contains sensitive data.",
-            )
-
-
-# Default dotfiles paths to sync
-DEFAULT_DOTFILES = [
-    ".bashrc",
-    ".zshrc",
-    ".gitconfig",
-    ".npmrc",
-    ".vimrc",
-    ".profile",
-    ".config/starship.toml",
-    ".ssh/config",  # Only the config, not keys
-    # CLI agent config directories
-    ".claude",
-    ".claude.json",
-    ".codex",
-    ".gemini",
-    ".opencode",
-]
-
 
 class UserConfigResponse(BaseModel):
     """User config response."""
 
     id: str
     user_id: str
-    sync_dotfiles: bool
-    dotfiles_repo: str | None
-    dotfiles_paths: list[str] | None
     default_shell: str
     default_editor: str
     git_name: str | None
@@ -180,9 +91,6 @@ class UserConfigResponse(BaseModel):
 class UpdateUserConfigRequest(BaseModel):
     """Request to update user config."""
 
-    sync_dotfiles: bool | None = None
-    dotfiles_repo: str | None = None
-    dotfiles_paths: list[str] | None = None
     default_shell: str | None = None
     default_editor: str | None = None
     git_name: str | None = None
@@ -231,11 +139,7 @@ async def get_user_config(
                 detail="Invalid authentication token - user not found",
             )
 
-        config = UserConfig(
-            user_id=user_id,
-            dotfiles_paths=DEFAULT_DOTFILES,
-            s3_dotfiles_path=f"users/{user_id}/dotfiles",
-        )
+        config = UserConfig(user_id=user_id)
         db.add(config)
         await db.commit()
         await db.refresh(config)
@@ -243,9 +147,6 @@ async def get_user_config(
     config_response = UserConfigResponse(
         id=config.id,
         user_id=config.user_id,
-        sync_dotfiles=config.sync_dotfiles,
-        dotfiles_repo=config.dotfiles_repo,
-        dotfiles_paths=config.dotfiles_paths,
         default_shell=config.default_shell,
         default_editor=config.default_editor,
         git_name=config.git_name,
@@ -294,18 +195,8 @@ async def update_user_config(
                 detail="Invalid authentication token - user not found",
             )
 
-        config = UserConfig(
-            user_id=user_id,
-            dotfiles_paths=DEFAULT_DOTFILES,
-            s3_dotfiles_path=f"users/{user_id}/dotfiles",
-        )
+        config = UserConfig(user_id=user_id)
         db.add(config)
-
-    # Validate dotfiles inputs before updating
-    if request_data.dotfiles_repo is not None:
-        validate_dotfiles_repo(request_data.dotfiles_repo)
-    if request_data.dotfiles_paths is not None:
-        validate_dotfiles_paths(request_data.dotfiles_paths)
 
     # Update fields using helper function
     _apply_config_updates(config, request_data)
@@ -319,9 +210,6 @@ async def update_user_config(
     config_response = UserConfigResponse(
         id=config.id,
         user_id=config.user_id,
-        sync_dotfiles=config.sync_dotfiles,
-        dotfiles_repo=config.dotfiles_repo,
-        dotfiles_paths=config.dotfiles_paths,
         default_shell=config.default_shell,
         default_editor=config.default_editor,
         git_name=config.git_name,
@@ -401,8 +289,6 @@ async def complete_tour(
     if not config:
         config = UserConfig(
             user_id=user_id,
-            dotfiles_paths=DEFAULT_DOTFILES,
-            s3_dotfiles_path=f"users/{user_id}/dotfiles",
             completed_tours=[tour_id],
         )
         db.add(config)
@@ -483,10 +369,16 @@ async def reset_all_tours(
 # LLM API Keys Management
 # ============================================================================
 
-# Valid provider names for API keys
-# Cloud providers: openai, anthropic, google
-# Local providers: ollama, lmstudio
-VALID_LLM_PROVIDERS = {"openai", "anthropic", "google", "ollama", "lmstudio"}
+
+async def _get_valid_llm_providers(db: AsyncSession) -> set[str]:
+    """Get valid LLM provider slugs from the database.
+
+    Returns enabled provider slugs that can be used for API key configuration.
+    """
+    result = await db.execute(
+        select(LLMProviderModel.slug).where(LLMProviderModel.is_enabled.is_(True))
+    )
+    return {row[0] for row in result.fetchall()}
 
 
 class LLMApiKeysResponse(BaseModel):
@@ -550,12 +442,13 @@ async def set_llm_api_key(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    # Validate provider
+    # Validate provider against database
     provider_lower = data.provider.lower()
-    if provider_lower not in VALID_LLM_PROVIDERS:
+    valid_providers = await _get_valid_llm_providers(db)
+    if provider_lower not in valid_providers:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid provider. Must be one of: {', '.join(sorted(VALID_LLM_PROVIDERS))}",
+            detail=f"Invalid provider. Must be one of: {', '.join(sorted(valid_providers))}",
         )
 
     # SECURITY: Validate API key format using provider-specific patterns
@@ -581,8 +474,6 @@ async def set_llm_api_key(
         # Create config with the API key
         config = UserConfig(
             user_id=user_id,
-            dotfiles_paths=DEFAULT_DOTFILES,
-            s3_dotfiles_path=f"users/{user_id}/dotfiles",
             llm_api_keys={provider_lower: data.api_key},
         )
         db.add(config)
@@ -757,10 +648,9 @@ async def discover_local_models(
         elif not config.agent_preferences:
             config.agent_preferences = {"local_llm_config": {}}
 
-        # Update local LLM config with discovered models
-        if config.agent_preferences is None:
-            config.agent_preferences = {}
-        local_config = config.agent_preferences.get("local_llm_config", {})
+        # Update local LLM config with discovered models (assign new dict so JSONB is persisted)
+        prefs = (config.agent_preferences or {}).copy()
+        local_config = dict(prefs.get("local_llm_config") or {})
         local_config[provider] = {
             "base_url": base_url,
             "models": [
@@ -769,9 +659,11 @@ async def discover_local_models(
             ],
             "discovered_at": datetime.now(UTC).isoformat(),
         }
-        config.agent_preferences["local_llm_config"] = local_config
+        prefs["local_llm_config"] = local_config
+        config.agent_preferences = prefs
         await db.commit()
         await db.refresh(config)
+        await cache_delete(user_config_key(user_id))
 
         return DiscoverLocalModelsResponse(models=models, success=True)
 
@@ -884,20 +776,19 @@ async def save_local_llm_url(
     elif not config.agent_preferences:
         config.agent_preferences = {"local_llm_config": {}}
 
-    # Update local LLM config with URL (preserve existing models if any)
-    if config.agent_preferences is None:
-        config.agent_preferences = {}
-    local_config = config.agent_preferences.get("local_llm_config", {})
-    if not isinstance(local_config, dict):
-        local_config = {}
-    if provider not in local_config:
+    # Update local LLM config with URL; preserve existing models, assign new dict so JSONB persists
+    prefs = (config.agent_preferences or {}).copy()
+    local_config = dict(prefs.get("local_llm_config") or {})
+    existing = local_config.get(provider)
+    if not isinstance(existing, dict):
         local_config[provider] = {"base_url": base_url, "models": []}
     else:
-        local_config[provider]["base_url"] = base_url
-
-    config.agent_preferences["local_llm_config"] = local_config
+        local_config[provider] = {**existing, "base_url": base_url}
+    prefs["local_llm_config"] = local_config
+    config.agent_preferences = prefs
     await db.commit()
     await db.refresh(config)
+    await cache_delete(user_config_key(user_id))
 
     logger.info(
         "Saved local LLM URL",

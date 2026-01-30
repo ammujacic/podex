@@ -1,2 +1,2 @@
 // Extension Marketplace
-export { ExtensionMarketplace, ExtensionIconButton } from './ExtensionMarketplace';
+export { ExtensionMarketplace } from './ExtensionMarketplace';

@@ -5,7 +5,7 @@ from typing import Any
 
 import stripe
 import structlog
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,7 @@ from src.database.models import (
     User,
     UserSubscription,
 )
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 from src.routes.billing import generate_invoice_number, sync_quotas_from_plan
 from src.services.email import EmailTemplate, get_email_service
 
@@ -243,7 +244,8 @@ async def _sync_subscription_from_stripe(
 
 
 @router.post("/stripe")
-async def handle_stripe_webhook(request: Request) -> dict[str, str]:
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def handle_stripe_webhook(request: Request, response: Response) -> dict[str, str]:
     """Handle incoming Stripe webhook events.
 
     Stripe sends various events for payment and subscription lifecycle.

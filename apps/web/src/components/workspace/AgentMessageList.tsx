@@ -32,6 +32,8 @@ interface AgentMessageListProps {
   onPlayMessage: (messageId: string, regenerate?: boolean) => void;
   onPlanApprove: (planId: string) => Promise<void>;
   onPlanReject: (planId: string) => Promise<void>;
+  /** Callback when a file link is clicked in a message */
+  onFileClick?: (path: string, startLine?: number, endLine?: number) => void;
 }
 
 /**
@@ -48,6 +50,7 @@ export const AgentMessageList = React.memo<AgentMessageListProps>(
     onPlayMessage,
     onPlanApprove,
     onPlanReject,
+    onFileClick,
   }) {
     const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
     const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
@@ -76,7 +79,6 @@ export const AgentMessageList = React.memo<AgentMessageListProps>(
         </div>
       );
     }
-
     return (
       <>
         {messages.map((msg, index) => (
@@ -117,7 +119,7 @@ export const AgentMessageList = React.memo<AgentMessageListProps>(
                 )}
               >
                 {msg.role === 'assistant' ? (
-                  <MarkdownRenderer content={msg.content} />
+                  <MarkdownRenderer content={msg.content} onFileClick={onFileClick} />
                 ) : (
                   <p className="whitespace-pre-wrap">{msg.content}</p>
                 )}
@@ -273,7 +275,8 @@ export const AgentMessageList = React.memo<AgentMessageListProps>(
       prevProps.messages === nextProps.messages &&
       prevProps.playingMessageId === nextProps.playingMessageId &&
       prevProps.synthesizingMessageId === nextProps.synthesizingMessageId &&
-      prevProps.deletingMessageId === nextProps.deletingMessageId
+      prevProps.deletingMessageId === nextProps.deletingMessageId &&
+      prevProps.onFileClick === nextProps.onFileClick
     );
   }
 );

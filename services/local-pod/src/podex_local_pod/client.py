@@ -4,17 +4,77 @@ import asyncio
 import contextlib
 import platform
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 import psutil
 import socketio
 import structlog
 
 from .config import LocalPodConfig
-from .docker_manager import LocalDockerManager
+from .native_manager import NativeManager
 from .rpc_handler import RPCHandler
 
 logger = structlog.get_logger()
+
+
+class WorkspaceManager(Protocol):
+    """Protocol for workspace managers."""
+
+    @property
+    def workspaces(self) -> dict[str, dict[str, Any]]: ...
+
+    # Lifecycle methods
+    async def initialize(self) -> None: ...
+    async def shutdown(self) -> None: ...
+    async def create_workspace(
+        self,
+        workspace_id: str | None,
+        user_id: str,
+        session_id: str,
+        config: dict[str, Any],
+    ) -> dict[str, Any]: ...
+    async def stop_workspace(self, workspace_id: str) -> None: ...
+    async def delete_workspace(self, workspace_id: str, preserve_files: bool = True) -> None: ...
+    async def get_workspace(self, workspace_id: str) -> dict[str, Any] | None: ...
+    async def list_workspaces(
+        self, user_id: str | None = None, session_id: str | None = None
+    ) -> list[dict[str, Any]]: ...
+    async def heartbeat(self, workspace_id: str) -> None: ...
+    async def update_workspace(
+        self, workspace_id: str, working_dir: str | None = None
+    ) -> dict[str, Any] | None: ...
+
+    # Command execution
+    async def exec_command(
+        self,
+        workspace_id: str,
+        command: str,
+        working_dir: str | None = None,
+        timeout: int = 30,
+    ) -> dict[str, Any]: ...
+
+    # File operations
+    async def read_file(self, workspace_id: str, path: str) -> str: ...
+    async def write_file(self, workspace_id: str, path: str, content: str) -> None: ...
+    async def list_files(self, workspace_id: str, path: str = ".") -> list[dict[str, Any]]: ...
+
+    # Ports
+    async def get_active_ports(self, workspace_id: str) -> list[dict[str, Any]]: ...
+
+    # Proxy
+    async def proxy_request(
+        self,
+        workspace_id: str,
+        port: int,
+        method: str,
+        path: str,
+        headers: dict[str, str],
+        body: bytes | None,
+        query_string: str | None,
+    ) -> dict[str, Any]: ...
+
+    # Terminal
+    async def terminal_write(self, workspace_id: str, data: str) -> None: ...
 
 
 class LocalPodClient:
@@ -39,8 +99,13 @@ class LocalPodClient:
             logger=False,
             engineio_logger=False,
         )
-        self.docker_manager = LocalDockerManager(config)
-        self.rpc_handler = RPCHandler(self.docker_manager)
+
+        # Always use native manager (stateless execution)
+        self.manager: WorkspaceManager = NativeManager(config)
+        logger.info("Using native execution mode (stateless)")
+
+        # Pass sio to RPCHandler for terminal output streaming
+        self.rpc_handler = RPCHandler(self.manager, config, sio=self.sio)
         self._running = False
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._connected = False
@@ -84,30 +149,40 @@ class LocalPodClient:
 
             logger.debug("RPC request received", call_id=call_id, method=method)
 
+            async def safe_emit(response_data: dict[str, Any]) -> None:
+                """Safely emit RPC response, handling disconnection gracefully."""
+                if not self._connected:
+                    logger.warning(
+                        "Cannot send RPC response: not connected",
+                        call_id=call_id,
+                        method=method,
+                    )
+                    return
+                try:
+                    await self.sio.emit(
+                        "rpc_response",
+                        response_data,
+                        namespace="/local-pod",
+                    )
+                except socketio.exceptions.BadNamespaceError:
+                    logger.warning(
+                        "Cannot send RPC response: namespace disconnected",
+                        call_id=call_id,
+                        method=method,
+                    )
+
             if not isinstance(method, str):
                 logger.error("Invalid RPC request: method must be a string")
-                await self.sio.emit(
-                    "rpc_response",
-                    {"call_id": call_id, "error": "method must be a string"},
-                    namespace="/local-pod",
-                )
+                await safe_emit({"call_id": call_id, "error": "method must be a string"})
                 return
 
             try:
                 result = await self.rpc_handler.handle(method, params)
-                await self.sio.emit(
-                    "rpc_response",
-                    {"call_id": call_id, "result": result},
-                    namespace="/local-pod",
-                )
+                await safe_emit({"call_id": call_id, "result": result})
                 logger.debug("RPC response sent", call_id=call_id)
             except Exception as e:
                 logger.exception("RPC handler error", method=method, error=str(e))
-                await self.sio.emit(
-                    "rpc_response",
-                    {"call_id": call_id, "error": str(e)},
-                    namespace="/local-pod",
-                )
+                await safe_emit({"call_id": call_id, "error": str(e)})
 
         @self.sio.on("terminal_input", namespace="/local-pod")
         async def on_terminal_input(data: dict[str, Any]) -> None:
@@ -115,38 +190,31 @@ class LocalPodClient:
             workspace_id = data.get("workspace_id")
             input_data = data.get("data")
             if workspace_id and input_data:
-                await self.docker_manager.terminal_write(workspace_id, input_data)
+                await self.manager.terminal_write(workspace_id, input_data)
 
     async def _send_capabilities(self) -> None:
         """Send system capabilities to cloud."""
-        try:
-            import docker
-
-            docker_client = docker.from_env()
-            docker_info = docker_client.info()
-            docker_version = docker_info.get("ServerVersion", "unknown")
-        except Exception:
-            docker_version = "unavailable"
-
         capabilities = {
             "os_info": f"{platform.system()} {platform.release()}",
             "architecture": platform.machine(),
-            "docker_version": docker_version,
             "total_memory_mb": psutil.virtual_memory().total // (1024 * 1024),
             "cpu_cores": psutil.cpu_count(),
-            "max_workspaces": self.config.max_workspaces,
             "pod_version": "0.1.0",
         }
 
-        await self.sio.emit("capabilities", capabilities, namespace="/local-pod")
-        logger.info("Capabilities sent", capabilities=capabilities)
+        await self.sio.emit(
+            "capabilities",
+            {"capabilities": capabilities},
+            namespace="/local-pod",
+        )
+        logger.info("Capabilities sent")
 
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats to cloud."""
         while self._running and self._connected:
             try:
                 # Get current workspace count
-                active_workspaces = len(self.docker_manager.workspaces)
+                active_workspaces = len(self.manager.workspaces)
 
                 # Send heartbeat
                 await self.sio.emit(
@@ -176,8 +244,11 @@ class LocalPodClient:
         """
         self._running = True
 
-        # Initialize Docker manager
-        await self.docker_manager.initialize()
+        # Initialize workspace manager
+        await self.manager.initialize()
+
+        # Initialize RPC handler (cleans up orphaned FIFOs from previous runs)
+        await self.rpc_handler.initialize()
 
         # Build WebSocket URL
         ws_url = self.config.cloud_url.replace("https://", "wss://").replace("http://", "ws://")
@@ -196,8 +267,13 @@ class LocalPodClient:
 
             # Keep running until shutdown
             while self._running and not shutdown_event.is_set():
-                await asyncio.sleep(1)
+                # Use wait_for with timeout so we respond immediately to shutdown_event
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(shutdown_event.wait(), timeout=1.0)
 
+        except asyncio.CancelledError:
+            # Graceful shutdown - don't treat as error
+            logger.debug("Client run loop cancelled")
         except socketio.exceptions.ConnectionError as e:
             logger.error("Failed to connect to Podex cloud", error=str(e))
             raise
@@ -216,8 +292,11 @@ class LocalPodClient:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._heartbeat_task
 
+        # Stop RPC handler (cancels terminal streaming tasks)
+        await self.rpc_handler.shutdown()
+
         # Stop all workspaces gracefully
-        await self.docker_manager.shutdown()
+        await self.manager.shutdown()
 
         # Disconnect from cloud
         if self.sio.connected:

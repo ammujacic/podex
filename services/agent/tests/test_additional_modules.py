@@ -203,12 +203,3 @@ class TestProgressModule:
         """Test TaskProgress class exists."""
         from src.progress.tracker import TaskProgress
         assert TaskProgress is not None
-
-
-class TestTerminalToolsModule:
-    """Test terminal_tools module."""
-
-    def test_terminal_tools_module_exists(self):
-        """Test terminal_tools module can be imported."""
-        from src.tools import terminal_tools
-        assert terminal_tools is not None

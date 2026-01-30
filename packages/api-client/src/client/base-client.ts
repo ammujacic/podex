@@ -20,6 +20,7 @@ export class BaseApiClient {
   protected authProvider: AuthProvider;
   protected errorReporter?: ErrorReporter;
   protected cache: RequestCache;
+  private refreshPromise: Promise<boolean> | null = null;
 
   constructor(config: ApiClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, ''); // Remove trailing slash
@@ -37,7 +38,7 @@ export class BaseApiClient {
   }
 
   /**
-   * Update the base URL (useful for Electron apps that need to configure it at runtime).
+   * Update the base URL (e.g. when configuring it at runtime).
    */
   setBaseUrl(url: string): void {
     this.baseUrl = url.replace(/\/$/, ''); // Remove trailing slash
@@ -62,9 +63,34 @@ export class BaseApiClient {
   }
 
   /**
+   * Attempt to refresh the access token.
+   * Ensures only one refresh happens at a time by reusing the same promise.
+   */
+  private async attemptTokenRefresh(): Promise<boolean> {
+    // If already refreshing, wait for the existing refresh to complete
+    if (this.refreshPromise) {
+      return this.refreshPromise;
+    }
+
+    // Start a new refresh operation
+    this.refreshPromise = this.authProvider
+      .refreshToken()
+      .then((success) => {
+        this.refreshPromise = null;
+        return success;
+      })
+      .catch(() => {
+        this.refreshPromise = null;
+        return false;
+      });
+
+    return this.refreshPromise;
+  }
+
+  /**
    * Handle HTTP response and errors.
    */
-  protected handleResponse<T>(response: HttpResponse<T>): T {
+  protected handleResponse<T>(response: HttpResponse<T>, isRetry: boolean = false): T {
     if (!response.ok) {
       const error = response.data as { detail?: string | Array<{ msg: string }> };
 
@@ -80,8 +106,9 @@ export class BaseApiClient {
 
       const err = new ApiRequestError(message, response.status);
 
-      // Auto-logout on 401 (invalid/expired token)
-      if (response.status === 401) {
+      // On 401, only logout if this was already a retry (refresh failed)
+      // If not a retry, the calling method will attempt to refresh and retry
+      if (response.status === 401 && isRetry) {
         this.authProvider.onUnauthorized();
       }
 
@@ -100,6 +127,7 @@ export class BaseApiClient {
             url: response.url,
             status: response.status,
             statusText: response.statusText,
+            isRetry,
           },
         });
       }
@@ -139,24 +167,65 @@ export class BaseApiClient {
   }
 
   /**
+   * Execute a request with automatic retry on 401 (expired token).
+   * If the first request fails with 401, attempts to refresh the token and retry once.
+   */
+  protected async requestWithRetry<T>(
+    requestFn: () => Promise<HttpResponse<T>>,
+    includeAuth: boolean
+  ): Promise<T> {
+    try {
+      // First attempt
+      const response = await requestFn();
+      return this.handleResponse(response, false);
+    } catch (error) {
+      // If it's a 401 and we're using auth, try to refresh and retry
+      if (
+        error instanceof ApiRequestError &&
+        error.status === 401 &&
+        includeAuth &&
+        !error.isAborted
+      ) {
+        const refreshed = await this.attemptTokenRefresh();
+
+        if (refreshed) {
+          // Token refreshed successfully, retry the request
+          try {
+            const response = await requestFn();
+            return this.handleResponse(response, true);
+          } catch (retryError) {
+            this.handleRequestError(retryError);
+          }
+        } else {
+          // Refresh failed, logout and throw
+          this.authProvider.onUnauthorized();
+          throw error;
+        }
+      }
+
+      // Not a 401 or refresh not applicable, re-throw
+      this.handleRequestError(error);
+    }
+  }
+
+  /**
    * Make a GET request.
    */
   async get<T>(path: string, options: RequestOptions | boolean = true): Promise<T> {
     const opts: RequestOptions = typeof options === 'boolean' ? { includeAuth: options } : options;
     const { includeAuth = true, signal } = opts;
 
-    try {
-      const response = await this.httpAdapter.request<T>({
-        url: `${this.baseUrl}${path}`,
-        method: 'GET',
-        headers: this.getHeaders(includeAuth),
-        credentials: 'include',
-        signal,
-      });
-      return this.handleResponse(response);
-    } catch (error) {
-      this.handleRequestError(error);
-    }
+    return this.requestWithRetry(
+      () =>
+        this.httpAdapter.request<T>({
+          url: `${this.baseUrl}${path}`,
+          method: 'GET',
+          headers: this.getHeaders(includeAuth),
+          credentials: 'include',
+          signal,
+        }),
+      includeAuth
+    );
   }
 
   /**
@@ -189,19 +258,18 @@ export class BaseApiClient {
     const opts: RequestOptions = typeof options === 'boolean' ? { includeAuth: options } : options;
     const { includeAuth = true, signal } = opts;
 
-    try {
-      const response = await this.httpAdapter.request<T>({
-        url: `${this.baseUrl}${path}`,
-        method: 'POST',
-        headers: this.getHeaders(includeAuth),
-        credentials: 'include',
-        body: JSON.stringify(data),
-        signal,
-      });
-      return this.handleResponse(response);
-    } catch (error) {
-      this.handleRequestError(error);
-    }
+    return this.requestWithRetry(
+      () =>
+        this.httpAdapter.request<T>({
+          url: `${this.baseUrl}${path}`,
+          method: 'POST',
+          headers: this.getHeaders(includeAuth),
+          credentials: 'include',
+          body: JSON.stringify(data),
+          signal,
+        }),
+      includeAuth
+    );
   }
 
   /**
@@ -210,19 +278,18 @@ export class BaseApiClient {
   async put<T>(path: string, data: unknown, options: RequestOptions = {}): Promise<T> {
     const { includeAuth = true, signal } = options;
 
-    try {
-      const response = await this.httpAdapter.request<T>({
-        url: `${this.baseUrl}${path}`,
-        method: 'PUT',
-        headers: this.getHeaders(includeAuth),
-        credentials: 'include',
-        body: JSON.stringify(data),
-        signal,
-      });
-      return this.handleResponse(response);
-    } catch (error) {
-      this.handleRequestError(error);
-    }
+    return this.requestWithRetry(
+      () =>
+        this.httpAdapter.request<T>({
+          url: `${this.baseUrl}${path}`,
+          method: 'PUT',
+          headers: this.getHeaders(includeAuth),
+          credentials: 'include',
+          body: JSON.stringify(data),
+          signal,
+        }),
+      includeAuth
+    );
   }
 
   /**
@@ -231,19 +298,18 @@ export class BaseApiClient {
   async patch<T>(path: string, data: unknown, options: RequestOptions = {}): Promise<T> {
     const { includeAuth = true, signal } = options;
 
-    try {
-      const response = await this.httpAdapter.request<T>({
-        url: `${this.baseUrl}${path}`,
-        method: 'PATCH',
-        headers: this.getHeaders(includeAuth),
-        credentials: 'include',
-        body: JSON.stringify(data),
-        signal,
-      });
-      return this.handleResponse(response);
-    } catch (error) {
-      this.handleRequestError(error);
-    }
+    return this.requestWithRetry(
+      () =>
+        this.httpAdapter.request<T>({
+          url: `${this.baseUrl}${path}`,
+          method: 'PATCH',
+          headers: this.getHeaders(includeAuth),
+          credentials: 'include',
+          body: JSON.stringify(data),
+          signal,
+        }),
+      includeAuth
+    );
   }
 
   /**
@@ -252,18 +318,17 @@ export class BaseApiClient {
   async delete<T>(path: string, options: RequestOptions = {}): Promise<T> {
     const { includeAuth = true, signal } = options;
 
-    try {
-      const response = await this.httpAdapter.request<T>({
-        url: `${this.baseUrl}${path}`,
-        method: 'DELETE',
-        headers: this.getHeaders(includeAuth),
-        credentials: 'include',
-        signal,
-      });
-      return this.handleResponse(response);
-    } catch (error) {
-      this.handleRequestError(error);
-    }
+    return this.requestWithRetry(
+      () =>
+        this.httpAdapter.request<T>({
+          url: `${this.baseUrl}${path}`,
+          method: 'DELETE',
+          headers: this.getHeaders(includeAuth),
+          credentials: 'include',
+          signal,
+        }),
+      includeAuth
+    );
   }
 
   /**

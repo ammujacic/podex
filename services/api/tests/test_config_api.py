@@ -60,17 +60,6 @@ class TestSettingsDefaults:
             if original:
                 os.environ["REDIS_URL"] = original
 
-    def test_gcp_region_default(self) -> None:
-        """Test default GCP region."""
-        settings = Settings()
-        assert settings.GCP_REGION == "us-east1"
-
-    def test_gcs_endpoint_default(self) -> None:
-        """Test default GCS endpoint (for local emulator)."""
-        settings = Settings()
-        assert settings.GCS_ENDPOINT_URL is None
-
-
 class TestAuthSettings:
     """Tests for authentication settings."""
 
@@ -175,25 +164,6 @@ class TestCacheSettings:
         """Test default cache prefix."""
         settings = Settings()
         assert settings.CACHE_PREFIX == "podex:cache:"
-
-
-class TestVoiceSettings:
-    """Tests for voice/audio settings."""
-
-    def test_default_polly_voice(self) -> None:
-        """Test default Polly voice."""
-        settings = Settings()
-        assert settings.DEFAULT_POLLY_VOICE_ID == "Joanna"
-
-    def test_default_polly_engine(self) -> None:
-        """Test default Polly engine."""
-        settings = Settings()
-        assert settings.DEFAULT_POLLY_ENGINE == "neural"
-
-    def test_default_transcribe_language(self) -> None:
-        """Test default Transcribe language."""
-        settings = Settings()
-        assert settings.DEFAULT_TRANSCRIBE_LANGUAGE == "en-US"
 
 
 class TestRateLimitSettings:
@@ -395,32 +365,13 @@ class TestGetSettingsCached:
         assert settings1 is settings2
 
 
-class TestGCSSettings:
-    """Tests for GCS settings."""
-
-    def test_gcs_bucket_default(self) -> None:
-        """Test default GCS bucket."""
-        settings = Settings()
-        assert settings.GCS_BUCKET == "podex-workspaces"
-
-    def test_gcs_workspace_prefix_default(self) -> None:
-        """Test default GCS workspace prefix."""
-        settings = Settings()
-        assert settings.GCS_WORKSPACE_PREFIX == "workspaces"
-
-    def test_voice_audio_gcs_prefix_default(self) -> None:
-        """Test default voice audio GCS prefix."""
-        settings = Settings()
-        assert settings.VOICE_AUDIO_GCS_PREFIX == "audio/voice"
-
-
 class TestEmailSettings:
     """Tests for email settings."""
 
     def test_email_from_address_default(self) -> None:
         """Test default email from address."""
         settings = Settings()
-        assert settings.EMAIL_FROM_ADDRESS == "noreply@podex.dev"
+        assert settings.EMAIL_FROM_ADDRESS == "podex@podex.dev"
 
     def test_email_from_name_default(self) -> None:
         """Test default email from name."""
@@ -430,4 +381,4 @@ class TestEmailSettings:
     def test_email_reply_to_default(self) -> None:
         """Test default email reply-to."""
         settings = Settings()
-        assert settings.EMAIL_REPLY_TO == "support@podex.dev"
+        assert settings.EMAIL_REPLY_TO == "podex@podex.dev"

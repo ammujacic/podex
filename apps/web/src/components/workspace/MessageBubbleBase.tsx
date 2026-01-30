@@ -12,6 +12,8 @@ interface MessageBubbleBaseProps {
   message: AgentMessage;
   /** Enable mobile-optimized touch targets and styling */
   isMobile?: boolean;
+  /** Callback when a file link is clicked in a message */
+  onFileClick?: (path: string, startLine?: number, endLine?: number) => void;
 }
 
 /**
@@ -20,7 +22,7 @@ interface MessageBubbleBaseProps {
  * Memoized to prevent unnecessary re-renders during streaming.
  */
 export const MessageBubbleBase = React.memo<MessageBubbleBaseProps>(
-  function MessageBubbleBase({ message, isMobile = false }) {
+  function MessageBubbleBase({ message, isMobile = false, onFileClick }) {
     const isUser = message.role === 'user';
     const isAssistant = message.role === 'assistant';
     const [isExpanded, setIsExpanded] = useState(true);
@@ -93,7 +95,7 @@ export const MessageBubbleBase = React.memo<MessageBubbleBaseProps>(
               {isUser ? (
                 <p className="whitespace-pre-wrap">{message.content}</p>
               ) : (
-                <MarkdownRenderer content={message.content} />
+                <MarkdownRenderer content={message.content} onFileClick={onFileClick} />
               )}
             </div>
           )}
@@ -179,6 +181,11 @@ export const MessageBubbleBase = React.memo<MessageBubbleBaseProps>(
   (prevProps, nextProps) => {
     // isMobile prop doesn't change at runtime, so we only check message
     if (prevProps.isMobile !== nextProps.isMobile) {
+      return false;
+    }
+
+    // Check onFileClick callback
+    if (prevProps.onFileClick !== nextProps.onFileClick) {
       return false;
     }
 

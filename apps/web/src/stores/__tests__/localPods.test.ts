@@ -25,7 +25,7 @@ vi.mock('@/lib/api', () => ({
   regenerateLocalPodToken: vi.fn(),
 }));
 
-// Mock fixtures
+// Mock fixtures - simplified local pod (no docker_version, max_workspaces, mode, mounts)
 const mockLocalPod: LocalPod = {
   id: 'pod-1',
   user_id: 'user-1',
@@ -36,10 +36,8 @@ const mockLocalPod: LocalPod = {
   last_error: null,
   os_info: 'Linux 5.15.0',
   architecture: 'x86_64',
-  docker_version: '24.0.7',
   total_memory_mb: 16384,
   total_cpu_cores: 8,
-  max_workspaces: 5,
   current_workspaces: 2,
   labels: { env: 'development', region: 'us-east-1' },
   created_at: '2024-01-01T00:00:00Z',
@@ -60,7 +58,7 @@ const mockErrorPod: LocalPod = {
   id: 'pod-3',
   name: 'Error Pod',
   status: 'error',
-  last_error: 'Failed to connect to Docker daemon',
+  last_error: 'Connection failed',
   current_workspaces: 0,
 };
 
@@ -70,7 +68,6 @@ const mockBusyPod: LocalPod = {
   name: 'Busy Pod',
   status: 'busy',
   current_workspaces: 5,
-  max_workspaces: 5,
 };
 
 describe('localPodsStore', () => {
@@ -211,7 +208,6 @@ describe('localPodsStore', () => {
       it('creates pod successfully', async () => {
         const createRequest: CreateLocalPodRequest = {
           name: 'New Pod',
-          max_workspaces: 3,
           labels: { env: 'test' },
         };
 
@@ -343,13 +339,11 @@ describe('localPodsStore', () => {
       it('updates pod successfully', async () => {
         const updateRequest: UpdateLocalPodRequest = {
           name: 'Updated Name',
-          max_workspaces: 10,
         };
 
         const updatedPod: LocalPod = {
           ...mockLocalPod,
           name: 'Updated Name',
-          max_workspaces: 10,
         };
 
         vi.mocked(api.updateLocalPod).mockResolvedValue(updatedPod);
@@ -367,7 +361,6 @@ describe('localPodsStore', () => {
 
         const pod = result.current.pods.find((p) => p.id === mockLocalPod.id);
         expect(pod?.name).toBe('Updated Name');
-        expect(pod?.max_workspaces).toBe(10);
         expect(result.current.error).toBeNull();
       });
 
@@ -778,7 +771,7 @@ describe('localPodsStore', () => {
       expect(pod.total_memory_mb).toBe(16384);
     });
 
-    it('tracks workspace usage against limits', () => {
+    it('tracks current workspace count', () => {
       const { result } = renderHook(() => useLocalPodsStore());
 
       act(() => {
@@ -789,39 +782,7 @@ describe('localPodsStore', () => {
       const busyPod = result.current.pods.find((p) => p.id === mockBusyPod.id);
 
       expect(normalPod?.current_workspaces).toBe(2);
-      expect(normalPod?.max_workspaces).toBe(5);
       expect(busyPod?.current_workspaces).toBe(5);
-      expect(busyPod?.max_workspaces).toBe(5);
-    });
-
-    it('identifies pods at capacity', () => {
-      const { result } = renderHook(() => useLocalPodsStore());
-
-      act(() => {
-        useLocalPodsStore.setState({ pods: [mockLocalPod, mockBusyPod] }, false);
-      });
-
-      const podsAtCapacity = result.current.pods.filter(
-        (p) => p.current_workspaces >= p.max_workspaces
-      );
-
-      expect(podsAtCapacity).toHaveLength(1);
-      expect(podsAtCapacity[0].id).toBe(mockBusyPod.id);
-    });
-
-    it('identifies pods with available capacity', () => {
-      const { result } = renderHook(() => useLocalPodsStore());
-
-      act(() => {
-        useLocalPodsStore.setState({ pods: [mockLocalPod, mockBusyPod] }, false);
-      });
-
-      const podsWithCapacity = result.current.pods.filter(
-        (p) => p.current_workspaces < p.max_workspaces
-      );
-
-      expect(podsWithCapacity).toHaveLength(1);
-      expect(podsWithCapacity[0].id).toBe(mockLocalPod.id);
     });
 
     it('handles pods with null resource values', () => {
@@ -900,28 +861,6 @@ describe('localPodsStore', () => {
       expect(pod.labels).toEqual(newLabels);
     });
 
-    it('updates max_workspaces configuration', async () => {
-      const updatedPod: LocalPod = {
-        ...mockLocalPod,
-        max_workspaces: 10,
-      };
-
-      vi.mocked(api.updateLocalPod).mockResolvedValue(updatedPod);
-
-      const { result } = renderHook(() => useLocalPodsStore());
-
-      act(() => {
-        useLocalPodsStore.setState({ pods: [mockLocalPod] }, false);
-      });
-
-      await act(async () => {
-        await result.current.updatePod(mockLocalPod.id, { max_workspaces: 10 });
-      });
-
-      const pod = result.current.pods[0];
-      expect(pod.max_workspaces).toBe(10);
-    });
-
     it('tracks pod system information', () => {
       const { result } = renderHook(() => useLocalPodsStore());
 
@@ -932,7 +871,6 @@ describe('localPodsStore', () => {
       const pod = result.current.pods[0];
       expect(pod.os_info).toBe('Linux 5.15.0');
       expect(pod.architecture).toBe('x86_64');
-      expect(pod.docker_version).toBe('24.0.7');
     });
   });
 

@@ -5,12 +5,11 @@ import { useUIStore } from '@/stores/ui';
 import { useSessionStore } from '@/stores/session';
 import {
   CreateAgentModal,
-  PauseSessionModal,
-  StandbySettingsModal,
   MCPSettingsModal,
   WorkspaceScalingModal,
   ExtensionMarketplaceModal,
   NewPathModal,
+  OpenClawInstallWizardModal,
 } from './modals';
 import type { WorkspaceTier } from '@podex/shared';
 
@@ -50,12 +49,6 @@ export function ModalLayer({ sessionId }: ModalLayerProps) {
       {activeModal === 'create-agent' && (
         <CreateAgentModal sessionId={sessionId} onClose={closeModal} />
       )}
-      {activeModal === 'pause-session' && workspaceId && (
-        <PauseSessionModal sessionId={sessionId} workspaceId={workspaceId} onClose={closeModal} />
-      )}
-      {activeModal === 'standby-settings' && (
-        <StandbySettingsModal sessionId={sessionId} onClose={closeModal} />
-      )}
       {activeModal === 'mcp-settings' && <MCPSettingsModal onClose={closeModal} />}
       {activeModal === 'extensions-marketplace' && (
         <ExtensionMarketplaceModal onClose={closeModal} workspaceId={workspaceId} />
@@ -75,6 +68,14 @@ export function ModalLayer({ sessionId }: ModalLayerProps) {
           initialPath={
             typeof modalData?.initialPath === 'string' ? (modalData.initialPath as string) : ''
           }
+          onClose={closeModal}
+        />
+      )}
+      {activeModal === 'openclaw-wizard' && (
+        <OpenClawInstallWizardModal
+          sessionId={sessionId}
+          workspaceId={workspaceId ?? null}
+          localPodId={currentSession?.localPodId ?? null}
           onClose={closeModal}
         />
       )}

@@ -1,13 +1,20 @@
-"""Configuration for Podex Local Pod agent."""
+"""Configuration for Podex Local Pod agent.
 
-from pathlib import Path
+Simplified configuration - the local pod runs in native unrestricted mode,
+executing commands at whatever working_dir the backend provides.
+"""
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class LocalPodConfig(BaseSettings):
-    """Configuration for the local pod agent."""
+    """Configuration for the local pod agent.
+
+    The local pod is a stateless executor - it receives working_dir with
+    each RPC call and executes commands at that path. No mode selection,
+    no security restrictions, no mount configuration needed.
+    """
 
     model_config = SettingsConfigDict(
         env_prefix="PODEX_",
@@ -32,28 +39,6 @@ class LocalPodConfig(BaseSettings):
     pod_name: str | None = Field(
         default=None,
         description="Display name for this pod (optional, uses hostname if not set)",
-    )
-
-    # Workspace limits
-    max_workspaces: int = Field(
-        default=3,
-        ge=1,
-        le=10,
-        description="Maximum concurrent workspaces",
-    )
-
-    # Docker configuration
-    docker_host: str = Field(
-        default="unix:///var/run/docker.sock",
-        description="Docker daemon socket",
-    )
-    docker_network: str = Field(
-        default="podex-local",
-        description="Docker network for workspaces",
-    )
-    workspace_image: str = Field(
-        default="podex/workspace:latest",
-        description="Docker image for workspaces",
     )
 
     # Heartbeat interval (seconds)
@@ -81,24 +66,15 @@ class LocalPodConfig(BaseSettings):
     )
 
 
-def load_config(config_file: str | Path | None = None) -> LocalPodConfig:
-    """Load configuration from environment and optional config file.
+def load_config() -> LocalPodConfig:
+    """Load configuration from environment variables.
 
-    Args:
-        config_file: Optional path to a config file
+    Configuration is loaded from:
+    1. Environment variables (PODEX_*)
+    2. .env file (if present)
+    3. Default values
 
     Returns:
         Loaded configuration
     """
-    if config_file:
-        # Load from file if provided
-        import tomllib
-
-        config_path = Path(config_file)
-        if config_path.exists():
-            with open(config_path, "rb") as f:
-                data = tomllib.load(f)
-                return LocalPodConfig(**data.get("podex", {}))
-
-    # Load from environment
     return LocalPodConfig()

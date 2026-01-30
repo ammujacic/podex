@@ -1,5 +1,6 @@
 'use client';
 
+import { memo, useCallback } from 'react';
 import { formatDistanceToNow } from 'date-fns';
 import { Bot, Check, FileCode, GitBranch, GitCommit, Play, Terminal, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -42,6 +43,14 @@ const activityIcons: Record<ActivityItem['type'], React.ReactNode> = {
 };
 
 export function ActivityFeed({ activities, isLoading, onActivityClick }: ActivityFeedProps) {
+  // Memoize the click handler to prevent unnecessary re-renders of ActivityRow
+  const handleActivityClick = useCallback(
+    (activity: ActivityItem) => {
+      onActivityClick?.(activity);
+    },
+    [onActivityClick]
+  );
+
   if (isLoading) {
     return (
       <div className="bg-surface border border-border-default rounded-xl p-5">
@@ -74,7 +83,7 @@ export function ActivityFeed({ activities, isLoading, onActivityClick }: Activit
             key={activity.id}
             activity={activity}
             isLast={index === activities.length - 1}
-            onClick={() => onActivityClick?.(activity)}
+            onActivityClick={handleActivityClick}
           />
         ))}
       </div>
@@ -85,18 +94,26 @@ export function ActivityFeed({ activities, isLoading, onActivityClick }: Activit
 interface ActivityRowProps {
   activity: ActivityItem;
   isLast: boolean;
-  onClick?: () => void;
+  onActivityClick?: (activity: ActivityItem) => void;
 }
 
-function ActivityRow({ activity, isLast, onClick }: ActivityRowProps) {
+const ActivityRow = memo(function ActivityRow({
+  activity,
+  isLast,
+  onActivityClick,
+}: ActivityRowProps) {
+  const handleClick = useCallback(() => {
+    onActivityClick?.(activity);
+  }, [onActivityClick, activity]);
+
   return (
     <button
-      onClick={onClick}
-      disabled={!onClick}
+      onClick={handleClick}
+      disabled={!onActivityClick}
       className={cn(
         'w-full flex items-start gap-3 p-3 rounded-lg text-left',
         'hover:bg-overlay transition-colors',
-        onClick && 'cursor-pointer'
+        onActivityClick && 'cursor-pointer'
       )}
     >
       {/* Timeline */}
@@ -126,7 +143,7 @@ function ActivityRow({ activity, isLast, onClick }: ActivityRowProps) {
       </div>
     </button>
   );
-}
+});
 
 // Usage chart component
 interface UsageChartProps {

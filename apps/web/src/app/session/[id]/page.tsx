@@ -20,12 +20,18 @@ import { CommandPalette } from '@/components/workspace/CommandPalette';
 import {
   getSession,
   getWorkspaceStatus,
+  getGitStatus,
   listAgents,
-  getAgentMessages,
+  listConversations,
+  getConversation,
+  getSessionLayout,
   type Session,
   type AgentResponse,
+  type ConversationSummary,
+  type SessionLayoutState,
 } from '@/lib/api';
-import type { Agent, AgentMessage } from '@/stores/session';
+import type { Agent, ConversationSession, AgentMessage } from '@/stores/session';
+import { getLanguageFromPath } from '@/stores/sessionTypes';
 import { useUser, useAuthStore } from '@/stores/auth';
 import { useSessionStore } from '@/stores/session';
 import { useEditorStore } from '@/stores/editor';
@@ -70,6 +76,7 @@ export default function SessionPage() {
   // Use getState() for initial check to avoid dependency on sessions object
   // This prevents the effect from re-running when any session changes
   const createSession = useSessionStore((s) => s.createSession);
+  const setCurrentSession = useSessionStore((s) => s.setCurrentSession);
   const setWorkspaceStatusChecking = useSessionStore((s) => s.setWorkspaceStatusChecking);
   const resetEditorLayout = useEditorStore((s) => s.resetLayout);
 
@@ -115,6 +122,15 @@ export default function SessionPage() {
     resetEditorLayout();
   }, [resetEditorLayout, sessionId]);
 
+  // Preserve selected session: set current session as soon as we're on a session page.
+  // This ensures the sidebar/dashboard shows the correct session as selected, and
+  // survives persist rehydration (which can overwrite state after createSession).
+  useEffect(() => {
+    if (sessionId) {
+      setCurrentSession(sessionId);
+    }
+  }, [sessionId, setCurrentSession]);
+
   // Simulate startup progress
   const simulateStartup = useCallback(() => {
     // Clean up any existing simulation first
@@ -158,10 +174,19 @@ export default function SessionPage() {
 
     async function loadSession() {
       try {
-        // Fetch session and agents in parallel
-        const [data, agentsData] = await Promise.all([
+        // Fetch session, agents, conversation sessions, and layout from backend in parallel
+        // BACKEND IS SOURCE OF TRUTH - fetch everything including UI state
+        // LayoutSyncProvider will also load layout for ongoing sync, but we load it here
+        // to ensure initial state is correct immediately
+        const [data, agentsData, conversationsData, layoutData] = await Promise.all([
           getSession(sessionId),
           listAgents(sessionId),
+          listConversations(sessionId),
+          getSessionLayout(sessionId).catch((err) => {
+            // Layout fetch is best-effort - fall back to defaults if it fails
+            console.warn('Failed to fetch session layout, using defaults:', err);
+            return null;
+          }),
         ]);
 
         // Check if request was cancelled
@@ -171,165 +196,290 @@ export default function SessionPage() {
 
         if (isCancelled) return;
 
-        // Fetch messages for each agent (backend creates default Chat agent on session creation)
-        const agentsWithMessages: Agent[] = await Promise.all(
-          agentsData.map(async (agentResponse: AgentResponse, index: number) => {
-            try {
-              const messagesData = await getAgentMessages(sessionId, agentResponse.id);
-              const messages: AgentMessage[] = messagesData.map((msg) => ({
-                id: msg.id,
-                role: msg.role,
-                content: msg.content,
-                timestamp: new Date(msg.created_at),
-              }));
+        // Map agents from API response (conversation sessions are loaded separately)
+        const agents: Agent[] = agentsData.map((agentResponse: AgentResponse, index: number) => ({
+          id: agentResponse.id,
+          name: agentResponse.name,
+          role: agentResponse.role as Agent['role'],
+          model: agentResponse.model,
+          modelDisplayName: agentResponse.model_display_name ?? undefined,
+          status: agentResponse.status as Agent['status'],
+          color: agentColors[index % agentColors.length] ?? 'agent-1',
+          conversationSessionId: agentResponse.conversation_session_id ?? null,
+          mode: (agentResponse.mode as Agent['mode']) || 'ask',
+        }));
 
+        if (isCancelled) return;
+
+        // Map conversations from API response and fetch messages for conversations that have them
+        const conversationsWithMessages = await Promise.all(
+          conversationsData.map(async (conv: ConversationSummary) => {
+            // Only fetch messages if the conversation has messages
+            if (conv.message_count > 0) {
+              try {
+                const convWithMessages = await getConversation(sessionId, conv.id);
+                if (isCancelled) return null;
+
+                // Map API messages to frontend AgentMessage format and deduplicate by ID
+                const messageMap = new Map<string, AgentMessage>();
+                for (const msg of convWithMessages.messages) {
+                  const agentMsg: AgentMessage = {
+                    id: msg.id,
+                    role: msg.role as 'user' | 'assistant',
+                    content: msg.content,
+                    thinking: msg.thinking ?? undefined,
+                    timestamp: new Date(msg.created_at),
+                    toolCalls: msg.tool_calls as unknown as AgentMessage['toolCalls'],
+                    toolResults: msg.tool_results as unknown as AgentMessage['toolResults'],
+                    stopReason: msg.stop_reason ?? undefined,
+                    usage: msg.usage as unknown as AgentMessage['usage'],
+                    model: msg.model ?? undefined,
+                  };
+                  // Deduplicate by ID - keep the first occurrence
+                  if (!messageMap.has(msg.id)) {
+                    messageMap.set(msg.id, agentMsg);
+                  }
+                }
+                // Convert back to array and sort by timestamp
+                const messages = Array.from(messageMap.values()).sort(
+                  (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
+                );
+
+                return {
+                  id: conv.id,
+                  name: conv.name,
+                  messages,
+                  attachedAgentIds: conv.attached_agent_ids || [],
+                  messageCount: conv.message_count,
+                  lastMessageAt: conv.last_message_at,
+                  createdAt: conv.created_at,
+                  updatedAt: conv.updated_at,
+                };
+              } catch (error) {
+                console.error(`Failed to load messages for conversation ${conv.id}:`, error);
+                // Fall back to conversation without messages
+                return {
+                  id: conv.id,
+                  name: conv.name,
+                  messages: [],
+                  attachedAgentIds: conv.attached_agent_ids || [],
+                  messageCount: conv.message_count,
+                  lastMessageAt: conv.last_message_at,
+                  createdAt: conv.created_at,
+                  updatedAt: conv.updated_at,
+                };
+              }
+            } else {
+              // No messages, return empty conversation
               return {
-                id: agentResponse.id,
-                name: agentResponse.name,
-                role: agentResponse.role as Agent['role'],
-                model: agentResponse.model,
-                modelDisplayName: agentResponse.model_display_name ?? undefined,
-                status: agentResponse.status as Agent['status'],
-                color: agentColors[index % agentColors.length] ?? 'agent-1',
-                messages,
-                mode: (agentResponse.mode as Agent['mode']) || 'ask',
-              };
-            } catch {
-              // If messages fail to load, return agent with empty messages
-              return {
-                id: agentResponse.id,
-                name: agentResponse.name,
-                role: agentResponse.role as Agent['role'],
-                model: agentResponse.model,
-                modelDisplayName: agentResponse.model_display_name ?? undefined,
-                status: agentResponse.status as Agent['status'],
-                color: agentColors[index % agentColors.length] ?? 'agent-1',
+                id: conv.id,
+                name: conv.name,
                 messages: [],
-                mode: (agentResponse.mode as Agent['mode']) || 'ask',
+                attachedAgentIds: conv.attached_agent_ids || [],
+                messageCount: conv.message_count,
+                lastMessageAt: conv.last_message_at,
+                createdAt: conv.created_at,
+                updatedAt: conv.updated_at,
               };
             }
           })
         );
 
-        if (isCancelled) return;
+        // Filter out any null results (from cancelled requests)
+        const conversations: ConversationSession[] = conversationsWithMessages.filter(
+          (c): c is ConversationSession => c !== null
+        );
+
+        // Ensure conversations and agents are in sync
+        // Backend is source of truth, but we ensure bidirectional consistency:
+        // If agent has conversationSessionId pointing to a conversation, ensure that conversation
+        // has the agent in its attachedAgentIds list (backend should already do this, but we verify)
+        const conversationsSynced = conversations.map((conv) => {
+          // Find agents that have this conversation attached (by conversationSessionId)
+          const attachedAgents = agents.filter((a) => a.conversationSessionId === conv.id);
+          const attachedAgentIdsFromConv = conv.attachedAgentIds || [];
+
+          // Merge any agents that have this conversation but aren't in the list
+          const mergedAgentIds = [
+            ...new Set([...attachedAgentIdsFromConv, ...attachedAgents.map((a) => a.id)]),
+          ];
+
+          // If there's a difference, update the conversation
+          if (
+            mergedAgentIds.length !== attachedAgentIdsFromConv.length ||
+            !mergedAgentIds.every((id) => attachedAgentIdsFromConv.includes(id))
+          ) {
+            return { ...conv, attachedAgentIds: mergedAgentIds };
+          }
+
+          // Otherwise trust backend data
+          return conv;
+        });
 
         // Sync session to Zustand store
-        // Note: workspace_id can be null during session creation - handle gracefully
-        // Components should check for valid workspaceId before performing terminal/LSP operations
+        // ============================================================================
+        // BACKEND IS ALWAYS THE SOURCE OF TRUTH - INCLUDING UI STATE
+        // ============================================================================
+        // This ensures consistent syncing across multiple windows/tabs/devices:
+        // 1. Always fetch fresh data from backend (agents, conversations, messages, layout)
+        // 2. Replace ALL data completely - never merge with localStorage
+        // 3. Backend layout includes: viewMode, agent positions, file previews, editor state
+        // 4. LayoutSyncProvider handles ongoing sync after initial load
+        // 5. WebSocket events keep sessions in sync in real-time across windows
+        // 6. localStorage is only used as a cache, backend always wins
+        // ============================================================================
         const existingSession = useSessionStore.getState().sessions[sessionId];
-        if (!existingSession) {
-          // Create new session if it doesn't exist
-          createSession({
-            id: sessionId,
-            name: data.name,
-            workspaceId: data.workspace_id ?? '', // Store requires string, empty means no workspace yet
-            branch: data.branch,
-            gitUrl: data.git_url,
-            agents: agentsWithMessages,
-            filePreviews: [],
-            activeAgentId: null,
-            viewMode: 'grid',
-            workspaceStatus: data.status === 'active' ? 'running' : 'pending',
-            workspaceStatusChecking: false,
-            standbyAt: null,
-            standbySettings: null,
-            editorGridCardId: null,
-            previewGridCardId: null,
-          });
-        } else {
-          // Session exists (likely from localStorage) - sync from API
-          // This ensures agents created in other views/devices are loaded
-          // and workspace ID is up to date (critical for terminal/file explorer sync)
-          const {
-            updateAgent,
-            addAgent: addAgentToSession,
-            updateSessionWorkspaceId,
-            updateSessionInfo,
-            removeAgent,
-          } = useSessionStore.getState();
 
-          // CRITICAL: Sync workspace ID from API to fix terminal/file explorer mismatch
-          // The localStorage may have a stale workspace ID from a previous session
-          if (data.workspace_id && data.workspace_id !== existingSession.workspaceId) {
-            updateSessionWorkspaceId(sessionId, data.workspace_id);
+        // Use backend layout as source of truth, fallback to defaults if not available
+        const layout: SessionLayoutState = layoutData || {
+          view_mode: 'grid',
+          active_agent_id: null,
+          agent_layouts: {},
+          file_preview_layouts: {},
+          sidebar_open: true,
+          sidebar_width: 280,
+          editor_grid_card_id: null,
+          editor_grid_span: null,
+          editor_freeform_position: null,
+        };
+
+        // Map backend agent layouts to frontend agent format
+        // Backend data (id, name, role, model, status, conversationSessionId) always wins
+        const agentsWithBackendLayout: Agent[] = agents.map((apiAgent, index) => {
+          const agentLayout = layout.agent_layouts[apiAgent.id];
+          const localAgent = existingSession?.agents.find((a) => a.id === apiAgent.id);
+          return {
+            ...apiAgent, // Backend data is source of truth
+            // Preserve color (UI preference, not stored in backend)
+            color: localAgent?.color ?? agentColors[index % agentColors.length] ?? 'agent-1',
+            // Use backend layout for positions and grid spans
+            position: agentLayout?.position
+              ? {
+                  x: agentLayout.position.x ?? 0,
+                  y: agentLayout.position.y ?? 0,
+                  width: agentLayout.position.width ?? 400,
+                  height: agentLayout.position.height ?? 300,
+                  zIndex: agentLayout.position.z_index ?? 1,
+                }
+              : undefined,
+            gridSpan: agentLayout?.grid_span
+              ? {
+                  colSpan: agentLayout.grid_span.col_span ?? 1,
+                  rowSpan: agentLayout.grid_span.row_span ?? 1,
+                  colStart: agentLayout.grid_span.col_start,
+                }
+              : undefined,
+            mode: apiAgent.mode || 'ask',
+            // Backend conversationSessionId is always used (source of truth)
+            conversationSessionId: apiAgent.conversationSessionId,
+          };
+        });
+
+        // Map backend file preview layouts to frontend format
+        // Backend stores layout metadata (position, gridSpan, docked, pinned) but not content
+        // Content is loaded separately when preview is opened
+        const filePreviewsFromBackend = Object.values(layout.file_preview_layouts || {}).map(
+          (previewLayout) => {
+            const existingPreview = existingSession?.filePreviews.find(
+              (p) => p.id === previewLayout.preview_id || p.path === previewLayout.path
+            );
+            return {
+              id: previewLayout.preview_id,
+              path: previewLayout.path,
+              content: existingPreview?.content ?? '', // Content loaded separately when preview is opened
+              language: existingPreview?.language ?? getLanguageFromPath(previewLayout.path),
+              pinned: previewLayout.pinned ?? false,
+              docked: previewLayout.docked ?? false,
+              position: previewLayout.position
+                ? {
+                    x: previewLayout.position.x ?? 100,
+                    y: previewLayout.position.y ?? 100,
+                    width: previewLayout.position.width ?? 600,
+                    height: previewLayout.position.height ?? 500,
+                    zIndex: previewLayout.position.z_index ?? 1,
+                  }
+                : { x: 100, y: 100 },
+              gridSpan: previewLayout.grid_span
+                ? {
+                    colSpan: previewLayout.grid_span.col_span ?? 1,
+                    rowSpan: previewLayout.grid_span.row_span ?? 1,
+                    colStart: previewLayout.grid_span.col_start,
+                  }
+                : undefined,
+            };
           }
+        );
 
-          updateSessionInfo(sessionId, {
-            name: data.name,
-            branch: data.branch,
-            gitUrl: data.git_url,
-          });
-
-          // Merge agents: keep local state (messages, status) but ensure all API agents exist
-          const existingAgentIds = new Set(existingSession.agents.map((a: Agent) => a.id));
-
-          for (const apiAgent of agentsWithMessages) {
-            if (!existingAgentIds.has(apiAgent.id)) {
-              // Agent exists in API but not in local store - add it
-              addAgentToSession(sessionId, apiAgent);
-            } else {
-              // Agent exists in both - update with API data but keep local messages if more recent
-              const localAgent = existingSession.agents.find((a: Agent) => a.id === apiAgent.id);
-              if (localAgent) {
-                // Merge messages: use API messages if local is empty, otherwise keep local
-                const mergedMessages =
-                  localAgent.messages.length > 0 ? localAgent.messages : apiAgent.messages;
-                updateAgent(sessionId, apiAgent.id, {
-                  name: apiAgent.name,
-                  model: apiAgent.model,
-                  modelDisplayName: apiAgent.modelDisplayName,
-                  status: apiAgent.status,
-                  messages: mergedMessages,
-                  // Fix corrupted localStorage data: ensure color is always set
-                  color: localAgent.color || apiAgent.color,
-                  mode: localAgent.mode || apiAgent.mode,
-                });
+        // Always replace session with backend data (including UI state from backend)
+        createSession({
+          id: sessionId,
+          name: data.name,
+          workspaceId: data.workspace_id ?? '', // Store requires string, empty means no workspace yet
+          branch: data.branch,
+          gitUrl: data.git_url,
+          agents: agentsWithBackendLayout,
+          conversationSessions: conversationsSynced, // Backend is source of truth - completely replace (synced with agents)
+          filePreviews: filePreviewsFromBackend, // Backend layout is source of truth
+          activeAgentId: layout.active_agent_id ?? null, // Backend is source of truth
+          viewMode: (layout.view_mode as 'grid' | 'focus' | 'freeform') || 'grid', // Backend is source of truth
+          workspaceStatus: data.status === 'active' ? 'running' : 'pending',
+          workspaceStatusChecking: false,
+          editorGridCardId: layout.editor_grid_card_id ?? null, // Backend is source of truth
+          editorGridSpan: layout.editor_grid_span
+            ? {
+                colSpan: layout.editor_grid_span.col_span ?? 2,
+                rowSpan: layout.editor_grid_span.row_span ?? 2,
+                colStart: layout.editor_grid_span.col_start,
               }
-            }
-          }
-
-          // Remove agents that exist locally but not in API (i.e., were deleted elsewhere)
-          // Also remove corrupted agents (missing id or essential fields)
-          const apiAgentIds = new Set(agentsWithMessages.map((a) => a.id));
-          for (const localAgent of existingSession.agents) {
-            // Skip terminal agents - they're managed separately and may not exist in API
-            if (localAgent.terminalSessionId) continue;
-
-            // Remove corrupted agents (missing required fields)
-            if (!localAgent.id || !localAgent.name) {
-              if (localAgent.id) {
-                removeAgent(sessionId, localAgent.id);
+            : undefined,
+          editorFreeformPosition: layout.editor_freeform_position
+            ? {
+                x: layout.editor_freeform_position.x ?? 100,
+                y: layout.editor_freeform_position.y ?? 100,
+                width: layout.editor_freeform_position.width ?? 600,
+                height: layout.editor_freeform_position.height ?? 500,
+                zIndex: layout.editor_freeform_position.z_index ?? 1,
               }
-              continue;
-            }
-
-            // Remove agents not found in backend
-            if (!apiAgentIds.has(localAgent.id)) {
-              removeAgent(sessionId, localAgent.id);
-            }
-          }
-        }
+            : undefined,
+          previewGridCardId: null, // TODO: Add to backend layout if needed
+          localPodId: data.local_pod_id ?? null,
+          localPodName: data.local_pod_name ?? null,
+          mount_path: data.mount_path ?? null,
+        });
 
         if (data.workspace_id) {
           try {
             if (data.status === 'active') {
               setWorkspaceStatusChecking(sessionId, true);
-              useSessionStore.getState().setWorkspaceStatus(sessionId, 'pending', null);
+              useSessionStore.getState().setWorkspaceStatus(sessionId, 'pending');
             }
             const workspaceStatus = await getWorkspaceStatus(data.workspace_id);
             if (!isCancelled) {
-              useSessionStore
-                .getState()
-                .setWorkspaceStatus(
-                  sessionId,
-                  workspaceStatus.status,
-                  workspaceStatus.standby_at ?? null
-                );
+              useSessionStore.getState().setWorkspaceStatus(sessionId, workspaceStatus.status);
               setWorkspaceStatusChecking(sessionId, false);
             }
           } catch (statusError) {
             console.warn('Failed to fetch workspace status:', statusError);
             setWorkspaceStatusChecking(sessionId, false);
+          }
+        }
+
+        // Sync git branch from actual workspace state (handles local git changes)
+        // This runs for both cloud workspaces and local pods
+        if (data.status === 'active' && !isCancelled) {
+          try {
+            const gitStatus = await getGitStatus(sessionId);
+            if (!isCancelled && gitStatus.branch) {
+              const currentSession = useSessionStore.getState().sessions[sessionId];
+              if (currentSession && currentSession.branch !== gitStatus.branch) {
+                useSessionStore
+                  .getState()
+                  .updateSessionInfo(sessionId, { branch: gitStatus.branch });
+              }
+            }
+          } catch (gitError) {
+            // Git status fetch is best-effort - don't block session loading
+            console.warn('Failed to fetch git status for branch sync:', gitError);
           }
         }
 

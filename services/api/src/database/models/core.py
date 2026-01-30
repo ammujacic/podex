@@ -1,4 +1,4 @@
-"""Core models: User, Session, Agent, Message, Workspace and related."""
+"""Core models: User, Session, Agent, Workspace and related."""
 
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -20,7 +20,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base, _generate_uuid
 
 if TYPE_CHECKING:
-    from .agent_config import AgentTemplate, TerminalIntegratedAgentType
+    from .agent_config import AgentTemplate
+    from .conversation import ConversationSession
     from .extensions import UserExtension, WorkspaceExtension
     from .infrastructure import GitHubIntegration, LocalPod
     from .organization import OrganizationMember
@@ -46,6 +47,10 @@ class User(Base):
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     mfa_secret: Mapped[str | None] = mapped_column(String(255))  # Encrypted TOTP secret
     mfa_backup_codes: Mapped[list[str] | None] = mapped_column(JSONB)  # Hashed backup codes
+
+    # SSH public keys for VS Code Remote-SSH and other SSH clients
+    # List of dicts with: name, key (public key string), fingerprint, created_at
+    ssh_public_keys: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
 
     # Organization billing context
     # When user joins an org, personal billing is suspended (not canceled)
@@ -170,6 +175,11 @@ class Session(Base):
         back_populates="session",
         cascade="all, delete-orphan",
     )
+    conversation_sessions: Mapped[list["ConversationSession"]] = relationship(
+        "ConversationSession",
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
     shares: Mapped[list["SessionShare"]] = relationship(
         "SessionShare",
         back_populates="session",
@@ -240,9 +250,10 @@ class Agent(Base):
     # Agent kind: podex_native, terminal_external
     kind: Mapped[str] = mapped_column(String(20), default="podex_native", nullable=False)
     # Reference to terminal-integrated agent type (for terminal_external agents)
+    # Note: This field is deprecated and will be removed in future versions
     terminal_agent_type_id: Mapped[str | None] = mapped_column(
         UUID(as_uuid=False),
-        ForeignKey("terminal_integrated_agent_types.id", ondelete="SET NULL"),
+        nullable=True,
     )
     # Voice configuration for TTS (tts_enabled, auto_play, voice_id, speed, language)
     voice_config: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
@@ -271,22 +282,23 @@ class Agent(Base):
 
     # Relationships
     session: Mapped["Session"] = relationship("Session", back_populates="agents")
-    messages: Mapped[list["Message"]] = relationship(
-        "Message",
-        back_populates="agent",
-        cascade="all, delete-orphan",
-    )
     template: Mapped["AgentTemplate | None"] = relationship(
         "AgentTemplate",
         back_populates="agents",
-    )
-    terminal_agent_type: Mapped["TerminalIntegratedAgentType | None"] = relationship(
-        "TerminalIntegratedAgentType",
     )
     pending_approvals: Mapped[list["AgentPendingApproval"]] = relationship(
         "AgentPendingApproval",
         back_populates="agent",
         cascade="all, delete-orphan",
+    )
+    # The conversation attached to this agent (via junction table).
+    # An agent can only have ONE conversation attached (unique constraint on junction).
+    # uselist=False because agent can only have one conversation.
+    attached_conversation: Mapped["ConversationSession | None"] = relationship(
+        "ConversationSession",
+        secondary="agent_conversation_attachments",
+        back_populates="attached_agents",
+        uselist=False,
     )
 
 
@@ -404,39 +416,6 @@ class PendingChange(Base):
     agent: Mapped["Agent"] = relationship("Agent")
 
 
-class Message(Base):
-    """Agent conversation message model."""
-
-    __tablename__ = "messages"
-
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
-    agent_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False),
-        ForeignKey("agents.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    role: Mapped[str] = mapped_column(String(50), nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    tool_calls: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
-    tokens_used: Mapped[int | None] = mapped_column()
-    # Voice/audio fields
-    audio_url: Mapped[str | None] = mapped_column(Text)  # S3 URL for audio
-    audio_duration_ms: Mapped[int | None] = mapped_column(Integer)  # Duration in milliseconds
-    input_type: Mapped[str] = mapped_column(String(20), default="text")  # "text" or "voice"
-    transcription_confidence: Mapped[float | None] = mapped_column(Float)  # STT confidence score
-    # TTS summary - short spoken version of the message (avoids reading code/plans)
-    tts_summary: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
-
-    # Relationships
-    agent: Mapped["Agent"] = relationship("Agent", back_populates="messages")
-
-
 class Workspace(Base):
     """Workspace model for compute environments."""
 
@@ -461,6 +440,32 @@ class Workspace(Base):
         index=True,
     )
 
+    # Multi-server orchestration: Which server hosts this workspace
+    # Human-readable server ID (e.g., "ws-local-1") - matches compute service config
+    server_id: Mapped[str | None] = mapped_column(
+        String(255),
+        ForeignKey("workspace_servers.id", ondelete="SET NULL"),
+        index=True,
+    )
+
+    # Container/volume tracking for Docker workspaces
+    container_name: Mapped[str | None] = mapped_column(String(255))
+    volume_name: Mapped[str | None] = mapped_column(String(255))
+
+    # Resource allocation
+    assigned_cpu: Mapped[float | None] = mapped_column(Float)
+    assigned_memory_mb: Mapped[int | None] = mapped_column(Integer)
+    assigned_disk_gb: Mapped[int | None] = mapped_column(Integer)
+    assigned_bandwidth_mbps: Mapped[int | None] = mapped_column(Integer)
+
+    # Region preference (user-selected region for compliance)
+    region_preference: Mapped[str | None] = mapped_column(String(50))  # "eu", "us"
+
+    # Networking
+    internal_ip: Mapped[str | None] = mapped_column(String(45))  # IPv6-safe length
+    workspace_ssh_port: Mapped[int | None] = mapped_column(Integer)
+    workspace_http_port: Mapped[int | None] = mapped_column(Integer)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -476,6 +481,10 @@ class Workspace(Base):
     # Relationships
     session: Mapped["Session | None"] = relationship("Session", back_populates="workspace")
     local_pod: Mapped["LocalPod | None"] = relationship("LocalPod")
+    server: Mapped["WorkspaceServer | None"] = relationship(  # type: ignore[name-defined]  # noqa: F821
+        "WorkspaceServer",
+        back_populates="workspaces",
+    )
     file_changes: Mapped[list["FileChange"]] = relationship(
         "FileChange",
         back_populates="workspace",

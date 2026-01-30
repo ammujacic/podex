@@ -8,6 +8,7 @@ container rather than the agent's local filesystem.
 
 from __future__ import annotations
 
+import shlex
 from typing import Any
 
 import httpx
@@ -341,8 +342,10 @@ class ComputeClient:
             Dictionary with matching files or error.
         """
         # Use find command for glob-like behavior
-        # Escape special characters in pattern for find
-        cmd = f"find {path} -type f -name '{pattern}' 2>/dev/null | head -500"
+        # SECURITY: Use shlex.quote() to prevent shell injection attacks
+        safe_path = shlex.quote(path)
+        safe_pattern = shlex.quote(pattern)
+        cmd = f"find {safe_path} -type f -name {safe_pattern} 2>/dev/null | head -500"
         result = await self.exec_command(cmd, timeout=30)
 
         if not result["success"] and "error" in result:
@@ -394,14 +397,24 @@ class ComputeClient:
 
         flags_str = " ".join(flags)
 
+        # SECURITY: Use shlex.quote() to prevent shell injection attacks
+        safe_pattern = shlex.quote(pattern)
+        safe_path = shlex.quote(path)
+        # Sanitize max_results to ensure it's a positive integer
+        safe_max_results = max(1, min(int(max_results), 10000))
+
         # Handle file pattern filter
         if file_pattern:
+            safe_file_pattern = shlex.quote(file_pattern)
             cmd = (
-                f"grep {flags_str} --include='{file_pattern}' '{pattern}' {path} "
-                f"2>/dev/null | head -{max_results}"
+                f"grep {flags_str} --include={safe_file_pattern} {safe_pattern} {safe_path} "
+                f"2>/dev/null | head -{safe_max_results}"
             )
         else:
-            cmd = f"grep {flags_str} '{pattern}' {path} 2>/dev/null | head -{max_results}"
+            cmd = (
+                f"grep {flags_str} {safe_pattern} {safe_path} "
+                f"2>/dev/null | head -{safe_max_results}"
+            )
 
         result = await self.exec_command(cmd, timeout=30)
 
@@ -477,7 +490,9 @@ class ComputeClient:
         Returns:
             Tuple of (success, stdout, stderr).
         """
-        cmd = "git " + " ".join(args)
+        # SECURITY: Use shlex.quote() to prevent shell injection attacks
+        safe_args = [shlex.quote(arg) for arg in args]
+        cmd = "git " + " ".join(safe_args)
         result = await self.exec_command(cmd, timeout=timeout)
 
         return (

@@ -1,8 +1,7 @@
 // Modal components
 export { CreateAgentModal } from './CreateAgentModal';
-export { PauseSessionModal } from './PauseSessionModal';
-export { StandbySettingsModal } from './StandbySettingsModal';
 export { MCPSettingsModal } from './MCPSettingsModal';
+export { OpenClawInstallWizardModal } from './OpenClawInstallWizardModal';
 export { WorkspaceScalingModal } from './WorkspaceScalingModal';
 export { ExtensionMarketplaceModal } from './ExtensionMarketplaceModal';
 export { NewPathModal } from './NewPathModal';

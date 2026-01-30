@@ -115,8 +115,12 @@ class ErrorAnalyzer:
         )
 
         try:
+            # Use the same model as the calling agent; ErrorAnalyzer should be
+            # instantiated with an LLMProvider already configured for that model.
+            model_value = context.get("model") if isinstance(context, dict) else None
+            model_str = str(model_value) if model_value is not None else ""
             request = CompletionRequest(
-                model="claude-sonnet-4-20250514",
+                model=model_str,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=1024,
                 temperature=0.3,

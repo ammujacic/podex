@@ -877,30 +877,6 @@ describe('Socket Module', () => {
         add_to_allowlist: false,
       });
     });
-
-    it('should emit permission response', () => {
-      socketModule.getSocket();
-
-      socketModule.emitPermissionResponse(
-        'session-1',
-        'agent-1',
-        'request-1',
-        true,
-        'npm install',
-        'Bash',
-        true
-      );
-
-      expect(mockSocket.emit).toHaveBeenCalledWith('permission_response', {
-        session_id: 'session-1',
-        agent_id: 'agent-1',
-        request_id: 'request-1',
-        approved: true,
-        command: 'npm install',
-        tool_name: 'Bash',
-        add_to_allowlist: true,
-      });
-    });
   });
 
   describe('Extension Operations', () => {

@@ -1,4 +1,12 @@
-import type { Agent, AgentMessage, Session, User, Plan, Subscription } from '@/stores/sessionTypes';
+import type {
+  Agent,
+  AgentMessage,
+  ConversationSession,
+  Session,
+  User,
+  Plan,
+  Subscription,
+} from '@/stores/sessionTypes';
 import type {
   SubscriptionPlan,
   Subscription as BillingSubscription,
@@ -44,31 +52,18 @@ export const mockAgent: Agent = {
   model: 'claude-opus-4-5-20251101',
   status: 'idle' as const,
   color: '#7C3AED',
-  messages: [],
+  conversationSessionId: null,
   position: { x: 0, y: 0, width: 400, height: 600, zIndex: 1 },
   gridSpan: { colSpan: 1, rowSpan: 1 },
   mode: 'ask',
 };
 
-export const mockAgentWithMessages: Agent = {
+export const mockAgentWithConversation: Agent = {
   ...mockAgent,
   id: 'agent-2',
   name: 'Developer',
   role: 'coder',
-  messages: [
-    {
-      id: 'msg-1',
-      role: 'user' as const,
-      content: 'Hello, can you help me?',
-      timestamp: new Date(Date.now() - 60000),
-    },
-    {
-      id: 'msg-2',
-      role: 'assistant' as const,
-      content: "Of course! I'd be happy to help.",
-      timestamp: new Date(Date.now() - 30000),
-    },
-  ],
+  conversationSessionId: 'conv-1',
 };
 
 // Message fixtures
@@ -86,34 +81,66 @@ export const mockAssistantMessage: AgentMessage = {
   timestamp: new Date(),
 };
 
+// Conversation Session fixtures
+export const mockConversationSession = {
+  id: 'conv-1',
+  name: 'Test Conversation',
+  messages: [
+    {
+      id: 'msg-1',
+      role: 'user' as const,
+      content: 'Hello, can you help me?',
+      timestamp: new Date(Date.now() - 60000),
+    },
+    {
+      id: 'msg-2',
+      role: 'assistant' as const,
+      content: "Of course! I'd be happy to help.",
+      timestamp: new Date(Date.now() - 30000),
+    },
+  ],
+  attachedAgentIds: ['agent-2'],
+  messageCount: 2,
+  lastMessageAt: new Date(Date.now() - 30000).toISOString(),
+  createdAt: new Date(Date.now() - 60000).toISOString(),
+  updatedAt: new Date(Date.now() - 30000).toISOString(),
+};
+
+export const mockEmptyConversationSession = {
+  id: 'conv-empty',
+  name: 'Empty Conversation',
+  messages: [],
+  attachedAgentIds: [],
+  messageCount: 0,
+  lastMessageAt: null,
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+};
+
 // Session fixtures
 export const mockSession: Session = {
   id: 'session-1',
   name: 'Test Session',
   agents: [],
+  conversationSessions: [],
   workspaceId: 'workspace-1',
   viewMode: 'grid',
-  createdAt: '2024-01-01T00:00:00Z',
-  updatedAt: '2024-01-01T00:00:00Z',
   activeAgentId: null,
   filePreviews: [],
-  editorGridCard: null,
-  previewGridCard: null,
+  editorGridCardId: null,
+  previewGridCardId: null,
   workspaceStatus: 'stopped',
   workspaceStatusChecking: false,
   workspaceError: null,
-  standbyAt: null,
-  standbySettings: null,
-  branch: null,
-  gitUrl: null,
-  tier: null,
+  branch: 'main',
 };
 
 export const mockSessionWithMultipleAgents: Session = {
   ...mockSession,
   id: 'session-2',
   name: 'Multi-Agent Session',
-  agents: [mockAgent, mockAgentWithMessages],
+  agents: [mockAgent, mockAgentWithConversation],
+  conversationSessions: [mockConversationSession],
 };
 
 // Plan fixtures
@@ -654,8 +681,7 @@ export const mockBasicHardwareSpec: HardwareSpec = {
   gpuType: null,
   gpuMemoryGb: null,
   gpuCount: 0,
-  storageGbDefault: 10,
-  storageGbMax: 50,
+  storageGb: 10,
   hourlyRate: 0.5,
   isAvailable: true,
   requiresSubscription: null,
@@ -673,8 +699,7 @@ export const mockGpuHardwareSpec: HardwareSpec = {
   gpuType: 'nvidia-tesla-t4',
   gpuMemoryGb: 16,
   gpuCount: 1,
-  storageGbDefault: 20,
-  storageGbMax: 100,
+  storageGb: 20,
   hourlyRate: 2.5,
   isAvailable: true,
   requiresSubscription: 'pro',
@@ -692,8 +717,7 @@ export const mockPremiumHardwareSpec: HardwareSpec = {
   gpuType: 'nvidia-tesla-a100',
   gpuMemoryGb: 40,
   gpuCount: 1,
-  storageGbDefault: 50,
-  storageGbMax: 200,
+  storageGb: 50,
   hourlyRate: 5.0,
   isAvailable: true,
   requiresSubscription: 'enterprise',

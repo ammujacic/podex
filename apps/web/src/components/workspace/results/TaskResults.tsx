@@ -3,9 +3,101 @@
  */
 
 import React from 'react';
-import { ListTodo } from 'lucide-react';
+import { ListTodo, Circle, Loader2, CheckCircle2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ResultComponentProps } from './types';
+
+interface TodoItem {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  activeForm?: string;
+}
+
+/**
+ * Displays TodoWrite tool results as a nicely formatted todo list.
+ */
+export const TodoWriteResult = React.memo<ResultComponentProps>(function TodoWriteResult({
+  result,
+}) {
+  const todos = (result.todos as TodoItem[]) || [];
+
+  if (todos.length === 0) {
+    return (
+      <div className="p-2 rounded-md bg-surface border border-border-default">
+        <div className="flex items-center gap-2">
+          <ListTodo className="h-4 w-4 text-text-muted" />
+          <span className="text-sm text-text-muted">No tasks</span>
+        </div>
+      </div>
+    );
+  }
+
+  const completedCount = todos.filter((t) => t.status === 'completed').length;
+  const inProgressCount = todos.filter((t) => t.status === 'in_progress').length;
+
+  return (
+    <div className="p-3 rounded-md bg-surface border border-border-default">
+      {/* Header with stats */}
+      <div className="flex items-center gap-2 mb-3 pb-2 border-b border-border-default">
+        <ListTodo className="h-5 w-5 text-accent-primary" />
+        <span className="text-sm font-semibold text-text-primary">Tasks</span>
+        <span className="text-xs font-medium text-text-secondary ml-auto bg-elevated px-2 py-0.5 rounded">
+          {completedCount}/{todos.length} done
+        </span>
+      </div>
+
+      {/* Todo list */}
+      <div className="space-y-2">
+        {todos.map((todo, index) => (
+          <div
+            key={index}
+            className={cn(
+              'flex items-start gap-3 text-sm py-2 px-2.5 rounded-md border',
+              todo.status === 'completed' && 'bg-green-500/5 border-green-500/20',
+              todo.status === 'in_progress' && 'bg-yellow-500/10 border-yellow-500/30',
+              todo.status === 'pending' && 'bg-elevated border-border-subtle'
+            )}
+          >
+            {/* Status icon */}
+            {todo.status === 'completed' && (
+              <CheckCircle2 className="h-5 w-5 text-green-400 shrink-0" />
+            )}
+            {todo.status === 'in_progress' && (
+              <Loader2 className="h-5 w-5 text-yellow-400 shrink-0 animate-spin" />
+            )}
+            {todo.status === 'pending' && <Circle className="h-5 w-5 text-text-muted shrink-0" />}
+
+            {/* Content */}
+            <div className="flex-1 min-w-0">
+              <span
+                className={cn(
+                  'leading-relaxed',
+                  todo.status === 'completed' && 'text-text-muted line-through',
+                  todo.status === 'in_progress' && 'text-text-primary font-medium',
+                  todo.status === 'pending' && 'text-text-secondary'
+                )}
+              >
+                {todo.status === 'in_progress' && todo.activeForm ? todo.activeForm : todo.content}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Progress indicator */}
+      {inProgressCount > 0 && (
+        <div className="mt-3 pt-2 border-t border-border-default">
+          <div className="flex items-center gap-2 text-xs font-medium text-yellow-400">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <span>
+              {inProgressCount} task{inProgressCount > 1 ? 's' : ''} in progress
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
 
 export const CreateTaskResult = React.memo<ResultComponentProps>(function CreateTaskResult({
   result,

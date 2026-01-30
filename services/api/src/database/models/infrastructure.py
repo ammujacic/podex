@@ -94,7 +94,6 @@ class LocalPod(Base):
     # Capabilities reported by pod on connection
     os_info: Mapped[str | None] = mapped_column(String(100))  # e.g., "Linux 5.15.0-ubuntu22.04"
     architecture: Mapped[str | None] = mapped_column(String(20))  # x86_64
-    docker_version: Mapped[str | None] = mapped_column(String(50))
     total_memory_mb: Mapped[int | None] = mapped_column(Integer)
     total_cpu_cores: Mapped[int | None] = mapped_column(Integer)
 

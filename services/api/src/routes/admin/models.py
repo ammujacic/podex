@@ -10,7 +10,7 @@ from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,7 @@ from src.database.models import (
     PlatformSetting,
     SubscriptionPlan,
     UserConfig,
+    UserOAuthToken,
     UserSubscription,
 )
 from src.middleware.admin import get_admin_user_id, require_admin, require_super_admin
@@ -111,8 +112,7 @@ class ModelResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AgentTypeDefaults(BaseModel):
@@ -655,12 +655,27 @@ async def list_user_provider_models(
     config_result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
     config = config_result.scalar_one_or_none()
 
+    # Get user's OAuth-connected providers
+    oauth_result = await db.execute(
+        select(UserOAuthToken)
+        .where(UserOAuthToken.user_id == user_id)
+        .where(UserOAuthToken.status == "connected")
+    )
+    oauth_tokens = oauth_result.scalars().all()
+    oauth_providers = [t.provider for t in oauth_tokens]
+
     models: list[UserProviderModelResponse] = []
 
-    # Add models from API key providers (cloud providers)
+    # Combine API key providers and OAuth providers
+    configured_providers: list[str] = []
     if config and config.llm_api_keys:
-        configured_providers = list(config.llm_api_keys.keys())
+        configured_providers.extend(list(config.llm_api_keys.keys()))
+    configured_providers.extend(oauth_providers)
+    # Remove duplicates while preserving order
+    configured_providers = list(dict.fromkeys(configured_providers))
 
+    # Add models from configured providers (API keys + OAuth)
+    if configured_providers:
         # Query user-key models from database where provider matches user's configured keys
         query = (
             select(LLMModel)
@@ -694,45 +709,8 @@ async def list_user_provider_models(
             ]
         )
 
-    # Add local models (Ollama, LM Studio) from discovered config
-    if config and config.agent_preferences:
-        local_config = config.agent_preferences.get("local_llm_config", {})
-        for provider, provider_config in local_config.items():
-            if provider in {"ollama", "lmstudio"} and provider_config.get("models"):
-                # Determine family based on provider
-                # Most local models are Llama-based
-                family = "llama"
-
-                for model_data in provider_config["models"]:
-                    model_name = model_data.get("name", model_data.get("id", ""))
-                    model_id = f"{provider}/{model_name}"
-
-                    # Estimate context window and capabilities for local models
-                    # Most local models have similar capabilities
-                    models.append(
-                        UserProviderModelResponse(
-                            model_id=model_id,
-                            display_name=f"{model_name} ({provider})",
-                            provider=provider,
-                            family=family,
-                            description=f"Local model via {provider}",
-                            cost_tier="low",  # Local models are free
-                            capabilities={
-                                "vision": False,  # Most local models don't support vision
-                                "thinking": False,
-                                "thinking_coming_soon": False,
-                                "tool_use": True,  # Many local models support tools
-                                "streaming": True,
-                                "json_mode": True,
-                            },
-                            context_window=200000,  # Conservative estimate
-                            max_output_tokens=8192,  # Conservative estimate
-                            is_user_key=False,  # Local models don't require API keys
-                            input_cost_per_million=0.0,  # Free
-                            output_cost_per_million=0.0,  # Free
-                            good_for=["Coding", "Local Development", "Privacy"],
-                        )
-                    )
+    # Note: Local models (Ollama, LM Studio) are NOT included here.
+    # They are shown in the "Local" tab via the useOllamaModels hook on the frontend.
 
     return models
 

@@ -10,7 +10,6 @@ from podex_shared import (
     WorkspaceScaleRequest,
     WorkspaceScaleResponse,
     WorkspaceStatus,
-    WorkspaceTier,
 )
 
 __all__ = [
@@ -23,5 +22,4 @@ __all__ = [
     "WorkspaceScaleRequest",
     "WorkspaceScaleResponse",
     "WorkspaceStatus",
-    "WorkspaceTier",
 ]

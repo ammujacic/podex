@@ -12,19 +12,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from podex_shared import SentryConfig, init_sentry, init_usage_tracker, shutdown_usage_tracker
 from src.config import settings
 from src.deps import (
-    ComputeManagerSingleton,
     InternalAuth,
+    OrchestratorSingleton,
     cleanup_compute_manager,
     get_compute_manager,
+    get_docker_manager,
     init_compute_manager,
 )
+from src.managers.heartbeat import HeartbeatConfig, HeartbeatService
 from src.routes import (
     health_router,
-    lsp_router,
     preview_router,
     reset_terminal_manager,
     shutdown_terminal_sessions,
     terminal_router,
+    tunnels_router,
     websocket_router,
     workspaces_router,
 )
@@ -83,7 +85,7 @@ async def cleanup_task() -> None:
                 logger.info("Cleaned up idle workspaces", count=len(cleaned))
 
             # Cleanup stale workspaces from Redis (defensive cleanup)
-            workspace_store = ComputeManagerSingleton._workspace_store
+            workspace_store = OrchestratorSingleton._workspace_store
             if workspace_store:
                 try:
                     # Clean up workspaces older than 48 hours (2x TTL)
@@ -108,7 +110,6 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info(
         "Starting Podex Compute Service",
         environment=settings.environment,
-        compute_mode=settings.compute_mode,
     )
 
     # Reset terminal manager state (clears any stale shutdown flags from hot reload)
@@ -130,6 +131,31 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     )
     logger.info("Usage tracker initialized", api_url=settings.api_base_url)
 
+    # Initialize and start heartbeat service for server and workspace health monitoring
+    heartbeat_service: HeartbeatService | None = None
+    docker_manager = get_docker_manager()
+    if docker_manager.servers:
+        heartbeat_config = HeartbeatConfig(
+            interval_seconds=30,
+            failure_threshold=3,
+            report_to_api=True,
+            check_workspace_containers=True,
+            workspace_check_interval_multiplier=2,  # Check workspaces every 60s
+        )
+        heartbeat_service = HeartbeatService(
+            docker_manager=docker_manager,
+            config=heartbeat_config,
+            api_base_url=settings.api_base_url,
+            api_token=settings.internal_service_token,
+            workspace_store=OrchestratorSingleton._workspace_store,
+        )
+        await heartbeat_service.start()
+        logger.info(
+            "Heartbeat service started",
+            server_count=len(docker_manager.servers),
+            workspace_health_check=True,
+        )
+
     # Start background cleanup task
     cleanup = asyncio.create_task(cleanup_task())
 
@@ -141,6 +167,12 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     async def graceful_shutdown() -> None:
         """Perform graceful shutdown with timeout protection."""
         logger.info("Starting graceful shutdown sequence")
+
+        # Stop heartbeat service first
+        if heartbeat_service:
+            logger.info("Stopping heartbeat service...")
+            await heartbeat_service.stop()
+            logger.info("Heartbeat service stopped")
 
         # Close active terminal sessions first to unblock WebSocket handlers
         logger.info("Closing terminal sessions...")
@@ -194,10 +226,10 @@ app.add_middleware(
 # Include routers
 app.include_router(health_router)
 app.include_router(workspaces_router)
+app.include_router(tunnels_router)
 app.include_router(preview_router)
 app.include_router(terminal_router)
 app.include_router(websocket_router)
-app.include_router(lsp_router)
 
 
 @app.get("/")
@@ -206,5 +238,4 @@ async def root(_auth: InternalAuth) -> dict[str, str]:
     return {
         "service": "podex-compute",
         "version": "0.1.0",
-        "mode": settings.compute_mode,
     }

@@ -1,5 +1,6 @@
 'use client';
 
+import { memo } from 'react';
 import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
 import { MoreVertical, Play, Pause, Trash2, Loader2, Pin, PinOff } from 'lucide-react';
@@ -23,7 +24,7 @@ interface SessionMenuProps {
   isResuming: boolean;
 }
 
-export function SessionMenu({
+export const SessionMenu = memo(function SessionMenu({
   sessionId,
   isPinned,
   status,
@@ -162,4 +163,4 @@ export function SessionMenu({
       </AnimatePresence>
     </div>
   );
-}
+});

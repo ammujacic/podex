@@ -3,7 +3,13 @@
  */
 
 import { useEffect, useCallback } from 'react';
-import { useSessionStore, type AgentMessage, type AgentMode } from '@/stores/session';
+import {
+  useSessionStore,
+  type AgentMessage,
+  type AgentMode,
+  type ConversationSession,
+  type ToolCall,
+} from '@/stores/session';
 import { useStoreCallbacks } from './useStoreCallbacks';
 import {
   connectSocket,
@@ -16,15 +22,17 @@ import {
   type AgentTokenEvent,
   type AgentThinkingTokenEvent,
   type AgentStreamEndEvent,
-  type AgentAutoModeSwitchEvent,
   type AgentConfigUpdateEvent,
   type WorkspaceStatusEvent,
   type WorkspaceBillingStandbyEvent,
-  type PermissionRequestEvent,
-  type NativeApprovalRequestEvent,
+  type ConversationCreatedEvent,
+  type ConversationUpdatedEvent,
+  type ConversationDeletedEvent,
+  type ConversationAttachedEvent,
+  type ConversationDetachedEvent,
+  type ConversationMessageEvent,
 } from '@/lib/socket';
 import { sendAgentMessage } from '@/lib/api';
-import { parseModelIdToDisplayName } from '@/lib/model-utils';
 import { toast } from 'sonner';
 import { useBillingStore } from '@/stores/billing';
 
@@ -40,7 +48,9 @@ interface UseAgentSocketOptions {
  */
 export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketOptions) {
   // Get store methods directly - Zustand selectors are stable and efficient
-  const addAgentMessage = useSessionStore((state) => state.addAgentMessage);
+  const addConversationMessage = useSessionStore((state) => state.addConversationMessage);
+  const getConversationForAgent = useSessionStore((state) => state.getConversationForAgent);
+  const handleConversationEvent = useSessionStore((state) => state.handleConversationEvent);
   const updateAgent = useSessionStore((state) => state.updateAgent);
   const handleAutoModeSwitch = useSessionStore((state) => state.handleAutoModeSwitch);
   const startStreamingMessage = useSessionStore((state) => state.startStreamingMessage);
@@ -51,7 +61,8 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
 
   // Use stable ref for callbacks to avoid re-running effects
   const callbacksRef = useStoreCallbacks({
-    addAgentMessage,
+    addConversationMessage,
+    getConversationForAgent,
     updateAgent,
     handleAutoModeSwitch,
     startStreamingMessage,
@@ -59,6 +70,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
     appendThinkingToken,
     finalizeStreamingMessage,
     setWorkspaceStatus,
+    handleConversationEvent,
   });
 
   useEffect(() => {
@@ -77,73 +89,33 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
 
       // Guard against missing session - may happen during initial load
       if (!session) {
-        // Session not yet loaded, still add the message as the store will handle missing session
-        const message: AgentMessage = {
-          id: data.id,
-          role: data.role,
-          content: data.content,
-          timestamp: data.created_at ? new Date(data.created_at) : new Date(),
-          toolCalls: data.tool_calls || undefined,
-        };
-        callbacksRef.current.addAgentMessage(sessionId, data.agent_id, message);
-        return;
+        return; // Can't add message without session
       }
 
       const agent = session.agents.find((a) => a.id === data.agent_id);
 
       // Guard against missing agent - may happen if agent was just created
       if (!agent) {
-        // Agent not found in store yet, add message anyway
-        const message: AgentMessage = {
-          id: data.id,
-          role: data.role,
-          content: data.content,
-          timestamp: data.created_at ? new Date(data.created_at) : new Date(),
-          toolCalls: data.tool_calls || undefined,
-        };
-        callbacksRef.current.addAgentMessage(sessionId, data.agent_id, message);
+        return; // Can't add message without agent
+      }
+
+      // Get the conversation session for this agent
+      const conversation = callbacksRef.current.getConversationForAgent(sessionId, data.agent_id);
+      if (!conversation) {
+        // No conversation attached to this agent yet - skip
+        // Messages will be added when user sends first message and creates a conversation
         return;
       }
 
-      // Check by ID first
-      const existingById = agent.messages.find((m) => m.id === data.id);
+      // Check by ID first - skip if exact ID already exists
+      const existingById = conversation.messages.find((m: AgentMessage) => m.id === data.id);
       if (existingById) {
         return; // Skip duplicate
       }
 
-      // Use store-level idempotent check via message ID
-      // The store's addAgentMessage handles deduplication internally
-
-      // For user messages, also check by content (optimistic messages have temp-xxx IDs)
-      if (data.role === 'user') {
-        const existingByContent = agent.messages.find(
-          (m) => m.role === 'user' && m.content === data.content && m.id.startsWith('temp-')
-        );
-        if (existingByContent) {
-          // Replace temp message with real one (update ID)
-          const { updateMessageId } = useSessionStore.getState();
-          if (updateMessageId) {
-            updateMessageId(sessionId, data.agent_id, existingByContent.id, data.id);
-          }
-          return; // Don't add duplicate
-        }
-      }
-
-      // For assistant messages, check by content (streaming messages might have different IDs)
-      // This fixes the "Message not found" error when trying to play audio
-      if (data.role === 'assistant') {
-        const existingByContent = agent.messages.find(
-          (m) => m.role === 'assistant' && m.content === data.content && m.id !== data.id
-        );
-        if (existingByContent) {
-          // Replace streaming message ID with real database ID
-          const { updateMessageId } = useSessionStore.getState();
-          if (updateMessageId) {
-            updateMessageId(sessionId, data.agent_id, existingByContent.id, data.id);
-          }
-          return; // Don't add duplicate
-        }
-      }
+      // IMPORTANT: All other deduplication is handled atomically by addConversationMessage.
+      // The store's addConversationMessage uses Zustand's set() which receives
+      // current state at execution time, avoiding stale snapshot issues.
 
       const message: AgentMessage = {
         id: data.id,
@@ -154,7 +126,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
         toolCalls: data.tool_calls || undefined,
       };
 
-      callbacksRef.current.addAgentMessage(sessionId, data.agent_id, message);
+      callbacksRef.current.addConversationMessage(sessionId, conversation.id, message);
     });
 
     // Handle agent status changes
@@ -162,43 +134,6 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       if (data.session_id !== sessionId) return;
       callbacksRef.current.updateAgent(sessionId, data.agent_id, { status: data.status });
     });
-
-    // Handle automatic mode switch notifications
-    const unsubModeSwitch = onSocketEvent(
-      'agent_auto_mode_switch',
-      (data: AgentAutoModeSwitchEvent) => {
-        if (data.session_id !== sessionId) return;
-
-        // Update the store with new mode
-        callbacksRef.current.handleAutoModeSwitch(
-          sessionId,
-          data.agent_id,
-          data.new_mode as AgentMode,
-          data.auto_revert ? (data.old_mode as AgentMode) : null
-        );
-
-        // Show toast notification
-        const modeLabels: Record<string, string> = {
-          plan: 'Plan',
-          ask: 'Ask',
-          auto: 'Auto',
-          sovereign: 'Sovereign',
-        };
-        const newModeLabel = modeLabels[data.new_mode] || data.new_mode;
-
-        if (data.auto_revert) {
-          // This is an auto-switch that will revert later
-          toast.info(`${data.agent_name} switched to ${newModeLabel} mode`, {
-            description: data.reason,
-          });
-        } else {
-          // This is a revert back to original mode
-          toast.info(`${data.agent_name} returned to ${newModeLabel} mode`, {
-            description: 'Task completed',
-          });
-        }
-      }
-    );
 
     // Handle streaming: stream start
     const unsubStreamStart = onSocketEvent('agent_stream_start', (data: AgentStreamStartEvent) => {
@@ -264,33 +199,24 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
         // Only update if there are changes
         if (Object.keys(agentUpdates).length > 0) {
           callbacksRef.current.updateAgent(sessionId, data.agent_id, agentUpdates);
-
-          // Show toast for CLI-initiated changes
-          if (data.source === 'cli') {
-            if (data.updates.model) {
-              toast.info(`Model switched to ${parseModelIdToDisplayName(data.updates.model)}`, {
-                description: 'Changed via CLI command',
-              });
-            }
-            if (data.updates.mode) {
-              toast.info(`Mode changed to ${data.updates.mode}`, {
-                description: 'Changed via CLI command',
-              });
-            }
-          }
         }
       }
     );
 
-    // Handle workspace status changes (standby, running, error, etc.)
+    // Handle workspace status changes (running, stopped, error, offline, etc.)
     const unsubWorkspaceStatus = onSocketEvent('workspace_status', (data: WorkspaceStatusEvent) => {
       // Update the session's workspace status in the store
-      callbacksRef.current.setWorkspaceStatus(sessionId, data.status, data.standby_at || null);
+      callbacksRef.current.setWorkspaceStatus(sessionId, data.status);
 
       // Show toast notification for status changes
-      if (data.status === 'standby') {
-        toast.info('Workspace moved to standby', {
-          description: 'Your workspace was paused due to inactivity. Click Resume to continue.',
+      if (data.status === 'stopped') {
+        toast.info('Workspace stopped', {
+          description: 'Your workspace was stopped. Click Start to continue.',
+        });
+      } else if (data.status === 'offline') {
+        toast.warning('Local pod disconnected', {
+          description:
+            'Your local pod has gone offline. The workspace will reconnect automatically when the pod comes back online.',
         });
       } else if (data.status === 'error' && data.error) {
         toast.error('Workspace error', {
@@ -299,12 +225,108 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       }
     });
 
-    // Handle billing standby events (credit exhaustion)
+    // Handle billing stop events (credit exhaustion)
+    // Handle conversation session lifecycle events
+    const unsubConversationCreated = onSocketEvent(
+      'conversation_created',
+      (data: ConversationCreatedEvent) => {
+        if (data.session_id !== sessionId) return;
+
+        const conv = data.conversation;
+        callbacksRef.current.handleConversationEvent(sessionId, 'conversation_created', {
+          conversation: {
+            id: conv.id,
+            name: conv.name,
+            messages: [],
+            attachedAgentIds: conv.attached_agent_ids || [],
+            messageCount: conv.message_count,
+            lastMessageAt: conv.last_message_at,
+            createdAt: conv.created_at,
+            updatedAt: conv.updated_at,
+          } as ConversationSession,
+        });
+      }
+    );
+
+    const unsubConversationUpdated = onSocketEvent(
+      'conversation_updated',
+      (data: ConversationUpdatedEvent) => {
+        if (data.session_id !== sessionId) return;
+        const conv = data.conversation;
+        callbacksRef.current.handleConversationEvent(sessionId, 'conversation_updated', {
+          conversation: {
+            id: conv.id,
+            name: conv.name,
+            attachedAgentIds: conv.attached_agent_ids || [],
+            messageCount: conv.message_count ?? 0,
+            lastMessageAt: conv.last_message_at ?? null,
+            createdAt: conv.created_at ?? new Date().toISOString(),
+            updatedAt: conv.updated_at ?? new Date().toISOString(),
+            messages: [],
+          } as ConversationSession,
+        });
+      }
+    );
+
+    const unsubConversationDeleted = onSocketEvent(
+      'conversation_deleted',
+      (data: ConversationDeletedEvent) => {
+        if (data.session_id !== sessionId) return;
+        callbacksRef.current.handleConversationEvent(sessionId, 'conversation_deleted', {
+          conversation_id: data.conversation_id,
+        });
+      }
+    );
+
+    const unsubConversationAttached = onSocketEvent(
+      'conversation_attached',
+      (data: ConversationAttachedEvent) => {
+        if (data.session_id !== sessionId) return;
+        callbacksRef.current.handleConversationEvent(sessionId, 'conversation_attached', {
+          conversation_id: data.conversation_id,
+          agent_id: data.agent_id,
+        });
+      }
+    );
+
+    const unsubConversationDetached = onSocketEvent(
+      'conversation_detached',
+      (data: ConversationDetachedEvent) => {
+        if (data.session_id !== sessionId) return;
+        callbacksRef.current.handleConversationEvent(sessionId, 'conversation_detached', {
+          conversation_id: data.conversation_id,
+          previous_agent_id: data.previous_agent_id,
+        });
+      }
+    );
+
+    const unsubConversationMessage = onSocketEvent(
+      'conversation_message',
+      (data: ConversationMessageEvent) => {
+        if (data.session_id !== sessionId) return;
+
+        const backendMsg = data.message;
+        const agentMessage: AgentMessage = {
+          id: backendMsg.id,
+          role: backendMsg.role === 'system' ? 'assistant' : backendMsg.role,
+          content: backendMsg.content,
+          thinking: backendMsg.thinking ?? undefined,
+          // Backend tool_calls is an arbitrary record; we don't have full typing here,
+          // so leave toolCalls undefined to avoid type mismatches.
+          toolCalls: undefined as ToolCall[] | undefined,
+          timestamp: new Date(backendMsg.created_at),
+        };
+
+        // Use addConversationMessage directly instead of handleConversationEvent
+        // This ensures proper deduplication logic is applied
+        callbacksRef.current.addConversationMessage(sessionId, data.conversation_id, agentMessage);
+      }
+    );
     const unsubBillingStandby = onSocketEvent(
       'workspace_billing_standby',
       (data: WorkspaceBillingStandbyEvent) => {
         // Update the session's workspace status in the store
-        callbacksRef.current.setWorkspaceStatus(sessionId, 'standby', data.standby_at);
+        callbacksRef.current.setWorkspaceStatus(sessionId, 'stopped');
 
         // Show the credit exhausted modal
         useBillingStore.getState().showCreditExhaustedModal({
@@ -325,57 +347,10 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       }
     );
 
-    // Handle Claude Code CLI permission requests
-    const unsubPermissionRequest = onSocketEvent(
-      'permission_request',
-      (data: PermissionRequestEvent) => {
-        if (data.session_id !== sessionId) return;
-
-        // Update the agent with the pending permission request
-        callbacksRef.current.updateAgent(sessionId, data.agent_id, {
-          pendingPermission: {
-            requestId: data.request_id,
-            command: data.command,
-            description: data.description,
-            toolName: data.tool_name,
-            timestamp: data.timestamp,
-            attentionId: data.attention_id ?? `permission-${data.request_id}`,
-          },
-        });
-      }
-    );
-
-    // Handle native Podex agent approval requests
-    const unsubNativeApproval = onSocketEvent(
-      'native_approval_request',
-      (data: NativeApprovalRequestEvent) => {
-        if (data.session_id !== sessionId) return;
-
-        // Update the agent with the pending permission request
-        // Using the same pendingPermission structure as CLI agents for consistency
-        callbacksRef.current.updateAgent(sessionId, data.agent_id, {
-          pendingPermission: {
-            requestId: data.approval_id,
-            command: data.action_details.command ?? data.action_details.file_path ?? null,
-            description: `${data.action_details.tool_name}: ${data.action_details.command || data.action_details.file_path || 'action'}`,
-            toolName: data.action_details.tool_name || 'action',
-            timestamp: new Date().toISOString(),
-            attentionId: `approval-${data.approval_id}`,
-          },
-        });
-
-        // Show toast notification
-        toast.info(`${data.agent_name} needs your approval`, {
-          description: `${data.action_details.tool_name}: ${data.action_details.command || data.action_details.file_path || 'action'}`,
-        });
-      }
-    );
-
     // Cleanup on unmount
     return () => {
       unsubMessage();
       unsubStatus();
-      unsubModeSwitch();
       unsubStreamStart();
       unsubStreamToken();
       unsubThinkingToken();
@@ -383,8 +358,12 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
       unsubConfigUpdate();
       unsubWorkspaceStatus();
       unsubBillingStandby();
-      unsubPermissionRequest();
-      unsubNativeApproval();
+      unsubConversationCreated();
+      unsubConversationUpdated();
+      unsubConversationDeleted();
+      unsubConversationAttached();
+      unsubConversationDetached();
+      unsubConversationMessage();
       leaveSession(sessionId, userId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

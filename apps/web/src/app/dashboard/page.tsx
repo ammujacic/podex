@@ -11,7 +11,6 @@ import {
   GitBranch,
   MoreVertical,
   Play,
-  Pause,
   Trash2,
   Loader2,
   Server,
@@ -43,6 +42,9 @@ import {
   FolderGit2,
   RefreshCw,
   LogOut,
+  WifiOff,
+  Sparkles,
+  BarChart2,
 } from 'lucide-react';
 import { Button } from '@podex/ui';
 import { Logo } from '@/components/ui/Logo';
@@ -58,8 +60,8 @@ import {
   pinSession,
   unpinSession,
   getUsageHistory,
-  pauseWorkspace,
-  resumeWorkspace,
+  getWorkspaceStatus,
+  startWorkspace,
   logout,
   type Session,
   type PodTemplate,
@@ -103,12 +105,6 @@ const statusConfig: Record<
     label: 'Stopped',
     icon: <Circle className="w-2 h-2" />,
   },
-  standby: {
-    color: 'text-accent-warning',
-    bg: 'bg-accent-warning/10',
-    label: 'Standby',
-    icon: <Circle className="w-2 h-2 fill-current" />,
-  },
   pending: {
     color: 'text-accent-warning',
     bg: 'bg-accent-warning/10',
@@ -121,9 +117,36 @@ const statusConfig: Record<
     label: 'Error',
     icon: <AlertCircle className="w-3 h-3" />,
   },
+  offline: {
+    color: 'text-red-400',
+    bg: 'bg-red-500/10',
+    label: 'Offline',
+    icon: <WifiOff className="w-3 h-3" />,
+  },
 };
 
 const getStatus = (status: string) => statusConfig[status] ?? defaultStatus;
+
+/** Derive display status from session when we don't have fresh workspace status (session page uses session.status). */
+function getDisplayStatus(session: Session): string {
+  if (session.status === 'active') return 'running';
+  if (session.status === 'creating') return 'pending';
+  if (session.status === 'stopped') return 'stopped';
+  if (session.status === 'error') return 'error';
+  return session.workspace_status || 'stopped';
+}
+
+/** Prefer fresh workspace status from API (syncs from compute) when available. */
+function getDisplayStatusForSession(
+  session: Session,
+  workspaceStatusByWorkspaceId: Record<string, string>
+): string {
+  const fresh =
+    session.workspace_id && workspaceStatusByWorkspaceId[session.workspace_id] != null
+      ? workspaceStatusByWorkspaceId[session.workspace_id]
+      : null;
+  return fresh ?? getDisplayStatus(session);
+}
 
 // Template icon configuration with CDN URLs (Simple Icons)
 const templateIconConfig: Record<string, { url: string; color: string }> = {
@@ -226,11 +249,14 @@ export default function DashboardPage() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [pinningSession, setPinningSession] = useState<string | null>(null);
-  const [pausingSession, setPausingSession] = useState<string | null>(null);
-  const [resumingSession, setResumingSession] = useState<string | null>(null);
+  const [startingSession, setStartingSession] = useState<string | null>(null);
   const [selectedPeriod, setSelectedPeriod] = useState('30d');
   const [loadingUsage, setLoadingUsage] = useState(false);
   const [visiblePods, setVisiblePods] = useState<Set<string>>(new Set());
+  /** Fresh workspace status from GET /workspaces/:id/status (syncs from compute). Keyed by workspace_id. */
+  const [workspaceStatusByWorkspaceId, setWorkspaceStatusByWorkspaceId] = useState<
+    Record<string, string>
+  >({});
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Click outside handler for notifications dropdown
@@ -318,6 +344,35 @@ export default function DashboardPage() {
 
     loadData();
   }, [user, router, isInitialized]);
+
+  // Fetch actual workspace status from compute when we have sessions (GET /status syncs from compute)
+  useEffect(() => {
+    if (!user || sessions.length === 0) return;
+
+    const workspaceIds = [
+      ...new Set(sessions.map((s) => s.workspace_id).filter((id): id is string => id != null)),
+    ];
+    if (workspaceIds.length === 0) return;
+
+    let cancelled = false;
+    Promise.allSettled(
+      workspaceIds.map(async (workspaceId) => {
+        const res = await getWorkspaceStatus(workspaceId);
+        return { workspaceId, status: res.status };
+      })
+    ).then((results) => {
+      if (cancelled) return;
+      const updates: Record<string, string> = {};
+      for (const r of results) {
+        if (r.status === 'fulfilled') updates[r.value.workspaceId] = r.value.status;
+      }
+      setWorkspaceStatusByWorkspaceId((prev) => ({ ...prev, ...updates }));
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user, sessions]);
 
   // Load usage history when period changes
   // Gate on configIsInitialized to ensure getDaysFromValue has access to time range options
@@ -545,30 +600,15 @@ export default function DashboardPage() {
     });
   };
 
-  const handlePauseSession = async (sessionId: string, workspaceId: string) => {
-    setPausingSession(sessionId);
+  const handleStartSession = async (sessionId: string, workspaceId: string) => {
+    setStartingSession(sessionId);
     try {
-      await pauseWorkspace(workspaceId);
-      setSessions((prev) =>
-        prev.map((s) => (s.id === sessionId ? { ...s, status: 'stopped' } : s))
-      );
-    } catch (error) {
-      console.error('Failed to pause session:', error);
-    } finally {
-      setPausingSession(null);
-      setOpenMenuId(null);
-    }
-  };
-
-  const handleResumeSession = async (sessionId: string, workspaceId: string) => {
-    setResumingSession(sessionId);
-    try {
-      await resumeWorkspace(workspaceId);
+      await startWorkspace(workspaceId);
       setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, status: 'active' } : s)));
     } catch (error) {
-      console.error('Failed to resume session:', error);
+      console.error('Failed to start session:', error);
     } finally {
-      setResumingSession(null);
+      setStartingSession(null);
       setOpenMenuId(null);
     }
   };
@@ -632,7 +672,7 @@ export default function DashboardPage() {
                     size="sm"
                     className="text-text-secondary hover:text-text-primary"
                   >
-                    <Activity className="w-4 h-4 mr-2" />
+                    <BarChart2 className="w-4 h-4 mr-2" />
                     Productivity
                   </Button>
                 </Link>
@@ -820,7 +860,7 @@ export default function DashboardPage() {
               <div className="bg-surface border border-border-default rounded-xl p-4">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-lg bg-accent-primary/10 flex items-center justify-center">
-                    <Activity className="w-5 h-5 text-accent-primary" />
+                    <Sparkles className="w-5 h-5 text-accent-primary" />
                   </div>
                   <div>
                     <p className="text-sm text-text-muted">Tokens Used</p>
@@ -837,8 +877,8 @@ export default function DashboardPage() {
               {/* Active Pods */}
               <div className="bg-surface border border-border-default rounded-xl p-4">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-accent-secondary/10 flex items-center justify-center">
-                    <Server className="w-5 h-5 text-accent-secondary" />
+                  <div className="w-10 h-10 rounded-lg bg-accent-success/10 flex items-center justify-center">
+                    <Server className="w-5 h-5 text-accent-success" />
                   </div>
                   <div>
                     <p className="text-sm text-text-muted">Active Pods</p>
@@ -968,7 +1008,9 @@ export default function DashboardPage() {
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
               {pinnedSessions.map((session, index) => {
                 const template = getTemplateForSession(session);
-                const status = getStatus(session.workspace_status || 'stopped');
+                const status = getStatus(
+                  getDisplayStatusForSession(session, workspaceStatusByWorkspaceId)
+                );
                 return (
                   <motion.div
                     key={session.id}
@@ -1033,6 +1075,26 @@ export default function DashboardPage() {
                             </div>
                           ) : null;
                         })()}
+                        {/* Local pod info */}
+                        {session.local_pod_id && (
+                          <div className="flex items-center gap-2 text-xs text-text-muted">
+                            <Server className="w-3 h-3 text-accent-secondary" />
+                            <span className="truncate">
+                              {session.local_pod_name || 'Local Pod'}
+                            </span>
+                            {session.mount_path && (
+                              <>
+                                <span className="text-text-muted/50">·</span>
+                                <span
+                                  className="font-mono truncate max-w-[100px]"
+                                  title={session.mount_path}
+                                >
+                                  {session.mount_path.split('/').pop()}
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
                     <button
@@ -1095,7 +1157,9 @@ export default function DashboardPage() {
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                 {recentSessions.map((session, index) => {
                   const template = getTemplateForSession(session);
-                  const status = getStatus(session.workspace_status || 'stopped');
+                  const status = getStatus(
+                    getDisplayStatusForSession(session, workspaceStatusByWorkspaceId)
+                  );
 
                   return (
                     <motion.div
@@ -1160,6 +1224,26 @@ export default function DashboardPage() {
                               </div>
                             ) : null;
                           })()}
+                          {/* Local pod info */}
+                          {session.local_pod_id && (
+                            <div className="flex items-center gap-2 text-xs text-text-muted">
+                              <Server className="w-3 h-3 text-accent-secondary" />
+                              <span className="truncate">
+                                {session.local_pod_name || 'Local Pod'}
+                              </span>
+                              {session.mount_path && (
+                                <>
+                                  <span className="text-text-muted/50">·</span>
+                                  <span
+                                    className="font-mono truncate max-w-[100px]"
+                                    title={session.mount_path}
+                                  >
+                                    {session.mount_path.split('/').pop()}
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </motion.div>
@@ -1216,7 +1300,9 @@ export default function DashboardPage() {
                   <AnimatePresence>
                     {allSessions.map((session, index) => {
                       const template = getTemplateForSession(session);
-                      const status = getStatus(session.workspace_status || 'stopped');
+                      const status = getStatus(
+                        getDisplayStatusForSession(session, workspaceStatusByWorkspaceId)
+                      );
 
                       return (
                         <motion.div
@@ -1247,36 +1333,20 @@ export default function DashboardPage() {
                                   <Play className="w-4 h-4" />
                                   Open
                                 </Link>
-                                {session.status === 'active' && session.workspace_id && (
-                                  <button
-                                    onClick={() =>
-                                      handlePauseSession(session.id, session.workspace_id!)
-                                    }
-                                    disabled={pausingSession === session.id}
-                                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-overlay"
-                                  >
-                                    {pausingSession === session.id ? (
-                                      <Loader2 className="w-4 h-4 animate-spin" />
-                                    ) : (
-                                      <Pause className="w-4 h-4" />
-                                    )}
-                                    Pause
-                                  </button>
-                                )}
                                 {session.status === 'stopped' && session.workspace_id && (
                                   <button
                                     onClick={() =>
-                                      handleResumeSession(session.id, session.workspace_id!)
+                                      handleStartSession(session.id, session.workspace_id!)
                                     }
-                                    disabled={resumingSession === session.id}
+                                    disabled={startingSession === session.id}
                                     className="w-full flex items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-overlay"
                                   >
-                                    {resumingSession === session.id ? (
+                                    {startingSession === session.id ? (
                                       <Loader2 className="w-4 h-4 animate-spin" />
                                     ) : (
                                       <Play className="w-4 h-4" />
                                     )}
-                                    Resume
+                                    Start
                                   </button>
                                 )}
                                 <button
@@ -1377,6 +1447,26 @@ export default function DashboardPage() {
                                   </div>
                                 ) : null;
                               })()}
+                              {/* Local pod info */}
+                              {session.local_pod_id && (
+                                <div className="flex items-center gap-2 text-xs text-text-muted">
+                                  <Server className="w-3 h-3 text-accent-secondary" />
+                                  <span className="truncate">
+                                    {session.local_pod_name || 'Local Pod'}
+                                  </span>
+                                  {session.mount_path && (
+                                    <>
+                                      <span className="text-text-muted/50">·</span>
+                                      <span
+                                        className="font-mono truncate max-w-[100px]"
+                                        title={session.mount_path}
+                                      >
+                                        {session.mount_path.split('/').pop()}
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           </div>
                         </motion.div>
@@ -1409,7 +1499,9 @@ export default function DashboardPage() {
                     <tbody>
                       {allSessions.map((session) => {
                         const template = getTemplateForSession(session);
-                        const status = getStatus(session.workspace_status || 'stopped');
+                        const status = getStatus(
+                          getDisplayStatusForSession(session, workspaceStatusByWorkspaceId)
+                        );
 
                         return (
                           <tr
@@ -1462,6 +1554,24 @@ export default function DashboardPage() {
                                       </div>
                                     ) : null;
                                   })()}
+                                  {/* Local pod info */}
+                                  {session.local_pod_id && (
+                                    <div className="flex items-center gap-2 text-xs text-text-muted mt-0.5">
+                                      <Server className="w-3 h-3 text-accent-secondary" />
+                                      <span>{session.local_pod_name || 'Local Pod'}</span>
+                                      {session.mount_path && (
+                                        <>
+                                          <span className="text-text-muted/50">·</span>
+                                          <span
+                                            className="font-mono truncate max-w-[150px]"
+                                            title={session.mount_path}
+                                          >
+                                            {session.mount_path}
+                                          </span>
+                                        </>
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
                               </div>
                             </td>
@@ -1486,34 +1596,17 @@ export default function DashboardPage() {
                                     <Play className="w-4 h-4" />
                                   </Button>
                                 </Link>
-                                {session.status === 'active' && session.workspace_id && (
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() =>
-                                      handlePauseSession(session.id, session.workspace_id!)
-                                    }
-                                    disabled={pausingSession === session.id}
-                                    title="Pause session"
-                                  >
-                                    {pausingSession === session.id ? (
-                                      <Loader2 className="w-4 h-4 animate-spin" />
-                                    ) : (
-                                      <Pause className="w-4 h-4 text-yellow-500" />
-                                    )}
-                                  </Button>
-                                )}
                                 {session.status === 'stopped' && session.workspace_id && (
                                   <Button
                                     variant="ghost"
                                     size="sm"
                                     onClick={() =>
-                                      handleResumeSession(session.id, session.workspace_id!)
+                                      handleStartSession(session.id, session.workspace_id!)
                                     }
-                                    disabled={resumingSession === session.id}
-                                    title="Resume session"
+                                    disabled={startingSession === session.id}
+                                    title="Start session"
                                   >
-                                    {resumingSession === session.id ? (
+                                    {startingSession === session.id ? (
                                       <Loader2 className="w-4 h-4 animate-spin" />
                                     ) : (
                                       <Play className="w-4 h-4 text-green-500" />

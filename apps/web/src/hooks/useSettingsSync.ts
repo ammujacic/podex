@@ -48,7 +48,10 @@ export function useSettingsSync() {
     }
 
     if (loadPromises.length > 0) {
-      Promise.all(loadPromises);
+      // Await all settings loads and handle any failures
+      Promise.all(loadPromises).catch((err) => {
+        console.error('Failed to load some settings:', err);
+      });
     }
   }, [isAuthenticated, loadKeybindings, loadEditorSettings, loadVoiceSettings, loadUIPreferences]);
 }

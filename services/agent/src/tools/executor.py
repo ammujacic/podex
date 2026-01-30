@@ -162,6 +162,7 @@ class ToolExecutor:
         command_allowlist: list[str] | None = None,
         approval_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         workspace_id: str | None = None,
+        agent_model: str | None = None,
     ) -> None:
         """Initialize tool executor.
 
@@ -177,6 +178,8 @@ class ToolExecutor:
             workspace_id: Optional workspace container ID for remote execution.
                          When provided, file/command/git tools execute on the
                          workspace container via the compute service.
+            agent_model: Optional model used by the agent. Used as default for
+                        agent builder tools when creating new templates.
         """
         self.workspace_path = Path(workspace_path).resolve()
         self.session_id = session_id
@@ -184,6 +187,7 @@ class ToolExecutor:
         self._mcp_registry = mcp_registry
         self.agent_id = agent_id
         self.workspace_id = workspace_id
+        self.agent_model = agent_model
 
         # Mode-based permissions
         if isinstance(agent_mode, str):
@@ -716,6 +720,14 @@ class ToolExecutor:
         if tool_name == "create_agent_template":
             if not self.user_id:
                 return {"success": False, "error": "User ID not available"}
+            # Use explicit model from arguments, or fall back to the agent's own model
+            model = arguments.get("model") or self.agent_model
+            if not model:
+                return {
+                    "success": False,
+                    "error": "Model is required to create an agent template. "
+                    "Pass an explicit model or configure role defaults in the platform settings.",
+                }
             config = AgentTemplateConfig(
                 user_id=self.user_id,
                 name=arguments.get("name", ""),
@@ -723,7 +735,7 @@ class ToolExecutor:
                 system_prompt=arguments.get("system_prompt", ""),
                 allowed_tools=arguments.get("allowed_tools", []),
                 description=arguments.get("description"),
-                model=arguments.get("model", "claude-sonnet-4-20250514"),
+                model=model,
                 temperature=arguments.get("temperature"),
                 icon=arguments.get("icon"),
             )
@@ -731,12 +743,20 @@ class ToolExecutor:
         if tool_name == "list_available_tools":
             return await list_available_tools()
         if tool_name == "preview_agent_template":
+            # Use explicit model from arguments, or fall back to the agent's own model
+            model = arguments.get("model") or self.agent_model
+            if not model:
+                return {
+                    "success": False,
+                    "error": "Model is required to preview an agent template. "
+                    "Pass an explicit model or configure role defaults in the platform settings.",
+                }
             preview_config = AgentTemplatePreviewConfig(
                 name=arguments.get("name", ""),
                 system_prompt=arguments.get("system_prompt", ""),
                 allowed_tools=arguments.get("allowed_tools", []),
                 description=arguments.get("description"),
-                model=arguments.get("model", "claude-sonnet-4-20250514"),
+                model=model,
                 temperature=arguments.get("temperature"),
                 icon=arguments.get("icon"),
             )
@@ -769,7 +789,7 @@ class ToolExecutor:
                 name=arguments.get("name", ""),
                 system_prompt=arguments.get("system_prompt", ""),
                 tools=arguments.get("tools", []),
-                model=arguments.get("model", "claude-sonnet-4-20250514"),
+                model=arguments.get("model") or "",
             ),
             "delegate_to_custom_agent": lambda: delegate_to_custom_agent(
                 session_id=self.session_id,

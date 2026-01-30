@@ -39,11 +39,17 @@ import {
   type FileNode,
 } from '@/lib/api';
 import { useUIStore } from '@/stores/ui';
+import { useSessionStore } from '@/stores/session';
+import { DirectoryBrowser } from '@/components/workspace/DirectoryBrowser';
 import { BranchCompare } from '@/components/git/BranchCompare';
 import { DiffViewer } from '@/components/git/DiffViewer';
 
 export interface GitPanelProps {
   sessionId: string;
+  /** If set, this is a local pod workspace - use workspace's default working directory */
+  localPodId?: string | null;
+  /** Mount path for local pods (displayed read-only) */
+  mountPath?: string | null;
 }
 
 const statusIcons: Record<string, { icon: string; color: string }> = {
@@ -55,7 +61,7 @@ const statusIcons: Record<string, { icon: string; color: string }> = {
   untracked: { icon: 'U', color: 'text-gray-400' },
 };
 
-export function GitPanel({ sessionId }: GitPanelProps) {
+export function GitPanel({ sessionId, localPodId, mountPath }: GitPanelProps) {
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [branches, setBranches] = useState<GitBranchType[]>([]);
   const [loading, setLoading] = useState(true);
@@ -79,8 +85,17 @@ export function GitPanel({ sessionId }: GitPanelProps) {
   const setWorkingDirectory = useUIStore((state) => state.setGitWidgetWorkingDirectory);
   const [showWorkingDirSelector, setShowWorkingDirSelector] = useState(false);
 
-  // Convert relative path to absolute path for git commands
-  const absoluteWorkingDir = `/home/dev/${workingDirectory}`;
+  // For local pods, we store absolute paths directly in the UI store
+  // For cloud workspaces, convert relative path to absolute path
+  const isLocalPod = !!localPodId;
+  // If local pod has a workingDirectory set, use it; otherwise undefined (uses workspace default)
+  // For cloud, always convert relative to absolute path
+  const absoluteWorkingDir = isLocalPod
+    ? workingDirectory && workingDirectory !== 'projects'
+      ? workingDirectory
+      : undefined
+    : `/home/dev/${workingDirectory}`;
+  const [showLocalPodDirSelector, setShowLocalPodDirSelector] = useState(false);
 
   const loadGitData = useCallback(async () => {
     setLoading(true);
@@ -94,6 +109,13 @@ export function GitPanel({ sessionId }: GitPanelProps) {
       setBranches(branchesData);
       // Clear any previous workspace error on success
       clearWorkspaceError(sessionId);
+
+      // Sync branch to session store if it differs from stored value
+      // This ensures the header shows the actual git branch, not stale API data
+      const session = useSessionStore.getState().sessions[sessionId];
+      if (session && statusData.branch && session.branch !== statusData.branch) {
+        useSessionStore.getState().updateSessionInfo(sessionId, { branch: statusData.branch });
+      }
     } catch (err) {
       // Check if this is a workspace unavailability error (503/500)
       if (handleWorkspaceError(err, sessionId)) {
@@ -247,8 +269,8 @@ export function GitPanel({ sessionId }: GitPanelProps) {
 
   const totalChanges = status.staged.length + status.unstaged.length + status.untracked.length;
 
-  // Directory browser component
-  const DirectoryBrowser = () => {
+  // Directory browser component for cloud workspaces (navigates /home/dev/projects)
+  const CloudDirectoryBrowser = () => {
     const [directories, setDirectories] = useState<FileNode[]>([]);
     const [loading, setLoading] = useState(false);
     const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set(['.']));
@@ -443,25 +465,27 @@ export function GitPanel({ sessionId }: GitPanelProps) {
             </button>
           </div>
 
-          {/* Working Directory selector */}
-          <div className="flex items-center gap-1">
-            <Settings className="h-4 w-4 text-accent-primary" />
+          {/* Working Directory selector - for both local pods and cloud */}
+          {isLocalPod ? (
+            // Local pod: show clickable directory selector
             <div className="flex items-center gap-1">
+              <Settings className="h-4 w-4 text-accent-primary" />
               <button
-                onClick={() => setShowWorkingDirSelector(!showWorkingDirSelector)}
+                onClick={() => setShowLocalPodDirSelector(!showLocalPodDirSelector)}
                 className="flex items-center gap-1 text-xs text-text-muted hover:bg-overlay px-1 py-0.5 rounded"
+                title={status.working_dir || mountPath || 'Select directory'}
               >
-                <span className="font-mono">
-                  {workingDirectory === 'projects'
-                    ? 'projects/'
-                    : workingDirectory
-                      ? `${workingDirectory.replace('projects/', '')}/`
-                      : '(root)'}
+                <span className="font-mono truncate max-w-[120px]">
+                  {status.working_dir
+                    ? status.working_dir.split('/').pop() || status.working_dir
+                    : mountPath
+                      ? mountPath.split('/').pop() || mountPath
+                      : '(select)'}
                 </span>
                 <ChevronDown
                   className={cn(
-                    'h-3 w-3 text-text-muted transition-transform ml-1',
-                    showWorkingDirSelector && 'rotate-180'
+                    'h-3 w-3 text-text-muted transition-transform',
+                    showLocalPodDirSelector && 'rotate-180'
                   )}
                 />
               </button>
@@ -469,16 +493,53 @@ export function GitPanel({ sessionId }: GitPanelProps) {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    setWorkingDirectory(sessionId, 'projects');
+                    setWorkingDirectory(sessionId, 'projects'); // Reset to default
                   }}
                   className="p-0.5 rounded hover:bg-surface-hover text-text-muted"
-                  title="Clear selection"
+                  title="Reset to default"
                 >
                   <X className="h-3 w-3" />
                 </button>
               )}
             </div>
-          </div>
+          ) : (
+            // Cloud workspace: show directory selector
+            <div className="flex items-center gap-1">
+              <Settings className="h-4 w-4 text-accent-primary" />
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setShowWorkingDirSelector(!showWorkingDirSelector)}
+                  className="flex items-center gap-1 text-xs text-text-muted hover:bg-overlay px-1 py-0.5 rounded"
+                >
+                  <span className="font-mono">
+                    {workingDirectory === 'projects'
+                      ? 'projects/'
+                      : workingDirectory
+                        ? `${workingDirectory.replace('projects/', '')}/`
+                        : '(root)'}
+                  </span>
+                  <ChevronDown
+                    className={cn(
+                      'h-3 w-3 text-text-muted transition-transform ml-1',
+                      showWorkingDirSelector && 'rotate-180'
+                    )}
+                  />
+                </button>
+                {workingDirectory && workingDirectory !== 'projects' && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setWorkingDirectory(sessionId, 'projects');
+                    }}
+                    className="p-0.5 rounded hover:bg-surface-hover text-text-muted"
+                    title="Clear selection"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Branch selector dropdown */}
@@ -503,10 +564,26 @@ export function GitPanel({ sessionId }: GitPanelProps) {
           </div>
         )}
 
-        {/* Working Directory selector dropdown */}
-        {showWorkingDirSelector && (
+        {/* Working Directory selector dropdown (cloud workspaces only) */}
+        {!isLocalPod && showWorkingDirSelector && (
           <div className="mt-2 bg-elevated rounded border border-border-default">
-            <DirectoryBrowser />
+            <CloudDirectoryBrowser />
+          </div>
+        )}
+
+        {/* Working Directory selector dropdown (local pods) */}
+        {isLocalPod && localPodId && showLocalPodDirSelector && (
+          <div className="mt-2">
+            <DirectoryBrowser
+              podId={localPodId}
+              selectedPath={absoluteWorkingDir || mountPath || null}
+              onSelect={(path) => {
+                if (path) {
+                  setWorkingDirectory(sessionId, path);
+                }
+                setShowLocalPodDirSelector(false);
+              }}
+            />
           </div>
         )}
       </div>
@@ -757,7 +834,9 @@ export function GitPanel({ sessionId }: GitPanelProps) {
               branches={branches.map((b) => ({
                 name: b.name,
                 current: b.is_current,
+                isRemote: b.is_remote,
               }))}
+              currentBranch={status.branch}
               workingDir={absoluteWorkingDir}
               onClose={() => setShowBranchCompare(false)}
             />
@@ -792,15 +871,13 @@ export function GitPanel({ sessionId }: GitPanelProps) {
             </div>
 
             {/* Diff Content */}
-            <div className="flex-1 overflow-hidden">
+            <div className="flex-1 min-h-0 overflow-auto">
               {loadingDiff ? (
                 <div className="flex items-center justify-center h-32">
                   <Loader2 className="h-6 w-6 animate-spin text-text-muted" />
                 </div>
               ) : fileDiff !== null ? (
-                <div className="h-full overflow-auto">
-                  <DiffViewer diff={fileDiff} />
-                </div>
+                <DiffViewer diff={fileDiff} className="h-full" />
               ) : (
                 <div className="flex items-center justify-center h-32 text-text-muted text-sm">
                   {error || 'No diff available'}

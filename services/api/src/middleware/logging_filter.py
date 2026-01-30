@@ -36,9 +36,9 @@ SENSITIVE_FIELDS = frozenset(
         "oauth_token",
         "oauth_secret",
         "code",  # OAuth authorization code
-        # Session
-        "session_id",
-        "sessionid",
+        # Session - temporarily disabled for debugging
+        # "session_id",
+        # "sessionid",
         "session_token",
         "cookie",
         "cookies",

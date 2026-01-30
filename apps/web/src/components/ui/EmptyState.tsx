@@ -7,7 +7,6 @@ import {
   Users,
   AlertCircle,
   FolderOpen,
-  CheckCircle2,
   Inbox,
   type LucideIcon,
 } from 'lucide-react';
@@ -115,17 +114,6 @@ export function NoUsersEmptyState({ size = 'md' }: { size?: 'sm' | 'md' | 'lg' }
       icon={Users}
       title="You're the only one here"
       description="Share this workspace to collaborate with others"
-      size={size}
-    />
-  );
-}
-
-export function NoProblemsEmptyState({ size = 'md' }: { size?: 'sm' | 'md' | 'lg' }) {
-  return (
-    <EmptyState
-      icon={CheckCircle2}
-      title="No issues found"
-      description="Your code looks good! No errors or warnings detected."
       size={size}
     />
   );

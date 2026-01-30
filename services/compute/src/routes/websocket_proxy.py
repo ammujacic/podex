@@ -18,6 +18,7 @@ from websockets.asyncio.client import ClientConnection
 from src.deps import get_compute_manager, verify_internal_api_key
 from src.managers.base import ComputeManager
 from src.models.workspace import WorkspaceStatus
+from src.validation import ValidationError, validate_workspace_id
 
 logger = structlog.get_logger()
 
@@ -88,6 +89,13 @@ async def _validate_workspace(
     workspace_id: str,
 ) -> bool:
     """Validate workspace exists and is running. Returns True if valid."""
+    # Validate workspace_id to prevent path traversal and injection attacks
+    try:
+        validate_workspace_id(workspace_id)
+    except ValidationError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid workspace ID")
+        return False
+
     workspace = await compute.get_workspace(workspace_id)
     if not workspace:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Workspace not found")

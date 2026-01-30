@@ -163,6 +163,36 @@ export async function testSentryToken(
       envVars.SENTRY_HOST = host;
     }
     const result = await testMCPDefault('sentry', envVars);
+
+    // Provide better error messages for common issues
+    if (!result.success && result.error) {
+      const errorLower = result.error.toLowerCase();
+
+      // Check for permission/scope issues
+      if (
+        errorLower.includes('forbidden') ||
+        errorLower.includes('403') ||
+        errorLower.includes('permission') ||
+        errorLower.includes('scope') ||
+        errorLower.includes('unauthorized') ||
+        errorLower.includes('401')
+      ) {
+        return {
+          success: false,
+          error:
+            'Token is missing required permissions. Please ensure it has these scopes: org:read, project:read, project:write, team:read, event:write',
+        };
+      }
+
+      // Check for invalid token format
+      if (errorLower.includes('invalid') && errorLower.includes('token')) {
+        return {
+          success: false,
+          error: 'Invalid token format. Sentry auth tokens typically start with "sntrys_"',
+        };
+      }
+    }
+
     return { success: result.success, error: result.error };
   } catch (err) {
     return {

@@ -111,14 +111,6 @@ class EmptyMessageContentError(ValidationError):
         super().__init__("Message content cannot be empty")
 
 
-class FileNotFoundInStorageError(FileNotFoundError):
-    """Raised when a file is not found in storage."""
-
-    def __init__(self, path: str) -> None:
-        self.path = path
-        super().__init__(f"File not found: {path}")
-
-
 # Agent client exceptions
 class AgentClientError(Exception):
     """Base exception for agent service call failures."""

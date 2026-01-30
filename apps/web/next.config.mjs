@@ -3,15 +3,66 @@ import withSerwist from '@serwist/next';
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: 'standalone',
   reactStrictMode: true,
+  env: {
+    // Feature flag for coming soon mode
+    NEXT_PUBLIC_COMING_SOON_MODE: process.env.NEXT_PUBLIC_COMING_SOON_MODE || 'false',
+  },
   // Allow dev server access from local network (mobile testing)
   allowedDevOrigins: ['192.168.*.*', '10.*.*.*', '172.16.*.*'],
   transpilePackages: [
     '@podex/shared',
     '@podex/ui',
-    // Monaco VSCode packages with .wasm dependencies that can't be externalized
-    'vscode-oniguruma',
+  ],
+  // Exclude Monaco packages from server-side bundling to avoid --localstorage-file warnings
+  // These packages are only used on the client via dynamic imports
+  serverExternalPackages: [
+    // Monaco core
+    '@codingame/monaco-vscode-api',
+    '@codingame/monaco-vscode-editor-api',
     '@codingame/monaco-vscode-textmate-service-override',
+    '@codingame/monaco-vscode-theme-service-override',
+    '@codingame/monaco-vscode-languages-service-override',
+    '@codingame/monaco-vscode-theme-defaults-default-extension',
+    'vscode-oniguruma',
+    // Web languages
+    '@codingame/monaco-vscode-typescript-basics-default-extension',
+    '@codingame/monaco-vscode-json-default-extension',
+    '@codingame/monaco-vscode-css-default-extension',
+    '@codingame/monaco-vscode-html-default-extension',
+    '@codingame/monaco-vscode-markdown-basics-default-extension',
+    '@codingame/monaco-vscode-xml-default-extension',
+    // Systems programming
+    '@codingame/monaco-vscode-cpp-default-extension',
+    '@codingame/monaco-vscode-rust-default-extension',
+    '@codingame/monaco-vscode-go-default-extension',
+    // JVM languages
+    '@codingame/monaco-vscode-java-default-extension',
+    '@codingame/monaco-vscode-groovy-default-extension',
+    '@codingame/monaco-vscode-clojure-default-extension',
+    // .NET languages
+    '@codingame/monaco-vscode-csharp-default-extension',
+    '@codingame/monaco-vscode-fsharp-default-extension',
+    // Scripting languages
+    '@codingame/monaco-vscode-python-default-extension',
+    '@codingame/monaco-vscode-ruby-default-extension',
+    '@codingame/monaco-vscode-php-default-extension',
+    '@codingame/monaco-vscode-perl-default-extension',
+    '@codingame/monaco-vscode-lua-default-extension',
+    '@codingame/monaco-vscode-r-default-extension',
+    // Apple ecosystem
+    '@codingame/monaco-vscode-swift-default-extension',
+    '@codingame/monaco-vscode-objective-c-default-extension',
+    // Shell & scripting
+    '@codingame/monaco-vscode-shellscript-default-extension',
+    '@codingame/monaco-vscode-powershell-default-extension',
+    '@codingame/monaco-vscode-bat-default-extension',
+    // Config & data
+    '@codingame/monaco-vscode-yaml-default-extension',
+    '@codingame/monaco-vscode-sql-default-extension',
+    '@codingame/monaco-vscode-docker-default-extension',
+    '@codingame/monaco-vscode-make-default-extension',
   ],
   experimental: {
     optimizePackageImports: ['lucide-react', '@radix-ui/react-icons'],

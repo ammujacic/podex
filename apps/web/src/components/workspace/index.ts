@@ -1,7 +1,6 @@
 // Workspace layout
 export { WorkspaceLayout } from './WorkspaceLayout';
 export { SidebarContainer } from './SidebarContainer';
-export { WorkspaceSidebar } from './WorkspaceSidebar'; // Legacy
 export { WorkspaceHeader } from './WorkspaceHeader';
 
 // Sidebar panels
@@ -16,10 +15,7 @@ export type {
   FileSearchResult as SidebarFileSearchResult,
   SearchOptions as SidebarSearchOptions,
 } from './SearchPanel';
-export { DiagnosticsSidebarPanel } from './DiagnosticsSidebarPanel';
 export { UsageSidebarPanel } from './UsageSidebarPanel';
-export { NotificationsSidebarPanel } from './NotificationsSidebarPanel';
-export { PresenceSidebarPanel } from './PresenceSidebarPanel';
 
 // Editor components
 export { CodeEditor } from './CodeEditor';
@@ -42,7 +38,6 @@ export { CompactionDialog } from './CompactionDialog';
 
 // Checkpoint components
 export { CheckpointTimeline, CheckpointTimelineCompact } from './CheckpointTimeline';
-export { CheckpointRestoreDialog } from './CheckpointRestoreDialog';
 
 // Worktree components
 export { WorktreeStatus } from './WorktreeStatus';
@@ -74,34 +69,6 @@ export { CommandPalette } from './CommandPalette';
 export { GlobalSearch } from './GlobalSearch';
 export type { SearchMatch, FileSearchResult, SearchOptions, SearchState } from './GlobalSearch';
 
-export { SymbolOutline, SymbolQuickPick } from './SymbolOutline';
-export type { DocumentSymbol, OutlineState } from './SymbolOutline';
-export { SymbolKind } from './SymbolOutline';
-
-// Diagnostics
-export {
-  ProblemsPanel,
-  ProblemsStatus,
-  useDiagnosticsStore,
-  useMonacoDiagnostics,
-} from './ProblemsPanel';
-export type { Diagnostic, FileDiagnostics } from './ProblemsPanel';
-export { DiagnosticSeverity } from './ProblemsPanel';
-
-// Planning components
-export { PlanningModelSelector } from './PlanningModelSelector';
-export { ParallelPlansPanel } from './ParallelPlansPanel';
-export { PlanComparisonView } from './PlanComparisonView';
-
-// Parallel agent components
-export { ConflictWarningPanel } from './ConflictWarningPanel';
-export { ParallelAgentLauncher } from './ParallelAgentLauncher';
-
-// Knowledge & Memory components
-export { PodexMdEditor } from './PodexMdEditor';
-export { WikiPanel } from './WikiPanel';
-export { CodebaseQA } from './CodebaseQA';
-
 // Visual feedback components
 export { ThinkingDisplay } from './ThinkingDisplay';
 export { EnhancedToolCallDisplay } from './EnhancedToolCallDisplay';
@@ -115,5 +82,4 @@ export type { FileChange, ChangeType } from './FileTreeChangeIndicator';
 
 // Cost & Usage components
 export { SessionCostCounter, MiniCostCounter } from './SessionCostCounter';
-export { AgentCostBreakdown } from './AgentCostBreakdown';
 export { BudgetAlertDialog, AlertBell, AlertList } from './BudgetAlertDialog';

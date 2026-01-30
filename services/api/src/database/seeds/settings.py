@@ -85,32 +85,61 @@ DEFAULT_SETTINGS = [
     {
         "key": "agent_model_defaults",
         "value": {
-            "architect": {"model_id": "claude-sonnet-4-5", "temperature": 0.7, "max_tokens": 8192},
-            "coder": {"model_id": "claude-sonnet-4-5", "temperature": 0.3, "max_tokens": 4096},
-            "reviewer": {"model_id": "claude-sonnet-4-5", "temperature": 0.5, "max_tokens": 4096},
-            "tester": {"model_id": "claude-sonnet-4-5", "temperature": 0.3, "max_tokens": 4096},
-            "chat": {"model_id": "claude-haiku-4-5", "temperature": 0.7, "max_tokens": 4096},
-            "security": {"model_id": "claude-sonnet-4-5", "temperature": 0.3, "max_tokens": 4096},
-            "devops": {"model_id": "claude-sonnet-4-5", "temperature": 0.5, "max_tokens": 4096},
+            "architect": {
+                "model_id": "anthropic/claude-sonnet-4-5",
+                "temperature": 0.7,
+                "max_tokens": 8192,
+            },
+            "coder": {
+                "model_id": "anthropic/claude-sonnet-4-5",
+                "temperature": 0.3,
+                "max_tokens": 4096,
+            },
+            "reviewer": {
+                "model_id": "anthropic/claude-sonnet-4-5",
+                "temperature": 0.5,
+                "max_tokens": 4096,
+            },
+            "tester": {
+                "model_id": "anthropic/claude-sonnet-4-5",
+                "temperature": 0.3,
+                "max_tokens": 4096,
+            },
+            "chat": {
+                "model_id": "anthropic/claude-haiku-4-5",
+                "temperature": 0.7,
+                "max_tokens": 4096,
+            },
+            "security": {
+                "model_id": "anthropic/claude-sonnet-4-5",
+                "temperature": 0.3,
+                "max_tokens": 4096,
+            },
+            "devops": {
+                "model_id": "anthropic/claude-sonnet-4-5",
+                "temperature": 0.5,
+                "max_tokens": 4096,
+            },
             "documentator": {
-                "model_id": "claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4-5",
                 "temperature": 0.7,
                 "max_tokens": 4096,
             },
             "agent_builder": {
-                "model_id": "claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4-5",
                 "temperature": 0.5,
                 "max_tokens": 8192,
             },
             "orchestrator": {
-                "model_id": "claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4-5",
                 "temperature": 0.5,
                 "max_tokens": 8192,
             },
-            "custom": {"model_id": "claude-sonnet-4-5", "temperature": 0.5, "max_tokens": 4096},
-            "claude-code": {"model_id": "sonnet", "temperature": 0.3, "max_tokens": 8192},
-            "gemini-cli": {"model_id": "gemini-2.5-pro", "temperature": 0.3, "max_tokens": 8192},
-            "openai-codex": {"model_id": "gpt-4o", "temperature": 0.3, "max_tokens": 8192},
+            "custom": {
+                "model_id": "anthropic/claude-sonnet-4-5",
+                "temperature": 0.5,
+                "max_tokens": 4096,
+            },
         },
         "description": "Default model settings per agent type",
         "category": "agents",
@@ -178,13 +207,14 @@ DEFAULT_SETTINGS = [
     {
         "key": "feature_flags",
         "value": {
-            "registration_enabled": True,
+            "registration_enabled": False,
             "voice_enabled": True,
             "collaboration_enabled": True,
             "custom_agents_enabled": True,
             "git_integration_enabled": True,
             "planning_mode_enabled": True,
             "vision_enabled": True,
+            "anthropic_prompt_caching_enabled": True,
         },
         "description": "Platform-wide feature toggles",
         "category": "features",
@@ -309,30 +339,6 @@ DEFAULT_SETTINGS = [
         "description": "Backend context window limits and thresholds",
         "category": "context",
         "is_public": False,
-    },
-    # ===================
-    # DOTFILES SYNC
-    # ===================
-    {
-        "key": "default_dotfiles",
-        "value": [
-            ".bashrc",
-            ".zshrc",
-            ".gitconfig",
-            ".npmrc",
-            ".vimrc",
-            ".profile",
-            ".config/starship.toml",
-            ".ssh/config",
-            ".claude/",
-            ".claude.json",
-            ".codex/",
-            ".gemini/",
-            ".opencode/",
-        ],
-        "description": "Default dotfiles to sync for new users",
-        "category": "dotfiles",
-        "is_public": True,
     },
     # ===================
     # AI FEATURES
@@ -563,9 +569,10 @@ DEFAULT_SETTINGS = [
         "value": {
             "maxParallelPlans": 5,
             "defaultModels": [
-                "claude-sonnet-4-20250514",
+                # Use Claude Sonnet 4.5 + Opus 4.5 as planning defaults
+                "claude-sonnet-4-5",
                 "gpt-4o",
-                "claude-opus-4-20250514",
+                "claude-opus-4-5",
             ],
         },
         "description": "Configuration for parallel plan generation",
@@ -586,6 +593,55 @@ DEFAULT_SETTINGS = [
         },
         "description": "Backend TTS and speech configuration",
         "category": "voice",
+        "is_public": False,
+    },
+    # ===================
+    # OAUTH PROVIDERS
+    # ===================
+    {
+        "key": "oauth_providers",
+        "value": {
+            "anthropic": {
+                "enabled": True,
+                "name": "Anthropic (Claude Pro/Max)",
+                "description": (
+                    "Connect your Claude Pro or Max subscription to use your personal quota"
+                ),
+                "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+                "scopes": ["org:create_api_key", "user:profile", "user:inference"],
+                "icon": "anthropic",
+            },
+            "google": {
+                "enabled": True,
+                "name": "Google (Gemini)",
+                "description": "Connect your Google account to use Gemini models",
+                "scopes": [
+                    "https://www.googleapis.com/auth/generative-language",
+                    "https://www.googleapis.com/auth/userinfo.email",
+                    "https://www.googleapis.com/auth/userinfo.profile",
+                ],
+                "icon": "google",
+            },
+            "github": {
+                "enabled": True,
+                "name": "GitHub (Copilot)",
+                "description": "Connect your GitHub account to use GitHub Copilot",
+                "scopes": ["read:user", "user:email", "copilot"],
+                "icon": "github",
+            },
+        },
+        "description": "OAuth provider configuration for personal LLM subscriptions",
+        "category": "oauth",
+        "is_public": True,  # Frontend needs to display available providers
+    },
+    {
+        "key": "oauth_redirect_urls",
+        "value": {
+            "development": "http://localhost:3000/api/oauth/callback",
+            "production": "https://app.podex.dev/api/oauth/callback",
+        },
+        "description": "OAuth redirect URLs by environment",
+        "category": "oauth",
         "is_public": False,
     },
 ]

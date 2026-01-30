@@ -3,7 +3,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   Settings,
-  Cloud,
   Server,
   Check,
   RefreshCw,
@@ -194,7 +193,8 @@ export const useModelSettings = create<ModelSettingsState>()(
   persist(
     (set, get) => ({
       providers: defaultProviders,
-      defaultModel: 'claude-sonnet-4',
+      // Default to Claude Sonnet 4.5 (platform balanced model)
+      defaultModel: 'claude-sonnet-4-5',
       agentModelOverrides: {},
       fallbackEnabled: true,
       fallbackOrder: ['ollama', 'lmstudio', 'anthropic'],
@@ -489,6 +489,13 @@ function ProviderConfigPanel({
     [baseUrl, providerId, onConfigured]
   );
 
+  // Sync discovered models from parent when parent has loaded config (e.g. after refresh)
+  useEffect(() => {
+    if (info?.isLocal && models?.length > 0) {
+      setDiscoveredModels(models);
+    }
+  }, [info?.isLocal, models]);
+
   // Load saved URL and models on mount (only once per provider)
   useEffect(() => {
     if (!info?.isLocal) return;
@@ -511,11 +518,10 @@ function ProviderConfigPanel({
         const providerConfig = config[providerId];
         if (providerConfig?.base_url) {
           setBaseUrl(providerConfig.base_url);
-          // Auto-discover models if URL is saved
+          // Restore saved models so they persist after refresh (do not re-discover here;
+          // that would clear the list and leave it empty if the backend cannot reach the URL)
           if (providerConfig.models && providerConfig.models.length > 0) {
             setDiscoveredModels(providerConfig.models);
-            // Also trigger a refresh to get latest models
-            handleDiscoverModels(providerConfig.base_url);
           }
         }
         loadingRef.current = null;
@@ -536,8 +542,7 @@ function ProviderConfigPanel({
         loadingRef.current = null;
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [providerId, info?.isLocal]); // Only depend on providerId and isLocal, not handleDiscoverModels
+  }, [providerId, info?.isLocal]);
 
   if (!info) return null;
 
@@ -873,7 +878,8 @@ interface ModelSettingsProps {
 }
 
 export function ModelSettings({ className }: ModelSettingsProps) {
-  const { configuredApiKeyProviders, setConfiguredApiKeyProviders } = useModelSettings();
+  const { configuredApiKeyProviders: _configuredApiKeyProviders, setConfiguredApiKeyProviders } =
+    useModelSettings();
 
   const user = useAuthStore((state) => state.user);
   const isAuthenticated = !!user;
@@ -885,7 +891,6 @@ export function ModelSettings({ className }: ModelSettingsProps) {
   // Get LLM providers and agent roles from config store
   const configProviders = useConfigStore((state) => state.providers);
   const agentRoles = useConfigStore((state) => state.agentRoles);
-  const configError = useConfigStore((state) => state.error);
   const configLoading = useConfigStore((state) => state.isLoading);
   const initializeConfig = useConfigStore((state) => state.initialize);
 
@@ -898,7 +903,6 @@ export function ModelSettings({ className }: ModelSettingsProps) {
   const [platformModels, setPlatformModels] = useState<PublicModel[]>([]);
   const [userProviderModels, setUserProviderModels] = useState<UserProviderModel[]>([]);
   const [platformDefaults, setPlatformDefaults] = useState<Record<string, AgentTypeDefaults>>({});
-  const [_isLoadingModels, setIsLoadingModels] = useState(true);
 
   // Local LLM config (for model counts)
   const [localLLMConfig, setLocalLLMConfig] = useState<
@@ -911,7 +915,7 @@ export function ModelSettings({ className }: ModelSettingsProps) {
       id: m.model_id,
       provider: 'podex',
       displayName: m.display_name,
-      shortName: m.display_name.replace('Claude ', '').replace('Llama ', ''),
+      shortName: m.display_name,
       tier:
         m.cost_tier === 'premium' || m.cost_tier === 'high'
           ? 'flagship'
@@ -986,8 +990,6 @@ export function ModelSettings({ className }: ModelSettingsProps) {
         setPlatformDefaults(defaults.defaults);
       } catch (error) {
         console.error('Failed to load platform models:', error);
-      } finally {
-        setIsLoadingModels(false);
       }
     }
     loadModels();
@@ -1044,17 +1046,7 @@ export function ModelSettings({ className }: ModelSettingsProps) {
     [isAuthenticated]
   );
 
-  const cloudProviderIds = ['anthropic', 'openai', 'google'];
   const localProviderIds = ['ollama', 'lmstudio'];
-
-  const refreshApiKeys = useCallback(async () => {
-    try {
-      const apiKeys = await getLLMApiKeys();
-      setConfiguredApiKeyProviders(apiKeys.providers);
-    } catch (error) {
-      console.error('Failed to refresh API keys:', error);
-    }
-  }, [setConfiguredApiKeyProviders]);
 
   return (
     <div className={cn('flex flex-col h-full', className)}>
@@ -1123,82 +1115,7 @@ export function ModelSettings({ className }: ModelSettingsProps) {
         <div className="border-t border-border-subtle" />
 
         {/* ================================================================
-            Section 2: Cloud Providers (API Keys)
-            ================================================================ */}
-        <section>
-          <SectionHeader icon={Cloud} title="Model Providers" />
-
-          <p className="text-sm text-text-muted mb-4">
-            Add your own API keys to use additional models from external providers
-          </p>
-
-          {/* Error state for config loading */}
-          {configError && (
-            <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/30 mb-4">
-              <div className="flex items-center gap-3">
-                <div className="text-red-400">
-                  <Settings className="h-5 w-5" />
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-red-400">
-                    Failed to load provider configuration
-                  </p>
-                  <p className="text-xs text-text-muted mt-0.5">{configError}</p>
-                </div>
-                <button
-                  onClick={() => initializeConfig()}
-                  className="px-3 py-1.5 rounded-lg text-sm bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors"
-                >
-                  Retry
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Provider Cards Grid */}
-          {configLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-5 w-5 animate-spin text-text-muted" />
-              <span className="ml-2 text-sm text-text-muted">Loading providers...</span>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-              {cloudProviderIds.map((providerId) => (
-                <ProviderCard
-                  key={providerId}
-                  providerId={providerId}
-                  providers={configProviders}
-                  isConfigured={configuredApiKeyProviders.includes(providerId)}
-                  isSelected={selectedProvider === providerId}
-                  modelCount={userProviderModels.filter((m) => m.provider === providerId).length}
-                  onSelect={() =>
-                    setSelectedProvider(selectedProvider === providerId ? null : providerId)
-                  }
-                />
-              ))}
-            </div>
-          )}
-
-          {/* Configuration Panel */}
-          {selectedProvider && cloudProviderIds.includes(selectedProvider) && (
-            <ProviderConfigPanel
-              providerId={selectedProvider}
-              providers={configProviders}
-              isConfigured={configuredApiKeyProviders.includes(selectedProvider)}
-              models={userProviderModels
-                .filter((m) => m.provider === selectedProvider)
-                .map((m) => ({ id: m.model_id, name: m.display_name }))}
-              onConfigured={refreshApiKeys}
-              onRemove={refreshApiKeys}
-            />
-          )}
-        </section>
-
-        {/* Divider */}
-        <div className="border-t border-border-subtle" />
-
-        {/* ================================================================
-            Section 3: Local Models
+            Section 2: Local Models
             ================================================================ */}
         <section>
           <SectionHeader
@@ -1293,7 +1210,7 @@ export function ModelSettings({ className }: ModelSettingsProps) {
         <div className="border-t border-border-subtle" />
 
         {/* ================================================================
-            Section 4: Default Models by Role
+            Section 3: Default Models by Role
             ================================================================ */}
         <section>
           <SectionHeader icon={Cpu} title="Default Models by Role" badgeColor="blue" />
@@ -1341,7 +1258,7 @@ export function ModelSettings({ className }: ModelSettingsProps) {
                           <optgroup label="Podex Native">
                             {platformModels.map((m) => (
                               <option key={m.model_id} value={m.model_id}>
-                                {m.display_name.replace('Claude ', '').replace('Llama ', '')}
+                                {m.display_name}
                               </option>
                             ))}
                           </optgroup>
@@ -1362,9 +1279,6 @@ export function ModelSettings({ className }: ModelSettingsProps) {
             </div>
           )}
         </section>
-
-        {/* Divider */}
-        <div className="border-t border-border-subtle" />
       </div>
     </div>
   );

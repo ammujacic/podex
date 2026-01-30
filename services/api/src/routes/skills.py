@@ -6,14 +6,15 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
 from src.database.models import SkillExecution, SkillVersion, SystemSkill, UserSkill
 from src.middleware.auth import get_current_user, get_optional_user_id
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
 router = APIRouter(prefix="/skills", tags=["skills"])
 
@@ -82,8 +83,7 @@ class SkillResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SkillListResponse(BaseModel):
@@ -164,8 +164,7 @@ class SkillVersionResponse(BaseModel):
     created_by: str
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SkillVersionListResponse(BaseModel):
@@ -204,8 +203,7 @@ class SkillExecutionResponse(BaseModel):
     error_message: str | None
     executed_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SkillAnalyticsResponse(BaseModel):
@@ -261,8 +259,10 @@ class SkillTrendResponse(BaseModel):
 
 
 @router.get("/available", response_model=AvailableSkillsResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_available_skills(
     request: Request,
+    response: Response,
     include_system: bool = Query(True, description="Include system skills"),
     include_user: bool = Query(True, description="Include user skills"),
     tag: str | None = Query(None, description="Filter by tag"),
@@ -358,7 +358,10 @@ async def get_available_skills(
 
 
 @router.get("", response_model=SkillListResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_skills(
+    request: Request,
+    response: Response,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     tag: str | None = Query(None),
@@ -411,7 +414,10 @@ async def list_skills(
 
 
 @router.get("/stats", response_model=SkillStatsResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_skill_stats(
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> SkillStatsResponse:
@@ -454,8 +460,11 @@ async def get_skill_stats(
 
 
 @router.get("/{skill_id}", response_model=SkillResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_skill(
     skill_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> SkillResponse:
@@ -479,8 +488,11 @@ async def get_skill(
 
 
 @router.post("", response_model=SkillResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def create_skill(
-    request: SkillCreateRequest,
+    request: Request,
+    response: Response,
+    body: SkillCreateRequest,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> SkillResponse:
@@ -490,31 +502,31 @@ async def create_skill(
     # Check for duplicate slug
     existing_query = select(UserSkill).where(
         UserSkill.user_id == user_id,
-        UserSkill.slug == request.slug,
+        UserSkill.slug == body.slug,
     )
     existing = (await db.execute(existing_query)).scalar_one_or_none()
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Skill with slug '{request.slug}' already exists",
+            detail=f"Skill with slug '{body.slug}' already exists",
         )
 
     now = datetime.now(UTC)
     skill = UserSkill(
         id=str(uuid4()),
         user_id=user_id,
-        name=request.name,
-        slug=request.slug,
-        description=request.description,
-        version=request.version,
-        triggers=request.triggers,
-        tags=request.tags,
-        required_tools=request.required_tools,
-        steps=[step.model_dump() for step in request.steps],
-        system_prompt=request.system_prompt,
+        name=body.name,
+        slug=body.slug,
+        description=body.description,
+        version=body.version,
+        triggers=body.triggers,
+        tags=body.tags,
+        required_tools=body.required_tools,
+        steps=[step.model_dump() for step in body.steps],
+        system_prompt=body.system_prompt,
         generated_by_agent=False,
         source_conversation_id=None,
-        is_public=request.is_public,
+        is_public=body.is_public,
         usage_count=0,
         created_at=now,
         updated_at=now,
@@ -528,9 +540,12 @@ async def create_skill(
 
 
 @router.patch("/{skill_id}", response_model=SkillResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def update_skill(
     skill_id: str,
-    request: SkillUpdateRequest,
+    request: Request,
+    response: Response,
+    body: SkillUpdateRequest,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> SkillResponse:
@@ -552,7 +567,7 @@ async def update_skill(
         )
 
     # Build update data
-    update_data = request.model_dump(exclude_unset=True)
+    update_data = body.model_dump(exclude_unset=True)
     if update_data.get("steps"):
         update_data["steps"] = [
             step.model_dump() if hasattr(step, "model_dump") else step
@@ -570,8 +585,11 @@ async def update_skill(
 
 
 @router.delete("/{skill_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def delete_skill(
     skill_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> None:
@@ -597,8 +615,11 @@ async def delete_skill(
 
 
 @router.post("/{skill_id}/execute", response_model=dict)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def record_execution(
     skill_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -629,7 +650,10 @@ async def record_execution(
 
 
 @router.post("/import", response_model=SkillResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def import_skill(
+    request: Request,
+    response: Response,
     skill_data: dict[str, Any],
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
@@ -687,8 +711,11 @@ async def import_skill(
 
 
 @router.get("/{skill_id}/export", response_model=dict)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def export_skill(
     skill_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -727,8 +754,11 @@ async def export_skill(
 
 
 @router.get("/{skill_id}/versions", response_model=SkillVersionListResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_skill_versions(
     skill_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> SkillVersionListResponse:
@@ -765,9 +795,12 @@ async def list_skill_versions(
 
 
 @router.get("/{skill_id}/versions/{version_id}", response_model=SkillVersionResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_skill_version(
     skill_id: str,
     version_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> SkillVersionResponse:
@@ -804,9 +837,12 @@ async def get_skill_version(
 
 
 @router.post("/{skill_id}/rollback/{version_id}", response_model=SkillResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def rollback_skill_version(
     skill_id: str,
     version_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> SkillResponse:
@@ -889,10 +925,13 @@ async def rollback_skill_version(
 
 
 @router.get("/{skill_id}/diff/{version1_id}/{version2_id}", response_model=SkillDiffResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def diff_skill_versions(
     skill_id: str,
     version1_id: str,
     version2_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> SkillDiffResponse:
@@ -962,7 +1001,10 @@ async def diff_skill_versions(
 
 
 @router.get("/analytics", response_model=SkillAnalyticsResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_skill_analytics(
+    request: Request,
+    response: Response,
     days: int = Query(30, ge=1, le=365),
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
@@ -1054,8 +1096,11 @@ async def get_skill_analytics(
 
 
 @router.get("/{skill_id}/analytics", response_model=SkillDetailedAnalyticsResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_skill_detailed_analytics(
     skill_id: str,
+    request: Request,
+    response: Response,
     days: int = Query(30, ge=1, le=365),
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
@@ -1152,7 +1197,10 @@ async def get_skill_detailed_analytics(
 
 
 @router.get("/analytics/timeline", response_model=SkillTimelineResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_skill_timeline(
+    request: Request,
+    response: Response,
     days: int = Query(30, ge=1, le=365),
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
@@ -1209,7 +1257,10 @@ async def get_skill_timeline(
 
 
 @router.get("/analytics/trends", response_model=SkillTrendResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_skill_trends(
+    request: Request,
+    response: Response,
     period: str = Query("weekly", pattern="^(daily|weekly|monthly)$"),
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
@@ -1332,8 +1383,11 @@ class RecordExecutionResponse(BaseModel):
 @router.post(
     "/executions", response_model=RecordExecutionResponse, status_code=status.HTTP_201_CREATED
 )
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def record_skill_execution(
-    request: RecordExecutionRequest,
+    request: Request,
+    response: Response,
+    body: RecordExecutionRequest,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> RecordExecutionResponse:
@@ -1348,33 +1402,33 @@ async def record_skill_execution(
     # Create execution record
     execution = SkillExecution(
         id=str(uuid4()),
-        skill_id=request.skill_id,
-        system_skill_id=request.system_skill_id,
-        skill_slug=request.skill_slug,
-        skill_type=request.skill_type,
+        skill_id=body.skill_id,
+        system_skill_id=body.system_skill_id,
+        skill_slug=body.skill_slug,
+        skill_type=body.skill_type,
         user_id=user_id,
-        session_id=request.session_id,
-        agent_id=request.agent_id,
-        success=request.success,
-        steps_completed=request.steps_completed,
-        total_steps=request.total_steps,
-        duration_ms=request.duration_ms,
-        error_message=request.error_message,
-        context_snapshot=request.context_snapshot,
-        results_snapshot=request.results_snapshot,
+        session_id=body.session_id,
+        agent_id=body.agent_id,
+        success=body.success,
+        steps_completed=body.steps_completed,
+        total_steps=body.total_steps,
+        duration_ms=body.duration_ms,
+        error_message=body.error_message,
+        context_snapshot=body.context_snapshot,
+        results_snapshot=body.results_snapshot,
         executed_at=now,
     )
 
     db.add(execution)
 
     # Also increment usage_count on the skill
-    if request.skill_type == "user" and request.skill_id:
+    if body.skill_type == "user" and body.skill_id:
         await db.execute(
             update(UserSkill)
-            .where(UserSkill.id == request.skill_id)
+            .where(UserSkill.id == body.skill_id)
             .values(usage_count=UserSkill.usage_count + 1)
         )
-    elif request.skill_type == "system" and request.system_skill_id:
+    elif body.skill_type == "system" and body.system_skill_id:
         # SystemSkill doesn't have usage_count, but we track via SkillExecution
         pass
 

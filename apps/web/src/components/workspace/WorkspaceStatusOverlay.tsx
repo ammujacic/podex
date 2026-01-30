@@ -2,13 +2,23 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { ArrowLeft, Check, Loader2, Pause, Play, RefreshCw, Server, Clock } from 'lucide-react';
+import {
+  ArrowLeft,
+  Check,
+  Info,
+  Loader2,
+  Play,
+  RefreshCw,
+  Server,
+  Square,
+  WifiOff,
+} from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@podex/ui';
-import { getWorkspaceStatus, resumeWorkspace } from '@/lib/api';
+import { getWorkspaceStatus, startWorkspace } from '@/lib/api';
 import { useSessionStore } from '@/stores/session';
 
-type WorkspaceStatus = 'pending' | 'running' | 'standby' | 'stopped' | 'error' | undefined;
+type WorkspaceStatus = 'pending' | 'running' | 'stopped' | 'error' | 'offline' | undefined;
 
 type LoadingMessage = { progress: number; message: string; detail: string };
 
@@ -132,7 +142,7 @@ export function WorkspaceStatusOverlay({
 
     try {
       const workspaceStatus = await getWorkspaceStatus(workspaceId);
-      setWorkspaceStatus(sessionId, workspaceStatus.status, workspaceStatus.standby_at ?? null);
+      setWorkspaceStatus(sessionId, workspaceStatus.status);
       setWorkspaceStatusChecking(sessionId, false);
     } catch (err) {
       console.warn('Failed to refresh workspace status:', err);
@@ -143,23 +153,23 @@ export function WorkspaceStatusOverlay({
     }
   };
 
-  const handleResume = async () => {
+  const handleStart = async () => {
     if (!workspaceId || isResuming) return;
     setIsResuming(true);
     setResumeError(null);
 
     try {
-      const result = await resumeWorkspace(workspaceId);
-      setWorkspaceStatus(sessionId, result.status, null);
+      const result = await startWorkspace(workspaceId);
+      setWorkspaceStatus(sessionId, result.status);
       // Status will change to 'running' or 'pending', which will hide this overlay
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to resume workspace';
+      const errorMessage = err instanceof Error ? err.message : 'Failed to start workspace';
       // If workspace is already running, it's actually a success - just update the status
       if (errorMessage.includes("'running' state") || errorMessage.includes('already running')) {
-        setWorkspaceStatus(sessionId, 'running', null);
+        setWorkspaceStatus(sessionId, 'running');
         return;
       }
-      console.error('Failed to resume workspace:', err);
+      console.error('Failed to start workspace:', err);
       setResumeError(errorMessage);
     } finally {
       setIsResuming(false);
@@ -364,7 +374,71 @@ export function WorkspaceStatusOverlay({
     );
   }
 
-  if (status !== 'standby') {
+  if (status === 'offline') {
+    return (
+      <div className="fixed inset-0 z-40 flex items-center justify-center">
+        <div className="absolute inset-0 bg-void/75 backdrop-blur-md" aria-hidden="true" />
+        <div className="relative w-full max-w-md rounded-2xl border border-border-default bg-surface/90 p-6 shadow-2xl">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-red-500/15">
+              <WifiOff className="h-5 w-5 text-red-400" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-text-primary">Local Pod Offline</h2>
+              <p className="text-sm text-text-muted">
+                {sessionName ? `Connection to ${sessionName} lost` : 'Connection to local pod lost'}
+              </p>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-border-subtle bg-overlay/60 p-4 text-sm text-text-secondary">
+            <div className="flex items-start gap-3">
+              <Server className="h-5 w-5 text-text-muted mt-0.5" />
+              <div>
+                <p className="text-text-secondary">
+                  Your local pod has disconnected. This workspace will automatically reconnect when
+                  the local pod comes back online.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-start gap-3 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 mt-4">
+            <Info className="h-4 w-4 text-blue-400 shrink-0 mt-0.5" aria-hidden="true" />
+            <p className="text-xs text-blue-200/80">
+              Make sure your local pod application is running and connected to the internet.
+            </p>
+          </div>
+
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
+            <Button
+              variant="secondary"
+              onClick={() => router.push('/dashboard')}
+              className="w-full sm:w-auto"
+            >
+              <ArrowLeft className="h-4 w-4 mr-2" />
+              Back to Dashboard
+            </Button>
+            <Button onClick={handleRetryStatus} disabled={isRetrying || !workspaceId}>
+              {isRetrying ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Checking...
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  Check Status
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (status !== 'stopped') {
     return null;
   }
 
@@ -373,13 +447,13 @@ export function WorkspaceStatusOverlay({
       <div className="absolute inset-0 bg-void/75 backdrop-blur-md" aria-hidden="true" />
       <div className="relative w-full max-w-md rounded-2xl border border-border-default bg-surface/90 p-6 shadow-2xl">
         <div className="flex items-center gap-3 mb-4">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-amber-500/15">
-            <Pause className="h-5 w-5 text-amber-400" />
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-gray-500/15">
+            <Square className="h-5 w-5 text-gray-400" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-text-primary">Compute in standby</h2>
+            <h2 className="text-lg font-semibold text-text-primary">Session stopped</h2>
             <p className="text-sm text-text-muted">
-              {sessionName ? `${sessionName} is paused` : 'Your session is paused'}
+              {sessionName ? `${sessionName} is stopped` : 'Your session is stopped'}
             </p>
           </div>
         </div>
@@ -389,18 +463,10 @@ export function WorkspaceStatusOverlay({
             <Server className="h-5 w-5 text-text-muted mt-0.5" />
             <div>
               <p className="text-text-secondary">
-                Your compute was paused to save resources. Resume to reconnect and continue working.
+                This session was stopped. Start it to create a new pod with your files mounted.
               </p>
             </div>
           </div>
-        </div>
-
-        {/* Time estimate info */}
-        <div className="flex items-start gap-3 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 mt-4">
-          <Clock className="h-4 w-4 text-blue-400 shrink-0 mt-0.5" aria-hidden="true" />
-          <p className="text-xs text-blue-200/80">
-            Resuming may take 10-30 seconds while we restart your pod.
-          </p>
         </div>
 
         {resumeError && (
@@ -424,19 +490,19 @@ export function WorkspaceStatusOverlay({
             Back to Dashboard
           </Button>
           <Button
-            onClick={handleResume}
+            onClick={handleStart}
             disabled={!workspaceId || isResuming}
             className="w-full sm:w-auto"
           >
             {isResuming ? (
               <>
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Resuming...
+                Starting...
               </>
             ) : (
               <>
                 <Play className="h-4 w-4 mr-2" />
-                Resume Session
+                Start Session
               </>
             )}
           </Button>

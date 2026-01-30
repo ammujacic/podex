@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Cpu, MemoryStick, HardDrive, Zap, Check } from 'lucide-react';
+import { Cpu, MemoryStick, HardDrive, Zap, Check, Wifi } from 'lucide-react';
 
 interface HardwareSpec {
   id: string;
@@ -13,8 +13,8 @@ interface HardwareSpec {
   memoryMb: number;
   gpuType?: string;
   gpuMemoryGb?: number;
-  storageGbDefault: number;
-  storageGbMax: number;
+  storageGb: number;
+  bandwidthMbps?: number; // Network bandwidth allocation
   hourlyRate: number; // Base cost
   isAvailable: boolean;
   requiresSubscription?: string;
@@ -23,12 +23,18 @@ interface HardwareSpec {
   computeMarginPercent?: number | null;
 }
 
+interface TierCapacity {
+  available: boolean;
+  slots: number;
+}
+
 interface HardwareSelectorProps {
   specs: HardwareSpec[];
-  selectedTier?: string;
+  selectedTier?: string | null;
   onSelect: (tier: string) => void;
   currentPlan?: string;
   showUnavailable?: boolean;
+  regionCapacity?: Record<string, TierCapacity>; // Capacity per tier in selected region
 }
 
 const formatMemory = (mb: number) => {
@@ -48,14 +54,18 @@ export function HardwareSelector({
   onSelect,
   currentPlan,
   showUnavailable = false,
+  regionCapacity,
 }: HardwareSelectorProps) {
   const [showGpu, setShowGpu] = useState(false);
 
-  const filteredSpecs = specs.filter((spec) => {
-    if (!showUnavailable && !spec.isAvailable) return false;
-    if (showGpu) return spec.gpuType && spec.gpuType !== 'none';
-    return !spec.gpuType || spec.gpuType === 'none';
-  });
+  const filteredSpecs = specs
+    .filter((spec) => {
+      if (!showUnavailable && !spec.isAvailable) return false;
+      if (showGpu) return spec.gpuType && spec.gpuType !== 'none';
+      return !spec.gpuType || spec.gpuType === 'none';
+    })
+    // Sort by price (cheaper to more expensive)
+    .sort((a, b) => (a.userHourlyRate ?? a.hourlyRate) - (b.userHourlyRate ?? b.hourlyRate));
 
   const canAccessTier = (spec: HardwareSpec) => {
     if (!spec.requiresSubscription) return true;
@@ -65,6 +75,12 @@ export function HardwareSelector({
     const requiredIndex = planOrder.indexOf(spec.requiresSubscription);
     const currentIndex = planOrder.indexOf(currentPlan);
     return currentIndex >= requiredIndex;
+  };
+
+  const hasRegionCapacity = (tier: string) => {
+    if (!regionCapacity) return true; // No capacity info means we don't filter
+    const capacity = regionCapacity[tier];
+    return capacity?.available ?? true;
   };
 
   return (
@@ -99,7 +115,8 @@ export function HardwareSelector({
         {filteredSpecs.map((spec) => {
           const isSelected = selectedTier === spec.tier;
           const hasAccess = canAccessTier(spec);
-          const isDisabled = !spec.isAvailable || !hasAccess;
+          const hasCapacity = hasRegionCapacity(spec.tier);
+          const isDisabled = !spec.isAvailable || !hasAccess || !hasCapacity;
 
           return (
             <button
@@ -151,10 +168,18 @@ export function HardwareSelector({
                 )}
                 <div className="flex items-center gap-2 text-sm">
                   <HardDrive className="w-4 h-4 text-neutral-500" />
-                  <span className="text-neutral-300">
-                    {spec.storageGbDefault}GB - {spec.storageGbMax}GB
-                  </span>
+                  <span className="text-neutral-300">{spec.storageGb} GB</span>
                 </div>
+                {spec.bandwidthMbps && (
+                  <div className="flex items-center gap-2 text-sm">
+                    <Wifi className="w-4 h-4 text-neutral-500" />
+                    <span className="text-neutral-300">
+                      {spec.bandwidthMbps >= 1000
+                        ? `${(spec.bandwidthMbps / 1000).toFixed(0)} Gbps`
+                        : `${spec.bandwidthMbps} Mbps`}
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* Price and access */}
@@ -169,7 +194,8 @@ export function HardwareSelector({
                     </span>
                   )}
                 </div>
-                {spec.requiresSubscription && !hasAccess && (
+                {!hasCapacity && <span className="text-xs text-red-400">No capacity</span>}
+                {hasCapacity && spec.requiresSubscription && !hasAccess && (
                   <span className="text-xs text-amber-400 capitalize">
                     Requires {spec.requiresSubscription}
                   </span>

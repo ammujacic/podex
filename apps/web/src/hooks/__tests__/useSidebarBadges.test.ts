@@ -1,11 +1,10 @@
 /**
  * Comprehensive tests for useSidebarBadges hook
- * Tests badge counting for agents, MCP, problems, and Sentry panels
+ * Tests badge counting for agents, MCP, and Sentry panels
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { useSidebarBadges } from '../useSidebarBadges';
-import { DiagnosticSeverity } from '@/components/workspace/ProblemsPanel';
 
 // Mock the stores
 vi.mock('@/stores/session', () => ({
@@ -16,16 +15,6 @@ vi.mock('@/stores/mcp', () => ({
   useMCPStore: vi.fn(),
 }));
 
-vi.mock('@/components/workspace/ProblemsPanel', () => ({
-  useDiagnosticsStore: vi.fn(),
-  DiagnosticSeverity: {
-    Error: 1,
-    Warning: 2,
-    Information: 3,
-    Hint: 4,
-  },
-}));
-
 vi.mock('@/stores/sentry', () => ({
   useSentryStore: vi.fn(),
   selectUnresolvedCount: vi.fn(),
@@ -33,7 +22,6 @@ vi.mock('@/stores/sentry', () => ({
 
 import { useSessionStore } from '@/stores/session';
 import { useMCPStore } from '@/stores/mcp';
-import { useDiagnosticsStore } from '@/components/workspace/ProblemsPanel';
 import { useSentryStore, selectUnresolvedCount } from '@/stores/sentry';
 
 describe('useSidebarBadges', () => {
@@ -56,12 +44,6 @@ describe('useSidebarBadges', () => {
     vi.mocked(useMCPStore).mockImplementation((selector: (state: unknown) => unknown) =>
       selector({
         categories: [],
-      })
-    );
-
-    vi.mocked(useDiagnosticsStore).mockImplementation((selector: (state: unknown) => unknown) =>
-      selector({
-        diagnostics: {},
       })
     );
 
@@ -287,114 +269,6 @@ describe('useSidebarBadges', () => {
   });
 
   // ========================================
-  // Problems Badge Tests
-  // ========================================
-
-  describe('Problems Badge', () => {
-    it('should return undefined when no diagnostics', () => {
-      vi.mocked(useDiagnosticsStore).mockImplementation((selector: (state: unknown) => unknown) =>
-        selector({
-          diagnostics: {},
-        })
-      );
-
-      const { result } = renderHook(() => useSidebarBadges(sessionId));
-
-      expect(result.current.problems).toBeUndefined();
-    });
-
-    it('should count errors', () => {
-      vi.mocked(useDiagnosticsStore).mockImplementation((selector: (state: unknown) => unknown) =>
-        selector({
-          diagnostics: {
-            '/path/file1.ts': [
-              { severity: DiagnosticSeverity.Error, message: 'Error 1' },
-              { severity: DiagnosticSeverity.Error, message: 'Error 2' },
-            ],
-          },
-        })
-      );
-
-      const { result } = renderHook(() => useSidebarBadges(sessionId));
-
-      expect(result.current.problems).toBe(2);
-    });
-
-    it('should count warnings', () => {
-      vi.mocked(useDiagnosticsStore).mockImplementation((selector: (state: unknown) => unknown) =>
-        selector({
-          diagnostics: {
-            '/path/file1.ts': [
-              { severity: DiagnosticSeverity.Warning, message: 'Warning 1' },
-              { severity: DiagnosticSeverity.Warning, message: 'Warning 2' },
-              { severity: DiagnosticSeverity.Warning, message: 'Warning 3' },
-            ],
-          },
-        })
-      );
-
-      const { result } = renderHook(() => useSidebarBadges(sessionId));
-
-      expect(result.current.problems).toBe(3);
-    });
-
-    it('should count errors and warnings together', () => {
-      vi.mocked(useDiagnosticsStore).mockImplementation((selector: (state: unknown) => unknown) =>
-        selector({
-          diagnostics: {
-            '/path/file1.ts': [
-              { severity: DiagnosticSeverity.Error, message: 'Error 1' },
-              { severity: DiagnosticSeverity.Warning, message: 'Warning 1' },
-            ],
-            '/path/file2.ts': [
-              { severity: DiagnosticSeverity.Error, message: 'Error 2' },
-              { severity: DiagnosticSeverity.Warning, message: 'Warning 2' },
-            ],
-          },
-        })
-      );
-
-      const { result } = renderHook(() => useSidebarBadges(sessionId));
-
-      expect(result.current.problems).toBe(4);
-    });
-
-    it('should not count information or hint diagnostics', () => {
-      vi.mocked(useDiagnosticsStore).mockImplementation((selector: (state: unknown) => unknown) =>
-        selector({
-          diagnostics: {
-            '/path/file1.ts': [
-              { severity: DiagnosticSeverity.Information, message: 'Info 1' },
-              { severity: DiagnosticSeverity.Hint, message: 'Hint 1' },
-              { severity: DiagnosticSeverity.Error, message: 'Error 1' },
-            ],
-          },
-        })
-      );
-
-      const { result } = renderHook(() => useSidebarBadges(sessionId));
-
-      expect(result.current.problems).toBe(1);
-    });
-
-    it('should count diagnostics across multiple files', () => {
-      vi.mocked(useDiagnosticsStore).mockImplementation((selector: (state: unknown) => unknown) =>
-        selector({
-          diagnostics: {
-            '/path/file1.ts': [{ severity: DiagnosticSeverity.Error, message: 'Error 1' }],
-            '/path/file2.ts': [{ severity: DiagnosticSeverity.Error, message: 'Error 2' }],
-            '/path/file3.ts': [{ severity: DiagnosticSeverity.Warning, message: 'Warning 1' }],
-          },
-        })
-      );
-
-      const { result } = renderHook(() => useSidebarBadges(sessionId));
-
-      expect(result.current.problems).toBe(3);
-    });
-  });
-
-  // ========================================
   // Sentry Badge Tests
   // ========================================
 
@@ -479,14 +353,6 @@ describe('useSidebarBadges', () => {
         })
       );
 
-      vi.mocked(useDiagnosticsStore).mockImplementation((selector: (state: unknown) => unknown) =>
-        selector({
-          diagnostics: {
-            '/path/file1.ts': [{ severity: DiagnosticSeverity.Error, message: 'Error' }],
-          },
-        })
-      );
-
       vi.mocked(useSentryStore).mockImplementation((selector: (state: unknown) => unknown) => {
         if (selector === selectUnresolvedCount) {
           return 3;
@@ -499,7 +365,6 @@ describe('useSidebarBadges', () => {
       expect(result.current).toEqual({
         agents: 2,
         mcp: 1,
-        problems: 1,
         sentry: 3,
       });
     });
@@ -521,12 +386,6 @@ describe('useSidebarBadges', () => {
         })
       );
 
-      vi.mocked(useDiagnosticsStore).mockImplementation((selector: (state: unknown) => unknown) =>
-        selector({
-          diagnostics: {},
-        })
-      );
-
       vi.mocked(useSentryStore).mockImplementation((selector: (state: unknown) => unknown) => {
         if (selector === selectUnresolvedCount) {
           return 0;
@@ -539,7 +398,6 @@ describe('useSidebarBadges', () => {
       expect(result.current).toEqual({
         agents: 1,
         mcp: undefined,
-        problems: undefined,
         sentry: undefined,
       });
     });
@@ -561,12 +419,6 @@ describe('useSidebarBadges', () => {
         })
       );
 
-      vi.mocked(useDiagnosticsStore).mockImplementation((selector: (state: unknown) => unknown) =>
-        selector({
-          diagnostics: {},
-        })
-      );
-
       vi.mocked(useSentryStore).mockImplementation((selector: (state: unknown) => unknown) => {
         if (selector === selectUnresolvedCount) {
           return 0;
@@ -579,7 +431,6 @@ describe('useSidebarBadges', () => {
       expect(result.current).toEqual({
         agents: undefined,
         mcp: undefined,
-        problems: undefined,
         sentry: undefined,
       });
     });
@@ -634,41 +485,6 @@ describe('useSidebarBadges', () => {
       const { result } = renderHook(() => useSidebarBadges(''));
 
       expect(result.current.agents).toBeUndefined();
-    });
-
-    it('should handle null values in diagnostics', () => {
-      vi.mocked(useDiagnosticsStore).mockImplementation((selector: (state: unknown) => unknown) =>
-        selector({
-          diagnostics: {
-            '/path/file1.ts': null,
-          },
-        })
-      );
-
-      // This might throw or return undefined - test the actual behavior
-      const { result } = renderHook(() => useSidebarBadges(sessionId));
-
-      // Hook should handle gracefully
-      expect(result.current.problems).toBeUndefined();
-    });
-
-    it('should memoize problems computation', () => {
-      const diagnostics = {
-        '/path/file1.ts': [{ severity: DiagnosticSeverity.Error, message: 'Error' }],
-      };
-
-      vi.mocked(useDiagnosticsStore).mockImplementation((selector: (state: unknown) => unknown) =>
-        selector({ diagnostics })
-      );
-
-      const { result, rerender } = renderHook(() => useSidebarBadges(sessionId));
-
-      const firstProblems = result.current.problems;
-
-      rerender();
-
-      // Same diagnostics should produce same result (memoized)
-      expect(result.current.problems).toBe(firstProblems);
     });
   });
 });

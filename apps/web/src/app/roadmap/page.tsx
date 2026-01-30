@@ -1,5 +1,7 @@
 import type { Metadata } from 'next';
 import { Check, Clock, Sparkles, Rocket } from 'lucide-react';
+import { Header } from '@/components/layout/Header';
+import { Footer } from '@/components/landing/Footer';
 
 export const metadata: Metadata = {
   title: 'Roadmap',
@@ -124,88 +126,92 @@ const statusColors = {
 
 export default function RoadmapPage() {
   return (
-    <div className="min-h-screen bg-void py-24 lg:py-32">
-      <div className="mx-auto max-w-5xl px-4 lg:px-8">
-        {/* Header */}
-        <div className="text-center mb-16">
-          <span className="inline-flex items-center gap-2 rounded-full border border-accent-primary/30 bg-accent-primary/10 px-4 py-1.5 text-sm text-accent-primary mb-6">
-            <Rocket className="h-4 w-4" />
-            Public Roadmap
-          </span>
-          <h1 className="text-4xl sm:text-5xl font-bold text-text-primary mb-4">
-            What We&apos;re Building
-          </h1>
-          <p className="text-xl text-text-secondary max-w-2xl mx-auto">
-            Our commitment to transparency. See what&apos;s coming next and help shape the future of
-            Podex.
-          </p>
-        </div>
-
-        {/* Legend */}
-        <div className="flex flex-wrap justify-center gap-6 mb-12">
-          <div className="flex items-center gap-2">
-            <Check className="h-5 w-5 text-accent-success" />
-            <span className="text-text-secondary">Completed</span>
+    <>
+      <Header />
+      <div className="min-h-screen bg-void py-24 lg:py-32">
+        <div className="mx-auto max-w-5xl px-4 lg:px-8">
+          {/* Page Header */}
+          <div className="text-center mb-16">
+            <span className="inline-flex items-center gap-2 rounded-full border border-accent-primary/30 bg-accent-primary/10 px-4 py-1.5 text-sm text-accent-primary mb-6">
+              <Rocket className="h-4 w-4" />
+              Public Roadmap
+            </span>
+            <h1 className="text-4xl sm:text-5xl font-bold text-text-primary mb-4">
+              What We&apos;re Building
+            </h1>
+            <p className="text-xl text-text-secondary max-w-2xl mx-auto">
+              Our commitment to transparency. See what&apos;s coming next and help shape the future
+              of Podex.
+            </p>
           </div>
-          <div className="flex items-center gap-2">
-            <Clock className="h-5 w-5 text-accent-primary" />
-            <span className="text-text-secondary">In Progress</span>
+
+          {/* Legend */}
+          <div className="flex flex-wrap justify-center gap-6 mb-12">
+            <div className="flex items-center gap-2">
+              <Check className="h-5 w-5 text-accent-success" />
+              <span className="text-text-secondary">Completed</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Clock className="h-5 w-5 text-accent-primary" />
+              <span className="text-text-secondary">In Progress</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-text-muted" />
+              <span className="text-text-secondary">Planned</span>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-text-muted" />
-            <span className="text-text-secondary">Planned</span>
-          </div>
-        </div>
 
-        {/* Roadmap */}
-        <div className="space-y-12">
-          {roadmapItems.map((quarter) => (
-            <section key={quarter.quarter} className="relative">
-              <div className="sticky top-4 z-10 mb-6">
-                <h2 className="inline-block px-4 py-2 rounded-full bg-surface border border-border-default text-text-primary font-bold">
-                  {quarter.quarter}
-                </h2>
-              </div>
+          {/* Roadmap */}
+          <div className="space-y-12">
+            {roadmapItems.map((quarter) => (
+              <section key={quarter.quarter} className="relative">
+                <div className="sticky top-4 z-10 mb-6">
+                  <h2 className="inline-block px-4 py-2 rounded-full bg-surface border border-border-default text-text-primary font-bold">
+                    {quarter.quarter}
+                  </h2>
+                </div>
 
-              <div className="grid gap-4 md:grid-cols-2">
-                {quarter.items.map((item) => {
-                  const StatusIcon = statusIcons[item.status as keyof typeof statusIcons];
-                  const color = statusColors[item.status as keyof typeof statusColors];
+                <div className="grid gap-4 md:grid-cols-2">
+                  {quarter.items.map((item) => {
+                    const StatusIcon = statusIcons[item.status as keyof typeof statusIcons];
+                    const color = statusColors[item.status as keyof typeof statusColors];
 
-                  return (
-                    <div
-                      key={item.name}
-                      className="p-6 rounded-xl bg-surface border border-border-default hover:border-border-strong transition-all"
-                    >
-                      <div className="flex items-start gap-3">
-                        <StatusIcon className={`h-5 w-5 mt-0.5 text-${color} shrink-0`} />
-                        <div>
-                          <h3 className="font-semibold text-text-primary mb-1">{item.name}</h3>
-                          <p className="text-sm text-text-muted">{item.description}</p>
+                    return (
+                      <div
+                        key={item.name}
+                        className="p-6 rounded-xl bg-surface border border-border-default hover:border-border-strong transition-all"
+                      >
+                        <div className="flex items-start gap-3">
+                          <StatusIcon className={`h-5 w-5 mt-0.5 text-${color} shrink-0`} />
+                          <div>
+                            <h3 className="font-semibold text-text-primary mb-1">{item.name}</h3>
+                            <p className="text-sm text-text-muted">{item.description}</p>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          ))}
-        </div>
+                    );
+                  })}
+                </div>
+              </section>
+            ))}
+          </div>
 
-        {/* Feedback CTA */}
-        <div className="mt-16 p-8 rounded-2xl bg-gradient-to-r from-accent-primary/10 to-accent-secondary/10 border border-border-default text-center">
-          <h3 className="text-xl font-bold text-text-primary mb-2">Have a Feature Request?</h3>
-          <p className="text-text-secondary mb-4">
-            We&apos;d love to hear what you want to see in Podex.
-          </p>
-          <a
-            href="/contact"
-            className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-accent-primary text-text-inverse font-medium hover:shadow-[0_0_30px_rgba(0,229,255,0.4)] transition-all"
-          >
-            Submit Feedback
-          </a>
+          {/* Feedback CTA */}
+          <div className="mt-16 p-8 rounded-2xl bg-gradient-to-r from-accent-primary/10 to-accent-secondary/10 border border-border-default text-center">
+            <h3 className="text-xl font-bold text-text-primary mb-2">Have a Feature Request?</h3>
+            <p className="text-text-secondary mb-4">
+              We&apos;d love to hear what you want to see in Podex.
+            </p>
+            <a
+              href="/contact"
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-accent-primary text-text-inverse font-medium hover:shadow-[0_0_30px_rgba(0,229,255,0.4)] transition-all"
+            >
+              Submit Feedback
+            </a>
+          </div>
         </div>
       </div>
-    </div>
+      <Footer />
+    </>
   );
 }

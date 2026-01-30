@@ -134,6 +134,11 @@ class LLMModel(Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
     # Additional metadata (release date, description, etc.)
     model_metadata: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB)
+    # Model selector UI fields
+    is_featured: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    categories: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
+    short_description: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -669,6 +674,61 @@ class ProjectHealthScore(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class WaitlistEntry(Base):
+    """Waitlist entries for users waiting for platform access.
+
+    Stores email signups from the coming soon page. Admins can view the list
+    and send invitations to waitlisted users.
+    """
+
+    __tablename__ = "waitlist_entries"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
+
+    # Email address (unique per waitlist)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+
+    # Status: "waiting", "invited", "registered"
+    status: Mapped[str] = mapped_column(String(50), default="waiting", nullable=False, index=True)
+
+    # Source of signup (e.g., "coming_soon", "referral", "social")
+    source: Mapped[str] = mapped_column(String(50), default="coming_soon", nullable=False)
+
+    # Optional referral code or campaign tracking
+    referral_code: Mapped[str | None] = mapped_column(String(100))
+
+    # Position in queue (for display purposes)
+    position: Mapped[int | None] = mapped_column(Integer)
+
+    # When they were invited (if invited)
+    invited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Link to the invitation if one was sent
+    invitation_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("platform_invitations.id", ondelete="SET NULL"),
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    # Relationship to invitation
+    invitation: Mapped["PlatformInvitation | None"] = relationship(
+        "PlatformInvitation",
+        lazy="selectin",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('waiting', 'invited', 'registered')",
+            name="ck_waitlist_entry_status",
+        ),
     )
 
 

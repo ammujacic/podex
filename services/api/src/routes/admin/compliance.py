@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,11 +19,11 @@ from src.audit_logger import AuditAction, AuditLogger
 from src.database import get_db
 from src.database.models import (
     AccessReview,
-    Agent,
     AuditLog,
+    ConversationMessage,
+    ConversationSession,
     DataExportRequest,
     DataRetentionPolicy,
-    Message,
     Session,
     UsageRecord,
     User,
@@ -31,6 +31,7 @@ from src.database.models import (
     UserSubscription,
 )
 from src.middleware.admin import get_admin_user_id
+from src.middleware.rate_limit import RATE_LIMIT_ADMIN, limiter
 
 router = APIRouter()
 
@@ -93,8 +94,7 @@ class DataRetentionPolicyResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AccessReviewCreate(BaseModel):
@@ -134,8 +134,7 @@ class AccessReviewResponse(BaseModel):
     completed_at: datetime | None
     due_date: datetime | None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DataExportRequestResponse(BaseModel):
@@ -155,8 +154,7 @@ class DataExportRequestResponse(BaseModel):
     started_at: datetime | None
     completed_at: datetime | None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ComplianceStats(BaseModel):
@@ -198,7 +196,10 @@ class RetentionExecutionResult(BaseModel):
 
 
 @router.get("/retention/policies", response_model=list[DataRetentionPolicyResponse])
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def list_retention_policies(
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     admin: dict[str, Any] = Depends(get_admin_user),
 ) -> list[DataRetentionPolicyResponse]:
@@ -214,8 +215,11 @@ async def list_retention_policies(
     response_model=DataRetentionPolicyResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def create_retention_policy(
-    request: DataRetentionPolicyCreate,
+    request: Request,
+    response: Response,
+    body: DataRetentionPolicyCreate,
     db: AsyncSession = Depends(get_db),
     admin: dict[str, Any] = Depends(get_admin_user),
 ) -> DataRetentionPolicyResponse:
@@ -223,24 +227,24 @@ async def create_retention_policy(
 
     # Check for duplicate data_type
     existing = await db.execute(
-        select(DataRetentionPolicy).where(DataRetentionPolicy.data_type == request.data_type)
+        select(DataRetentionPolicy).where(DataRetentionPolicy.data_type == body.data_type)
     )
     if existing.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Policy for data type '{request.data_type}' already exists",
+            detail=f"Policy for data type '{body.data_type}' already exists",
         )
 
     policy = DataRetentionPolicy(
         id=str(uuid4()),
-        name=request.name,
-        data_type=request.data_type,
-        retention_days=request.retention_days,
-        archive_after_days=request.archive_after_days,
-        delete_after_archive_days=request.delete_after_archive_days,
-        description=request.description,
-        legal_basis=request.legal_basis,
-        is_enabled=request.is_enabled,
+        name=body.name,
+        data_type=body.data_type,
+        retention_days=body.retention_days,
+        archive_after_days=body.archive_after_days,
+        delete_after_archive_days=body.delete_after_archive_days,
+        description=body.description,
+        legal_basis=body.legal_basis,
+        is_enabled=body.is_enabled,
         created_by=admin.get("id"),
     )
 
@@ -252,9 +256,12 @@ async def create_retention_policy(
 
 
 @router.patch("/retention/policies/{policy_id}", response_model=DataRetentionPolicyResponse)
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def update_retention_policy(
     policy_id: str,
-    request: DataRetentionPolicyUpdate,
+    request: Request,
+    response: Response,
+    body: DataRetentionPolicyUpdate,
     db: AsyncSession = Depends(get_db),
     admin: dict[str, Any] = Depends(get_admin_user),
 ) -> DataRetentionPolicyResponse:
@@ -269,7 +276,7 @@ async def update_retention_policy(
             detail="Policy not found",
         )
 
-    update_data = request.model_dump(exclude_unset=True)
+    update_data = body.model_dump(exclude_unset=True)
     if update_data:
         await db.execute(
             update(DataRetentionPolicy)
@@ -283,8 +290,11 @@ async def update_retention_policy(
 
 
 @router.delete("/retention/policies/{policy_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def delete_retention_policy(
     policy_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     admin: dict[str, Any] = Depends(get_admin_user),
 ) -> None:
@@ -303,7 +313,10 @@ async def delete_retention_policy(
 
 
 @router.post("/retention/run", response_model=list[RetentionExecutionResult])
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def run_retention_policies(
+    request: Request,
+    response: Response,
     policy_id: str | None = Query(None),
     dry_run: bool = Query(True),
     db: AsyncSession = Depends(get_db),
@@ -401,16 +414,20 @@ async def run_retention_policies(
                         records_deleted = count_result.scalar() or 0
 
             elif policy.data_type == "messages":
-                # Delete messages from sessions older than retention period
+                # Delete messages from conversation sessions older than retention period
                 # Messages are cascade deleted with sessions, but this allows direct cleanup
                 if not dry_run:
                     delete_result = await db.execute(
-                        delete(Message).where(Message.created_at < retention_cutoff)
+                        delete(ConversationMessage).where(
+                            ConversationMessage.created_at < retention_cutoff
+                        )
                     )
                     records_deleted = getattr(delete_result, "rowcount", 0)
                 else:
                     count_result = await db.execute(
-                        select(func.count(Message.id)).where(Message.created_at < retention_cutoff)
+                        select(func.count(ConversationMessage.id)).where(
+                            ConversationMessage.created_at < retention_cutoff
+                        )
                     )
                     records_deleted = count_result.scalar() or 0
 
@@ -486,7 +503,10 @@ async def run_retention_policies(
 
 
 @router.get("/access-reviews", response_model=list[AccessReviewResponse])
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def list_access_reviews(
+    request: Request,
+    response: Response,
     status_filter: str | None = Query(None, alias="status"),
     review_type: str | None = Query(None),
     page: int = Query(1, ge=1),
@@ -514,8 +534,11 @@ async def list_access_reviews(
 @router.post(
     "/access-reviews", response_model=AccessReviewResponse, status_code=status.HTTP_201_CREATED
 )
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def initiate_access_review(
-    request: AccessReviewCreate,
+    request: Request,
+    response: Response,
+    body: AccessReviewCreate,
     db: AsyncSession = Depends(get_db),
     admin: dict[str, Any] = Depends(get_admin_user),
 ) -> AccessReviewResponse:
@@ -523,13 +546,13 @@ async def initiate_access_review(
 
     review = AccessReview(
         id=str(uuid4()),
-        review_type=request.review_type,
-        review_period_start=request.review_period_start,
-        review_period_end=request.review_period_end,
-        target_user_id=request.target_user_id,
+        review_type=body.review_type,
+        review_period_start=body.review_period_start,
+        review_period_end=body.review_period_end,
+        target_user_id=body.target_user_id,
         reviewer_id=admin.get("id"),
-        due_date=request.due_date,
-        notes=request.notes,
+        due_date=body.due_date,
+        notes=body.notes,
         status="pending",
     )
 
@@ -541,8 +564,11 @@ async def initiate_access_review(
 
 
 @router.get("/access-reviews/{review_id}", response_model=AccessReviewResponse)
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def get_access_review(
     review_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     admin: dict[str, Any] = Depends(get_admin_user),
 ) -> AccessReviewResponse:
@@ -561,9 +587,12 @@ async def get_access_review(
 
 
 @router.patch("/access-reviews/{review_id}", response_model=AccessReviewResponse)
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def update_access_review(
     review_id: str,
-    request: AccessReviewUpdate,
+    request: Request,
+    response: Response,
+    body: AccessReviewUpdate,
     db: AsyncSession = Depends(get_db),
     admin: dict[str, Any] = Depends(get_admin_user),
 ) -> AccessReviewResponse:
@@ -578,7 +607,7 @@ async def update_access_review(
             detail="Access review not found",
         )
 
-    update_data = request.model_dump(exclude_unset=True)
+    update_data = body.model_dump(exclude_unset=True)
     if update_data:
         # Set completed_at if status is being set to completed
         if update_data.get("status") == "completed" and review.status != "completed":
@@ -594,7 +623,10 @@ async def update_access_review(
 
 
 @router.get("/access-reviews/generate-report", response_model=dict)
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def generate_access_report(
+    request: Request,
+    response: Response,
     review_type: str = Query(...),
     db: AsyncSession = Depends(get_db),
     admin: dict[str, Any] = Depends(get_admin_user),
@@ -650,7 +682,10 @@ async def generate_access_report(
 
 
 @router.get("/data-exports", response_model=list[DataExportRequestResponse])
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def list_data_export_requests(
+    request: Request,
+    response: Response,
     status_filter: str | None = Query(None, alias="status"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -669,9 +704,11 @@ async def list_data_export_requests(
 
 
 @router.post("/data-exports/{request_id}/process", response_model=DataExportRequestResponse)
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def process_data_export(
     request_id: str,
     request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     admin: dict[str, Any] = Depends(get_admin_user),
 ) -> DataExportRequestResponse:
@@ -764,11 +801,14 @@ async def process_data_export(
 
         # Messages data
         if "messages" in categories:
-            # Get messages from user's sessions (via agents)
+            # Get messages from user's sessions via conversation sessions
             messages_query = (
-                select(Message)
-                .join(Agent, Message.agent_id == Agent.id)
-                .join(Session, Agent.session_id == Session.id)
+                select(ConversationMessage)
+                .join(
+                    ConversationSession,
+                    ConversationMessage.conversation_session_id == ConversationSession.id,
+                )
+                .join(Session, ConversationSession.session_id == Session.id)
                 .where(Session.owner_id == user_id)
                 .limit(5000)
             )
@@ -827,9 +867,6 @@ async def process_data_export(
             config = config_result.scalar_one_or_none()
             if config:
                 export_data["settings"] = {
-                    "sync_dotfiles": config.sync_dotfiles,
-                    "dotfiles_repo": config.dotfiles_repo,
-                    "dotfiles_branch": config.dotfiles_branch,
                     "default_shell": config.default_shell,
                     "default_editor": config.default_editor,
                     "git_name": config.git_name,
@@ -903,8 +940,11 @@ async def process_data_export(
 
 
 @router.get("/data-exports/{request_id}/download")
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def download_data_export(
     request_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     admin: dict[str, Any] = Depends(get_admin_user),
 ) -> FileResponse:
@@ -959,7 +999,10 @@ async def download_data_export(
 
 
 @router.get("/stats", response_model=ComplianceStats)
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def get_compliance_stats(
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     admin: dict[str, Any] = Depends(get_admin_user),
 ) -> ComplianceStats:

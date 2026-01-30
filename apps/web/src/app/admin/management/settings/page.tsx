@@ -58,6 +58,12 @@ const FEATURE_FLAG_META: Record<
     description: 'Enable image analysis capabilities',
     icon: Eye,
   },
+  anthropic_prompt_caching_enabled: {
+    label: 'Anthropic prompt caching',
+    description:
+      'Use Anthropic prompt caching for conversation summaries (reduces cost and latency for long sessions)',
+    icon: Settings,
+  },
 };
 
 interface QuickSettingsProps {

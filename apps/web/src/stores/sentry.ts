@@ -32,19 +32,24 @@ export type StatusFilter = 'unresolved' | 'resolved' | 'ignored' | 'all';
 export type ValidationStatus = 'idle' | 'checking' | 'valid' | 'invalid';
 
 // Sentry region options
-// NOTE: Regional tokens (DE/EU) need SENTRY_HOST set to their region's domain.
-// The MCP uses the host to call /users/me/regions/ which must work with the token.
+// NOTE: Currently only the main Sentry Cloud region is supported via the MCP server.
+// Self-hosted instances can use the custom option with their hostname.
 export const SENTRY_REGIONS = [
-  { value: '', label: 'Sentry Cloud (US)', host: '' },
-  { value: 'de.sentry.io', label: 'Sentry Cloud (EU/DE)', host: 'de.sentry.io' },
+  { value: '', label: 'Sentry Cloud', host: '' },
   { value: 'custom', label: 'Self-hosted', host: '' },
 ] as const;
+
+// Cache TTL for data fetches (5 minutes)
+const DATA_CACHE_TTL_MS = 5 * 60 * 1000;
 
 interface SentryState {
   // Configuration status
   isConfigured: boolean;
   serverId: string | null;
   isCheckingConfig: boolean;
+
+  // Cache timestamps for data
+  lastDataFetch: number | null; // Timestamp of last orgs/projects/issues fetch
 
   // Setup wizard state
   setupToken: string;
@@ -75,7 +80,7 @@ interface SentryState {
   error: string | null;
 
   // Configuration actions
-  checkConfiguration: () => Promise<void>;
+  checkConfiguration: (forceRefresh?: boolean) => Promise<void>;
   setSetupToken: (token: string) => void;
   setSetupRegion: (region: string) => void;
   setSetupCustomHost: (host: string) => void;
@@ -88,10 +93,10 @@ interface SentryState {
   resetSetup: () => void;
 
   // Data actions
-  loadOrganizations: (retryAfterRefresh?: boolean) => Promise<void>;
-  loadProjects: () => Promise<void>;
-  loadIssues: () => Promise<void>;
-  refresh: () => Promise<void>;
+  loadOrganizations: (retryAfterRefresh?: boolean, forceRefresh?: boolean) => Promise<void>;
+  loadProjects: (forceRefresh?: boolean) => Promise<void>;
+  loadIssues: (forceRefresh?: boolean) => Promise<void>;
+  refresh: () => Promise<void>; // Always forces fresh data
   refreshServer: () => Promise<void>;
   selectOrganization: (slug: string | null) => void;
   selectProject: (slug: string | null) => void;
@@ -112,6 +117,9 @@ const initialState = {
   isConfigured: false,
   serverId: null,
   isCheckingConfig: false,
+
+  // Cache timestamps
+  lastDataFetch: null as number | null,
 
   // Setup wizard state
   setupToken: '',
@@ -156,20 +164,50 @@ export const useSentryStore = create<SentryState>()(
         // Configuration Actions
         // ======================================================================
 
-        checkConfiguration: async () => {
+        checkConfiguration: async (forceRefresh = false) => {
+          const { lastDataFetch, isConfigured, organizations } = get();
+          const now = Date.now();
+
+          // If we have cached data within TTL and not forcing refresh, use it
+          const hasCachedData =
+            lastDataFetch && now - lastDataFetch < DATA_CACHE_TTL_MS && organizations.length > 0;
+
+          if (!forceRefresh && hasCachedData && isConfigured) {
+            // Data is fresh, no need to refetch
+            return;
+          }
+
           set({ isCheckingConfig: true, error: null });
           try {
-            const { isConfigured, server } = await checkSentryConfigured();
+            const { isConfigured: configured, server } = await checkSentryConfigured();
+
+            if (!configured) {
+              // Sentry MCP is not configured for this workspace.
+              // Clean up any stale localStorage state from previous workspaces so
+              // we don't show outdated badges or cached issues.
+              set({
+                isConfigured: false,
+                serverId: null,
+                isCheckingConfig: false,
+                lastDataFetch: null,
+                organizations: [],
+                selectedOrganizationSlug: null,
+                projects: [],
+                issues: [],
+                selectedProjectSlug: null,
+                expandedIssueId: null,
+              });
+              return;
+            }
+
             set({
-              isConfigured,
+              isConfigured: true,
               serverId: server?.id || null,
               isCheckingConfig: false,
             });
 
-            // If configured, load organizations first (which will then load projects)
-            if (isConfigured) {
-              get().loadOrganizations();
-            }
+            // If configured, load organizations (respects cache unless forcing)
+            await get().loadOrganizations(true, forceRefresh);
           } catch (err) {
             set({
               isCheckingConfig: false,
@@ -293,7 +331,8 @@ export const useSentryStore = create<SentryState>()(
               });
 
               // Load organizations after successful connection (which will then load projects)
-              get().loadOrganizations();
+              // IMPORTANT: Await to ensure orgs/projects are loaded before returning
+              await get().loadOrganizations();
               return true;
             } else {
               set({
@@ -317,6 +356,7 @@ export const useSentryStore = create<SentryState>()(
             set({
               isConfigured: false,
               serverId: null,
+              lastDataFetch: null, // Clear cache so next check fetches fresh
               organizations: [],
               selectedOrganizationSlug: null,
               projects: [],
@@ -349,27 +389,46 @@ export const useSentryStore = create<SentryState>()(
         // Data Actions
         // ======================================================================
 
-        loadOrganizations: async (retryAfterRefresh = true) => {
+        loadOrganizations: async (retryAfterRefresh = true, forceRefresh = false) => {
+          const { lastDataFetch, organizations } = get();
+          const now = Date.now();
+
+          // If we have cached data within TTL and not forcing refresh, skip fetch
+          const hasCachedData =
+            lastDataFetch && now - lastDataFetch < DATA_CACHE_TTL_MS && organizations.length > 0;
+
+          if (!forceRefresh && hasCachedData) {
+            // Data is fresh, just ensure projects are loaded
+            const { selectedOrganizationSlug } = get();
+            if (selectedOrganizationSlug) {
+              await get().loadProjects(forceRefresh);
+            }
+            return;
+          }
+
           set({ isLoadingOrganizations: true, error: null });
 
           try {
-            const organizations = await getSentryOrganizations();
-            set({ organizations, isLoadingOrganizations: false });
+            const orgs = await getSentryOrganizations();
+            set({
+              organizations: orgs,
+              isLoadingOrganizations: false,
+              lastDataFetch: now,
+            });
 
             // Check if persisted selection exists in loaded organizations
             const { selectedOrganizationSlug } = get();
-            const firstOrg = organizations[0];
+            const firstOrg = orgs[0];
             const persistedOrgExists =
-              selectedOrganizationSlug &&
-              organizations.some((org) => org.slug === selectedOrganizationSlug);
+              selectedOrganizationSlug && orgs.some((org) => org.slug === selectedOrganizationSlug);
 
             if (persistedOrgExists) {
               // Use persisted selection, load its projects
-              get().loadProjects();
+              await get().loadProjects(forceRefresh);
             } else if (firstOrg) {
               // Fall back to first org if no valid persisted selection
               set({ selectedOrganizationSlug: firstOrg.slug, selectedProjectSlug: null });
-              get().loadProjects();
+              await get().loadProjects(forceRefresh);
             }
           } catch (err) {
             const errorMessage =
@@ -381,7 +440,7 @@ export const useSentryStore = create<SentryState>()(
               try {
                 await refreshSentryServer();
                 // Retry loading organizations, but don't refresh again if it fails
-                return get().loadOrganizations(false);
+                return get().loadOrganizations(false, forceRefresh);
               } catch {
                 // If refresh fails, show the original error
                 set({
@@ -399,10 +458,24 @@ export const useSentryStore = create<SentryState>()(
           }
         },
 
-        loadProjects: async () => {
-          const { selectedOrganizationSlug, organizations } = get();
+        loadProjects: async (forceRefresh = false) => {
+          const { selectedOrganizationSlug, organizations, projects, lastDataFetch } = get();
           if (!selectedOrganizationSlug) {
             set({ projects: [] });
+            return;
+          }
+
+          // If we have cached projects within TTL and not forcing refresh, skip fetch
+          const now = Date.now();
+          const hasCachedData =
+            lastDataFetch && now - lastDataFetch < DATA_CACHE_TTL_MS && projects.length > 0;
+
+          if (!forceRefresh && hasCachedData) {
+            // Data is fresh, just ensure issues are loaded
+            const { selectedProjectSlug } = get();
+            if (selectedProjectSlug) {
+              await get().loadIssues(forceRefresh);
+            }
             return;
           }
 
@@ -413,22 +486,22 @@ export const useSentryStore = create<SentryState>()(
           set({ isLoadingProjects: true, error: null });
 
           try {
-            const projects = await getSentryProjects(selectedOrganizationSlug, regionUrl);
-            set({ projects, isLoadingProjects: false });
+            const projs = await getSentryProjects(selectedOrganizationSlug, regionUrl);
+            set({ projects: projs, isLoadingProjects: false });
 
             // Check if persisted selection exists in loaded projects
             const { selectedProjectSlug } = get();
-            const firstProject = projects[0];
+            const firstProject = projs[0];
             const persistedProjectExists =
-              selectedProjectSlug && projects.some((p) => p.slug === selectedProjectSlug);
+              selectedProjectSlug && projs.some((p) => p.slug === selectedProjectSlug);
 
             if (persistedProjectExists) {
               // Use persisted selection, load its issues
-              get().loadIssues();
+              await get().loadIssues(forceRefresh);
             } else if (firstProject) {
               // Fall back to first project if no valid persisted selection
               set({ selectedProjectSlug: firstProject.slug });
-              get().loadIssues();
+              await get().loadIssues(forceRefresh);
             }
           } catch (err) {
             set({
@@ -438,11 +511,27 @@ export const useSentryStore = create<SentryState>()(
           }
         },
 
-        loadIssues: async () => {
-          const { selectedOrganizationSlug, selectedProjectSlug, statusFilter, organizations } =
-            get();
+        loadIssues: async (forceRefresh = false) => {
+          const {
+            selectedOrganizationSlug,
+            selectedProjectSlug,
+            statusFilter,
+            organizations,
+            issues,
+            lastDataFetch,
+          } = get();
           if (!selectedOrganizationSlug) {
             set({ issues: [] });
+            return;
+          }
+
+          // If we have cached issues within TTL and not forcing refresh, skip fetch
+          const now = Date.now();
+          const hasCachedData =
+            lastDataFetch && now - lastDataFetch < DATA_CACHE_TTL_MS && issues.length > 0;
+
+          if (!forceRefresh && hasCachedData) {
+            // Data is fresh, no need to refetch
             return;
           }
 
@@ -453,13 +542,13 @@ export const useSentryStore = create<SentryState>()(
           set({ isLoadingIssues: true, error: null });
 
           try {
-            const issues = await getSentryIssues(selectedOrganizationSlug, {
+            const fetchedIssues = await getSentryIssues(selectedOrganizationSlug, {
               projectSlug: selectedProjectSlug || undefined,
               status: statusFilter === 'all' ? undefined : statusFilter,
               limit: 50,
               regionUrl,
             });
-            set({ issues, isLoadingIssues: false });
+            set({ issues: fetchedIssues, isLoadingIssues: false });
           } catch (err) {
             set({
               isLoadingIssues: false,
@@ -471,21 +560,22 @@ export const useSentryStore = create<SentryState>()(
         refresh: async () => {
           const { isConfigured } = get();
           if (!isConfigured) {
-            await get().checkConfiguration();
+            await get().checkConfiguration(true);
             return;
           }
 
-          await get().loadIssues();
+          // Manual refresh always forces fresh data
+          await get().loadIssues(true);
         },
 
         refreshServer: async () => {
-          set({ isLoadingOrganizations: true, error: null });
+          set({ isLoadingOrganizations: true, error: null, lastDataFetch: null });
 
           try {
             // Refresh the server to rediscover tools
             await refreshSentryServer();
-            // Then reload organizations
-            await get().loadOrganizations();
+            // Force a fresh config check
+            await get().checkConfiguration(true);
           } catch (err) {
             set({
               isLoadingOrganizations: false,
@@ -503,18 +593,21 @@ export const useSentryStore = create<SentryState>()(
             expandedIssueId: null,
           });
           if (slug) {
-            get().loadProjects();
+            // Force refresh since it's a new organization
+            get().loadProjects(true);
           }
         },
 
         selectProject: (slug: string | null) => {
           set({ selectedProjectSlug: slug, issues: [], expandedIssueId: null });
-          get().loadIssues();
+          // Force refresh since it's a new project
+          get().loadIssues(true);
         },
 
         setStatusFilter: (filter: StatusFilter) => {
           set({ statusFilter: filter });
-          get().loadIssues();
+          // Force refresh since filter changed
+          get().loadIssues(true);
         },
 
         toggleIssueExpanded: (issueId: string) => {
@@ -537,11 +630,21 @@ export const useSentryStore = create<SentryState>()(
       }),
       {
         name: 'sentry-store-persist',
-        // Only persist user selections, not transient data
+        // Persist configuration status, data, and user selections for immediate UI rendering
         partialize: (state) => ({
+          // Configuration status
+          isConfigured: state.isConfigured,
+          serverId: state.serverId,
+          // Cache timestamp for data freshness check
+          lastDataFetch: state.lastDataFetch,
+          // User selections
           selectedOrganizationSlug: state.selectedOrganizationSlug,
           selectedProjectSlug: state.selectedProjectSlug,
           statusFilter: state.statusFilter,
+          // Persist all data so UI renders immediately on reload (cached for 5 min)
+          organizations: state.organizations,
+          projects: state.projects,
+          issues: state.issues,
         }),
       }
     ),
@@ -553,8 +656,12 @@ export const useSentryStore = create<SentryState>()(
 // Selectors
 // ============================================================================
 
-export const selectUnresolvedCount = (state: SentryState): number =>
-  state.issues.filter((i) => i.status === 'unresolved').length;
+export const selectUnresolvedCount = (state: SentryState): number => {
+  // If Sentry isn't configured for this workspace, ignore any stale persisted
+  // issues data that may still be in localStorage from a different workspace.
+  if (!state.isConfigured) return 0;
+  return state.issues.filter((i) => i.status === 'unresolved').length;
+};
 
 export const selectFilteredIssues = (state: SentryState): SentryIssue[] => {
   if (state.statusFilter === 'all') {

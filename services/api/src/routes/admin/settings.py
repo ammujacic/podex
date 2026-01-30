@@ -5,7 +5,7 @@ from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,8 +55,7 @@ class AdminSettingResponse(BaseModel):
     updated_at: datetime
     updated_by: str | None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PublicSettingResponse(BaseModel):
@@ -190,8 +189,7 @@ class LLMProviderResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class CreateLLMProviderRequest(BaseModel):
@@ -756,6 +754,7 @@ async def reset_setting_to_default(
             "git_integration_enabled": True,
             "planning_mode_enabled": True,
             "vision_enabled": True,
+            "anthropic_prompt_caching_enabled": True,
         },
         "platform_limits": {
             "max_concurrent_agents": 3,

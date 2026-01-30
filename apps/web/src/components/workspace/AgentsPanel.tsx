@@ -3,13 +3,14 @@
 import { Bot } from 'lucide-react';
 import { useSessionStore } from '@/stores/session';
 import { cn } from '@/lib/utils';
+import { getRoleIcon } from '@/lib/agentConstants';
 
 interface AgentsPanelProps {
   sessionId: string;
 }
 
 export function AgentsPanel({ sessionId }: AgentsPanelProps) {
-  const { sessions, setActiveAgent } = useSessionStore();
+  const { sessions, setActiveAgent, getConversationForAgent } = useSessionStore();
   const session = sessions[sessionId];
   const agents = session?.agents || [];
 
@@ -24,33 +25,72 @@ export function AgentsPanel({ sessionId }: AgentsPanelProps) {
           </p>
         </div>
       ) : (
-        <div className="p-2 space-y-1">
-          {agents.map((agent) => (
-            <button
-              key={agent.id}
-              onClick={() => setActiveAgent(sessionId, agent.id)}
-              className={cn(
-                'w-full flex items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-overlay',
-                session?.activeAgentId === agent.id && 'bg-overlay'
-              )}
-            >
-              <div className="h-3 w-3 rounded-full" style={{ backgroundColor: agent.color }} />
-              <div className="flex-1 truncate">
-                <div className="font-medium text-text-primary">{agent.name}</div>
-                <div className="text-xs text-text-muted capitalize">{agent.role}</div>
-              </div>
-              <div
+        <div className="p-3 space-y-2">
+          {agents.map((agent) => {
+            const isActive = session?.activeAgentId === agent.id;
+            const RoleIcon = getRoleIcon(agent.role);
+            const conversation = getConversationForAgent(sessionId, agent.id);
+            const sessionTitle = conversation?.name || 'New Session';
+            return (
+              <button
+                key={agent.id}
+                onClick={() => setActiveAgent(sessionId, agent.id)}
                 className={cn(
-                  'h-2 w-2 rounded-full',
-                  agent.status === 'active'
-                    ? 'bg-accent-success animate-pulse'
-                    : agent.status === 'error'
-                      ? 'bg-accent-error'
-                      : 'bg-text-muted'
+                  'w-full flex items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors',
+                  isActive ? 'bg-accent-primary text-text-inverse' : 'bg-elevated hover:bg-overlay'
                 )}
-              />
-            </button>
-          ))}
+              >
+                <RoleIcon
+                  className={cn(
+                    'h-4 w-4 shrink-0',
+                    isActive ? 'text-text-inverse' : 'text-text-muted'
+                  )}
+                />
+                <div className="flex-1 min-w-0">
+                  <div
+                    className={cn(
+                      'font-medium truncate',
+                      isActive ? 'text-text-inverse' : 'text-text-primary'
+                    )}
+                  >
+                    {sessionTitle}
+                  </div>
+                  <div
+                    className={cn(
+                      'text-xs capitalize truncate',
+                      isActive ? 'text-text-inverse/70' : 'text-text-muted'
+                    )}
+                  >
+                    {agent.role}
+                  </div>
+                  <div
+                    className={cn(
+                      'text-xs truncate',
+                      isActive ? 'text-text-inverse/60' : 'text-text-muted/80'
+                    )}
+                  >
+                    {agent.modelDisplayName || agent.model}
+                  </div>
+                </div>
+                <div
+                  className={cn(
+                    'h-2 w-2 rounded-full shrink-0',
+                    agent.status === 'active'
+                      ? isActive
+                        ? 'bg-text-inverse animate-pulse'
+                        : 'bg-accent-success animate-pulse'
+                      : agent.status === 'error'
+                        ? isActive
+                          ? 'bg-text-inverse'
+                          : 'bg-accent-error'
+                        : isActive
+                          ? 'bg-text-inverse/50'
+                          : 'bg-text-muted'
+                  )}
+                />
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

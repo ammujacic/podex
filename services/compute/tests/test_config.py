@@ -18,27 +18,15 @@ class TestSettingsDefaults:
         settings = Settings()
         assert settings.debug is False
 
-    def test_compute_mode_default(self) -> None:
-        """Test default compute mode."""
+    def test_workspace_settings_defaults(self) -> None:
+        """Test default workspace settings."""
         settings = Settings()
-        assert settings.compute_mode == "docker"
-
-    def test_docker_settings_defaults(self) -> None:
-        """Test default Docker settings."""
-        settings = Settings()
-        assert settings.docker_host == "unix:///var/run/docker.sock"
         assert settings.max_workspaces == 10
         assert settings.workspace_timeout == 3600
         assert settings.workspace_image == "podex/workspace:latest"
-        assert settings.docker_network == "podex-dev"
-
-    def test_gcp_settings_defaults(self) -> None:
-        """Test default GCP settings."""
-        settings = Settings()
-        assert settings.gcp_region == "us-east1"
-        assert settings.gcp_project_id is None
-        assert settings.gke_cluster_name == "podex-workspaces"
-        assert settings.gke_namespace == "workspaces"
+        # Multi-server mode: workspace servers are configured via JSON
+        assert settings.workspace_servers_json == "[]"
+        assert len(settings.workspace_servers) == 0
 
     def test_redis_settings_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test default Redis settings."""
@@ -46,13 +34,6 @@ class TestSettingsDefaults:
         monkeypatch.delenv("COMPUTE_REDIS_URL", raising=False)
         settings = Settings()
         assert settings.redis_url == "redis://localhost:6379"
-
-    def test_gcs_settings_defaults(self) -> None:
-        """Test default GCS settings."""
-        settings = Settings()
-        assert settings.gcs_bucket == "podex-workspaces"
-        assert settings.gcs_prefix == "workspaces"
-        assert settings.gcs_sync_interval == 30
 
     def test_tier_cpu_defaults(self) -> None:
         """Test default tier CPU settings."""
@@ -79,29 +60,15 @@ class TestSettingsCustom:
         settings = Settings(environment="production")
         assert settings.environment == "production"
 
-    def test_custom_compute_mode(self) -> None:
-        """Test custom compute mode."""
-        settings = Settings(compute_mode="gcp")
-        assert settings.compute_mode == "gcp"
-
-    def test_custom_docker_settings(self) -> None:
-        """Test custom Docker settings."""
+    def test_custom_workspace_settings(self) -> None:
+        """Test custom workspace settings."""
         settings = Settings(
-            docker_host="tcp://localhost:2375",
             max_workspaces=20,
+            workspace_servers='[{"server_id": "test-1", "host": "localhost", "docker_port": 2375}]',
         )
-        assert settings.docker_host == "tcp://localhost:2375"
         assert settings.max_workspaces == 20
-
-    def test_custom_gcp_settings(self) -> None:
-        """Test custom GCP settings."""
-        settings = Settings(
-            gcp_project_id="my-project",
-            gcp_region="us-east1",
-        )
-        assert settings.gcp_project_id == "my-project"
-        assert settings.gcp_region == "us-east1"
-
+        assert len(settings.workspace_servers) == 1
+        assert settings.workspace_servers[0].server_id == "test-1"
 
 class TestSettingsSentry:
     """Tests for Sentry configuration."""

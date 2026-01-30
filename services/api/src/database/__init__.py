@@ -37,7 +37,6 @@ from src.database.models import (
     CustomCommand,
     # Planning
     ExecutionPlan,
-    ExternalAgentEnvProfile,
     FileChange,
     FileCheckpoint,
     HardwareSpec,
@@ -48,7 +47,6 @@ from src.database.models import (
     LocalPod,
     MCPServer,
     Memory,
-    Message,
     Notification,
     PendingChangeSet,
     PlatformSetting,
@@ -61,8 +59,6 @@ from src.database.models import (
     Subagent,
     SubscriptionPlan,
     TaskProgress,
-    TerminalAgentSession,
-    TerminalIntegratedAgentType,
     UsageQuota,
     UsageRecord,
     User,
@@ -77,6 +73,7 @@ from src.database.models import (
     WikiDocument,
     Workspace,
     WorkspaceExtension,
+    WorkspaceTunnel,
     _generate_uuid,
 )
 
@@ -102,7 +99,6 @@ __all__ = [
     "CustomCommand",
     # Planning
     "ExecutionPlan",
-    "ExternalAgentEnvProfile",
     "FileChange",
     # Checkpoints
     "FileCheckpoint",
@@ -112,7 +108,6 @@ __all__ = [
     "LocalPod",
     "MCPServer",
     "Memory",
-    "Message",
     # Notifications
     "Notification",
     "PendingChangeSet",
@@ -129,8 +124,6 @@ __all__ = [
     # Billing
     "SubscriptionPlan",
     "TaskProgress",
-    "TerminalAgentSession",
-    "TerminalIntegratedAgentType",
     "UsageQuota",
     "UsageRecord",
     # Core
@@ -147,6 +140,7 @@ __all__ = [
     "WikiDocument",
     "Workspace",
     "WorkspaceExtension",
+    "WorkspaceTunnel",
     "_generate_uuid",
     # Connection
     "async_session_factory",

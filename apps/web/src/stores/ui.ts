@@ -31,11 +31,12 @@ export type PanelId =
   | 'mcp'
   | 'extensions'
   | 'search'
-  | 'problems'
   | 'usage'
   | 'sentry'
   | 'skills'
-  | 'health';
+  | 'health'
+  | 'tunnels'
+  | 'openclaw';
 export type SidebarSide = 'left' | 'right';
 
 export interface PanelSlot {

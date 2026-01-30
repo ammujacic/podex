@@ -3,13 +3,14 @@
 from datetime import UTC, datetime
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from src.compute_client import compute_client
 from src.database.models import AgentWorktree
 from src.database.models import Session as SessionModel
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 from src.routes.dependencies import DbSession, get_current_user_id
 from src.websocket.hub import emit_to_session
 
@@ -42,9 +43,11 @@ class WorktreeListResponse(BaseModel):
 
 
 @router.get("/sessions/{session_id}/worktrees", response_model=WorktreeListResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_session_worktrees(
     session_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> WorktreeListResponse:
     """Get all worktrees for a session."""
@@ -94,9 +97,11 @@ async def get_session_worktrees(
 
 
 @router.get("/worktrees/{worktree_id}", response_model=WorktreeResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_worktree(
     worktree_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> WorktreeResponse:
     """Get single worktree details."""
@@ -145,9 +150,11 @@ class MergeWorktreeResponse(BaseModel):
 
 
 @router.post("/worktrees/{worktree_id}/merge", response_model=MergeWorktreeResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def merge_worktree(
     worktree_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
     merge_request: MergeWorktreeRequest = MergeWorktreeRequest(),
 ) -> MergeWorktreeResponse:
@@ -283,9 +290,11 @@ class DeleteWorktreeResponse(BaseModel):
 
 
 @router.delete("/worktrees/{worktree_id}", response_model=DeleteWorktreeResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def delete_worktree(
     worktree_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> DeleteWorktreeResponse:
     """Delete/cleanup a worktree."""
@@ -375,9 +384,11 @@ class ConflictsResponse(BaseModel):
 
 
 @router.get("/worktrees/{worktree_id}/conflicts", response_model=ConflictsResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def check_worktree_conflicts(
     worktree_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> ConflictsResponse:
     """Check for merge conflicts in a worktree."""

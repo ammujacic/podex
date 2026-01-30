@@ -8,7 +8,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +17,12 @@ from src.database.connection import get_db
 from src.database.models import LocalPod, Workspace
 from src.middleware.auth import get_current_user
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
+from src.websocket.local_pod_hub import (
+    PodNotConnectedError,
+    RPCMethods,
+    call_pod,
+    is_pod_online,
+)
 
 router = APIRouter(prefix="/local-pods", tags=["local-pods"])
 
@@ -26,7 +32,6 @@ CurrentUser = Annotated[dict[str, str | None], Depends(get_current_user)]
 
 # Limits
 MAX_PODS_PER_USER = 10
-MAX_WORKSPACES_PER_POD = 10
 
 
 # ============== Request/Response Models ==============
@@ -37,7 +42,6 @@ class LocalPodCreate(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=100)
     labels: dict[str, str] = Field(default_factory=dict)
-    max_workspaces: int = Field(default=3, ge=1, le=MAX_WORKSPACES_PER_POD)
 
 
 class LocalPodUpdate(BaseModel):
@@ -45,7 +49,6 @@ class LocalPodUpdate(BaseModel):
 
     name: str | None = Field(None, min_length=1, max_length=100)
     labels: dict[str, str] | None = None
-    max_workspaces: int | None = Field(None, ge=1, le=MAX_WORKSPACES_PER_POD)
 
 
 class LocalPodResponse(BaseModel):
@@ -60,17 +63,14 @@ class LocalPodResponse(BaseModel):
     last_error: str | None
     os_info: str | None
     architecture: str | None
-    docker_version: str | None
     total_memory_mb: int | None
     total_cpu_cores: int | None
-    max_workspaces: int
     current_workspaces: int
     labels: dict[str, Any] | None
     created_at: str
     updated_at: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class LocalPodRegisterResponse(BaseModel):
@@ -111,6 +111,34 @@ class TokenRegenerateResponse(BaseModel):
     token_prefix: str
 
 
+class BrowseDirectoryRequest(BaseModel):
+    """Request to browse host filesystem."""
+
+    path: str = Field(default="~", description="Directory path to browse")
+    show_hidden: bool = Field(default=False, description="Include hidden files")
+
+
+class DirectoryEntry(BaseModel):
+    """Single entry in a directory listing."""
+
+    name: str
+    path: str
+    is_dir: bool
+    is_file: bool
+    size: int | None = None
+    modified: float | None = None
+
+
+class BrowseDirectoryResponse(BaseModel):
+    """Response from browsing host filesystem."""
+
+    path: str
+    parent: str | None
+    entries: list[DirectoryEntry]
+    is_home: bool = False
+    error: str | None = None
+
+
 # ============== Helper Functions ==============
 
 
@@ -145,10 +173,8 @@ def _pod_to_response(pod: LocalPod) -> LocalPodResponse:
         last_error=pod.last_error,
         os_info=pod.os_info,
         architecture=pod.architecture,
-        docker_version=pod.docker_version,
         total_memory_mb=pod.total_memory_mb,
         total_cpu_cores=pod.total_cpu_cores,
-        max_workspaces=pod.max_workspaces,
         current_workspaces=pod.current_workspaces,
         labels=pod.labels,
         created_at=pod.created_at.isoformat(),
@@ -232,7 +258,6 @@ async def register_pod(
         token_hash=token_hash,
         token_prefix=token_prefix,
         labels=data.labels if data.labels else None,
-        max_workspaces=data.max_workspaces,
     )
 
     db.add(pod)
@@ -306,8 +331,6 @@ async def update_pod(
         pod.name = data.name
     if data.labels is not None:
         pod.labels = data.labels if data.labels else None
-    if data.max_workspaces is not None:
-        pod.max_workspaces = data.max_workspaces
 
     await db.commit()
     await db.refresh(pod)
@@ -417,6 +440,55 @@ async def list_pod_workspaces(
     )
 
 
+@router.post("/{pod_id}/browse", response_model=BrowseDirectoryResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def browse_host_directory(
+    request: Request,
+    response: Response,
+    pod_id: UUID,
+    data: BrowseDirectoryRequest,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> BrowseDirectoryResponse:
+    """Browse host filesystem on a local pod.
+
+    Used for workspace folder selection in native mode.
+    """
+    pod = await db.get(LocalPod, pod_id)
+
+    if not pod or pod.user_id != current_user["id"]:
+        raise HTTPException(status_code=404, detail="Local pod not found")
+
+    if not is_pod_online(str(pod_id)):
+        raise HTTPException(status_code=503, detail="Local pod is not connected")
+
+    try:
+        result = await call_pod(
+            str(pod_id),
+            RPCMethods.HOST_BROWSE,
+            {"path": data.path, "show_hidden": data.show_hidden},
+        )
+
+        # Result is a dict from the local pod
+        if isinstance(result, dict):
+            return BrowseDirectoryResponse(
+                path=result.get("path", ""),
+                parent=result.get("parent"),
+                entries=[DirectoryEntry(**e) for e in result.get("entries", [])],
+                is_home=result.get("is_home", False),
+                error=result.get("error"),
+            )
+
+        raise HTTPException(status_code=500, detail="Invalid response from pod")  # noqa: TRY301
+
+    except PodNotConnectedError:
+        raise HTTPException(status_code=503, detail="Local pod is not connected")
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="Request to local pod timed out")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to browse directory: {e}")
+
+
 # ============== Internal/WebSocket Helper Functions ==============
 # These are used by the WebSocket hub, not exposed as REST endpoints
 
@@ -486,18 +558,23 @@ async def update_pod_capabilities(
     pod_id: str,
     capabilities: dict[str, Any],
 ) -> None:
-    """Update pod capabilities. Called when pod reports its system info."""
+    """Update pod capabilities. Called when pod reports its system info.
+
+    Args:
+        db: Database session.
+        pod_id: Pod ID to update.
+        capabilities: System capabilities (os_info, architecture, etc.).
+    """
+    values: dict[str, Any] = {
+        "os_info": capabilities.get("os_info"),
+        "architecture": capabilities.get("architecture"),
+        "total_memory_mb": capabilities.get("total_memory_mb"),
+        "total_cpu_cores": capabilities.get("cpu_cores"),
+        "updated_at": datetime.now(UTC),
+    }
+
     await db.execute(
-        update(LocalPod)
-        .where(LocalPod.id == pod_id)
-        .values(
-            os_info=capabilities.get("os_info"),
-            architecture=capabilities.get("architecture"),
-            docker_version=capabilities.get("docker_version"),
-            total_memory_mb=capabilities.get("total_memory_mb"),
-            total_cpu_cores=capabilities.get("cpu_cores"),
-            updated_at=datetime.now(UTC),
-        ),
+        update(LocalPod).where(LocalPod.id == pod_id).values(**values),
     )
     await db.commit()
 

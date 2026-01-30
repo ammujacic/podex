@@ -1,15 +1,9 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Brain, Info, X, AlertTriangle, Loader2, AlertCircle } from 'lucide-react';
+import { Brain, Info, X, Loader2, AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ThinkingConfig } from '@podex/shared';
-import {
-  isCliAgentRole,
-  getCliAgentType,
-  getCliCapabilities,
-  type CliCapabilities,
-} from '@/hooks/useCliAgentCommands';
 import { useConfigStore } from '@/stores/config';
 
 interface ThinkingConfigDialogProps {
@@ -18,8 +12,6 @@ interface ThinkingConfigDialogProps {
   config: ThinkingConfig | undefined;
   onSave: (config: ThinkingConfig) => void;
   modelName: string;
-  /** Agent role for checking CLI-specific capabilities */
-  agentRole?: string;
 }
 
 const MIN_BUDGET = 1024;
@@ -34,7 +26,6 @@ export function ThinkingConfigDialog({
   config,
   onSave,
   modelName,
-  agentRole,
 }: ThinkingConfigDialogProps) {
   const [enabled, setEnabled] = useState(config?.enabled ?? false);
   const [budgetTokens, setBudgetTokens] = useState(config?.budgetTokens ?? 8000);
@@ -51,18 +42,6 @@ export function ThinkingConfigDialog({
   useEffect(() => {
     initializeConfig();
   }, [initializeConfig]);
-
-  // Check CLI capabilities for thinking support
-  const cliCapabilities: CliCapabilities | null = useMemo(() => {
-    if (!agentRole || !isCliAgentRole(agentRole)) return null;
-    const cliType = getCliAgentType(agentRole);
-    if (!cliType) return null;
-    return getCliCapabilities(cliType);
-  }, [agentRole]);
-
-  const isCliAgent = cliCapabilities !== null;
-  const thinkingNotSupported = isCliAgent && !cliCapabilities.thinkingSupported;
-  const thinkingUsesEffort = isCliAgent && cliCapabilities.thinkingBudgetType === 'effort';
 
   // Sync state when config prop changes
   useEffect(() => {
@@ -123,47 +102,10 @@ export function ThinkingConfigDialog({
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 space-y-6">
-          {/* CLI Agent Warning - Thinking Not Supported */}
-          {thinkingNotSupported && (
-            <div className="flex items-start gap-3 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30">
-              <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
-              <div className="text-xs text-text-secondary space-y-1">
-                <p className="font-medium text-amber-400">Extended thinking not available</p>
-                <p>{cliCapabilities?.thinkingDescription}</p>
-                <p>This CLI agent manages reasoning internally. Settings below will be ignored.</p>
-              </div>
-            </div>
-          )}
-
-          {/* CLI Agent Info - Thinking Uses Effort Levels */}
-          {thinkingUsesEffort && (
-            <div className="flex items-start gap-3 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
-              <Info className="h-4 w-4 text-blue-400 shrink-0 mt-0.5" />
-              <div className="text-xs text-text-secondary space-y-1">
-                <p className="font-medium text-blue-400">Reasoning effort mode</p>
-                <p>{cliCapabilities?.thinkingDescription}</p>
-                <p>
-                  Token budget will be converted to effort level: Low (&lt;5K), Medium (5-15K), High
-                  (&gt;15K).
-                </p>
-              </div>
-            </div>
-          )}
-
           {/* Enable/Disable Toggle */}
-          <div
-            className={cn(
-              'flex items-center justify-between',
-              thinkingNotSupported && 'opacity-50 pointer-events-none'
-            )}
-          >
+          <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <Brain
-                className={cn(
-                  'h-5 w-5',
-                  enabled && !thinkingNotSupported ? 'text-blue-400' : 'text-text-muted'
-                )}
-              />
+              <Brain className={cn('h-5 w-5', enabled ? 'text-blue-400' : 'text-text-muted')} />
               <div>
                 <p className="text-sm font-medium text-text-primary">Enable Extended Thinking</p>
                 <p className="text-xs text-text-muted">Allow deeper reasoning before responding</p>
@@ -172,21 +114,20 @@ export function ThinkingConfigDialog({
             <label className="relative inline-flex items-center cursor-pointer">
               <input
                 type="checkbox"
-                checked={enabled && !thinkingNotSupported}
+                checked={enabled}
                 onChange={(e) => setEnabled(e.target.checked)}
-                disabled={thinkingNotSupported}
                 className="sr-only peer"
               />
               <div
                 className={cn(
                   'w-11 h-6 rounded-full transition-colors',
-                  enabled && !thinkingNotSupported ? 'bg-blue-500' : 'bg-overlay'
+                  enabled ? 'bg-blue-500' : 'bg-overlay'
                 )}
               >
                 <div
                   className={cn(
                     'absolute w-5 h-5 bg-white rounded-full top-0.5 left-0.5 transition-transform',
-                    enabled && !thinkingNotSupported && 'translate-x-5'
+                    enabled && 'translate-x-5'
                   )}
                 />
               </div>
@@ -194,12 +135,7 @@ export function ThinkingConfigDialog({
           </div>
 
           {/* Budget Slider */}
-          <div
-            className={cn(
-              'space-y-3',
-              (!enabled || thinkingNotSupported) && 'opacity-50 pointer-events-none'
-            )}
-          >
+          <div className={cn('space-y-3', !enabled && 'opacity-50 pointer-events-none')}>
             <div className="flex items-center justify-between">
               <label className="text-sm font-medium text-text-primary">Thinking Budget</label>
               <span className="text-sm font-mono text-text-secondary">
@@ -214,7 +150,7 @@ export function ThinkingConfigDialog({
               step={1000}
               value={budgetTokens}
               onChange={handleSliderChange}
-              disabled={!enabled || thinkingNotSupported}
+              disabled={!enabled}
               className="w-full h-2 bg-overlay rounded-lg appearance-none cursor-pointer accent-blue-500"
             />
 
@@ -227,12 +163,7 @@ export function ThinkingConfigDialog({
           </div>
 
           {/* Presets */}
-          <div
-            className={cn(
-              'space-y-2',
-              (!enabled || thinkingNotSupported) && 'opacity-50 pointer-events-none'
-            )}
-          >
+          <div className={cn('space-y-2', !enabled && 'opacity-50 pointer-events-none')}>
             <label className="text-sm font-medium text-text-primary">Presets</label>
             {configError ? (
               <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/30">
@@ -256,7 +187,7 @@ export function ThinkingConfigDialog({
                   <button
                     key={key}
                     onClick={() => handlePresetClick(preset.tokens)}
-                    disabled={!enabled || thinkingNotSupported}
+                    disabled={!enabled}
                     className={cn(
                       'px-3 py-2 rounded-lg text-sm font-medium transition-colors',
                       budgetTokens === preset.tokens

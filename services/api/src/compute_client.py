@@ -305,7 +305,7 @@ class ComputeClient:
             )
         except ComputeServiceHTTPError as e:
             if e.status_code == HTTPStatus.NOT_FOUND:
-                # Workspace not found in compute service, mark as standby
+                # Workspace not found in compute service - normalize to a fully stopped workspace.
                 await self._handle_workspace_not_found(workspace_id, "get")
                 return None
             raise
@@ -317,10 +317,11 @@ class ComputeClient:
 
         This indicates a state inconsistency where the API database thinks a workspace
         exists but the compute service doesn't have it (likely stopped/removed).
-        Automatically mark as standby in the database.
+        We normalize this to a *stopped* workspace in the database - we no longer use a
+        separate 'standby' status.
         """
         logger.warning(
-            "Compute service returned 404 for workspace %s, marking as standby",
+            "Compute service returned 404 for workspace %s, marking as stopped",
             operation,
             workspace_id=workspace_id,
             operation=operation,
@@ -328,17 +329,25 @@ class ComputeClient:
 
         try:
             async with get_db_context() as db:
-                # Update workspace status to standby
+                # Update workspace status to stopped (no more 'standby' state)
+                # BUT: only if the workspace is not currently being created/pending.
+                # A 404 from compute is expected during workspace creation - the container
+                # hasn't been registered yet. Marking it as "stopped" would cause a race
+                # condition where auto-provisioning tries to create it again.
                 now = datetime.now(UTC)
                 result = await db.execute(
                     update(Workspace)
-                    .where(Workspace.id == workspace_id)
-                    .values(status="standby", standby_at=now, updated_at=now)
+                    .where(
+                        Workspace.id == workspace_id,
+                        # Only mark as stopped if not in a "creating" state
+                        Workspace.status.not_in(["creating", "pending"]),
+                    )
+                    .values(status="stopped", standby_at=None, updated_at=now)
                 )
 
                 if result.rowcount and result.rowcount > 0:  # type: ignore[attr-defined]
                     logger.info(
-                        "Automatically marked inconsistent workspace as standby",
+                        "Automatically marked inconsistent workspace as stopped",
                         workspace_id=workspace_id,
                         operation=operation,
                     )
@@ -358,8 +367,8 @@ class ComputeClient:
                                 "workspace_status",
                                 {
                                     "workspace_id": workspace_id,
-                                    "status": "standby",
-                                    "standby_at": now.isoformat(),
+                                    "status": "stopped",
+                                    "standby_at": None,
                                 },
                             )
                     except Exception as e:
@@ -370,7 +379,7 @@ class ComputeClient:
                         )
                 else:
                     logger.warning(
-                        "Workspace not found in database during auto-standby",
+                        "Workspace not found in database during auto-stop normalization",
                         workspace_id=workspace_id,
                     )
 
@@ -378,7 +387,7 @@ class ComputeClient:
 
         except Exception as e:
             logger.exception(
-                "Failed to auto-mark workspace as standby",
+                "Failed to auto-mark workspace as stopped",
                 workspace_id=workspace_id,
                 operation=operation,
                 error=str(e),
@@ -390,13 +399,13 @@ class ComputeClient:
             await self._request("POST", f"/workspaces/{workspace_id}/stop", user_id=user_id)
         except ComputeServiceHTTPError as e:
             if e.status_code == 404:
-                # Workspace not found in compute service, mark as standby
+                # Workspace not found in compute service - normalize to stopped in DB.
                 await self._handle_workspace_not_found(workspace_id, "stop")
             else:
                 raise
 
     async def restart_workspace(self, workspace_id: str, user_id: str) -> dict[str, Any]:
-        """Restart a stopped/standby workspace."""
+        """Restart a stopped workspace."""
         result: dict[str, Any] = await self._request(
             "POST",
             f"/workspaces/{workspace_id}/restart",
@@ -418,6 +427,23 @@ class ComputeClient:
                 await self._handle_workspace_not_found(workspace_id, "heartbeat")
             else:
                 raise
+
+    async def get_scale_options(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        """Get available scaling options for a workspace.
+
+        Returns which tiers the workspace can scale to based on current
+        server capacity (same-server only).
+        """
+        result: dict[str, Any] = await self._request(
+            "GET",
+            f"/workspaces/{workspace_id}/scale-options",
+            user_id=user_id,
+        )
+        return result
 
     async def scale_workspace(
         self,
@@ -738,6 +764,53 @@ class ComputeClient:
             )
             yield f"Error: {e}"
 
+    # ==================== Tunnel Operations ====================
+
+    async def start_tunnel(
+        self,
+        workspace_id: str,
+        user_id: str,
+        token: str,
+        port: int,
+        service_type: str = "http",
+    ) -> dict[str, Any]:
+        """Start a cloudflared tunnel via compute service."""
+        result: dict[str, Any] = await self._request(
+            "POST",
+            f"/workspaces/{workspace_id}/tunnels/start",
+            user_id=user_id,
+            json={"token": token, "port": port, "service_type": service_type},
+        )
+        return result
+
+    async def stop_tunnel(
+        self,
+        workspace_id: str,
+        user_id: str,
+        port: int,
+    ) -> dict[str, Any]:
+        """Stop a cloudflared tunnel via compute service."""
+        result: dict[str, Any] = await self._request(
+            "POST",
+            f"/workspaces/{workspace_id}/tunnels/stop",
+            user_id=user_id,
+            json={"port": port},
+        )
+        return result
+
+    async def get_tunnel_status(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        """Get tunnel status via compute service."""
+        result: dict[str, Any] = await self._request(
+            "GET",
+            f"/workspaces/{workspace_id}/tunnels/status",
+            user_id=user_id,
+        )
+        return result
+
     # ==================== Git Operations ====================
 
     async def git_status(
@@ -794,15 +867,31 @@ class ComputeClient:
         staged: bool = False,
         working_dir: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Get git diff."""
+        """Get git diff with actual diff content for each file."""
         flag = "--staged" if staged else ""
+
+        # First get file list with stats
         result = await self.exec_command(
             workspace_id,
             user_id,
             f"git diff {flag} --numstat",
             working_dir=working_dir,
         )
-        return self._parse_git_diff(result.get("stdout", ""))
+        files = self._parse_git_diff(result.get("stdout", ""))
+
+        # Then get actual diff content for each file
+        for file_info in files:
+            file_path = file_info["path"]
+            escaped_path = self._escape_shell_arg(file_path)
+            diff_result = await self.exec_command(
+                workspace_id,
+                user_id,
+                f"git diff {flag} -- {escaped_path}",
+                working_dir=working_dir,
+            )
+            file_info["diff"] = diff_result.get("stdout", "")
+
+        return files
 
     async def git_stage(
         self,
@@ -1044,6 +1133,7 @@ class ComputeClient:
         base: str,
         compare: str,
         working_dir: str | None = None,
+        include_uncommitted: bool = False,
     ) -> dict[str, Any]:
         """Compare two branches and return commits and changed files.
 
@@ -1053,16 +1143,19 @@ class ComputeClient:
             base: The base branch to compare from.
             compare: The branch to compare against.
             working_dir: Working directory for git commands.
+            include_uncommitted: If True, also include uncommitted working directory changes.
 
         Returns:
             Dictionary with commits, files, and stats.
         """
         try:
             # Get commits between branches
+            # Use compare..base to get commits on base not on compare
+            # (i.e., how many commits base is "ahead" of compare)
             commits_result = await self.exec_command(
                 workspace_id,
                 user_id,
-                f"git log --oneline --format='%H|%s|%an|%ad' --date=iso {base}..{compare}",
+                f"git log --oneline --format='%H|%s|%an|%ad' --date=iso {compare}..{base}",
                 working_dir=working_dir,
             )
             commits_output = commits_result.get("stdout", "")
@@ -1079,41 +1172,106 @@ class ComputeClient:
                         }
                     )
 
-            # Get diff stat
+            # Get diff stat (compare...base shows changes on base relative to merge-base)
             stat_result = await self.exec_command(
                 workspace_id,
                 user_id,
-                f"git diff --stat {base}...{compare}",
+                f"git diff --stat {compare}...{base}",
                 working_dir=working_dir,
             )
             stat_output = stat_result.get("stdout", "")
 
-            # Get list of changed files
+            # Get list of changed files between branches
             files_result = await self.exec_command(
                 workspace_id,
                 user_id,
-                f"git diff --name-status {base}...{compare}",
+                f"git diff --name-status {compare}...{base}",
                 working_dir=working_dir,
             )
             files_output = files_result.get("stdout", "")
             files = []
+            seen_paths: set[str] = set()
+            status_map = {
+                "A": "added",
+                "M": "modified",
+                "D": "deleted",
+                "R": "renamed",
+            }
+
             for line in files_output.strip().split("\n") if files_output.strip() else []:
                 parts = line.split("\t", 1)
                 if len(parts) >= MIN_COMMIT_INFO_PARTS:
                     status = parts[0]
                     path = parts[1]
-                    status_map = {
-                        "A": "added",
-                        "M": "modified",
-                        "D": "deleted",
-                        "R": "renamed",
-                    }
                     files.append(
                         {
                             "path": path,
                             "status": status_map.get(status[0], "modified"),
                         }
                     )
+                    seen_paths.add(path)
+
+            # Include uncommitted changes if requested
+            if include_uncommitted:
+                # Get staged changes
+                staged_result = await self.exec_command(
+                    workspace_id,
+                    user_id,
+                    "git diff --cached --name-status",
+                    working_dir=working_dir,
+                )
+                staged_output = staged_result.get("stdout", "")
+                for line in staged_output.strip().split("\n") if staged_output.strip() else []:
+                    parts = line.split("\t", 1)
+                    if len(parts) >= MIN_COMMIT_INFO_PARTS:
+                        status = parts[0]
+                        path = parts[1]
+                        if path not in seen_paths:
+                            files.append(
+                                {
+                                    "path": path,
+                                    "status": status_map.get(status[0], "modified"),
+                                }
+                            )
+                            seen_paths.add(path)
+
+                # Get unstaged changes
+                unstaged_result = await self.exec_command(
+                    workspace_id,
+                    user_id,
+                    "git diff --name-status",
+                    working_dir=working_dir,
+                )
+                unstaged_output = unstaged_result.get("stdout", "")
+                for line in unstaged_output.strip().split("\n") if unstaged_output.strip() else []:
+                    parts = line.split("\t", 1)
+                    if len(parts) >= MIN_COMMIT_INFO_PARTS:
+                        status = parts[0]
+                        path = parts[1]
+                        if path not in seen_paths:
+                            files.append(
+                                {
+                                    "path": path,
+                                    "status": status_map.get(status[0], "modified"),
+                                }
+                            )
+                            seen_paths.add(path)
+
+                # Get untracked files
+                untracked_result = await self.exec_command(
+                    workspace_id,
+                    user_id,
+                    "git ls-files --others --exclude-standard",
+                    working_dir=working_dir,
+                )
+                untracked_output = untracked_result.get("stdout", "")
+                for line in (
+                    untracked_output.strip().split("\n") if untracked_output.strip() else []
+                ):
+                    path = line.strip()
+                    if path and path not in seen_paths:
+                        files.append({"path": path, "status": "added"})
+                        seen_paths.add(path)
 
             return {
                 "base": base,
@@ -1395,7 +1553,7 @@ class ComputeClient:
                         "status": "modified",
                         "additions": additions,
                         "deletions": deletions,
-                        "diff": None,  # Would need separate call for actual diff
+                        "diff": None,  # Populated by git_diff() after parsing
                     },
                 )
         return files

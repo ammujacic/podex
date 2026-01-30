@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -16,6 +16,7 @@ from src.database.models import (
 from src.database.models import (
     Session as SessionModel,
 )
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 from src.routes.dependencies import DbSession, get_current_user_id
 from src.websocket.hub import emit_to_session
 
@@ -66,9 +67,11 @@ class RestoreResponse(BaseModel):
 
 
 @router.get("/sessions/{session_id}/checkpoints", response_model=list[CheckpointResponse])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_session_checkpoints(
     session_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
     agent_id: str | None = None,
     limit: int = 50,
@@ -135,9 +138,11 @@ async def get_session_checkpoints(
 
 
 @router.get("/checkpoints/{checkpoint_id}", response_model=CheckpointResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_checkpoint(
     checkpoint_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> CheckpointResponse:
     """Get a specific checkpoint."""
@@ -194,9 +199,11 @@ async def get_checkpoint(
 
 
 @router.get("/checkpoints/{checkpoint_id}/diff", response_model=CheckpointDiffResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_checkpoint_diff(
     checkpoint_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> CheckpointDiffResponse:
     """Get the full diff for a checkpoint."""
@@ -245,9 +252,11 @@ async def get_checkpoint_diff(
 
 
 @router.post("/checkpoints/{checkpoint_id}/restore", response_model=RestoreResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def restore_checkpoint(
     checkpoint_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> RestoreResponse:
     """Restore files to their state at a checkpoint."""

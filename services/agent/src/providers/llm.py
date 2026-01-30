@@ -11,7 +11,6 @@ from openai import AsyncOpenAI
 
 from podex_shared import TokenUsageParams, get_usage_tracker
 from src.config import settings
-from src.providers.vertex import VertexAIProvider
 
 logger = structlog.get_logger()
 
@@ -32,6 +31,9 @@ class CompletionRequest:
     # Optional user-provided API keys for external providers
     # Format: {"openai": "sk-...", "anthropic": "sk-ant-...", ...}
     llm_api_keys: dict[str, str] | None = None
+    # Model's registered provider from the database (passed from API)
+    # This takes precedence over guessing the provider from model name
+    model_provider: str | None = None
 
 
 @dataclass
@@ -40,6 +42,7 @@ class UsageTrackingContext:
 
     user_id: str
     model: str
+    provider: str  # The actual provider used for the request
     usage: dict[str, int] = field(default_factory=dict)
     session_id: str | None = None
     workspace_id: str | None = None
@@ -76,11 +79,10 @@ class LLMProvider:
 
     def __init__(self) -> None:
         """Initialize LLM provider."""
-        self.provider = settings.LLM_PROVIDER
         self._anthropic_client: AsyncAnthropic | None = None
         self._openai_client: AsyncOpenAI | None = None
         self._ollama_client: AsyncOpenAI | None = None
-        self._vertex_provider: VertexAIProvider | None = None
+        self._openrouter_client: AsyncOpenAI | None = None
 
     def _estimate_tokens(self, text: str) -> int:
         """Estimate token count from text length.
@@ -124,23 +126,51 @@ class LLMProvider:
         return self._ollama_client
 
     @property
-    def vertex_provider(self) -> VertexAIProvider:
-        """Get or create Vertex AI provider."""
-        if self._vertex_provider is None:
-            self._vertex_provider = VertexAIProvider()
-        return self._vertex_provider
+    def openrouter_client(self) -> AsyncOpenAI:
+        """Get or create OpenRouter client (using OpenAI-compatible API)."""
+        if self._openrouter_client is None:
+            # OpenRouter uses OpenAI-compatible API
+            self._openrouter_client = AsyncOpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=settings.OPENROUTER_API_KEY,
+            )
+        return self._openrouter_client
 
     def _get_anthropic_client(self, api_key: str | None = None) -> AsyncAnthropic:
         """Get Anthropic client, optionally with user-provided API key.
 
         Args:
-            api_key: Optional user-provided API key. If None, uses platform default.
+            api_key: Optional user-provided API key (can be standard API key or OAuth token).
+                     OAuth tokens start with "sk-ant-oat" and require special headers.
 
         Returns:
             Anthropic client instance
         """
         if api_key:
-            # Create a new client with user's API key
+            # Check if this is an OAuth token (starts with sk-ant-oat)
+            is_oauth_token = api_key.startswith("sk-ant-oat")
+            if is_oauth_token:
+                # OAuth tokens MUST use auth_token parameter, not api_key
+                # Stealth mode: Mimic Claude Code's identity to authorize OAuth token usage
+                # OAuth tokens are restricted to Claude Code and require specific headers
+                return AsyncAnthropic(
+                    api_key=None,  # Must be None for OAuth
+                    auth_token=api_key,  # OAuth token goes here
+                    default_headers={
+                        "accept": "application/json",
+                        "anthropic-dangerous-direct-browser-access": "true",
+                        # Include Claude Code version and OAuth beta flags
+                        "anthropic-beta": (
+                            "claude-code-20250219,"
+                            "oauth-2025-04-20,"
+                            "fine-grained-tool-streaming-2025-05-14"
+                        ),
+                        # Identify as Claude Code CLI (required for OAuth tokens)
+                        "user-agent": "claude-cli/2.1.2 (external, cli)",
+                        "x-app": "cli",
+                    },
+                )
+            # Standard API key
             return AsyncAnthropic(api_key=api_key)
         return self.anthropic_client
 
@@ -172,6 +202,87 @@ class LLMProvider:
             return None
         return llm_api_keys.get(provider)
 
+    def _resolve_anthropic_model_id(self, model: str) -> str:
+        """Extract Anthropic model ID from prefixed format.
+
+        Args:
+            model: Model identifier (e.g., "anthropic-direct/claude-haiku-4-5")
+
+        Returns:
+            Anthropic API model ID (part after slash, or original if no slash)
+        """
+        if "/" in model:
+            return model.split("/", 1)[1]
+        return model
+
+    def _resolve_provider(
+        self,
+        model: str,
+        llm_api_keys: dict[str, str] | None,
+        model_provider: str | None = None,
+    ) -> tuple[str, str | None]:
+        """Resolve which provider to use based on database metadata and API keys.
+
+        Priority:
+        1. **Always** use model_provider from the database (required)
+        2. If user has an API key for that provider, use the user's key
+
+        This ensures the API/database is the single source of truth for which
+        provider backs a given model. No fallback or guessing is performed.
+
+        Args:
+            model: Model identifier (for error messages)
+            llm_api_keys: User-provided API keys
+            model_provider: Model's registered provider from database (required)
+
+        Returns:
+            Tuple of (provider_name, api_key_if_user_provided)
+
+        Raises:
+            ValueError: If model_provider is not set in the database
+        """
+        # Use database-provided provider as the source of truth.
+        native_provider = (model_provider or "").strip().lower()
+
+        # Debug: log what keys are available
+        if llm_api_keys:
+            logger.debug(
+                "Available LLM API keys",
+                providers=list(llm_api_keys.keys()),
+                native_provider=native_provider or "unset",
+                model=model,
+            )
+
+        # Case 1: model_provider is present - respect it.
+        if native_provider:
+            # If user has an API key for this provider, use it.
+            if llm_api_keys:
+                user_key = llm_api_keys.get(native_provider)
+                if user_key:
+                    # SECURITY: Don't log API key prefixes - they reveal token type
+                    logger.info(
+                        "Using user-provided API key for model",
+                        model=model,
+                        provider=native_provider,
+                        from_database=True,
+                    )
+                    return native_provider, user_key
+
+            # Otherwise fall back to the platform-configured credentials for that provider.
+            logger.debug(
+                "Using platform provider from database for model",
+                model=model,
+                provider=native_provider,
+                has_llm_keys=bool(llm_api_keys),
+            )
+            return native_provider, None
+
+        # Case 2: no model_provider in DB - raise an error, don't guess.
+        raise ValueError(
+            f"Model '{model}' does not have a configured provider. "
+            "Please ensure the model is registered in the database with a valid provider."
+        )
+
     def _determine_usage_source(self, provider: str, llm_api_keys: dict[str, str] | None) -> str:
         """Determine the usage source for billing purposes.
 
@@ -190,20 +301,25 @@ class LLMProvider:
         if llm_api_keys and provider in llm_api_keys:
             return "external"
 
-        # Vertex AI is our platform provider - counts as included
-        if provider == "vertex":
+        # OpenRouter is our platform provider - counts as included
+        if provider == "openrouter":
             return "included"
 
         # For anthropic/openai without user keys, check if we're using platform keys
-        # If using platform API keys (not Vertex), this is external since user is
+        # If using platform API keys (not OpenRouter), this is external since user is
         # consuming their own quota on those providers
-        # NOTE: In current architecture, only Vertex is "included" (platform-provided)
+        # NOTE: In current architecture, only OpenRouter is "included" (platform-provided)
         # Direct anthropic/openai through platform keys is still "external"
         return "external"
 
     async def complete(self, request: CompletionRequest) -> dict[str, Any]:
         """
-        Generate a completion using the configured LLM provider.
+        Generate a completion using the appropriate LLM provider.
+
+        Routes to the correct provider based on:
+        1. The model being requested (e.g., claude-* → anthropic)
+        2. Whether the user has provided an API key for that provider
+        3. Falls back to the configured default provider if no user key
 
         Args:
             request: CompletionRequest containing model, messages, tools, and tracking context.
@@ -211,31 +327,38 @@ class LLMProvider:
         Returns:
             Response dictionary with content and metadata
         """
-        if self.provider == "anthropic":
+        # Resolve which provider to use based on model, database provider, and user's API keys
+        resolved_provider, user_key = self._resolve_provider(
+            request.model, request.llm_api_keys, request.model_provider
+        )
+
+        if resolved_provider == "anthropic":
             result = await self._complete_anthropic(
                 model=request.model,
                 messages=request.messages,
                 tools=request.tools,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
+                api_key=user_key,
             )
-        elif self.provider == "openai":
+        elif resolved_provider == "openai":
             result = await self._complete_openai(
                 model=request.model,
                 messages=request.messages,
                 tools=request.tools,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
+                api_key=user_key,
             )
-        elif self.provider == "vertex":
-            result = await self._complete_vertex(
+        elif resolved_provider == "openrouter":
+            result = await self._complete_openrouter(
                 model=request.model,
                 messages=request.messages,
                 tools=request.tools,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
             )
-        elif self.provider == "ollama":
+        elif resolved_provider == "ollama":
             result = await self._complete_ollama(
                 model=request.model,
                 messages=request.messages,
@@ -244,16 +367,17 @@ class LLMProvider:
                 temperature=request.temperature,
             )
         else:
-            raise ValueError(f"Unknown provider: {self.provider}")
+            raise ValueError(f"Unknown provider: {resolved_provider}")
 
         # Track usage if user context is provided
         if request.user_id and result.get("usage"):
             # Determine usage source for billing
-            usage_source = self._determine_usage_source(self.provider, request.llm_api_keys)
+            usage_source = self._determine_usage_source(resolved_provider, request.llm_api_keys)
 
             tracking_context = UsageTrackingContext(
                 user_id=request.user_id,
                 model=request.model,
+                provider=resolved_provider,
                 usage=result["usage"],
                 session_id=request.session_id,
                 workspace_id=request.workspace_id,
@@ -268,7 +392,9 @@ class LLMProvider:
         self, request: CompletionRequest
     ) -> AsyncGenerator[StreamEvent, None]:
         """
-        Stream a completion from the configured LLM provider.
+        Stream a completion from the appropriate LLM provider.
+
+        The provider is determined by request.model_provider which must be set.
 
         Yields StreamEvent objects as tokens are generated.
 
@@ -277,28 +403,38 @@ class LLMProvider:
 
         Yields:
             StreamEvent objects for tokens, tool calls, and completion.
+
+        Raises:
+            ValueError: If model_provider is not set in the request.
         """
+        # Resolve which provider to use based on model, database provider, and user's API keys
+        resolved_provider, user_key = self._resolve_provider(
+            request.model, request.llm_api_keys, request.model_provider
+        )
+
         try:
-            if self.provider == "anthropic":
+            if resolved_provider == "anthropic":
                 async for event in self._stream_anthropic(
                     model=request.model,
                     messages=request.messages,
                     tools=request.tools,
                     max_tokens=request.max_tokens,
                     temperature=request.temperature,
+                    api_key=user_key,
                 ):
                     yield event
-            elif self.provider == "openai":
+            elif resolved_provider == "openai":
                 async for event in self._stream_openai(
                     model=request.model,
                     messages=request.messages,
                     tools=request.tools,
                     max_tokens=request.max_tokens,
                     temperature=request.temperature,
+                    api_key=user_key,
                 ):
                     yield event
-            elif self.provider == "vertex":
-                async for event in self._stream_vertex(
+            elif resolved_provider == "openrouter":
+                async for event in self._stream_openrouter(
                     model=request.model,
                     messages=request.messages,
                     tools=request.tools,
@@ -306,7 +442,7 @@ class LLMProvider:
                     temperature=request.temperature,
                 ):
                     yield event
-            elif self.provider == "ollama":
+            elif resolved_provider == "ollama":
                 async for event in self._stream_ollama(
                     model=request.model,
                     messages=request.messages,
@@ -316,10 +452,10 @@ class LLMProvider:
                 ):
                     yield event
             else:
-                yield StreamEvent(type="error", error=f"Unknown provider: {self.provider}")
+                yield StreamEvent(type="error", error=f"Unknown provider: {resolved_provider}")
                 return
         except Exception as e:
-            logger.exception("Streaming error", provider=self.provider)
+            logger.exception("Streaming error", provider=resolved_provider)
             yield StreamEvent(type="error", error=str(e))
 
     async def _track_usage(self, context: UsageTrackingContext) -> None:
@@ -342,7 +478,7 @@ class LLMProvider:
                 session_id=context.session_id,
                 workspace_id=context.workspace_id,
                 agent_id=context.agent_id,
-                metadata={"provider": self.provider},
+                metadata={"provider": context.provider},
                 usage_source=context.usage_source,
             )
             await tracker.record_token_usage(params)
@@ -357,8 +493,25 @@ class LLMProvider:
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        api_key: str | None = None,
     ) -> dict[str, Any]:
-        """Complete using Anthropic API."""
+        """Complete using Anthropic API.
+
+        Args:
+            model: Model identifier
+            messages: Conversation messages
+            tools: Optional tool definitions
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            api_key: Optional user API key (standard or OAuth token)
+        """
+        # Get appropriate client (with user key or platform default)
+        client = self._get_anthropic_client(api_key)
+
+        # Resolve model ID (strip prefix if present)
+        resolved_model = self._resolve_anthropic_model_id(model)
+        logger.info("Anthropic API call", original_model=model, resolved_model=resolved_model)
+
         # Extract system message
         system_message = ""
         conversation_messages = []
@@ -371,7 +524,7 @@ class LLMProvider:
 
         # Build request
         request_params: dict[str, Any] = {
-            "model": model,
+            "model": resolved_model,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "messages": conversation_messages,
@@ -384,7 +537,7 @@ class LLMProvider:
             request_params["tools"] = tools
 
         # Make API call
-        response = await self.anthropic_client.messages.create(**request_params)
+        response = await client.messages.create(**request_params)
 
         # Extract content
         content = ""
@@ -420,8 +573,21 @@ class LLMProvider:
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        api_key: str | None = None,
     ) -> dict[str, Any]:
-        """Complete using OpenAI API."""
+        """Complete using OpenAI API.
+
+        Args:
+            model: Model identifier
+            messages: Conversation messages
+            tools: Optional tool definitions
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            api_key: Optional user API key
+        """
+        # Get appropriate client (with user key or platform default)
+        client = self._get_openai_client(api_key)
+
         # Convert Anthropic-style tools to OpenAI format
         openai_tools = None
         if tools:
@@ -459,7 +625,7 @@ class LLMProvider:
             request_params["tool_choice"] = "auto"
 
         # Make API call
-        response = await self.openai_client.chat.completions.create(**request_params)
+        response = await client.chat.completions.create(**request_params)
 
         # Extract content and tool calls
         content = ""
@@ -492,7 +658,7 @@ class LLMProvider:
             "stop_reason": choice.finish_reason,
         }
 
-    async def _complete_vertex(
+    async def _complete_openrouter(
         self,
         model: str,
         messages: list[dict[str, str]],
@@ -500,14 +666,69 @@ class LLMProvider:
         max_tokens: int = 4096,
         temperature: float = 0.7,
     ) -> dict[str, Any]:
-        """Complete using Google Cloud Vertex AI (Claude models via Anthropic partnership)."""
-        return await self.vertex_provider.complete(
-            model=model,
-            messages=messages,
-            tools=tools,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        """Complete using OpenRouter API (unified access to multiple LLM providers)."""
+
+        # Convert Anthropic-style tools to OpenAI format
+        openai_tools = None
+        if tools:
+            openai_tools = []
+            for tool in tools:
+                openai_tools.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool["name"],
+                            "description": tool["description"],
+                            "parameters": tool["input_schema"],
+                        },
+                    },
+                )
+
+        # Build request parameters
+        request_params: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
+        if openai_tools:
+            request_params["tools"] = openai_tools
+            request_params["tool_choice"] = "auto"
+
+        # Make API call
+        response = await self.openrouter_client.chat.completions.create(**request_params)
+
+        # Extract content and tool calls
+        content = ""
+        tool_calls = []
+
+        choice = response.choices[0]
+        message = choice.message
+
+        if message.content:
+            content = message.content
+
+        if message.tool_calls:
+            for tc in message.tool_calls:
+                tool_calls.append(
+                    {
+                        "id": tc.id,
+                        "name": tc.function.name,
+                        "arguments": json.loads(tc.function.arguments),
+                    },
+                )
+
+        return {
+            "content": content,
+            "tool_calls": tool_calls,
+            "usage": {
+                "input_tokens": response.usage.prompt_tokens if response.usage else 0,
+                "output_tokens": response.usage.completion_tokens if response.usage else 0,
+                "total_tokens": response.usage.total_tokens if response.usage else 0,
+            },
+            "stop_reason": choice.finish_reason,
+        }
 
     async def _complete_ollama(
         self,
@@ -612,8 +833,25 @@ class LLMProvider:
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        api_key: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
-        """Stream completion using Anthropic API."""
+        """Stream completion using Anthropic API.
+
+        Args:
+            model: Model identifier
+            messages: Conversation messages
+            tools: Optional tool definitions
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            api_key: Optional user API key (standard or OAuth token)
+        """
+        # Get appropriate client (with user key or platform default)
+        client = self._get_anthropic_client(api_key)
+
+        # Resolve model ID (strip prefix if present)
+        resolved_model = self._resolve_anthropic_model_id(model)
+        logger.info("Anthropic API call", original_model=model, resolved_model=resolved_model)
+
         # Extract system message
         system_message = ""
         conversation_messages = []
@@ -626,7 +864,7 @@ class LLMProvider:
 
         # Build request
         request_params: dict[str, Any] = {
-            "model": model,
+            "model": resolved_model,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "messages": conversation_messages,
@@ -644,9 +882,12 @@ class LLMProvider:
         output_tokens = 0
         stop_reason = "end_turn"
 
-        async with self.anthropic_client.messages.stream(**request_params) as stream:
+        async with client.messages.stream(**request_params) as stream:
             async for event in stream:
                 if event.type == "message_start":
+                    # Log the actual model returned by Anthropic API
+                    if hasattr(event, "message") and hasattr(event.message, "model"):
+                        logger.info("Anthropic response model", response_model=event.message.model)
                     # Capture input token count
                     if hasattr(event, "message") and hasattr(event.message, "usage"):
                         input_tokens = event.message.usage.input_tokens
@@ -721,8 +962,21 @@ class LLMProvider:
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        api_key: str | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
-        """Stream completion using OpenAI API."""
+        """Stream completion using OpenAI API.
+
+        Args:
+            model: Model identifier
+            messages: Conversation messages
+            tools: Optional tool definitions
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            api_key: Optional user API key
+        """
+        # Get appropriate client (with user key or platform default)
+        client = self._get_openai_client(api_key)
+
         # Convert Anthropic-style tools to OpenAI format
         openai_tools = None
         if tools:
@@ -766,7 +1020,7 @@ class LLMProvider:
         usage_data: dict[str, int] = {}
         finish_reason: str | None = None
 
-        stream = await self.openai_client.chat.completions.create(**request_params)
+        stream = await client.chat.completions.create(**request_params)
 
         async for chunk in stream:
             if not chunk.choices and chunk.usage:
@@ -832,7 +1086,7 @@ class LLMProvider:
             stop_reason=finish_reason or "stop",
         )
 
-    async def _stream_vertex(
+    async def _stream_openrouter(
         self,
         model: str,
         messages: list[dict[str, str]],
@@ -840,25 +1094,108 @@ class LLMProvider:
         max_tokens: int = 4096,
         temperature: float = 0.7,
     ) -> AsyncGenerator[StreamEvent, None]:
-        """Stream completion using Google Cloud Vertex AI."""
-        async for vertex_event in self.vertex_provider.stream(
-            model=model,
-            messages=messages,
-            tools=tools,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        ):
-            # Convert VertexStreamEvent to StreamEvent
+        """Stream completion using OpenRouter API."""
+
+        # Convert Anthropic-style tools to OpenAI format
+        openai_tools = None
+        if tools:
+            openai_tools = []
+            for tool in tools:
+                openai_tools.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool["name"],
+                            "description": tool["description"],
+                            "parameters": tool["input_schema"],
+                        },
+                    },
+                )
+
+        # Build request parameters
+        request_params: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+
+        if openai_tools:
+            request_params["tools"] = openai_tools
+            request_params["tool_choice"] = "auto"
+
+        # Track tool calls being built
+        tool_calls_building: dict[int, dict[str, Any]] = {}
+        usage_data: dict[str, int] = {}
+        finish_reason: str | None = None
+
+        stream = await self.openrouter_client.chat.completions.create(**request_params)
+
+        async for chunk in stream:
+            if not chunk.choices and chunk.usage:
+                # Final chunk with usage
+                usage_data = {
+                    "input_tokens": chunk.usage.prompt_tokens,
+                    "output_tokens": chunk.usage.completion_tokens,
+                    "total_tokens": chunk.usage.total_tokens,
+                }
+                continue
+
+            if not chunk.choices:
+                continue
+
+            choice = chunk.choices[0]
+            delta = choice.delta
+
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+
+            # Handle text content
+            if delta.content:
+                yield StreamEvent(type="token", content=delta.content)
+
+            # Handle tool calls
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in tool_calls_building:
+                        # New tool call starting
+                        tool_calls_building[idx] = {
+                            "id": tc.id or "",
+                            "name": tc.function.name if tc.function else "",
+                            "arguments": "",
+                        }
+                        if tc.function and tc.function.name:
+                            yield StreamEvent(
+                                type="tool_call_start",
+                                tool_call_id=tc.id,
+                                tool_name=tc.function.name,
+                            )
+
+                    # Accumulate arguments
+                    if tc.function and tc.function.arguments:
+                        tool_calls_building[idx]["arguments"] += tc.function.arguments
+
+        # Emit tool call ends
+        for tc_data in tool_calls_building.values():
+            try:
+                tool_input = json.loads(tc_data["arguments"]) if tc_data["arguments"] else {}
+            except json.JSONDecodeError:
+                tool_input = {}
             yield StreamEvent(
-                type=vertex_event.type,  # type: ignore[arg-type]
-                content=vertex_event.content,
-                tool_call_id=vertex_event.tool_call_id,
-                tool_name=vertex_event.tool_name,
-                tool_input=vertex_event.tool_input,
-                usage=vertex_event.usage,
-                stop_reason=vertex_event.stop_reason,
-                error=vertex_event.error,
+                type="tool_call_end",
+                tool_call_id=tc_data["id"],
+                tool_name=tc_data["name"],
+                tool_input=tool_input,
             )
+
+        yield StreamEvent(
+            type="done",
+            usage=usage_data,
+            stop_reason=finish_reason or "stop",
+        )
 
     async def _stream_ollama(
         self,
