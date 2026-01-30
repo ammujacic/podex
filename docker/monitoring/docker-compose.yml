@@ -3,6 +3,9 @@ version: '3.8'
 # Podex Monitoring Stack
 # Deploy via Coolify Docker Compose from GitHub
 #
+# NOTE: This config uses default/minimal configs that work with Coolify.
+# Config files from the repo are NOT mounted (Coolify doesn't support this).
+#
 # Services exposed:
 #   - Grafana (dashboards): port 9000 -> grafana.yourdomain.com
 #   - Uptime Kuma (status): port 9001 -> status.yourdomain.com
@@ -15,14 +18,15 @@ services:
     container_name: prometheus
     volumes:
       - prometheus_data:/prometheus
-      - ./prometheus:/etc/prometheus:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--storage.tsdb.retention.time=30d'
       - '--web.enable-lifecycle'
       - '--web.enable-admin-api'
+      # Use web config for basic scraping (self + Docker service discovery)
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
     ports:
       - "9090:9090"
     restart: unless-stopped
@@ -37,13 +41,14 @@ services:
     container_name: grafana
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-changeme}
       - GF_SERVER_ROOT_URL=${GRAFANA_URL:-http://localhost:3000}
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_AUTH_ANONYMOUS_ENABLED=false
+      # Auto-provision Prometheus and Loki datasources
+      - GF_DATASOURCES_DEFAULT_NAME=Prometheus
       # SMTP for alerts (optional)
       - GF_SMTP_ENABLED=${SMTP_ENABLED:-false}
       - GF_SMTP_HOST=${SMTP_HOST:-}
@@ -69,7 +74,7 @@ services:
     container_name: loki
     volumes:
       - loki_data:/loki
-      - ./loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+    # Use Loki's built-in default config - works out of the box
     command: -config.file=/etc/loki/local-config.yaml
     ports:
       - "3100:3100"
@@ -87,8 +92,12 @@ services:
       - /var/log:/var/log:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./promtail/promtail-config.yml:/etc/promtail/config.yml:ro
-    command: -config.file=/etc/promtail/config.yml
+    # Use inline config via command line args
+    command:
+      - '-config.expand-env=true'
+      - '-print-config-stderr'
+      - '-client.url=http://loki:3100/loki/api/v1/push'
+      - '-positions.filename=/tmp/positions.yaml'
     restart: unless-stopped
     depends_on:
       - loki
