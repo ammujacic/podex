@@ -22,8 +22,8 @@ import {
   Zap,
 } from 'lucide-react';
 
-// Custom Moltbot icon component using official lobster logo, styled as a monochrome icon
-function MoltbotIcon({ className }: { className?: string }) {
+// Custom OpenClaw icon component using official lobster logo, styled as a monochrome icon
+function OpenClawIcon({ className }: { className?: string }) {
   return (
     // Use the SVG as a mask so the icon takes on the current text color,
     // matching the single-color Lucide style used elsewhere in the sidebar.
@@ -80,7 +80,7 @@ import { SentryPanel } from './SentryPanel';
 import { SkillsPanel } from './SkillsPanel';
 import ProjectHealth from './ProjectHealth';
 import { TunnelWidget } from './TunnelWidget';
-import { MoltBotWidget } from './MoltBotWidget';
+import { OpenClawWidget } from './OpenClawWidget';
 
 interface SidebarContainerProps {
   side: SidebarSide;
@@ -109,7 +109,7 @@ const panelConfig: Record<
   skills: { icon: Zap, label: 'Skills' },
   health: { icon: Activity, label: 'Health' },
   tunnels: { icon: Cable, label: 'Tunnels' },
-  moltbot: { icon: MoltbotIcon, label: 'MoltBot' },
+  openclaw: { icon: OpenClawIcon, label: 'OpenClaw' },
 };
 
 // Left sidebar: traditional coding tools
@@ -131,7 +131,7 @@ const rightPanelIds: PanelId[] = [
   'sentry',
   'extensions',
   'usage',
-  'moltbot',
+  'openclaw',
   'preview',
 ];
 
@@ -240,8 +240,8 @@ function SidebarPanel({
         return <UsageSidebarPanel sessionId={sessionId} isVisible={true} />;
       case 'tunnels':
         return <TunnelWidget workspaceId={workspaceId} />;
-      case 'moltbot':
-        return <MoltBotWidget workspaceId={workspaceId} localPodId={localPodId ?? null} />;
+      case 'openclaw':
+        return <OpenClawWidget workspaceId={workspaceId} localPodId={localPodId ?? null} />;
       case 'preview':
         // Preview is now rendered as a grid card, not a sidebar panel
         // This case should not be reached since handleIconClick returns early for preview

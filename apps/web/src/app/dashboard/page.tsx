@@ -43,6 +43,8 @@ import {
   RefreshCw,
   LogOut,
   WifiOff,
+  Sparkles,
+  BarChart2,
 } from 'lucide-react';
 import { Button } from '@podex/ui';
 import { Logo } from '@/components/ui/Logo';
@@ -670,7 +672,7 @@ export default function DashboardPage() {
                     size="sm"
                     className="text-text-secondary hover:text-text-primary"
                   >
-                    <Activity className="w-4 h-4 mr-2" />
+                    <BarChart2 className="w-4 h-4 mr-2" />
                     Productivity
                   </Button>
                 </Link>
@@ -858,7 +860,7 @@ export default function DashboardPage() {
               <div className="bg-surface border border-border-default rounded-xl p-4">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-lg bg-accent-primary/10 flex items-center justify-center">
-                    <Activity className="w-5 h-5 text-accent-primary" />
+                    <Sparkles className="w-5 h-5 text-accent-primary" />
                   </div>
                   <div>
                     <p className="text-sm text-text-muted">Tokens Used</p>
@@ -875,8 +877,8 @@ export default function DashboardPage() {
               {/* Active Pods */}
               <div className="bg-surface border border-border-default rounded-xl p-4">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-accent-secondary/10 flex items-center justify-center">
-                    <Server className="w-5 h-5 text-accent-secondary" />
+                  <div className="w-10 h-10 rounded-lg bg-accent-success/10 flex items-center justify-center">
+                    <Server className="w-5 h-5 text-accent-success" />
                   </div>
                   <div>
                     <p className="text-sm text-text-muted">Active Pods</p>

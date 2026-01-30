@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useState, useMemo } from 'react';
+import { useCallback, useRef, useState, useMemo, memo } from 'react';
 import {
   Terminal,
   Network,
@@ -720,7 +720,7 @@ function ElementsPanel({ onRefresh, onRequestHTML }: ElementsPanelProps) {
   );
 }
 
-function DOMTreeNode({
+const DOMTreeNode = memo(function DOMTreeNode({
   node,
   path,
   selectedPath,
@@ -736,10 +736,14 @@ function DOMTreeNode({
   const [expanded, setExpanded] = useState(depth < 3);
   const isSelected = JSON.stringify(path) === JSON.stringify(selectedPath);
 
+  // Memoize inline styles to prevent recreation on every render
+  const nodeStyle = useMemo(() => ({ marginLeft: depth * 16 }), [depth]);
+  const closingTagStyle = useMemo(() => ({ marginLeft: (depth + 1) * 16 }), [depth]);
+
   // Text node
   if (node.text) {
     return (
-      <div style={{ marginLeft: depth * 16 }} className="text-text-secondary py-0.5">
+      <div style={nodeStyle} className="text-text-secondary py-0.5">
         "{node.text}"
       </div>
     );
@@ -748,7 +752,7 @@ function DOMTreeNode({
   const hasChildren = node.children && node.children.length > 0;
 
   return (
-    <div style={{ marginLeft: depth * 16 }}>
+    <div style={nodeStyle}>
       <div
         onClick={() => onSelect(path)}
         className={cn(
@@ -802,13 +806,13 @@ function DOMTreeNode({
               depth={depth + 1}
             />
           ))}
-          <div style={{ marginLeft: (depth + 1) * 16 }} className="text-accent-primary py-0.5">
+          <div style={closingTagStyle} className="text-accent-primary py-0.5">
             &lt;/{node.tagName}&gt;
           </div>
         </>
       )}
     </div>
   );
-}
+});
 
 export default DevToolsPanel;

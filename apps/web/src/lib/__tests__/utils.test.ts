@@ -9,7 +9,6 @@ import {
   getFriendlyToolName,
   formatTimestamp,
   cleanStreamingContent,
-  getFriendlyErrorMessage,
 } from '../utils';
 
 describe('cn (className utility)', () => {
@@ -224,52 +223,5 @@ describe('cleanStreamingContent', () => {
     expect(result.isToolCallJson).toBe(true);
     expect(result.toolName).toBe('write_file');
     expect(result.displayContent).toBe('Writing file...');
-  });
-});
-
-describe('getFriendlyErrorMessage', () => {
-  it('returns friendly message for known errors', () => {
-    expect(getFriendlyErrorMessage('Play Audio', 'Message not found')).toBe(
-      'Play Audio failed: The message could not be found. It may have been deleted.'
-    );
-    expect(getFriendlyErrorMessage('Send', 'Unauthorized')).toBe(
-      'Send failed: You are not authorized to perform this action. Please sign in again.'
-    );
-    expect(getFriendlyErrorMessage('Request', 'Rate limit exceeded')).toBe(
-      'Request failed: Too many requests. Please wait a moment and try again.'
-    );
-  });
-
-  it('handles HTTP 404 errors', () => {
-    expect(getFriendlyErrorMessage('Fetch', 'HTTP 404 Not Found')).toBe(
-      'Fetch failed: The requested resource was not found.'
-    );
-  });
-
-  it('handles HTTP 500 errors', () => {
-    expect(getFriendlyErrorMessage('Save', 'HTTP 500 Internal Server Error')).toBe(
-      'Save failed: Server error. Please try again later.'
-    );
-  });
-
-  it('handles HTTP 503 errors', () => {
-    expect(getFriendlyErrorMessage('Load', 'HTTP 503 Service Unavailable')).toBe(
-      'Load failed: Service temporarily unavailable.'
-    );
-  });
-
-  it('includes original error for unknown errors', () => {
-    expect(getFriendlyErrorMessage('Action', 'Some unknown error')).toBe(
-      'Action failed: Some unknown error'
-    );
-  });
-
-  it('handles various operation names', () => {
-    expect(getFriendlyErrorMessage('Delete File', 'Forbidden')).toBe(
-      'Delete File failed: You do not have permission to perform this action.'
-    );
-    expect(getFriendlyErrorMessage('Create Session', 'Session not found')).toBe(
-      'Create Session failed: The session could not be found. It may have expired.'
-    );
   });
 });

@@ -21,10 +21,10 @@ import {
   type TunnelItem,
 } from '@/lib/api';
 
-const MOLTBOT_GATEWAY_PORT = 18789;
+const OPENCLAW_GATEWAY_PORT = 18789;
 const DISCORD_DEV_PORTAL = 'https://discord.com/developers/applications';
 
-interface MoltBotInstallWizardModalProps {
+interface OpenClawInstallWizardModalProps {
   sessionId: string;
   workspaceId: string | null;
   localPodId: string | null;
@@ -35,12 +35,12 @@ type Step = 'welcome' | 'install' | 'expose' | 'discord' | 'done';
 
 const STEPS: Step[] = ['welcome', 'install', 'expose', 'discord', 'done'];
 
-export function MoltBotInstallWizardModal({
+export function OpenClawInstallWizardModal({
   sessionId: _sessionId,
   workspaceId,
   localPodId: _localPodId,
   onClose,
-}: MoltBotInstallWizardModalProps) {
+}: OpenClawInstallWizardModalProps) {
   const [step, setStep] = useState<Step>('welcome');
   const [installOutput, setInstallOutput] = useState<WorkspaceExecResponse | null>(null);
   const [installLoading, setInstallLoading] = useState(false);
@@ -59,7 +59,7 @@ export function MoltBotInstallWizardModal({
     setInstallError(null);
     try {
       const res = await runWorkspaceCommand(workspaceId, {
-        command: 'npm install -g moltbot@latest',
+        command: 'npm install -g openclaw@latest',
         timeout: 300,
       });
       setInstallOutput(res);
@@ -79,7 +79,7 @@ export function MoltBotInstallWizardModal({
     setExposeLoading(true);
     setExposeError(null);
     try {
-      const t = await exposePort(workspaceId, MOLTBOT_GATEWAY_PORT);
+      const t = await exposePort(workspaceId, OPENCLAW_GATEWAY_PORT);
       setTunnel(t);
     } catch (e) {
       setExposeError(e instanceof Error ? e.message : 'Expose failed');
@@ -120,7 +120,7 @@ export function MoltBotInstallWizardModal({
       <div
         role="dialog"
         aria-modal="true"
-        aria-labelledby="moltbot-wizard-title"
+        aria-labelledby="openclaw-wizard-title"
         className="relative w-full max-w-lg rounded-xl border border-border-default bg-surface shadow-2xl"
       >
         <div className="flex items-center justify-between border-b border-border-subtle px-6 py-4">
@@ -129,8 +129,8 @@ export function MoltBotInstallWizardModal({
               <Bot className="h-5 w-5 text-accent-primary" />
             </div>
             <div>
-              <h2 id="moltbot-wizard-title" className="text-lg font-semibold text-text-primary">
-                Install MoltBot (ClawdBot)
+              <h2 id="openclaw-wizard-title" className="text-lg font-semibold text-text-primary">
+                Install OpenClaw
               </h2>
               <p className="text-sm text-text-muted">
                 Step {stepIndex + 1} of {STEPS.length}
@@ -167,7 +167,7 @@ export function MoltBotInstallWizardModal({
           {step === 'welcome' && (
             <div className="space-y-4">
               <p className="text-sm text-text-secondary">
-                Connect MoltBot to Discord, Slack, and more. This wizard will install MoltBot in
+                Connect OpenClaw to Discord, Slack, and more. This wizard will install OpenClaw in
                 your workspace, expose its gateway via a public URL, and guide you through Discord
                 setup.
               </p>
@@ -197,7 +197,7 @@ export function MoltBotInstallWizardModal({
           {step === 'install' && (
             <div className="space-y-4">
               <p className="text-sm text-text-secondary">
-                Install MoltBot globally in the workspace. This may take a minute.
+                Install OpenClaw globally in the workspace. This may take a minute.
               </p>
               {!installOutput ? (
                 <div className="space-y-3">
@@ -215,7 +215,7 @@ export function MoltBotInstallWizardModal({
                     ) : (
                       <>
                         <Bot className="h-4 w-4" />
-                        Install MoltBot
+                        Install OpenClaw
                       </>
                     )}
                   </button>
@@ -229,7 +229,7 @@ export function MoltBotInstallWizardModal({
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 text-sm text-accent-success">
                     <Check className="h-4 w-4" />
-                    MoltBot installed. Exit code: {installOutput.exit_code}
+                    OpenClaw installed. Exit code: {installOutput.exit_code}
                   </div>
                   {(installOutput.stdout || installOutput.stderr) && (
                     <pre className="max-h-40 overflow-auto rounded-lg bg-overlay px-3 py-2 text-xs text-text-muted">
@@ -244,7 +244,7 @@ export function MoltBotInstallWizardModal({
           {step === 'expose' && (
             <div className="space-y-4">
               <p className="text-sm text-text-secondary">
-                Expose MoltBot’s gateway (port {MOLTBOT_GATEWAY_PORT}) so Discord can reach it.
+                Expose OpenClaw's gateway (port {OPENCLAW_GATEWAY_PORT}) so Discord can reach it.
               </p>
               {!tunnel ? (
                 <div className="space-y-3">
@@ -262,7 +262,7 @@ export function MoltBotInstallWizardModal({
                     ) : (
                       <>
                         <Globe className="h-4 w-4" />
-                        Expose port {MOLTBOT_GATEWAY_PORT}
+                        Expose port {OPENCLAW_GATEWAY_PORT}
                       </>
                     )}
                   </button>
@@ -333,14 +333,14 @@ export function MoltBotInstallWizardModal({
                   Under <strong>Bot</strong> → <strong>Interactions Endpoint URL</strong>, set the
                   URL above.
                 </li>
-                <li>Copy the Bot Token and use it in MoltBot config (~/.clawdbot/moltbot.json).</li>
+                <li>Copy the Bot Token and use it in OpenClaw config (~/.openclaw/config.json).</li>
               </ol>
               <p className="text-sm text-text-muted">
                 Then run{' '}
                 <code className="rounded bg-overlay px-1 py-0.5">
-                  moltbot onboard --install-daemon
+                  openclaw onboard --install-daemon
                 </code>{' '}
-                and <code className="rounded bg-overlay px-1 py-0.5">moltbot gateway</code> in your
+                and <code className="rounded bg-overlay px-1 py-0.5">openclaw gateway</code> in your
                 workspace terminal.
               </p>
             </div>
@@ -353,7 +353,7 @@ export function MoltBotInstallWizardModal({
                 <span className="font-medium">Setup complete</span>
               </div>
               <p className="text-sm text-text-secondary">
-                Run <code className="rounded bg-overlay px-1 py-0.5">moltbot gateway</code> in the
+                Run <code className="rounded bg-overlay px-1 py-0.5">openclaw gateway</code> in the
                 workspace terminal to start the bot. Keep the terminal open. Use the Tunnels panel
                 to manage the public URL.
               </p>

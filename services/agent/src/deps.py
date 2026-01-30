@@ -19,51 +19,43 @@ def require_internal_service_token(
 ) -> None:
     """Require a valid internal service token for access.
 
-    Supports dual-mode authentication:
-    - Production (GCP Cloud Run): GCP ID token in Authorization header
-      The token is validated by Cloud Run's IAM layer before reaching here.
-    - Development (Docker): Service token in X-Internal-Service-Token header
-      or Authorization: Bearer header
+    Validates service token in X-Internal-Service-Token header
+    or Authorization: Bearer header.
+
+    SECURITY: Token is always required - no bypass for development mode.
 
     Args:
-        x_internal_service_token: Service token header (development mode)
-        authorization: Bearer token header (both modes)
+        x_internal_service_token: Service token header
+        authorization: Bearer token header (alternative)
     """
-    if settings.ENVIRONMENT == "production":
-        # In production, Cloud Run validates the ID token via IAM
-        # The request only reaches here if IAM allowed it
-        if authorization and authorization.startswith("Bearer "):
-            # Token validated by Cloud Run IAM - allow request
-            logger.debug("Request authenticated via GCP IAM")
-            return
-
-        # Check for service token as fallback (gradual migration)
-        expected_token = settings.INTERNAL_SERVICE_TOKEN
-        if expected_token and x_internal_service_token:
-            if secrets.compare_digest(x_internal_service_token, expected_token):
-                logger.debug("Request authenticated via service token (production fallback)")
-                return
-
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid authentication",
-        )
-
-    # Development mode: Use service token authentication
     expected_token = settings.INTERNAL_SERVICE_TOKEN
     if not expected_token:
-        # No token configured in development - allow all requests
-        logger.debug("No internal service token configured, allowing request (dev mode)")
-        return
+        # SECURITY: Fail closed - if no token configured, reject all requests
+        logger.error("INTERNAL_SERVICE_TOKEN not configured - rejecting request")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Service authentication not configured",
+        )
 
+    # Extract token from either header
     token = None
     if x_internal_service_token:
         token = x_internal_service_token
     elif authorization and authorization.startswith("Bearer "):
         token = authorization[7:]
 
-    if not token or not secrets.compare_digest(token, expected_token):
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing service token",
+        )
+
+    # SECURITY: Use constant-time comparison to prevent timing attacks
+    if not secrets.compare_digest(token, expected_token):
+        logger.warning("Invalid service token received")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid service token",
         )
+
+    logger.debug("Request authenticated via service token")

@@ -278,6 +278,7 @@ class BaseAgent(ABC):
                 approval_callback=self._handle_approval_request,
                 user_id=config.user_id,
                 workspace_id=config.workspace_id,
+                agent_model=config.model,
             )
 
         # Context manager for handling conversation trimming/summarization

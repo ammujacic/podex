@@ -52,30 +52,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: 'weekly',
       priority: 0.8,
     },
-    {
-      url: `${siteUrl}/docs/api`,
-      lastModified,
-      changeFrequency: 'weekly',
-      priority: 0.7,
-    },
-    {
-      url: `${siteUrl}/docs/guides`,
-      lastModified,
-      changeFrequency: 'weekly',
-      priority: 0.7,
-    },
-    {
-      url: `${siteUrl}/examples`,
-      lastModified,
-      changeFrequency: 'monthly',
-      priority: 0.6,
-    },
-    {
-      url: `${siteUrl}/blog`,
-      lastModified,
-      changeFrequency: 'weekly',
-      priority: 0.7,
-    },
     // Company
     {
       url: `${siteUrl}/about`,
@@ -84,22 +60,10 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.5,
     },
     {
-      url: `${siteUrl}/careers`,
-      lastModified,
-      changeFrequency: 'weekly',
-      priority: 0.6,
-    },
-    {
       url: `${siteUrl}/contact`,
       lastModified,
       changeFrequency: 'monthly',
       priority: 0.5,
-    },
-    {
-      url: `${siteUrl}/press`,
-      lastModified,
-      changeFrequency: 'monthly',
-      priority: 0.4,
     },
     // Legal
     {
@@ -119,12 +83,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
       lastModified,
       changeFrequency: 'monthly',
       priority: 0.4,
-    },
-    {
-      url: `${siteUrl}/dpa`,
-      lastModified,
-      changeFrequency: 'yearly',
-      priority: 0.3,
     },
     // Support
     {

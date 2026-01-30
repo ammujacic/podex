@@ -24,6 +24,8 @@ export interface UseOllamaModelsReturn {
   refresh: () => Promise<void>;
   /** Whether Ollama is connected and responding */
   isConnected: boolean;
+  /** Whether Ollama has been configured (models previously discovered in settings) */
+  isConfigured: boolean;
 }
 
 /**
@@ -106,30 +108,47 @@ export function useOllamaModels(options: UseOllamaModelsOptions = {}): UseOllama
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [isConfigured, setIsConfigured] = useState(false);
 
   // Track if component is mounted to avoid state updates after unmount
   const isMountedRef = useRef(true);
 
   // Load cached models from user config
-  const loadCachedModels = useCallback(async () => {
-    if (!isMountedRef.current) return;
+  // Returns true if Ollama has been configured (has cached models or URL set)
+  const loadCachedModels = useCallback(async (): Promise<boolean> => {
+    if (!isMountedRef.current) return false;
 
     try {
       const config = await getLocalLLMConfig();
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current) return false;
 
       const ollamaConfig = config?.ollama;
-      if (ollamaConfig?.models && Array.isArray(ollamaConfig.models)) {
+      // Consider configured if user has set a URL or has cached models
+      const hasConfig = !!(
+        ollamaConfig?.base_url ||
+        (ollamaConfig?.models && ollamaConfig.models.length > 0)
+      );
+
+      if (
+        ollamaConfig?.models &&
+        Array.isArray(ollamaConfig.models) &&
+        ollamaConfig.models.length > 0
+      ) {
         const transformedModels = ollamaConfig.models.map(transformDiscoveredModel);
         setModels(transformedModels);
         setIsConnected(true);
         setError(null);
       }
+
+      setIsConfigured(hasConfig);
+      return hasConfig;
     } catch {
       // Silently fail on load - will try discovery
       if (isMountedRef.current) {
         setModels([]);
+        setIsConfigured(false);
       }
+      return false;
     }
   }, []);
 
@@ -183,16 +202,17 @@ export function useOllamaModels(options: UseOllamaModelsOptions = {}): UseOllama
     }
   }, [baseUrl]);
 
-  // Load cached models on mount, then optionally discover
+  // Load cached models on mount, then optionally discover (only if already configured)
   useEffect(() => {
     isMountedRef.current = true;
 
     const init = async () => {
-      // First try to load cached models
-      await loadCachedModels();
+      // First try to load cached models and check if configured
+      const wasConfigured = await loadCachedModels();
 
-      // Then discover fresh models if autoDiscover is enabled
-      if (autoDiscover) {
+      // Only auto-discover if Ollama has been configured in settings
+      // This prevents connection errors when user hasn't set up Ollama yet
+      if (autoDiscover && wasConfigured) {
         await discover();
       }
     };
@@ -210,5 +230,6 @@ export function useOllamaModels(options: UseOllamaModelsOptions = {}): UseOllama
     error,
     refresh: discover,
     isConnected,
+    isConfigured,
   };
 }

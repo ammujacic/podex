@@ -13,6 +13,7 @@ import {
   Sparkles,
   Loader2,
   AlertTriangle,
+  Plus,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSessionStore, type Agent } from '@/stores/session';
@@ -415,13 +416,22 @@ export function CreateAgentModal({ sessionId, onClose }: CreateAgentModalProps) 
                 </div>
               )}
 
-              {/* No custom agents hint */}
-              {customTemplates.length === 0 && !searchQuery && (
+              {/* Create custom agent hint */}
+              {!searchQuery && (
                 <div className="text-center py-4 px-6 rounded-lg bg-elevated border border-border-subtle">
                   <Sparkles className="h-5 w-5 text-pink-400 mx-auto mb-2" aria-hidden="true" />
-                  <p className="text-sm text-text-secondary">
-                    Create your own agents with the <strong>Agent Builder</strong>
+                  <p className="text-sm text-text-secondary mb-3">
+                    {customTemplates.length === 0
+                      ? 'Create your own agents with custom prompts and tools'
+                      : 'Want more custom agents?'}
                   </p>
+                  <Link
+                    href="/settings/agents/templates"
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-primary/10 text-accent-primary text-sm font-medium hover:bg-accent-primary/20 transition-colors"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Create New Agent Type
+                  </Link>
                 </div>
               )}
             </div>

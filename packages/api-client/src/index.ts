@@ -20,27 +20,8 @@
  */
 
 // Core utilities
-export { RequestCache } from './core/cache';
-export {
-  ApiRequestError,
-  isAbortError,
-  isAuthError,
-  isForbiddenError,
-  isNetworkError,
-  isNotFoundError,
-  isQuotaError,
-  isServerError,
-} from './core/errors';
-export {
-  buildQueryString,
-  calculateExpiry,
-  camelToSnake,
-  isTokenExpiringSoon,
-  joinPath,
-  snakeToCamel,
-  transformKeysToCamel,
-  transformKeysToSnake,
-} from './core/utils';
+export { ApiRequestError, isAbortError, isQuotaError } from './core/errors';
+export { calculateExpiry } from './core/utils';
 
 // Adapter interfaces
 export type {
@@ -50,24 +31,10 @@ export type {
   HttpAdapter,
   HttpRequestConfig,
   HttpResponse,
-  StorageAdapter,
 } from './adapters/types';
 
 // Client
 export { BaseApiClient } from './client/base-client';
 
 // Types
-export type {
-  ApiError,
-  AuthResponse,
-  AuthTokens,
-  CachedRequestOptions,
-  LoginRequest,
-  OAuthTokenResponse,
-  OAuthURLResponse,
-  PaginatedResponse,
-  RegisterRequest,
-  RequestOptions,
-  TokenResponse,
-  User,
-} from './types/index';
+export type { AuthResponse, TokenResponse } from './types/index';

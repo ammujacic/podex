@@ -6,11 +6,11 @@ import { useTunnels } from '@/hooks/useTunnels';
 import { useUIStore } from '@/stores/ui';
 import { cn } from '@/lib/utils';
 
-const MOLTBOT_GATEWAY_PORT = 18789;
+const OPENCLAW_GATEWAY_PORT = 18789;
 const DISCORD_DEV_PORTAL = 'https://discord.com/developers/applications';
 
 // Reuse the same lobster icon styling as in the sidebar: monochrome, currentColor-tinted mask
-function MoltbotIcon({ className }: { className?: string }) {
+function OpenClawIcon({ className }: { className?: string }) {
   return (
     <span
       aria-hidden="true"
@@ -31,19 +31,19 @@ function MoltbotIcon({ className }: { className?: string }) {
   );
 }
 
-interface MoltBotWidgetProps {
+interface OpenClawWidgetProps {
   workspaceId: string | null;
   localPodId: string | null;
 }
 
-export function MoltBotWidget({ workspaceId, localPodId: _localPodId }: MoltBotWidgetProps) {
+export function OpenClawWidget({ workspaceId, localPodId: _localPodId }: OpenClawWidgetProps) {
   const openModal = useUIStore((s) => s.openModal);
   const sendTerminalCommand = useUIStore((s) => s.sendTerminalCommand);
   const { tunnels, loading, error, unexposePort, refetch } = useTunnels(workspaceId);
   const [disconnecting, setDisconnecting] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  const tunnel = tunnels.find((t) => t.port === MOLTBOT_GATEWAY_PORT);
+  const tunnel = tunnels.find((t) => t.port === OPENCLAW_GATEWAY_PORT);
   const hasWorkspace = !!workspaceId;
   // Tunnels now work with both local pods and compute workspaces
   const canSetup = hasWorkspace;
@@ -64,14 +64,14 @@ export function MoltBotWidget({ workspaceId, localPodId: _localPodId }: MoltBotW
     if (!workspaceId) return;
     setDisconnecting(true);
     try {
-      await unexposePort(MOLTBOT_GATEWAY_PORT);
+      await unexposePort(OPENCLAW_GATEWAY_PORT);
     } finally {
       setDisconnecting(false);
     }
   };
 
   const handleRunGateway = () => {
-    sendTerminalCommand('moltbot gateway');
+    sendTerminalCommand('openclaw gateway');
   };
 
   if (!canSetup) {
@@ -79,15 +79,15 @@ export function MoltBotWidget({ workspaceId, localPodId: _localPodId }: MoltBotW
       <div className="flex flex-col gap-4 p-4">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent-primary/10">
-            <MoltbotIcon className="h-5 w-5" />
+            <OpenClawIcon className="h-5 w-5" />
           </div>
           <div>
-            <h3 className="text-sm font-medium text-text-primary">MoltBot (ClawdBot)</h3>
+            <h3 className="text-sm font-medium text-text-primary">OpenClaw</h3>
             <p className="text-xs text-text-muted">Connect to Discord, Slack & more</p>
           </div>
         </div>
         <p className="text-sm text-text-secondary">
-          MoltBot needs a running workspace for tunnels. Start a session first, then return here to
+          OpenClaw needs a running workspace for tunnels. Start a session first, then return here to
           set it up.
         </p>
       </div>
@@ -98,7 +98,7 @@ export function MoltBotWidget({ workspaceId, localPodId: _localPodId }: MoltBotW
     return (
       <div className="flex flex-col items-center justify-center gap-3 p-8">
         <Loader2 className="h-8 w-8 animate-spin text-text-muted" />
-        <p className="text-sm text-text-muted">Checking MoltBot…</p>
+        <p className="text-sm text-text-muted">Checking OpenClaw…</p>
       </div>
     );
   }
@@ -108,10 +108,10 @@ export function MoltBotWidget({ workspaceId, localPodId: _localPodId }: MoltBotW
       <div className="flex flex-col gap-4 p-4">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent-primary/10">
-            <MoltbotIcon className="h-5 w-5" />
+            <OpenClawIcon className="h-5 w-5" />
           </div>
           <div>
-            <h3 className="text-sm font-medium text-text-primary">MoltBot</h3>
+            <h3 className="text-sm font-medium text-text-primary">OpenClaw</h3>
             <p className="text-xs text-text-muted">Connect to Discord, Slack & more</p>
           </div>
         </div>
@@ -135,19 +135,19 @@ export function MoltBotWidget({ workspaceId, localPodId: _localPodId }: MoltBotW
       <div className="flex flex-col gap-4 p-4">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent-primary/10">
-            <MoltbotIcon className="h-5 w-5" />
+            <OpenClawIcon className="h-5 w-5" />
           </div>
           <div>
-            <h3 className="text-sm font-medium text-text-primary">MoltBot (ClawdBot)</h3>
+            <h3 className="text-sm font-medium text-text-primary">OpenClaw</h3>
             <p className="text-xs text-text-muted">Connect to Discord, Slack & more</p>
           </div>
         </div>
         <p className="text-sm text-text-secondary">
-          Install MoltBot, expose its gateway, and connect Discord in a few steps.
+          Install OpenClaw, expose its gateway, and connect Discord in a few steps.
         </p>
         <button
           type="button"
-          onClick={() => openModal('moltbot-wizard')}
+          onClick={() => openModal('openclaw-wizard')}
           className="flex items-center justify-center gap-2 rounded-lg bg-accent-primary px-4 py-3 text-sm font-medium text-white hover:bg-accent-primary/90"
         >
           <Bot className="h-4 w-4" />
@@ -161,10 +161,10 @@ export function MoltBotWidget({ workspaceId, localPodId: _localPodId }: MoltBotW
     <div className="flex flex-col gap-4 p-4">
       <div className="flex items-center gap-3">
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent-primary/10">
-          <MoltbotIcon className="h-5 w-5" />
+          <OpenClawIcon className="h-5 w-5" />
         </div>
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-medium text-text-primary">MoltBot</h3>
+          <h3 className="text-sm font-medium text-text-primary">OpenClaw</h3>
           <div className="flex items-center gap-1.5 text-xs text-text-muted">
             <span
               className={cn(

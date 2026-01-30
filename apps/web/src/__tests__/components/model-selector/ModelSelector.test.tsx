@@ -310,7 +310,7 @@ describe('ModelSelector', () => {
   });
 
   describe('Your Keys tab', () => {
-    it('shows empty state when no user key models', async () => {
+    it('shows empty state with settings link when no user key models', async () => {
       const user = userEvent.setup();
       render(<ModelSelector {...defaultProps} userKeyModels={[]} />);
 
@@ -323,6 +323,12 @@ describe('ModelSelector', () => {
             'Configure your API keys in Settings to use models with your own billing.'
           )
         ).toBeInTheDocument();
+        // Should show link to Connected Accounts settings
+        expect(screen.getByRole('link', { name: /Connected Accounts/i })).toBeInTheDocument();
+        expect(screen.getByRole('link', { name: /Connected Accounts/i })).toHaveAttribute(
+          'href',
+          '/settings/connections'
+        );
       });
     });
 
@@ -373,9 +379,35 @@ describe('ModelSelector', () => {
   });
 
   describe('Local tab', () => {
-    it('shows connection error when Ollama is not running', async () => {
+    // Helper to set up Ollama as configured (so auto-discovery triggers)
+    const setupOllamaConfigured = () => {
+      mockGetLocalLLMConfig.mockResolvedValue({
+        ollama: {
+          base_url: 'http://localhost:11434',
+          models: [],
+        },
+      });
+    };
+
+    it('shows configure settings message when Ollama is not configured', async () => {
       const user = userEvent.setup();
-      // Default mock already rejects with connection error
+      // Default mock returns null (not configured)
+
+      render(<ModelSelector {...defaultProps} />);
+
+      // Switch to Local tab
+      await user.click(screen.getByRole('tab', { name: 'Local' }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/Configure Ollama in Settings/i)).toBeInTheDocument();
+        expect(screen.getByRole('link', { name: /Configure Local Models/i })).toBeInTheDocument();
+      });
+    });
+
+    it('shows connection error when Ollama is configured but not running', async () => {
+      const user = userEvent.setup();
+      setupOllamaConfigured();
+      mockDiscoverLocalModels.mockRejectedValue(new Error('Could not connect to Ollama'));
 
       render(<ModelSelector {...defaultProps} />);
 
@@ -384,6 +416,8 @@ describe('ModelSelector', () => {
 
       await waitFor(() => {
         expect(screen.getByText(/Could not connect to Ollama/i)).toBeInTheDocument();
+        // Should also show a link to check settings
+        expect(screen.getByRole('link', { name: /Check Settings/i })).toBeInTheDocument();
       });
     });
 
@@ -413,6 +447,7 @@ describe('ModelSelector', () => {
 
     it('shows loading state when discovering models', async () => {
       const user = userEvent.setup();
+      setupOllamaConfigured();
       // Make discoverLocalModels hang
       mockDiscoverLocalModels.mockImplementation(
         () => new Promise(() => {}) // Never resolves
@@ -430,6 +465,7 @@ describe('ModelSelector', () => {
 
     it('shows empty state when Ollama connected but no models', async () => {
       const user = userEvent.setup();
+      setupOllamaConfigured();
       mockDiscoverLocalModels.mockResolvedValue({
         success: true,
         models: [],
@@ -447,6 +483,7 @@ describe('ModelSelector', () => {
 
     it('shows Ollama models when available', async () => {
       const user = userEvent.setup();
+      setupOllamaConfigured();
       mockDiscoverLocalModels.mockResolvedValue({
         success: true,
         models: [
@@ -468,8 +505,9 @@ describe('ModelSelector', () => {
       });
     });
 
-    it('refresh button triggers model refresh', async () => {
+    it('refresh button triggers model refresh when configured', async () => {
       const user = userEvent.setup();
+      setupOllamaConfigured();
       mockDiscoverLocalModels.mockResolvedValue({
         success: true,
         models: [],
@@ -560,6 +598,13 @@ describe('ModelSelector', () => {
 
     it('can select models from Local tab', async () => {
       const user = userEvent.setup();
+      // Need to configure Ollama so models are discovered
+      mockGetLocalLLMConfig.mockResolvedValue({
+        ollama: {
+          base_url: 'http://localhost:11434',
+          models: [],
+        },
+      });
       mockDiscoverLocalModels.mockResolvedValue({
         success: true,
         models: [

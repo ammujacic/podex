@@ -37,9 +37,6 @@ class RoleConfig:
     name: str
     system_prompt: str
     tools: list[str]  # Tool names
-    default_model: str | None = None
-    default_temperature: float | None = None
-    default_max_tokens: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for Redis storage."""
@@ -48,9 +45,6 @@ class RoleConfig:
             "name": self.name,
             "system_prompt": self.system_prompt,
             "tools": self.tools,
-            "default_model": self.default_model,
-            "default_temperature": self.default_temperature,
-            "default_max_tokens": self.default_max_tokens,
         }
 
     @classmethod
@@ -61,9 +55,6 @@ class RoleConfig:
             name=data["name"],
             system_prompt=data["system_prompt"],
             tools=data["tools"],
-            default_model=data.get("default_model"),
-            default_temperature=data.get("default_temperature"),
-            default_max_tokens=data.get("default_max_tokens"),
         )
 
 
@@ -167,9 +158,6 @@ async def fetch_role_config(role: str) -> RoleConfig | None:
                     name=data["name"],
                     system_prompt=data["system_prompt"],
                     tools=data["tools"],
-                    default_model=data.get("default_model"),
-                    default_temperature=data.get("default_temperature"),
-                    default_max_tokens=data.get("default_max_tokens"),
                 )
                 # Cache in Redis
                 try:
@@ -319,15 +307,10 @@ class DatabaseAgent(BaseAgent):
         self._system_prompt_override = config.system_prompt_override
         self._tools_override = config.tools_override
 
-        # Determine effective model
-        effective_model = config.model
-        if role_config.default_model and not config.model:
-            effective_model = role_config.default_model
-
         # Create base agent config
         agent_config = AgentConfig(
             agent_id=config.agent_id,
-            model=effective_model,
+            model=config.model,
             llm_provider=config.llm_provider,
             workspace_path=config.workspace_path,
             session_id=config.session_id,
@@ -347,7 +330,7 @@ class DatabaseAgent(BaseAgent):
             "Initialized database agent",
             agent_id=config.agent_id,
             role=role_config.role,
-            model=effective_model,
+            model=config.model,
             tool_count=len(self.tools),
         )
 
@@ -380,16 +363,6 @@ class DatabaseAgent(BaseAgent):
                 )
 
         return tools
-
-    @property
-    def temperature(self) -> float | None:
-        """Get temperature setting from role config."""
-        return self._role_config.default_temperature
-
-    @property
-    def max_tokens(self) -> int | None:
-        """Get max_tokens setting from role config."""
-        return self._role_config.default_max_tokens
 
 
 async def create_database_agent(

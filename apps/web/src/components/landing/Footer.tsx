@@ -17,23 +17,18 @@ const footerLinks = {
   ],
   Resources: [
     { name: 'Documentation', href: '/docs' },
-    { name: 'API Reference', href: '/docs/api' },
-    { name: 'Guides', href: '/docs/guides' },
-    { name: 'Examples', href: '/examples' },
+    { name: 'FAQ', href: '/faq' },
     { name: 'Glossary', href: '/glossary' },
-    { name: 'Blog', href: '/blog' },
+    { name: 'Status', href: '/status' },
   ],
   Company: [
     { name: 'About', href: '/about' },
-    { name: 'Careers', href: '/careers', badge: 'Hiring' },
     { name: 'Contact', href: '/contact' },
-    { name: 'Press Kit', href: '/press' },
   ],
   Legal: [
     { name: 'Privacy', href: '/privacy' },
     { name: 'Terms', href: '/terms' },
     { name: 'Security', href: '/security' },
-    { name: 'DPA', href: '/dpa' },
   ],
 };
 
@@ -161,14 +156,9 @@ export function Footer() {
                   <li key={link.name}>
                     <Link
                       href={link.href}
-                      className="text-text-secondary hover:text-text-primary transition-colors inline-flex items-center gap-2"
+                      className="text-text-secondary hover:text-text-primary transition-colors"
                     >
                       {link.name}
-                      {'badge' in link && link.badge && (
-                        <span className="px-1.5 py-0.5 text-xs rounded bg-accent-success/20 text-accent-success">
-                          {link.badge}
-                        </span>
-                      )}
                     </Link>
                   </li>
                 ))}

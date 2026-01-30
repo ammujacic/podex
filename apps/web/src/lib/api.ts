@@ -898,9 +898,6 @@ export interface AgentRoleConfig {
   features: string[] | null;
   example_prompts: string[] | null;
   requires_subscription: string | null;
-  default_model: string | null;
-  default_temperature: number | null;
-  default_max_tokens: number | null;
   sort_order: number;
   is_enabled: boolean;
   is_system: boolean;

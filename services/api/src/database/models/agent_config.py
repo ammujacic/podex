@@ -204,11 +204,6 @@ class AgentRoleConfig(Base):
         String(50)
     )  # Minimum plan slug required (null = available to all)
 
-    # Default model settings (can be overridden per-user in preferences)
-    default_model: Mapped[str | None] = mapped_column(String(100))  # Falls back to platform default
-    default_temperature: Mapped[float | None] = mapped_column(Float)
-    default_max_tokens: Mapped[int | None] = mapped_column(Integer)
-
     # Ordering and visibility
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

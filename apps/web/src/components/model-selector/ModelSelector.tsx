@@ -1,8 +1,9 @@
 'use client';
 
 import { useState, useMemo, useCallback } from 'react';
+import Link from 'next/link';
 import * as Tabs from '@radix-ui/react-tabs';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, Settings } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ModelSearch } from './ModelSearch';
 import { ModelFilters } from './ModelFilters';
@@ -112,6 +113,7 @@ export function ModelSelector({
     error: ollamaError,
     refresh: refreshOllama,
     isConnected: ollamaConnected,
+    isConfigured: ollamaConfigured,
   } = useOllamaModels();
 
   // Convert Ollama models to LLMModel format (prefixed with "ollama/")
@@ -249,10 +251,23 @@ export function ModelSelector({
               </div>
             </>
           ) : (
-            /* Empty state */
+            /* Empty state - prompt to configure API keys */
             <div className="flex-1 flex items-center justify-center p-6">
               <div className="text-center text-text-muted max-w-sm">
-                <p>Configure your API keys in Settings to use models with your own billing.</p>
+                <p className="mb-3">
+                  Configure your API keys in Settings to use models with your own billing.
+                </p>
+                <Link
+                  href="/settings/connections"
+                  className={cn(
+                    'inline-flex items-center gap-2 px-4 py-2 rounded-lg',
+                    'bg-accent-primary/10 text-accent-primary hover:bg-accent-primary/20',
+                    'text-sm font-medium transition-colors'
+                  )}
+                >
+                  <Settings className="h-4 w-4" />
+                  Connected Accounts
+                </Link>
               </div>
             </div>
           )}
@@ -291,7 +306,27 @@ export function ModelSelector({
 
           {/* Content based on state */}
           <div className="flex-1 min-h-0">
-            {ollamaLoading ? (
+            {!ollamaConfigured ? (
+              /* Not configured state - prompt to configure in settings */
+              <div className="flex items-center justify-center h-full p-6">
+                <div className="text-center text-text-muted max-w-sm">
+                  <p className="mb-3">
+                    Configure Ollama in Settings to use local models on your machine.
+                  </p>
+                  <Link
+                    href="/settings/agents"
+                    className={cn(
+                      'inline-flex items-center gap-2 px-4 py-2 rounded-lg',
+                      'bg-green-500/10 text-green-400 hover:bg-green-500/20',
+                      'text-sm font-medium transition-colors'
+                    )}
+                  >
+                    <Settings className="h-4 w-4" />
+                    Configure Local Models
+                  </Link>
+                </div>
+              </div>
+            ) : ollamaLoading ? (
               /* Loading state */
               <div className="flex items-center justify-center h-full p-6">
                 <div className="text-center text-text-muted">
@@ -300,10 +335,23 @@ export function ModelSelector({
                 </div>
               </div>
             ) : ollamaError ? (
-              /* Error state */
+              /* Error state - configured but can't connect */
               <div className="flex items-center justify-center h-full p-6">
                 <div className="text-center text-text-muted max-w-sm">
-                  <p>Could not connect to Ollama. Make sure it&apos;s running at localhost:11434</p>
+                  <p className="mb-3">
+                    Could not connect to Ollama. Make sure it&apos;s running at localhost:11434
+                  </p>
+                  <Link
+                    href="/settings/agents"
+                    className={cn(
+                      'inline-flex items-center gap-2 px-4 py-2 rounded-lg',
+                      'bg-overlay text-text-secondary hover:text-text-primary hover:bg-elevated',
+                      'text-sm font-medium transition-colors'
+                    )}
+                  >
+                    <Settings className="h-4 w-4" />
+                    Check Settings
+                  </Link>
                 </div>
               </div>
             ) : ollamaConnected && ollamaLLMModels.length === 0 ? (

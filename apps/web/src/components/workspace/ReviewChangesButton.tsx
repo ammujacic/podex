@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { cn } from '@/lib/utils';
 import { GitMerge, ChevronUp, Loader2 } from 'lucide-react';
 import { getSessionChangeSets, type ChangeSetResponse } from '@/lib/api';
@@ -35,8 +35,8 @@ export function ReviewChangesButton({ sessionId, className }: ReviewChangesButto
   // Fetch pending changes
   useEffect(() => {
     fetchPendingChanges();
-    // Poll for changes every 5 seconds
-    const interval = setInterval(fetchPendingChanges, 5000);
+    // Poll for changes every 15 seconds (reduced from 5s for performance)
+    const interval = setInterval(fetchPendingChanges, 15000);
     return () => clearInterval(interval);
   }, [fetchPendingChanges]);
 
@@ -54,10 +54,15 @@ export function ReviewChangesButton({ sessionId, className }: ReviewChangesButto
     fetchPendingChanges();
   };
 
-  // Calculate totals
-  const totalFiles = pendingChanges.reduce((acc, cs) => acc + cs.total_files, 0);
-  const totalAdditions = pendingChanges.reduce((acc, cs) => acc + cs.total_additions, 0);
-  const totalDeletions = pendingChanges.reduce((acc, cs) => acc + cs.total_deletions, 0);
+  // Memoize calculated totals to avoid recalculating on every render
+  const { totalFiles, totalAdditions, totalDeletions } = useMemo(
+    () => ({
+      totalFiles: pendingChanges.reduce((acc, cs) => acc + cs.total_files, 0),
+      totalAdditions: pendingChanges.reduce((acc, cs) => acc + cs.total_additions, 0),
+      totalDeletions: pendingChanges.reduce((acc, cs) => acc + cs.total_deletions, 0),
+    }),
+    [pendingChanges]
+  );
 
   // Don't show if no pending changes
   if (!loading && pendingChanges.length === 0) {

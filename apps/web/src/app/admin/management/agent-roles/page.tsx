@@ -218,9 +218,6 @@ interface AgentRoleConfig {
   description?: string;
   system_prompt: string;
   tools: string[];
-  default_model?: string;
-  default_temperature?: number;
-  default_max_tokens?: number;
   sort_order: number;
   is_enabled: boolean;
   is_system: boolean;
@@ -246,9 +243,6 @@ interface CreateRoleForm {
   description: string;
   system_prompt: string;
   tools: string[];
-  default_model: string;
-  default_temperature: number | null;
-  default_max_tokens: number | null;
   sort_order: number;
 }
 
@@ -260,9 +254,6 @@ const defaultForm: CreateRoleForm = {
   description: '',
   system_prompt: '',
   tools: [],
-  default_model: '',
-  default_temperature: null,
-  default_max_tokens: null,
   sort_order: 100,
 };
 
@@ -376,9 +367,6 @@ export default function AgentRolesAdminPage() {
       description: role.description || '',
       system_prompt: role.system_prompt,
       tools: role.tools,
-      default_model: role.default_model || '',
-      default_temperature: role.default_temperature ?? null,
-      default_max_tokens: role.default_max_tokens ?? null,
       sort_order: role.sort_order,
     });
   };
@@ -837,63 +825,6 @@ export default function AgentRolesAdminPage() {
                 <p className="text-xs text-text-muted mt-1">
                   Selected: {formData.tools.length} tools
                 </p>
-              </div>
-
-              {/* Model Settings */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                <div>
-                  <label className="block text-sm font-medium text-text-primary mb-1">
-                    Default Model
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.default_model}
-                    onChange={(e) => setFormData({ ...formData, default_model: e.target.value })}
-                    className="w-full px-3 py-2 border border-border-subtle rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="e.g., claude-sonnet-4-5-20250929"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-text-primary mb-1">
-                    Temperature
-                  </label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    max="2"
-                    value={formData.default_temperature ?? ''}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        default_temperature: e.target.value ? parseFloat(e.target.value) : null,
-                      })
-                    }
-                    className="w-full px-3 py-2 border border-border-subtle rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="0.5"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-text-primary mb-1">
-                    Max Tokens
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="100000"
-                    value={formData.default_max_tokens ?? ''}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        default_max_tokens: e.target.value ? parseInt(e.target.value) : null,
-                      })
-                    }
-                    className="w-full px-3 py-2 border border-border-subtle rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="4096"
-                  />
-                </div>
               </div>
 
               <div className="flex justify-end gap-3">

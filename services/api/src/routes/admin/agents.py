@@ -41,9 +41,6 @@ class AgentRoleConfigResponse(BaseModel):
     features: list[str] | None
     example_prompts: list[str] | None
     requires_subscription: str | None
-    default_model: str | None
-    default_temperature: float | None
-    default_max_tokens: int | None
     sort_order: int
     is_enabled: bool
     is_system: bool
@@ -64,9 +61,6 @@ class UpdateAgentRoleConfigRequest(BaseModel):
     description: str | None = None
     system_prompt: str | None = Field(None, min_length=10)
     tools: list[str] | None = None
-    default_model: str | None = Field(None, max_length=100)
-    default_temperature: float | None = Field(None, ge=0, le=2)
-    default_max_tokens: int | None = Field(None, ge=1, le=100000)
     sort_order: int | None = Field(None, ge=0)
     is_enabled: bool | None = None
 
@@ -81,9 +75,6 @@ class CreateAgentRoleConfigRequest(BaseModel):
     description: str | None = None
     system_prompt: str = Field(..., min_length=10)
     tools: list[str] = Field(default_factory=list)
-    default_model: str | None = Field(None, max_length=100)
-    default_temperature: float | None = Field(None, ge=0, le=2)
-    default_max_tokens: int | None = Field(None, ge=1, le=100000)
     sort_order: int = Field(default=500, ge=0)
 
 
@@ -259,9 +250,6 @@ async def create_role_config(
         description=data.description,
         system_prompt=data.system_prompt,
         tools=data.tools,
-        default_model=data.default_model,
-        default_temperature=data.default_temperature,
-        default_max_tokens=data.default_max_tokens,
         sort_order=data.sort_order,
         is_enabled=True,
         is_system=False,  # Custom roles can be deleted

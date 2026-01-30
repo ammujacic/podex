@@ -157,22 +157,38 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     getConversationForAgent,
     handleConversationEvent,
   } = useSessionStore();
-  const streamingMessages = useStreamingStore((state) => state.streamingMessages);
-  const { getAgentWorktree } = useWorktreesStore();
-  const { getAgentCheckpoints, restoringCheckpointId } = useCheckpointsStore();
+  // Use specific selectors to avoid re-renders when unrelated state changes
+  // Only subscribe to streaming messages for THIS agent
+  const streamingMessage = useStreamingStore(
+    useCallback(
+      (state) => {
+        const messages = Object.values(state.streamingMessages);
+        return messages.find(
+          (sm) => sm.sessionId === sessionId && sm.agentId === agent.id && sm.isStreaming
+        );
+      },
+      [sessionId, agent.id]
+    )
+  );
+
+  // Use specific selectors for worktree and checkpoint data
+  const agentWorktree = useWorktreesStore(
+    useCallback(
+      (state) => state.sessionWorktrees[sessionId]?.find((w) => w.agentId === agent.id),
+      [sessionId, agent.id]
+    )
+  );
+  const agentCheckpoints = useCheckpointsStore(
+    useCallback(
+      (state) => state.sessionCheckpoints[sessionId]?.filter((c) => c.agentId === agent.id) ?? [],
+      [sessionId, agent.id]
+    )
+  );
+  const restoringCheckpointId = useCheckpointsStore((state) => state.restoringCheckpointId);
 
   // Get the conversation session attached to this agent
   const conversationSession = getConversationForAgent(sessionId, agent.id);
   const messages = conversationSession?.messages ?? [];
-
-  // Related data
-  const agentWorktree = getAgentWorktree(sessionId, agent.id);
-  const agentCheckpoints = getAgentCheckpoints(sessionId, agent.id);
-
-  // Streaming message
-  const streamingMessage = Object.values(streamingMessages).find(
-    (sm) => sm.sessionId === sessionId && sm.agentId === agent.id && sm.isStreaming
-  );
 
   // User message history (from conversation session)
   const userMessages = messages

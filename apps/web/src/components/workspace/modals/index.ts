@@ -1,7 +1,7 @@
 // Modal components
 export { CreateAgentModal } from './CreateAgentModal';
 export { MCPSettingsModal } from './MCPSettingsModal';
-export { MoltBotInstallWizardModal } from './MoltBotInstallWizardModal';
+export { OpenClawInstallWizardModal } from './OpenClawInstallWizardModal';
 export { WorkspaceScalingModal } from './WorkspaceScalingModal';
 export { ExtensionMarketplaceModal } from './ExtensionMarketplaceModal';
 export { NewPathModal } from './NewPathModal';

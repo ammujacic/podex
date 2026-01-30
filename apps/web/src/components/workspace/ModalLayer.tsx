@@ -9,7 +9,7 @@ import {
   WorkspaceScalingModal,
   ExtensionMarketplaceModal,
   NewPathModal,
-  MoltBotInstallWizardModal,
+  OpenClawInstallWizardModal,
 } from './modals';
 import type { WorkspaceTier } from '@podex/shared';
 
@@ -71,8 +71,8 @@ export function ModalLayer({ sessionId }: ModalLayerProps) {
           onClose={closeModal}
         />
       )}
-      {activeModal === 'moltbot-wizard' && (
-        <MoltBotInstallWizardModal
+      {activeModal === 'openclaw-wizard' && (
+        <OpenClawInstallWizardModal
           sessionId={sessionId}
           workspaceId={workspaceId ?? null}
           localPodId={currentSession?.localPodId ?? null}

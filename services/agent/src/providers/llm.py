@@ -298,12 +298,12 @@ class LLMProvider:
             if llm_api_keys:
                 user_key = llm_api_keys.get(native_provider)
                 if user_key:
+                    # SECURITY: Don't log API key prefixes - they reveal token type
                     logger.info(
                         "Using user-provided API key for model",
                         model=model,
                         provider=native_provider,
                         from_database=True,
-                        key_prefix=user_key[:15] + "..." if len(user_key) > 15 else user_key,
                     )
                     return native_provider, user_key
 
@@ -707,8 +707,6 @@ class LLMProvider:
         temperature: float = 0.7,
     ) -> dict[str, Any]:
         """Complete using OpenRouter API (unified access to multiple LLM providers)."""
-        # Map internal model IDs to OpenRouter model identifiers
-        openrouter_model = self._map_to_openrouter_model(model)
 
         # Convert Anthropic-style tools to OpenAI format
         openai_tools = None
@@ -728,7 +726,7 @@ class LLMProvider:
 
         # Build request parameters
         request_params: dict[str, Any] = {
-            "model": openrouter_model,
+            "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
@@ -771,36 +769,6 @@ class LLMProvider:
             },
             "stop_reason": choice.finish_reason,
         }
-
-    def _map_to_openrouter_model(self, model: str) -> str:
-        """Map internal model IDs to OpenRouter model identifiers.
-
-        Args:
-            model: Internal model identifier
-
-        Returns:
-            OpenRouter model identifier (e.g., "anthropic/claude-sonnet-4-5")
-        """
-        # OpenRouter uses provider/model format
-        model_mapping = {
-            # Claude 4.5 family
-            "claude-opus-4-5": "anthropic/claude-opus-4-5",
-            "claude-sonnet-4-5": "anthropic/claude-sonnet-4-5",
-            "claude-haiku-4-5": "anthropic/claude-haiku-4-5",
-            # Short aliases
-            "opus": "anthropic/claude-opus-4-5",
-            "sonnet": "anthropic/claude-sonnet-4-5",
-            "haiku": "anthropic/claude-haiku-4-5",
-            # Gemini models
-            "gemini-2.0-flash": "google/gemini-2.0-flash-001",
-            "gemini-2.5-pro-preview": "google/gemini-2.5-pro-preview-05-06",
-            # OpenAI models
-            "gpt-4o": "openai/gpt-4o",
-            "gpt-4o-mini": "openai/gpt-4o-mini",
-            "o1": "openai/o1",
-            "o1-mini": "openai/o1-mini",
-        }
-        return model_mapping.get(model, model)
 
     async def _complete_ollama(
         self,
@@ -1163,8 +1131,6 @@ class LLMProvider:
         temperature: float = 0.7,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Stream completion using OpenRouter API."""
-        # Map internal model IDs to OpenRouter model identifiers
-        openrouter_model = self._map_to_openrouter_model(model)
 
         # Convert Anthropic-style tools to OpenAI format
         openai_tools = None
@@ -1184,7 +1150,7 @@ class LLMProvider:
 
         # Build request parameters
         request_params: dict[str, Any] = {
-            "model": openrouter_model,
+            "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,

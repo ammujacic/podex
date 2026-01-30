@@ -162,6 +162,7 @@ class ToolExecutor:
         command_allowlist: list[str] | None = None,
         approval_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         workspace_id: str | None = None,
+        agent_model: str | None = None,
     ) -> None:
         """Initialize tool executor.
 
@@ -177,6 +178,8 @@ class ToolExecutor:
             workspace_id: Optional workspace container ID for remote execution.
                          When provided, file/command/git tools execute on the
                          workspace container via the compute service.
+            agent_model: Optional model used by the agent. Used as default for
+                        agent builder tools when creating new templates.
         """
         self.workspace_path = Path(workspace_path).resolve()
         self.session_id = session_id
@@ -184,6 +187,7 @@ class ToolExecutor:
         self._mcp_registry = mcp_registry
         self.agent_id = agent_id
         self.workspace_id = workspace_id
+        self.agent_model = agent_model
 
         # Mode-based permissions
         if isinstance(agent_mode, str):
@@ -716,7 +720,8 @@ class ToolExecutor:
         if tool_name == "create_agent_template":
             if not self.user_id:
                 return {"success": False, "error": "User ID not available"}
-            model = arguments.get("model")
+            # Use explicit model from arguments, or fall back to the agent's own model
+            model = arguments.get("model") or self.agent_model
             if not model:
                 return {
                     "success": False,
@@ -738,7 +743,8 @@ class ToolExecutor:
         if tool_name == "list_available_tools":
             return await list_available_tools()
         if tool_name == "preview_agent_template":
-            model = arguments.get("model")
+            # Use explicit model from arguments, or fall back to the agent's own model
+            model = arguments.get("model") or self.agent_model
             if not model:
                 return {
                     "success": False,

@@ -136,7 +136,7 @@ async def get_settings_from_cache() -> dict[str, Any]:
         await redis_client.connect()
         cached = await redis_client.get_json(PLATFORM_SETTINGS_CACHE_KEY)
         if cached and isinstance(cached, dict):
-            return cached
+            return dict(cached)  # Explicit dict to satisfy type checker
     except Exception as e:
         raise SettingsNotAvailableError(f"Failed to get settings from Redis cache: {e}") from e
 

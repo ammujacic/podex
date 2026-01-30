@@ -843,12 +843,15 @@ async def workspace_provision_background_task() -> None:
                     # Find active *cloud* sessions with workspaces that should be running.
                     # IMPORTANT: Skip local-pod workspaces entirely - those are managed by the
                     # local pod connection and should never be auto-provisioned via compute.
+                    # NOTE: Only check "running" status - "pending" and "creating" workspaces
+                    # are still being provisioned by another request, and checking them here
+                    # causes a race condition where we try to create them twice.
                     query = (
                         select(SessionModel, Workspace)
                         .join(Workspace, SessionModel.workspace_id == Workspace.id)
                         .where(
                             SessionModel.status == "active",
-                            Workspace.status.in_(["running", "creating", "pending"]),
+                            Workspace.status == "running",
                             Workspace.local_pod_id.is_(None),
                         )
                     )

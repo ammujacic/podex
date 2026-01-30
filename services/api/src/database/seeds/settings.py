@@ -85,29 +85,61 @@ DEFAULT_SETTINGS = [
     {
         "key": "agent_model_defaults",
         "value": {
-            "architect": {"model_id": "claude-sonnet-4-5", "temperature": 0.7, "max_tokens": 8192},
-            "coder": {"model_id": "claude-sonnet-4-5", "temperature": 0.3, "max_tokens": 4096},
-            "reviewer": {"model_id": "claude-sonnet-4-5", "temperature": 0.5, "max_tokens": 4096},
-            "tester": {"model_id": "claude-sonnet-4-5", "temperature": 0.3, "max_tokens": 4096},
-            "chat": {"model_id": "claude-haiku-4-5", "temperature": 0.7, "max_tokens": 4096},
-            "security": {"model_id": "claude-sonnet-4-5", "temperature": 0.3, "max_tokens": 4096},
-            "devops": {"model_id": "claude-sonnet-4-5", "temperature": 0.5, "max_tokens": 4096},
+            "architect": {
+                "model_id": "anthropic/claude-sonnet-4-5",
+                "temperature": 0.7,
+                "max_tokens": 8192,
+            },
+            "coder": {
+                "model_id": "anthropic/claude-sonnet-4-5",
+                "temperature": 0.3,
+                "max_tokens": 4096,
+            },
+            "reviewer": {
+                "model_id": "anthropic/claude-sonnet-4-5",
+                "temperature": 0.5,
+                "max_tokens": 4096,
+            },
+            "tester": {
+                "model_id": "anthropic/claude-sonnet-4-5",
+                "temperature": 0.3,
+                "max_tokens": 4096,
+            },
+            "chat": {
+                "model_id": "anthropic/claude-haiku-4-5",
+                "temperature": 0.7,
+                "max_tokens": 4096,
+            },
+            "security": {
+                "model_id": "anthropic/claude-sonnet-4-5",
+                "temperature": 0.3,
+                "max_tokens": 4096,
+            },
+            "devops": {
+                "model_id": "anthropic/claude-sonnet-4-5",
+                "temperature": 0.5,
+                "max_tokens": 4096,
+            },
             "documentator": {
-                "model_id": "claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4-5",
                 "temperature": 0.7,
                 "max_tokens": 4096,
             },
             "agent_builder": {
-                "model_id": "claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4-5",
                 "temperature": 0.5,
                 "max_tokens": 8192,
             },
             "orchestrator": {
-                "model_id": "claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4-5",
                 "temperature": 0.5,
                 "max_tokens": 8192,
             },
-            "custom": {"model_id": "claude-sonnet-4-5", "temperature": 0.5, "max_tokens": 4096},
+            "custom": {
+                "model_id": "anthropic/claude-sonnet-4-5",
+                "temperature": 0.5,
+                "max_tokens": 4096,
+            },
         },
         "description": "Default model settings per agent type",
         "category": "agents",

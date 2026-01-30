@@ -330,10 +330,18 @@ class ComputeClient:
         try:
             async with get_db_context() as db:
                 # Update workspace status to stopped (no more 'standby' state)
+                # BUT: only if the workspace is not currently being created/pending.
+                # A 404 from compute is expected during workspace creation - the container
+                # hasn't been registered yet. Marking it as "stopped" would cause a race
+                # condition where auto-provisioning tries to create it again.
                 now = datetime.now(UTC)
                 result = await db.execute(
                     update(Workspace)
-                    .where(Workspace.id == workspace_id)
+                    .where(
+                        Workspace.id == workspace_id,
+                        # Only mark as stopped if not in a "creating" state
+                        Workspace.status.not_in(["creating", "pending"]),
+                    )
                     .values(status="stopped", standby_at=None, updated_at=now)
                 )
 

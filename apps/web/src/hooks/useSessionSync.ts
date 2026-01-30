@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useMemo } from 'react';
 import { useAuthStore } from '@/stores/auth';
 import { useSessionStore } from '@/stores/session';
 import { listSessions } from '@/lib/api';
@@ -23,6 +23,10 @@ export function useSessionSync() {
   const syncSessionsWithBackend = useSessionStore((state) => state.syncSessionsWithBackend);
   const sessions = useSessionStore((state) => state.sessions);
 
+  // Memoize session count to avoid effect re-runs when sessions object reference changes
+  // We only care about the count/existence for the sync decision
+  const sessionCount = useMemo(() => Object.keys(sessions).length, [sessions]);
+
   // Track if we've already synced this session to avoid repeated calls
   const hasSyncedRef = useRef(false);
 
@@ -33,8 +37,7 @@ export function useSessionSync() {
     }
 
     // Don't sync if there are no local sessions to clean up
-    const localSessionIds = Object.keys(sessions);
-    if (localSessionIds.length === 0) {
+    if (sessionCount === 0) {
       hasSyncedRef.current = true;
       return;
     }
@@ -68,5 +71,5 @@ export function useSessionSync() {
     }
 
     syncSessions();
-  }, [isInitialized, user, sessions, syncSessionsWithBackend]);
+  }, [isInitialized, user, sessionCount, syncSessionsWithBackend]);
 }

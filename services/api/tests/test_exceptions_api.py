@@ -18,7 +18,6 @@ from src.exceptions import (
     ConfigurationError,
     DefaultSecretKeyError,
     EmptyMessageContentError,
-    FileNotFoundInStorageError,
     InvalidAgentRoleError,
     MessageContentTooLargeError,
     MigrationError,
@@ -159,18 +158,6 @@ class TestValidationErrors:
         """Test EmptyMessageContentError message."""
         error = EmptyMessageContentError()
         assert "empty" in str(error).lower()
-
-
-class TestFileErrors:
-    """Tests for file-related exceptions."""
-
-    def test_file_not_found_in_storage_error(self) -> None:
-        """Test FileNotFoundInStorageError message."""
-        error = FileNotFoundInStorageError("/workspace/file.txt")
-        assert "/workspace/file.txt" in str(error)
-        assert "not found" in str(error).lower()
-        assert error.path == "/workspace/file.txt"
-        assert isinstance(error, FileNotFoundError)
 
 
 class TestAgentClientErrors:

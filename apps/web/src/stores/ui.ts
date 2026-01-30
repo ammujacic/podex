@@ -37,7 +37,7 @@ export type PanelId =
   | 'skills'
   | 'health'
   | 'tunnels'
-  | 'moltbot';
+  | 'openclaw';
 export type SidebarSide = 'left' | 'right';
 
 export interface PanelSlot {

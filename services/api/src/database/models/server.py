@@ -219,6 +219,5 @@ class ServerStatus:
 
     ACTIVE = "active"
     DRAINING = "draining"  # No new workspaces, existing ones continue
-    MAINTENANCE = "maintenance"  # Scheduled maintenance
     OFFLINE = "offline"  # Not reachable
     ERROR = "error"  # Has errors

@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useCallback, useMemo } from 'react';
+import { useRef, useCallback, useMemo, memo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useRouter } from 'next/navigation';
 import { Pin, PinOff, Trash2, Clock, Bot, Star, GitBranch } from 'lucide-react';
@@ -65,46 +65,56 @@ export function VirtualSessionList({
     overscan: 5,
   });
 
-  const handleSessionClick = (sessionId: string) => {
-    router.push(`/session/${sessionId}`);
-  };
+  const handleSessionClick = useCallback(
+    (sessionId: string) => {
+      router.push(`/session/${sessionId}`);
+    },
+    [router]
+  );
 
-  const handlePinToggle = async (session: Session, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handlePinToggle = useCallback(
+    async (session: Session, e: React.MouseEvent) => {
+      e.stopPropagation();
 
-    if (session.isPinned) {
+      if (session.isPinned) {
+        await undoableAction({
+          action: () => onUnpin(session.id),
+          undo: () => onPin(session.id),
+          message: `Unpinned "${session.name}"`,
+          undoMessage: `"${session.name}" pinned again`,
+        });
+      } else {
+        await undoableAction({
+          action: () => onPin(session.id),
+          undo: () => onUnpin(session.id),
+          message: `Pinned "${session.name}"`,
+          undoMessage: `"${session.name}" unpinned`,
+        });
+      }
+    },
+    [onPin, onUnpin]
+  );
+
+  const handleDelete = useCallback(
+    async (session: Session, e: React.MouseEvent) => {
+      e.stopPropagation();
+
+      // Store session data for potential undo (in a real app you'd need proper restore)
       await undoableAction({
-        action: () => onUnpin(session.id),
-        undo: () => onPin(session.id),
-        message: `Unpinned "${session.name}"`,
-        undoMessage: `"${session.name}" pinned again`,
+        action: () => onDelete(session.id),
+        undo: () => {
+          showError('Cannot restore deleted session');
+          return Promise.resolve();
+        },
+        message: `Deleted "${session.name}"`,
+        undoMessage: 'Deletion cannot be undone',
       });
-    } else {
-      await undoableAction({
-        action: () => onPin(session.id),
-        undo: () => onUnpin(session.id),
-        message: `Pinned "${session.name}"`,
-        undoMessage: `"${session.name}" unpinned`,
-      });
-    }
-  };
+    },
+    [onDelete]
+  );
 
-  const handleDelete = async (session: Session, e: React.MouseEvent) => {
-    e.stopPropagation();
-
-    // Store session data for potential undo (in a real app you'd need proper restore)
-    await undoableAction({
-      action: () => onDelete(session.id),
-      undo: () => {
-        showError('Cannot restore deleted session');
-        return Promise.resolve();
-      },
-      message: `Deleted "${session.name}"`,
-      undoMessage: 'Deletion cannot be undone',
-    });
-  };
-
-  const formatTimeAgo = (date: Date) => {
+  // Memoized formatters to prevent SessionCard re-renders
+  const formatTimeAgo = useCallback((date: Date) => {
     const now = new Date();
     const diff = now.getTime() - date.getTime();
     const minutes = Math.floor(diff / 60000);
@@ -115,13 +125,13 @@ export function VirtualSessionList({
     if (hours > 0) return `${hours}h ago`;
     if (minutes > 0) return `${minutes}m ago`;
     return 'Just now';
-  };
+  }, []);
 
-  const formatTokens = (tokens: number) => {
+  const formatTokens = useCallback((tokens: number) => {
     if (tokens >= 1000000) return `${(tokens / 1000000).toFixed(1)}M`;
     if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}K`;
     return tokens.toString();
-  };
+  }, []);
 
   if (sessions.length === 0) {
     return null;
@@ -161,7 +171,7 @@ export function VirtualSessionList({
               )}
             >
               {rowSessions.map((session) => (
-                <SessionCard
+                <VirtualSessionCard
                   key={session.id}
                   session={session}
                   viewMode={viewMode}
@@ -190,7 +200,14 @@ interface SessionCardProps {
   formatTokens: (tokens: number) => string;
 }
 
-function SessionCard({
+// Memoized status colors - defined outside component
+const statusColors = {
+  active: 'bg-accent-success',
+  stopped: 'bg-text-muted',
+  error: 'bg-accent-error',
+} as const;
+
+const VirtualSessionCard = memo(function VirtualSessionCard({
   session,
   viewMode,
   onClick,
@@ -199,12 +216,6 @@ function SessionCard({
   formatTimeAgo,
   formatTokens,
 }: SessionCardProps) {
-  const statusColors = {
-    active: 'bg-accent-success',
-    stopped: 'bg-text-muted',
-    error: 'bg-accent-error',
-  };
-
   if (viewMode === 'list') {
     return (
       <div
@@ -345,4 +356,4 @@ function SessionCard({
       )}
     </div>
   );
-}
+});

@@ -23,53 +23,44 @@ def validate_internal_auth(
 ) -> None:
     """Validate internal service-to-service authentication.
 
-    Supports two authentication modes:
-    - Bearer token: Authorization header with Bearer token
-    - API key: X-Internal-API-Key header
+    Validates API key in X-Internal-API-Key header or Authorization: Bearer header.
+
+    SECURITY: API key is always required - no bypass for development mode.
 
     Args:
         x_internal_api_key: API key header
-        authorization: Bearer token header
+        authorization: Bearer token header (alternative)
     """
-    if settings.environment == "production":
-        # In production, check for Bearer token first
-        if authorization and authorization.startswith("Bearer "):
-            logger.debug("Request authenticated via Bearer token")
-            return
-
-        # No bearer token - check if API key is present as fallback
-        # This allows gradual migration: some services may still use API keys
-        if (
-            x_internal_api_key
-            and settings.internal_api_key
-            and secrets.compare_digest(x_internal_api_key, settings.internal_api_key)
-        ):
-            logger.debug("Request authenticated via API key (production fallback)")
-            return
-
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid authentication",
-        )
-
-    # Development mode: Use API key authentication
     if not settings.internal_api_key:
-        # No key configured in development - allow all requests
-        logger.debug("No internal API key configured, allowing request (dev mode)")
-        return
-
-    if not x_internal_api_key:
+        # SECURITY: Fail closed - if no API key configured, reject all requests
+        logger.error("COMPUTE_INTERNAL_API_KEY not configured - rejecting request")
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing internal API key",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Service authentication not configured",
         )
 
-    # Use constant-time comparison to prevent timing attacks
-    if not secrets.compare_digest(x_internal_api_key, settings.internal_api_key):
+    # Extract token from either header
+    token = None
+    if x_internal_api_key:
+        token = x_internal_api_key
+    elif authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing API key",
+        )
+
+    # SECURITY: Use constant-time comparison to prevent timing attacks
+    if not secrets.compare_digest(token, settings.internal_api_key):
+        logger.warning("Invalid internal API key received")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid internal API key",
         )
+
+    logger.debug("Request authenticated via API key")
 
 
 def verify_internal_auth(

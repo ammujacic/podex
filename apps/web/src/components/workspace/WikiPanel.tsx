@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 import {
   Book,
@@ -49,12 +49,7 @@ export function WikiPanel({
   const [generating, setGenerating] = useState(false);
   const [filterCategory, setFilterCategory] = useState<string | null>(null);
 
-  useEffect(() => {
-    loadPages();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]);
-
-  const loadPages = async () => {
+  const loadPages = useCallback(async () => {
     setLoading(true);
     try {
       const loaded = await onLoadPages?.();
@@ -69,9 +64,13 @@ export function WikiPanel({
     } finally {
       setLoading(false);
     }
-  };
+  }, [onLoadPages, selectedPage]);
 
-  const handleGenerate = async () => {
+  useEffect(() => {
+    loadPages();
+  }, [sessionId, loadPages]);
+
+  const handleGenerate = useCallback(async () => {
     setGenerating(true);
     try {
       const generated = await onGenerateWiki?.();
@@ -86,32 +85,36 @@ export function WikiPanel({
     } finally {
       setGenerating(false);
     }
-  };
+  }, [onGenerateWiki]);
 
-  // Get unique categories
-  const categories = [...new Set(pages.map((p) => p.category))];
+  // Memoize unique categories to prevent recalculating on every render
+  const categories = useMemo(() => [...new Set(pages.map((p) => p.category))], [pages]);
 
-  // Filter pages
-  const filteredPages = pages.filter((page) => {
-    const matchesSearch =
-      !searchQuery ||
-      page.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      page.tags.some((t) => t.toLowerCase().includes(searchQuery.toLowerCase()));
-    const matchesCategory = !filterCategory || page.category === filterCategory;
-    return matchesSearch && matchesCategory;
-  });
+  // Memoize filtered pages to prevent recalculating on every render
+  const filteredPages = useMemo(() => {
+    return pages.filter((page) => {
+      const matchesSearch =
+        !searchQuery ||
+        page.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        page.tags.some((t) => t.toLowerCase().includes(searchQuery.toLowerCase()));
+      const matchesCategory = !filterCategory || page.category === filterCategory;
+      return matchesSearch && matchesCategory;
+    });
+  }, [pages, searchQuery, filterCategory]);
 
-  // Group by category
-  const pagesByCategory = filteredPages.reduce(
-    (acc, page) => {
-      if (!acc[page.category]) {
-        acc[page.category] = [];
-      }
-      acc[page.category]!.push(page);
-      return acc;
-    },
-    {} as Record<string, WikiPage[]>
-  );
+  // Memoize pages grouped by category
+  const pagesByCategory = useMemo(() => {
+    return filteredPages.reduce(
+      (acc, page) => {
+        if (!acc[page.category]) {
+          acc[page.category] = [];
+        }
+        acc[page.category]!.push(page);
+        return acc;
+      },
+      {} as Record<string, WikiPage[]>
+    );
+  }, [filteredPages]);
 
   return (
     <div className={cn('flex h-full', className)}>

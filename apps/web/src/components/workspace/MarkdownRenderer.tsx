@@ -1,13 +1,36 @@
 'use client';
 
-import React, { useMemo, useState, useCallback } from 'react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import React, { useMemo, useState, useCallback, useEffect, memo } from 'react';
 import { cn } from '@/lib/utils';
-import { Copy, Check, Save } from 'lucide-react';
+import { Copy, Check, Save, Loader2 } from 'lucide-react';
 import { useSessionStore } from '@/stores/session';
 import { PromptDialog } from '@/components/ui/Dialogs';
 import { createFile } from '@/lib/api';
+
+// Types for lazy-loaded syntax highlighter
+type SyntaxHighlighterType = typeof import('react-syntax-highlighter').Prism;
+type ThemeType = Record<string, React.CSSProperties>;
+
+// Lazy-loaded syntax highlighter state
+let SyntaxHighlighterComponent: SyntaxHighlighterType | null = null;
+let oneDarkTheme: ThemeType | null = null;
+let loadPromise: Promise<void> | null = null;
+
+// Load the syntax highlighter and theme lazily (~200KB total)
+function loadSyntaxHighlighter(): Promise<void> {
+  if (loadPromise) return loadPromise;
+
+  loadPromise = Promise.all([
+    import('react-syntax-highlighter').then((mod) => {
+      SyntaxHighlighterComponent = mod.Prism;
+    }),
+    import('react-syntax-highlighter/dist/esm/styles/prism').then((mod) => {
+      oneDarkTheme = mod.oneDark;
+    }),
+  ]).then(() => {});
+
+  return loadPromise;
+}
 
 interface MarkdownRendererProps {
   content: string;
@@ -772,20 +795,50 @@ function SaveToFileButton({ content, language }: { content: string; language: st
 
 /**
  * Renders a code block with syntax highlighting and copy buttons
+ * Uses lazy-loaded syntax highlighter for better performance
  */
-function CodeBlock({ content, language }: { content: string; language: string }) {
+const CodeBlock = memo(function CodeBlock({
+  content,
+  language,
+}: {
+  content: string;
+  language: string;
+}) {
   const normalizedLang = LANGUAGE_MAP[language.toLowerCase()] || language.toLowerCase();
   const lineCount = content.split('\n').length;
+  const [isLoaded, setIsLoaded] = useState(
+    SyntaxHighlighterComponent !== null && oneDarkTheme !== null
+  );
+
+  // Load syntax highlighter on mount if not already loaded
+  useEffect(() => {
+    if (!isLoaded) {
+      loadSyntaxHighlighter().then(() => setIsLoaded(true));
+    }
+  }, [isLoaded]);
 
   // Custom style overrides to match the app theme
-  const customStyle: React.CSSProperties = {
-    margin: 0,
-    padding: '0.75rem',
-    fontSize: '0.75rem',
-    lineHeight: '1.625',
-    borderRadius: 0,
-    background: 'transparent',
-  };
+  const customStyle: React.CSSProperties = useMemo(
+    () => ({
+      margin: 0,
+      padding: '0.75rem',
+      fontSize: '0.75rem',
+      lineHeight: '1.625',
+      borderRadius: 0,
+      background: 'transparent',
+    }),
+    []
+  );
+
+  const lineNumberStyle = useMemo(
+    () => ({
+      minWidth: '2.5em',
+      paddingRight: '1em',
+      color: 'rgb(var(--text-muted))',
+      userSelect: 'none' as const,
+    }),
+    []
+  );
 
   return (
     <div className="relative group my-2 rounded-md overflow-hidden bg-void/80">
@@ -799,21 +852,27 @@ function CodeBlock({ content, language }: { content: string; language: string })
       </div>
 
       {/* Code content with syntax highlighting */}
-      <SyntaxHighlighter
-        language={normalizedLang}
-        style={oneDark}
-        customStyle={customStyle}
-        wrapLongLines
-        showLineNumbers={lineCount > 5}
-        lineNumberStyle={{
-          minWidth: '2.5em',
-          paddingRight: '1em',
-          color: 'rgb(var(--text-muted))',
-          userSelect: 'none',
-        }}
-      >
-        {content}
-      </SyntaxHighlighter>
+      {isLoaded && SyntaxHighlighterComponent && oneDarkTheme ? (
+        <SyntaxHighlighterComponent
+          language={normalizedLang}
+          style={oneDarkTheme}
+          customStyle={customStyle}
+          wrapLongLines
+          showLineNumbers={lineCount > 5}
+          lineNumberStyle={lineNumberStyle}
+        >
+          {content}
+        </SyntaxHighlighterComponent>
+      ) : (
+        // Fallback while syntax highlighter is loading
+        <div className="p-3">
+          <div className="flex items-center gap-2 text-text-muted text-xs mb-2">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            <span>Loading syntax highlighter...</span>
+          </div>
+          <pre className="text-xs font-mono text-text-secondary whitespace-pre-wrap">{content}</pre>
+        </div>
+      )}
 
       {/* Bottom copy/save buttons - only show for longer code blocks */}
       {lineCount > 15 && (
@@ -826,7 +885,7 @@ function CodeBlock({ content, language }: { content: string; language: string })
       )}
     </div>
   );
-}
+});
 
 /**
  * Renders a tool/function call block with special formatting
