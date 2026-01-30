@@ -19,6 +19,12 @@ import {
   Loader2,
   User,
   HardDrive,
+  Pencil,
+  ChevronDown,
+  ChevronRight,
+  Lock,
+  Unlock,
+  Settings,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -171,10 +177,12 @@ interface ServerCardProps {
   onDrain: (serverId: string) => void;
   onActivate: (serverId: string) => void;
   onDelete: (serverId: string) => void;
+  onEdit: (server: AdminWorkspaceServer) => void;
 }
 
-function ServerCard({ server, onDrain, onActivate, onDelete }: ServerCardProps) {
+function ServerCard({ server, onDrain, onActivate, onDelete, onEdit }: ServerCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [showConfig, setShowConfig] = useState(false);
   const { serverWorkspaces, serverWorkspacesLoading, fetchServerWorkspaces } = useAdminStore();
 
   const workspaces = serverWorkspaces[server.id] ?? [];
@@ -230,6 +238,13 @@ function ServerCard({ server, onDrain, onActivate, onDelete }: ServerCardProps) 
               <Play className="h-4 w-4 text-green-500" />
             </button>
           ) : null}
+          <button
+            onClick={() => onEdit(server)}
+            className="p-2 hover:bg-blue-500/10 rounded-lg transition-colors"
+            title="Edit server"
+          >
+            <Pencil className="h-4 w-4 text-blue-500" />
+          </button>
           <button
             onClick={() => onDelete(server.id)}
             className="p-2 hover:bg-red-500/10 rounded-lg transition-colors"
@@ -348,6 +363,72 @@ function ServerCard({ server, onDrain, onActivate, onDelete }: ServerCardProps) 
       <div className="mt-4 pt-4 border-t border-border-subtle text-xs text-text-muted">
         Last heartbeat:{' '}
         {server.last_heartbeat ? new Date(server.last_heartbeat).toLocaleString() : 'Never'}
+      </div>
+
+      {/* Configuration Details (expandable) */}
+      <div className="mt-4 pt-4 border-t border-border-subtle">
+        <button
+          onClick={() => setShowConfig(!showConfig)}
+          className="text-xs font-medium text-text-muted cursor-pointer hover:text-text-primary flex items-center gap-1 w-full"
+        >
+          {showConfig ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          <Settings className="h-3 w-3 mr-1" />
+          Configuration
+        </button>
+        {showConfig && (
+          <div className="mt-3 space-y-2 text-xs bg-elevated/50 rounded-lg p-3">
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <span className="text-text-muted">ID:</span>
+                <span className="ml-2 text-text-secondary font-mono">{server.id}</span>
+              </div>
+              <div>
+                <span className="text-text-muted">IP:</span>
+                <span className="ml-2 text-text-secondary font-mono">{server.ip_address}</span>
+              </div>
+              <div>
+                <span className="text-text-muted">Port:</span>
+                <span className="ml-2 text-text-secondary font-mono">{server.docker_port}</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-text-muted">TLS:</span>
+                {server.tls_enabled ? (
+                  <span className="flex items-center gap-1 text-green-500">
+                    <Lock className="h-3 w-3" />
+                    Enabled
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1 text-yellow-500">
+                    <Unlock className="h-3 w-3" />
+                    Disabled
+                  </span>
+                )}
+              </div>
+            </div>
+            {server.tls_enabled && (
+              <div className="mt-2 pt-2 border-t border-border-subtle space-y-1">
+                <div>
+                  <span className="text-text-muted">Cert:</span>
+                  <span className="ml-2 text-text-secondary font-mono text-[10px] break-all">
+                    {server.tls_cert_path || <span className="text-red-400">NOT SET</span>}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-text-muted">Key:</span>
+                  <span className="ml-2 text-text-secondary font-mono text-[10px] break-all">
+                    {server.tls_key_path || <span className="text-red-400">NOT SET</span>}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-text-muted">CA:</span>
+                  <span className="ml-2 text-text-secondary font-mono text-[10px] break-all">
+                    {server.tls_ca_path || <span className="text-red-400">NOT SET</span>}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -836,6 +917,358 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
   );
 }
 
+interface EditServerModalProps {
+  server: AdminWorkspaceServer | null;
+  onClose: () => void;
+  onSubmit: (serverId: string, data: Partial<AdminWorkspaceServer>) => Promise<void>;
+}
+
+function EditServerModal({ server, onClose, onSubmit }: EditServerModalProps) {
+  const { testServerConnection } = useAdminStore();
+  const [formData, setFormData] = useState({
+    name: '',
+    hostname: '',
+    ip_address: '',
+    docker_port: 2376,
+    region: '',
+    max_workspaces: 50,
+    tls_enabled: true,
+    tls_cert_path: '',
+    tls_key_path: '',
+    tls_ca_path: '',
+  });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<TestServerConnectionResponse | null>(null);
+
+  // Update form when server changes
+  useEffect(() => {
+    if (server) {
+      setFormData({
+        name: server.name,
+        hostname: server.hostname,
+        ip_address: server.ip_address,
+        docker_port: server.docker_port,
+        region: server.region || '',
+        max_workspaces: server.max_workspaces,
+        tls_enabled: server.tls_enabled,
+        tls_cert_path: server.tls_cert_path || '',
+        tls_key_path: server.tls_key_path || '',
+        tls_ca_path: server.tls_ca_path || '',
+      });
+      setTestResult(null);
+    }
+  }, [server]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!server) return;
+    setIsSubmitting(true);
+    try {
+      await onSubmit(server.id, {
+        name: formData.name,
+        hostname: formData.hostname,
+        ip_address: formData.ip_address,
+        docker_port: formData.docker_port,
+        region: formData.region || null,
+        max_workspaces: formData.max_workspaces,
+        tls_enabled: formData.tls_enabled,
+        tls_cert_path: formData.tls_cert_path || null,
+        tls_key_path: formData.tls_key_path || null,
+        tls_ca_path: formData.tls_ca_path || null,
+      });
+      onClose();
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    if (!formData.ip_address || !formData.docker_port) {
+      setTestResult({
+        success: false,
+        message: 'IP address and Docker port are required',
+        error: 'Missing required fields',
+      });
+      return;
+    }
+
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      const result = await testServerConnection({
+        ip_address: formData.ip_address,
+        docker_port: formData.docker_port,
+        tls_enabled: formData.tls_enabled,
+        tls_cert_path: formData.tls_cert_path,
+        tls_key_path: formData.tls_key_path,
+        tls_ca_path: formData.tls_ca_path,
+      });
+      setTestResult(result);
+    } finally {
+      setIsTesting(false);
+    }
+  };
+
+  // Auto-fill TLS paths based on server name
+  const updateTlsPaths = (name: string, tlsEnabled: boolean) => {
+    if (tlsEnabled && name) {
+      const basePath = `/etc/docker/workspace-certs/${name}`;
+      return {
+        tls_cert_path: `${basePath}/cert.pem`,
+        tls_key_path: `${basePath}/key.pem`,
+        tls_ca_path: `${basePath}/ca.pem`,
+      };
+    }
+    return {};
+  };
+
+  const handleNameChange = (name: string) => {
+    // Only auto-update TLS paths if they were previously auto-generated
+    const currentBasePath = formData.name ? `/etc/docker/workspace-certs/${formData.name}` : '';
+    const wasAutoGenerated =
+      formData.tls_cert_path === `${currentBasePath}/cert.pem` || !formData.tls_cert_path;
+    const tlsPaths = wasAutoGenerated ? updateTlsPaths(name, formData.tls_enabled) : {};
+    setFormData({ ...formData, name, ...tlsPaths });
+  };
+
+  const handleTlsToggle = (enabled: boolean) => {
+    const tlsPaths = updateTlsPaths(formData.name, enabled);
+    setFormData({
+      ...formData,
+      tls_enabled: enabled,
+      docker_port: enabled ? 2376 : 2375,
+      ...tlsPaths,
+    });
+  };
+
+  if (!server) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-surface rounded-xl border border-border-subtle p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <h2 className="text-xl font-semibold text-text-primary mb-4">Edit Server: {server.name}</h2>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-text-secondary mb-1">Name</label>
+              <input
+                type="text"
+                value={formData.name}
+                onChange={(e) => handleNameChange(e.target.value)}
+                className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-text-secondary mb-1">Hostname</label>
+              <input
+                type="text"
+                value={formData.hostname}
+                onChange={(e) => setFormData({ ...formData, hostname: e.target.value })}
+                className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                required
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-text-secondary mb-1">IP Address</label>
+              <input
+                type="text"
+                value={formData.ip_address}
+                onChange={(e) => setFormData({ ...formData, ip_address: e.target.value })}
+                className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-text-secondary mb-1">Docker Port</label>
+              <input
+                type="number"
+                value={formData.docker_port}
+                onChange={(e) =>
+                  setFormData({ ...formData, docker_port: parseInt(e.target.value) })
+                }
+                className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                required
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-text-secondary mb-1">Max Workspaces</label>
+              <input
+                type="number"
+                value={formData.max_workspaces}
+                onChange={(e) =>
+                  setFormData({ ...formData, max_workspaces: parseInt(e.target.value) })
+                }
+                className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                min={1}
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-text-secondary mb-1">Region</label>
+              <input
+                type="text"
+                value={formData.region}
+                onChange={(e) => setFormData({ ...formData, region: e.target.value })}
+                className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                placeholder="eu / us"
+              />
+            </div>
+          </div>
+
+          {/* TLS Configuration */}
+          <div className="border-t border-border-subtle pt-4">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={formData.tls_enabled}
+                onChange={(e) => handleTlsToggle(e.target.checked)}
+                className="rounded border-border-subtle"
+              />
+              <span className="text-sm text-text-secondary">
+                Enable TLS (recommended for production)
+              </span>
+            </label>
+
+            {formData.tls_enabled && (
+              <div className="mt-4 space-y-3">
+                <div>
+                  <label className="block text-sm text-text-secondary mb-1">Certificate Path</label>
+                  <input
+                    type="text"
+                    value={formData.tls_cert_path}
+                    onChange={(e) => setFormData({ ...formData, tls_cert_path: e.target.value })}
+                    className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary font-mono text-sm"
+                    placeholder="/etc/docker/workspace-certs/server-name/cert.pem"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-text-secondary mb-1">Key Path</label>
+                  <input
+                    type="text"
+                    value={formData.tls_key_path}
+                    onChange={(e) => setFormData({ ...formData, tls_key_path: e.target.value })}
+                    className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary font-mono text-sm"
+                    placeholder="/etc/docker/workspace-certs/server-name/key.pem"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-text-secondary mb-1">CA Path</label>
+                  <input
+                    type="text"
+                    value={formData.tls_ca_path}
+                    onChange={(e) => setFormData({ ...formData, tls_ca_path: e.target.value })}
+                    className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary font-mono text-sm"
+                    placeholder="/etc/docker/workspace-certs/server-name/ca.pem"
+                    required
+                  />
+                </div>
+                <p className="text-xs text-text-muted">
+                  Paths are on the platform server where compute service runs
+                </p>
+              </div>
+            )}
+
+            {/* Test Connection Button */}
+            <div className="mt-4">
+              <button
+                type="button"
+                onClick={handleTestConnection}
+                disabled={isTesting || !formData.ip_address}
+                className="flex items-center gap-2 px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-secondary hover:text-text-primary hover:bg-elevated/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isTesting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Testing...
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="h-4 w-4" />
+                    Test Connection
+                  </>
+                )}
+              </button>
+
+              {/* Test Results */}
+              {testResult && (
+                <div
+                  className={cn(
+                    'mt-3 p-3 rounded-lg text-sm',
+                    testResult.success
+                      ? 'bg-green-500/10 border border-green-500/30'
+                      : 'bg-red-500/10 border border-red-500/30'
+                  )}
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    {testResult.success ? (
+                      <Check className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <AlertTriangle className="h-4 w-4 text-red-500" />
+                    )}
+                    <span className={testResult.success ? 'text-green-500' : 'text-red-500'}>
+                      {testResult.message}
+                    </span>
+                  </div>
+                  {testResult.success && testResult.docker_info && (
+                    <div className="text-xs text-text-muted space-y-1 ml-6">
+                      {testResult.docker_info.server_version && (
+                        <p>Docker: {testResult.docker_info.server_version}</p>
+                      )}
+                      {testResult.docker_info.os && testResult.docker_info.architecture && (
+                        <p>
+                          OS: {testResult.docker_info.os} ({testResult.docker_info.architecture})
+                        </p>
+                      )}
+                      {testResult.docker_info.cpus !== undefined && (
+                        <p>CPUs: {testResult.docker_info.cpus}</p>
+                      )}
+                      {testResult.docker_info.memory_total !== undefined && (
+                        <p>
+                          Memory:{' '}
+                          {(testResult.docker_info.memory_total / 1024 / 1024 / 1024).toFixed(1)} GB
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  {testResult.error && !testResult.success && (
+                    <p className="text-xs text-red-400 ml-6 mt-1">{testResult.error}</p>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-3 pt-4">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="px-4 py-2 bg-accent-primary text-white rounded-lg hover:bg-accent-primary/90 transition-colors disabled:opacity-50"
+            >
+              {isSubmitting ? 'Saving...' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 export default function ServersManagement() {
   useDocumentTitle('Workspace Servers');
   const {
@@ -849,10 +1282,12 @@ export default function ServersManagement() {
     drainWorkspaceServer,
     activateWorkspaceServer,
     deleteWorkspaceServer,
+    updateWorkspaceServer,
     error,
   } = useAdminStore();
 
   const [showAddModal, setShowAddModal] = useState(false);
+  const [editingServer, setEditingServer] = useState<AdminWorkspaceServer | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>('');
 
   useEffect(() => {
@@ -1014,6 +1449,7 @@ export default function ServersManagement() {
               onDrain={handleDrain}
               onActivate={handleActivate}
               onDelete={handleDelete}
+              onEdit={setEditingServer}
             />
           ))}
         </div>
@@ -1024,6 +1460,13 @@ export default function ServersManagement() {
         isOpen={showAddModal}
         onClose={() => setShowAddModal(false)}
         onSubmit={createWorkspaceServer}
+      />
+
+      {/* Edit Server Modal */}
+      <EditServerModal
+        server={editingServer}
+        onClose={() => setEditingServer(null)}
+        onSubmit={updateWorkspaceServer}
       />
     </div>
   );
