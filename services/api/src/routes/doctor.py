@@ -146,8 +146,8 @@ async def check_compute_service() -> ServiceHealth:
     start = datetime.now(UTC)
     try:
         headers = {}
-        if settings.COMPUTE_INTERNAL_API_KEY:
-            headers["X-Internal-API-Key"] = settings.COMPUTE_INTERNAL_API_KEY
+        if settings.INTERNAL_SERVICE_TOKEN:
+            headers["X-Internal-Service-Token"] = settings.INTERNAL_SERVICE_TOKEN
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(
                 f"{settings.COMPUTE_SERVICE_URL}/health",

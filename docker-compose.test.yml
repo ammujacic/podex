@@ -97,7 +97,6 @@ services:
       INTERNAL_SERVICE_TOKEN: test-internal-service-token
       # Internal service URLs
       COMPUTE_SERVICE_URL: http://compute-test:3003
-      COMPUTE_INTERNAL_API_KEY: test-internal-key
       AGENT_SERVICE_URL: http://agent-test:3002
     volumes:
       - ./services/api/src:/app/services/api/src
@@ -175,11 +174,10 @@ services:
       # GCP Configuration
       GCP_PROJECT_ID: podex-test
       GCP_REGION: us-east1
-      COMPUTE_INTERNAL_API_KEY: test-internal-key
       COMPUTE_CORS_ORIGINS: '["http://localhost:3000", "http://localhost:3010"]'
       # API Service (for usage tracking)
       COMPUTE_API_BASE_URL: http://api-test:3001
-      COMPUTE_INTERNAL_SERVICE_TOKEN: test-internal-service-token
+      INTERNAL_SERVICE_TOKEN: test-internal-service-token
     volumes:
       - ./services/compute/src:/app/services/compute/src
       - ./services/shared/src:/app/services/shared/src
@@ -329,11 +327,10 @@ services:
       COMPUTE_MODE: docker
       COMPUTE_REDIS_URL: redis://redis-test:6379
       COMPUTE_DOCKER_HOST: unix:///var/run/docker.sock
-      COMPUTE_INTERNAL_API_KEY: test-internal-key
       COMPUTE_MAX_WORKSPACES: 5
       COMPUTE_WORKSPACE_IMAGE: podex/workspace:test
       COMPUTE_API_BASE_URL: http://localhost:3001
-      COMPUTE_INTERNAL_SERVICE_TOKEN: test-internal-service-token
+      INTERNAL_SERVICE_TOKEN: test-internal-service-token
       # GCP Configuration (for tests)
       GCP_PROJECT_ID: podex-test
       GCP_REGION: us-east1

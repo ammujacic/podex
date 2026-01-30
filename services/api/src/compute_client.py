@@ -43,7 +43,7 @@ def _get_service_auth() -> ServiceAuthClient:
     if _service_auth is None:
         _service_auth = ServiceAuthClient(
             target_url=settings.COMPUTE_SERVICE_URL,
-            api_key=settings.COMPUTE_INTERNAL_API_KEY,
+            api_key=settings.INTERNAL_SERVICE_TOKEN,
             environment=settings.ENVIRONMENT,
         )
     return _service_auth

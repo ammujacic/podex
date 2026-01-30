@@ -21,22 +21,22 @@ logger = structlog.get_logger()
 
 
 def validate_internal_auth(
-    x_internal_api_key: str | None = None,
+    x_internal_service_token: str | None = None,
     authorization: str | None = None,
 ) -> None:
     """Validate internal service-to-service authentication.
 
-    Validates API key in X-Internal-API-Key header or Authorization: Bearer header.
+    Validates token in X-Internal-Service-Token header or Authorization: Bearer header.
 
-    SECURITY: API key is always required - no bypass for development mode.
+    SECURITY: Token is always required - no bypass for development mode.
 
     Args:
-        x_internal_api_key: API key header
+        x_internal_service_token: Service token header
         authorization: Bearer token header (alternative)
     """
-    if not settings.internal_api_key:
-        # SECURITY: Fail closed - if no API key configured, reject all requests
-        logger.error("COMPUTE_INTERNAL_API_KEY not configured - rejecting request")
+    if not settings.internal_service_token:
+        # SECURITY: Fail closed - if no token configured, reject all requests
+        logger.error("INTERNAL_SERVICE_TOKEN not configured - rejecting request")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Service authentication not configured",
@@ -44,52 +44,41 @@ def validate_internal_auth(
 
     # Extract token from either header
     token = None
-    if x_internal_api_key:
-        token = x_internal_api_key
+    if x_internal_service_token:
+        token = x_internal_service_token
     elif authorization and authorization.startswith("Bearer "):
         token = authorization[7:]
 
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing API key",
+            detail="Missing service token",
         )
 
     # SECURITY: Use constant-time comparison to prevent timing attacks
-    if not secrets.compare_digest(token, settings.internal_api_key):
-        logger.warning("Invalid internal API key received")
+    if not secrets.compare_digest(token, settings.internal_service_token):
+        logger.warning("Invalid internal service token received")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid internal API key",
+            detail="Invalid service token",
         )
 
-    logger.debug("Request authenticated via API key")
+    logger.debug("Request authenticated via service token")
 
 
 def verify_internal_auth(
-    x_internal_api_key: Annotated[str | None, Header(alias="X-Internal-API-Key")] = None,
+    x_internal_service_token: Annotated[
+        str | None, Header(alias="X-Internal-Service-Token")
+    ] = None,
     authorization: Annotated[str | None, Header()] = None,
 ) -> None:
     """Verify internal service-to-service authentication.
 
     Supports dual-mode authentication:
     - Bearer token in Authorization header
-    - API key in X-Internal-API-Key header
+    - Token in X-Internal-Service-Token header
     """
-    validate_internal_auth(x_internal_api_key, authorization)
-
-
-# Keep legacy function name for backward compatibility
-def verify_internal_api_key(
-    x_internal_api_key: Annotated[str | None, Header(alias="X-Internal-API-Key")] = None,
-    authorization: Annotated[str | None, Header()] = None,
-) -> None:
-    """Verify internal service-to-service API key.
-
-    Deprecated: Use verify_internal_auth instead.
-    This function is kept for backward compatibility.
-    """
-    validate_internal_auth(x_internal_api_key, authorization)
+    validate_internal_auth(x_internal_service_token, authorization)
 
 
 def get_user_id(
@@ -208,15 +197,15 @@ async def fetch_servers_from_api() -> list[dict[str, Any]]:
 
     Returns list of server configurations from the API's internal endpoint.
     """
-    if not settings.internal_api_key:
-        logger.warning("No internal API key configured, cannot fetch servers from API")
+    if not settings.internal_service_token:
+        logger.warning("No internal service token configured, cannot fetch servers from API")
         return []
 
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{settings.api_base_url}/api/servers/internal/list",
-                headers={"X-Internal-API-Key": settings.internal_api_key},
+                headers={"X-Internal-Service-Token": settings.internal_service_token},
                 timeout=10.0,
             )
             response.raise_for_status()

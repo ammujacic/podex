@@ -33,7 +33,7 @@ def _get_service_auth() -> ServiceAuthClient:
     if _service_auth is None:
         _service_auth = ServiceAuthClient(
             target_url=settings.COMPUTE_SERVICE_URL,
-            api_key=settings.COMPUTE_INTERNAL_API_KEY,
+            api_key=settings.INTERNAL_SERVICE_TOKEN,
             environment=settings.ENVIRONMENT,
         )
     return _service_auth
@@ -75,8 +75,8 @@ class ComputeClient:
         self.workspace_id = workspace_id
         self.user_id = user_id
         self.base_url = (base_url or settings.COMPUTE_SERVICE_URL).rstrip("/")
-        # Use COMPUTE_INTERNAL_API_KEY for compute service authentication (dev mode)
-        self.auth_token = auth_token or settings.COMPUTE_INTERNAL_API_KEY
+        # Use INTERNAL_SERVICE_TOKEN for compute service authentication
+        self.auth_token = auth_token or settings.INTERNAL_SERVICE_TOKEN
 
     async def _get_headers(self) -> dict[str, str]:
         """Get HTTP headers for compute service requests.

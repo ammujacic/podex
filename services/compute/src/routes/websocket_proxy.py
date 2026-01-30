@@ -15,7 +15,7 @@ import websockets
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
 from websockets.asyncio.client import ClientConnection
 
-from src.deps import get_compute_manager, verify_internal_api_key
+from src.deps import get_compute_manager, verify_internal_auth
 from src.managers.base import ComputeManager
 from src.models.workspace import WorkspaceStatus
 from src.validation import ValidationError, validate_workspace_id
@@ -25,7 +25,7 @@ logger = structlog.get_logger()
 router = APIRouter(
     prefix="/ws",
     tags=["websocket"],
-    dependencies=[Depends(verify_internal_api_key)],
+    dependencies=[Depends(verify_internal_auth)],
 )
 
 

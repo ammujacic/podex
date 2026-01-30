@@ -259,7 +259,6 @@ class TestJWTSecretValidation:
             os.environ,
             {
                 "ENVIRONMENT": "production",
-                "COMPUTE_INTERNAL_API_KEY": "test-key",
                 "INTERNAL_SERVICE_TOKEN": "test-token",
             },
             clear=False,
@@ -277,7 +276,6 @@ class TestJWTSecretValidation:
             os.environ,
             {
                 "ENVIRONMENT": "production",
-                "COMPUTE_INTERNAL_API_KEY": "test-key",
                 "INTERNAL_SERVICE_TOKEN": "test-token",
             },
             clear=False,
@@ -295,7 +293,6 @@ class TestJWTSecretValidation:
             {
                 "ENVIRONMENT": "production",
                 "JWT_SECRET_KEY": long_secret,
-                "COMPUTE_INTERNAL_API_KEY": "test-key",
                 "INTERNAL_SERVICE_TOKEN": "test-token",
             },
             clear=False,

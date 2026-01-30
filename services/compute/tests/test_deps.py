@@ -9,77 +9,77 @@ from src.deps import (
     OrchestratorSingleton,
     get_compute_manager,
     get_user_id,
-    verify_internal_api_key,
+    validate_internal_auth,
 )
 
 
 class TestInternalAuth:
     """Tests for internal authentication."""
 
-    def test_internal_auth_no_key_configured_dev(self) -> None:
-        """Test no API key in development mode - fails closed with 500.
+    def test_internal_auth_no_token_configured_dev(self) -> None:
+        """Test no service token in development mode - fails closed with 500.
 
-        SECURITY: Even in development, if no API key is configured,
+        SECURITY: Even in development, if no token is configured,
         the service should fail closed (500) rather than allowing access.
         """
         mock_settings = MagicMock()
-        mock_settings.internal_api_key = ""
+        mock_settings.internal_service_token = ""
         mock_settings.environment = "development"
 
         with patch("src.deps.settings", mock_settings):
             with pytest.raises(HTTPException) as exc:
-                verify_internal_api_key(None)
+                validate_internal_auth(None)
             assert exc.value.status_code == 500
             assert "not configured" in exc.value.detail
 
-    def test_internal_auth_no_key_configured_prod(self) -> None:
-        """Test no API key configured in production returns 500.
+    def test_internal_auth_no_token_configured_prod(self) -> None:
+        """Test no service token configured in production returns 500.
 
-        SECURITY: Fail closed - if no API key is configured, the service
+        SECURITY: Fail closed - if no token is configured, the service
         returns 500 (misconfiguration) rather than allowing unauthenticated access.
         """
         mock_settings = MagicMock()
-        mock_settings.internal_api_key = ""
+        mock_settings.internal_service_token = ""
         mock_settings.environment = "production"
 
         with patch("src.deps.settings", mock_settings):
             with pytest.raises(HTTPException) as exc:
-                verify_internal_api_key(None)
+                validate_internal_auth(None)
             assert exc.value.status_code == 500
             assert "not configured" in exc.value.detail
 
-    def test_internal_auth_missing_key(self) -> None:
-        """Test missing API key when configured."""
+    def test_internal_auth_missing_token(self) -> None:
+        """Test missing service token when configured."""
         mock_settings = MagicMock()
-        mock_settings.internal_api_key = "correct-key"
+        mock_settings.internal_service_token = "correct-token"
         mock_settings.environment = "development"
 
         with patch("src.deps.settings", mock_settings):
             with pytest.raises(HTTPException) as exc:
-                verify_internal_api_key(None)
+                validate_internal_auth(None)
             assert exc.value.status_code == 401
             assert "Missing" in exc.value.detail
 
-    def test_internal_auth_invalid_key(self) -> None:
-        """Test invalid internal API key."""
+    def test_internal_auth_invalid_token(self) -> None:
+        """Test invalid internal service token."""
         mock_settings = MagicMock()
-        mock_settings.internal_api_key = "correct-key"
+        mock_settings.internal_service_token = "correct-token"
         mock_settings.environment = "development"
 
         with patch("src.deps.settings", mock_settings):
             with pytest.raises(HTTPException) as exc:
-                verify_internal_api_key("wrong-key")
+                validate_internal_auth("wrong-token")
             assert exc.value.status_code == 401
             assert "Invalid" in exc.value.detail
 
-    def test_internal_auth_valid_key(self) -> None:
-        """Test valid internal API key."""
+    def test_internal_auth_valid_token(self) -> None:
+        """Test valid internal service token."""
         mock_settings = MagicMock()
-        mock_settings.internal_api_key = "test-api-key-123"
+        mock_settings.internal_service_token = "test-service-token-123"
         mock_settings.environment = "development"
 
         with patch("src.deps.settings", mock_settings):
-            verify_internal_api_key("test-api-key-123")
+            validate_internal_auth("test-service-token-123")
 
 
 class TestUserIdExtraction:

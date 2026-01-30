@@ -2,6 +2,7 @@
 
 from src.routes.health import router as health_router
 from src.routes.preview import router as preview_router
+from src.routes.servers import router as servers_router
 from src.routes.terminal import (
     reset_terminal_manager,
     shutdown_terminal_sessions,
@@ -17,6 +18,7 @@ __all__ = [
     "health_router",
     "preview_router",
     "reset_terminal_manager",
+    "servers_router",
     "shutdown_terminal_sessions",
     "terminal_router",
     "tunnels_router",

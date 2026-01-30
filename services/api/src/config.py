@@ -122,16 +122,6 @@ class Settings(BaseSettings):
                 raise ShortSecretKeyError
         return v
 
-    @field_validator("COMPUTE_INTERNAL_API_KEY")
-    @classmethod
-    def validate_compute_api_key(cls, v: str, _info: object) -> str:
-        """Validate compute API key is set in production environments."""
-        env = os.environ.get("ENVIRONMENT", "development")
-
-        if env == "production" and not v:
-            raise ValueError("COMPUTE_INTERNAL_API_KEY required in production")  # noqa: TRY003
-        return v
-
     # OAuth - GitHub
     GITHUB_CLIENT_ID: str | None = None
     GITHUB_CLIENT_SECRET: str | None = None
@@ -161,7 +151,6 @@ class Settings(BaseSettings):
 
     # Compute service
     COMPUTE_SERVICE_URL: str = "http://compute:3003"
-    COMPUTE_INTERNAL_API_KEY: str = ""  # Must match compute service's internal_api_key
 
     # Agent service
     AGENT_SERVICE_URL: str = "http://agent:3002"

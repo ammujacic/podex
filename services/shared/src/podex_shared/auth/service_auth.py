@@ -1,4 +1,4 @@
-"""Service-to-service authentication using API keys.
+"""Service-to-service authentication using service tokens.
 
 This module provides a unified authentication client for inter-service communication.
 
@@ -8,12 +8,12 @@ Usage:
     # Create client for a target service
     auth = ServiceAuthClient(
         target_url="https://compute.podex.dev",
-        api_key="your-service-key",
+        api_key="your-service-token",
     )
 
     # Get auth headers for requests
     headers = await auth.get_auth_headers()
-    # Returns {"X-Internal-API-Key": "your-service-key"}
+    # Returns {"X-Internal-Service-Token": "your-service-token"}
 """
 
 from __future__ import annotations
@@ -34,15 +34,15 @@ class ServiceAuthClient:
         target_url: str,
         api_key: str | None = None,
         environment: str = "development",  # Kept for backwards compatibility
-        api_key_header: str = "X-Internal-API-Key",
+        api_key_header: str = "X-Internal-Service-Token",
     ) -> None:
         """Initialize the auth client.
 
         Args:
             target_url: The URL of the service being called (for logging)
-            api_key: API key for authentication (required)
+            api_key: Service token for authentication (required)
             environment: Environment name (kept for backwards compatibility, unused)
-            api_key_header: Header name for API key auth (default: X-Internal-API-Key)
+            api_key_header: Header name for service token auth (default: X-Internal-Service-Token)
         """
         self.target_url = target_url.rstrip("/")
         self.api_key = api_key
@@ -77,7 +77,7 @@ async def get_service_auth_headers(
     target_url: str,
     environment: str,  # Kept for backwards compatibility
     api_key: str | None = None,
-    api_key_header: str = "X-Internal-API-Key",
+    api_key_header: str = "X-Internal-Service-Token",
 ) -> dict[str, str]:
     """Convenience function to get auth headers without creating a client.
 
@@ -87,8 +87,8 @@ async def get_service_auth_headers(
     Args:
         target_url: The URL of the service being called
         environment: Environment name (kept for backwards compatibility, unused)
-        api_key: API key for authentication
-        api_key_header: Header name for API key auth
+        api_key: Service token for authentication
+        api_key_header: Header name for service token auth
 
     Returns:
         Dict with authentication headers

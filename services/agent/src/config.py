@@ -75,7 +75,6 @@ class Settings(BaseSettings):
 
     # Compute Service (for terminal access)
     COMPUTE_SERVICE_URL: str = "http://localhost:3003"
-    COMPUTE_INTERNAL_API_KEY: str | None = None  # Auth key for compute service calls
 
     # Internal Agent URL (for MCP self-referencing endpoints like /mcp/skills)
     # Docker Compose: http://agent:3002, GCP Cloud Run: https://agent-xxx.run.app

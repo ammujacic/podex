@@ -94,7 +94,6 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-LocalDev_Change_In_Prod_123!}
       # Internal service URLs
       COMPUTE_SERVICE_URL: http://compute:3003
-      COMPUTE_INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
       AGENT_SERVICE_URL: http://agent:3002
       # Stripe (for billing)
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
@@ -165,7 +164,6 @@ services:
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-service-token}
       # Compute Service (for remote workspace operations)
       COMPUTE_SERVICE_URL: http://compute:3003
-      COMPUTE_INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -244,13 +242,11 @@ services:
       COMPUTE_WORKSPACE_IMAGE_AMD64: ${COMPUTE_WORKSPACE_IMAGE_AMD64:-podex/workspace:latest-amd64}
       # Redis
       COMPUTE_REDIS_URL: redis://redis:6379
-      # Internal API key (for secure inter-service communication)
-      COMPUTE_INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
       # CORS
       COMPUTE_CORS_ORIGINS: ${CORS_ORIGINS:-'["http://localhost:3000"]'}
       # API Service (for usage tracking)
       COMPUTE_API_BASE_URL: http://api:3001
-      COMPUTE_INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-service-token}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-service-token}
       # Sentry
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-1.0}

@@ -112,14 +112,13 @@ describe('useOllamaModels', () => {
 
       const { result } = renderHook(() => useOllamaModels({ autoDiscover: false }));
 
-      // Wait a tick to ensure no async calls are made
+      // Wait for the config to be loaded (isConfigured becomes true once loadCachedModels completes)
       await waitFor(() => {
-        expect(result.current.isLoading).toBe(false);
+        expect(result.current.isConfigured).toBe(true);
       });
 
+      // Discovery should not have been called since autoDiscover is false
       expect(mockDiscoverLocalModels).not.toHaveBeenCalled();
-      // Should still show as configured based on loaded config
-      expect(result.current.isConfigured).toBe(true);
     });
 
     it('should transform discovered models correctly', async () => {

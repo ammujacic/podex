@@ -26,6 +26,7 @@ import {
   type AdminWorkspaceServer,
   type ClusterStatus,
   type CreateServerRequest,
+  type TestServerConnectionResponse,
 } from '@/stores/admin';
 import type { ServerWorkspaceInfo } from '@/lib/api';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
@@ -403,6 +404,7 @@ interface AddServerModalProps {
 }
 
 function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
+  const { testServerConnection } = useAdminStore();
   const [formData, setFormData] = useState<CreateServerRequest>({
     name: '',
     hostname: '',
@@ -423,11 +425,13 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
     tls_ca_path: '',
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<TestServerConnectionResponse | null>(null);
 
-  // Auto-fill TLS paths based on hostname
-  const updateTlsPaths = (hostname: string, tlsEnabled: boolean) => {
-    if (tlsEnabled && hostname) {
-      const basePath = `/etc/docker/workspace-certs/${hostname}`;
+  // Auto-fill TLS paths based on server name
+  const updateTlsPaths = (name: string, tlsEnabled: boolean) => {
+    if (tlsEnabled && name) {
+      const basePath = `/etc/docker/workspace-certs/${name}`;
       return {
         tls_cert_path: `${basePath}/cert.pem`,
         tls_key_path: `${basePath}/key.pem`,
@@ -437,13 +441,13 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
     return {};
   };
 
-  const handleHostnameChange = (hostname: string) => {
-    const tlsPaths = updateTlsPaths(hostname, formData.tls_enabled || false);
-    setFormData({ ...formData, hostname, ...tlsPaths });
+  const handleNameChange = (name: string) => {
+    const tlsPaths = updateTlsPaths(name, formData.tls_enabled || false);
+    setFormData({ ...formData, name, ...tlsPaths });
   };
 
   const handleTlsToggle = (enabled: boolean) => {
-    const tlsPaths = updateTlsPaths(formData.hostname, enabled);
+    const tlsPaths = updateTlsPaths(formData.name, enabled);
     setFormData({
       ...formData,
       tls_enabled: enabled,
@@ -477,8 +481,36 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
         tls_key_path: '',
         tls_ca_path: '',
       });
+      setTestResult(null);
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    if (!formData.ip_address || !formData.docker_port) {
+      setTestResult({
+        success: false,
+        message: 'IP address and Docker port are required',
+        error: 'Missing required fields',
+      });
+      return;
+    }
+
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      const result = await testServerConnection({
+        ip_address: formData.ip_address,
+        docker_port: formData.docker_port,
+        tls_enabled: formData.tls_enabled || false,
+        tls_cert_path: formData.tls_cert_path,
+        tls_key_path: formData.tls_key_path,
+        tls_ca_path: formData.tls_ca_path,
+      });
+      setTestResult(result);
+    } finally {
+      setIsTesting(false);
     }
   };
 
@@ -495,7 +527,7 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
               <input
                 type="text"
                 value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                onChange={(e) => handleNameChange(e.target.value)}
                 className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
                 required
               />
@@ -505,7 +537,7 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
               <input
                 type="text"
                 value={formData.hostname}
-                onChange={(e) => handleHostnameChange(e.target.value)}
+                onChange={(e) => setFormData({ ...formData, hostname: e.target.value })}
                 className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
                 required
               />
@@ -611,7 +643,7 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
                 value={formData.region || ''}
                 onChange={(e) => setFormData({ ...formData, region: e.target.value })}
                 className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
-                placeholder="us-east-1"
+                placeholder="eu / us"
               />
             </div>
           </div>
@@ -668,6 +700,78 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
                 </p>
               </div>
             )}
+
+            {/* Test Connection Button */}
+            <div className="mt-4">
+              <button
+                type="button"
+                onClick={handleTestConnection}
+                disabled={isTesting || !formData.ip_address}
+                className="flex items-center gap-2 px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-secondary hover:text-text-primary hover:bg-elevated/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isTesting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Testing...
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="h-4 w-4" />
+                    Test Connection
+                  </>
+                )}
+              </button>
+
+              {/* Test Results */}
+              {testResult && (
+                <div
+                  className={cn(
+                    'mt-3 p-3 rounded-lg text-sm',
+                    testResult.success
+                      ? 'bg-green-500/10 border border-green-500/30'
+                      : 'bg-red-500/10 border border-red-500/30'
+                  )}
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    {testResult.success ? (
+                      <Check className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <AlertTriangle className="h-4 w-4 text-red-500" />
+                    )}
+                    <span className={testResult.success ? 'text-green-500' : 'text-red-500'}>
+                      {testResult.message}
+                    </span>
+                  </div>
+                  {testResult.success && testResult.docker_info && (
+                    <div className="text-xs text-text-muted space-y-1 ml-6">
+                      {testResult.docker_info.server_version && (
+                        <p>Docker: {testResult.docker_info.server_version}</p>
+                      )}
+                      {testResult.docker_info.os && testResult.docker_info.architecture && (
+                        <p>
+                          OS: {testResult.docker_info.os} ({testResult.docker_info.architecture})
+                        </p>
+                      )}
+                      {testResult.docker_info.cpus !== undefined && (
+                        <p>CPUs: {testResult.docker_info.cpus}</p>
+                      )}
+                      {testResult.docker_info.memory_total !== undefined && (
+                        <p>
+                          Memory:{' '}
+                          {(testResult.docker_info.memory_total / 1024 / 1024 / 1024).toFixed(1)} GB
+                        </p>
+                      )}
+                      {testResult.docker_info.containers !== undefined && (
+                        <p>Containers: {testResult.docker_info.containers}</p>
+                      )}
+                    </div>
+                  )}
+                  {testResult.error && !testResult.success && (
+                    <p className="text-xs text-red-400 ml-6 mt-1">{testResult.error}</p>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* GPU Configuration */}

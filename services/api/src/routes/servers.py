@@ -6,10 +6,12 @@ including registration, health monitoring, and capacity management.
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from datetime import UTC, datetime
 from typing import Self
 
+import httpx
 import structlog
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field, model_validator
@@ -142,6 +144,38 @@ class ClusterStatusResponse(BaseModel):
     memory_utilization: float
     total_workspaces: int
     servers: list[ServerHealthResponse]
+
+
+class TestConnectionRequest(BaseModel):
+    """Request to test a Docker server connection."""
+
+    ip_address: str
+    docker_port: int
+    tls_enabled: bool
+    tls_cert_path: str | None = None
+    tls_key_path: str | None = None
+    tls_ca_path: str | None = None
+
+
+class DockerInfo(BaseModel):
+    """Docker server information from test connection."""
+
+    server_version: str | None = None
+    os: str | None = None
+    architecture: str | None = None
+    containers: int | None = None
+    images: int | None = None
+    memory_total: int | None = None
+    cpus: int | None = None
+
+
+class TestConnectionResponse(BaseModel):
+    """Response from connection test."""
+
+    success: bool
+    message: str
+    docker_info: DockerInfo | None = None
+    error: str | None = None
 
 
 # ============== Helper Functions ==============
@@ -865,13 +899,15 @@ async def list_servers_for_compute(
 ) -> list[InternalServerResponse]:
     """Internal endpoint for compute service to fetch server configs.
 
-    Authenticated via X-Internal-API-Key header.
+    Authenticated via X-Internal-Service-Token header.
     Returns all active servers with TLS configuration.
     """
-    # Verify internal API key
-    api_key = request.headers.get("X-Internal-API-Key")
-    if not api_key or api_key != settings.COMPUTE_INTERNAL_API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid or missing internal API key")
+    # Verify internal service token
+    token = request.headers.get("X-Internal-Service-Token")
+    if not settings.INTERNAL_SERVICE_TOKEN:
+        raise HTTPException(status_code=500, detail="INTERNAL_SERVICE_TOKEN not configured")
+    if not token or not secrets.compare_digest(token, settings.INTERNAL_SERVICE_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid or missing service token")
 
     # Get all active servers
     result = await db.execute(
@@ -894,3 +930,81 @@ async def list_servers_for_compute(
         )
         for s in servers
     ]
+
+
+# ============== Test Connection Endpoint ==============
+
+
+@router.post("/test-connection", response_model=TestConnectionResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def test_server_connection(
+    request: Request,
+    response: Response,  # noqa: ARG001
+    data: TestConnectionRequest,
+) -> TestConnectionResponse:
+    """Test Docker connection to a workspace server before adding it.
+
+    This endpoint proxies to the compute service to test connectivity
+    to a Docker host. Useful for validating server configuration before
+    registering it in the system.
+
+    Requires admin access.
+    """
+    _require_admin(request)
+
+    try:
+        # Proxy request to compute service
+        async with httpx.AsyncClient(
+            base_url=settings.COMPUTE_SERVICE_URL,
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        ) as client:
+            compute_response = await client.post(
+                "/servers/test-connection",
+                headers={"X-Internal-Service-Token": settings.INTERNAL_SERVICE_TOKEN},
+                json=data.model_dump(),
+            )
+
+            if compute_response.status_code == 200:
+                result = compute_response.json()
+                return TestConnectionResponse(
+                    success=result.get("success", False),
+                    message=result.get("message", "Unknown result"),
+                    docker_info=DockerInfo(**result["docker_info"])
+                    if result.get("docker_info")
+                    else None,
+                    error=result.get("error"),
+                )
+
+            logger.warning(
+                "Compute service returned error for connection test",
+                status_code=compute_response.status_code,
+                detail=compute_response.text[:200] if compute_response.text else None,
+            )
+            error_detail = compute_response.text[:200] if compute_response.text else "Unknown error"
+            return TestConnectionResponse(
+                success=False,
+                message="Compute service error",
+                error=f"HTTP {compute_response.status_code}: {error_detail}",
+            )
+
+    except httpx.TimeoutException:
+        logger.warning(
+            "Timeout connecting to compute service for connection test",
+            ip_address=data.ip_address,
+            port=data.docker_port,
+        )
+        return TestConnectionResponse(
+            success=False,
+            message="Connection test timed out",
+            error="Timeout connecting to compute service",
+        )
+    except httpx.RequestError as e:
+        logger.exception(
+            "Error connecting to compute service for connection test",
+            error=str(e),
+        )
+        return TestConnectionResponse(
+            success=False,
+            message="Failed to reach compute service",
+            error=str(e),
+        )

@@ -243,15 +243,22 @@ def test_user_id() -> str:
 
 
 @pytest.fixture
-def test_internal_api_key(monkeypatch: pytest.MonkeyPatch) -> str:
-    """Test internal API key for authentication.
+def test_internal_service_token(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Test internal service token for authentication.
 
-    Sets a non-empty API key so authentication checks are actually enforced.
+    Sets a non-empty token so authentication checks are actually enforced.
     """
-    test_key = "test-api-key-12345"  # gitleaks:allow
-    # Set the key in settings so auth checks work
-    monkeypatch.setattr(settings, "internal_api_key", test_key)
-    return test_key
+    test_token = "test-service-token-12345"  # gitleaks:allow
+    # Set the token in settings so auth checks work
+    monkeypatch.setattr(settings, "internal_service_token", test_token)
+    return test_token
+
+
+# Backward-compatible alias
+@pytest.fixture
+def test_internal_api_key(test_internal_service_token: str) -> str:
+    """Deprecated alias for test_internal_service_token."""
+    return test_internal_service_token
 
 
 # ============================================

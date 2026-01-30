@@ -53,12 +53,12 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # Internal service authentication
-    # This key must be shared between API service and compute service
-    internal_api_key: str = ""  # Required in production
+    # This token must be shared between all services (API, compute, agent)
+    # Reads from INTERNAL_SERVICE_TOKEN env var (not prefixed with COMPUTE_)
+    internal_service_token: str = Field(default="", validation_alias="INTERNAL_SERVICE_TOKEN")
 
     # API service (for usage tracking)
     api_base_url: str = "http://localhost:3001"
-    internal_service_token: str | None = None  # Token for service-to-service auth
 
     # CORS - stored as raw string to avoid pydantic-settings JSON parsing issues
     cors_origins_raw: str = Field(

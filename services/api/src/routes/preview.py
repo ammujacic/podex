@@ -84,9 +84,9 @@ def _get_compute_client(user_id: str | None = None) -> httpx.AsyncClient:
     headers = {}
     if user_id:
         headers["X-User-ID"] = user_id
-    # Add internal API key for service-to-service auth
-    if settings.COMPUTE_INTERNAL_API_KEY:
-        headers["X-Internal-API-Key"] = settings.COMPUTE_INTERNAL_API_KEY
+    # Add internal service token for service-to-service auth
+    if settings.INTERNAL_SERVICE_TOKEN:
+        headers["X-Internal-Service-Token"] = settings.INTERNAL_SERVICE_TOKEN
     return httpx.AsyncClient(base_url=COMPUTE_SERVICE_URL, timeout=30.0, headers=headers)
 
 

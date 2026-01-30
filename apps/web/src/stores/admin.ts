@@ -335,6 +335,30 @@ export interface CreateServerRequest {
   tls_ca_path?: string;
 }
 
+export interface TestServerConnectionRequest {
+  ip_address: string;
+  docker_port: number;
+  tls_enabled: boolean;
+  tls_cert_path?: string;
+  tls_key_path?: string;
+  tls_ca_path?: string;
+}
+
+export interface TestServerConnectionResponse {
+  success: boolean;
+  message: string;
+  docker_info?: {
+    server_version?: string;
+    os?: string;
+    architecture?: string;
+    containers?: number;
+    images?: number;
+    memory_total?: number;
+    cpus?: number;
+  };
+  error?: string;
+}
+
 // ============================================================================
 // State
 // ============================================================================
@@ -466,6 +490,9 @@ interface AdminState {
   drainWorkspaceServer: (serverId: string) => Promise<void>;
   activateWorkspaceServer: (serverId: string) => Promise<void>;
   fetchServerWorkspaces: (serverId: string) => Promise<ServerWorkspaceInfo[]>;
+  testServerConnection: (
+    data: TestServerConnectionRequest
+  ) => Promise<TestServerConnectionResponse>;
   clearError: () => void;
 }
 
@@ -959,6 +986,27 @@ export const useAdminStore = create<AdminState>()(
             serverWorkspacesLoading: { ...state.serverWorkspacesLoading, [serverId]: false },
           }));
           throw err;
+        }
+      },
+
+      testServerConnection: async (
+        data: TestServerConnectionRequest
+      ): Promise<TestServerConnectionResponse> => {
+        set({ error: null });
+        try {
+          const result = await api.post<TestServerConnectionResponse>(
+            '/api/servers/test-connection',
+            data
+          );
+          return result;
+        } catch (err) {
+          const errorMessage = (err as Error).message;
+          set({ error: errorMessage });
+          return {
+            success: false,
+            message: 'Connection test failed',
+            error: errorMessage,
+          };
         }
       },
 

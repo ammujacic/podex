@@ -5,13 +5,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from podex_shared import PortInfo, PreviewInfo
-from src.deps import get_compute_manager, verify_internal_api_key
+from src.deps import get_compute_manager, verify_internal_auth
 from src.managers.base import ComputeManager, ProxyRequest
 
 router = APIRouter(
     prefix="/preview",
     tags=["preview"],
-    dependencies=[Depends(verify_internal_api_key)],
+    dependencies=[Depends(verify_internal_auth)],
 )
 
 

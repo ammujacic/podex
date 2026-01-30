@@ -117,7 +117,7 @@ class TestTunnelRoutes:
             json={"token": "test-token", "port": 3000, "service_type": "http"},
             headers={
                 "X-User-ID": test_user_id,
-                "X-Internal-API-Key": test_internal_api_key,
+                "X-Internal-Service-Token": test_internal_api_key,
             },
         )
 
@@ -143,7 +143,7 @@ class TestTunnelRoutes:
             json={"token": "test-token", "port": 22, "service_type": "ssh"},
             headers={
                 "X-User-ID": test_user_id,
-                "X-Internal-API-Key": test_internal_api_key,
+                "X-Internal-Service-Token": test_internal_api_key,
             },
         )
 
@@ -166,7 +166,7 @@ class TestTunnelRoutes:
             json={"token": "test-token", "port": 3000},
             headers={
                 "X-User-ID": test_user_id,
-                "X-Internal-API-Key": test_internal_api_key,
+                "X-Internal-Service-Token": test_internal_api_key,
             },
         )
 
@@ -184,7 +184,7 @@ class TestTunnelRoutes:
             json={"token": "test-token", "port": 3000},
             headers={
                 "X-User-ID": "wrong-user",
-                "X-Internal-API-Key": test_internal_api_key,
+                "X-Internal-Service-Token": test_internal_api_key,
             },
         )
 
@@ -199,7 +199,7 @@ class TestTunnelRoutes:
             json={"port": 3000},
             headers={
                 "X-User-ID": test_user_id,
-                "X-Internal-API-Key": test_internal_api_key,
+                "X-Internal-Service-Token": test_internal_api_key,
             },
         )
 
@@ -220,7 +220,7 @@ class TestTunnelRoutes:
             "/workspaces/ws-test-123/tunnels/status",
             headers={
                 "X-User-ID": test_user_id,
-                "X-Internal-API-Key": test_internal_api_key,
+                "X-Internal-Service-Token": test_internal_api_key,
             },
         )
 
@@ -247,7 +247,7 @@ class TestTunnelRoutes:
             json={"token": "test-token", "port": 3000},
             headers={
                 "X-User-ID": test_user_id,
-                "X-Internal-API-Key": test_internal_api_key,
+                "X-Internal-Service-Token": test_internal_api_key,
             },
         )
 

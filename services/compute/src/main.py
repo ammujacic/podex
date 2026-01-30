@@ -24,6 +24,7 @@ from src.routes import (
     health_router,
     preview_router,
     reset_terminal_manager,
+    servers_router,
     shutdown_terminal_sessions,
     terminal_router,
     tunnels_router,
@@ -235,6 +236,7 @@ app.include_router(tunnels_router)
 app.include_router(preview_router)
 app.include_router(terminal_router)
 app.include_router(websocket_router)
+app.include_router(servers_router)
 
 
 @app.get("/")

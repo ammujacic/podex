@@ -242,7 +242,8 @@ class MultiServerDockerManager:
         def _connect() -> DockerClient:
             if tls_enabled:
                 # TLS-secured connection (production)
-                if not all([tls_cert_path, tls_key_path, tls_ca_path]):
+                # Explicit checks for type narrowing (mypy doesn't understand all())
+                if tls_cert_path is None or tls_key_path is None or tls_ca_path is None:
                     raise ValueError(
                         f"All TLS paths (cert, key, ca) required for TLS connection to {ip_address}"
                     )
