@@ -91,7 +91,6 @@ import { FilesPanel } from './FilesPanel';
 import { GitPanel } from './GitPanel';
 import { GitHubWidget } from './GitHubWidget';
 import { SearchPanel } from './SearchPanel';
-import { DiagnosticsSidebarPanel } from './DiagnosticsSidebarPanel';
 import { AgentsPanel } from './AgentsPanel';
 import { MCPPanel } from './MCPPanel';
 import { UsageSidebarPanel } from './UsageSidebarPanel';
@@ -183,12 +182,6 @@ export function MobileWorkspaceLayout({ sessionId }: MobileWorkspaceLayoutProps)
       icon: <Search className="h-5 w-5" />,
       height: 'full',
       component: <SearchPanel sessionId={sessionId} />,
-    },
-    problems: {
-      title: 'Problems',
-      icon: <AlertCircle className="h-5 w-5" />,
-      height: 'full',
-      component: <DiagnosticsSidebarPanel sessionId={sessionId} />,
     },
     agents: {
       title: 'Agents',

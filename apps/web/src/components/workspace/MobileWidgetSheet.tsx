@@ -9,7 +9,6 @@ export type WidgetId =
   | 'git'
   | 'github'
   | 'search'
-  | 'problems'
   | 'agents'
   | 'mcp'
   | 'extensions'

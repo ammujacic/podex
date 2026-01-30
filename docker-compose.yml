@@ -323,12 +323,14 @@ services:
     deploy:
       resources:
         limits:
-          memory: 16G
+          memory: 8G
           cpus: '4.0'
     environment:
       NODE_ENV: development
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
       NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:3001}
+      # Feature flags
+      NEXT_PUBLIC_COMING_SOON_MODE: ${NEXT_PUBLIC_COMING_SOON_MODE:-true}
       # Sentry
       NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
       NEXT_PUBLIC_ENVIRONMENT: development

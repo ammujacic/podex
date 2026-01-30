@@ -530,7 +530,7 @@ export interface ConversationCreatedEvent {
   conversation: {
     id: string;
     name: string;
-    attached_to_agent_id: string | null;
+    attached_agent_ids: string[];
     message_count: number;
     last_message_at: string | null;
     created_at: string;
@@ -543,7 +543,7 @@ export interface ConversationUpdatedEvent {
   conversation: {
     id: string;
     name?: string;
-    attached_to_agent_id?: string | null;
+    attached_agent_ids?: string[];
     message_count?: number;
     last_message_at?: string | null;
     created_at?: string;

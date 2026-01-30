@@ -11,7 +11,6 @@ const mockConversationSession = {
   id: 'conv-1',
   name: 'Test Conversation',
   messages: [],
-  attachedToAgentId: 'agent-123',
   attachedAgentIds: ['agent-123'],
   messageCount: 0,
   lastMessageAt: null,
@@ -47,9 +46,15 @@ vi.mock('@/stores/session', async () => {
 });
 
 vi.mock('@/stores/streaming', () => ({
-  useStreamingStore: () => ({
-    streamingMessages: {},
-  }),
+  useStreamingStore: (selector?: (state: any) => any) => {
+    const state = {
+      streamingMessages: {},
+    };
+    if (selector) {
+      return selector(state);
+    }
+    return state;
+  },
 }));
 
 vi.mock('@/stores/editor', () => ({
@@ -59,16 +64,28 @@ vi.mock('@/stores/editor', () => ({
 }));
 
 vi.mock('@/stores/worktrees', () => ({
-  useWorktreesStore: () => ({
-    getAgentWorktree: () => null,
-  }),
+  useWorktreesStore: (selector?: (state: any) => any) => {
+    const state = {
+      sessionWorktrees: { 'session-123': [] },
+    };
+    if (selector) {
+      return selector(state);
+    }
+    return state;
+  },
 }));
 
 vi.mock('@/stores/checkpoints', () => ({
-  useCheckpointsStore: () => ({
-    getAgentCheckpoints: () => [],
-    restoringCheckpointId: null,
-  }),
+  useCheckpointsStore: (selector?: (state: any) => any) => {
+    const state = {
+      sessionCheckpoints: { 'session-123': [] },
+      restoringCheckpointId: null,
+    };
+    if (selector) {
+      return selector(state);
+    }
+    return state;
+  },
 }));
 
 vi.mock('@/stores/approvals', () => ({

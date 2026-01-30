@@ -3,7 +3,12 @@ import withSerwist from '@serwist/next';
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: 'standalone',
   reactStrictMode: true,
+  env: {
+    // Feature flag for coming soon mode
+    NEXT_PUBLIC_COMING_SOON_MODE: process.env.NEXT_PUBLIC_COMING_SOON_MODE || 'false',
+  },
   // Allow dev server access from local network (mobile testing)
   allowedDevOrigins: ['192.168.*.*', '10.*.*.*', '172.16.*.*'],
   transpilePackages: [

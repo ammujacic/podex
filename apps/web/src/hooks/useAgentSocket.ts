@@ -238,7 +238,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
             id: conv.id,
             name: conv.name,
             messages: [],
-            attachedToAgentId: conv.attached_to_agent_id,
+            attachedAgentIds: conv.attached_agent_ids || [],
             messageCount: conv.message_count,
             lastMessageAt: conv.last_message_at,
             createdAt: conv.created_at,
@@ -257,7 +257,7 @@ export function useAgentSocket({ sessionId, userId, authToken }: UseAgentSocketO
           conversation: {
             id: conv.id,
             name: conv.name,
-            attachedToAgentId: conv.attached_to_agent_id,
+            attachedAgentIds: conv.attached_agent_ids || [],
             messageCount: conv.message_count ?? 0,
             lastMessageAt: conv.last_message_at ?? null,
             createdAt: conv.created_at ?? new Date().toISOString(),

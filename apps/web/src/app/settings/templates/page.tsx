@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import {
   Plus,
   Edit,
@@ -138,11 +138,7 @@ export default function AgentTemplatesPage() {
     return models;
   }, [providers]);
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     try {
       const [templatesData, providersData] = await Promise.all([
         listAgentTemplates(),
@@ -165,7 +161,12 @@ export default function AgentTemplatesPage() {
     } finally {
       setLoading(false);
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   const generateSlug = (name: string) => {
     return name
@@ -331,7 +332,7 @@ export default function AgentTemplatesPage() {
   }
 
   return (
-    <div className="p-6 max-w-4xl">
+    <div className="p-6">
       <div className="mb-6">
         <div className="flex items-center justify-between">
           <div>
@@ -517,7 +518,7 @@ export default function AgentTemplatesPage() {
                         <h4 className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-2">
                           {category}
                         </h4>
-                        <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2">
                           {categoryTools.map(([toolId, tool]) => (
                             <button
                               key={toolId}
@@ -587,7 +588,7 @@ export default function AgentTemplatesPage() {
           </button>
         </div>
       ) : (
-        <div className="space-y-3">
+        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
           {templates.map((template) => (
             <div
               key={template.id}

@@ -28,6 +28,8 @@ import {
   Plug,
   BookOpen,
   ExternalLink,
+  Mail,
+  Clock,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUser, useAuthLoading } from '@/stores/auth';
@@ -51,6 +53,8 @@ const adminNavItems = [
     items: [
       { href: '/admin/management/users', label: 'Users', icon: Users },
       { href: '/admin/management/organizations', label: 'Organizations', icon: Building2 },
+      { href: '/admin/management/waitlist', label: 'Waitlist', icon: Clock },
+      { href: '/admin/management/invitations', label: 'Invitations', icon: Mail },
       { href: '/admin/management/plans', label: 'Subscription Plans', icon: CreditCard },
       { href: '/admin/management/models', label: 'LLM Models', icon: Brain },
       { href: '/admin/management/providers', label: 'LLM Providers', icon: Cloud },

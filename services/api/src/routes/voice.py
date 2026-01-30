@@ -784,12 +784,12 @@ async def synthesize_message(
     # Verify user has access to the session
     await verify_session_access(session_id, request, db)
 
-    # Verify agent exists in the session and get its conversation session
+    # Verify agent exists in the session and get its attached conversation
     from sqlalchemy.orm import selectinload
 
     agent_check_query = (
         select(AgentModel)
-        .options(selectinload(AgentModel.conversation_session))
+        .options(selectinload(AgentModel.attached_conversation))
         .where(
             AgentModel.id == agent_id,
             AgentModel.session_id == session_id,
@@ -800,13 +800,13 @@ async def synthesize_message(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found in session")
 
-    if not agent.conversation_session:
+    if not agent.attached_conversation:
         raise HTTPException(status_code=404, detail="Agent has no conversation session")
 
-    # Get the message from the agent's conversation session
+    # Get the message from the agent's attached conversation
     query = select(ConversationMessage).where(
         ConversationMessage.id == message_id,
-        ConversationMessage.conversation_session_id == agent.conversation_session.id,
+        ConversationMessage.conversation_session_id == agent.attached_conversation.id,
     )
     result = await db.execute(query)
     message = result.scalar_one_or_none()

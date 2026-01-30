@@ -3,8 +3,6 @@
 import { useCallback, useRef, useEffect } from 'react';
 import { VSCodeEditor, type VSCodeEditorRef } from '@/lib/vscode';
 import * as monaco from '@codingame/monaco-vscode-editor-api';
-import type { LSPDiagnostic } from '@/lib/api';
-import { diagnosticsToMonacoMarkers } from '@/hooks/useLSP';
 
 export interface CodeEditorProps {
   value: string;
@@ -14,10 +12,6 @@ export interface CodeEditorProps {
   onChange?: (value: string) => void;
   onSave?: (value: string) => void;
   className?: string;
-  /** LSP diagnostics to display as markers */
-  diagnostics?: LSPDiagnostic[];
-  /** Callback when editor content changes (debounced) for triggering diagnostics */
-  onContentChange?: (value: string) => void;
   /** Line number to scroll to and highlight */
   startLine?: number;
   /** End line for highlighting a range */
@@ -32,13 +26,10 @@ export function CodeEditor({
   onChange,
   onSave,
   className,
-  diagnostics,
-  onContentChange,
   startLine,
   endLine,
 }: CodeEditorProps) {
   const editorRef = useRef<VSCodeEditorRef>(null);
-  const contentChangeTimerRef = useRef<NodeJS.Timeout | null>(null);
   const hasScrolledToLine = useRef(false);
 
   // Handle editor mount
@@ -115,50 +106,14 @@ export function CodeEditor({
     }
   }, [startLine, endLine]);
 
-  // Update Monaco markers when diagnostics change
-  useEffect(() => {
-    const editor = editorRef.current?.getEditor();
-    if (!editor) return;
-
-    const model = editor.getModel();
-    if (!model) return;
-
-    if (diagnostics && diagnostics.length > 0) {
-      const markers = diagnosticsToMonacoMarkers(diagnostics);
-      monaco.editor.setModelMarkers(model, 'lsp', markers);
-    } else {
-      // Clear markers if no diagnostics
-      monaco.editor.setModelMarkers(model, 'lsp', []);
-    }
-  }, [diagnostics]);
-
   const handleChange = useCallback(
     (newValue: string) => {
       if (onChange) {
         onChange(newValue);
       }
-
-      // Debounced content change for diagnostics
-      if (onContentChange) {
-        if (contentChangeTimerRef.current) {
-          clearTimeout(contentChangeTimerRef.current);
-        }
-        contentChangeTimerRef.current = setTimeout(() => {
-          onContentChange(newValue);
-        }, 500); // 500ms debounce
-      }
     },
-    [onChange, onContentChange]
+    [onChange]
   );
-
-  // Cleanup debounce timer on unmount
-  useEffect(() => {
-    return () => {
-      if (contentChangeTimerRef.current) {
-        clearTimeout(contentChangeTimerRef.current);
-      }
-    };
-  }, []);
 
   return (
     <div className={className}>

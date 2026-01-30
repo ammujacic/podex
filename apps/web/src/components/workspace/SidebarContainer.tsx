@@ -3,7 +3,6 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   Activity,
-  AlertTriangle,
   BarChart3,
   Bot,
   Box,
@@ -74,7 +73,6 @@ import { GitHubWidget } from './GitHubWidget';
 import { MCPPanel } from './MCPPanel';
 import { ExtensionsPanel } from './ExtensionsPanel';
 import { SearchPanel } from './SearchPanel';
-import { DiagnosticsSidebarPanel } from './DiagnosticsSidebarPanel';
 import { UsageSidebarPanel } from './UsageSidebarPanel';
 import { SentryPanel } from './SentryPanel';
 import { SkillsPanel } from './SkillsPanel';
@@ -103,7 +101,6 @@ const panelConfig: Record<
   mcp: { icon: Plug, label: 'Integrations (MCP)' },
   extensions: { icon: Box, label: 'Extensions' },
   search: { icon: Search, label: 'Search' },
-  problems: { icon: AlertTriangle, label: 'Problems' },
   usage: { icon: BarChart3, label: 'Usage' },
   sentry: { icon: SentryIcon, label: 'Sentry MCP' },
   skills: { icon: Zap, label: 'Skills' },
@@ -113,15 +110,7 @@ const panelConfig: Record<
 };
 
 // Left sidebar: traditional coding tools
-const leftPanelIds: PanelId[] = [
-  'files',
-  'search',
-  'git',
-  'github',
-  'problems',
-  'health',
-  'tunnels',
-];
+const leftPanelIds: PanelId[] = ['files', 'search', 'git', 'github', 'health', 'tunnels'];
 
 // Right sidebar: AI-related and utility panels
 const rightPanelIds: PanelId[] = [
@@ -136,7 +125,7 @@ const rightPanelIds: PanelId[] = [
 ];
 
 // Panels that show badge counts
-const badgePanelIds: PanelId[] = ['agents', 'mcp', 'problems', 'sentry'];
+const badgePanelIds: PanelId[] = ['agents', 'mcp', 'sentry'];
 
 function SidebarBadge({ count }: { count: number | undefined }) {
   if (!count || count <= 0) return null;
@@ -233,8 +222,6 @@ function SidebarPanel({
         return <ExtensionsPanel sessionId={sessionId} />;
       case 'search':
         return <SearchPanel sessionId={sessionId} />;
-      case 'problems':
-        return <DiagnosticsSidebarPanel sessionId={sessionId} />;
       case 'usage':
         // Usage panel receives isVisible=true since it's only rendered when in the active panels list
         return <UsageSidebarPanel sessionId={sessionId} isVisible={true} />;

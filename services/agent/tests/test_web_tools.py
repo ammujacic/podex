@@ -160,16 +160,6 @@ class TestMemoryModules:
         from src.memory import retriever
         assert retriever is not None
 
-    def test_qa_search_module_exists(self):
-        """Test QA search module can be imported."""
-        from src.memory import qa_search
-        assert qa_search is not None
-
-    def test_podex_md_parser_module_exists(self):
-        """Test podex md parser module can be imported."""
-        from src.memory import podex_md_parser
-        assert podex_md_parser is not None
-
     def test_wiki_generator_module_exists(self):
         """Test wiki generator module can be imported."""
         from src.memory import wiki_generator
@@ -184,21 +174,10 @@ class TestMeshModules:
         from src.mesh import agent_bus
         assert agent_bus is not None
 
-    def test_conflict_detector_module_exists(self):
-        """Test conflict detector module can be imported."""
-        from src.mesh import conflict_detector
-        assert conflict_detector is not None
-
     def test_coordinator_module_exists(self):
         """Test coordinator module can be imported."""
         from src.mesh import coordinator
         assert coordinator is not None
-
-    def test_results_merger_module_exists(self):
-        """Test results merger module can be imported."""
-        from src.mesh import results_merger
-        assert results_merger is not None
-
 
 class TestCheckpointModules:
     """Test checkpoint modules."""

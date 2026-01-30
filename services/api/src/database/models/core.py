@@ -291,19 +291,14 @@ class Agent(Base):
         back_populates="agent",
         cascade="all, delete-orphan",
     )
-    # Legacy relationship for backward compatibility (one-to-one)
-    # The FK lives on ConversationSession.attached_to_agent_id
-    conversation_session: Mapped["ConversationSession | None"] = relationship(
-        "ConversationSession",
-        back_populates="attached_agent",
-        uselist=False,
-        foreign_keys="ConversationSession.attached_to_agent_id",
-    )
-    # Many-to-many relationship: conversations attached to this agent
-    attached_conversations: Mapped[list["ConversationSession"]] = relationship(
+    # The conversation attached to this agent (via junction table).
+    # An agent can only have ONE conversation attached (unique constraint on junction).
+    # uselist=False because agent can only have one conversation.
+    attached_conversation: Mapped["ConversationSession | None"] = relationship(
         "ConversationSession",
         secondary="agent_conversation_attachments",
         back_populates="attached_agents",
+        uselist=False,
     )
 
 

@@ -249,7 +249,7 @@ export default function SessionPage() {
                   id: conv.id,
                   name: conv.name,
                   messages,
-                  attachedToAgentId: conv.attached_to_agent_id,
+                  attachedAgentIds: conv.attached_agent_ids || [],
                   messageCount: conv.message_count,
                   lastMessageAt: conv.last_message_at,
                   createdAt: conv.created_at,
@@ -262,7 +262,7 @@ export default function SessionPage() {
                   id: conv.id,
                   name: conv.name,
                   messages: [],
-                  attachedToAgentId: conv.attached_to_agent_id,
+                  attachedAgentIds: conv.attached_agent_ids || [],
                   messageCount: conv.message_count,
                   lastMessageAt: conv.last_message_at,
                   createdAt: conv.created_at,
@@ -275,7 +275,7 @@ export default function SessionPage() {
                 id: conv.id,
                 name: conv.name,
                 messages: [],
-                attachedToAgentId: conv.attached_to_agent_id,
+                attachedAgentIds: conv.attached_agent_ids || [],
                 messageCount: conv.message_count,
                 lastMessageAt: conv.last_message_at,
                 createdAt: conv.created_at,
@@ -293,21 +293,26 @@ export default function SessionPage() {
         // Ensure conversations and agents are in sync
         // Backend is source of truth, but we ensure bidirectional consistency:
         // If agent has conversationSessionId pointing to a conversation, ensure that conversation
-        // has attachedToAgentId pointing back to the agent (backend should already do this, but we verify)
+        // has the agent in its attachedAgentIds list (backend should already do this, but we verify)
         const conversationsSynced = conversations.map((conv) => {
-          // Find agent that has this conversation attached (by conversationSessionId)
-          const attachedAgent = agents.find((a) => a.conversationSessionId === conv.id);
+          // Find agents that have this conversation attached (by conversationSessionId)
+          const attachedAgents = agents.filter((a) => a.conversationSessionId === conv.id);
+          const attachedAgentIdsFromConv = conv.attachedAgentIds || [];
 
-          // If agent exists with this conversationSessionId, ensure conversation reflects it
-          // This handles edge cases where backend data might be slightly out of sync
+          // Merge any agents that have this conversation but aren't in the list
+          const mergedAgentIds = [
+            ...new Set([...attachedAgentIdsFromConv, ...attachedAgents.map((a) => a.id)]),
+          ];
+
+          // If there's a difference, update the conversation
           if (
-            attachedAgent &&
-            (!conv.attachedToAgentId || conv.attachedToAgentId !== attachedAgent.id)
+            mergedAgentIds.length !== attachedAgentIdsFromConv.length ||
+            !mergedAgentIds.every((id) => attachedAgentIdsFromConv.includes(id))
           ) {
-            return { ...conv, attachedToAgentId: attachedAgent.id };
+            return { ...conv, attachedAgentIds: mergedAgentIds };
           }
 
-          // Otherwise trust backend data (conversation's attached_to_agent_id)
+          // Otherwise trust backend data
           return conv;
         });
 

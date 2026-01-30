@@ -286,13 +286,18 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
       const session = state.sessions[sessionId];
       if (!session) return state;
 
-      // Detach any conversations that were attached to this agent so they
-      // return to the available pool (matches backend detach semantics).
-      const updatedConversations = session.conversationSessions.map((c) =>
-        c.attachedToAgentId === agentId
-          ? { ...c, attachedToAgentId: null, updatedAt: new Date().toISOString() }
-          : c
-      );
+      // Remove this agent from any conversations' attached list
+      const updatedConversations = session.conversationSessions.map((c) => {
+        const attachedAgentIds = c.attachedAgentIds || [];
+        if (attachedAgentIds.includes(agentId)) {
+          return {
+            ...c,
+            attachedAgentIds: attachedAgentIds.filter((id) => id !== agentId),
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        return c;
+      });
 
       return {
         sessions: {
@@ -355,8 +360,7 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
       id,
       name,
       messages: [],
-      attachedToAgentId: null, // Legacy field
-      attachedAgentIds: [], // New field for many-to-many
+      attachedAgentIds: [],
       messageCount: 0,
       lastMessageAt: null,
       createdAt: now,
@@ -435,7 +439,6 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
         if (!attachedAgentIds.includes(agentId)) {
           return {
             ...c,
-            attachedToAgentId: c.attachedToAgentId || agentId, // Legacy field
             attachedAgentIds: [...attachedAgentIds, agentId],
             updatedAt: new Date().toISOString(),
           };
@@ -468,22 +471,20 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
       const conversation = session.conversationSessions.find((c) => c.id === conversationId);
       if (!conversation) return state;
 
-      // Determine which agent to detach from
-      const targetAgentId = agentId || conversation.attachedToAgentId;
+      // Determine which agent to detach from - use first attached if not specified
+      const attachedAgentIds = conversation.attachedAgentIds || [];
+      const targetAgentId = agentId || attachedAgentIds[0];
       if (!targetAgentId) return state;
 
       // Remove agent from attached list
-      const attachedAgentIds = (conversation.attachedAgentIds || []).filter(
-        (id) => id !== targetAgentId
-      );
+      const newAttachedAgentIds = attachedAgentIds.filter((id) => id !== targetAgentId);
 
       // Update conversation
       const updatedConversations = session.conversationSessions.map((c) =>
         c.id === conversationId
           ? {
               ...c,
-              attachedToAgentId: attachedAgentIds.length > 0 ? (attachedAgentIds[0] ?? null) : null, // Legacy field
-              attachedAgentIds: attachedAgentIds,
+              attachedAgentIds: newAttachedAgentIds,
               updatedAt: new Date().toISOString(),
             }
           : c
@@ -734,7 +735,9 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
     if (!session) return [];
 
     // Return conversations that are not attached to any agent
-    return session.conversationSessions.filter((c) => c.attachedToAgentId === null);
+    return session.conversationSessions.filter(
+      (c) => !c.attachedAgentIds || c.attachedAgentIds.length === 0
+    );
   },
 
   handleConversationEvent: (sessionId, event, data) =>
@@ -772,10 +775,10 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
                 ...session,
                 conversationSessions: session.conversationSessions.map((c) => {
                   if (c.id !== convData.id) return c;
-                  const base = { ...c, ...convData };
                   return {
-                    ...base,
-                    attachedToAgentId: base.attachedToAgentId ?? c.attachedToAgentId ?? null,
+                    ...c,
+                    ...convData,
+                    attachedAgentIds: convData.attachedAgentIds ?? c.attachedAgentIds ?? [],
                   };
                 }),
               },
@@ -817,7 +820,6 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
                   if (!attachedAgentIds.includes(agentId)) {
                     return {
                       ...c,
-                      attachedToAgentId: c.attachedToAgentId || agentId, // Legacy field
                       attachedAgentIds: [...attachedAgentIds, agentId],
                     };
                   }
@@ -849,8 +851,6 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
                   );
                   return {
                     ...c,
-                    attachedToAgentId:
-                      attachedAgentIds.length > 0 ? (attachedAgentIds[0] ?? null) : null, // Legacy
                     attachedAgentIds: attachedAgentIds,
                   };
                 }),

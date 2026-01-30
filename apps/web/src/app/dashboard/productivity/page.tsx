@@ -2,8 +2,9 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
-  Activity,
+  BarChart2,
   Clock,
   Code,
   GitCommit,
@@ -18,13 +19,22 @@ import {
   XCircle,
   ChevronDown,
   Server,
+  Bell,
+  Settings,
+  LogOut,
+  Plus,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   getProductivitySummary,
   getProductivityTrends,
+  getNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
+  logout,
   type ProductivitySummary,
   type ProductivityTrends,
+  type Notification,
 } from '@/lib/api';
 import { Button } from '@podex/ui';
 import { Logo } from '@/components/ui/Logo';
@@ -194,22 +204,29 @@ function AcceptanceRing({ rate }: { rate: number }) {
 }
 
 export default function ProductivityDashboard() {
+  const router = useRouter();
   const [summary, setSummary] = useState<ProductivitySummary | null>(null);
   const [trends, setTrends] = useState<ProductivityTrends | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [days, setDays] = useState(30);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [showNotifications, setShowNotifications] = useState(false);
+
+  const unreadCount = notifications.filter((n) => !n.read).length;
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [summaryData, trendsData] = await Promise.all([
+      const [summaryData, trendsData, notificationsResponse] = await Promise.all([
         getProductivitySummary(days),
         getProductivityTrends(days),
+        getNotifications(),
       ]);
       setSummary(summaryData);
       setTrends(trendsData);
+      setNotifications(notificationsResponse.items);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -220,6 +237,29 @@ export default function ProductivityDashboard() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  const handleMarkNotificationRead = async (id: string) => {
+    try {
+      await markNotificationRead(id);
+      setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
+    } catch (err) {
+      console.error('Failed to mark notification as read:', err);
+    }
+  };
+
+  const handleMarkAllRead = async () => {
+    try {
+      await markAllNotificationsRead();
+      setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    } catch (err) {
+      console.error('Failed to mark all notifications as read:', err);
+    }
+  };
+
+  const handleLogout = () => {
+    logout();
+    router.push('/');
+  };
 
   // Shared header component
   const PageHeader = () => (
@@ -246,11 +286,99 @@ export default function ProductivityDashboard() {
                 </Link>
                 <Link href="/dashboard/productivity">
                   <Button variant="ghost" size="sm" className="bg-surface text-text-primary">
-                    <Activity className="w-4 h-4 mr-2" />
+                    <BarChart2 className="w-4 h-4 mr-2" />
                     Productivity
                   </Button>
                 </Link>
               </nav>
+            </div>
+            {/* Right actions */}
+            <div className="flex items-center gap-2">
+              {/* Notifications */}
+              <div className="relative">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowNotifications(!showNotifications)}
+                  className="min-w-[44px] min-h-[44px]"
+                >
+                  <Bell className="w-4 h-4" />
+                  {unreadCount > 0 && (
+                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-accent-error text-white text-xs rounded-full flex items-center justify-center">
+                      {unreadCount > 9 ? '9+' : unreadCount}
+                    </span>
+                  )}
+                </Button>
+
+                {/* Notifications Dropdown */}
+                {showNotifications && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-40"
+                      onClick={() => setShowNotifications(false)}
+                    />
+                    <div className="absolute right-0 mt-2 w-80 bg-surface border border-border-default rounded-xl shadow-lg overflow-hidden z-50">
+                      <div className="flex items-center justify-between px-4 py-3 border-b border-border-subtle">
+                        <h3 className="font-medium text-text-primary">Notifications</h3>
+                        {unreadCount > 0 && (
+                          <button
+                            onClick={handleMarkAllRead}
+                            className="text-xs text-accent-primary hover:underline"
+                          >
+                            Mark all read
+                          </button>
+                        )}
+                      </div>
+                      <div className="max-h-[300px] overflow-y-auto">
+                        {notifications.length === 0 ? (
+                          <div className="px-4 py-8 text-center text-text-muted text-sm">
+                            No notifications yet
+                          </div>
+                        ) : (
+                          notifications.slice(0, 5).map((notification) => (
+                            <div
+                              key={notification.id}
+                              onClick={() => handleMarkNotificationRead(notification.id)}
+                              className={`px-4 py-3 border-b border-border-subtle last:border-0 cursor-pointer hover:bg-overlay transition-colors ${
+                                !notification.read ? 'bg-accent-primary/5' : ''
+                              }`}
+                            >
+                              <p className="text-sm font-medium text-text-primary">
+                                {notification.title}
+                              </p>
+                              <p className="text-xs text-text-muted mt-0.5 line-clamp-2">
+                                {notification.message}
+                              </p>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <Link href="/settings">
+                <Button variant="ghost" size="sm">
+                  <Settings className="w-4 h-4 sm:mr-2" />
+                  <span className="hidden sm:inline">Settings</span>
+                </Button>
+              </Link>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleLogout}
+                className="text-text-secondary hover:text-accent-error"
+                title="Log out"
+              >
+                <LogOut className="w-4 h-4" />
+              </Button>
+              <Link href="/session/new">
+                <Button>
+                  <Plus className="w-4 h-4 sm:mr-2" />
+                  <span className="hidden sm:inline">New Pod</span>
+                </Button>
+              </Link>
             </div>
           </div>
         </div>

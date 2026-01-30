@@ -144,6 +144,7 @@ from .platform import (
     PlatformSetting,
     ProductivityMetric,
     ProjectHealthScore,
+    WaitlistEntry,
 )
 
 # Server models (multi-server orchestration)
@@ -255,6 +256,7 @@ __all__ = [
     "UserOAuthToken",
     "UserSkill",
     "UserSubscription",
+    "WaitlistEntry",
     "WikiDocument",
     "Workspace",
     "WorkspaceExtension",

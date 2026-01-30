@@ -111,7 +111,7 @@ async def compact_agent_context(
 
         result = await db.execute(
             select(Agent)
-            .options(selectinload(Agent.conversation_session))
+            .options(selectinload(Agent.attached_conversation))
             .where(Agent.id == agent_id)
         )
         agent = result.scalar_one_or_none()
@@ -120,7 +120,7 @@ async def compact_agent_context(
             raise HTTPException(status_code=404, detail="Agent not found")
 
         # Check if agent has a conversation session
-        if not agent.conversation_session:
+        if not agent.attached_conversation:
             return CompactResponse(
                 tokens_before=0,
                 tokens_after=0,
@@ -132,7 +132,7 @@ async def compact_agent_context(
         # Load all messages for this agent's conversation session
         messages_result = await db.execute(
             select(ConversationMessage)
-            .where(ConversationMessage.conversation_session_id == agent.conversation_session.id)
+            .where(ConversationMessage.conversation_session_id == agent.attached_conversation.id)
             .order_by(ConversationMessage.created_at.asc())
         )
         messages = list(messages_result.scalars().all())
@@ -204,7 +204,7 @@ async def compact_agent_context(
 
                 # Insert summary as a system message at the beginning
                 summary_message = ConversationMessage(
-                    conversation_session_id=agent.conversation_session.id,
+                    conversation_session_id=agent.attached_conversation.id,
                     role="system",
                     content=f"[Previous conversation summary]\n{summary_text}",
                 )

@@ -49,6 +49,7 @@ class EmailTemplate(str, Enum):
     TEAM_INVITE = "team_invite"
     SESSION_SHARED = "session_shared"
     PLATFORM_INVITE = "platform_invite"
+    WAITLIST_CONFIRMATION = "waitlist_confirmation"
 
 
 @dataclass
@@ -342,6 +343,7 @@ class EmailService:
             EmailTemplate.TEAM_INVITE: f"You've been invited to join {team_name} on Podex",
             EmailTemplate.SESSION_SHARED: f"{sharer_name} shared a session with you",
             EmailTemplate.PLATFORM_INVITE: f"{inviter_name} invited you to join Podex",
+            EmailTemplate.WAITLIST_CONFIRMATION: "You're on the Podex waitlist!",
         }
         return subjects.get(template, "Message from Podex")
 
@@ -379,6 +381,7 @@ class EmailService:
             EmailTemplate.PAYMENT_FAILED: "Please update your payment method",
             EmailTemplate.USAGE_WARNING: "Consider upgrading your plan",
             EmailTemplate.PLATFORM_INVITE: f"Join the AI-powered IDE{gift_text}",
+            EmailTemplate.WAITLIST_CONFIRMATION: "We'll notify you when it's your turn",
         }
         return preheaders.get(template, "")
 
@@ -487,6 +490,9 @@ class EmailService:
             ),
             EmailTemplate.PLATFORM_INVITE: self._render_platform_invite(
                 name, context, h1, p_main, p_small, box_gradient, box_purple
+            ),
+            EmailTemplate.WAITLIST_CONFIRMATION: self._render_waitlist_confirmation(
+                name, context, h1, p_main, box_gradient, box_purple
             ),
         }
 
@@ -787,6 +793,63 @@ class EmailService:
 <p style="{p_small}">This invitation will expire in {expires_days} days.</p>
         """
 
+    def _render_waitlist_confirmation(
+        self,
+        _name: str,
+        context: dict[str, Any],
+        h1: str,
+        p_main: str,
+        box_gradient: str,
+        box_purple: str,
+    ) -> str:
+        """Render waitlist confirmation email content."""
+        position = context.get("position")
+        purple = "color: #8B5CF6;"
+
+        # Build position section if we have a position
+        position_section = ""
+        if position:
+            position_section = f"""
+<div style="{box_purple} text-align: center;">
+    <p style="margin: 0 0 8px; font-size: 14px; color: #9898a8;">Your position</p>
+    <p style="margin: 0; font-size: 48px; font-weight: 700; {purple}">
+        #{position}
+    </p>
+    <p style="margin: 8px 0 0; font-size: 14px; color: #5c5c6e;">
+        We'll notify you when it's your turn
+    </p>
+</div>
+"""
+
+        return f"""
+<h1 style="{h1}">You're on the list!</h1>
+<p style="{p_main}">
+    Thanks for your interest in Podex. We're building something special and
+    can't wait to share it with you.
+</p>
+{position_section}
+<div style="{box_gradient}">
+    <p style="margin: 0 0 12px; font-size: 16px; font-weight: 600; color: #f0f0f5;">
+        What's coming:
+    </p>
+    <p style="margin: 0 0 8px; font-size: 14px; color: #9898a8;">
+        • AI agents that code alongside you
+    </p>
+    <p style="margin: 0 0 8px; font-size: 14px; color: #9898a8;">
+        • Cloud workspaces accessible from anywhere
+    </p>
+    <p style="margin: 0 0 8px; font-size: 14px; color: #9898a8;">
+        • Mobile-first development experience
+    </p>
+    <p style="margin: 0; font-size: 14px; color: #9898a8;">
+        • Real-time collaboration with your team
+    </p>
+</div>
+<p style="margin: 0; font-size: 14px; color: #5c5c6e;">
+    We'll send you an invitation as soon as a spot opens up.
+</p>
+        """
+
     def _get_cta_button(self, template: EmailTemplate, context: dict[str, Any]) -> str:
         """Get the call-to-action button for a template."""
         base = settings.FRONTEND_URL
@@ -813,6 +876,10 @@ class EmailService:
             EmailTemplate.PLATFORM_INVITE: (
                 "Accept Invitation",
                 context.get("invite_url", "#"),
+            ),
+            EmailTemplate.WAITLIST_CONFIRMATION: (
+                "Learn More",
+                f"{base}/",
             ),
         }
 
@@ -974,6 +1041,30 @@ What you can do with Podex:
 Accept your invitation: {invite_url}
 
 This invitation will expire in {expires_days} days.
+
+--
+The Podex Team
+"""
+
+        # Handle WAITLIST_CONFIRMATION
+        waitlist_position = context.get("position")
+        position_text = f"\nYour position: #{waitlist_position}\n" if waitlist_position else ""
+
+        text_map[EmailTemplate.WAITLIST_CONFIRMATION] = f"""
+You're on the Podex waitlist!
+
+Thanks for your interest in Podex. We're building something special and
+can't wait to share it with you.
+{position_text}
+What's coming:
+- AI agents that code alongside you
+- Cloud workspaces accessible from anywhere
+- Mobile-first development experience
+- Real-time collaboration with your team
+
+We'll send you an invitation as soon as a spot opens up.
+
+Learn more: {frontend_url}/
 
 --
 The Podex Team

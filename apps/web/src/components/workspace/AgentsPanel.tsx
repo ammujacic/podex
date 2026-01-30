@@ -3,6 +3,7 @@
 import { Bot } from 'lucide-react';
 import { useSessionStore } from '@/stores/session';
 import { cn } from '@/lib/utils';
+import { getRoleIcon } from '@/lib/agentConstants';
 
 interface AgentsPanelProps {
   sessionId: string;
@@ -27,6 +28,7 @@ export function AgentsPanel({ sessionId }: AgentsPanelProps) {
         <div className="p-3 space-y-2">
           {agents.map((agent) => {
             const isActive = session?.activeAgentId === agent.id;
+            const RoleIcon = getRoleIcon(agent.role);
             return (
               <button
                 key={agent.id}
@@ -36,9 +38,11 @@ export function AgentsPanel({ sessionId }: AgentsPanelProps) {
                   isActive ? 'bg-accent-primary text-text-inverse' : 'bg-elevated hover:bg-overlay'
                 )}
               >
-                <div
-                  className="h-3.5 w-3.5 rounded-full shrink-0 ml-0.5"
-                  style={{ backgroundColor: agent.color }}
+                <RoleIcon
+                  className={cn(
+                    'h-4 w-4 shrink-0',
+                    isActive ? 'text-text-inverse' : 'text-text-muted'
+                  )}
                 />
                 <div className="flex-1 truncate">
                   <div

@@ -709,45 +709,8 @@ async def list_user_provider_models(
             ]
         )
 
-    # Add local models (Ollama, LM Studio) from discovered config
-    if config and config.agent_preferences:
-        local_config = config.agent_preferences.get("local_llm_config", {})
-        for provider, provider_config in local_config.items():
-            if provider in {"ollama", "lmstudio"} and provider_config.get("models"):
-                # Determine family based on provider
-                # Most local models are Llama-based
-                family = "llama"
-
-                for model_data in provider_config["models"]:
-                    model_name = model_data.get("name", model_data.get("id", ""))
-                    model_id = f"{provider}/{model_name}"
-
-                    # Estimate context window and capabilities for local models
-                    # Most local models have similar capabilities
-                    models.append(
-                        UserProviderModelResponse(
-                            model_id=model_id,
-                            display_name=f"{model_name} ({provider})",
-                            provider=provider,
-                            family=family,
-                            description=f"Local model via {provider}",
-                            cost_tier="low",  # Local models are free
-                            capabilities={
-                                "vision": False,  # Most local models don't support vision
-                                "thinking": False,
-                                "thinking_coming_soon": False,
-                                "tool_use": True,  # Many local models support tools
-                                "streaming": True,
-                                "json_mode": True,
-                            },
-                            context_window=200000,  # Conservative estimate
-                            max_output_tokens=8192,  # Conservative estimate
-                            is_user_key=False,  # Local models don't require API keys
-                            input_cost_per_million=0.0,  # Free
-                            output_cost_per_million=0.0,  # Free
-                            good_for=["Coding", "Local Development", "Privacy"],
-                        )
-                    )
+    # Note: Local models (Ollama, LM Studio) are NOT included here.
+    # They are shown in the "Local" tab via the useOllamaModels hook on the frontend.
 
     return models
 

@@ -19,10 +19,7 @@ import {
   Globe,
   Cpu,
   DollarSign,
-  Bot,
-  ArrowRight,
 } from 'lucide-react';
-import Link from 'next/link';
 import { cn } from '@/lib/utils';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
@@ -1281,38 +1278,6 @@ export function ModelSettings({ className }: ModelSettingsProps) {
                 })}
             </div>
           )}
-        </section>
-
-        {/* Divider */}
-        <div className="border-t border-border-subtle" />
-
-        {/* ================================================================
-            Section 4: Custom Agent Templates
-            ================================================================ */}
-        <section>
-          <SectionHeader icon={Bot} title="Custom Agent Templates" badgeColor="accent" />
-
-          <p className="text-sm text-text-muted mb-4">
-            Create and manage custom agents with tailored system prompts and tool configurations.
-          </p>
-
-          <Link
-            href="/settings/agents/templates"
-            className="flex items-center justify-between p-4 rounded-xl border border-border-subtle bg-elevated hover:border-accent-primary/50 hover:bg-accent-primary/5 transition-all group"
-          >
-            <div className="flex items-center gap-3">
-              <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-accent-primary/20">
-                <Bot className="h-5 w-5 text-accent-primary" />
-              </div>
-              <div>
-                <span className="font-semibold text-text-primary">Manage Agent Templates</span>
-                <p className="text-sm text-text-muted">
-                  Create, edit, and share custom agent configurations
-                </p>
-              </div>
-            </div>
-            <ArrowRight className="h-5 w-5 text-text-muted group-hover:text-accent-primary transition-colors" />
-          </Link>
         </section>
       </div>
     </div>

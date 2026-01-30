@@ -64,7 +64,6 @@ from src.routes import (
     knowledge,
     llm_providers,
     local_pods,
-    lsp,
     marketplace,
     mcp,
     memory,
@@ -93,6 +92,7 @@ from src.routes import (
     user_compliance,
     user_config,
     voice,
+    waitlist,
     webhooks,
     workspaces,
     worktrees,
@@ -1950,6 +1950,7 @@ api_v1.include_router(models_public_router, prefix="/models", tags=["models"])
 api_v1.include_router(agent_roles_public_router, prefix="/agent-roles", tags=["agent-roles"])
 api_v1.include_router(agent_tools_public_router, prefix="/agent-tools", tags=["agent-tools"])
 api_v1.include_router(platform_settings.router, tags=["platform"])
+api_v1.include_router(waitlist.router, tags=["waitlist"])  # Public waitlist signup
 api_v1.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 api_v1.include_router(productivity.router, tags=["productivity"])
 api_v1.include_router(project_health.router, tags=["project-health"])
@@ -1964,7 +1965,6 @@ api_v1.include_router(changes.router, prefix="/changes", tags=["changes"])
 api_v1.include_router(pending_changes.router, tags=["pending-changes"])
 api_v1.include_router(subagents.router, tags=["subagents"])
 api_v1.include_router(hooks.router, tags=["hooks"])
-api_v1.include_router(lsp.router, tags=["lsp"])
 api_v1.include_router(commands.router, tags=["commands"])
 api_v1.include_router(project_init.router, tags=["init"])
 api_v1.include_router(doctor.router, tags=["doctor"])

@@ -133,7 +133,6 @@ describe('useAgentSocket', () => {
             id: mockConversationId,
             name: 'Test Conversation',
             messages: [],
-            attachedToAgentId: agentId,
             attachedAgentIds: [agentId],
             messageCount: 0,
             lastMessageAt: null,

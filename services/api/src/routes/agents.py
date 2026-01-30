@@ -718,10 +718,10 @@ def _build_agent_response(
     Returns:
         AgentResponse with all fields populated
     """
-    # Get conversation_session_id from the relationship if loaded
+    # Get conversation_session_id from the attached_conversation relationship
     conversation_session_id = None
-    if agent.conversation_session:
-        conversation_session_id = agent.conversation_session.id
+    if agent.attached_conversation:
+        conversation_session_id = agent.attached_conversation.id
 
     return AgentResponse(
         id=agent.id,
@@ -1220,17 +1220,16 @@ async def _process_and_emit_response(
     # Messages now belong to conversation sessions, not agents directly
     if not ctx.conversation_session_id:
         logger.warning("No conversation session for agent response", agent_id=ctx.agent_id)
-        # Create a conversation session if none exists
+        # Create a conversation session and attach it to the agent
         conversation = ConversationSession(
             session_id=ctx.session_id,
             name="New Session",
-            attached_to_agent_id=ctx.agent_id,
         )
         db.add(conversation)
         await db.flush()
         ctx.conversation_session_id = conversation.id
-        # Update agent reference
-        agent.conversation_session = conversation
+        # Attach conversation to agent via the junction table
+        conversation.attached_agents.append(agent)
 
     assistant_message = ConversationMessage(
         id=processing_ctx.message_id,  # Will be None for non-streaming, triggering auto-generation
@@ -1710,7 +1709,7 @@ async def list_agents(
     # Eagerly load conversation_session relationship to get conversation_session_id
     query = (
         select(AgentModel)
-        .options(selectinload(AgentModel.conversation_session))
+        .options(selectinload(AgentModel.attached_conversation))
         .where(AgentModel.session_id == session_id)
         .order_by(AgentModel.created_at)
     )
@@ -1743,7 +1742,7 @@ async def get_agent(
     # Eagerly load conversation_session relationship to get conversation_session_id
     query = (
         select(AgentModel)
-        .options(selectinload(AgentModel.conversation_session))
+        .options(selectinload(AgentModel.attached_conversation))
         .where(
             AgentModel.id == agent_id,
             AgentModel.session_id == session_id,
@@ -1786,7 +1785,7 @@ async def update_agent_mode(
             AgentModel.id == agent_id,
             AgentModel.session_id == session_id,
         )
-        .options(selectinload(AgentModel.conversation_session))
+        .options(selectinload(AgentModel.attached_conversation))
     )
     result = await db.execute(query)
     agent = result.scalar_one_or_none()
@@ -1862,7 +1861,7 @@ async def update_agent(
             AgentModel.id == agent_id,
             AgentModel.session_id == session_id,
         )
-        .options(selectinload(AgentModel.conversation_session))
+        .options(selectinload(AgentModel.attached_conversation))
     )
     result = await db.execute(query)
     agent = result.scalar_one_or_none()
@@ -2045,7 +2044,7 @@ async def delete_agent(
     # Load agent with its attached conversation session (if any)
     query = (
         select(AgentModel)
-        .options(selectinload(AgentModel.conversation_session))
+        .options(selectinload(AgentModel.attached_conversation))
         .where(
             AgentModel.id == agent_id,
             AgentModel.session_id == session_id,
@@ -2057,14 +2056,9 @@ async def delete_agent(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    # Detach any attached conversation session instead of deleting it.
-    # This ensures portable conversation sessions are not coupled to agent lifecycle.
-    conversation_id: str | None = None
-    if agent.conversation_session:
-        conversation = agent.conversation_session
-        conversation_id = conversation.id
-        # Only ConversationSession holds the FK (attached_to_agent_id), clear it here.
-        conversation.attached_to_agent_id = None
+    # The junction table has CASCADE delete, so deleting the agent will automatically
+    # remove it from any attached conversations. The conversation itself is preserved.
+    conversation_id = agent.attached_conversation.id if agent.attached_conversation else None
 
     # Capture agent info before deletion for audit log
     agent_name = agent.name
@@ -2114,7 +2108,7 @@ async def _send_message_impl(
 
     agent_query = (
         select(AgentModel)
-        .options(selectinload(AgentModel.conversation_session))
+        .options(selectinload(AgentModel.attached_conversation))
         .where(
             AgentModel.id == params.agent_id,
             AgentModel.session_id == params.session_id,
@@ -2149,19 +2143,20 @@ async def _send_message_impl(
 
     # Get or create conversation session for this agent
     conversation_session_id = None
-    if agent.conversation_session:
-        conversation_session_id = agent.conversation_session.id
+    if agent.attached_conversation:
+        conversation_session_id = agent.attached_conversation.id
     else:
-        # Create a new conversation session attached to this agent
+        # Create a new conversation session and attach it to this agent
         from src.routes.conversations import derive_session_name
 
         conversation = ConversationSession(
             session_id=params.session_id,
             name=derive_session_name(params.data.content),
-            attached_to_agent_id=params.agent_id,
         )
         deps.common.db.add(conversation)
         await deps.common.db.flush()
+        # Attach conversation to agent via the junction table
+        conversation.attached_agents.append(agent)
         conversation_session_id = conversation.id
 
     # Deduplication: Check if an identical message was recently added to this conversation
@@ -2408,7 +2403,7 @@ async def _get_messages_impl(
 
     agent_query = (
         select(AgentModel)
-        .options(selectinload(AgentModel.conversation_session))
+        .options(selectinload(AgentModel.attached_conversation))
         .where(
             AgentModel.id == params.agent_id,
             AgentModel.session_id == params.session_id,
@@ -2420,10 +2415,10 @@ async def _get_messages_impl(
         raise HTTPException(status_code=404, detail="Agent not found")
 
     # If agent has no conversation session, return empty list
-    if not agent.conversation_session:
+    if not agent.attached_conversation:
         return []
 
-    conversation_session_id = agent.conversation_session.id
+    conversation_session_id = agent.attached_conversation.id
 
     # Build base query - messages now come from ConversationMessage
     query = select(ConversationMessage).where(
@@ -2534,7 +2529,7 @@ async def abort_agent(
 
     agent_query = (
         select(AgentModel)
-        .options(selectinload(AgentModel.conversation_session))
+        .options(selectinload(AgentModel.attached_conversation))
         .where(
             AgentModel.id == agent_id,
             AgentModel.session_id == session_id,
@@ -2566,16 +2561,16 @@ async def abort_agent(
     await _notify_agent_status(session_id, agent_id, "idle")
 
     # Add an "Aborted" message if there were tasks cancelled
-    if cancelled_count > 0 and agent.conversation_session:
+    if cancelled_count > 0 and agent.attached_conversation:
         aborted_message = ConversationMessage(
-            conversation_session_id=agent.conversation_session.id,
+            conversation_session_id=agent.attached_conversation.id,
             role="assistant",
             content="Task aborted by user.",
         )
         db.add(aborted_message)
         # Update conversation metadata
-        agent.conversation_session.message_count += 1
-        agent.conversation_session.last_message_at = func.now()
+        agent.attached_conversation.message_count += 1
+        agent.attached_conversation.last_message_at = func.now()
         await db.commit()
         await db.refresh(aborted_message)
 
@@ -2727,7 +2722,7 @@ async def pause_agent(
 
     agent_query = (
         select(AgentModel)
-        .options(selectinload(AgentModel.conversation_session))
+        .options(selectinload(AgentModel.attached_conversation))
         .where(
             AgentModel.id == agent_id,
             AgentModel.session_id == session_id,
@@ -2764,15 +2759,15 @@ async def pause_agent(
     await _notify_agent_status(session_id, agent_id, "paused")
 
     # Emit system message (only if conversation session exists)
-    if agent.conversation_session:
+    if agent.attached_conversation:
         pause_message = ConversationMessage(
-            conversation_session_id=agent.conversation_session.id,
+            conversation_session_id=agent.attached_conversation.id,
             role="system",
             content="Agent paused by user. Send a message to resume.",
         )
         db.add(pause_message)
-        agent.conversation_session.message_count += 1
-        agent.conversation_session.last_message_at = func.now()
+        agent.attached_conversation.message_count += 1
+        agent.attached_conversation.last_message_at = func.now()
         await db.commit()
         await db.refresh(pause_message)
 
@@ -2819,7 +2814,7 @@ async def resume_agent(
 
     agent_query = (
         select(AgentModel)
-        .options(selectinload(AgentModel.conversation_session))
+        .options(selectinload(AgentModel.attached_conversation))
         .where(
             AgentModel.id == agent_id,
             AgentModel.session_id == session_id,
@@ -2856,15 +2851,15 @@ async def resume_agent(
     await _notify_agent_status(session_id, agent_id, "running")
 
     # Emit system message (only if conversation session exists)
-    if agent.conversation_session:
+    if agent.attached_conversation:
         resume_message = ConversationMessage(
-            conversation_session_id=agent.conversation_session.id,
+            conversation_session_id=agent.attached_conversation.id,
             role="system",
             content="Agent resumed. Continuing from where it left off.",
         )
         db.add(resume_message)
-        agent.conversation_session.message_count += 1
-        agent.conversation_session.last_message_at = func.now()
+        agent.attached_conversation.message_count += 1
+        agent.attached_conversation.last_message_at = func.now()
         await db.commit()
         await db.refresh(resume_message)
 
@@ -2999,7 +2994,7 @@ async def delete_message(
 
     agent_query = (
         select(AgentModel)
-        .options(selectinload(AgentModel.conversation_session))
+        .options(selectinload(AgentModel.attached_conversation))
         .where(
             AgentModel.id == agent_id,
             AgentModel.session_id == session_id,
@@ -3011,13 +3006,13 @@ async def delete_message(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    if not agent.conversation_session:
+    if not agent.attached_conversation:
         raise HTTPException(status_code=404, detail="Agent has no conversation session")
 
     # Get the message from the conversation session
     message_query = select(ConversationMessage).where(
         ConversationMessage.id == message_id,
-        ConversationMessage.conversation_session_id == agent.conversation_session.id,
+        ConversationMessage.conversation_session_id == agent.attached_conversation.id,
     )
     message_result = await db.execute(message_query)
     message = message_result.scalar_one_or_none()
@@ -3027,7 +3022,9 @@ async def delete_message(
 
     # Delete the message and update conversation metadata
     await db.delete(message)
-    agent.conversation_session.message_count = max(0, agent.conversation_session.message_count - 1)
+    agent.attached_conversation.message_count = max(
+        0, agent.attached_conversation.message_count - 1
+    )
     await db.commit()
 
     # Notify via WebSocket

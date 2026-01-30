@@ -10,6 +10,10 @@ import { PricingSection } from '@/components/landing/PricingSection';
 import { TeamsSection } from '@/components/landing/TeamsSection';
 import { LandingFaqSection } from '@/components/landing/LandingFaqSection';
 import { Footer } from '@/components/landing/Footer';
+import { ComingSoonPage } from '@/components/coming-soon';
+
+// Feature flag for Coming Soon mode
+const isComingSoonMode = process.env.NEXT_PUBLIC_COMING_SOON_MODE === 'true';
 
 export const metadata: Metadata = {
   title: 'Podex | Code from anywhere',
@@ -217,6 +221,11 @@ const reviewSchema = {
 };
 
 export default function HomePage() {
+  // Show Coming Soon page when feature flag is enabled
+  if (isComingSoonMode) {
+    return <ComingSoonPage />;
+  }
+
   return (
     <>
       {/* JSON-LD Structured Data */}

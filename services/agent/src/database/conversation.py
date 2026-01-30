@@ -42,18 +42,18 @@ async def load_conversation_history(
     """
     # Get the agent with its conversation session
     result = await db.execute(
-        select(Agent).options(selectinload(Agent.conversation_session)).where(Agent.id == agent_id)
+        select(Agent).options(selectinload(Agent.attached_conversation)).where(Agent.id == agent_id)
     )
     agent = result.scalar_one_or_none()
 
-    if not agent or not agent.conversation_session:
+    if not agent or not agent.attached_conversation:
         logger.info("No conversation session for agent", agent_id=agent_id)
         return []
 
     # Load messages from the conversation session
     messages_result = await db.execute(
         select(ConversationMessage)
-        .where(ConversationMessage.conversation_session_id == agent.conversation_session.id)
+        .where(ConversationMessage.conversation_session_id == agent.attached_conversation.id)
         .order_by(ConversationMessage.created_at.desc())
         .limit(limit),
     )
@@ -92,7 +92,7 @@ async def save_message(
     """
     # Get the agent with its conversation session
     result = await db.execute(
-        select(Agent).options(selectinload(Agent.conversation_session)).where(Agent.id == agent_id)
+        select(Agent).options(selectinload(Agent.attached_conversation)).where(Agent.id == agent_id)
     )
     agent = result.scalar_one_or_none()
 
@@ -101,18 +101,19 @@ async def save_message(
 
     # Get or create conversation session
     conversation_session_id = None
-    if agent.conversation_session:
-        conversation_session_id = agent.conversation_session.id
+    if agent.attached_conversation:
+        conversation_session_id = agent.attached_conversation.id
     else:
-        # Create a new conversation session attached to this agent
+        # Create a new conversation session and attach it to this agent
         conversation = ConversationSession(
             id=str(uuid4()),
             session_id=agent.session_id,
             name="New Session",
-            attached_to_agent_id=agent_id,
         )
         db.add(conversation)
         await db.flush()
+        # Attach conversation to agent via the junction table
+        conversation.attached_agents.append(agent)
         conversation_session_id = conversation.id
 
     message = ConversationMessage(
@@ -214,11 +215,11 @@ async def get_conversation_summary(
     """
     # Get the agent's conversation session
     result = await db.execute(
-        select(Agent).options(selectinload(Agent.conversation_session)).where(Agent.id == agent_id)
+        select(Agent).options(selectinload(Agent.attached_conversation)).where(Agent.id == agent_id)
     )
     agent = result.scalar_one_or_none()
 
-    if not agent or not agent.conversation_session:
+    if not agent or not agent.attached_conversation:
         return {
             "message_count": 0,
             "first_message_at": None,
@@ -230,7 +231,7 @@ async def get_conversation_summary(
             sqlfunc.count(ConversationMessage.id).label("msg_count"),
             sqlfunc.min(ConversationMessage.created_at).label("first"),
             sqlfunc.max(ConversationMessage.created_at).label("last"),
-        ).where(ConversationMessage.conversation_session_id == agent.conversation_session.id),
+        ).where(ConversationMessage.conversation_session_id == agent.attached_conversation.id),
     )
     row = messages_result.one()
 

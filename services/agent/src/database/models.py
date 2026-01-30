@@ -6,11 +6,13 @@ from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
+    Column,
     DateTime,
     Float,
     ForeignKey,
     Integer,
     String,
+    Table,
     Text,
     UniqueConstraint,
     func,
@@ -27,6 +29,28 @@ class Base(DeclarativeBase):
         dict[str, Any]: JSONB,
         list[str]: JSONB,
     }
+
+
+# Junction table for agent-conversation attachments.
+# A conversation can be attached to multiple agents, but an agent can only have one conversation.
+# The unique constraint on agent_id enforces the "agent has one conversation" rule.
+agent_conversation_attachments = Table(
+    "agent_conversation_attachments",
+    Base.metadata,
+    Column(
+        "agent_id",
+        UUID(as_uuid=False),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        primary_key=True,
+        unique=True,  # Agent can only be attached to ONE conversation
+    ),
+    Column(
+        "conversation_session_id",
+        UUID(as_uuid=False),
+        ForeignKey("conversation_sessions.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+)
 
 
 class User(Base):
@@ -158,10 +182,12 @@ class Agent(Base):
         "AgentTemplate",
         back_populates="agents",
     )
-    # Portable conversation session (FK lives on ConversationSession.attached_to_agent_id)
-    conversation_session: Mapped["ConversationSession | None"] = relationship(
+    # The conversation attached to this agent (via junction table).
+    # An agent can only have ONE conversation attached (unique constraint on junction).
+    attached_conversation: Mapped["ConversationSession | None"] = relationship(
         "ConversationSession",
-        back_populates="attached_agent",
+        secondary=agent_conversation_attachments,
+        back_populates="attached_agents",
         uselist=False,
     )
 
@@ -183,11 +209,6 @@ class ConversationSession(Base):
         index=True,
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    attached_to_agent_id: Mapped[str | None] = mapped_column(
-        UUID(as_uuid=False),
-        ForeignKey("agents.id", ondelete="SET NULL"),
-        index=True,
-    )
     message_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
@@ -209,10 +230,11 @@ class ConversationSession(Base):
         back_populates="conversation_session",
         order_by="ConversationMessage.created_at",
     )
-    attached_agent: Mapped["Agent | None"] = relationship(
+    # Agents that have this conversation attached (many-to-many, but agent side is unique)
+    attached_agents: Mapped[list["Agent"]] = relationship(
         "Agent",
-        back_populates="conversation_session",
-        foreign_keys=[attached_to_agent_id],
+        secondary=agent_conversation_attachments,
+        back_populates="attached_conversation",
     )
 
 

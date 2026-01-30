@@ -788,7 +788,7 @@ export interface MessageResponse {
 export interface ConversationSummary {
   id: string;
   name: string;
-  attached_to_agent_id: string | null;
+  attached_agent_ids: string[];
   message_count: number;
   last_message_at: string | null;
   created_at: string;
@@ -4134,120 +4134,6 @@ export async function acknowledgeCostAlert(alertId: string): Promise<{ success: 
 }
 
 // ============================================================================
-// LSP (Language Server Protocol) APIs
-// ============================================================================
-
-export interface LSPDiagnostic {
-  file_path: string;
-  line: number;
-  column: number;
-  end_line: number;
-  end_column: number;
-  message: string;
-  severity: 'error' | 'warning' | 'information' | 'hint';
-  source: string | null;
-  code: string | null;
-}
-
-export interface DiagnosticsResponse {
-  file_path: string;
-  diagnostics: LSPDiagnostic[];
-  language: string | null;
-}
-
-export interface BatchDiagnosticsResponse {
-  results: DiagnosticsResponse[];
-  total_diagnostics: number;
-}
-
-export interface SupportedLanguage {
-  command: string;
-  installed: boolean;
-  extensions: string[];
-}
-
-export interface SupportedLanguagesResponse {
-  workspace_id: string;
-  languages: Record<string, SupportedLanguage>;
-}
-
-/**
- * Get diagnostics for a single file in a workspace.
- */
-export async function getFileDiagnostics(
-  workspaceId: string,
-  filePath: string
-): Promise<DiagnosticsResponse> {
-  return api.get<DiagnosticsResponse>(
-    `/api/lsp/workspaces/${workspaceId}/diagnostics?file_path=${encodeURIComponent(filePath)}`
-  );
-}
-
-/**
- * Get diagnostics for multiple files in a workspace.
- */
-export async function getBatchDiagnostics(
-  workspaceId: string,
-  filePaths: string[]
-): Promise<BatchDiagnosticsResponse> {
-  return api.post<BatchDiagnosticsResponse>(
-    `/api/lsp/workspaces/${workspaceId}/diagnostics/batch`,
-    { file_paths: filePaths }
-  );
-}
-
-/**
- * Get supported languages and their installation status for a workspace.
- */
-export async function getSupportedLanguages(
-  workspaceId: string
-): Promise<SupportedLanguagesResponse> {
-  return api.get<SupportedLanguagesResponse>(
-    `/api/lsp/workspaces/${workspaceId}/supported-languages`
-  );
-}
-
-// ============================================================================
-// File Watching APIs
-// ============================================================================
-
-export interface WatchStatusResponse {
-  workspace_id: string;
-  watching: boolean;
-  patterns: string[] | null;
-}
-
-export interface StartWatchingRequest {
-  patterns?: string[];
-  debounce_ms?: number;
-}
-
-/**
- * Start watching files for changes in a workspace.
- * When files change, diagnostics will be automatically refreshed.
- */
-export async function startFileWatching(
-  workspaceId: string,
-  options?: StartWatchingRequest
-): Promise<WatchStatusResponse> {
-  return api.post<WatchStatusResponse>(`/api/lsp/workspaces/${workspaceId}/watch`, options || {});
-}
-
-/**
- * Stop watching files for changes in a workspace.
- */
-export async function stopFileWatching(workspaceId: string): Promise<WatchStatusResponse> {
-  return api.delete<WatchStatusResponse>(`/api/lsp/workspaces/${workspaceId}/watch`);
-}
-
-/**
- * Get file watcher status for a workspace.
- */
-export async function getFileWatchStatus(workspaceId: string): Promise<WatchStatusResponse> {
-  return api.get<WatchStatusResponse>(`/api/lsp/workspaces/${workspaceId}/watch/status`);
-}
-
-// ============================================================================
 // Doctor/Diagnostics APIs
 // ============================================================================
 
@@ -6294,4 +6180,143 @@ export interface ServerWorkspacesResponse {
  */
 export async function getServerWorkspaces(serverId: string): Promise<ServerWorkspacesResponse> {
   return api.get<ServerWorkspacesResponse>(`/api/servers/${serverId}/workspaces`);
+}
+
+// ==================== Waitlist API ====================
+
+export interface WaitlistJoinResponse {
+  success: boolean;
+  message: string;
+  position: number | null;
+  already_registered: boolean;
+}
+
+export interface WaitlistEntry {
+  id: string;
+  email: string;
+  status: 'waiting' | 'invited' | 'registered';
+  source: string;
+  referral_code: string | null;
+  position: number | null;
+  created_at: string;
+  invited_at: string | null;
+  invitation_id: string | null;
+}
+
+export interface WaitlistListResponse {
+  items: WaitlistEntry[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_more: boolean;
+  stats: {
+    total: number;
+    waiting: number;
+    invited: number;
+    registered: number;
+  };
+}
+
+export interface SendWaitlistInviteResponse {
+  success: boolean;
+  message: string;
+  invitation_id: string;
+  waitlist_entry: WaitlistEntry;
+}
+
+/**
+ * Join the waitlist (public endpoint).
+ */
+export async function joinWaitlist(
+  email: string,
+  source = 'coming_soon',
+  referralCode?: string
+): Promise<WaitlistJoinResponse> {
+  return api.post<WaitlistJoinResponse>(
+    '/api/waitlist',
+    { email, source, referral_code: referralCode },
+    false // Public endpoint, no auth required
+  );
+}
+
+/**
+ * Check waitlist position (public endpoint).
+ */
+export async function checkWaitlistPosition(email: string): Promise<{
+  email: string;
+  position: number | null;
+  status: string;
+  joined_at: string | null;
+}> {
+  return api.get(`/api/waitlist/position/${encodeURIComponent(email)}`, false);
+}
+
+/**
+ * List waitlist entries (admin only).
+ */
+export async function listWaitlistEntries(
+  page = 1,
+  pageSize = 50,
+  status?: string,
+  search?: string,
+  source?: string
+): Promise<WaitlistListResponse> {
+  const params = new URLSearchParams({
+    page: String(page),
+    page_size: String(pageSize),
+  });
+  if (status) params.append('status', status);
+  if (search) params.append('search', search);
+  if (source) params.append('source', source);
+  return api.get<WaitlistListResponse>(`/api/admin/waitlist?${params}`);
+}
+
+/**
+ * Get a specific waitlist entry (admin only).
+ */
+export async function getWaitlistEntry(entryId: string): Promise<WaitlistEntry> {
+  return api.get<WaitlistEntry>(`/api/admin/waitlist/${entryId}`);
+}
+
+/**
+ * Send invitation to a waitlist entry (admin only).
+ */
+export async function sendWaitlistInvitation(
+  entryId: string,
+  options?: {
+    message?: string;
+    gift_plan_id?: string;
+    gift_months?: number;
+    expires_in_days?: number;
+  }
+): Promise<SendWaitlistInviteResponse> {
+  return api.post<SendWaitlistInviteResponse>(
+    `/api/admin/waitlist/${entryId}/invite`,
+    options ?? {}
+  );
+}
+
+/**
+ * Delete a waitlist entry (admin only).
+ */
+export async function deleteWaitlistEntry(entryId: string): Promise<{ message: string }> {
+  return api.delete(`/api/admin/waitlist/${entryId}`);
+}
+
+/**
+ * Bulk invite waitlist entries (admin only).
+ */
+export async function bulkInviteWaitlist(
+  count = 10,
+  options?: {
+    message?: string;
+    gift_plan_id?: string;
+    gift_months?: number;
+  }
+): Promise<{ message: string; invited: number; skipped: number }> {
+  const params = new URLSearchParams({ count: String(count) });
+  if (options?.message) params.append('message', options.message);
+  if (options?.gift_plan_id) params.append('gift_plan_id', options.gift_plan_id);
+  if (options?.gift_months) params.append('gift_months', String(options.gift_months));
+  return api.post(`/api/admin/waitlist/bulk-invite?${params}`, {});
 }

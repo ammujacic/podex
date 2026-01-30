@@ -63,7 +63,6 @@ class ConversationSessionResponse(BaseModel):
 
     id: str
     name: str
-    attached_to_agent_id: str | None = None  # Legacy field for backward compatibility
     attached_agent_ids: list[str] = []  # List of agent IDs that have this conversation attached
     message_count: int
     last_message_at: datetime | None = None
@@ -74,7 +73,6 @@ class ConversationSessionResponse(BaseModel):
     def model_validate(cls, obj: Any, **kwargs: Any) -> "ConversationSessionResponse":
         """Custom validation to populate attached_agent_ids from relationship."""
         # Extract agent IDs from the relationship if available
-        # Use try-except to handle cases where relationship might trigger lazy loading
         attached_agent_ids = []
         with contextlib.suppress(Exception):
             if hasattr(obj, "attached_agents") and obj.attached_agents:
@@ -97,7 +95,6 @@ class ConversationSessionResponse(BaseModel):
             data = {
                 "id": obj.id,
                 "name": obj.name,
-                "attached_to_agent_id": obj.attached_to_agent_id,
                 "message_count": obj.message_count,
                 "last_message_at": obj.last_message_at,
                 "created_at": obj.created_at,
@@ -367,11 +364,12 @@ async def get_conversation(
         Conversation session with messages
     """
     conversation = await verify_conversation_access(db, session_id, conversation_id, request)
+    await db.refresh(conversation, ["attached_agents"])
 
     return ConversationSessionWithMessagesResponse(
         id=conversation.id,
         name=conversation.name,
-        attached_to_agent_id=conversation.attached_to_agent_id,
+        attached_agent_ids=[a.id for a in conversation.attached_agents],
         message_count=conversation.message_count,
         last_message_at=conversation.last_message_at,
         created_at=conversation.created_at,
@@ -478,27 +476,27 @@ async def attach_conversation(
 ) -> ConversationSessionResponse:
     """Attach a conversation to an agent.
 
-    A conversation can only be attached to one agent at a time (exclusive).
-    If the conversation is already attached to another agent, this will fail.
+    A conversation can be attached to multiple agents, but an agent can only have
+    one conversation attached. If the agent already has a different conversation
+    attached, it will be detached first.
 
     Args:
         session_id: Parent session ID
         conversation_id: Conversation ID
-        request: Attach request with agent_id
+        body: Attach request with agent_id
         db: Database session
         user_id: Current user ID
 
     Returns:
         Updated conversation session
-
-    Raises:
-        HTTPException: If conversation is already attached to another agent
     """
     conversation = await verify_conversation_access(db, session_id, conversation_id, request)
 
     # Verify the agent exists and belongs to this session
     result = await db.execute(
-        select(AgentModel).where(
+        select(AgentModel)
+        .options(selectinload(AgentModel.attached_conversation))
+        .where(
             AgentModel.id == body.agent_id,
             AgentModel.session_id == session_id,
         )
@@ -513,19 +511,22 @@ async def attach_conversation(
 
     # Check if already attached to this agent (idempotent)
     if agent in conversation.attached_agents:
-        # Already attached, just return success
         await db.refresh(conversation, ["attached_agents"])
         return ConversationSessionResponse.model_validate(conversation)
 
-    # Add to many-to-many relationship
+    # If agent already has a different conversation attached, detach it first
+    # (agent can only have ONE conversation)
+    if agent.attached_conversation and agent.attached_conversation.id != conversation_id:
+        old_conv = agent.attached_conversation
+        await db.refresh(old_conv, ["attached_agents"])
+        if agent in old_conv.attached_agents:
+            old_conv.attached_agents.remove(agent)
+
+    # Attach conversation to agent
     conversation.attached_agents.append(agent)
 
-    # Also update legacy field for backward compatibility (set to first attached agent)
-    if not conversation.attached_to_agent_id:
-        conversation.attached_to_agent_id = body.agent_id
-
     await db.commit()
-    await db.refresh(conversation)
+    await db.refresh(conversation, ["attached_agents"])
 
     # Emit WebSocket event
     await emit_to_session(
@@ -578,7 +579,7 @@ async def detach_conversation(
     # Load attached agents
     await db.refresh(conversation, ["attached_agents"])
 
-    old_agent_id: str | None
+    old_agent_id: str | None = None
     if body.agent_id:
         # Detach from specific agent
         agent_result = await db.execute(
@@ -590,24 +591,19 @@ async def detach_conversation(
         agent = agent_result.scalar_one_or_none()
         if agent and agent in conversation.attached_agents:
             conversation.attached_agents.remove(agent)
-            # Update legacy field if this was the only agent or if it matched
-            if conversation.attached_to_agent_id == body.agent_id:
-                conversation.attached_to_agent_id = (
-                    conversation.attached_agents[0].id if conversation.attached_agents else None
-                )
             old_agent_id = body.agent_id
         else:
             # Agent not found or not attached, return as-is
-            await db.refresh(conversation)
+            await db.refresh(conversation, ["attached_agents"])
             return ConversationSessionResponse.model_validate(conversation)
     else:
-        # Detach from all agents (backward compatibility)
-        old_agent_id = conversation.attached_to_agent_id
+        # Detach from all agents
+        if conversation.attached_agents:
+            old_agent_id = conversation.attached_agents[0].id
         conversation.attached_agents.clear()
-        conversation.attached_to_agent_id = None
 
     await db.commit()
-    await db.refresh(conversation)
+    await db.refresh(conversation, ["attached_agents"])
 
     # Emit WebSocket event
     await emit_to_session(

@@ -639,8 +639,33 @@ class AgentOrchestrator:
         # Update agent activity timestamp
         self._agent_last_activity[params.agent_id] = time.time()
 
-        # Update mode and command_allowlist if they changed (agent may have been cached)
+        # Update agent properties that may have changed (agent may have been cached)
         agent = self.agents[params.agent_id]
+
+        # Update model, llm_api_keys, and model_provider if they changed
+        # This is critical when user switches models mid-session
+        model_changed = agent.model != params.model
+        keys_changed = agent.llm_api_keys != params.llm_api_keys
+        provider_changed = agent.model_provider != params.model_provider
+
+        if model_changed or keys_changed or provider_changed:
+            logger.info(
+                "Updating agent LLM settings",
+                agent_id=params.agent_id,
+                old_model=agent.model,
+                new_model=params.model,
+                old_provider=agent.model_provider,
+                new_provider=params.model_provider,
+                has_new_keys=bool(params.llm_api_keys),
+            )
+            agent.model = params.model
+            agent.llm_api_keys = params.llm_api_keys
+            agent.model_provider = params.model_provider
+            # Also update tool executor's model if present
+            if agent.tool_executor:
+                agent.tool_executor.agent_model = params.model
+
+        # Update mode if changed
         if agent.mode != params.mode:
             logger.info(
                 "Updating agent mode",

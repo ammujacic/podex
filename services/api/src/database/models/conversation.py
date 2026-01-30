@@ -16,7 +16,9 @@ from .base import Base, _generate_uuid
 if TYPE_CHECKING:
     from .core import Agent, Session
 
-# Junction table for many-to-many relationship between agents and conversations
+# Junction table for agent-conversation attachments.
+# A conversation can be attached to multiple agents, but an agent can only have one conversation.
+# The unique constraint on agent_id enforces the "agent has one conversation" rule.
 agent_conversation_attachments = Table(
     "agent_conversation_attachments",
     Base.metadata,
@@ -25,6 +27,7 @@ agent_conversation_attachments = Table(
         UUID(as_uuid=False),
         ForeignKey("agents.id", ondelete="CASCADE"),
         primary_key=True,
+        unique=True,  # Agent can only be attached to ONE conversation
     ),
     Column(
         "conversation_session_id",
@@ -53,14 +56,6 @@ class ConversationSession(Base):
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
 
-    # Legacy field for backward compatibility - kept for migration period
-    # Use attached_agents relationship instead
-    attached_to_agent_id: Mapped[str | None] = mapped_column(
-        UUID(as_uuid=False),
-        ForeignKey("agents.id", ondelete="SET NULL"),
-        index=True,
-    )
-
     # Metadata for display
     message_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -85,17 +80,11 @@ class ConversationSession(Base):
         cascade="all, delete-orphan",
         order_by="ConversationMessage.created_at",
     )
-    # Legacy relationship for backward compatibility
-    attached_agent: Mapped["Agent | None"] = relationship(
-        "Agent",
-        back_populates="conversation_session",
-        foreign_keys=[attached_to_agent_id],
-    )
-    # Many-to-many relationship: agents that have this conversation attached
+    # Agents that have this conversation attached (many-to-many, but agent side is unique)
     attached_agents: Mapped[list["Agent"]] = relationship(
         "Agent",
         secondary=agent_conversation_attachments,
-        back_populates="attached_conversations",
+        back_populates="attached_conversation",
     )
 
 

@@ -102,13 +102,15 @@ function transformDiscoveredModel(model: { id: string; name: string; size?: numb
  * ```
  */
 export function useOllamaModels(options: UseOllamaModelsOptions = {}): UseOllamaModelsReturn {
-  const { baseUrl = DEFAULT_OLLAMA_URL, autoDiscover = true } = options;
+  const { baseUrl: optionsBaseUrl, autoDiscover = true } = options;
 
   const [models, setModels] = useState<LocalModel[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [isConfigured, setIsConfigured] = useState(false);
+  // Store the configured URL from backend (or use options/default)
+  const [configuredUrl, setConfiguredUrl] = useState<string>(optionsBaseUrl || DEFAULT_OLLAMA_URL);
 
   // Track if component is mounted to avoid state updates after unmount
   const isMountedRef = useRef(true);
@@ -128,6 +130,11 @@ export function useOllamaModels(options: UseOllamaModelsOptions = {}): UseOllama
         ollamaConfig?.base_url ||
         (ollamaConfig?.models && ollamaConfig.models.length > 0)
       );
+
+      // Use the configured URL from backend if available
+      if (ollamaConfig?.base_url) {
+        setConfiguredUrl(ollamaConfig.base_url);
+      }
 
       if (
         ollamaConfig?.models &&
@@ -162,7 +169,7 @@ export function useOllamaModels(options: UseOllamaModelsOptions = {}): UseOllama
     try {
       const response = await discoverLocalModels({
         provider: 'ollama',
-        base_url: baseUrl,
+        base_url: configuredUrl,
       });
 
       if (!isMountedRef.current) return;
@@ -200,7 +207,7 @@ export function useOllamaModels(options: UseOllamaModelsOptions = {}): UseOllama
         setIsLoading(false);
       }
     }
-  }, [baseUrl]);
+  }, [configuredUrl]);
 
   // Load cached models on mount, then optionally discover (only if already configured)
   useEffect(() => {

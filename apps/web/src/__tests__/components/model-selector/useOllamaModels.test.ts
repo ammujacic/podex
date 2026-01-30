@@ -192,11 +192,11 @@ describe('useOllamaModels', () => {
 
       const { result } = renderHook(() => useOllamaModels());
 
+      // Wait for the error to be set (not just isLoading to be false)
       await waitFor(() => {
-        expect(result.current.isLoading).toBe(false);
+        expect(result.current.error).toBe('Could not connect to Ollama');
       });
 
-      expect(result.current.error).toBe('Could not connect to Ollama');
       expect(result.current.isConnected).toBe(false);
       expect(result.current.models).toEqual([]);
       // Still marked as configured (user intentionally set it up)
@@ -214,11 +214,11 @@ describe('useOllamaModels', () => {
 
       const { result } = renderHook(() => useOllamaModels());
 
+      // Wait for the error to be set (not just isLoading to be false)
       await waitFor(() => {
-        expect(result.current.isLoading).toBe(false);
+        expect(result.current.error).toBe('Ollama service unavailable');
       });
 
-      expect(result.current.error).toBe('Ollama service unavailable');
       expect(result.current.isConnected).toBe(false);
     });
 
@@ -233,12 +233,12 @@ describe('useOllamaModels', () => {
 
       const { result } = renderHook(() => useOllamaModels());
 
+      // Wait for discovery to complete (isConnected becomes true on success)
       await waitFor(() => {
-        expect(result.current.isLoading).toBe(false);
+        expect(result.current.isConnected).toBe(true);
       });
 
       expect(result.current.models).toEqual([]);
-      expect(result.current.isConnected).toBe(true);
       expect(result.current.error).toBeNull();
     });
 

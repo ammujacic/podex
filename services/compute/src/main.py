@@ -22,7 +22,6 @@ from src.deps import (
 from src.managers.heartbeat import HeartbeatConfig, HeartbeatService
 from src.routes import (
     health_router,
-    lsp_router,
     preview_router,
     reset_terminal_manager,
     shutdown_terminal_sessions,
@@ -231,7 +230,6 @@ app.include_router(tunnels_router)
 app.include_router(preview_router)
 app.include_router(terminal_router)
 app.include_router(websocket_router)
-app.include_router(lsp_router)
 
 
 @app.get("/")

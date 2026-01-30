@@ -31,7 +31,6 @@ export type PanelId =
   | 'mcp'
   | 'extensions'
   | 'search'
-  | 'problems'
   | 'usage'
   | 'sentry'
   | 'skills'

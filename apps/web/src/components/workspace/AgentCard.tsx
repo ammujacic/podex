@@ -178,11 +178,14 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       [sessionId, agent.id]
     )
   );
-  const agentCheckpoints = useCheckpointsStore(
-    useCallback(
-      (state) => state.sessionCheckpoints[sessionId]?.filter((c) => c.agentId === agent.id) ?? [],
-      [sessionId, agent.id]
-    )
+  // Select raw checkpoints array (stable reference), then filter with useMemo
+  // This avoids the infinite loop caused by .filter() creating new arrays in the selector
+  const sessionCheckpoints = useCheckpointsStore(
+    useCallback((state) => state.sessionCheckpoints[sessionId], [sessionId])
+  );
+  const agentCheckpoints = useMemo(
+    () => sessionCheckpoints?.filter((c) => c.agentId === agent.id) ?? [],
+    [sessionCheckpoints, agent.id]
   );
   const restoringCheckpointId = useCheckpointsStore((state) => state.restoringCheckpointId);
 
@@ -501,8 +504,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
             conversation: {
               id: newConversation.id,
               name: newConversation.name,
-              attachedToAgentId: null,
-              attachedAgentIds: [],
+              attachedAgentIds: newConversation.attached_agent_ids || [],
               messageCount: newConversation.message_count,
               lastMessageAt: newConversation.last_message_at,
               createdAt: newConversation.created_at,
@@ -937,8 +939,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         conversation: {
           id: newConversation.id,
           name: newConversation.name,
-          attachedToAgentId: null,
-          attachedAgentIds: [],
+          attachedAgentIds: newConversation.attached_agent_ids || [],
           messageCount: newConversation.message_count,
           lastMessageAt: newConversation.last_message_at,
           createdAt: newConversation.created_at,
