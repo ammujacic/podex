@@ -46,35 +46,25 @@ storage_config:
     active_index_directory: /loki/boltdb-shipper-active
     cache_location: /loki/boltdb-shipper-cache
     cache_ttl: 24h
-    shared_store: filesystem
   filesystem:
     directory: /loki/chunks
 
 compactor:
   working_directory: /loki/boltdb-shipper-compactor
-  shared_store: filesystem
   compaction_interval: 10m
   retention_enabled: true
   retention_delete_delay: 2h
-  retention_delete_worker_count: 150
+  delete_request_store: filesystem
 
 limits_config:
   volume_enabled: true
   retention_period: 720h  # 30 days
-  enforce_metric_name: false
   reject_old_samples: true
   reject_old_samples_max_age: 168h
   ingestion_rate_mb: 16
   ingestion_burst_size_mb: 32
   max_streams_per_user: 10000
   max_line_size: 256kb
-
-chunk_store_config:
-  max_look_back_period: 0s
-
-table_manager:
-  retention_deletes_enabled: false
-  retention_period: 0s
 
 query_range:
   results_cache:

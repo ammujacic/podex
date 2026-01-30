@@ -355,6 +355,7 @@ class EmailService:
 
         return BASE_HTML_TEMPLATE.format(
             preheader=self._get_preheader(template, context),
+            logo_url=f"{settings.FRONTEND_URL}/icons/icon-192.png",
             body_content=body_content,
             cta_button=cta_button,
             footer_text=footer_text,
@@ -1095,6 +1096,8 @@ BASE_HTML_TEMPLATE = """
     </noscript>
     <![endif]-->
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@800&display=swap');
+
         :root {{
             color-scheme: dark;
             supported-color-schemes: dark;
@@ -1137,16 +1140,7 @@ BASE_HTML_TEMPLATE = """
         }}
 
         .logo {{
-            font-size: 28px;
-            font-weight: 800;
-            letter-spacing: -0.5px;
-        }}
-
-        .logo-gradient {{
-            background: linear-gradient(135deg, #8B5CF6, #06B6D4);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
+            text-align: center;
         }}
 
         .content {{
@@ -1219,7 +1213,8 @@ BASE_HTML_TEMPLATE = """
             <div class="card">
                 <div class="header">
                     <div class="logo">
-                        <span class="logo-gradient">Podex</span>
+                        <img src="{logo_url}" alt="Podex" width="48" height="48" style="width: 48px; height: 48px; border-radius: 8px; margin-bottom: 8px;" />
+                        <div style="font-family: 'Orbitron', sans-serif; font-size: 24px; font-weight: 800; letter-spacing: -0.5px; color: #ffffff;">Podex</div>
                     </div>
                 </div>
 
