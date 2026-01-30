@@ -446,8 +446,9 @@ class Workspace(Base):
     )
 
     # Multi-server orchestration: Which server hosts this workspace
+    # Human-readable server ID (e.g., "ws-local-1") - matches compute service config
     server_id: Mapped[str | None] = mapped_column(
-        UUID(as_uuid=False),
+        String(255),
         ForeignKey("workspace_servers.id", ondelete="SET NULL"),
         index=True,
     )

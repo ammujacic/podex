@@ -4,11 +4,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text
-from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
+from sqlalchemy.dialects.postgresql import INET, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
-from src.database.models.base import Base, _generate_uuid
+from src.database.models.base import Base
 
 
 class WorkspaceServer(Base):
@@ -21,7 +21,8 @@ class WorkspaceServer(Base):
 
     __tablename__ = "workspace_servers"
 
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
+    # Human-readable server ID (e.g., "ws-local-1") - matches compute service config
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     hostname: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     ip_address: Mapped[str] = mapped_column(INET, nullable=False)

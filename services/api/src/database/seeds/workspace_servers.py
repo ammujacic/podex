@@ -5,8 +5,10 @@ the Docker-in-Docker (DinD) workspace infrastructure.
 """
 
 # Local development workspace servers matching docker-compose.yml
+# Note: id uses hostname for consistency with compute service config
 DEV_WORKSPACE_SERVERS = [
     {
+        "id": "ws-local-1",  # Matches compute service server_id
         "name": "Local Dev Server 1",
         "hostname": "ws-local-1",  # Docker DNS resolves container names
         "ip_address": "10.0.0.1",  # Placeholder IP; hostname used for actual connections
@@ -21,6 +23,7 @@ DEV_WORKSPACE_SERVERS = [
         "labels": {"zone": "eu-west-1a", "environment": "development"},
     },
     {
+        "id": "ws-local-2",  # Matches compute service server_id
         "name": "Local Dev Server 2",
         "hostname": "ws-local-2",  # Docker DNS resolves container names
         "ip_address": "10.0.0.2",  # Placeholder IP; hostname used for actual connections
