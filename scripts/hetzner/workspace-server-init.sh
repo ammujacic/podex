@@ -153,6 +153,12 @@ cd "${DOCKER_TLS_CERT_PATH}"
 # Get server's public IP
 SERVER_IP=$(curl -s ifconfig.me)
 
+# Detect private network IP (Hetzner private network is typically 10.x.x.x)
+PRIVATE_IP=$(ip -4 addr show | grep -oP '10\.\d+\.\d+\.\d+' | head -1 || echo "")
+if [ -n "$PRIVATE_IP" ]; then
+    log_info "Private network IP detected: ${PRIVATE_IP}"
+fi
+
 # Generate CA key and certificate
 log_info "Generating CA certificate..."
 openssl genrsa -out ca-key.pem 4096
@@ -166,9 +172,14 @@ openssl genrsa -out server-key.pem 4096
 # Create server CSR
 openssl req -subj "/CN=${SERVER_NAME}" -sha256 -new -key server-key.pem -out server.csr
 
-# Create extfile for server certificate
+# Create extfile for server certificate - include private IP if available
+SAN_LIST="DNS:${SERVER_NAME},DNS:${SERVER_NAME}.podex.dev,DNS:localhost,IP:${SERVER_IP},IP:127.0.0.1"
+if [ -n "$PRIVATE_IP" ]; then
+    SAN_LIST="${SAN_LIST},IP:${PRIVATE_IP}"
+fi
+
 cat > extfile.cnf << EOF
-subjectAltName = DNS:${SERVER_NAME},DNS:localhost,IP:${SERVER_IP},IP:127.0.0.1
+subjectAltName = ${SAN_LIST}
 extendedKeyUsage = serverAuth
 EOF
 
@@ -390,6 +401,25 @@ log_info "Setting up XFS volume for workspace storage..."
 # Create mount point
 mkdir -p "${WORKSPACE_STORAGE_PATH}"
 
+# Auto-detect Hetzner volume if not explicitly set
+if [ -z "$WORKSPACE_VOLUME_DEVICE" ]; then
+    # Check for Hetzner auto-mounted volumes at /mnt/HC_Volume_*
+    HETZNER_MOUNT=$(find /mnt -maxdepth 1 -name "HC_Volume_*" -type d 2>/dev/null | head -1)
+    if [ -n "$HETZNER_MOUNT" ] && mountpoint -q "$HETZNER_MOUNT"; then
+        # Get the device from the mount
+        WORKSPACE_VOLUME_DEVICE=$(findmnt -n -o SOURCE "$HETZNER_MOUNT")
+        log_info "Auto-detected Hetzner volume: $WORKSPACE_VOLUME_DEVICE mounted at $HETZNER_MOUNT"
+
+        # Unmount from Hetzner's default location
+        log_info "Unmounting from $HETZNER_MOUNT..."
+        umount "$HETZNER_MOUNT"
+        rmdir "$HETZNER_MOUNT" 2>/dev/null || true
+
+        # Remove Hetzner's auto-mount entry from fstab
+        sed -i '/HC_Volume_/d' /etc/fstab
+    fi
+fi
+
 if [ -n "$WORKSPACE_VOLUME_DEVICE" ]; then
     # Check if device exists
     if [ ! -b "$WORKSPACE_VOLUME_DEVICE" ]; then
@@ -409,25 +439,25 @@ if [ -n "$WORKSPACE_VOLUME_DEVICE" ]; then
         log_info "Device $WORKSPACE_VOLUME_DEVICE is already XFS formatted"
     fi
 
-    # Check if already mounted
+    # Check if already mounted at workspace path
     if ! mountpoint -q "${WORKSPACE_STORAGE_PATH}"; then
         log_info "Mounting XFS volume with project quota support..."
         mount -o pquota "$WORKSPACE_VOLUME_DEVICE" "${WORKSPACE_STORAGE_PATH}"
     fi
 
-    # Add to fstab if not already present
-    if ! grep -q "$WORKSPACE_VOLUME_DEVICE" /etc/fstab; then
-        log_info "Adding XFS mount to /etc/fstab..."
-        # Get UUID for reliable mounting
-        UUID=$(blkid -s UUID -o value "$WORKSPACE_VOLUME_DEVICE")
-        echo "UUID=${UUID} ${WORKSPACE_STORAGE_PATH} xfs defaults,pquota 0 2" >> /etc/fstab
-    fi
+    # Get UUID for fstab
+    UUID=$(blkid -s UUID -o value "$WORKSPACE_VOLUME_DEVICE")
+
+    # Update fstab - remove any old entry for this UUID, add new one
+    sed -i "/${UUID}/d" /etc/fstab
+    echo "UUID=${UUID} ${WORKSPACE_STORAGE_PATH} xfs defaults,pquota 0 2" >> /etc/fstab
+    log_info "Updated /etc/fstab with XFS mount"
 
     # Verify pquota is enabled
     if mount | grep "${WORKSPACE_STORAGE_PATH}" | grep -q "pquota"; then
         log_success "XFS mounted with project quota support"
     else
-        log_error "XFS mounted but pquota not enabled - remounting..."
+        log_warn "XFS mounted but pquota not enabled - remounting..."
         umount "${WORKSPACE_STORAGE_PATH}"
         mount -o pquota "$WORKSPACE_VOLUME_DEVICE" "${WORKSPACE_STORAGE_PATH}"
     fi
@@ -668,7 +698,11 @@ else
 fi
 echo ""
 echo "Workspace Storage:"
-du -sh /data/workspaces/* 2>/dev/null | head -10 || echo "No workspaces"
+if [ -d /data/workspaces ] && [ "$(ls -A /data/workspaces 2>/dev/null)" ]; then
+    du -sh /data/workspaces/* 2>/dev/null | head -10
+else
+    echo "No workspaces yet"
+fi
 EOF
 
 chmod +x /usr/local/bin/podex-workspace-status
@@ -697,25 +731,37 @@ echo "  - client-key.pem (client key)"
 echo ""
 echo -e "${CYAN}To register this server with the platform:${NC}"
 echo ""
-echo "1. Copy client certificates to platform server:"
-echo "   scp ${DOCKER_TLS_CERT_PATH}/ca.pem ${DOCKER_TLS_CERT_PATH}/client-cert.pem ${DOCKER_TLS_CERT_PATH}/client-key.pem user@platform:/path/to/certs/${SERVER_NAME}/"
+# Try to detect private network IP (Hetzner private network is typically 10.x.x.x)
+PRIVATE_IP=$(ip -4 addr show | grep -oP '10\.\d+\.\d+\.\d+' | head -1 || echo "")
+if [ -n "$PRIVATE_IP" ]; then
+    DOCKER_HOST_IP="$PRIVATE_IP"
+    echo "Private network IP detected: ${PRIVATE_IP}"
+else
+    DOCKER_HOST_IP="$SERVER_IP"
+    echo "No private network detected, using public IP"
+fi
+echo ""
+echo "1. Copy client certificates to platform server (run from your laptop):"
+echo "   ssh ${SERVER_NAME}.podex.dev \"cat ${DOCKER_TLS_CERT_PATH}/ca.pem\" | ssh podex-platform \"mkdir -p /etc/docker/workspace-certs/${SERVER_NAME} && cat > /etc/docker/workspace-certs/${SERVER_NAME}/ca.pem\" && \\"
+echo "   ssh ${SERVER_NAME}.podex.dev \"cat ${DOCKER_TLS_CERT_PATH}/client-cert.pem\" | ssh podex-platform \"cat > /etc/docker/workspace-certs/${SERVER_NAME}/client-cert.pem\" && \\"
+echo "   ssh ${SERVER_NAME}.podex.dev \"cat ${DOCKER_TLS_CERT_PATH}/client-key.pem\" | ssh podex-platform \"cat > /etc/docker/workspace-certs/${SERVER_NAME}/client-key.pem\""
 echo ""
 echo "2. In your Podex admin panel or compute service config, add:"
 echo "   {"
 echo "     \"server_id\": \"${SERVER_NAME}\","
-echo "     \"host\": \"${SERVER_IP}\","
+echo "     \"host\": \"${DOCKER_HOST_IP}\","
 echo "     \"port\": 2376,"
-echo "     \"tls_ca\": \"/path/to/certs/${SERVER_NAME}/ca.pem\","
-echo "     \"tls_cert\": \"/path/to/certs/${SERVER_NAME}/client-cert.pem\","
-echo "     \"tls_key\": \"/path/to/certs/${SERVER_NAME}/client-key.pem\""
+echo "     \"tls_ca\": \"/etc/docker/workspace-certs/${SERVER_NAME}/ca.pem\","
+echo "     \"tls_cert\": \"/etc/docker/workspace-certs/${SERVER_NAME}/client-cert.pem\","
+echo "     \"tls_key\": \"/etc/docker/workspace-certs/${SERVER_NAME}/client-key.pem\""
 echo "   }"
 echo ""
 echo "3. Test Docker connection from platform:"
 echo "   docker --tlsverify \\
-     --tlscacert=/path/to/certs/${SERVER_NAME}/ca.pem \\
-     --tlscert=/path/to/certs/${SERVER_NAME}/client-cert.pem \\
-     --tlskey=/path/to/certs/${SERVER_NAME}/client-key.pem \\
-     -H=tcp://${SERVER_IP}:2376 info"
+     --tlscacert=/etc/docker/workspace-certs/${SERVER_NAME}/ca.pem \\
+     --tlscert=/etc/docker/workspace-certs/${SERVER_NAME}/client-cert.pem \\
+     --tlskey=/etc/docker/workspace-certs/${SERVER_NAME}/client-key.pem \\
+     -H=tcp://${DOCKER_HOST_IP}:2376 info"
 echo ""
 echo -e "${CYAN}Quick Commands:${NC}"
 echo "  podex-workspace-status  - Check server status"
