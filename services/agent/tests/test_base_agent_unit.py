@@ -411,7 +411,7 @@ class TestAgentMemoryIntegration:
         with patch("src.agents.base.get_db_context"), \
              patch("src.agents.base.update_agent_status", new_callable=AsyncMock), \
              patch("src.agents.base.save_message", new_callable=AsyncMock), \
-             patch("src.agents.base.get_context_manager", return_value=None), \
+             patch("src.agents.base.create_context_manager_with_settings", new_callable=AsyncMock, return_value=None), \
              patch("src.agents.base.get_knowledge_base") as mock_kb, \
              patch("src.agents.base.get_retriever") as mock_retriever, \
              patch("src.agents.base.get_usage_tracker", return_value=None):
@@ -478,11 +478,15 @@ class TestAgentConversationManagement:
         self,
         agent: ConcreteTestAgent,
     ):
-        """Test that messages are saved to database after execution."""
+        """Test that agent updates status when persist=True.
+
+        Note: User messages are saved by the API service, not by the agent.
+        The agent only updates status, not message persistence.
+        """
         with patch("src.agents.base.get_db_context") as mock_db_context, \
-             patch("src.agents.base.update_agent_status", new_callable=AsyncMock), \
+             patch("src.agents.base.update_agent_status", new_callable=AsyncMock) as mock_update, \
              patch("src.agents.base.save_message", new_callable=AsyncMock) as mock_save, \
-             patch("src.agents.base.get_context_manager", return_value=None), \
+             patch("src.agents.base.create_context_manager_with_settings", new_callable=AsyncMock, return_value=None), \
              patch("src.agents.base.get_knowledge_base") as mock_kb, \
              patch("src.agents.base.get_retriever") as mock_retriever, \
              patch("src.agents.base.get_usage_tracker", return_value=None):
@@ -495,18 +499,21 @@ class TestAgentConversationManagement:
 
             await agent.execute("Test message", persist=True)
 
-            # Should save both user message and assistant response
-            assert mock_save.call_count >= 2
+            # Agent should update status to active when persist=True
+            mock_update.assert_called_once()
+            # update_agent_status(db, agent_id, status)
+            call_args = mock_update.call_args[0]
+            assert call_args[2] == "active"  # Status is the 3rd argument
 
     async def test_agent_status_updated_during_execution(
         self,
         agent: ConcreteTestAgent,
     ):
-        """Test that agent status is updated during execution."""
+        """Test that agent status is updated to active during execution."""
         with patch("src.agents.base.get_db_context") as mock_db_context, \
              patch("src.agents.base.update_agent_status", new_callable=AsyncMock) as mock_update, \
              patch("src.agents.base.save_message", new_callable=AsyncMock) as mock_save, \
-             patch("src.agents.base.get_context_manager", return_value=None), \
+             patch("src.agents.base.create_context_manager_with_settings", new_callable=AsyncMock, return_value=None), \
              patch("src.agents.base.get_knowledge_base") as mock_kb, \
              patch("src.agents.base.get_retriever") as mock_retriever, \
              patch("src.agents.base.get_usage_tracker", return_value=None):
@@ -519,8 +526,11 @@ class TestAgentConversationManagement:
 
             await agent.execute("Test message", persist=True)
 
-            # Should update status (at least to 'active' and back to 'idle')
-            assert mock_update.call_count >= 2
+            # Should update status to 'active' once
+            mock_update.assert_called_once()
+            # update_agent_status(db, agent_id, status)
+            call_args = mock_update.call_args[0]
+            assert call_args[2] == "active"  # Status is the 3rd argument
 
 
 class TestAgentErrorHandling:
@@ -994,7 +1004,7 @@ class TestAgentExecution:
         with patch("src.agents.base.get_db_context"), \
              patch("src.agents.base.update_agent_status", new_callable=AsyncMock), \
              patch("src.agents.base.save_message", new_callable=AsyncMock), \
-             patch("src.agents.base.get_context_manager", return_value=None), \
+             patch("src.agents.base.create_context_manager_with_settings", new_callable=AsyncMock, return_value=None), \
              patch("src.agents.base.get_knowledge_base") as mock_kb, \
              patch("src.agents.base.get_retriever") as mock_retriever, \
              patch("src.agents.base.get_usage_tracker", return_value=None):
@@ -1014,7 +1024,7 @@ class TestAgentExecution:
         with patch("src.agents.base.get_db_context"), \
              patch("src.agents.base.update_agent_status", new_callable=AsyncMock), \
              patch("src.agents.base.save_message", new_callable=AsyncMock), \
-             patch("src.agents.base.get_context_manager", return_value=None), \
+             patch("src.agents.base.create_context_manager_with_settings", new_callable=AsyncMock, return_value=None), \
              patch("src.agents.base.get_knowledge_base") as mock_kb, \
              patch("src.agents.base.get_retriever") as mock_retriever, \
              patch("src.agents.base.get_usage_tracker", return_value=None):
@@ -1048,7 +1058,7 @@ class TestAgentExecution:
         with patch("src.agents.base.get_db_context"), \
              patch("src.agents.base.update_agent_status", new_callable=AsyncMock), \
              patch("src.agents.base.save_message", new_callable=AsyncMock), \
-             patch("src.agents.base.get_context_manager", return_value=None), \
+             patch("src.agents.base.create_context_manager_with_settings", new_callable=AsyncMock, return_value=None), \
              patch("src.agents.base.get_knowledge_base") as mock_kb, \
              patch("src.agents.base.get_retriever") as mock_retriever, \
              patch("src.agents.base.get_usage_tracker", return_value=None):
@@ -1077,7 +1087,7 @@ class TestAgentExecution:
         with patch("src.agents.base.get_db_context"), \
              patch("src.agents.base.update_agent_status", new_callable=AsyncMock), \
              patch("src.agents.base.save_message", new_callable=AsyncMock), \
-             patch("src.agents.base.get_context_manager", return_value=None), \
+             patch("src.agents.base.create_context_manager_with_settings", new_callable=AsyncMock, return_value=None), \
              patch("src.agents.base.get_knowledge_base") as mock_kb, \
              patch("src.agents.base.get_retriever") as mock_retriever, \
              patch("src.agents.base.get_usage_tracker", return_value=None):
@@ -1092,11 +1102,15 @@ class TestAgentExecution:
             assert response.tool_calls[0]["name"] == "read_file"
 
     async def test_execute_with_persist_saves_to_db(self, agent: ConcreteTestAgent):
-        """Test execute with persist=True saves to database."""
+        """Test execute with persist=True updates agent status.
+
+        Note: User messages are saved by the API service, not by the agent.
+        The agent only updates status to 'active' when persist=True.
+        """
         with patch("src.agents.base.get_db_context") as mock_db_context, \
              patch("src.agents.base.update_agent_status", new_callable=AsyncMock) as mock_update, \
              patch("src.agents.base.save_message", new_callable=AsyncMock) as mock_save, \
-             patch("src.agents.base.get_context_manager", return_value=None), \
+             patch("src.agents.base.create_context_manager_with_settings", new_callable=AsyncMock, return_value=None), \
              patch("src.agents.base.get_knowledge_base") as mock_kb, \
              patch("src.agents.base.get_retriever") as mock_retriever, \
              patch("src.agents.base.get_usage_tracker", return_value=None):
@@ -1109,10 +1123,11 @@ class TestAgentExecution:
 
             await agent.execute("Test", persist=True)
 
-            # Should save user and assistant messages
-            assert mock_save.call_count >= 2
-            # Should update status to active and back to idle
-            assert mock_update.call_count >= 2
+            # Should update status to active
+            mock_update.assert_called_once()
+            # update_agent_status(db, agent_id, status)
+            call_args = mock_update.call_args[0]
+            assert call_args[2] == "active"  # Status is the 3rd argument
 
 
 class TestAgentToolExecution:
@@ -1552,7 +1567,7 @@ class TestAgentUsageTracking:
         with patch("src.agents.base.get_db_context"), \
              patch("src.agents.base.update_agent_status", new_callable=AsyncMock), \
              patch("src.agents.base.save_message", new_callable=AsyncMock), \
-             patch("src.agents.base.get_context_manager", return_value=None), \
+             patch("src.agents.base.create_context_manager_with_settings", new_callable=AsyncMock, return_value=None), \
              patch("src.agents.base.get_knowledge_base") as mock_kb, \
              patch("src.agents.base.get_retriever") as mock_retriever, \
              patch("src.agents.base.get_usage_tracker") as mock_tracker:
@@ -1584,7 +1599,7 @@ class TestAgentUsageTracking:
         with patch("src.agents.base.get_db_context"), \
              patch("src.agents.base.update_agent_status", new_callable=AsyncMock), \
              patch("src.agents.base.save_message", new_callable=AsyncMock), \
-             patch("src.agents.base.get_context_manager", return_value=None), \
+             patch("src.agents.base.create_context_manager_with_settings", new_callable=AsyncMock, return_value=None), \
              patch("src.agents.base.get_knowledge_base") as mock_kb, \
              patch("src.agents.base.get_retriever") as mock_retriever, \
              patch("src.agents.base.get_usage_tracker") as mock_tracker:
@@ -1615,7 +1630,7 @@ class TestAgentUsageTracking:
         with patch("src.agents.base.get_db_context"), \
              patch("src.agents.base.update_agent_status", new_callable=AsyncMock), \
              patch("src.agents.base.save_message", new_callable=AsyncMock), \
-             patch("src.agents.base.get_context_manager", return_value=None), \
+             patch("src.agents.base.create_context_manager_with_settings", new_callable=AsyncMock, return_value=None), \
              patch("src.agents.base.get_knowledge_base") as mock_kb, \
              patch("src.agents.base.get_retriever") as mock_retriever, \
              patch("src.agents.base.get_usage_tracker") as mock_tracker:

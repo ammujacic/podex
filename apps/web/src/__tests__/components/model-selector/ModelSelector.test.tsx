@@ -29,44 +29,68 @@ Object.defineProperty(window, 'localStorage', {
   value: localStorageMock,
 });
 
-// Mock fetch for Ollama API
-const mockFetch = vi.fn();
-global.fetch = mockFetch;
+// Mock @/lib/api for local models discovery (useOllamaModels hook uses these)
+const mockGetLocalLLMConfig = vi.fn();
+const mockDiscoverLocalModels = vi.fn();
+
+vi.mock('@/lib/api', async () => {
+  const actual = await vi.importActual('@/lib/api');
+  return {
+    ...actual,
+    getLocalLLMConfig: () => mockGetLocalLLMConfig(),
+    discoverLocalModels: (params: unknown) => mockDiscoverLocalModels(params),
+  };
+});
 
 // Mock ResizeObserver for virtualization
+// Note: Callback must be deferred to prevent infinite loops with TanStack Virtual
 class ResizeObserverMock {
   callback: ResizeObserverCallback;
+  private observedElements = new Set<Element>();
 
   constructor(callback: ResizeObserverCallback) {
     this.callback = callback;
   }
 
   observe = vi.fn((target: Element) => {
-    this.callback(
-      [
-        {
-          target,
-          contentRect: {
-            width: 400,
-            height: 600,
-            top: 0,
-            left: 0,
-            bottom: 600,
-            right: 400,
-            x: 0,
-            y: 0,
-            toJSON: () => ({}),
-          },
-          borderBoxSize: [{ blockSize: 600, inlineSize: 400 }],
-          contentBoxSize: [{ blockSize: 600, inlineSize: 400 }],
-          devicePixelContentBoxSize: [{ blockSize: 600, inlineSize: 400 }],
-        } as ResizeObserverEntry,
-      ],
-      this
-    );
+    // Prevent multiple observations of the same element causing loops
+    if (this.observedElements.has(target)) {
+      return;
+    }
+    this.observedElements.add(target);
+
+    // Use queueMicrotask to defer callback and prevent synchronous infinite loops
+    queueMicrotask(() => {
+      this.callback(
+        [
+          {
+            target,
+            contentRect: {
+              width: 400,
+              height: 600,
+              top: 0,
+              left: 0,
+              bottom: 600,
+              right: 400,
+              x: 0,
+              y: 0,
+              toJSON: () => ({}),
+            },
+            borderBoxSize: [{ blockSize: 600, inlineSize: 400 }],
+            contentBoxSize: [{ blockSize: 600, inlineSize: 400 }],
+            devicePixelContentBoxSize: [{ blockSize: 600, inlineSize: 400 }],
+          } as ResizeObserverEntry,
+        ],
+        this
+      );
+    });
   });
-  unobserve = vi.fn();
-  disconnect = vi.fn();
+  unobserve = vi.fn((target: Element) => {
+    this.observedElements.delete(target);
+  });
+  disconnect = vi.fn(() => {
+    this.observedElements.clear();
+  });
 }
 
 Object.defineProperty(window, 'ResizeObserver', {
@@ -175,8 +199,9 @@ describe('ModelSelector', () => {
     localStorageMock.clear();
     __resetFavoritesCache();
 
-    // Default Ollama mock - connection error
-    mockFetch.mockRejectedValue(new Error('Failed to fetch'));
+    // Default local LLM mocks - no cached config, connection error on discover
+    mockGetLocalLLMConfig.mockResolvedValue(null);
+    mockDiscoverLocalModels.mockRejectedValue(new Error('Could not connect to Ollama'));
   });
 
   describe('Tab rendering', () => {
@@ -254,11 +279,11 @@ describe('ModelSelector', () => {
       expect(screen.getByRole('button', { name: 'Code' })).toBeInTheDocument();
     });
 
-    it('shows "Show all" toggle', async () => {
+    it('does not show "Show all" toggle (removed for simplicity)', async () => {
       render(<ModelSelector {...defaultProps} />);
 
-      expect(screen.getByText('Show all (200+)')).toBeInTheDocument();
-      expect(screen.getByRole('checkbox')).toBeInTheDocument();
+      // Show all toggle was removed to keep interface simple
+      expect(screen.queryByText(/Show all/)).not.toBeInTheDocument();
     });
 
     it('shows model list', async () => {
@@ -350,7 +375,7 @@ describe('ModelSelector', () => {
   describe('Local tab', () => {
     it('shows connection error when Ollama is not running', async () => {
       const user = userEvent.setup();
-      mockFetch.mockRejectedValue(new Error('Failed to fetch'));
+      // Default mock already rejects with connection error
 
       render(<ModelSelector {...defaultProps} />);
 
@@ -388,8 +413,8 @@ describe('ModelSelector', () => {
 
     it('shows loading state when discovering models', async () => {
       const user = userEvent.setup();
-      // Make fetch hang
-      mockFetch.mockImplementation(
+      // Make discoverLocalModels hang
+      mockDiscoverLocalModels.mockImplementation(
         () => new Promise(() => {}) // Never resolves
       );
 
@@ -405,9 +430,9 @@ describe('ModelSelector', () => {
 
     it('shows empty state when Ollama connected but no models', async () => {
       const user = userEvent.setup();
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ models: [] }),
+      mockDiscoverLocalModels.mockResolvedValue({
+        success: true,
+        models: [],
       });
 
       render(<ModelSelector {...defaultProps} />);
@@ -422,23 +447,15 @@ describe('ModelSelector', () => {
 
     it('shows Ollama models when available', async () => {
       const user = userEvent.setup();
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            models: [
-              {
-                name: 'llama2:7b',
-                model: 'llama2:7b',
-                modified_at: '2024-01-01T00:00:00Z',
-                size: 3826793472,
-                digest: 'abc123',
-                details: {
-                  quantization_level: 'Q4_0',
-                },
-              },
-            ],
-          }),
+      mockDiscoverLocalModels.mockResolvedValue({
+        success: true,
+        models: [
+          {
+            id: 'llama2:7b',
+            name: 'llama2:7b',
+            size: 3826793472,
+          },
+        ],
       });
 
       render(<ModelSelector {...defaultProps} />);
@@ -453,9 +470,9 @@ describe('ModelSelector', () => {
 
     it('refresh button triggers model refresh', async () => {
       const user = userEvent.setup();
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ models: [] }),
+      mockDiscoverLocalModels.mockResolvedValue({
+        success: true,
+        models: [],
       });
 
       render(<ModelSelector {...defaultProps} />);
@@ -465,17 +482,17 @@ describe('ModelSelector', () => {
 
       // Wait for initial load
       await waitFor(() => {
-        expect(mockFetch).toHaveBeenCalled();
+        expect(mockDiscoverLocalModels).toHaveBeenCalled();
       });
 
-      const initialCallCount = mockFetch.mock.calls.length;
+      const initialCallCount = mockDiscoverLocalModels.mock.calls.length;
 
       // Click refresh
       const refreshButton = screen.getByRole('button', { name: 'Refresh local models' });
       await user.click(refreshButton);
 
       await waitFor(() => {
-        expect(mockFetch.mock.calls.length).toBeGreaterThan(initialCallCount);
+        expect(mockDiscoverLocalModels.mock.calls.length).toBeGreaterThan(initialCallCount);
       });
     });
   });
@@ -543,20 +560,15 @@ describe('ModelSelector', () => {
 
     it('can select models from Local tab', async () => {
       const user = userEvent.setup();
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            models: [
-              {
-                name: 'llama2:7b',
-                model: 'llama2:7b',
-                modified_at: '2024-01-01T00:00:00Z',
-                size: 3826793472,
-                digest: 'abc123',
-              },
-            ],
-          }),
+      mockDiscoverLocalModels.mockResolvedValue({
+        success: true,
+        models: [
+          {
+            id: 'llama2:7b',
+            name: 'llama2:7b',
+            size: 3826793472,
+          },
+        ],
       });
 
       const onSelectModel = vi.fn();
@@ -572,7 +584,8 @@ describe('ModelSelector', () => {
       const modelCard = screen.getByRole('button', { name: /Select Llama2/i });
       await user.click(modelCard);
 
-      expect(onSelectModel).toHaveBeenCalledWith('llama2:7b');
+      // Model ID is prefixed with provider (e.g., "ollama/llama2:7b")
+      expect(onSelectModel).toHaveBeenCalledWith('ollama/llama2:7b');
     });
   });
 

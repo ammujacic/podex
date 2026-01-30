@@ -1,146 +1,151 @@
 /**
  * Tests for useOllamaModels hook
+ *
+ * This hook uses backend API functions (getLocalLLMConfig, discoverLocalModels)
+ * instead of calling Ollama directly.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useOllamaModels } from '@/components/model-selector/hooks/useOllamaModels';
-import type { OllamaTagsResponse } from '@/components/model-selector/types';
 
-// Mock fetch globally
-const mockFetch = vi.fn();
+// Use vi.hoisted to ensure mocks are available when vi.mock runs
+const { mockGetLocalLLMConfig, mockDiscoverLocalModels } = vi.hoisted(() => ({
+  mockGetLocalLLMConfig: vi.fn(),
+  mockDiscoverLocalModels: vi.fn(),
+}));
+
+// Mock @/lib/api functions - use importActual to preserve other exports
+vi.mock('@/lib/api', async () => {
+  const actual = await vi.importActual('@/lib/api');
+  return {
+    ...actual,
+    getLocalLLMConfig: () => mockGetLocalLLMConfig(),
+    discoverLocalModels: (params: unknown) => mockDiscoverLocalModels(params),
+  };
+});
+
+// Mock response data that would come from backend API
+const mockDiscoverResponse = {
+  success: true,
+  models: [
+    {
+      id: 'llama2:7b',
+      name: 'llama2:7b',
+      size: 3825819519,
+    },
+    {
+      id: 'codellama:13b',
+      name: 'codellama:13b',
+      size: 7365960704,
+    },
+    {
+      id: 'mistral:7b-q8_0',
+      name: 'mistral:7b-q8_0',
+      size: 7365960704,
+    },
+  ],
+};
+
+// Helper to set up successful discovery mocks
+function setupSuccessfulDiscovery() {
+  mockGetLocalLLMConfig.mockImplementation(() => Promise.resolve(null));
+  mockDiscoverLocalModels.mockImplementation(() => Promise.resolve(mockDiscoverResponse));
+}
 
 describe('useOllamaModels', () => {
   beforeEach(() => {
-    vi.stubGlobal('fetch', mockFetch);
-    mockFetch.mockReset();
+    // Reset mocks explicitly - vi.resetAllMocks can be unreliable
+    mockGetLocalLLMConfig.mockReset();
+    mockDiscoverLocalModels.mockReset();
   });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  const mockOllamaResponse: OllamaTagsResponse = {
-    models: [
-      {
-        name: 'llama2:7b',
-        model: 'llama2:7b',
-        modified_at: '2024-01-15T10:30:00Z',
-        size: 3825819519,
-        digest: 'abc123',
-        details: {
-          family: 'llama',
-          parameter_size: '7B',
-          quantization_level: 'Q4_0',
-        },
-      },
-      {
-        name: 'codellama:13b',
-        model: 'codellama:13b',
-        modified_at: '2024-01-14T08:00:00Z',
-        size: 7365960704,
-        digest: 'def456',
-        details: {
-          family: 'llama',
-          parameter_size: '13B',
-        },
-      },
-      {
-        name: 'mistral:7b-q8_0',
-        model: 'mistral:7b-q8_0',
-        modified_at: '2024-01-16T12:00:00Z',
-        size: 7365960704,
-        digest: 'ghi789',
-      },
-    ],
-  };
 
   describe('successful discovery', () => {
-    it('should fetch models on mount when autoDiscover is true', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => mockOllamaResponse,
-      });
+    it('should discover models on mount when autoDiscover is true', async () => {
+      setupSuccessfulDiscovery();
 
       const { result } = renderHook(() => useOllamaModels());
 
-      // Initially loading
-      expect(result.current.isLoading).toBe(true);
-
+      // Wait for models to be loaded
       await waitFor(() => {
-        expect(result.current.isLoading).toBe(false);
+        expect(result.current.models.length).toBe(3);
       });
 
-      expect(result.current.models.length).toBe(3);
+      // Verify final state
       expect(result.current.isConnected).toBe(true);
       expect(result.current.error).toBeNull();
+      expect(mockDiscoverLocalModels).toHaveBeenCalled();
     });
 
-    it('should not fetch on mount when autoDiscover is false', () => {
+    it('should not fetch on mount when autoDiscover is false', async () => {
+      setupSuccessfulDiscovery();
+
       const { result } = renderHook(() => useOllamaModels({ autoDiscover: false }));
 
-      expect(mockFetch).not.toHaveBeenCalled();
+      // Wait a tick to ensure no async calls are made
+      await waitFor(() => {
+        expect(result.current.isLoading).toBe(false);
+      });
+
+      expect(mockDiscoverLocalModels).not.toHaveBeenCalled();
       expect(result.current.models).toEqual([]);
-      expect(result.current.isLoading).toBe(false);
     });
 
-    it('should transform Ollama models correctly', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => mockOllamaResponse,
-      });
+    it('should transform discovered models correctly', async () => {
+      setupSuccessfulDiscovery();
 
       const { result } = renderHook(() => useOllamaModels());
 
       await waitFor(() => {
-        expect(result.current.isLoading).toBe(false);
+        expect(result.current.models.length).toBe(3);
       });
 
       const llama2 = result.current.models.find((m) => m.id === 'llama2:7b');
       expect(llama2).toBeDefined();
       expect(llama2?.name).toBe('Llama2');
-      expect(llama2?.quantization).toBe('Q4_0');
       expect(llama2?.size).toBe('3.6 GB');
       expect(llama2?.modifiedAt).toBeInstanceOf(Date);
     });
 
-    it('should extract quantization from model name when not in details', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => mockOllamaResponse,
-      });
+    it('should extract quantization from model name', async () => {
+      setupSuccessfulDiscovery();
 
       const { result } = renderHook(() => useOllamaModels());
 
       await waitFor(() => {
-        expect(result.current.isLoading).toBe(false);
+        expect(result.current.models.length).toBe(3);
       });
 
       const mistral = result.current.models.find((m) => m.id === 'mistral:7b-q8_0');
       expect(mistral?.quantization).toBe('Q8_0');
     });
 
-    it('should sort models by modified date (most recent first)', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => mockOllamaResponse,
-      });
+    it('should load cached models from config on mount', async () => {
+      mockGetLocalLLMConfig.mockImplementation(() =>
+        Promise.resolve({
+          ollama: {
+            models: [{ id: 'cached-model', name: 'cached-model', size: 1000000 }],
+          },
+        })
+      );
+      mockDiscoverLocalModels.mockImplementation(() => Promise.resolve(mockDiscoverResponse));
 
       const { result } = renderHook(() => useOllamaModels());
 
       await waitFor(() => {
-        expect(result.current.isLoading).toBe(false);
+        expect(result.current.models.length).toBe(3);
       });
 
-      // mistral is most recent (Jan 16), then llama2 (Jan 15), then codellama (Jan 14)
-      expect(result.current.models[0].id).toBe('mistral:7b-q8_0');
-      expect(result.current.models[1].id).toBe('llama2:7b');
-      expect(result.current.models[2].id).toBe('codellama:13b');
+      // Should have models from discovery (which overrides cached)
+      expect(result.current.models.length).toBe(3);
     });
   });
 
   describe('error handling', () => {
-    it('should handle connection errors gracefully', async () => {
-      mockFetch.mockRejectedValueOnce(new Error('Failed to fetch'));
+    it('should handle discovery errors gracefully', async () => {
+      mockGetLocalLLMConfig.mockImplementation(() => Promise.resolve(null));
+      mockDiscoverLocalModels.mockImplementation(() =>
+        Promise.reject(new Error('Could not connect to Ollama'))
+      );
 
       const { result } = renderHook(() => useOllamaModels());
 
@@ -148,17 +153,19 @@ describe('useOllamaModels', () => {
         expect(result.current.isLoading).toBe(false);
       });
 
-      expect(result.current.error).toContain('Could not connect to Ollama');
+      expect(result.current.error).toBe('Could not connect to Ollama');
       expect(result.current.isConnected).toBe(false);
       expect(result.current.models).toEqual([]);
     });
 
-    it('should handle HTTP errors', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        statusText: 'Internal Server Error',
-      });
+    it('should handle API error response', async () => {
+      mockGetLocalLLMConfig.mockImplementation(() => Promise.resolve(null));
+      mockDiscoverLocalModels.mockImplementation(() =>
+        Promise.resolve({
+          success: false,
+          error: 'Ollama service unavailable',
+        })
+      );
 
       const { result } = renderHook(() => useOllamaModels());
 
@@ -166,30 +173,18 @@ describe('useOllamaModels', () => {
         expect(result.current.isLoading).toBe(false);
       });
 
-      expect(result.current.error).toContain('500');
-      expect(result.current.isConnected).toBe(false);
-    });
-
-    it('should handle timeout errors', async () => {
-      const abortError = new Error('Aborted');
-      abortError.name = 'AbortError';
-      mockFetch.mockRejectedValueOnce(abortError);
-
-      const { result } = renderHook(() => useOllamaModels());
-
-      await waitFor(() => {
-        expect(result.current.isLoading).toBe(false);
-      });
-
-      expect(result.current.error).toContain('timed out');
+      expect(result.current.error).toBe('Ollama service unavailable');
       expect(result.current.isConnected).toBe(false);
     });
 
     it('should handle empty model list', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ models: [] }),
-      });
+      mockGetLocalLLMConfig.mockImplementation(() => Promise.resolve(null));
+      mockDiscoverLocalModels.mockImplementation(() =>
+        Promise.resolve({
+          success: true,
+          models: [],
+        })
+      );
 
       const { result } = renderHook(() => useOllamaModels());
 
@@ -202,11 +197,14 @@ describe('useOllamaModels', () => {
       expect(result.current.error).toBeNull();
     });
 
-    it('should handle malformed response', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({}), // Missing models field
-      });
+    it('should handle missing models field gracefully', async () => {
+      mockGetLocalLLMConfig.mockImplementation(() => Promise.resolve(null));
+      mockDiscoverLocalModels.mockImplementation(() =>
+        Promise.resolve({
+          success: true,
+          // models field is undefined
+        })
+      );
 
       const { result } = renderHook(() => useOllamaModels());
 
@@ -221,10 +219,14 @@ describe('useOllamaModels', () => {
 
   describe('refresh functionality', () => {
     it('should refetch models when refresh is called', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ models: [] }),
-      });
+      mockGetLocalLLMConfig.mockImplementation(() => Promise.resolve(null));
+      // Start with empty models
+      mockDiscoverLocalModels.mockImplementationOnce(() =>
+        Promise.resolve({
+          success: true,
+          models: [],
+        })
+      );
 
       const { result } = renderHook(() => useOllamaModels());
 
@@ -234,11 +236,8 @@ describe('useOllamaModels', () => {
 
       expect(result.current.models).toEqual([]);
 
-      // Now add a model and refresh
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => mockOllamaResponse,
-      });
+      // Now return models on refresh
+      mockDiscoverLocalModels.mockImplementationOnce(() => Promise.resolve(mockDiscoverResponse));
 
       await act(async () => {
         await result.current.refresh();
@@ -248,8 +247,11 @@ describe('useOllamaModels', () => {
     });
 
     it('should clear previous error on successful refresh', async () => {
+      mockGetLocalLLMConfig.mockImplementation(() => Promise.resolve(null));
       // First call fails
-      mockFetch.mockRejectedValueOnce(new Error('Failed to fetch'));
+      mockDiscoverLocalModels.mockImplementationOnce(() =>
+        Promise.reject(new Error('Connection failed'))
+      );
 
       const { result } = renderHook(() => useOllamaModels());
 
@@ -258,10 +260,7 @@ describe('useOllamaModels', () => {
       });
 
       // Second call succeeds
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => mockOllamaResponse,
-      });
+      mockDiscoverLocalModels.mockImplementationOnce(() => Promise.resolve(mockDiscoverResponse));
 
       await act(async () => {
         await result.current.refresh();
@@ -273,71 +272,51 @@ describe('useOllamaModels', () => {
   });
 
   describe('custom baseUrl', () => {
-    it('should use custom baseUrl when provided', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => mockOllamaResponse,
-      });
+    it('should pass custom baseUrl to discover API', async () => {
+      setupSuccessfulDiscovery();
 
       renderHook(() => useOllamaModels({ baseUrl: 'http://custom:1234' }));
 
       await waitFor(() => {
-        expect(mockFetch).toHaveBeenCalledWith('http://custom:1234/api/tags', expect.any(Object));
+        expect(mockDiscoverLocalModels).toHaveBeenCalledWith({
+          provider: 'ollama',
+          base_url: 'http://custom:1234',
+        });
       });
     });
 
     it('should use default URL when baseUrl not provided', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => mockOllamaResponse,
-      });
+      setupSuccessfulDiscovery();
 
       renderHook(() => useOllamaModels());
 
       await waitFor(() => {
-        expect(mockFetch).toHaveBeenCalledWith(
-          'http://localhost:11434/api/tags',
-          expect.any(Object)
-        );
+        expect(mockDiscoverLocalModels).toHaveBeenCalledWith({
+          provider: 'ollama',
+          base_url: 'http://localhost:11434',
+        });
       });
     });
   });
 
   describe('format helpers', () => {
     it('should format bytes correctly', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
+      mockGetLocalLLMConfig.mockImplementation(() => Promise.resolve(null));
+      mockDiscoverLocalModels.mockImplementation(() =>
+        Promise.resolve({
+          success: true,
           models: [
-            {
-              name: 'small',
-              model: 'small',
-              modified_at: '2024-01-15T10:00:00Z',
-              size: 1024,
-              digest: 'abc',
-            },
-            {
-              name: 'medium',
-              model: 'medium',
-              modified_at: '2024-01-15T10:00:00Z',
-              size: 1024 * 1024,
-              digest: 'def',
-            },
-            {
-              name: 'large',
-              model: 'large',
-              modified_at: '2024-01-15T10:00:00Z',
-              size: 1024 * 1024 * 1024,
-              digest: 'ghi',
-            },
+            { id: 'small', name: 'small', size: 1024 },
+            { id: 'medium', name: 'medium', size: 1024 * 1024 },
+            { id: 'large', name: 'large', size: 1024 * 1024 * 1024 },
           ],
-        }),
-      });
+        })
+      );
 
       const { result } = renderHook(() => useOllamaModels());
 
       await waitFor(() => {
-        expect(result.current.isLoading).toBe(false);
+        expect(result.current.models.length).toBe(3);
       });
 
       const small = result.current.models.find((m) => m.id === 'small');

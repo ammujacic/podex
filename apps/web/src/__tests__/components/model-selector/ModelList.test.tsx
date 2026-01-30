@@ -28,41 +28,55 @@ Object.defineProperty(window, 'localStorage', {
   value: localStorageMock,
 });
 
-// Mock ResizeObserver for virtualization - must trigger callback with dimensions
+// Mock ResizeObserver for virtualization
+// Note: Callback must be deferred to prevent infinite loops with TanStack Virtual
 class ResizeObserverMock {
   callback: ResizeObserverCallback;
+  private observedElements = new Set<Element>();
 
   constructor(callback: ResizeObserverCallback) {
     this.callback = callback;
   }
 
   observe = vi.fn((target: Element) => {
-    // Immediately call the callback with mocked dimensions
-    this.callback(
-      [
-        {
-          target,
-          contentRect: {
-            width: 400,
-            height: 600,
-            top: 0,
-            left: 0,
-            bottom: 600,
-            right: 400,
-            x: 0,
-            y: 0,
-            toJSON: () => ({}),
-          },
-          borderBoxSize: [{ blockSize: 600, inlineSize: 400 }],
-          contentBoxSize: [{ blockSize: 600, inlineSize: 400 }],
-          devicePixelContentBoxSize: [{ blockSize: 600, inlineSize: 400 }],
-        } as ResizeObserverEntry,
-      ],
-      this
-    );
+    // Prevent multiple observations of the same element causing loops
+    if (this.observedElements.has(target)) {
+      return;
+    }
+    this.observedElements.add(target);
+
+    // Use queueMicrotask to defer callback and prevent synchronous infinite loops
+    queueMicrotask(() => {
+      this.callback(
+        [
+          {
+            target,
+            contentRect: {
+              width: 400,
+              height: 600,
+              top: 0,
+              left: 0,
+              bottom: 600,
+              right: 400,
+              x: 0,
+              y: 0,
+              toJSON: () => ({}),
+            },
+            borderBoxSize: [{ blockSize: 600, inlineSize: 400 }],
+            contentBoxSize: [{ blockSize: 600, inlineSize: 400 }],
+            devicePixelContentBoxSize: [{ blockSize: 600, inlineSize: 400 }],
+          } as ResizeObserverEntry,
+        ],
+        this
+      );
+    });
   });
-  unobserve = vi.fn();
-  disconnect = vi.fn();
+  unobserve = vi.fn((target: Element) => {
+    this.observedElements.delete(target);
+  });
+  disconnect = vi.fn(() => {
+    this.observedElements.clear();
+  });
 }
 
 Object.defineProperty(window, 'ResizeObserver', {

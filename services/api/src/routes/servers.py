@@ -234,9 +234,9 @@ async def register_server(
             detail=f"Server with hostname '{data.hostname}' already registered",
         )
 
-    # Create new server
+    # Create new server with hostname as ID (matches compute service config)
     server = WorkspaceServer(
-        id=str(uuid.uuid4()),
+        id=data.hostname,  # Use hostname as ID for consistency with compute service
         name=data.name,
         hostname=data.hostname,
         ip_address=data.ip_address,

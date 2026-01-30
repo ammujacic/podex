@@ -262,7 +262,8 @@ class TestComputeManagerTunnelMethods:
     def mock_docker_manager(self):
         """Create a mock Docker manager."""
         docker = MagicMock()
-        docker.run_in_container = AsyncMock(return_value={"stdout": "12345\n", "stderr": ""})
+        # run_in_container returns tuple[int, str, str] (exit_code, stdout, stderr)
+        docker.run_in_container = AsyncMock(return_value=(0, "12345\n", ""))
         return docker
 
     @pytest.fixture
@@ -366,8 +367,9 @@ class TestComputeManagerTunnelMethods:
         self, compute_manager, mock_docker_manager, mock_workspace
     ):
         """Test getting status when tunnel is running."""
+        # run_in_container returns tuple[int, str, str] (exit_code, stdout, stderr)
         mock_docker_manager.run_in_container = AsyncMock(
-            return_value={"stdout": "12345 cloudflared tunnel run --token abc\n", "stderr": ""}
+            return_value=(0, "12345 cloudflared tunnel run --token abc\n", "")
         )
 
         result = await compute_manager.get_tunnel_status(workspace_id="ws-test-123")
@@ -381,8 +383,9 @@ class TestComputeManagerTunnelMethods:
         self, compute_manager, mock_docker_manager, mock_workspace
     ):
         """Test getting status when no tunnel is running."""
+        # run_in_container returns tuple[int, str, str] (exit_code, stdout, stderr)
         mock_docker_manager.run_in_container = AsyncMock(
-            return_value={"stdout": "none", "stderr": ""}
+            return_value=(0, "none", "")
         )
 
         result = await compute_manager.get_tunnel_status(workspace_id="ws-test-123")

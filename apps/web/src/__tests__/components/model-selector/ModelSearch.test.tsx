@@ -173,7 +173,7 @@ describe('ModelSearch', () => {
     render(<ModelSearch {...defaultProps} value="test" />);
 
     const clearButton = screen.getByRole('button', { name: 'Clear search' });
-    expect(clearButton.className).toContain('hover:text-foreground');
+    expect(clearButton.className).toContain('hover:text-text-primary');
     expect(clearButton.className).toContain('focus:ring-2');
   });
 

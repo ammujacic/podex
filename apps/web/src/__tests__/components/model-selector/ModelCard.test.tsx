@@ -205,7 +205,7 @@ describe('ModelCard', () => {
 
     const card = screen.getByRole('button', { name: /select claude 3\.5 sonnet/i });
     expect(card).toHaveAttribute('aria-pressed', 'true');
-    expect(card.className).toContain('border-primary');
+    expect(card.className).toContain('border-accent-primary');
   });
 
   it('applies correct styling when not selected', () => {
@@ -213,7 +213,7 @@ describe('ModelCard', () => {
 
     const card = screen.getByRole('button', { name: /select claude 3\.5 sonnet/i });
     expect(card).toHaveAttribute('aria-pressed', 'false');
-    expect(card.className).not.toContain('border-primary');
+    expect(card.className).not.toContain('border-accent-primary');
   });
 
   it('hides favorite toggle when showFavoriteToggle is false', () => {
