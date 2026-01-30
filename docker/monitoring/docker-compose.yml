@@ -148,6 +148,7 @@ services:
     restart: unless-stopped
     networks:
       - monitoring
+      - coolify  # Access app services via internal hostnames
     labels:
       - "coolify.managed=true"
       - "coolify.service=uptime-kuma"
@@ -161,3 +162,6 @@ volumes:
 networks:
   monitoring:
     driver: bridge
+  # Connect to Coolify's network to reach app services
+  coolify:
+    external: true
