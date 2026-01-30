@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import {
   Save,
   RefreshCw,
@@ -254,6 +255,7 @@ function SettingEditor({ setting, onSave }: SettingEditorProps) {
 }
 
 export default function SettingsManagement() {
+  useDocumentTitle('Platform Settings');
   const { settings, settingsLoading, fetchSettings, updateSetting, error } = useAdminStore();
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [savingFlags, setSavingFlags] = useState(false);

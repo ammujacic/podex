@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import {
   Plus,
   Edit2,
@@ -685,6 +686,7 @@ function MCPServerFormModal({ server, onClose, onSave }: MCPServerFormModalProps
 // ============================================================================
 
 export default function MCPServersManagement() {
+  useDocumentTitle('MCP Servers');
   const currentUser = useUser();
   const isSuperAdmin = currentUser?.role === 'super_admin';
   const {

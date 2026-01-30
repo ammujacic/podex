@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAdminStore, type AdminTemplate } from '@/stores/admin';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 // Available icons for templates
 const AVAILABLE_ICONS = [
@@ -338,6 +339,7 @@ function TemplateModal({ template, onClose, onSave, isCreating }: TemplateModalP
 }
 
 export default function TemplatesManagement() {
+  useDocumentTitle('Pod Templates');
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [officialFilter, setOfficialFilter] = useState<boolean | null>(null);

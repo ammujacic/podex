@@ -26,6 +26,7 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { useUser } from '@/stores/auth';
 import { api } from '@/lib/api';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 // Types matching the API
 interface SkillStep {
@@ -891,6 +892,7 @@ function EditSkillModal({ skill, onClose, onSave }: EditSkillModalProps) {
 
 // Main Page Component
 export default function SkillsManagement() {
+  useDocumentTitle('System Skills');
   const [skills, setSkills] = useState<SystemSkill[]>([]);
   const [analytics, setAnalytics] = useState<Record<string, SkillAnalytics>>({});
   const [analyticsSummary, setAnalyticsSummary] = useState<SkillsAnalyticsSummary | null>(null);

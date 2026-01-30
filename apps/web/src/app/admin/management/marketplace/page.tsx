@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import {
   Check,
   X,
@@ -601,6 +602,7 @@ function DetailModal({ skill, onClose }: DetailModalProps) {
 
 // Main Page Component
 export default function MarketplaceManagement() {
+  useDocumentTitle('Marketplace');
   const [skills, setSkills] = useState<MarketplaceSkill[]>([]);
   const [stats, setStats] = useState<MarketplaceStats>({
     total: 0,

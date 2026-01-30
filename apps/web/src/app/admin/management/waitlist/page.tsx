@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import {
   Search,
   Send,
@@ -345,6 +346,7 @@ function BulkInviteModal({ isOpen, onClose, onSubmit, waitingCount }: BulkInvite
 }
 
 export default function WaitlistPage() {
+  useDocumentTitle('Waitlist');
   const [entries, setEntries] = useState<WaitlistEntry[]>([]);
   const [stats, setStats] = useState({ total: 0, waiting: 0, invited: 0, registered: 0 });
   const [loading, setLoading] = useState(true);

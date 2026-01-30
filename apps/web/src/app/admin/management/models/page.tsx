@@ -30,6 +30,7 @@ import {
 } from '@/lib/api';
 import { toast } from 'sonner';
 import { useUser } from '@/stores/auth';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 // Cost tier badge colors
 const costTierColors: Record<string, string> = {
@@ -588,6 +589,7 @@ function AgentDefaultsModal({ defaults, models, onClose, onSave }: AgentDefaults
 }
 
 export default function ModelsManagement() {
+  useDocumentTitle('LLM Models');
   const [models, setModels] = useState<AdminModel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

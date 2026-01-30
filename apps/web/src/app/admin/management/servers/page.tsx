@@ -28,6 +28,7 @@ import {
   type CreateServerRequest,
 } from '@/stores/admin';
 import type { ServerWorkspaceInfo } from '@/lib/api';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 function formatBytes(mb: number): string {
   if (mb >= 1024) {
@@ -641,6 +642,7 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
 }
 
 export default function ServersManagement() {
+  useDocumentTitle('Workspace Servers');
   const {
     workspaceServers,
     workspaceServersLoading,

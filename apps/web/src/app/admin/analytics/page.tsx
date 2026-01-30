@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { DollarSign, Activity, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAdminStore } from '@/stores/admin';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 function formatCurrency(cents: number): string {
   return new Intl.NumberFormat('en-US', {
@@ -91,6 +92,7 @@ function SimpleBarChart({
 }
 
 export default function AnalyticsOverview() {
+  useDocumentTitle('Analytics Overview');
   const [days, setDays] = useState(30);
   const {
     revenueMetrics,

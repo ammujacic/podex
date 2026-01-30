@@ -21,6 +21,7 @@ import { cn } from '@/lib/utils';
 import { useAdminStore, type AdminLLMProvider } from '@/stores/admin';
 import { useUser } from '@/stores/auth';
 import { toast } from 'sonner';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 // ============================================================================
 // Provider Card Component
@@ -431,6 +432,7 @@ function ProviderFormModal({ provider, onClose, onSave }: ProviderFormModalProps
 // ============================================================================
 
 export default function ProvidersManagement() {
+  useDocumentTitle('LLM Providers');
   const currentUser = useUser();
   const isSuperAdmin = currentUser?.role === 'super_admin';
   const {

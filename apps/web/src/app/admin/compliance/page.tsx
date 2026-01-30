@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import {
   ShieldCheck,
   Database,
@@ -438,6 +439,7 @@ function ReviewModal({ onClose, onSave }: ReviewModalProps) {
 type TabType = 'overview' | 'retention' | 'reviews' | 'exports';
 
 export default function CompliancePage() {
+  useDocumentTitle('Compliance');
   const [activeTab, setActiveTab] = useState<TabType>('overview');
   const [stats, setStats] = useState<ComplianceStats | null>(null);
   const [policies, setPolicies] = useState<DataRetentionPolicy[]>([]);

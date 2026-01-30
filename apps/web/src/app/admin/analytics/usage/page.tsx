@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Zap, Cpu, HardDrive, Activity, AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAdminStore } from '@/stores/admin';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 function formatNumber(num: number): string {
   if (num >= 1000000) {
@@ -237,6 +238,7 @@ function DailyUsageChart({ data }: DailyChartProps) {
 }
 
 export default function UsageAnalytics() {
+  useDocumentTitle('Usage Analytics');
   const [days, setDays] = useState(7);
   const { usageMetrics, analyticsLoading, fetchUsageMetrics, error } = useAdminStore();
 

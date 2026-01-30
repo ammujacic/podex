@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils';
 import { useAdminStore, type AdminUser, type AdminPlan } from '@/stores/admin';
 import { useUser } from '@/stores/auth';
 import { UserDetailsModal } from '@/components/admin/UserDetailsModal';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString('en-US', {
@@ -175,6 +176,7 @@ function UserRow({
 }
 
 export default function UsersManagement() {
+  useDocumentTitle('User Management');
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('');

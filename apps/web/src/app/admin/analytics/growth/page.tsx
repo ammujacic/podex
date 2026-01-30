@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAdminStore } from '@/stores/admin';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 interface DateRangeSelectorProps {
   value: number;
@@ -95,6 +96,7 @@ function RetentionBar({ label, value, color }: RetentionBarProps) {
 }
 
 export default function GrowthAnalytics() {
+  useDocumentTitle('User Growth');
   const [days, setDays] = useState(30);
   const { userGrowthMetrics, analyticsLoading, fetchUserGrowthMetrics, error } = useAdminStore();
 

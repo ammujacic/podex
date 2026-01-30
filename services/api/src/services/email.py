@@ -1214,7 +1214,7 @@ BASE_HTML_TEMPLATE = """
                 <div class="header">
                     <div class="logo">
                         <img src="{logo_url}" alt="Podex" width="48" height="48" style="width: 48px; height: 48px; border-radius: 8px; margin-bottom: 8px;" />
-                        <div style="font-family: 'Orbitron', sans-serif; font-size: 24px; font-weight: 800; letter-spacing: -0.5px; color: #ffffff;">Podex</div>
+                        <div style="font-family: 'Orbitron', sans-serif; font-size: 24px; font-weight: 800; letter-spacing: -0.5px; color: #ffffff;">PODEX</div>
                     </div>
                 </div>
 

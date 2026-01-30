@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import {
   Search,
   ChevronLeft,
@@ -348,6 +349,7 @@ function StatsCard({
 }
 
 export default function AuditLogsPage() {
+  useDocumentTitle('Audit Logs');
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [stats, setStats] = useState<AuditStats | null>(null);
   const [loading, setLoading] = useState(true);

@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { api } from '@/lib/api';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 function formatNumber(num: number): string {
   if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
@@ -272,6 +273,7 @@ const colorOptions = [
 ];
 
 export default function AgentRolesAdminPage() {
+  useDocumentTitle('Agent Management');
   const [roles, setRoles] = useState<AgentRoleConfig[]>([]);
   const [tools, setTools] = useState<AgentTool[]>([]);
   const [loading, setLoading] = useState(true);

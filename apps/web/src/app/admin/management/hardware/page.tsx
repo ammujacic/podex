@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Plus, Edit2, Cpu, MemoryStick, HardDrive, Zap, Check, X, Wifi } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAdminStore, type AdminHardwareSpec } from '@/stores/admin';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 // ============================================================================
 // Edit Hardware Modal
@@ -383,6 +384,7 @@ function HardwareCard({ spec, onEdit, onToggleAvailable }: HardwareCardProps) {
 }
 
 export default function HardwareManagement() {
+  useDocumentTitle('Hardware Specifications');
   const { hardwareSpecs, hardwareLoading, fetchHardwareSpecs, updateHardwareSpec, error } =
     useAdminStore();
   const [editingSpec, setEditingSpec] = useState<AdminHardwareSpec | null>(null);

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Plus, Edit2, Check, X, Users } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAdminStore, type AdminPlan } from '@/stores/admin';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 function formatCurrency(cents: number): string {
   return new Intl.NumberFormat('en-US', {
@@ -391,6 +392,7 @@ function EditPlanModal({ plan, onClose, onSave }: EditPlanModalProps) {
 }
 
 export default function PlansManagement() {
+  useDocumentTitle('Subscription Plans');
   const { plans, plansLoading, fetchPlans, updatePlan, error } = useAdminStore();
   const [editingPlan, setEditingPlan] = useState<AdminPlan | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);

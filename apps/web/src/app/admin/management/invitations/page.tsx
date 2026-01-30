@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import {
   Search,
   Plus,
@@ -434,6 +435,7 @@ function CreateInvitationModal({ isOpen, onClose, onSubmit }: CreateInvitationMo
 }
 
 export default function InvitationsManagement() {
+  useDocumentTitle('Invitations');
   const [invitations, setInvitations] = useState<PlatformInvitation[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
