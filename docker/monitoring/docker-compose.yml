@@ -129,7 +129,7 @@ services:
       - /var/lib/docker/:/var/lib/docker:ro
       - /dev/disk/:/dev/disk:ro
     ports:
-      - "8080:8080"
+      - "9080:8080"
     restart: unless-stopped
     networks:
       - monitoring
