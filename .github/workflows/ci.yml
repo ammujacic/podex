@@ -271,7 +271,6 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/podex_test
       REDIS_URL: redis://localhost:6379
       ENVIRONMENT: test
-      LLM_PROVIDER: mock
       ANTHROPIC_API_KEY: sk-ant-test-mock-key
     steps:
       - uses: actions/checkout@v4

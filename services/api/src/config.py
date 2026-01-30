@@ -202,7 +202,6 @@ class Settings(BaseSettings):
     VAPID_EMAIL: str = "mailto:admin@podex.io"
 
     # AI/LLM providers
-    LLM_PROVIDER: str = "openrouter"  # openrouter (default), anthropic, openai, ollama
     OPENROUTER_API_KEY: str | None = None  # For Podex-hosted models via OpenRouter
     ANTHROPIC_API_KEY: str | None = None  # For users with own API keys
     OPENAI_API_KEY: str | None = None  # For users with own API keys

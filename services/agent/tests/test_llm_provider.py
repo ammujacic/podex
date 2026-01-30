@@ -89,9 +89,11 @@ class TestUsageTrackingContext:
         ctx = UsageTrackingContext(
             user_id="user-123",
             model="claude-3-5-sonnet-20241022",
+            provider="anthropic",
         )
         assert ctx.user_id == "user-123"
         assert ctx.model == "claude-3-5-sonnet-20241022"
+        assert ctx.provider == "anthropic"
         assert ctx.usage == {}
         assert ctx.usage_source == "included"
 
@@ -100,12 +102,14 @@ class TestUsageTrackingContext:
         ctx = UsageTrackingContext(
             user_id="user-123",
             model="gpt-4",
+            provider="openai",
             usage={"input_tokens": 100, "output_tokens": 50},
             session_id="session-456",
             workspace_id="workspace-789",
             agent_id="agent-101",
             usage_source="external",
         )
+        assert ctx.provider == "openai"
         assert ctx.usage == {"input_tokens": 100, "output_tokens": 50}
         assert ctx.usage_source == "external"
 
@@ -164,11 +168,11 @@ class TestLLMProviderInit:
     """Test LLM provider initialization."""
 
     def test_provider_initialization(self):
-        """Test provider initializes with default settings."""
-        with patch("src.providers.llm.settings") as mock_settings:
-            mock_settings.LLM_PROVIDER = "anthropic"
-            provider = LLMProvider()
-            assert provider.provider == "anthropic"
+        """Test provider initializes correctly."""
+        provider = LLMProvider()
+        # Provider no longer has a global default - each request specifies model_provider
+        assert provider._anthropic_client is None
+        assert provider._openai_client is None
 
     def test_clients_lazy_initialized(self):
         """Test clients are lazily initialized."""
@@ -233,11 +237,11 @@ class TestProviderDispatch:
     ):
         """Test completion dispatches to Anthropic for Claude models."""
         provider = LLMProvider()
-        provider.provider = "anthropic"
 
         request = CompletionRequest(
             model="claude-3-5-sonnet-20241022",
             messages=[{"role": "user", "content": "Hello"}],
+            model_provider="anthropic",
         )
 
         with patch.object(provider, "_complete_anthropic", new_callable=AsyncMock) as mock_complete:
@@ -256,11 +260,11 @@ class TestProviderDispatch:
     async def test_complete_dispatches_to_openai(self):
         """Test completion dispatches to OpenAI for GPT models."""
         provider = LLMProvider()
-        provider.provider = "openai"
 
         request = CompletionRequest(
             model="gpt-4",
             messages=[{"role": "user", "content": "Hello"}],
+            model_provider="openai",
         )
 
         with patch.object(provider, "_complete_openai", new_callable=AsyncMock) as mock_complete:
@@ -279,11 +283,11 @@ class TestProviderDispatch:
     async def test_complete_dispatches_to_ollama(self):
         """Test completion dispatches to Ollama for local models."""
         provider = LLMProvider()
-        provider.provider = "ollama"
 
         request = CompletionRequest(
             model="llama2",
             messages=[{"role": "user", "content": "Hello"}],
+            model_provider="ollama",
         )
 
         with patch.object(provider, "_complete_ollama", new_callable=AsyncMock) as mock_complete:
@@ -306,13 +310,13 @@ class TestUsageTracking:
     async def test_usage_tracked_for_user_id(self):
         """Test that usage is tracked when user_id is provided."""
         provider = LLMProvider()
-        provider.provider = "anthropic"
 
         request = CompletionRequest(
             model="claude-3-5-sonnet-20241022",
             messages=[{"role": "user", "content": "Hello"}],
             user_id="user-123",
             session_id="session-456",
+            model_provider="anthropic",
         )
 
         with patch.object(provider, "_complete_anthropic", new_callable=AsyncMock) as mock_complete:
@@ -332,12 +336,12 @@ class TestUsageTracking:
     async def test_local_provider_marked_as_local(self):
         """Test that local providers (Ollama) are marked as 'local' source."""
         provider = LLMProvider()
-        provider.provider = "ollama"
 
         request = CompletionRequest(
             model="llama2",
             messages=[{"role": "user", "content": "Hello"}],
             user_id="user-123",
+            model_provider="ollama",
         )
 
         with patch.object(provider, "_complete_ollama", new_callable=AsyncMock) as mock_complete, \
@@ -369,11 +373,11 @@ class TestErrorHandling:
     async def test_anthropic_error_propagated(self):
         """Test that Anthropic errors are propagated."""
         provider = LLMProvider()
-        provider.provider = "anthropic"
 
         request = CompletionRequest(
             model="claude-3-5-sonnet-20241022",
             messages=[{"role": "user", "content": "Hello"}],
+            model_provider="anthropic",
         )
 
         with patch.object(provider, "_complete_anthropic", new_callable=AsyncMock) as mock_complete:
@@ -389,7 +393,6 @@ class TestToolCallExtraction:
     async def test_anthropic_tool_calls_extracted(self):
         """Test that Anthropic tool calls are correctly extracted."""
         provider = LLMProvider()
-        provider.provider = "anthropic"
 
         with patch.object(provider, "_complete_anthropic", new_callable=AsyncMock) as mock_complete:
             mock_complete.return_value = {
@@ -409,6 +412,7 @@ class TestToolCallExtraction:
                 model="claude-3-5-sonnet-20241022",
                 messages=[{"role": "user", "content": "Read main.py"}],
                 tools=[{"name": "read_file"}],
+                model_provider="anthropic",
             )
 
             result = await provider.complete(request)

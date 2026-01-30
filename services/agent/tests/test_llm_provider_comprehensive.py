@@ -139,10 +139,12 @@ class TestUsageTrackingContextDataclass:
         context = UsageTrackingContext(
             user_id="user-123",
             model="claude-3-5-sonnet",
+            provider="anthropic",
         )
 
         assert context.user_id == "user-123"
         assert context.model == "claude-3-5-sonnet"
+        assert context.provider == "anthropic"
         assert context.usage == {}
         assert context.usage_source == "included"
 
@@ -151,6 +153,7 @@ class TestUsageTrackingContextDataclass:
         context = UsageTrackingContext(
             user_id="user-123",
             model="claude-3-5-sonnet",
+            provider="openai",
             usage={"input_tokens": 100, "output_tokens": 50},
             session_id="session-456",
             workspace_id="workspace-789",
@@ -158,6 +161,7 @@ class TestUsageTrackingContextDataclass:
             usage_source="external",
         )
 
+        assert context.provider == "openai"
         assert context.session_id == "session-456"
         assert context.workspace_id == "workspace-789"
         assert context.agent_id == "agent-abc"
@@ -176,13 +180,13 @@ class TestLLMProviderInitialization:
         assert provider._openai_client is None
         assert provider._ollama_client is None
 
-    def test_provider_property(self):
-        """Test provider property returns configured provider."""
-        with patch("src.providers.llm.settings") as mock_settings:
-            mock_settings.LLM_PROVIDER = "anthropic"
-            provider = LLMProvider()
+    def test_clients_not_initialized(self):
+        """Test that clients are not initialized until accessed."""
+        provider = LLMProvider()
 
-            assert provider.provider == "anthropic"
+        # No global provider - each request specifies model_provider
+        assert provider._anthropic_client is None
+        assert provider._openrouter_client is None
 
 
 class TestLLMProviderClientCreation:
@@ -426,6 +430,7 @@ class TestUsageTrackingContextDefaults:
         context = UsageTrackingContext(
             user_id="test-user",
             model="test-model",
+            provider="anthropic",
         )
         assert context.usage == {}
 
@@ -434,6 +439,7 @@ class TestUsageTrackingContextDefaults:
         context = UsageTrackingContext(
             user_id="test-user",
             model="test-model",
+            provider="anthropic",
         )
         assert context.usage_source == "included"
 
@@ -442,6 +448,7 @@ class TestUsageTrackingContextDefaults:
         context = UsageTrackingContext(
             user_id="test-user",
             model="test-model",
+            provider="anthropic",
         )
         assert context.session_id is None
         assert context.workspace_id is None
@@ -540,23 +547,22 @@ class TestCompleteMethod:
         """Create test provider."""
         return LLMProvider()
 
-    async def test_complete_unknown_provider_raises(self, provider: LLMProvider):
-        """Test that unknown provider raises ValueError."""
-        provider.provider = "unknown"
+    async def test_complete_missing_provider_raises(self, provider: LLMProvider):
+        """Test that missing model_provider raises ValueError."""
         request = CompletionRequest(
             model="test",
             messages=[{"role": "user", "content": "hello"}],
         )
 
-        with pytest.raises(ValueError, match="Unknown provider"):
+        with pytest.raises(ValueError, match="does not have a configured provider"):
             await provider.complete(request)
 
     async def test_complete_dispatches_to_openrouter(self, provider: LLMProvider):
         """Test completion dispatches to OpenRouter."""
-        provider.provider = "openrouter"
         request = CompletionRequest(
             model="claude-3-5-sonnet",
             messages=[{"role": "user", "content": "hello"}],
+            model_provider="openrouter",
         )
 
         with patch.object(provider, "_complete_openrouter", new_callable=AsyncMock) as mock:
@@ -571,11 +577,11 @@ class TestCompleteMethod:
 
     async def test_complete_tracks_usage_with_user_id(self, provider: LLMProvider):
         """Test that usage is tracked when user_id provided."""
-        provider.provider = "anthropic"
         request = CompletionRequest(
             model="claude-3-5-sonnet",
             messages=[{"role": "user", "content": "hello"}],
             user_id="user-123",
+            model_provider="anthropic",
         )
 
         with patch.object(provider, "_complete_anthropic", new_callable=AsyncMock) as mock_complete, \
@@ -898,28 +904,23 @@ class TestCompleteStreamMethod:
         """Create test provider."""
         return LLMProvider()
 
-    async def test_complete_stream_unknown_provider(self, provider: LLMProvider):
-        """Test streaming with unknown provider yields error."""
-        provider.provider = "unknown"
+    async def test_complete_stream_missing_provider(self, provider: LLMProvider):
+        """Test streaming with missing model_provider raises ValueError."""
         request = CompletionRequest(
             model="test",
             messages=[{"role": "user", "content": "hello"}],
         )
 
-        events = []
-        async for event in provider.complete_stream(request):
-            events.append(event)
-
-        assert len(events) == 1
-        assert events[0].type == "error"
-        assert "Unknown provider" in events[0].error
+        with pytest.raises(ValueError, match="does not have a configured provider"):
+            async for _ in provider.complete_stream(request):
+                pass
 
     async def test_complete_stream_exception_yields_error(self, provider: LLMProvider):
         """Test streaming exception yields error event."""
-        provider.provider = "anthropic"
         request = CompletionRequest(
             model="claude",
             messages=[{"role": "user", "content": "hello"}],
+            model_provider="anthropic",
         )
 
         async def failing_stream(*args, **kwargs):
@@ -936,10 +937,10 @@ class TestCompleteStreamMethod:
 
     async def test_complete_stream_dispatches_to_anthropic(self, provider: LLMProvider):
         """Test streaming dispatches to Anthropic."""
-        provider.provider = "anthropic"
         request = CompletionRequest(
             model="claude-3-5-sonnet",
             messages=[{"role": "user", "content": "hello"}],
+            model_provider="anthropic",
         )
 
         async def mock_stream(*args, **kwargs):
@@ -957,10 +958,10 @@ class TestCompleteStreamMethod:
 
     async def test_complete_stream_dispatches_to_openai(self, provider: LLMProvider):
         """Test streaming dispatches to OpenAI."""
-        provider.provider = "openai"
         request = CompletionRequest(
             model="gpt-4",
             messages=[{"role": "user", "content": "hello"}],
+            model_provider="openai",
         )
 
         async def mock_stream(*args, **kwargs):
@@ -976,10 +977,10 @@ class TestCompleteStreamMethod:
 
     async def test_complete_stream_dispatches_to_openrouter(self, provider: LLMProvider):
         """Test streaming dispatches to OpenRouter."""
-        provider.provider = "openrouter"
         request = CompletionRequest(
             model="claude",
             messages=[{"role": "user", "content": "hello"}],
+            model_provider="openrouter",
         )
 
         async def mock_stream(*args, **kwargs):
@@ -995,10 +996,10 @@ class TestCompleteStreamMethod:
 
     async def test_complete_stream_dispatches_to_ollama(self, provider: LLMProvider):
         """Test streaming dispatches to Ollama."""
-        provider.provider = "ollama"
         request = CompletionRequest(
             model="llama2",
             messages=[{"role": "user", "content": "hello"}],
+            model_provider="ollama",
         )
 
         async def mock_stream(*args, **kwargs):
@@ -1026,6 +1027,7 @@ class TestTrackUsageMethod:
         context = UsageTrackingContext(
             user_id="user-123",
             model="claude-3-5-sonnet",
+            provider="anthropic",
             usage={"input_tokens": 10, "output_tokens": 5},
         )
 
@@ -1038,6 +1040,7 @@ class TestTrackUsageMethod:
         context = UsageTrackingContext(
             user_id="user-123",
             model="claude-3-5-sonnet",
+            provider="anthropic",
             usage={"input_tokens": 10, "output_tokens": 5},
             session_id="session-1",
         )
@@ -1054,6 +1057,7 @@ class TestTrackUsageMethod:
         context = UsageTrackingContext(
             user_id="user-123",
             model="claude-3-5-sonnet",
+            provider="anthropic",
             usage={"input_tokens": 10, "output_tokens": 5},
         )
 

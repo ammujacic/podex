@@ -500,7 +500,7 @@ run:
 	NEXT_PUBLIC_API_URL=http://$$HOST_IP:3001 \
 	NEXT_PUBLIC_WS_URL=ws://$$HOST_IP:3001 \
 	CORS_ORIGINS='["http://localhost:3000","http://'$$HOST_IP':3000"]' \
-	LLM_PROVIDER=ollama docker-compose up -d
+	docker-compose up -d
 	@echo ""
 	@echo "$(CYAN)Waiting for workspace servers to be ready...$(NC)"
 	@# Wait for both DinD containers to be healthy (up to 60 seconds)

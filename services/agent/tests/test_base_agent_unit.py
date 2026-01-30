@@ -1542,9 +1542,8 @@ class TestAgentUsageTracking:
 
     @pytest.fixture
     def mock_llm_provider(self) -> MagicMock:
-        """Create mock LLM provider with provider attribute."""
+        """Create mock LLM provider."""
         mock = MagicMock()
-        mock.provider = "anthropic"
         mock.complete = AsyncMock(return_value={
             "content": "Response",
             "tool_calls": [],
@@ -1561,6 +1560,7 @@ class TestAgentUsageTracking:
             model="claude-3-5-sonnet",
             llm_provider=mock_llm_provider,
             user_id="user-123",
+            model_provider="anthropic",
         )
         agent = ConcreteTestAgent(config)
 
@@ -1586,13 +1586,12 @@ class TestAgentUsageTracking:
 
     async def test_tracks_usage_for_local_provider(self, mock_llm_provider: MagicMock):
         """Test usage tracking for local providers (ollama, lmstudio)."""
-        mock_llm_provider.provider = "ollama"
-
         config = AgentConfig(
             agent_id="test-agent",
             model="llama3",
             llm_provider=mock_llm_provider,
             user_id="user-123",
+            model_provider="ollama",
         )
         agent = ConcreteTestAgent(config)
 
@@ -1617,13 +1616,12 @@ class TestAgentUsageTracking:
 
     async def test_tracks_usage_for_vertex_provider(self, mock_llm_provider: MagicMock):
         """Test usage tracking for vertex provider (included)."""
-        mock_llm_provider.provider = "vertex"
-
         config = AgentConfig(
             agent_id="test-agent",
             model="gemini-pro",
             llm_provider=mock_llm_provider,
             user_id="user-123",
+            model_provider="vertex",
         )
         agent = ConcreteTestAgent(config)
 

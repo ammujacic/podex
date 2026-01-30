@@ -14,6 +14,7 @@ from src.cache import cache_delete, cache_get, cache_set, user_config_key
 from src.config import settings
 from src.database.connection import get_db
 from src.database.models import User, UserConfig
+from src.database.models.platform import LLMProvider as LLMProviderModel
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
 logger = structlog.get_logger()
@@ -368,10 +369,16 @@ async def reset_all_tours(
 # LLM API Keys Management
 # ============================================================================
 
-# Valid provider names for API keys
-# Cloud providers: openai, anthropic, google
-# Local providers: ollama, lmstudio
-VALID_LLM_PROVIDERS = {"openai", "anthropic", "google", "ollama", "lmstudio"}
+
+async def _get_valid_llm_providers(db: AsyncSession) -> set[str]:
+    """Get valid LLM provider slugs from the database.
+
+    Returns enabled provider slugs that can be used for API key configuration.
+    """
+    result = await db.execute(
+        select(LLMProviderModel.slug).where(LLMProviderModel.is_enabled.is_(True))
+    )
+    return {row[0] for row in result.fetchall()}
 
 
 class LLMApiKeysResponse(BaseModel):
@@ -435,12 +442,13 @@ async def set_llm_api_key(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    # Validate provider
+    # Validate provider against database
     provider_lower = data.provider.lower()
-    if provider_lower not in VALID_LLM_PROVIDERS:
+    valid_providers = await _get_valid_llm_providers(db)
+    if provider_lower not in valid_providers:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid provider. Must be one of: {', '.join(sorted(VALID_LLM_PROVIDERS))}",
+            detail=f"Invalid provider. Must be one of: {', '.join(sorted(valid_providers))}",
         )
 
     # SECURITY: Validate API key format using provider-specific patterns

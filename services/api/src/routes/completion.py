@@ -25,6 +25,13 @@ router = APIRouter()
 # Minimum number of lines needed to strip markdown code block (opening, content, closing)
 MIN_CODE_BLOCK_LINES = 2
 
+# Providers with implementation in this module (client code exists for these).
+# Note: This is a code-level constraint, not configuration. Adding support for
+# a new provider requires implementing the client code in this file.
+# The database LLMProvider table stores metadata about all providers, but this
+# list defines what this service can actually execute.
+IMPLEMENTED_COMPLETION_PROVIDERS = ("ollama", "lmstudio", "anthropic", "openrouter")
+
 
 async def _record_editor_usage(
     db: AsyncSession,
@@ -280,11 +287,11 @@ class CompletionProvider:
             provider_prefix = parts[0].lower()
             model_name = parts[1] if len(parts) > 1 else None
 
-            valid_providers = ("ollama", "lmstudio", "anthropic", "openrouter")
-            if provider_prefix in valid_providers:
+            if provider_prefix in IMPLEMENTED_COMPLETION_PROVIDERS:
                 return provider_prefix, model_name
 
-            msg = f"Unknown provider '{provider_prefix}'. Valid: {', '.join(valid_providers)}"
+            valid = ", ".join(IMPLEMENTED_COMPLETION_PROVIDERS)
+            msg = f"Unknown provider '{provider_prefix}'. Valid: {valid}"
             raise ValueError(msg)
 
         # No prefix - require explicit provider

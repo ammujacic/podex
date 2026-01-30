@@ -175,11 +175,6 @@ class TestServiceURLs:
 class TestLLMProviderSettings:
     """Test LLM provider settings."""
 
-    def test_llm_provider(self):
-        """Test LLM provider setting."""
-        from src.config import settings
-        assert settings.LLM_PROVIDER is not None
-
     def test_ollama_url(self):
         """Test Ollama URL setting."""
         from src.config import settings
