@@ -73,8 +73,8 @@ COPY services/api/migrations ./migrations
 RUN adduser --disabled-password --gecos "" appuser
 USER appuser
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+# Health check (start-period allows time for migrations and app initialization)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:3001/health || exit 1
 
 # Run migrations and start with gunicorn
