@@ -54,8 +54,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
         # Permissions Policy (formerly Feature-Policy)
         # Restrict access to sensitive browser features
+        # Note: browsing-topics is part of Chrome's Privacy Sandbox Topics API
         response.headers["Permissions-Policy"] = (
             "accelerometer=(), "
+            "browsing-topics=(), "
             "camera=(), "
             "geolocation=(), "
             "gyroscope=(), "

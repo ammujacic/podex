@@ -358,7 +358,49 @@ export function HeroSection() {
       {/* Subtle radial glow */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1000px] h-[1000px] bg-purple-500/5 rounded-full blur-[150px] pointer-events-none" />
 
-      {/* Floating UI elements - only rendered on desktop to avoid mobile performance issues */}
+      {/* Mobile floating elements - scattered to fill vertical gaps */}
+      {!isDesktop && (
+        <>
+          {/* Top row */}
+          <FloatingCodeBlock
+            className="top-[10%] left-[2%] scale-[0.65] origin-top-left"
+            delay={0}
+          />
+          <FloatingTerminal
+            className="top-[8%] right-[0%] scale-[0.65] origin-top-right"
+            delay={0.5}
+          />
+
+          {/* Upper sides */}
+          <FloatingAgentCard className="top-[18%] left-[1%] scale-[0.6] origin-left" delay={0.3} />
+          <FloatingPresence
+            className="top-[20%] right-[3%] scale-[0.65] origin-top-right"
+            delay={0.8}
+          />
+
+          {/* Upper center gap - between top elements and logo */}
+          <FloatingFileTree
+            className="top-[16%] left-1/2 -translate-x-1/2 scale-[0.6]"
+            delay={0.9}
+          />
+
+          {/* Lower center gap - between mobile and laptop */}
+          <FloatingChat className="bottom-[12%] right-[22%] scale-[0.6]" delay={0.7} />
+
+          {/* Bottom row */}
+          <FloatingCloud
+            className="bottom-[12%] left-[2%] scale-[0.65] origin-bottom-left"
+            delay={1.0}
+          />
+          <FloatingMobile className="bottom-[4%] left-[28%] scale-[0.65]" delay={0.6} />
+          <FloatingLaptop
+            className="bottom-[8%] right-[0%] scale-[0.65] origin-bottom-right"
+            delay={1.2}
+          />
+        </>
+      )}
+
+      {/* Desktop floating elements - full set */}
       {isDesktop && (
         <>
           {/* Top row */}
@@ -382,7 +424,7 @@ export function HeroSection() {
           <FloatingWorkflow className="bottom-[8%] left-[15%]" delay={4.5} />
           <FloatingMobile className="bottom-[6%] right-[38%]" delay={5} />
 
-          {/* Additional elements on larger screens - using CSS for lg/xl breakpoints */}
+          {/* Additional elements on larger screens */}
           <FloatingAgentCard className="hidden lg:block top-[12%] left-[22%]" delay={5.5} />
           <FloatingFileTree className="hidden lg:block bottom-[8%] right-[15%]" delay={6} />
           <FloatingChat className="hidden xl:block top-[28%] right-[20%]" delay={6.5} />
@@ -442,8 +484,8 @@ export function HeroSection() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.5, duration: 0.8 }}
         >
-          AI-powered agents, mobile-first development, and code from anywhere. Invite only.... For
-          now!
+          AI-powered agents, mobile-first development, and code from anywhere. Invitation only...
+          for now!
         </motion.p>
       </div>
     </section>

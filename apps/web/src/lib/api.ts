@@ -322,14 +322,23 @@ export async function initializeAuth(): Promise<void> {
   }
 
   const tokens = store.tokens;
-  if (tokens?.expiresAt) {
+
+  // If no tokens exist, user is not authenticated - skip API calls
+  // This prevents unnecessary 401 errors for unauthenticated users
+  if (!tokens?.accessToken) {
+    store.setInitialized(true);
+    return;
+  }
+
+  // Check if token is expiring soon and refresh if needed
+  if (tokens.expiresAt) {
     const isExpiringSoon = tokens.expiresAt - Date.now() < 5 * 60 * 1000;
     if (isExpiringSoon) {
       await refreshAuth();
     }
   }
 
-  // Fetch current user to validate cookie/token-based session
+  // Fetch current user to validate token-based session
   try {
     const user = await api.getCurrentUser();
     store.setUser(user);
