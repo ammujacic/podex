@@ -12,13 +12,14 @@ from typing import Annotated, Any, ClassVar
 
 import docker
 import structlog
+from docker import DockerClient
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, status
 
-from src.deps import get_compute_manager, verify_internal_api_key
+from src.deps import OrchestratorSingleton, get_compute_manager, verify_internal_api_key
 from src.managers.base import (
     ComputeManager,  # noqa: TC001 - FastAPI needs this at runtime for Depends()
 )
-from src.models.workspace import WorkspaceStatus
+from src.models.workspace import WorkspaceInfo, WorkspaceStatus
 from src.validation import ValidationError, validate_workspace_id
 
 logger = structlog.get_logger()
@@ -163,13 +164,18 @@ class TmuxTerminalSession:
     }
 
     def __init__(
-        self, container_id: str, workspace_id: str, session_name: str, shell: str = "bash"
+        self,
+        container_id: str,
+        workspace_id: str,
+        session_name: str,
+        docker_client: DockerClient,
+        shell: str = "bash",
     ) -> None:
         self.container_id = container_id
         self.workspace_id = workspace_id
         self.session_name = session_name  # Unique name for the tmux session
         self.shell = shell if shell in self.SHELL_PATHS else "bash"
-        self.client = docker.from_env()
+        self.client = docker_client
         self.exec_id: str | None = None
         self.socket: Any = None
         self.websocket: WebSocket | None = None  # Reference to client WebSocket for shutdown
@@ -575,8 +581,8 @@ async def _validate_workspace_for_terminal(
     compute: ComputeManager,
     websocket: WebSocket,
     workspace_id: str,
-) -> tuple[bool, str | None]:
-    """Validate workspace exists and is running. Returns (valid, container_id)."""
+) -> tuple[bool, WorkspaceInfo | None]:
+    """Validate workspace exists and is running. Returns (valid, workspace_info)."""
     # Validate workspace_id to prevent path traversal and injection attacks
     try:
         validate_workspace_id(workspace_id)
@@ -584,68 +590,42 @@ async def _validate_workspace_for_terminal(
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid workspace ID")
         return False, None
 
-    # First try to get workspace from compute manager's registry
+    # Get workspace from compute manager's registry
     workspace = await compute.get_workspace(workspace_id)
-    if workspace:
-        if workspace.status != WorkspaceStatus.RUNNING:
-            logger.warning(
-                "Workspace not running",
-                workspace_id=workspace_id,
-                status=workspace.status,
-            )
-            await websocket.close(
-                code=status.WS_1008_POLICY_VIOLATION,
-                reason="Workspace is not running",
-            )
-            return False, None
-
-        if not workspace.container_id:
-            logger.warning("Workspace has no container", workspace_id=workspace_id)
-            await websocket.close(
-                code=status.WS_1008_POLICY_VIOLATION,
-                reason="Workspace has no container",
-            )
-            return False, None
-
-        return True, workspace.container_id
-
-    # Workspace not in registry - try to find container by name directly
-    try:
-        client = docker.from_env()
-        container_name = f"podex-workspace-{workspace_id}"
-        container = client.containers.get(container_name)
-
-        if container.status != "running":
-            logger.warning(
-                "Container not running",
-                workspace_id=workspace_id,
-                container_status=container.status,
-            )
-            await websocket.close(
-                code=status.WS_1008_POLICY_VIOLATION,
-                reason="Workspace container is not running",
-            )
-            return False, None
-
-        logger.info(
-            "Found container directly (not in registry)",
-            workspace_id=workspace_id,
-            container_id=container.id[:12] if container.id else None,
-        )
-        return True, container.id
-
-    except docker.errors.NotFound:
-        logger.warning("Workspace container not found", workspace_id=workspace_id)
+    if not workspace:
+        logger.warning("Workspace not found in registry", workspace_id=workspace_id)
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Workspace not found")
         return False, None
-    except Exception as e:
-        logger.exception(
-            "Error finding workspace container",
+
+    if workspace.status != WorkspaceStatus.RUNNING:
+        logger.warning(
+            "Workspace not running",
             workspace_id=workspace_id,
-            error=str(e),
+            status=workspace.status,
         )
-        await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason="Failed to find workspace")
+        await websocket.close(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Workspace is not running",
+        )
         return False, None
+
+    if not workspace.container_id:
+        logger.warning("Workspace has no container", workspace_id=workspace_id)
+        await websocket.close(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Workspace has no container",
+        )
+        return False, None
+
+    if not workspace.server_id:
+        logger.warning("Workspace has no server_id", workspace_id=workspace_id)
+        await websocket.close(
+            code=status.WS_1011_INTERNAL_ERROR,
+            reason="Workspace server not available",
+        )
+        return False, None
+
+    return True, workspace
 
 
 @router.websocket("/{workspace_id}")
@@ -674,9 +654,26 @@ async def terminal_websocket(
     """
     await websocket.accept()
 
-    valid, container_id = await _validate_workspace_for_terminal(compute, websocket, workspace_id)
-    if not valid or not container_id:
+    valid, workspace = await _validate_workspace_for_terminal(compute, websocket, workspace_id)
+    if not valid or not workspace:
         return
+
+    # Get Docker client for the workspace's server
+    docker_manager = OrchestratorSingleton.get_docker_manager()
+    docker_client = docker_manager.get_client(workspace.server_id)  # type: ignore[arg-type]
+    if not docker_client:
+        logger.error(
+            "No Docker client available for server",
+            workspace_id=workspace_id,
+            server_id=workspace.server_id,
+        )
+        await websocket.close(
+            code=status.WS_1011_INTERNAL_ERROR,
+            reason="Workspace server not available",
+        )
+        return
+
+    container_id = workspace.container_id  # Already validated in _validate_workspace_for_terminal
 
     # Use session_id if provided, otherwise use workspace_id
     # This allows multiple independent terminal sessions per workspace
@@ -685,7 +682,8 @@ async def terminal_websocket(
     logger.info(
         "Terminal WebSocket connected",
         workspace_id=workspace_id,
-        container_id=container_id[:12],
+        container_id=container_id[:12] if container_id else "unknown",
+        server_id=workspace.server_id,
         session_id=session_id,
         tmux_session=tmux_session_name,
         shell=shell,
@@ -700,7 +698,13 @@ async def terminal_websocket(
         return
 
     # Create/attach to tmux session with specified shell
-    session = TmuxTerminalSession(container_id, workspace_id, tmux_session_name, shell=shell)
+    session = TmuxTerminalSession(
+        container_id,  # type: ignore[arg-type]
+        workspace_id,
+        tmux_session_name,
+        docker_client=docker_client,
+        shell=shell,
+    )
     if not await session.start():
         await websocket.close(
             code=status.WS_1011_INTERNAL_ERROR,
@@ -808,25 +812,27 @@ async def kill_terminal_session(
     Called when a terminal agent is removed/stopped.
     """
     workspace = await compute.get_workspace(workspace_id)
-    if not workspace or not workspace.container_id:
-        # Try to find container directly
-        try:
-            client = docker.from_env()
-            container_name = f"podex-workspace-{workspace_id}"
-            container = client.containers.get(container_name)
-            container_id = container.id
-        except Exception:
-            return {"status": "not_found", "message": "Workspace not found"}
-    else:
-        container_id = workspace.container_id
+    if not workspace or not workspace.container_id or not workspace.server_id:
+        return {"status": "not_found", "message": "Workspace not found"}
 
-    if not container_id:
-        return {"status": "not_found", "message": "Workspace container not found"}
+    # Get Docker client for the workspace's server
+    docker_manager = OrchestratorSingleton.get_docker_manager()
+    docker_client = docker_manager.get_client(workspace.server_id)
+    if not docker_client:
+        logger.error(
+            "No Docker client available for server",
+            workspace_id=workspace_id,
+            server_id=workspace.server_id,
+        )
+        return {"status": "error", "message": "Workspace server not available"}
 
+    container_id = workspace.container_id
     tmux_session_name = f"podex-{session_id}"
 
     # Create a temporary session object to kill the tmux session
-    session = TmuxTerminalSession(container_id, workspace_id, tmux_session_name)
+    session = TmuxTerminalSession(
+        container_id, workspace_id, tmux_session_name, docker_client=docker_client
+    )
     killed = await session.kill_session()
 
     if killed:

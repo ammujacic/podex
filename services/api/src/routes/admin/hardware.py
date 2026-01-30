@@ -51,6 +51,9 @@ class CreateHardwareSpecRequest(BaseModel):
     # Storage
     storage_gb: int = Field(default=20, ge=5, le=1000)
 
+    # Network bandwidth (Mbps)
+    bandwidth_mbps: int | None = Field(default=None, ge=0, le=10000)
+
     # Pricing
     hourly_rate_cents: int = Field(ge=0)
 
@@ -72,6 +75,7 @@ class UpdateHardwareSpecRequest(BaseModel):
     is_gpu: bool | None = None
     requires_gke: bool | None = None
     storage_gb: int | None = Field(default=None, ge=5, le=1000)
+    bandwidth_mbps: int | None = Field(default=None, ge=0, le=10000)
     hourly_rate_cents: int | None = Field(default=None, ge=0)
     is_available: bool | None = None
     requires_subscription: str | None = None
@@ -93,6 +97,7 @@ class AdminHardwareSpecResponse(BaseModel):
     is_gpu: bool
     requires_gke: bool
     storage_gb: int
+    bandwidth_mbps: int | None
     hourly_rate_cents: int
     is_available: bool
     requires_subscription: str | None
@@ -152,6 +157,7 @@ async def list_hardware_specs(
                 is_gpu=spec.is_gpu,
                 requires_gke=spec.requires_gke,
                 storage_gb=spec.storage_gb,
+                bandwidth_mbps=spec.bandwidth_mbps,
                 hourly_rate_cents=spec.hourly_rate_cents,
                 is_available=spec.is_available,
                 requires_subscription=spec.requires_subscription,
@@ -195,6 +201,7 @@ async def create_hardware_spec(
         is_gpu=data.is_gpu,
         requires_gke=data.requires_gke,
         storage_gb=data.storage_gb,
+        bandwidth_mbps=data.bandwidth_mbps,
         hourly_rate_cents=data.hourly_rate_cents,
         is_available=data.is_available,
         requires_subscription=data.requires_subscription,
@@ -220,6 +227,7 @@ async def create_hardware_spec(
         is_gpu=spec.is_gpu,
         requires_gke=spec.requires_gke,
         storage_gb=spec.storage_gb,
+        bandwidth_mbps=spec.bandwidth_mbps,
         hourly_rate_cents=spec.hourly_rate_cents,
         is_available=spec.is_available,
         requires_subscription=spec.requires_subscription,
@@ -265,6 +273,7 @@ async def get_hardware_spec(
         is_gpu=spec.is_gpu,
         requires_gke=spec.requires_gke,
         storage_gb=spec.storage_gb,
+        bandwidth_mbps=spec.bandwidth_mbps,
         hourly_rate_cents=spec.hourly_rate_cents,
         is_available=spec.is_available,
         requires_subscription=spec.requires_subscription,

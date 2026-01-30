@@ -7,13 +7,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
 from src.database.models import Memory
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
 logger = structlog.get_logger()
 
@@ -96,8 +97,10 @@ class CreateMemoryRequest(BaseModel):
 
 
 @router.get("/memories", response_model=MemoryListResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_memories(
     request: Request,
+    response: Response,
     db: DbSession,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -165,8 +168,10 @@ async def list_memories(
 
 
 @router.post("/memories", response_model=MemoryResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def create_memory(
     request: Request,
+    response: Response,
     db: DbSession,
     body: CreateMemoryRequest,
 ) -> MemoryResponse:
@@ -218,8 +223,10 @@ async def create_memory(
 
 
 @router.get("/memories/stats", response_model=MemoryStatsResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_memory_stats(
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> MemoryStatsResponse:
     """Get memory statistics for the user."""
@@ -284,9 +291,11 @@ async def get_memory_stats(
 
 
 @router.get("/memories/{memory_id}", response_model=MemoryResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_memory(
     memory_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> MemoryResponse:
     """Get a specific memory."""
@@ -315,9 +324,11 @@ async def get_memory(
 
 
 @router.delete("/memories/{memory_id}")
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def delete_memory(
     memory_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> dict[str, str]:
     """Delete a specific memory."""
@@ -340,8 +351,10 @@ async def delete_memory(
 
 
 @router.post("/memories/bulk-delete")
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def bulk_delete_memories(
     request: Request,
+    response: Response,
     db: DbSession,
     body: BulkDeleteRequest,
 ) -> dict[str, int]:
@@ -379,8 +392,10 @@ async def bulk_delete_memories(
 
 
 @router.delete("/memories")
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def clear_all_memories(
     request: Request,
+    response: Response,
     db: DbSession,
     confirm: bool = Query(default=False),
 ) -> dict[str, int]:

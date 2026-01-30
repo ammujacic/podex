@@ -6,12 +6,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from src.database.models import Agent
 from src.database.models import Session as SessionModel
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 from src.routes.dependencies import DbSession, get_current_user_id
 
 logger = structlog.get_logger()
@@ -112,9 +113,11 @@ _subagent_by_id: dict[str, Subagent] = {}
 
 
 @router.post("/agents/{agent_id}/subagents", response_model=SubagentResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def spawn_subagent(
     agent_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
     body: SpawnSubagentRequest,
 ) -> SubagentResponse:
@@ -206,9 +209,11 @@ async def spawn_subagent(
 
 
 @router.get("/agents/{agent_id}/subagents", response_model=list[SubagentResponse])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_subagents(
     agent_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
     status: str | None = None,
 ) -> list[SubagentResponse]:
@@ -257,9 +262,11 @@ async def list_subagents(
 
 
 @router.get("/subagents/{subagent_id}", response_model=SubagentResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_subagent(
     subagent_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> SubagentResponse:
     """Get a specific subagent."""
@@ -296,9 +303,11 @@ async def get_subagent(
 
 
 @router.get("/subagents/{subagent_id}/summary", response_model=SubagentSummaryResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_subagent_summary(
     subagent_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> SubagentSummaryResponse:
     """Get the summary to inject into parent context."""
@@ -335,9 +344,11 @@ async def get_subagent_summary(
 
 
 @router.post("/subagents/{subagent_id}/cancel")
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def cancel_subagent(
     subagent_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> dict[str, str]:
     """Cancel a running subagent."""

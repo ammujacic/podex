@@ -2306,20 +2306,37 @@ async def _send_message_impl(
     else:
         logger.debug("No user_id available, skipping OAuth token loading")
 
-    # Look up the model's registered provider from the database
+    # Resolve model provider: check for local provider prefix first, then database
     model_provider: str | None = None
-    model_result = await deps.common.db.execute(
-        select(LLMModel.provider).where(LLMModel.model_id == agent.model)
-    )
-    model_row = model_result.scalar_one_or_none()
-    if model_row:
-        model_provider = model_row
-        logger.info(
-            "Resolved model provider from database",
-            model=agent.model,
-            provider=model_provider,
-            available_llm_keys=list(llm_api_keys.keys()) if llm_api_keys else [],
+    agent_model_for_llm = agent.model  # Model ID to pass to LLM (may strip prefix)
+
+    # Check if model ID has a local provider prefix (e.g., "ollama/qwen2.5-coder:14b")
+    if "/" in agent.model:
+        prefix, local_model_id = agent.model.split("/", 1)
+        if prefix in {"ollama", "lmstudio"}:
+            model_provider = prefix
+            agent_model_for_llm = local_model_id  # Use just the model name for LLM
+            logger.info(
+                "Using local provider from model ID prefix",
+                model=agent.model,
+                provider=model_provider,
+                local_model_id=local_model_id,
+            )
+
+    # If not a local model, look up provider from database
+    if not model_provider:
+        model_result = await deps.common.db.execute(
+            select(LLMModel.provider).where(LLMModel.model_id == agent.model)
         )
+        model_row = model_result.scalar_one_or_none()
+        if model_row:
+            model_provider = model_row
+            logger.info(
+                "Resolved model provider from database",
+                model=agent.model,
+                provider=model_provider,
+                available_llm_keys=list(llm_api_keys.keys()) if llm_api_keys else [],
+            )
 
     # Schedule background task to process the message and generate agent response
     msg_context = AgentMessageContext(
@@ -2327,7 +2344,7 @@ async def _send_message_impl(
         agent_id=params.agent_id,
         agent_name=agent.name,
         agent_role=agent.role,
-        agent_model=agent.model,
+        agent_model=agent_model_for_llm,  # Use stripped model name for LLM
         user_message=params.data.content,
         conversation_session_id=conversation_session_id,
         agent_config=agent.config,

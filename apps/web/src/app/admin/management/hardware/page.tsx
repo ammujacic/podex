@@ -1,9 +1,258 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Plus, Edit2, Cpu, MemoryStick, HardDrive, Zap, Check, X, Wifi } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAdminStore, type AdminHardwareSpec } from '@/stores/admin';
+
+// ============================================================================
+// Edit Hardware Modal
+// ============================================================================
+
+interface EditHardwareModalProps {
+  spec: AdminHardwareSpec;
+  onClose: () => void;
+  onSave: (specId: string, data: Partial<AdminHardwareSpec>) => Promise<void>;
+}
+
+function EditHardwareModal({ spec, onClose, onSave }: EditHardwareModalProps) {
+  const [formData, setFormData] = useState({
+    display_name: spec.display_name,
+    description: spec.description || '',
+    tier: spec.tier,
+    vcpu: spec.vcpu,
+    memory_mb: spec.memory_mb,
+    storage_gb: spec.storage_gb,
+    bandwidth_mbps: spec.bandwidth_mbps || 0,
+    hourly_rate_cents: spec.hourly_rate_cents,
+    requires_subscription: spec.requires_subscription || '',
+    gpu_type: spec.gpu_type || '',
+    gpu_memory_gb: spec.gpu_memory_gb || 0,
+    gpu_count: spec.gpu_count || 0,
+  });
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await onSave(spec.id, {
+        display_name: formData.display_name,
+        description: formData.description || null,
+        tier: formData.tier,
+        vcpu: formData.vcpu,
+        memory_mb: formData.memory_mb,
+        storage_gb: formData.storage_gb,
+        bandwidth_mbps: formData.bandwidth_mbps || null,
+        hourly_rate_cents: formData.hourly_rate_cents,
+        requires_subscription: formData.requires_subscription || null,
+        gpu_type: formData.gpu_type || null,
+        gpu_memory_gb: formData.gpu_memory_gb || null,
+        gpu_count: formData.gpu_count || 0,
+      });
+      onClose();
+    } catch {
+      // Error handled by store
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-surface border border-border-subtle rounded-xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <h2 className="text-xl font-semibold text-text-primary mb-6">Edit Hardware Spec</h2>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Basic Info */}
+          <div>
+            <label className="block text-sm text-text-secondary mb-1">Display Name</label>
+            <input
+              type="text"
+              value={formData.display_name}
+              onChange={(e) => setFormData({ ...formData, display_name: e.target.value })}
+              className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm text-text-secondary mb-1">Description</label>
+            <textarea
+              value={formData.description}
+              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+              className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+              rows={2}
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm text-text-secondary mb-1">Tier</label>
+            <input
+              type="text"
+              value={formData.tier}
+              onChange={(e) => setFormData({ ...formData, tier: e.target.value })}
+              className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+              required
+            />
+          </div>
+
+          {/* Compute Resources */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-text-secondary mb-1">vCPU</label>
+              <input
+                type="number"
+                value={formData.vcpu}
+                onChange={(e) => setFormData({ ...formData, vcpu: parseInt(e.target.value) || 0 })}
+                className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                min={1}
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-text-secondary mb-1">Memory (MB)</label>
+              <input
+                type="number"
+                value={formData.memory_mb}
+                onChange={(e) =>
+                  setFormData({ ...formData, memory_mb: parseInt(e.target.value) || 0 })
+                }
+                className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                min={512}
+                step={512}
+                required
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-text-secondary mb-1">Storage (GB)</label>
+              <input
+                type="number"
+                value={formData.storage_gb}
+                onChange={(e) =>
+                  setFormData({ ...formData, storage_gb: parseInt(e.target.value) || 0 })
+                }
+                className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                min={1}
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-text-secondary mb-1">Bandwidth (Mbps)</label>
+              <input
+                type="number"
+                value={formData.bandwidth_mbps}
+                onChange={(e) =>
+                  setFormData({ ...formData, bandwidth_mbps: parseInt(e.target.value) || 0 })
+                }
+                className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                min={0}
+              />
+            </div>
+          </div>
+
+          {/* GPU (optional) */}
+          <div className="border-t border-border-subtle pt-4">
+            <h3 className="text-sm font-medium text-text-secondary mb-3">GPU (Optional)</h3>
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">GPU Type</label>
+                <input
+                  type="text"
+                  value={formData.gpu_type}
+                  onChange={(e) => setFormData({ ...formData, gpu_type: e.target.value })}
+                  className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                  placeholder="e.g., A100"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">GPU Memory (GB)</label>
+                <input
+                  type="number"
+                  value={formData.gpu_memory_gb}
+                  onChange={(e) =>
+                    setFormData({ ...formData, gpu_memory_gb: parseInt(e.target.value) || 0 })
+                  }
+                  className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                  min={0}
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">GPU Count</label>
+                <input
+                  type="number"
+                  value={formData.gpu_count}
+                  onChange={(e) =>
+                    setFormData({ ...formData, gpu_count: parseInt(e.target.value) || 0 })
+                  }
+                  className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                  min={0}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Pricing */}
+          <div className="border-t border-border-subtle pt-4">
+            <h3 className="text-sm font-medium text-text-secondary mb-3">Pricing</h3>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">
+                  Hourly Rate (cents)
+                </label>
+                <input
+                  type="number"
+                  value={formData.hourly_rate_cents}
+                  onChange={(e) =>
+                    setFormData({ ...formData, hourly_rate_cents: parseInt(e.target.value) || 0 })
+                  }
+                  className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                  min={0}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">Requires Plan</label>
+                <select
+                  value={formData.requires_subscription}
+                  onChange={(e) =>
+                    setFormData({ ...formData, requires_subscription: e.target.value })
+                  }
+                  className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                >
+                  <option value="">None</option>
+                  <option value="pro">Pro</option>
+                  <option value="team">Team</option>
+                  <option value="enterprise">Enterprise</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="flex justify-end gap-3 pt-4">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="px-4 py-2 bg-accent-primary text-white rounded-lg hover:bg-accent-primary/90 transition-colors disabled:opacity-50"
+            >
+              {saving ? 'Saving...' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
 
 function formatCurrency(cents: number): string {
   return new Intl.NumberFormat('en-US', {
@@ -88,9 +337,7 @@ function HardwareCard({ spec, onEdit, onToggleAvailable }: HardwareCardProps) {
         <div className="flex items-center gap-3">
           <HardDrive className="h-4 w-4 text-text-muted" />
           <div className="flex-1">
-            <p className="text-sm text-text-secondary">
-              {spec.storage_gb_default} - {spec.storage_gb_max} GB Storage
-            </p>
+            <p className="text-sm text-text-secondary">{spec.storage_gb} GB Storage</p>
           </div>
         </div>
 
@@ -138,6 +385,7 @@ function HardwareCard({ spec, onEdit, onToggleAvailable }: HardwareCardProps) {
 export default function HardwareManagement() {
   const { hardwareSpecs, hardwareLoading, fetchHardwareSpecs, updateHardwareSpec, error } =
     useAdminStore();
+  const [editingSpec, setEditingSpec] = useState<AdminHardwareSpec | null>(null);
 
   useEffect(() => {
     fetchHardwareSpecs();
@@ -145,6 +393,14 @@ export default function HardwareManagement() {
 
   const handleToggleAvailable = async (specId: string, isAvailable: boolean) => {
     await updateHardwareSpec(specId, { is_available: isAvailable });
+  };
+
+  const handleEdit = (spec: AdminHardwareSpec) => {
+    setEditingSpec(spec);
+  };
+
+  const handleSaveEdit = async (specId: string, data: Partial<AdminHardwareSpec>) => {
+    await updateHardwareSpec(specId, data);
   };
 
   // Group specs by type (standard vs GPU)
@@ -196,7 +452,7 @@ export default function HardwareManagement() {
                   <HardwareCard
                     key={spec.id}
                     spec={spec}
-                    onEdit={() => {}}
+                    onEdit={handleEdit}
                     onToggleAvailable={handleToggleAvailable}
                   />
                 ))}
@@ -218,7 +474,7 @@ export default function HardwareManagement() {
                   <HardwareCard
                     key={spec.id}
                     spec={spec}
-                    onEdit={() => {}}
+                    onEdit={handleEdit}
                     onToggleAvailable={handleToggleAvailable}
                   />
                 ))}
@@ -230,6 +486,15 @@ export default function HardwareManagement() {
             </div>
           </div>
         </>
+      )}
+
+      {/* Edit Modal */}
+      {editingSpec && (
+        <EditHardwareModal
+          spec={editingSpec}
+          onClose={() => setEditingSpec(null)}
+          onSave={handleSaveEdit}
+        />
       )}
     </div>
   );

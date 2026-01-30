@@ -33,7 +33,7 @@ export interface ModelListProps {
  */
 function ModelCardSkeleton() {
   return (
-    <div className="flex flex-col gap-1 rounded-lg border p-3 bg-card">
+    <div className="flex flex-col gap-1.5 rounded-lg border border-border-default p-3 bg-elevated">
       {/* Top row: name and toggle */}
       <div className="flex items-center gap-2">
         <Skeleton className="h-5 w-48" />
@@ -86,7 +86,7 @@ export function ModelList({
   const virtualizer = useVirtualizer({
     count: models.length,
     getScrollElement: () => scrollContainerRef.current,
-    estimateSize: () => 80, // Estimated row height in pixels
+    estimateSize: () => 96, // Estimated row height in pixels (card + padding)
     overscan: 5, // Number of items to render above/below viewport
   });
 
@@ -111,7 +111,7 @@ export function ModelList({
     return (
       <div
         className={cn(
-          'flex items-center justify-center h-full min-h-[200px] text-muted-foreground',
+          'flex items-center justify-center h-full min-h-[200px] text-text-muted',
           className
         )}
         role="status"
@@ -125,8 +125,10 @@ export function ModelList({
     <div className={cn('flex flex-col h-full', className)}>
       {/* Favorites section (pinned, not virtualized) */}
       {favoritedModels.length > 0 && (
-        <div className="flex-shrink-0 border-b border-border pb-2 mb-2">
-          <h3 className="text-sm font-medium text-muted-foreground px-2 mb-2">Favorites</h3>
+        <div className="flex-shrink-0 border-b border-border-subtle pb-2 mb-2">
+          <h3 className="text-xs font-medium text-text-muted px-2 mb-2 uppercase tracking-wide">
+            Favorites
+          </h3>
           <div className="flex flex-col gap-2 px-2" role="group" aria-label="Favorite models">
             {favoritedModels.map((model) => (
               <ModelCard
@@ -140,6 +142,11 @@ export function ModelList({
           </div>
         </div>
       )}
+
+      {/* All Models header */}
+      <h3 className="text-xs font-medium text-text-muted px-2 mb-2 uppercase tracking-wide flex-shrink-0">
+        All Models
+      </h3>
 
       {/* Virtualized main list */}
       <div
@@ -158,11 +165,14 @@ export function ModelList({
           {virtualItems.map((virtualItem) => {
             const model = models[virtualItem.index];
             if (!model) return null;
+            const isSelected = model.model_id === selectedModelId;
             return (
               <div
                 key={virtualItem.key}
+                data-index={virtualItem.index}
+                ref={virtualizer.measureElement}
                 role="option"
-                aria-selected={selectedModelId === model.model_id}
+                aria-selected={isSelected}
                 style={{
                   position: 'absolute',
                   top: 0,
@@ -175,7 +185,7 @@ export function ModelList({
                   <ModelCard
                     model={model}
                     onSelect={onSelectModel}
-                    isSelected={selectedModelId === model.model_id}
+                    isSelected={isSelected}
                     showFavoriteToggle={showFavoriteToggle}
                   />
                 </div>

@@ -241,16 +241,39 @@ class WorkspaceOrchestrator:
         # Create container spec
         from src.managers.multi_server_docker import ContainerSpec
 
-        # Determine image to use
+        # Determine image to use based on server architecture
         # GPU workspaces should use a CUDA-enabled image
         if requirements.gpu_required:
             gpu_image = getattr(settings, "workspace_image_gpu", settings.workspace_image)
             workspace_image = config.base_image or gpu_image or settings.workspace_image
         else:
-            workspace_image = config.base_image or settings.workspace_image
+            # Use architecture-specific image for non-GPU workspaces
+            workspace_image = self._docker.get_image_for_server(
+                placement.server_id, config.base_image
+            )
 
         # Ensure we have a valid image string (cast to str for type safety)
         workspace_image = str(workspace_image or settings.workspace_image)
+
+        # Check if the image exists on the target server before creating container
+        image_exists = await self._docker.image_exists(placement.server_id, workspace_image)
+        if not image_exists:
+            logger.error(
+                "Workspace image not found on server",
+                workspace_id=workspace_id[:12],
+                server_id=placement.server_id,
+                image=workspace_image,
+            )
+            return OrchestrationResult(
+                success=False,
+                workspace_id=workspace_id,
+                server_id=placement.server_id,
+                message=(
+                    f"Workspace image '{workspace_image}' not found on server "
+                    f"'{placement.server_id}'. Run 'make load-workspace-images-dind' "
+                    f"to load workspace images into the development servers."
+                ),
+            )
 
         container_spec = ContainerSpec(
             name=f"workspace-{workspace_id[:12]}",
@@ -318,6 +341,22 @@ class WorkspaceOrchestrator:
                 workspace_id=workspace_id,
                 server_id=placement.server_id,
                 message="Container creation returned no container ID",
+            )
+
+        # Start the container
+        started = await self._docker.start_container(placement.server_id, container_id)
+        if not started:
+            logger.error(
+                "Failed to start container",
+                workspace_id=workspace_id[:12],
+                server_id=placement.server_id,
+                container_id=container_id[:12],
+            )
+            return OrchestrationResult(
+                success=False,
+                workspace_id=workspace_id,
+                server_id=placement.server_id,
+                message="Container created but failed to start. Check container logs for details.",
             )
 
         # Create workspace info

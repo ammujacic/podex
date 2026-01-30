@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,7 @@ from src.database.models import (
 from src.database.models import (
     Session as SessionModel,
 )
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 from src.routes.dependencies import DbSession, get_current_user_id
 from src.websocket.hub import emit_to_session
 
@@ -241,9 +242,11 @@ async def maybe_trigger_auto_compaction(
 
 
 @router.get("/agents/{agent_id}/context", response_model=ContextUsageResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_agent_context_usage(
     agent_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> ContextUsageResponse:
     """Get context usage for an agent."""
@@ -289,9 +292,11 @@ async def get_agent_context_usage(
 
 
 @router.get("/sessions/{session_id}/context/settings", response_model=CompactionSettingsResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_compaction_settings(
     session_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> CompactionSettingsResponse:
     """Get compaction settings for a session."""
@@ -330,10 +335,12 @@ async def get_compaction_settings(
 
 
 @router.put("/sessions/{session_id}/context/settings", response_model=CompactionSettingsResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def update_compaction_settings(
     session_id: str,
-    settings_data: CompactionSettingsRequest,
     request: Request,
+    response: Response,
+    settings_data: CompactionSettingsRequest,
     db: DbSession,
 ) -> CompactionSettingsResponse:
     """Update compaction settings for a session."""
@@ -384,10 +391,12 @@ async def update_compaction_settings(
 
 
 @router.post("/agents/{agent_id}/compact", response_model=CompactResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def compact_agent_context(
     agent_id: str,
-    compact_data: CompactRequest,
     request: Request,
+    response: Response,
+    compact_data: CompactRequest,
     db: DbSession,
 ) -> CompactResponse:
     """Manually trigger context compaction for an agent."""
@@ -508,9 +517,11 @@ async def compact_agent_context(
 
 
 @router.get("/sessions/{session_id}/context/history", response_model=list[CompactionLogResponse])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_compaction_history(
     session_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> list[CompactionLogResponse]:
     """Get compaction history for a session."""

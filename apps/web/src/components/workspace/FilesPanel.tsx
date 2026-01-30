@@ -10,7 +10,6 @@ import {
   FolderOpen,
   Loader2,
   RefreshCw,
-  CloudSync,
   Eye,
   EyeOff,
 } from 'lucide-react';
@@ -153,7 +152,6 @@ function FileTreeNode({
   getSyncInfo,
   onToggleSync,
 }: FileTreeNodeProps) {
-  const syncInfo = getSyncInfo(item.path || item.name || '');
   const isExpanded = expandedFolders.has(item.path);
   const isLoading = loadingFolders.has(item.path);
   const rawChildren = loadedFolders.get(item.path);
@@ -262,17 +260,6 @@ function FileTreeNode({
               >
                 {item.name}
               </span>
-              {syncInfo.isSynced && (
-                <CloudSync
-                  className={cn(
-                    'h-3 w-3 shrink-0 opacity-70',
-                    syncInfo.syncType === 'user' ? 'text-blue-500' : 'text-accent-secondary'
-                  )}
-                  aria-label={
-                    syncInfo.syncType === 'user' ? 'Synced to user account' : 'Auto-synced by Podex'
-                  }
-                />
-              )}
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56">
@@ -308,24 +295,6 @@ function FileTreeNode({
               <Download className="mr-2 h-4 w-4" />
               Download as ZIP
             </DropdownMenuItem>
-            {onToggleSync && (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => onToggleSync(item.path)}>
-                  {syncInfo.isSynced ? (
-                    <>
-                      <CloudSync className="mr-2 h-4 w-4" />
-                      Remove from sync
-                    </>
-                  ) : (
-                    <>
-                      <CloudSync className="mr-2 h-4 w-4" />
-                      Add to user sync
-                    </>
-                  )}
-                </DropdownMenuItem>
-              </>
-            )}
           </DropdownMenuContent>
         </DropdownMenu>
         {isExpanded && children && children.length > 0 && (
@@ -390,17 +359,6 @@ function FileTreeNode({
           >
             {item.name}
           </span>
-          {syncInfo.isSynced && (
-            <CloudSync
-              className={cn(
-                'h-3 w-3 shrink-0 opacity-70',
-                syncInfo.syncType === 'user' ? 'text-blue-500' : 'text-accent-secondary'
-              )}
-              aria-label={
-                syncInfo.syncType === 'user' ? 'Synced to user account' : 'Auto-synced by Podex'
-              }
-            />
-          )}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56">
@@ -438,24 +396,6 @@ function FileTreeNode({
           <Download className="mr-2 h-4 w-4" />
           Download
         </DropdownMenuItem>
-        {onToggleSync && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => onToggleSync(item.path)}>
-              {syncInfo.isSynced ? (
-                <>
-                  <CloudSync className="mr-2 h-4 w-4" />
-                  Remove from sync
-                </>
-              ) : (
-                <>
-                  <CloudSync className="mr-2 h-4 w-4" />
-                  Add to user sync
-                </>
-              )}
-            </DropdownMenuItem>
-          </>
-        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );

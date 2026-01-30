@@ -10,7 +10,7 @@ import time
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +19,7 @@ from src.config import settings
 from src.database.connection import get_db
 from src.database.models import UserOAuthToken
 from src.middleware.auth import get_current_user_id
+from src.middleware.rate_limit import RATE_LIMIT_OAUTH, RATE_LIMIT_STANDARD, limiter
 from src.services.oauth import (
     OAUTH_PROVIDERS,
     OAuthCredentials,
@@ -70,7 +71,8 @@ class OAuthConnectionsResponse(BaseModel):
 
 
 @router.get("/providers")
-async def list_oauth_providers() -> dict[str, Any]:
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def list_oauth_providers(request: Request, response: Response) -> dict[str, Any]:
     """List available OAuth providers."""
     providers = []
     for provider_id, provider_class in OAUTH_PROVIDERS.items():
@@ -86,7 +88,10 @@ async def list_oauth_providers() -> dict[str, Any]:
 
 
 @router.get("/connections", response_model=OAuthConnectionsResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_oauth_connections(
+    request: Request,
+    response: Response,
     user_id: CurrentUserId,
     db: DbSession,
 ) -> OAuthConnectionsResponse:
@@ -111,8 +116,11 @@ async def list_oauth_connections(
 
 
 @router.get("/{provider}/start", response_model=OAuthStartResponse)
+@limiter.limit(RATE_LIMIT_OAUTH)
 async def start_oauth_flow(
     provider: str,
+    request: Request,
+    response: Response,
     user_id: CurrentUserId,
 ) -> OAuthStartResponse:
     """Start OAuth flow for a provider.
@@ -165,8 +173,11 @@ async def start_oauth_flow(
 
 
 @router.get("/{provider}/callback")
+@limiter.limit(RATE_LIMIT_OAUTH)
 async def oauth_callback(
     provider: str,
+    request: Request,
+    response: Response,
     code: str = Query(...),
     state: str = Query(...),
     db: DbSession = None,  # type: ignore
@@ -226,9 +237,12 @@ async def oauth_callback(
 
 
 @router.post("/{provider}/callback", response_model=OAuthTokenResponse)
+@limiter.limit(RATE_LIMIT_OAUTH)
 async def oauth_callback_post(
     provider: str,
-    request: OAuthCallbackRequest,
+    request: Request,
+    response: Response,
+    body: OAuthCallbackRequest,
     user_id: CurrentUserId,
     db: DbSession,
 ) -> OAuthTokenResponse:
@@ -237,10 +251,10 @@ async def oauth_callback_post(
     Used when frontend handles the callback and sends code/state to backend.
     """
     # Verify state
-    if request.state not in _oauth_states:
+    if body.state not in _oauth_states:
         raise HTTPException(status_code=400, detail="Invalid or expired state")
 
-    state_data = _oauth_states.pop(request.state)
+    state_data = _oauth_states.pop(body.state)
 
     if state_data["provider"] != provider:
         raise HTTPException(status_code=400, detail="Provider mismatch")
@@ -256,7 +270,7 @@ async def oauth_callback_post(
     try:
         # Exchange code for tokens
         credentials = await oauth_provider.exchange_code(
-            code=request.code,
+            code=body.code,
             code_verifier=code_verifier,
             redirect_uri=redirect_uri,
         )
@@ -293,8 +307,11 @@ async def oauth_callback_post(
 
 
 @router.delete("/{provider}")
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def disconnect_oauth(
     provider: str,
+    request: Request,
+    response: Response,
     user_id: CurrentUserId,
     db: DbSession,
 ) -> dict[str, Any]:
@@ -336,8 +353,11 @@ async def disconnect_oauth(
 
 
 @router.post("/{provider}/refresh")
+@limiter.limit(RATE_LIMIT_OAUTH)
 async def refresh_oauth_token(
     provider: str,
+    request: Request,
+    response: Response,
     user_id: CurrentUserId,
     db: DbSession,
 ) -> OAuthTokenResponse:

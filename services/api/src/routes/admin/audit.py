@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_db
 from src.database.models import AuditLog
 from src.dependencies import get_admin_user
+from src.middleware.rate_limit import RATE_LIMIT_ADMIN, limiter
 
 router = APIRouter()
 
@@ -74,7 +75,10 @@ class AuditStatsResponse(BaseModel):
 
 
 @router.get("", response_model=AuditLogListResponse)
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def list_audit_logs(
+    request: Request,
+    response: Response,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
     category: str | None = Query(None),
@@ -143,7 +147,10 @@ async def list_audit_logs(
 
 
 @router.get("/stats", response_model=AuditStatsResponse)
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def get_audit_stats(
+    request: Request,
+    response: Response,
     start_date: datetime | None = Query(None),
     end_date: datetime | None = Query(None),
     db: AsyncSession = Depends(get_db),
@@ -229,8 +236,11 @@ async def get_audit_stats(
 
 
 @router.get("/{log_id}", response_model=AuditLogResponse)
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def get_audit_log(
     log_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     admin: dict = Depends(get_admin_user),
 ) -> AuditLogResponse:
@@ -251,8 +261,11 @@ async def get_audit_log(
 
 
 @router.get("/user/{user_id}", response_model=AuditLogListResponse)
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def list_user_audit_logs(
     user_id: str,
+    request: Request,
+    response: Response,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -285,7 +298,10 @@ async def list_user_audit_logs(
 
 
 @router.get("/categories", response_model=list[str])
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def list_categories(
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     admin: dict = Depends(get_admin_user),
 ) -> list[str]:
@@ -296,7 +312,10 @@ async def list_categories(
 
 
 @router.get("/actions", response_model=list[str])
+@limiter.limit(RATE_LIMIT_ADMIN)
 async def list_actions(
+    request: Request,
+    response: Response,
     category: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
     admin: dict = Depends(get_admin_user),

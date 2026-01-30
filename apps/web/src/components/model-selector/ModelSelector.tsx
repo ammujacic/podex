@@ -30,13 +30,18 @@ export interface ModelSelectorProps {
 }
 
 /**
- * Convert LocalModel from Ollama to LLMModel display format
+ * Convert LocalModel from Ollama to LLMModel display format.
+ * Model ID is prefixed with provider (e.g., "ollama/qwen2.5-coder:14b")
+ * so the backend can correctly route to the local provider.
  */
-function localModelToLLMModel(local: LocalModel): LLMModel {
+function localModelToLLMModel(
+  local: LocalModel,
+  provider: 'ollama' | 'lmstudio' = 'ollama'
+): LLMModel {
   return {
-    model_id: local.id,
+    model_id: `${provider}/${local.id}`,
     display_name: local.name,
-    provider: 'ollama',
+    provider,
     family: 'local',
     description: null,
     cost_tier: 'low',
@@ -81,7 +86,7 @@ export function ModelSelector({
   defaultTab = 'podex',
 }: ModelSelectorProps) {
   const [activeTab, setActiveTab] = useState<ModelTab>(defaultTab);
-  const [showAllModels, setShowAllModels] = useState(false);
+  const [showAllModels, setShowAllModels] = useState(true);
 
   // Favorites hook
   const { favorites } = useModelFavorites();
@@ -109,9 +114,9 @@ export function ModelSelector({
     isConnected: ollamaConnected,
   } = useOllamaModels();
 
-  // Convert Ollama models to LLMModel format
+  // Convert Ollama models to LLMModel format (prefixed with "ollama/")
   const ollamaLLMModels = useMemo(() => {
-    return ollamaModels.map(localModelToLLMModel);
+    return ollamaModels.map((model) => localModelToLLMModel(model, 'ollama'));
   }, [ollamaModels]);
 
   // Local search hook
@@ -139,16 +144,19 @@ export function ModelSelector({
         className="flex flex-col h-full"
       >
         {/* Tab list */}
-        <Tabs.List className="flex border-b border-border px-2" aria-label="Model source tabs">
+        <Tabs.List
+          className="flex border-b border-border-subtle px-2"
+          aria-label="Model source tabs"
+        >
           <Tabs.Trigger
             value="podex"
             className={cn(
               'px-4 py-2 text-sm font-medium transition-colors',
-              'border-b-2 border-transparent',
-              'hover:text-foreground',
-              'data-[state=active]:border-primary data-[state=active]:text-foreground',
-              'data-[state=inactive]:text-muted-foreground',
-              'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2'
+              'border-b-2 border-transparent -mb-px',
+              'hover:text-text-primary',
+              'data-[state=active]:border-accent-primary data-[state=active]:text-text-primary',
+              'data-[state=inactive]:text-text-muted',
+              'focus:outline-none focus-visible:text-text-primary'
             )}
           >
             Podex
@@ -157,11 +165,11 @@ export function ModelSelector({
             value="your-keys"
             className={cn(
               'px-4 py-2 text-sm font-medium transition-colors',
-              'border-b-2 border-transparent',
-              'hover:text-foreground',
-              'data-[state=active]:border-primary data-[state=active]:text-foreground',
-              'data-[state=inactive]:text-muted-foreground',
-              'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2'
+              'border-b-2 border-transparent -mb-px',
+              'hover:text-text-primary',
+              'data-[state=active]:border-accent-primary data-[state=active]:text-text-primary',
+              'data-[state=inactive]:text-text-muted',
+              'focus:outline-none focus-visible:text-text-primary'
             )}
           >
             Your Keys
@@ -170,11 +178,11 @@ export function ModelSelector({
             value="local"
             className={cn(
               'px-4 py-2 text-sm font-medium transition-colors',
-              'border-b-2 border-transparent',
-              'hover:text-foreground',
-              'data-[state=active]:border-primary data-[state=active]:text-foreground',
-              'data-[state=inactive]:text-muted-foreground',
-              'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2'
+              'border-b-2 border-transparent -mb-px',
+              'hover:text-text-primary',
+              'data-[state=active]:border-accent-primary data-[state=active]:text-text-primary',
+              'data-[state=inactive]:text-text-muted',
+              'focus:outline-none focus-visible:text-text-primary'
             )}
           >
             Local
@@ -243,7 +251,7 @@ export function ModelSelector({
           ) : (
             /* Empty state */
             <div className="flex-1 flex items-center justify-center p-6">
-              <div className="text-center text-muted-foreground max-w-sm">
+              <div className="text-center text-text-muted max-w-sm">
                 <p>Configure your API keys in Settings to use models with your own billing.</p>
               </div>
             </div>
@@ -267,9 +275,9 @@ export function ModelSelector({
               disabled={ollamaLoading}
               aria-label="Refresh local models"
               className={cn(
-                'p-2 rounded-md border border-input bg-background',
-                'hover:bg-accent hover:text-accent-foreground',
-                'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
+                'p-2 rounded-md border border-border-default bg-elevated',
+                'hover:bg-overlay hover:text-text-primary',
+                'focus:outline-none focus:ring-2 focus:ring-accent-primary focus:ring-offset-2 focus:ring-offset-surface',
                 'disabled:opacity-50 disabled:cursor-not-allowed',
                 'transition-colors'
               )}
@@ -286,7 +294,7 @@ export function ModelSelector({
             {ollamaLoading ? (
               /* Loading state */
               <div className="flex items-center justify-center h-full p-6">
-                <div className="text-center text-muted-foreground">
+                <div className="text-center text-text-muted">
                   <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2" aria-hidden="true" />
                   <p>Discovering local models...</p>
                 </div>
@@ -294,17 +302,17 @@ export function ModelSelector({
             ) : ollamaError ? (
               /* Error state */
               <div className="flex items-center justify-center h-full p-6">
-                <div className="text-center text-muted-foreground max-w-sm">
+                <div className="text-center text-text-muted max-w-sm">
                   <p>Could not connect to Ollama. Make sure it&apos;s running at localhost:11434</p>
                 </div>
               </div>
             ) : ollamaConnected && ollamaLLMModels.length === 0 ? (
               /* Empty state - connected but no models */
               <div className="flex items-center justify-center h-full p-6">
-                <div className="text-center text-muted-foreground max-w-sm">
+                <div className="text-center text-text-muted max-w-sm">
                   <p>
                     No local models found. Pull models with{' '}
-                    <code className="text-foreground bg-muted px-1 rounded">
+                    <code className="text-text-primary bg-elevated px-1 rounded">
                       ollama pull &lt;model&gt;
                     </code>
                   </p>

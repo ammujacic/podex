@@ -232,6 +232,7 @@ async def init_compute_manager() -> None:
                 ip_address=server.host,  # hostname and ip_address are the same for Docker
                 docker_port=server.docker_port,
                 architecture=server.architecture,
+                region=server.region,
                 tls_enabled=server.tls_enabled,
                 cert_path=server.cert_path,
             )
@@ -241,6 +242,8 @@ async def init_compute_manager() -> None:
                     server_id=server.server_id,
                     host=server.host,
                     port=server.docker_port,
+                    architecture=server.architecture,
+                    region=server.region,
                     tls=server.tls_enabled,
                 )
             else:

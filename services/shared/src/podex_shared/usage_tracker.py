@@ -89,14 +89,17 @@ class TokenUsageParams:
 
 @dataclass
 class ComputeUsageParams:
-    """Parameters for recording compute usage."""
+    """Parameters for recording compute usage.
+
+    Note: Pricing is NOT included here. The API calculates pricing server-side
+    based on the tier to ensure accurate billing and prevent manipulation.
+    """
 
     user_id: str
     tier: str
     duration_seconds: int
     session_id: str | None = None
     workspace_id: str | None = None
-    hourly_rate_cents: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -365,20 +368,16 @@ class UsageTracker:
 
         Args:
             params: Compute usage parameters including user_id, tier, duration_seconds,
-                   and optional session_id, workspace_id, hourly_rate_cents, metadata
+                   and optional session_id, workspace_id, metadata
 
         Returns:
             The created usage event
+
+        Note:
+            Pricing (unit_price_cents, total_cost_cents) is NOT calculated here.
+            The API service calculates pricing server-side based on the tier
+            to ensure accurate billing and prevent manipulation.
         """
-        # Calculate cost based on duration and hourly rate
-        # Use proper decimal rounding to avoid truncating small values to 0
-        hours = Decimal(params.duration_seconds) / Decimal(3600)
-        total_cost_decimal = hours * Decimal(params.hourly_rate_cents)
-        total_cost_cents = int(total_cost_decimal.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-
-        # Price per second
-        unit_price_cents = params.hourly_rate_cents // 3600 if params.hourly_rate_cents > 0 else 0
-
         event = UsageEvent(
             user_id=params.user_id,
             session_id=params.session_id,
@@ -386,8 +385,8 @@ class UsageTracker:
             usage_type=UsageType.COMPUTE_SECONDS,
             quantity=params.duration_seconds,
             unit="seconds",
-            unit_price_cents=unit_price_cents,
-            total_cost_cents=total_cost_cents,
+            unit_price_cents=0,  # API calculates this server-side
+            total_cost_cents=0,  # API calculates this server-side
             tier=params.tier,
             duration_seconds=params.duration_seconds,
             metadata=params.metadata,
@@ -400,7 +399,6 @@ class UsageTracker:
             user_id=params.user_id,
             tier=params.tier,
             duration_seconds=params.duration_seconds,
-            cost_cents=total_cost_cents,
         )
 
         return event

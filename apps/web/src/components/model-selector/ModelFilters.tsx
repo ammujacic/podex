@@ -33,9 +33,9 @@ export interface ModelFiltersProps {
 export function ModelFilters({
   activeCategories,
   onToggleCategory,
-  showAllToggle = false,
-  showAll = false,
-  onToggleShowAll,
+  showAllToggle: _showAllToggle = false,
+  showAll: _showAll = false,
+  onToggleShowAll: _onToggleShowAll,
   className,
 }: ModelFiltersProps) {
   const handleChipClick = useCallback(
@@ -55,28 +55,14 @@ export function ModelFilters({
     [onToggleCategory]
   );
 
-  const handleShowAllClick = useCallback(() => {
-    onToggleShowAll?.();
-  }, [onToggleShowAll]);
-
-  const handleShowAllKeyDown = useCallback(
-    (event: React.KeyboardEvent) => {
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        onToggleShowAll?.();
-      }
-    },
-    [onToggleShowAll]
-  );
-
   return (
     <div
       role="group"
       aria-label="Filter by category"
-      className={cn('flex items-center gap-2 overflow-x-auto scrollbar-hide', className)}
+      className={cn('flex items-center gap-1 overflow-x-auto scrollbar-hide', className)}
     >
-      {/* Category chips */}
-      <div className="flex items-center gap-2 flex-shrink-0">
+      {/* Category filters - underline style */}
+      <div className="flex items-center gap-1 flex-shrink-0">
         {MODEL_CATEGORIES.map((category) => {
           const isActive = activeCategories.includes(category.id);
           return (
@@ -90,16 +76,16 @@ export function ModelFilters({
               aria-label={category.label}
               title={category.description}
               className={cn(
-                'inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium',
-                'border transition-all duration-150 ease-in-out',
-                'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
+                'inline-flex items-center gap-1 px-2 py-1 text-xs font-medium',
+                'border-b-2 transition-all duration-150 ease-in-out',
+                'focus:outline-none',
                 'flex-shrink-0 whitespace-nowrap cursor-pointer',
                 isActive
-                  ? 'bg-primary text-primary-foreground border-primary hover:bg-primary/90'
-                  : 'bg-background text-foreground border-border hover:bg-accent hover:border-accent-foreground/20'
+                  ? 'border-accent-primary text-text-primary'
+                  : 'border-transparent text-text-muted hover:text-text-secondary hover:border-border-default'
               )}
             >
-              <span className="text-sm" aria-hidden="true">
+              <span className="text-xs" aria-hidden="true">
                 {category.icon}
               </span>
               <span>{category.label}</span>
@@ -108,40 +94,7 @@ export function ModelFilters({
         })}
       </div>
 
-      {/* Show all toggle */}
-      {showAllToggle && (
-        <div className="flex items-center gap-2 ml-auto flex-shrink-0 pl-4 border-l border-border">
-          <label
-            htmlFor="show-all-toggle"
-            className="text-sm text-muted-foreground whitespace-nowrap cursor-pointer"
-          >
-            Show all (200+)
-          </label>
-          <button
-            id="show-all-toggle"
-            type="button"
-            role="checkbox"
-            aria-checked={showAll}
-            onClick={handleShowAllClick}
-            onKeyDown={handleShowAllKeyDown}
-            className={cn(
-              'relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent',
-              'transition-colors duration-200 ease-in-out',
-              'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
-              showAll ? 'bg-primary' : 'bg-muted'
-            )}
-          >
-            <span
-              aria-hidden="true"
-              className={cn(
-                'pointer-events-none inline-block h-4 w-4 transform rounded-full bg-background shadow ring-0',
-                'transition duration-200 ease-in-out',
-                showAll ? 'translate-x-4' : 'translate-x-0'
-              )}
-            />
-          </button>
-        </div>
-      )}
+      {/* Show all toggle - removed, keeping interface simple */}
     </div>
   );
 }

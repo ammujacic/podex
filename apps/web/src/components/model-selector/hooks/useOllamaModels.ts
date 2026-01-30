@@ -1,10 +1,10 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { LocalModel, OllamaTagsResponse, OllamaModel } from '../types';
+import { getLocalLLMConfig, discoverLocalModels } from '@/lib/api';
+import type { LocalModel } from '../types';
 
 const DEFAULT_OLLAMA_URL = 'http://localhost:11434';
-const API_TAGS_PATH = '/api/tags';
 
 export interface UseOllamaModelsOptions {
   /** Custom Ollama base URL (default: http://localhost:11434) */
@@ -20,7 +20,7 @@ export interface UseOllamaModelsReturn {
   isLoading: boolean;
   /** Error message if discovery failed */
   error: string | null;
-  /** Manually trigger a refresh/re-scan */
+  /** Manually trigger a refresh/re-scan via backend */
   refresh: () => Promise<void>;
   /** Whether Ollama is connected and responding */
   isConnected: boolean;
@@ -40,50 +40,46 @@ function formatBytes(bytes: number): string {
 }
 
 /**
- * Extract quantization level from model name or details
+ * Extract quantization level from model name
  */
-function extractQuantization(model: OllamaModel): string | undefined {
-  // Check if quantization is in the details
-  if (model.details?.quantization_level) {
-    return model.details.quantization_level;
-  }
-
+function extractQuantization(modelName: string): string | undefined {
   // Try to extract from the model name (e.g., "llama2:7b-q4_0")
-  const nameMatch = model.name.match(/[qQ](\d+)(?:_(\d+|K|k))?/i);
+  const nameMatch = modelName.match(/[qQ](\d+)(?:_(\d+|K|k))?/i);
   if (nameMatch) {
     return nameMatch[0].toUpperCase();
   }
-
   return undefined;
 }
 
 /**
- * Transform Ollama API response model to our LocalModel format
+ * Transform discovered model from backend to our LocalModel format
  */
-function transformOllamaModel(model: OllamaModel): LocalModel {
+function transformDiscoveredModel(model: { id: string; name: string; size?: number }): LocalModel {
   // Use the model name as the display name, but clean it up
   const firstPart = model.name.split(':')[0];
   const nameParts = firstPart ? firstPart.split('/') : [model.name];
   const baseName = nameParts[nameParts.length - 1] ?? model.name;
-  const displayName = baseName.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()); // Title case
+  const displayName = baseName.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
   return {
-    id: model.name,
+    id: model.id || model.name,
     name: displayName,
-    size: formatBytes(model.size),
-    quantization: extractQuantization(model),
-    modifiedAt: new Date(model.modified_at),
+    size: model.size ? formatBytes(model.size) : 'Unknown',
+    quantization: extractQuantization(model.name),
+    modifiedAt: new Date(),
   };
 }
 
 /**
- * Hook for auto-discovering local Ollama models.
+ * Hook for discovering local Ollama models via the backend API.
+ *
+ * This hook uses the backend to discover and cache Ollama models,
+ * rather than calling Ollama directly from the browser.
  *
  * Features:
- * - Auto-discovers models on mount (optional)
- * - Handles connection errors gracefully
- * - Provides refresh function for manual re-scan
- * - Transforms Ollama API response to LocalModel format
+ * - Loads cached models from user config on mount
+ * - Provides refresh function to re-discover via backend
+ * - Transforms backend response to LocalModel format
  *
  * @example
  * ```tsx
@@ -114,6 +110,30 @@ export function useOllamaModels(options: UseOllamaModelsOptions = {}): UseOllama
   // Track if component is mounted to avoid state updates after unmount
   const isMountedRef = useRef(true);
 
+  // Load cached models from user config
+  const loadCachedModels = useCallback(async () => {
+    if (!isMountedRef.current) return;
+
+    try {
+      const config = await getLocalLLMConfig();
+      if (!isMountedRef.current) return;
+
+      const ollamaConfig = config?.ollama;
+      if (ollamaConfig?.models && Array.isArray(ollamaConfig.models)) {
+        const transformedModels = ollamaConfig.models.map(transformDiscoveredModel);
+        setModels(transformedModels);
+        setIsConnected(true);
+        setError(null);
+      }
+    } catch {
+      // Silently fail on load - will try discovery
+      if (isMountedRef.current) {
+        setModels([]);
+      }
+    }
+  }, []);
+
+  // Discover models via backend API
   const discover = useCallback(async () => {
     if (!isMountedRef.current) return;
 
@@ -121,36 +141,26 @@ export function useOllamaModels(options: UseOllamaModelsOptions = {}): UseOllama
     setError(null);
 
     try {
-      const url = `${baseUrl}${API_TAGS_PATH}`;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
-
-      const response = await fetch(url, {
-        method: 'GET',
-        signal: controller.signal,
-        headers: {
-          Accept: 'application/json',
-        },
+      const response = await discoverLocalModels({
+        provider: 'ollama',
+        base_url: baseUrl,
       });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw new Error(`Ollama returned ${response.status}: ${response.statusText}`);
-      }
-
-      const data: OllamaTagsResponse = await response.json();
 
       if (!isMountedRef.current) return;
 
-      if (!data.models || !Array.isArray(data.models)) {
+      if (!response.success) {
+        setIsConnected(false);
+        setModels([]);
+        setError(response.error || 'Failed to discover models');
+        return;
+      }
+
+      if (!response.models || response.models.length === 0) {
         setModels([]);
         setIsConnected(true);
         setError(null);
       } else {
-        const transformedModels = data.models.map(transformOllamaModel);
-        // Sort by modified date (most recent first)
-        transformedModels.sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime());
+        const transformedModels = response.models.map(transformDiscoveredModel);
         setModels(transformedModels);
         setIsConnected(true);
         setError(null);
@@ -162,18 +172,9 @@ export function useOllamaModels(options: UseOllamaModelsOptions = {}): UseOllama
       setModels([]);
 
       if (err instanceof Error) {
-        if (err.name === 'AbortError') {
-          setError('Connection to Ollama timed out. Is Ollama running?');
-        } else if (
-          err.message.includes('Failed to fetch') ||
-          err.message.includes('NetworkError')
-        ) {
-          setError('Could not connect to Ollama. Make sure Ollama is running at ' + baseUrl);
-        } else {
-          setError(err.message);
-        }
+        setError(err.message);
       } else {
-        setError('An unknown error occurred while connecting to Ollama');
+        setError('An unknown error occurred while discovering models');
       }
     } finally {
       if (isMountedRef.current) {
@@ -182,18 +183,26 @@ export function useOllamaModels(options: UseOllamaModelsOptions = {}): UseOllama
     }
   }, [baseUrl]);
 
-  // Auto-discover on mount
+  // Load cached models on mount, then optionally discover
   useEffect(() => {
     isMountedRef.current = true;
 
-    if (autoDiscover) {
-      discover();
-    }
+    const init = async () => {
+      // First try to load cached models
+      await loadCachedModels();
+
+      // Then discover fresh models if autoDiscover is enabled
+      if (autoDiscover) {
+        await discover();
+      }
+    };
+
+    init();
 
     return () => {
       isMountedRef.current = false;
     };
-  }, [autoDiscover, discover]);
+  }, [autoDiscover, discover, loadCachedModels]);
 
   return {
     models,

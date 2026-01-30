@@ -38,7 +38,7 @@ const STEPS: Step[] = ['welcome', 'install', 'expose', 'discord', 'done'];
 export function MoltBotInstallWizardModal({
   sessionId: _sessionId,
   workspaceId,
-  localPodId,
+  localPodId: _localPodId,
   onClose,
 }: MoltBotInstallWizardModalProps) {
   const [step, setStep] = useState<Step>('welcome');
@@ -51,7 +51,6 @@ export function MoltBotInstallWizardModal({
   const [copied, setCopied] = useState(false);
 
   const stepIndex = STEPS.indexOf(step);
-  const isLocalPod = !!localPodId;
   const hasWorkspace = !!workspaceId;
 
   const handleInstall = async () => {
@@ -175,23 +174,17 @@ export function MoltBotInstallWizardModal({
               <ul className="space-y-2 text-sm text-text-muted">
                 <li className="flex items-center gap-2">
                   <Check className="h-4 w-4 text-accent-success" />
-                  Workspace on a <strong>local pod</strong> (required for tunnels)
+                  Running workspace (required for tunnels)
                 </li>
                 <li className="flex items-center gap-2">
                   <Check className="h-4 w-4 text-accent-success" />
                   Node.js 22+ in the workspace
                 </li>
                 <li className="flex items-center gap-2">
-                  <Check className="h-4 w-4 text-accent-success" />A Discord application (we’ll walk
+                  <Check className="h-4 w-4 text-accent-success" />A Discord application (we'll walk
                   you through it)
                 </li>
               </ul>
-              {!isLocalPod && (
-                <div className="flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-sm text-amber-600 dark:text-amber-400">
-                  <AlertTriangle className="h-4 w-4 shrink-0" />
-                  Tunnels require a workspace on a local pod. Use a local pod session to continue.
-                </div>
-              )}
               {!hasWorkspace && (
                 <div className="flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-sm text-amber-600 dark:text-amber-400">
                   <AlertTriangle className="h-4 w-4 shrink-0" />
@@ -398,7 +391,7 @@ export function MoltBotInstallWizardModal({
             type="button"
             onClick={next}
             disabled={
-              (step === 'welcome' && (!isLocalPod || !hasWorkspace)) ||
+              (step === 'welcome' && !hasWorkspace) ||
               (step === 'install' && (!installOutput || installOutput.exit_code !== 0)) ||
               (step === 'expose' && !tunnel)
             }

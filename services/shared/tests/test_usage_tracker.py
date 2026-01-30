@@ -142,11 +142,10 @@ class TestComputeUsageParams:
             duration_seconds=7200,
             session_id="session-456",
             workspace_id="workspace-789",
-            hourly_rate_cents=20,
             metadata={"project": "ml-training"},
         )
         assert params.session_id == "session-456"
-        assert params.hourly_rate_cents == 20
+        assert params.workspace_id == "workspace-789"
         assert params.metadata == {"project": "ml-training"}
 
 
@@ -289,13 +288,16 @@ class TestUsageTrackerRecordComputeUsage:
 
     @pytest.mark.asyncio
     async def test_record_compute_usage(self) -> None:
-        """Test recording compute usage."""
+        """Test recording compute usage.
+
+        Note: Pricing is NOT calculated client-side. The API calculates
+        pricing server-side based on the tier to ensure accurate billing.
+        """
         tracker = UsageTracker(api_base_url="http://localhost:8000", batch_size=100)
         params = ComputeUsageParams(
             user_id="user-123",
             tier="pro",
             duration_seconds=3600,
-            hourly_rate_cents=10,
         )
 
         event = await tracker.record_compute_usage(params)
@@ -306,7 +308,9 @@ class TestUsageTrackerRecordComputeUsage:
         assert event.quantity == 3600
         assert event.unit == "seconds"
         assert event.usage_type == UsageType.COMPUTE_SECONDS
-        assert event.total_cost_cents == 10  # 1 hour at 10 cents/hour
+        # Pricing is calculated server-side by the API, not client-side
+        assert event.total_cost_cents == 0
+        assert event.unit_price_cents == 0
 
 
 class TestUsageTrackerRecordStorageUsage:

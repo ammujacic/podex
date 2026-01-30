@@ -96,15 +96,35 @@ async def _update_pod_capabilities(
         await db.commit()
 
 
-async def _update_pod_heartbeat(pod_id: str, current_workspaces: int) -> None:
-    """Update pod heartbeat in database."""
+async def _update_pod_heartbeat(pod_id: str, _reported_workspaces: int) -> None:
+    """Update pod heartbeat in database.
+
+    Note: We count active workspaces from the database rather than using the
+    reported count from the local pod, since native mode pods are stateless
+    and don't track workspace state locally.
+    """
+    from sqlalchemy import func
+
+    from src.database.models import Workspace
+
     async with async_session_factory() as db:
+        # Count active workspaces on this pod from the database
+        result = await db.execute(
+            select(func.count())
+            .select_from(Workspace)
+            .where(
+                Workspace.local_pod_id == pod_id,
+                Workspace.status.in_(["pending", "running", "starting"]),
+            )
+        )
+        workspace_count = result.scalar() or 0
+
         await db.execute(
             update(LocalPod)
             .where(LocalPod.id == pod_id)
             .values(
                 last_heartbeat=datetime.now(UTC),
-                current_workspaces=current_workspaces,
+                current_workspaces=workspace_count,
                 updated_at=datetime.now(UTC),
             ),
         )

@@ -254,7 +254,7 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
 
   return (
     <header
-      className="flex h-12 items-center justify-between border-b border-border-subtle bg-surface px-4"
+      className="relative flex h-12 items-center border-b border-border-subtle bg-surface px-4"
       data-tour="workspace-header"
     >
       {/* Left section */}
@@ -302,19 +302,11 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
               </div>
             )}
           </div>
-
-          {/* Pod Status Indicator */}
-          <PodStatusIndicator
-            status={session?.workspaceStatus}
-            tier={session?.workspaceTier}
-            isLocalPod={!!localPodId}
-            localPodName={localPodName}
-          />
         </div>
       </div>
 
-      {/* Center section - View mode toggle and grid config */}
-      <div className="flex items-center gap-2">
+      {/* Center section - View mode toggle and grid config (absolutely centered) */}
+      <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2">
         <div
           className="flex items-center gap-1 rounded-lg border border-border-default bg-elevated p-1"
           role="tablist"
@@ -369,7 +361,18 @@ export function WorkspaceHeader({ sessionId }: WorkspaceHeaderProps) {
       </div>
 
       {/* Right section */}
-      <div className="flex items-center gap-2" role="toolbar" aria-label="Workspace actions">
+      <div
+        className="ml-auto flex items-center gap-2"
+        role="toolbar"
+        aria-label="Workspace actions"
+      >
+        {/* Pod Status Indicator */}
+        <PodStatusIndicator
+          status={session?.workspaceStatus}
+          tier={session?.workspaceTier}
+          isLocalPod={!!localPodId}
+          localPodName={localPodName}
+        />
         {/* Voice command button */}
         <div className="relative">
           <button

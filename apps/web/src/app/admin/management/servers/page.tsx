@@ -5,7 +5,7 @@ import {
   Plus,
   Server,
   Cpu,
-  Activity,
+  Boxes,
   AlertTriangle,
   Check,
   Play,
@@ -13,6 +13,12 @@ import {
   Trash2,
   RefreshCw,
   Zap,
+  MapPin,
+  Users,
+  Clock,
+  Loader2,
+  User,
+  HardDrive,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -21,6 +27,7 @@ import {
   type ClusterStatus,
   type CreateServerRequest,
 } from '@/stores/admin';
+import type { ServerWorkspaceInfo } from '@/lib/api';
 
 function formatBytes(mb: number): string {
   if (mb >= 1024) {
@@ -92,6 +99,71 @@ function UtilizationBar({ label, used, total, unit = '' }: UtilizationBarProps) 
   );
 }
 
+function formatTimeAgo(dateStr: string | null): string {
+  if (!dateStr) return 'Never';
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays}d ago`;
+}
+
+interface WorkspaceRowProps {
+  workspace: ServerWorkspaceInfo;
+}
+
+function WorkspaceRow({ workspace }: WorkspaceRowProps) {
+  const statusColors: Record<string, string> = {
+    running: 'text-green-500',
+    starting: 'text-yellow-500',
+    stopping: 'text-yellow-500',
+    stopped: 'text-text-muted',
+    error: 'text-red-500',
+  };
+
+  return (
+    <div className="flex items-center justify-between py-2 px-3 bg-elevated/50 rounded-lg">
+      <div className="flex items-center gap-3 min-w-0 flex-1">
+        <User className="h-3.5 w-3.5 text-text-muted flex-shrink-0" />
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-medium text-text-primary truncate">
+            {workspace.user_email || workspace.user_id.slice(0, 8)}
+          </p>
+          <p className="text-[10px] text-text-muted truncate">
+            {workspace.workspace_id.slice(0, 8)}
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-4 text-[10px] text-text-muted flex-shrink-0">
+        <span className={cn('font-medium', statusColors[workspace.status] || 'text-text-muted')}>
+          {workspace.status}
+        </span>
+        {workspace.assigned_cpu && (
+          <span className="flex items-center gap-1">
+            <Cpu className="h-3 w-3" />
+            {workspace.assigned_cpu}
+          </span>
+        )}
+        {workspace.assigned_memory_mb && (
+          <span className="flex items-center gap-1">
+            <HardDrive className="h-3 w-3" />
+            {formatBytes(workspace.assigned_memory_mb)}
+          </span>
+        )}
+        <span className="flex items-center gap-1">
+          <Clock className="h-3 w-3" />
+          {formatTimeAgo(workspace.last_activity)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 interface ServerCardProps {
   server: AdminWorkspaceServer;
   onDrain: (serverId: string) => void;
@@ -100,6 +172,22 @@ interface ServerCardProps {
 }
 
 function ServerCard({ server, onDrain, onActivate, onDelete }: ServerCardProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const { serverWorkspaces, serverWorkspacesLoading, fetchServerWorkspaces } = useAdminStore();
+
+  const workspaces = serverWorkspaces[server.id] ?? [];
+  const isLoadingWorkspaces = serverWorkspacesLoading[server.id] ?? false;
+  const hasLoadedWorkspaces = server.id in serverWorkspaces;
+
+  const handleToggleExpand = () => {
+    const newExpanded = !isExpanded;
+    setIsExpanded(newExpanded);
+    // Lazy load workspaces when expanding for the first time
+    if (newExpanded && !hasLoadedWorkspaces && server.active_workspaces > 0) {
+      fetchServerWorkspaces(server.id);
+    }
+  };
+
   return (
     <div
       className={cn(
@@ -183,8 +271,16 @@ function ServerCard({ server, onDrain, onActivate, onDelete }: ServerCardProps) 
           <span className="text-text-secondary">{server.architecture}</span>
         </div>
         <div className="flex items-center gap-2">
-          <Activity className="h-4 w-4 text-text-muted" />
+          <Boxes className="h-4 w-4 text-text-muted" />
           <span className="text-text-secondary">{server.active_workspaces} workspaces</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <MapPin className="h-4 w-4 text-text-muted" />
+          <span className="text-text-secondary">{server.region || 'No region'}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Users className="h-4 w-4 text-text-muted" />
+          <span className="text-text-secondary">max {server.max_workspaces}</span>
         </div>
         {server.has_gpu && (
           <div className="flex items-center gap-2 col-span-2">
@@ -192,12 +288,6 @@ function ServerCard({ server, onDrain, onActivate, onDelete }: ServerCardProps) 
             <span className="text-text-secondary">
               {server.gpu_count}x {server.gpu_type || 'GPU'}
             </span>
-          </div>
-        )}
-        {server.region && (
-          <div className="flex items-center gap-2">
-            <Server className="h-4 w-4 text-text-muted" />
-            <span className="text-text-secondary">{server.region}</span>
           </div>
         )}
       </div>
@@ -227,14 +317,29 @@ function ServerCard({ server, onDrain, onActivate, onDelete }: ServerCardProps) 
 
       {/* Per-Workspace Resources (expandable) */}
       {server.active_workspaces > 0 && (
-        <details className="mt-4 pt-4 border-t border-border-subtle">
-          <summary className="text-xs font-medium text-text-muted cursor-pointer hover:text-text-primary">
+        <div className="mt-4 pt-4 border-t border-border-subtle">
+          <button
+            onClick={handleToggleExpand}
+            className="text-xs font-medium text-text-muted cursor-pointer hover:text-text-primary flex items-center gap-1"
+          >
+            <span className={cn('transition-transform', isExpanded ? 'rotate-90' : '')}>▶</span>
             View {server.active_workspaces} workspace{server.active_workspaces > 1 ? 's' : ''}
-          </summary>
-          <div className="mt-2 text-xs text-text-muted">
-            <p>Workspace-level metrics coming soon</p>
-          </div>
-        </details>
+          </button>
+          {isExpanded && (
+            <div className="mt-3 space-y-2">
+              {isLoadingWorkspaces ? (
+                <div className="flex items-center justify-center py-4">
+                  <Loader2 className="h-4 w-4 animate-spin text-text-muted" />
+                  <span className="ml-2 text-xs text-text-muted">Loading workspaces...</span>
+                </div>
+              ) : workspaces.length > 0 ? (
+                workspaces.map((ws) => <WorkspaceRow key={ws.workspace_id} workspace={ws} />)
+              ) : (
+                <p className="text-xs text-text-muted py-2">No workspace details available</p>
+              )}
+            </div>
+          )}
+        </div>
       )}
 
       {/* Last Heartbeat */}

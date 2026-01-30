@@ -53,26 +53,9 @@ class TestSettingsClass:
 class TestDefaultModels:
     """Test default model settings.
 
-    Note: Default models are now admin-controlled via the database.
-    The agent service uses platform settings from Redis cache.
-    These tests verify the fallback model configuration exists.
+    Note: All model configuration is admin-controlled via the database.
+    The agent service fetches capabilities from the API and caches them in Redis.
     """
-
-    def test_fallback_vision_capable_models_exist(self):
-        """Test fallback vision-capable models are defined."""
-        from src.config import _FALLBACK_VISION_CAPABLE_MODELS
-
-        assert _FALLBACK_VISION_CAPABLE_MODELS is not None
-        assert len(_FALLBACK_VISION_CAPABLE_MODELS) > 0
-        # Should include at least one Claude model
-        assert any("claude" in m for m in _FALLBACK_VISION_CAPABLE_MODELS)
-
-    def test_fallback_thinking_capable_models_exist(self):
-        """Test fallback thinking-capable models are defined."""
-        from src.config import _FALLBACK_THINKING_CAPABLE_MODELS
-
-        assert _FALLBACK_THINKING_CAPABLE_MODELS is not None
-        assert len(_FALLBACK_THINKING_CAPABLE_MODELS) > 0
 
     def test_default_thinking_budget_constants(self):
         """Test default thinking budget constants are defined."""
@@ -87,23 +70,15 @@ class TestDefaultModels:
         assert MAX_THINKING_BUDGET > MIN_THINKING_BUDGET
         assert MIN_THINKING_BUDGET <= DEFAULT_THINKING_BUDGET <= MAX_THINKING_BUDGET
 
-    def test_supports_vision_function(self):
-        """Test supports_vision function works with fallback."""
-        from src.config import supports_vision
+    def test_async_capability_functions_exist(self):
+        """Test async capability functions are available."""
+        from src.config import supports_thinking_async, supports_vision_async
 
-        # Should return True for known vision-capable models
-        assert supports_vision("claude-opus-4-5") is True
-        # Should return False for unknown models
-        assert supports_vision("unknown-model") is False
+        # These should be async functions
+        import inspect
 
-    def test_supports_thinking_function(self):
-        """Test supports_thinking function works with fallback."""
-        from src.config import supports_thinking
-
-        # Should return True for known thinking-capable models
-        assert supports_thinking("claude-opus-4-5") is True
-        # Should return False for unknown models
-        assert supports_thinking("unknown-model") is False
+        assert inspect.iscoroutinefunction(supports_vision_async)
+        assert inspect.iscoroutinefunction(supports_thinking_async)
 
 
 class TestToolExecutionLimits:

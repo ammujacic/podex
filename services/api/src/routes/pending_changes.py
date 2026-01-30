@@ -7,12 +7,13 @@ that users can review via a diff view and accept or reject.
 from datetime import UTC, datetime
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from src.database.models import Agent, PendingChange
 from src.database.models import Session as SessionModel
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 from src.routes.dependencies import DbSession, get_current_user_id
 
 logger = structlog.get_logger()
@@ -62,9 +63,11 @@ class RejectChangeRequest(BaseModel):
 
 
 @router.get("/sessions/{session_id}/pending-changes", response_model=list[PendingChangeResponse])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_pending_changes(
     session_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
     status: str | None = None,
 ) -> list[PendingChangeResponse]:
@@ -116,10 +119,12 @@ async def list_pending_changes(
     "/sessions/{session_id}/pending-changes/{change_id}",
     response_model=PendingChangeResponse,
 )
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_pending_change(
     session_id: str,
     change_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> PendingChangeResponse:
     """Get a specific pending change."""
@@ -167,9 +172,11 @@ async def get_pending_change(
 
 
 @router.post("/sessions/{session_id}/pending-changes", response_model=PendingChangeResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def create_pending_change(
     session_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
     body: CreatePendingChangeRequest,
 ) -> PendingChangeResponse:
@@ -232,10 +239,12 @@ async def create_pending_change(
 
 
 @router.post("/sessions/{session_id}/pending-changes/{change_id}/accept")
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def accept_pending_change(
     session_id: str,
     change_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> dict[str, str]:
     """Accept a pending change and apply the file modification."""
@@ -290,10 +299,12 @@ async def accept_pending_change(
 
 
 @router.post("/sessions/{session_id}/pending-changes/{change_id}/reject")
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def reject_pending_change(
     session_id: str,
     change_id: str,
     request: Request,
+    response: Response,
     db: DbSession,
     body: RejectChangeRequest | None = None,
 ) -> dict[str, str]:

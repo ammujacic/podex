@@ -10,6 +10,8 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  Globe,
+  Plus,
 } from 'lucide-react';
 import { useTunnels } from '@/hooks/useTunnels';
 import { useSSHTunnel } from '@/hooks/useSSHTunnel';
@@ -17,6 +19,65 @@ import { cn } from '@/lib/utils';
 
 interface TunnelWidgetProps {
   workspaceId: string | null;
+}
+
+// Simple status badge
+function StatusBadge({ status }: { status: string | null }) {
+  const isRunning = status === 'running';
+  const isStarting = status === 'starting';
+
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium',
+        isRunning && 'bg-emerald-500/15 text-emerald-500',
+        isStarting && 'bg-amber-500/15 text-amber-500',
+        !isRunning && !isStarting && 'bg-text-muted/10 text-text-muted'
+      )}
+    >
+      <span
+        className={cn(
+          'w-1.5 h-1.5 rounded-full',
+          isRunning && 'bg-emerald-500',
+          isStarting && 'bg-amber-500 animate-pulse',
+          !isRunning && !isStarting && 'bg-text-muted'
+        )}
+      />
+      {status || 'offline'}
+    </span>
+  );
+}
+
+// Copy button with feedback
+function CopyButton({
+  text: _text,
+  copied,
+  onCopy,
+  size = 'default',
+}: {
+  text: string;
+  copied: boolean;
+  onCopy: () => void;
+  size?: 'default' | 'small';
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onCopy}
+      className={cn(
+        'rounded-md text-text-muted hover:text-text-primary hover:bg-elevated transition-colors',
+        size === 'default' && 'p-1.5',
+        size === 'small' && 'p-1'
+      )}
+      title={copied ? 'Copied!' : 'Copy'}
+    >
+      {copied ? (
+        <Check className={cn('text-emerald-500', size === 'default' ? 'w-4 h-4' : 'w-3.5 h-3.5')} />
+      ) : (
+        <Copy className={size === 'default' ? 'w-4 h-4' : 'w-3.5 h-3.5'} />
+      )}
+    </button>
+  );
 }
 
 export function TunnelWidget({ workspaceId }: TunnelWidgetProps) {
@@ -47,16 +108,6 @@ export function TunnelWidget({ workspaceId }: TunnelWidgetProps) {
     }
   };
 
-  const copyUrl = async (url: string) => {
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopied(url);
-      setTimeout(() => setCopied(null), 2000);
-    } catch {
-      /* ignore */
-    }
-  };
-
   const copyText = async (text: string, id: string) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -69,322 +120,228 @@ export function TunnelWidget({ workspaceId }: TunnelWidgetProps) {
 
   if (!workspaceId) {
     return (
-      <div className="h-full flex items-center justify-center px-4 py-6 text-center">
-        <p className="text-sm text-text-muted">
-          No workspace yet. Start a session to expose ports.
+      <div className="h-full flex items-center justify-center px-4 py-8">
+        <p className="text-sm text-text-muted text-center">
+          Start a session to expose ports and enable SSH.
         </p>
       </div>
     );
   }
 
   return (
-    <div className="flex h-full flex-col gap-4 p-4 overflow-auto">
-      {/* Error messages */}
-      {error && (
-        <div className="flex items-start gap-2 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-accent-error">
-          <span className="mt-0.5 h-1.5 w-1.5 rounded-full bg-accent-error" />
-          <p className="flex-1">{error}</p>
-        </div>
-      )}
-      {sshError && (
-        <div className="flex items-start gap-2 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-accent-error">
-          <span className="mt-0.5 h-1.5 w-1.5 rounded-full bg-accent-error" />
-          <p className="flex-1">{sshError}</p>
+    <div className="flex h-full flex-col">
+      {/* Errors */}
+      {(error || sshError) && (
+        <div className="p-3 space-y-2 border-b border-border-subtle">
+          {error && (
+            <p className="text-xs text-accent-error bg-accent-error/10 px-3 py-2 rounded-lg">
+              {error}
+            </p>
+          )}
+          {sshError && (
+            <p className="text-xs text-accent-error bg-accent-error/10 px-3 py-2 rounded-lg">
+              {sshError}
+            </p>
+          )}
         </div>
       )}
 
-      {/* VS Code Remote-SSH Section */}
-      <div className="space-y-3 border-b border-border-subtle pb-4">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Terminal className="h-4 w-4 text-text-muted" />
-            <div>
-              <h3 className="text-xs font-medium uppercase tracking-wide text-text-muted">
-                VS Code Remote-SSH
-              </h3>
-              <p className="mt-0.5 text-xs text-text-tertiary">
-                Connect via SSH from your local VS Code.
-              </p>
+      {/* Scrollable content */}
+      <div className="flex-1 overflow-y-auto">
+        {/* SSH Section */}
+        <div className="p-3 border-b border-border-subtle">
+          <div className="flex items-center gap-2 mb-3">
+            <Terminal className="w-4 h-4 text-text-muted" />
+            <span className="text-xs font-semibold text-text-primary">SSH Access</span>
+          </div>
+
+          {sshLoading ? (
+            <div className="flex justify-center py-4">
+              <Loader2 className="w-5 h-5 animate-spin text-text-muted" />
             </div>
-          </div>
-        </div>
-
-        {sshLoading ? (
-          <div className="flex items-center justify-center py-4">
-            <Loader2 className="h-4 w-4 animate-spin text-text-muted" />
-          </div>
-        ) : sshTunnel?.enabled ? (
-          <div className="space-y-3">
-            <div className="flex flex-col gap-2 rounded-lg border border-border-subtle bg-overlay/60 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-medium text-text-primary">SSH Tunnel</span>
-                <span
-                  className={cn(
-                    'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
-                    sshTunnel.status === 'running'
-                      ? 'bg-green-500/10 text-accent-success'
-                      : sshTunnel.status === 'starting'
-                        ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
-                        : 'bg-text-muted/15 text-text-muted'
-                  )}
-                >
-                  <span
-                    className={cn(
-                      'h-1.5 w-1.5 rounded-full',
-                      sshTunnel.status === 'running'
-                        ? 'bg-accent-success'
-                        : sshTunnel.status === 'starting'
-                          ? 'bg-amber-500'
-                          : 'bg-text-muted'
-                    )}
-                  />
-                  {sshTunnel.status || 'enabled'}
-                </span>
-              </div>
-
-              {/* Connection command */}
-              <div className="flex items-center gap-1.5">
-                <code className="min-w-0 flex-1 truncate text-xs text-text-secondary font-mono bg-surface px-2 py-1 rounded">
-                  {sshTunnel.connection_string || `ssh podex@${sshTunnel.hostname}`}
-                </code>
+          ) : sshTunnel?.enabled ? (
+            <div className="space-y-3">
+              {/* Status row */}
+              <div className="flex items-center justify-between">
+                <StatusBadge status={sshTunnel.status} />
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={disableSSH}
+                  disabled={disabling}
+                  className="text-xs text-text-muted hover:text-accent-error transition-colors disabled:opacity-50"
+                >
+                  {disabling ? 'Disabling...' : 'Disable'}
+                </button>
+              </div>
+
+              {/* Command box */}
+              <div className="flex items-center gap-2 bg-elevated rounded-lg px-3 py-2">
+                <code className="flex-1 text-xs font-mono text-text-primary truncate">
+                  {sshTunnel.connection_string || `ssh podex@${sshTunnel.hostname}`}
+                </code>
+                <CopyButton
+                  text={sshTunnel.connection_string || `ssh podex@${sshTunnel.hostname}`}
+                  copied={copied === 'ssh-cmd'}
+                  onCopy={() =>
                     copyText(
                       sshTunnel.connection_string || `ssh podex@${sshTunnel.hostname}`,
                       'ssh-cmd'
                     )
                   }
-                  className="shrink-0 rounded p-1 text-text-muted hover:bg-overlay hover:text-text-primary"
-                  title="Copy command"
-                >
-                  {copied === 'ssh-cmd' ? (
-                    <Check className="h-4 w-4 text-accent-success" />
-                  ) : (
-                    <Copy className="h-4 w-4" />
-                  )}
-                </button>
+                  size="small"
+                />
               </div>
 
               {/* SSH Config toggle */}
               <button
                 type="button"
                 onClick={() => setShowSSHConfig(!showSSHConfig)}
-                className="flex items-center gap-1 text-xs text-accent-primary hover:underline"
+                className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary transition-colors"
               >
                 {showSSHConfig ? (
-                  <ChevronUp className="h-3 w-3" />
+                  <ChevronUp className="w-3 h-3" />
                 ) : (
-                  <ChevronDown className="h-3 w-3" />
+                  <ChevronDown className="w-3 h-3" />
                 )}
                 SSH Config
               </button>
 
               {showSSHConfig && sshTunnel.ssh_config_snippet && (
-                <div className="relative">
-                  <pre className="text-[10px] text-text-muted font-mono bg-surface p-2 rounded overflow-x-auto whitespace-pre">
+                <div className="relative bg-elevated rounded-lg">
+                  <pre className="p-3 text-[11px] text-text-muted font-mono overflow-x-auto whitespace-pre">
                     {sshTunnel.ssh_config_snippet}
                   </pre>
-                  <button
-                    type="button"
-                    onClick={() => copyText(sshTunnel.ssh_config_snippet!, 'ssh-config')}
-                    className="absolute top-1 right-1 rounded p-1 text-text-muted hover:bg-overlay hover:text-text-primary"
-                    title="Copy config"
-                  >
-                    {copied === 'ssh-config' ? (
-                      <Check className="h-3 w-3 text-accent-success" />
-                    ) : (
-                      <Copy className="h-3 w-3" />
-                    )}
-                  </button>
+                  <div className="absolute top-2 right-2">
+                    <CopyButton
+                      text={sshTunnel.ssh_config_snippet}
+                      copied={copied === 'ssh-config'}
+                      onCopy={() => copyText(sshTunnel.ssh_config_snippet!, 'ssh-config')}
+                      size="small"
+                    />
+                  </div>
                 </div>
               )}
-
-              {/* Disable button */}
-              <button
-                type="button"
-                onClick={disableSSH}
-                disabled={disabling}
-                className="mt-1 flex items-center justify-center gap-1.5 rounded px-2 py-1.5 text-xs text-accent-error hover:bg-red-500/10 disabled:opacity-50"
-              >
-                {disabling ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : (
-                  <Trash2 className="h-3 w-3" />
-                )}
-                Disable SSH
-              </button>
             </div>
-          </div>
-        ) : (
-          <div className="rounded-lg border border-dashed border-border-subtle/70 bg-surface-hover/40 px-3 py-4 text-center">
-            <p className="text-sm font-medium text-text-secondary">SSH not enabled</p>
-            <p className="mt-1 text-xs text-text-muted">
-              Enable SSH to connect with VS Code Remote-SSH.
-            </p>
+          ) : (
             <button
               type="button"
               onClick={enableSSH}
               disabled={enabling}
-              className="mt-3 inline-flex items-center justify-center gap-1.5 rounded-lg bg-accent-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-primary/90 disabled:opacity-50"
+              className="w-full flex items-center justify-center gap-2 py-3 rounded-lg border border-dashed border-border-subtle bg-elevated/50 text-text-secondary hover:bg-elevated hover:border-border-default transition-colors disabled:opacity-50"
             >
               {enabling ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Enabling...
-                </>
+                <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
-                <>
-                  <Terminal className="h-4 w-4" />
-                  Enable SSH
-                </>
+                <Terminal className="w-4 h-4" />
               )}
+              <span className="text-sm font-medium">{enabling ? 'Enabling...' : 'Enable SSH'}</span>
             </button>
+          )}
+        </div>
+
+        {/* Port Tunnels Section */}
+        <div className="p-3">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Globe className="w-4 h-4 text-text-muted" />
+              <span className="text-xs font-semibold text-text-primary">Exposed Ports</span>
+            </div>
+            {tunnels.length > 0 && (
+              <span className="text-xs text-text-muted">{tunnels.length}</span>
+            )}
           </div>
-        )}
+
+          {loading && tunnels.length === 0 ? (
+            <div className="flex justify-center py-4">
+              <Loader2 className="w-5 h-5 animate-spin text-text-muted" />
+            </div>
+          ) : tunnels.length > 0 ? (
+            <div className="space-y-2">
+              {tunnels.map((t) => (
+                <div key={t.id} className="bg-elevated rounded-lg p-3 space-y-2">
+                  {/* Port + Status + Actions */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-text-primary font-mono">
+                        :{t.port}
+                      </span>
+                      <StatusBadge status={t.status} />
+                    </div>
+                    <div className="flex items-center">
+                      <CopyButton
+                        text={t.public_url}
+                        copied={copied === t.public_url}
+                        onCopy={() => copyText(t.public_url, t.public_url)}
+                        size="small"
+                      />
+                      <a
+                        href={t.public_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="p-1 rounded-md text-text-muted hover:text-text-primary hover:bg-surface transition-colors"
+                        title="Open"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => unexposePort(t.port)}
+                        className="p-1 rounded-md text-text-muted hover:text-accent-error hover:bg-accent-error/10 transition-colors"
+                        title="Remove"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* URL */}
+                  <a
+                    href={t.public_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block text-xs text-accent-primary hover:underline truncate"
+                  >
+                    {t.public_url}
+                  </a>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-text-muted text-center py-4">No ports exposed yet.</p>
+          )}
+        </div>
       </div>
 
-      {/* HTTP Port Tunnels Section */}
-      {tunnels.length > 0 ? (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <h3 className="text-xs font-medium uppercase tracking-wide text-text-muted">
-                Public URLs
-              </h3>
-              <p className="mt-0.5 text-xs text-text-tertiary">
-                Secure links to your local services.
-              </p>
-            </div>
-            <span className="rounded-full bg-surface-hover px-2 py-0.5 text-xs text-text-muted">
-              {tunnels.length} {tunnels.length === 1 ? 'tunnel' : 'tunnels'}
-            </span>
-          </div>
-          {tunnels.map((t) => (
-            <div
-              key={t.id}
-              className="flex flex-col gap-2 rounded-lg border border-border-subtle bg-overlay/60 p-3"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-xs font-medium text-text-primary">Port {t.port}</span>
-                  <span className="text-[11px] text-text-tertiary truncate">
-                    {t.public_url.replace(/^https?:\/\//, '')}
-                  </span>
-                </div>
-                <span
-                  className={cn(
-                    'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
-                    t.status === 'running'
-                      ? 'bg-green-500/10 text-accent-success'
-                      : t.status === 'starting'
-                        ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
-                        : 'bg-text-muted/15 text-text-muted'
-                  )}
-                >
-                  <span
-                    className={cn(
-                      'h-1.5 w-1.5 rounded-full',
-                      t.status === 'running'
-                        ? 'bg-accent-success'
-                        : t.status === 'starting'
-                          ? 'bg-amber-500'
-                          : 'bg-text-muted'
-                    )}
-                  />
-                  {t.status}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <a
-                  href={t.public_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="min-w-0 flex-1 truncate text-sm text-accent-primary hover:underline"
-                >
-                  {t.public_url}
-                </a>
-                <button
-                  type="button"
-                  onClick={() => copyUrl(t.public_url)}
-                  className="shrink-0 rounded p-1 text-text-muted hover:bg-overlay hover:text-text-primary"
-                  title="Copy"
-                >
-                  <Copy className="h-4 w-4" />
-                </button>
-                <a
-                  href={t.public_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="shrink-0 rounded p-1 text-text-muted hover:bg-overlay hover:text-text-primary"
-                  title="Open"
-                >
-                  <ExternalLink className="h-4 w-4" />
-                </a>
-                <button
-                  type="button"
-                  onClick={() => unexposePort(t.port)}
-                  className="shrink-0 rounded p-1 text-text-muted hover:bg-red-500/10 hover:text-accent-error"
-                  title="Remove"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
-              {copied === t.public_url && (
-                <span className="text-xs text-accent-success">Copied to clipboard</span>
-              )}
-            </div>
-          ))}
-        </div>
-      ) : (
-        !loading && (
-          <div className="rounded-lg border border-dashed border-border-subtle/70 bg-surface-hover/40 px-3 py-4 text-center">
-            <p className="text-sm font-medium text-text-secondary">No ports exposed</p>
-            <p className="mt-1 text-xs text-text-muted">
-              Expose a port below to create a shareable HTTPS URL for a local service.
-            </p>
-          </div>
-        )
-      )}
-
-      <div className="space-y-2 border-t border-border-subtle pt-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-xs font-medium uppercase tracking-wide text-text-muted">
-              Expose port
-            </h3>
-            <p className="mt-0.5 text-xs text-text-tertiary">
-              Start your dev server, then publish it with one click.
-            </p>
-          </div>
-        </div>
+      {/* Footer: Expose port input */}
+      <div className="shrink-0 p-3 border-t border-border-subtle bg-surface">
         <div className="flex gap-2">
           <input
             type="number"
             min={1}
             max={65535}
-            placeholder="e.g. 8080"
+            placeholder="Port (e.g. 3000)"
             value={portInput}
             onChange={(e) => setPortInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleExpose()}
-            className="min-w-0 flex-1 rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:outline-none focus:ring-1 focus:ring-accent-primary"
+            className="flex-1 min-w-0 h-9 px-3 rounded-lg bg-elevated border border-border-subtle text-sm text-text-primary placeholder:text-text-muted focus:border-accent-primary focus:outline-none focus:ring-1 focus:ring-accent-primary/30 transition-colors"
           />
           <button
             type="button"
             onClick={handleExpose}
             disabled={exposing || loading || !portInput.trim()}
-            className="inline-flex items-center justify-center rounded-lg bg-accent-primary px-3 py-2 text-sm font-medium text-white hover:bg-accent-primary/90 disabled:opacity-50"
+            className="h-9 px-4 rounded-lg bg-accent-primary text-white text-sm font-medium hover:bg-accent-primary-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
           >
-            {exposing ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Expose'}
+            {exposing ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <>
+                <Plus className="w-4 h-4" />
+                Expose
+              </>
+            )}
           </button>
         </div>
       </div>
-
-      {loading && tunnels.length === 0 && (
-        <div className="flex items-center justify-center py-6">
-          <Loader2 className="h-5 w-5 animate-spin text-text-muted" />
-        </div>
-      )}
     </div>
   );
 }

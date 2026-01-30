@@ -694,8 +694,12 @@ async def create_session(
                 workspace_id=str(workspace.id),
                 config=workspace_config,
             )
-            # Update workspace status from compute service response
+            # Update workspace status and server_id from compute service response
             workspace.status = workspace_info.get("status", "running")
+            if workspace_info.get("server_id"):
+                workspace.server_id = workspace_info.get("server_id")
+            if workspace_info.get("container_id"):
+                workspace.container_id = workspace_info.get("container_id")
             await db.commit()
         except ComputeClientError as e:
             logger.warning(
@@ -1808,12 +1812,26 @@ async def ensure_workspace_provisioned(
                 has_template=bool(session.template_id),
             )
 
-            await compute_client.create_workspace(
+            workspace_info = await compute_client.create_workspace(
                 session_id=str(session.id),
                 user_id=user_id,
                 workspace_id=workspace_id,
                 config=workspace_config,
             )
+
+            # Update workspace record with server_id if db is available
+            if db and workspace_info:
+                ws_result = await db.execute(
+                    select(WorkspaceModel).where(WorkspaceModel.id == workspace_id)
+                )
+                ws = ws_result.scalar_one_or_none()
+                if ws:
+                    if workspace_info.get("server_id"):
+                        ws.server_id = workspace_info.get("server_id")
+                    if workspace_info.get("container_id"):
+                        ws.container_id = workspace_info.get("container_id")
+                    ws.status = workspace_info.get("status", "running")
+                    await db.commit()
     except RuntimeError as e:
         # Lock acquisition failed - do NOT proceed without lock
         # This prevents race conditions where multiple requests could

@@ -1,4 +1,4 @@
-.PHONY: build test check run stop logs clean help sync-venvs
+.PHONY: build build-workspace-images build-workspace-images-all push-workspace-images load-workspace-images-dind test check run stop logs clean help sync-venvs
 
 # Colors for output
 CYAN := \033[0;36m
@@ -23,14 +23,105 @@ build:
 	cd services/api && uv sync --active --dev --quiet
 	cd services/agent && uv sync --active --dev --quiet
 	cd services/compute && uv sync --active --dev --quiet
-	@echo "$(CYAN)Building workspace base image (podex/workspace:latest)...$(NC)"
-	@# Build the dedicated workspace-base image explicitly so compute workspaces always have it available
-	docker-compose build workspace-base
+	@echo "$(CYAN)Building workspace images for arm64 and amd64...$(NC)"
+	@# Build workspace images for both architectures
+	@$(MAKE) build-workspace-images
 	@echo "$(CYAN)Building frontend packages...$(NC)"
 	pnpm build
 	@echo "$(CYAN)Building Docker images...$(NC)"
 	docker-compose build
 	@echo "$(GREEN)Build complete!$(NC)"
+
+## Build workspace image for current platform (local dev)
+## For cross-platform builds, use: make build-workspace-images-all
+build-workspace-images:
+	@echo "$(CYAN)Building workspace image for current platform...$(NC)"
+	@ARCH=$$(uname -m); \
+	if [ "$$ARCH" = "arm64" ] || [ "$$ARCH" = "aarch64" ]; then \
+		echo "$(CYAN)Detected ARM64 - building arm64 image...$(NC)"; \
+		docker build -t podex/workspace:latest-arm64 ./docker/workspace; \
+		docker tag podex/workspace:latest-arm64 podex/workspace:latest; \
+		echo "$(GREEN)Built: podex/workspace:latest-arm64$(NC)"; \
+	else \
+		echo "$(CYAN)Detected x86_64 - building amd64 image...$(NC)"; \
+		docker build -t podex/workspace:latest-amd64 ./docker/workspace; \
+		docker tag podex/workspace:latest-amd64 podex/workspace:latest; \
+		echo "$(GREEN)Built: podex/workspace:latest-amd64$(NC)"; \
+	fi
+
+## Build workspace images for BOTH arm64 and amd64 (requires more disk space)
+build-workspace-images-all:
+	@echo "$(CYAN)Setting up docker buildx...$(NC)"
+	@docker buildx inspect podex-builder > /dev/null 2>&1 || docker buildx create --name podex-builder --use
+	@docker buildx use podex-builder
+	@echo "$(CYAN)Building workspace image for arm64...$(NC)"
+	docker buildx build --platform linux/arm64 -t podex/workspace:latest-arm64 --load ./docker/workspace
+	@echo "$(CYAN)Building workspace image for amd64...$(NC)"
+	docker buildx build --platform linux/amd64 -t podex/workspace:latest-amd64 --load ./docker/workspace
+	@echo "$(CYAN)Tagging latest image for current platform...$(NC)"
+	@ARCH=$$(uname -m); \
+	if [ "$$ARCH" = "arm64" ] || [ "$$ARCH" = "aarch64" ]; then \
+		docker tag podex/workspace:latest-arm64 podex/workspace:latest; \
+	else \
+		docker tag podex/workspace:latest-amd64 podex/workspace:latest; \
+	fi
+	@echo "$(GREEN)Workspace images built: podex/workspace:latest-arm64, podex/workspace:latest-amd64$(NC)"
+
+## Build and push workspace images to a container registry (production)
+## Usage: REGISTRY=ghcr.io/yourorg make push-workspace-images
+## Optional: VERSION=1.0.0 (defaults to git commit hash)
+push-workspace-images:
+	@if [ -z "$(REGISTRY)" ]; then \
+		echo "$(RED)Error: REGISTRY is required$(NC)"; \
+		echo "Usage: REGISTRY=ghcr.io/yourorg make push-workspace-images"; \
+		echo "       REGISTRY=yourname make push-workspace-images  (for Docker Hub)"; \
+		exit 1; \
+	fi
+	@echo "$(CYAN)Setting up docker buildx for multi-arch push...$(NC)"
+	@docker buildx inspect podex-builder > /dev/null 2>&1 || docker buildx create --name podex-builder --use
+	@docker buildx use podex-builder
+	@# Determine version tag
+	@VERSION=$${VERSION:-$$(git rev-parse --short HEAD)}; \
+	echo "$(CYAN)Building and pushing multi-arch images to $(REGISTRY)/workspace...$(NC)"; \
+	echo "$(CYAN)Version: $$VERSION$(NC)"; \
+	echo ""; \
+	echo "$(CYAN)Building and pushing linux/arm64 + linux/amd64...$(NC)"; \
+	docker buildx build \
+		--platform linux/arm64,linux/amd64 \
+		-t $(REGISTRY)/workspace:$$VERSION \
+		-t $(REGISTRY)/workspace:latest \
+		-t $(REGISTRY)/workspace:latest-arm64 \
+		-t $(REGISTRY)/workspace:latest-amd64 \
+		--push \
+		./docker/workspace; \
+	echo ""; \
+	echo "$(GREEN)Images pushed to registry:$(NC)"; \
+	echo "  $(REGISTRY)/workspace:$$VERSION"; \
+	echo "  $(REGISTRY)/workspace:latest"; \
+	echo "  $(REGISTRY)/workspace:latest-arm64"; \
+	echo "  $(REGISTRY)/workspace:latest-amd64"
+
+## Load workspace images into Docker-in-Docker containers (ws-local-1, ws-local-2)
+## Run this after build-workspace-images to make images available for workspace creation
+load-workspace-images-dind:
+	@echo "$(CYAN)Loading workspace images into DinD containers...$(NC)"
+	@ARCH=$$(uname -m); \
+	if [ "$$ARCH" = "arm64" ] || [ "$$ARCH" = "aarch64" ]; then \
+		IMG="podex/workspace:latest-arm64"; \
+	else \
+		IMG="podex/workspace:latest-amd64"; \
+	fi; \
+	echo "$(CYAN)Loading $$IMG into ws-local-1 (this may take a moment)...$(NC)"; \
+	docker save $$IMG | docker exec -i ws-local-1 docker -H tcp://localhost:2375 load; \
+	echo "$(CYAN)Loading $$IMG into ws-local-2...$(NC)"; \
+	docker save $$IMG | docker exec -i ws-local-2 docker -H tcp://localhost:2375 load; \
+	echo "$(GREEN)Workspace images loaded into DinD containers!$(NC)"; \
+	echo ""; \
+	echo "Images in ws-local-1:"; \
+	docker exec ws-local-1 docker -H tcp://localhost:2375 images; \
+	echo ""; \
+	echo "Images in ws-local-2:"; \
+	docker exec ws-local-2 docker -H tcp://localhost:2375 images
 
 # ============================================
 # TEST
@@ -411,6 +502,34 @@ run:
 	CORS_ORIGINS='["http://localhost:3000","http://'$$HOST_IP':3000"]' \
 	LLM_PROVIDER=ollama docker-compose up -d
 	@echo ""
+	@echo "$(CYAN)Waiting for workspace servers to be ready...$(NC)"
+	@# Wait for both DinD containers to be healthy (up to 60 seconds)
+	@for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
+		WS1_READY=$$(docker exec ws-local-1 docker -H tcp://localhost:2375 info > /dev/null 2>&1 && echo "yes" || echo "no"); \
+		WS2_READY=$$(docker exec ws-local-2 docker -H tcp://localhost:2375 info > /dev/null 2>&1 && echo "yes" || echo "no"); \
+		if [ "$$WS1_READY" = "yes" ] && [ "$$WS2_READY" = "yes" ]; then \
+			echo "  Both workspace servers ready"; \
+			break; \
+		fi; \
+		echo "  Waiting for workspace servers (ws-local-1: $$WS1_READY, ws-local-2: $$WS2_READY)..."; \
+		sleep 5; \
+	done
+	@# Small delay to ensure Docker daemons are fully stable
+	@sleep 2
+	@# Check if workspace images are loaded in DinD, load if missing
+	@ARCH=$$(uname -m); \
+	if [ "$$ARCH" = "arm64" ] || [ "$$ARCH" = "aarch64" ]; then \
+		IMG="podex/workspace:latest-arm64"; \
+	else \
+		IMG="podex/workspace:latest-amd64"; \
+	fi; \
+	if ! docker exec ws-local-1 docker -H tcp://localhost:2375 images -q $$IMG 2>/dev/null | grep -q .; then \
+		echo "$(YELLOW)Workspace image not found in DinD containers, loading...$(NC)"; \
+		$(MAKE) load-workspace-images-dind; \
+	else \
+		echo "$(GREEN)Workspace images already loaded in DinD containers$(NC)"; \
+	fi
+	@echo ""
 	@HOST_IP=$$(ipconfig getifaddr en0 2>/dev/null || echo "localhost"); \
 	echo "$(GREEN)Services started!$(NC)"; \
 	echo "  Web:               http://localhost:3000 (or http://$$HOST_IP:3000 from mobile)"; \
@@ -497,10 +616,14 @@ help:
 	@echo ""
 	@echo "$(YELLOW)Build & Development:$(NC)"
 	@echo "  $(GREEN)make build$(NC)             Install all dependencies and build Docker images"
+	@echo "  $(GREEN)make build-workspace-images$(NC)  Build workspace images locally (arm64 + amd64)"
 	@echo "  $(GREEN)make run$(NC)               Start local development (requires Ollama with a model)"
 	@echo "  $(GREEN)make stop$(NC)              Stop running services"
 	@echo "  $(GREEN)make logs$(NC)              Watch logs from all services"
 	@echo "  $(GREEN)make clean$(NC)             Stop all services, remove volumes, kill workspaces"
+	@echo ""
+	@echo "$(YELLOW)Production:$(NC)"
+	@echo "  $(GREEN)REGISTRY=ghcr.io/org make push-workspace-images$(NC)  Build & push multi-arch images"
 	@echo ""
 	@echo "$(YELLOW)Testing:$(NC)"
 	@echo "  $(GREEN)make test$(NC)              Run all tests with coverage + cleanup (recommended)"

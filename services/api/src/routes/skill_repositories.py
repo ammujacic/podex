@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +16,7 @@ from src.config import settings
 from src.database import get_db
 from src.database.models import SkillRepository, SkillSyncLog
 from src.middleware.auth import get_current_user
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
 router = APIRouter(prefix="/skill-repositories", tags=["skill-repositories"])
 
@@ -110,7 +111,10 @@ class SyncTriggerResponse(BaseModel):
 
 
 @router.get("", response_model=SkillRepositoryListResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_repositories(
+    request: Request,
+    response: Response,
     include_inactive: bool = Query(False, description="Include inactive repositories"),
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
@@ -135,8 +139,11 @@ async def list_repositories(
 
 
 @router.post("", response_model=SkillRepositoryResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def create_repository(
-    request: SkillRepositoryCreateRequest,
+    request: Request,
+    response: Response,
+    body: SkillRepositoryCreateRequest,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> SkillRepositoryResponse:
@@ -146,7 +153,7 @@ async def create_repository(
     # Check for duplicate URL
     existing_query = select(SkillRepository).where(
         SkillRepository.user_id == user_id,
-        SkillRepository.repo_url == request.repo_url,
+        SkillRepository.repo_url == body.repo_url,
     )
     existing = (await db.execute(existing_query)).scalar_one_or_none()
     if existing:
@@ -162,11 +169,11 @@ async def create_repository(
     repository = SkillRepository(
         id=str(uuid4()),
         user_id=user_id,
-        name=request.name,
-        repo_url=request.repo_url,
-        branch=request.branch,
-        skills_path=request.skills_path,
-        sync_direction=request.sync_direction,
+        name=body.name,
+        repo_url=body.repo_url,
+        branch=body.branch,
+        skills_path=body.skills_path,
+        sync_direction=body.sync_direction,
         webhook_secret=webhook_secret,
         is_active=True,
         created_at=now,
@@ -180,8 +187,11 @@ async def create_repository(
 
 
 @router.get("/{repo_id}", response_model=SkillRepositoryResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_repository(
     repo_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> SkillRepositoryResponse:
@@ -205,9 +215,12 @@ async def get_repository(
 
 
 @router.patch("/{repo_id}", response_model=SkillRepositoryResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def update_repository(
     repo_id: str,
-    request: SkillRepositoryUpdateRequest,
+    request: Request,
+    response: Response,
+    body: SkillRepositoryUpdateRequest,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> SkillRepositoryResponse:
@@ -229,7 +242,7 @@ async def update_repository(
         )
 
     # Build update data
-    update_data = request.model_dump(exclude_unset=True)
+    update_data = body.model_dump(exclude_unset=True)
     update_data["updated_at"] = datetime.now(UTC)
 
     # Apply update
@@ -243,8 +256,11 @@ async def update_repository(
 
 
 @router.delete("/{repo_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def delete_repository(
     repo_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> None:
@@ -275,8 +291,11 @@ async def delete_repository(
 
 
 @router.post("/{repo_id}/sync", response_model=SyncTriggerResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def trigger_sync(
     repo_id: str,
+    request: Request,
+    response: Response,
     force: bool = Query(False, description="Force sync even if recently synced"),
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
@@ -348,8 +367,11 @@ async def trigger_sync(
 
 
 @router.get("/{repo_id}/logs", response_model=SkillSyncLogListResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_sync_logs(
     repo_id: str,
+    request: Request,
+    response: Response,
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -393,8 +415,11 @@ async def list_sync_logs(
 
 
 @router.get("/{repo_id}/webhook-url", response_model=dict)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_webhook_url(
     repo_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -432,8 +457,11 @@ async def get_webhook_url(
 
 
 @router.post("/webhook/{secret}", response_model=dict)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def receive_webhook(
     secret: str,
+    request: Request,
+    response: Response,
     payload: dict[str, Any],
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:

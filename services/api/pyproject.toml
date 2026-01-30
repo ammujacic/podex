@@ -192,8 +192,8 @@ known-first-party = ["src", "podex_shared"]
 "src/routes/templates.py" = ["ARG001"]
 # Billing routes: complex billing logic requires many branches/statements/arguments
 "src/routes/billing.py" = ["ARG001", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR2004", "E501", "F841", "FBT001", "FBT002", "PLC0415"]
-# Webhooks: complex stripe event handling, many args for helper
-"src/routes/webhooks.py" = ["PLR0913", "E501"]
+# Webhooks: complex stripe event handling, many args for helper, rate limiter params
+"src/routes/webhooks.py" = ["ARG001", "PLR0913", "E501"]
 # Workspaces: file operations need extra params, lazy imports
 "src/routes/workspaces.py" = ["PLR0913", "PLC0415"]
 # Agents: message handling needs extra params, lazy imports
@@ -212,8 +212,8 @@ known-first-party = ["src", "podex_shared"]
 "src/routes/doctor.py" = ["PLC0415"]
 # User config: lazy imports
 "src/routes/user_config.py" = ["PLC0415"]
-# Hooks: performance suggestions
-"src/routes/hooks.py" = ["PERF401"]
+# Hooks: performance suggestions, rate limiter params
+"src/routes/hooks.py" = ["ARG001", "PERF401"]
 # GCS storage: exception messages
 "src/storage/gcs.py" = ["TRY003"]
 # Sharing routes: upsert logic with inline imports
@@ -226,10 +226,10 @@ known-first-party = ["src", "podex_shared"]
 "src/middleware/auth.py" = ["PLC0415"]
 # Admin compliance: lazy imports for uuid and time
 "src/routes/admin/compliance.py" = ["PLC0415"]
-# LLM providers: lazy imports
-"src/routes/llm_providers.py" = ["PLC0415"]
-# Project health: lazy imports
-"src/routes/project_health.py" = ["PLC0415"]
+# LLM providers: lazy imports, rate limiter params
+"src/routes/llm_providers.py" = ["ARG001", "PLC0415"]
+# Project health: lazy imports, rate limiter params
+"src/routes/project_health.py" = ["ARG001", "PLC0415"]
 # Project init: lazy imports
 "src/routes/project_init.py" = ["PLC0415"]
 # Voice: lazy imports for audio processing libraries
@@ -237,15 +237,15 @@ known-first-party = ["src", "podex_shared"]
 # WebSocket hub: lazy imports to avoid circular dependencies
 "src/websocket/hub.py" = ["PLC0415"]
 # Memory routes: FastAPI routes with many params and boolean confirm query param
-"src/routes/memory.py" = ["PLR0913", "FBT001", "FBT002"]
+"src/routes/memory.py" = ["ARG001", "PLR0913", "FBT001", "FBT002"]
 # Skills routes: FastAPI patterns (Depends, boolean params, type import)
-"src/routes/skills.py" = ["PLR0913", "FBT001", "FBT002", "FBT003", "B008", "TC002"]
+"src/routes/skills.py" = ["ARG001", "PLR0913", "FBT001", "FBT002", "FBT003", "B008", "TC002"]
 # Compute client: exception messages and return in try block for complex flow
 "src/compute_client.py" = ["TRY003", "TRY300"]
 # GitHub client: async context manager patterns, runtime error messages, datetime parsing, many params
 "src/github_client.py" = ["ANN001", "ANN003", "ANN204", "TRY003", "E741", "F401", "UP037", "FURB162", "PLR0913", "FBT001", "FBT002"]
 # GitHub routes: FastAPI patterns with Depends and many dict returns
-"src/routes/github.py" = ["PLR0913", "FBT001", "FBT002", "FBT003", "B008", "TC002", "RET504"]
+"src/routes/github.py" = ["ARG001", "PLR0913", "FBT001", "FBT002", "FBT003", "B008", "TC002", "RET504"]
 # Audit logger: decorator patterns, many params, logging best practices, security false positives
 "src/audit_logger.py" = ["I001", "UP035", "TC002", "S105", "ANN204", "UP037", "PLR0913", "G004", "SIM105", "S110", "TRY400", "ANN002", "ANN003", "ANN201", "ANN202", "TRY300", "RET504"]
 # Rate limit middleware: TRY300 false positive on return statement after if/return
@@ -256,6 +256,19 @@ known-first-party = ["src", "podex_shared"]
 "src/services/token_blacklist.py" = ["PLC0415"]
 # Local pod hub: lazy imports for async handling
 "src/websocket/local_pod_hub.py" = ["PLC0415"]
+# Route files: rate limiter params require unused response argument
+"src/routes/changes.py" = ["ARG001"]
+"src/routes/checkpoints.py" = ["ARG001"]
+"src/routes/context.py" = ["ARG001"]
+"src/routes/cost_insights.py" = ["ARG001"]
+"src/routes/health_checks.py" = ["ARG001"]
+"src/routes/marketplace.py" = ["ARG001"]
+"src/routes/pending_changes.py" = ["ARG001"]
+"src/routes/productivity.py" = ["ARG001"]
+"src/routes/skill_repositories.py" = ["ARG001"]
+"src/routes/skill_templates.py" = ["ARG001"]
+"src/routes/subagents.py" = ["ARG001"]
+"src/routes/worktrees.py" = ["ARG001"]
 
 [tool.mypy]
 python_version = "3.12"

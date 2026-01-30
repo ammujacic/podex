@@ -38,6 +38,7 @@ import {
   getLocalLLMConfig,
   executeCommand,
   attachConversation,
+  createConversation,
   detachConversation,
   type PublicModel,
   type UserProviderModel,
@@ -149,12 +150,12 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     updateAgentThinking,
     setActiveAgent,
     // Conversation session actions
-    createConversationSession,
     attachConversationToAgent,
     detachConversationFromAgent,
     addConversationMessage,
     deleteConversationMessage,
     getConversationForAgent,
+    handleConversationEvent,
   } = useSessionStore();
   const streamingMessages = useStreamingStore((state) => state.streamingMessages);
   const { getAgentWorktree } = useWorktreesStore();
@@ -405,54 +406,6 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     userModelToInfo,
   ]);
 
-  const modelsByTier = useMemo(() => {
-    const flagship: ExtendedModelInfo[] = [];
-    const balanced: ExtendedModelInfo[] = [];
-    const fast: ExtendedModelInfo[] = [];
-    const userApi: ExtendedModelInfo[] = [];
-    const local: ExtendedModelInfo[] = [];
-
-    // Standard Podex model tiers
-    for (const m of backendModels) {
-      const info = backendModelToInfo(m);
-      if (m.cost_tier === 'premium' || m.cost_tier === 'high') flagship.push(info);
-      else if (m.cost_tier === 'medium') balanced.push(info);
-      else fast.push(info);
-    }
-    for (const m of userProviderModels) {
-      userApi.push(userModelToInfo(m));
-    }
-
-    // Local models (Ollama / LM Studio) from saved config; id format is "provider/name"
-    const providerLabels: Record<string, string> = { ollama: 'Ollama', lmstudio: 'LM Studio' };
-    for (const [provider, cfg] of Object.entries(localLLMConfig)) {
-      if (!cfg?.models?.length) continue;
-      const label = providerLabels[provider] ?? provider;
-      for (const m of cfg.models) {
-        const modelId = `${provider}/${m.id || m.name}`;
-        local.push({
-          id: modelId,
-          provider: provider as LLMProvider,
-          displayName: `${m.name} (${label})`,
-          shortName: m.name,
-          tier: 'fast',
-          contextWindow: 4096,
-          maxOutputTokens: 2048,
-          supportsVision: false,
-          supportsThinking: false,
-          thinkingStatus: 'not_supported',
-          capabilities: ['chat', 'code'],
-          goodFor: [],
-          description: `Local model via ${label}`,
-          reasoningEffort: 'low',
-          isUserKey: false,
-        } as ExtendedModelInfo);
-      }
-    }
-
-    return { flagship, balanced, fast, userApi, local };
-  }, [backendModels, userProviderModels, localLLMConfig, backendModelToInfo, userModelToInfo]);
-
   const getModelDisplayName = useCallback(
     (modelId: string) => {
       if (agent.modelDisplayName) {
@@ -520,19 +473,38 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       // Add message to conversation session (creates one if needed)
       let conversationId = conversationSession?.id;
       if (!conversationId) {
-        // Create a new conversation session and attach to this agent
-        const newConversation = createConversationSession(sessionId, {
-          firstMessage: messageContent,
-        });
-        conversationId = newConversation.id;
-        // Optimistically update local state
-        attachConversationToAgent(sessionId, conversationId, agent.id);
-        // Call API to attach (don't await - let it happen in background)
-        // Backend will handle detaching old conversation if needed
-        attachConversation(sessionId, conversationId, agent.id).catch((error) => {
-          console.error('Failed to attach conversation:', error);
-          // WebSocket event will sync state if API call fails
-        });
+        // Create conversation on backend first (backend generates the UUID)
+        // NOTE: Don't pass first_message here - sendMessage will create the user message
+        // to avoid duplicate message creation
+        try {
+          const newConversation = await createConversation(sessionId, {});
+          conversationId = newConversation.id;
+
+          // Update local state immediately (don't wait for WebSocket)
+          handleConversationEvent(sessionId, 'conversation_created', {
+            conversation: {
+              id: newConversation.id,
+              name: newConversation.name,
+              attachedToAgentId: null,
+              attachedAgentIds: [],
+              messageCount: newConversation.message_count,
+              lastMessageAt: newConversation.last_message_at,
+              createdAt: newConversation.created_at,
+              updatedAt: newConversation.updated_at,
+            },
+          });
+
+          // Attach conversation to agent
+          await attachConversation(sessionId, conversationId, agent.id);
+
+          // Update local state for attach
+          attachConversationToAgent(sessionId, conversationId, agent.id);
+        } catch (error) {
+          console.error('Failed to create conversation:', error);
+          toast.error('Failed to start conversation');
+          setIsSending(false);
+          return;
+        }
       }
       addConversationMessage(sessionId, conversationId, userMessage);
       updateAgent(sessionId, agent.id, { status: 'active' });
@@ -584,7 +556,6 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       agent.id,
       agent.thinkingConfig,
       conversationSession,
-      createConversationSession,
       attachConversationToAgent,
       addConversationMessage,
       updateAgent,
@@ -594,6 +565,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
       getPendingBrowserContext,
       captureBrowserContext,
       clearPendingBrowserContext,
+      handleConversationEvent,
     ]
   );
 
@@ -940,27 +912,34 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
   }, [sessionId, conversationSession, agent.id, detachConversationFromAgent]);
 
   const handleCreateNewSession = useCallback(async () => {
-    // Create a new conversation and attach it to this agent
-    const newConversation = createConversationSession(sessionId);
     try {
-      // Optimistically update local state
-      attachConversationToAgent(sessionId, newConversation.id, agent.id);
+      // Create conversation on backend first (backend generates the UUID)
+      const newConversation = await createConversation(sessionId, { name: 'New Session' });
 
-      // Call API to attach (backend will handle detaching old conversation)
+      // Update local state immediately (don't wait for WebSocket)
+      handleConversationEvent(sessionId, 'conversation_created', {
+        conversation: {
+          id: newConversation.id,
+          name: newConversation.name,
+          attachedToAgentId: null,
+          attachedAgentIds: [],
+          messageCount: newConversation.message_count,
+          lastMessageAt: newConversation.last_message_at,
+          createdAt: newConversation.created_at,
+          updatedAt: newConversation.updated_at,
+        },
+      });
+
+      // Attach the conversation to this agent
       await attachConversation(sessionId, newConversation.id, agent.id);
+
+      // Update local state for attach
+      attachConversationToAgent(sessionId, newConversation.id, agent.id);
     } catch (error) {
-      console.error('Failed to attach new conversation:', error);
+      console.error('Failed to create new conversation:', error);
       toast.error('Failed to create new session');
-      // Revert optimistic update
-      detachConversationFromAgent(sessionId, newConversation.id);
     }
-  }, [
-    sessionId,
-    agent.id,
-    createConversationSession,
-    attachConversationToAgent,
-    detachConversationFromAgent,
-  ]);
+  }, [sessionId, agent.id, handleConversationEvent, attachConversationToAgent]);
 
   const handleSaveThinkingConfig = useCallback(
     (config: ThinkingConfig) => {
@@ -1146,7 +1125,8 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
         conversationSession={conversationSession}
         currentModelInfo={currentModelInfo}
         getModelDisplayName={getModelDisplayName}
-        modelsByTier={modelsByTier}
+        publicModels={backendModels}
+        userKeyModels={userProviderModels}
         isDeleting={isDeleting}
         isDuplicating={isDuplicating}
         isTogglingPlanMode={isTogglingPlanMode}

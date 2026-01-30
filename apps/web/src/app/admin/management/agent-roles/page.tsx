@@ -15,7 +15,6 @@ import {
   Activity,
   Clock,
   Award,
-  Terminal,
   Workflow,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -26,9 +25,6 @@ function formatNumber(num: number): string {
   if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
   return num.toString();
 }
-
-// CLI agent roles that wrap external CLI tools
-const CLI_AGENT_ROLES = new Set(['claude-code', 'openai-codex', 'gemini-cli']);
 
 // Horizontal bar chart component
 interface BarChartProps {
@@ -293,7 +289,7 @@ export default function AgentRolesAdminPage() {
   const [formData, setFormData] = useState<CreateRoleForm>(defaultForm);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'cli' | 'roles' | 'stats'>('cli');
+  const [activeTab, setActiveTab] = useState<'roles' | 'stats'>('roles');
 
   useEffect(() => {
     loadData();
@@ -313,10 +309,6 @@ export default function AgentRolesAdminPage() {
       setLoading(false);
     }
   };
-
-  // Split roles into CLI wrapper agents and native orchestrated agents
-  const cliAgents = roles.filter((r) => CLI_AGENT_ROLES.has(r.role));
-  const nativeAgents = roles.filter((r) => !CLI_AGENT_ROLES.has(r.role));
 
   const handleCreate = async () => {
     setSaving(true);
@@ -433,32 +425,12 @@ export default function AgentRolesAdminPage() {
     <div className="p-6 max-w-7xl mx-auto">
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-text-primary mb-2">Agent Management</h1>
-        <p className="text-text-muted">Configure native CLI agents and orchestrated agent roles</p>
+        <p className="text-text-muted">Configure orchestrated agent roles</p>
       </div>
 
       {/* Tab Navigation */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex bg-surface border border-border-subtle rounded-xl p-1.5 gap-1">
-          <button
-            onClick={() => setActiveTab('cli')}
-            className={cn(
-              'px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2',
-              activeTab === 'cli'
-                ? 'bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-md'
-                : 'text-text-secondary hover:text-text-primary hover:bg-elevated'
-            )}
-          >
-            <Terminal className="h-4 w-4" />
-            CLI Agents
-            <span
-              className={cn(
-                'px-1.5 py-0.5 rounded-full text-xs',
-                activeTab === 'cli' ? 'bg-white/20' : 'bg-elevated'
-              )}
-            >
-              {cliAgents.filter((a) => a.is_enabled).length}
-            </span>
-          </button>
           <button
             onClick={() => setActiveTab('roles')}
             className={cn(
@@ -476,7 +448,7 @@ export default function AgentRolesAdminPage() {
                 activeTab === 'roles' ? 'bg-white/20' : 'bg-elevated'
               )}
             >
-              {nativeAgents.filter((r) => r.is_enabled).length}
+              {roles.filter((r) => r.is_enabled).length}
             </span>
           </button>
           <button
@@ -492,7 +464,7 @@ export default function AgentRolesAdminPage() {
             Usage Stats
           </button>
         </div>
-        {(activeTab === 'roles' || activeTab === 'cli') && (
+        {activeTab === 'roles' && (
           <button
             onClick={() => setShowCreateForm(true)}
             className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-600 to-purple-500 text-white rounded-xl hover:from-purple-700 hover:to-purple-600 transition-all shadow-md hover:shadow-lg"
@@ -948,7 +920,7 @@ export default function AgentRolesAdminPage() {
 
           {/* Roles List */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {nativeAgents.map((role) => (
+            {roles.map((role) => (
               <div
                 key={role.id}
                 className={cn(
@@ -1042,7 +1014,7 @@ export default function AgentRolesAdminPage() {
             ))}
           </div>
 
-          {nativeAgents.length === 0 && (
+          {roles.length === 0 && (
             <div className="text-center py-16 bg-surface rounded-2xl border border-border-subtle">
               <Workflow className="h-12 w-12 text-text-muted mx-auto mb-4" />
               <p className="text-text-muted">No agent roles configured yet.</p>

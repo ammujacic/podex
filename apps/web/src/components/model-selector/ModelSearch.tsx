@@ -63,7 +63,7 @@ export function ModelSearch({
     <div className={cn('relative', className)}>
       {/* Search icon */}
       <Search
-        className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none"
+        className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-muted pointer-events-none"
         aria-hidden="true"
       />
 
@@ -77,9 +77,9 @@ export function ModelSearch({
         autoFocus={autoFocus}
         aria-label="Search models"
         className={cn(
-          'flex h-10 w-full rounded-md border border-input bg-background text-sm ring-offset-background',
-          'placeholder:text-muted-foreground',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+          'flex h-10 w-full rounded-md border border-border-default bg-elevated text-sm text-text-primary',
+          'placeholder:text-text-muted',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary focus-visible:ring-offset-2 focus-visible:ring-offset-surface',
           'disabled:cursor-not-allowed disabled:opacity-50',
           'pl-9 pr-9 py-2'
         )}
@@ -94,9 +94,9 @@ export function ModelSearch({
           aria-label="Clear search"
           className={cn(
             'absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded',
-            'text-muted-foreground hover:text-foreground',
-            'hover:bg-muted transition-colors',
-            'focus:outline-none focus:ring-2 focus:ring-ring'
+            'text-text-muted hover:text-text-primary',
+            'hover:bg-overlay transition-colors',
+            'focus:outline-none focus:ring-2 focus:ring-accent-primary'
           )}
         >
           <X className="h-4 w-4" aria-hidden="true" />

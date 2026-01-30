@@ -35,6 +35,7 @@ class ServerConnection:
     ip_address: str
     docker_port: int
     architecture: str
+    region: str | None = None
     tls_enabled: bool = False  # Per-server TLS setting
     cert_path: str | None = None  # Path to TLS certs for this server
     client: DockerClient | None = None
@@ -89,6 +90,7 @@ class MultiServerDockerManager:
         ip_address: str,
         docker_port: int = 2375,
         architecture: str = "amd64",
+        region: str | None = None,
         tls_enabled: bool = False,
         cert_path: str | None = None,
     ) -> bool:
@@ -100,6 +102,7 @@ class MultiServerDockerManager:
             ip_address: Server IP address (or Docker hostname for local dev)
             docker_port: Docker API port (2375 for HTTP, 2376 for TLS)
             architecture: Server architecture (arm64, amd64)
+            region: Server region (e.g., eu, us-east)
             tls_enabled: Whether to use TLS for this server
             cert_path: Path to TLS certificates (required if tls_enabled)
 
@@ -113,6 +116,7 @@ class MultiServerDockerManager:
                 ip_address=ip_address,
                 docker_port=docker_port,
                 architecture=architecture,
+                region=region,
                 tls_enabled=tls_enabled,
                 cert_path=cert_path,
             )
@@ -307,6 +311,60 @@ class MultiServerDockerManager:
             conn.is_healthy = False
             conn.last_error = str(e)
             return False
+
+    async def image_exists(self, server_id: str, image: str) -> bool:
+        """Check if a Docker image exists on a server.
+
+        Args:
+            server_id: Server identifier
+            image: Image name (e.g., "podex/workspace:latest-arm64")
+
+        Returns:
+            True if image exists, False otherwise
+        """
+        client = self.get_client(server_id)
+        if not client:
+            return False
+
+        loop = asyncio.get_event_loop()
+
+        def _check() -> bool:
+            try:
+                client.images.get(image)
+                return True
+            except docker.errors.ImageNotFound:
+                return False
+            except Exception:
+                return False
+
+        try:
+            return await loop.run_in_executor(None, _check)
+        except Exception:
+            return False
+
+    def get_image_for_server(self, server_id: str, base_image: str | None = None) -> str:
+        """Get the appropriate workspace image for a server based on its architecture.
+
+        Args:
+            server_id: Server identifier
+            base_image: Optional base image override
+
+        Returns:
+            Image name appropriate for the server's architecture
+        """
+        if base_image:
+            return base_image
+
+        conn = self._connections.get(server_id)
+        if not conn:
+            return settings.workspace_image
+
+        if conn.architecture == "arm64" and hasattr(settings, "workspace_image_arm64"):
+            return settings.workspace_image_arm64
+        elif conn.architecture == "amd64" and hasattr(settings, "workspace_image_amd64"):
+            return settings.workspace_image_amd64
+
+        return settings.workspace_image
 
     async def create_container(
         self,
@@ -993,7 +1051,7 @@ class MultiServerDockerManager:
                 "architecture": (
                     connection.architecture if connection else info.get("Architecture", "amd64")
                 ),
-                "region": None,
+                "region": connection.region if connection else None,
                 "status": "active" if connection and connection.is_healthy else "unhealthy",
                 "labels": {},
                 # Legacy fields
@@ -1216,30 +1274,45 @@ class MultiServerDockerManager:
         data_path = settings.workspace_data_path
         workspace_path = f"{data_path}/{workspace_id}"
 
-        # In development, we can create the directory via docker exec on DinD
+        # In development, we create the directory via the DinD server's Docker API
+        # The compute service connects to workspace servers over the network
         if settings.environment == "development":
             client = self.get_client(server_id)
             if not client:
-                return False
+                logger.warning(
+                    "No Docker client for server in dev mode, skipping directory setup",
+                    server_id=server_id,
+                )
+                return True  # Continue anyway in dev
 
-            # For DinD, create directory inside the DinD container's filesystem
-            # The DinD container has /data/workspaces mounted
+            # For DinD, create a temporary container to set up the directory
+            # The DinD server has /data/workspaces as a volume
             loop = asyncio.get_event_loop()
 
             def _create_dir() -> bool:
-                # Run mkdir in the DinD server using docker exec
-                # DinD container name matches server_id
-                import docker as docker_lib  # noqa: PLC0415
-
-                local_client = docker_lib.from_env()
                 try:
-                    dind_container = local_client.containers.get(server_id)
-                    result = dind_container.exec_run(
-                        f"mkdir -p {workspace_path}/home && chown -R 1000:1000 {workspace_path}",
+                    # Run a temporary alpine container to create the directory
+                    # This runs ON the DinD server via the network connection
+                    # Wrap in sh -c to properly interpret && as shell operator
+                    cmd = f"mkdir -p {workspace_path}/home && chown -R 1000:1000 {workspace_path}"
+                    client.containers.run(
+                        "alpine:latest",
+                        ["sh", "-c", cmd],
+                        volumes={
+                            settings.workspace_data_path: {
+                                "bind": settings.workspace_data_path,
+                                "mode": "rw",
+                            }
+                        },
+                        remove=True,
                         user="root",
                     )
-                    return result.exit_code == 0
-                except Exception:
+                    return True
+                except Exception as e:
+                    logger.warning(
+                        "Failed to create workspace directory via temporary container",
+                        error=str(e),
+                    )
                     # Fallback: assume directory exists or will be created
                     return True
 
@@ -1401,18 +1474,26 @@ class MultiServerDockerManager:
         workspace_path = f"{data_path}/{workspace_id}"
 
         if settings.environment == "development":
-            # In dev, remove via docker exec
+            # In dev, remove via a temporary container on the DinD server
             client = self.get_client(server_id)
             if client:
                 loop = asyncio.get_event_loop()
 
                 def _remove_dir() -> bool:
-                    import docker as docker_lib  # noqa: PLC0415
-
                     try:
-                        local_client = docker_lib.from_env()
-                        dind_container = local_client.containers.get(server_id)
-                        dind_container.exec_run(f"rm -rf {workspace_path}", user="root")
+                        # Run a temporary alpine container to remove the directory
+                        client.containers.run(
+                            "alpine:latest",
+                            f"rm -rf {workspace_path}",
+                            volumes={
+                                settings.workspace_data_path: {
+                                    "bind": settings.workspace_data_path,
+                                    "mode": "rw",
+                                }
+                            },
+                            remove=True,
+                            user="root",
+                        )
                         return True
                     except Exception:
                         return True  # Ignore errors in dev
@@ -1477,15 +1558,3 @@ class MultiServerDockerManager:
                         pass
             self._connections.clear()
             logger.info("Closed all server connections")
-
-
-# Global instance
-_docker_manager: MultiServerDockerManager | None = None
-
-
-def get_multi_server_docker_manager() -> MultiServerDockerManager:
-    """Get the global multi-server Docker manager instance."""
-    global _docker_manager
-    if _docker_manager is None:
-        _docker_manager = MultiServerDockerManager()
-    return _docker_manager

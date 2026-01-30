@@ -17,5 +17,7 @@ export { ModelFilters } from './ModelFilters';
 export type { ModelFiltersProps } from './ModelFilters';
 export { ModelSearch } from './ModelSearch';
 export type { ModelSearchProps } from './ModelSearch';
+export { ModelSelectorPopover } from './ModelSelectorPopover';
+export type { ModelSelectorPopoverProps } from './ModelSelectorPopover';
 export * from './types';
 export * from './hooks';

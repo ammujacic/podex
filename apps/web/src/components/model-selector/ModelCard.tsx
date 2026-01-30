@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useMemo } from 'react';
+import { Check } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { useModelFavorites } from './hooks/useModelFavorites';
@@ -136,24 +137,39 @@ export function ModelCard({
       aria-pressed={isSelected}
       aria-label={`Select ${model.display_name}`}
       className={cn(
-        'relative flex flex-col gap-1 rounded-lg border p-3 cursor-pointer transition-all',
-        'bg-card text-card-foreground',
-        'hover:bg-accent hover:border-accent-foreground/20',
-        'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
-        isSelected && 'border-primary bg-primary/5 ring-1 ring-primary'
+        'relative flex flex-col gap-1.5 rounded-lg border p-3 cursor-pointer transition-all',
+        'bg-elevated text-text-primary border-border-default',
+        'hover:bg-overlay hover:border-border-strong',
+        'focus:outline-none focus:ring-2 focus:ring-accent-primary focus:ring-offset-2 focus:ring-offset-surface',
+        isSelected &&
+          'border-accent-primary bg-accent-primary/15 ring-2 ring-accent-primary shadow-[0_0_12px_rgba(139,92,246,0.3)]'
       )}
     >
-      {/* Top row: Featured star, name, favorite toggle, category badges */}
+      {/* Top row: Selected check, Featured star, name, favorite toggle, category badges */}
       <div className="flex items-center gap-2">
+        {/* Selected indicator */}
+        {isSelected && (
+          <span className="flex items-center justify-center w-5 h-5 rounded-full bg-accent-primary text-white shrink-0">
+            <Check className="w-3 h-3" strokeWidth={3} />
+          </span>
+        )}
+
         {/* Featured indicator */}
-        {model.is_featured && (
+        {model.is_featured && !isSelected && (
           <span className="text-yellow-500" title="Featured model" aria-label="Featured">
             &#11088;
           </span>
         )}
 
         {/* Model display name */}
-        <span className="font-medium text-foreground flex-1 truncate">{model.display_name}</span>
+        <span
+          className={cn(
+            'font-medium flex-1 truncate',
+            isSelected ? 'text-accent-primary' : 'text-text-primary'
+          )}
+        >
+          {model.display_name}
+        </span>
 
         {/* Favorite toggle */}
         {showFavoriteToggle && (
@@ -164,11 +180,11 @@ export function ModelCard({
             aria-label={modelIsFavorite ? 'Remove from favorites' : 'Add to favorites'}
             aria-pressed={modelIsFavorite}
             className={cn(
-              'p-1 rounded hover:bg-muted transition-colors',
-              'focus:outline-none focus:ring-2 focus:ring-ring'
+              'p-1 rounded hover:bg-overlay transition-colors',
+              'focus:outline-none focus:ring-2 focus:ring-accent-primary'
             )}
           >
-            <span className={cn(modelIsFavorite ? 'text-red-500' : 'text-muted-foreground')}>
+            <span className={cn(modelIsFavorite ? 'text-red-500' : 'text-text-muted')}>
               {modelIsFavorite ? '\u2764\uFE0F' : '\u2661'}
             </span>
           </button>
@@ -183,19 +199,29 @@ export function ModelCard({
       </div>
 
       {/* Model ID / slug */}
-      <div className="text-sm text-muted-foreground truncate">{model.model_id}</div>
+      <div className="text-xs text-text-muted truncate font-mono">{model.model_id}</div>
 
       {/* Bottom row: Context window, pricing, recommended badge */}
-      <div className="flex items-center gap-2 flex-wrap text-sm text-muted-foreground">
-        <span>{contextWindow}</span>
-        <span className="text-muted-foreground/50">&bull;</span>
-        <span>{pricing}</span>
+      <div className="flex items-center gap-2 flex-wrap text-xs text-text-secondary">
+        <span className="bg-surface px-1.5 py-0.5 rounded">{contextWindow}</span>
+        <span className="text-text-muted">&bull;</span>
+        <span className="text-accent-success">{pricing}</span>
 
-        {/* Recommended badge for default models */}
-        {model.is_default && (
+        {/* Selected badge */}
+        {isSelected && (
           <Badge
             variant="secondary"
-            className="ml-auto text-xs bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/20"
+            className="ml-auto text-xs bg-accent-primary/20 text-accent-primary border-accent-primary/30"
+          >
+            Selected
+          </Badge>
+        )}
+
+        {/* Recommended badge for default models (only if not selected) */}
+        {model.is_default && !isSelected && (
+          <Badge
+            variant="secondary"
+            className="ml-auto text-xs bg-accent-success/10 text-accent-success border-accent-success/20"
           >
             Recommended
           </Badge>

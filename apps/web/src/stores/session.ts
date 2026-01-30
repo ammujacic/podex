@@ -339,7 +339,8 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
   // ========================================================================
 
   createConversationSession: (sessionId, options = {}) => {
-    const id = `conv-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    // Use crypto.randomUUID() to generate proper UUIDs that are compatible with the database
+    const id = crypto.randomUUID();
     const now = new Date().toISOString();
 
     // Derive name from first message or use provided name or default.

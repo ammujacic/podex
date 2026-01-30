@@ -3349,6 +3349,70 @@ def _calculate_token_cost_from_db(
     return total_cost_cents
 
 
+async def _calculate_compute_cost_from_db(
+    db: AsyncSession,
+    tier: str | None,
+    duration_seconds: int,
+) -> tuple[int, int]:
+    """Calculate compute cost in cents using database pricing.
+
+    SECURITY: Server-side cost calculation prevents clients from manipulating costs.
+    Always uses database pricing for the given hardware tier.
+
+    Args:
+        db: Database session
+        tier: Hardware tier name (e.g., "starter_arm", "pro")
+        duration_seconds: Duration of compute usage in seconds
+
+    Returns:
+        Tuple of (total_cost_cents, unit_price_cents) where:
+        - total_cost_cents: Total cost with minimum 1 cent for any non-zero usage
+        - unit_price_cents: Price per second (hourly_rate / 3600)
+    """
+    import math
+
+    if duration_seconds <= 0:
+        return 0, 0
+
+    hourly_rate_cents = 0
+
+    if tier:
+        # Look up hardware spec for the tier
+        result = await db.execute(
+            select(HardwareSpec.hourly_rate_cents).where(HardwareSpec.tier == tier)
+        )
+        spec_rate = result.scalar_one_or_none()
+        if spec_rate is not None:
+            hourly_rate_cents = spec_rate
+        else:
+            # Fallback to default rate if tier not found
+            # Use conservative default that doesn't undercharge
+            hourly_rate_cents = 5  # $0.05/hour default
+            logger.warning(
+                "Hardware tier pricing not found in database, using default",
+                tier=tier,
+                default_rate_cents=hourly_rate_cents,
+            )
+
+    # Calculate unit price per second (integer division for storage)
+    unit_price_cents = hourly_rate_cents // 3600 if hourly_rate_cents > 0 else 0
+
+    # Calculate cost: (duration / 3600) * hourly_rate
+    # Use Decimal for precise calculation
+    hours = Decimal(duration_seconds) / Decimal(3600)
+    total_cost_decimal = hours * Decimal(hourly_rate_cents)
+
+    # Convert to cents with ceiling to prevent revenue loss
+    total_cost_cents = math.ceil(total_cost_decimal)
+
+    # SECURITY: Minimum 1 cent for any non-zero compute usage
+    # This prevents abuse through many small requests that round to 0
+    if duration_seconds > 0 and total_cost_cents == 0 and hourly_rate_cents > 0:
+        total_cost_cents = 1
+
+    return total_cost_cents, unit_price_cents
+
+
 async def _get_user_margin(
     db: AsyncSession,
     user_id: str,
@@ -3827,8 +3891,14 @@ async def _record_single_event(
                 await db.flush()  # Write the change while still holding the lock
 
         elif event.usage_type in ("compute", "compute_seconds"):
-            # For compute, use client-provided cost (compute pricing is tier-based)
-            base_cost = event.total_cost_cents
+            # SECURITY: Calculate cost server-side based on tier
+            # This prevents clients from manipulating pricing data
+            duration_seconds = event.duration_seconds or event.quantity
+            tier = event.tier or "starter_arm"  # Default tier if not provided
+
+            base_cost, unit_price_cents = await _calculate_compute_cost_from_db(
+                db, tier, duration_seconds
+            )
             total_cost = _apply_margin(base_cost, margin_percent)
 
             # Check compute quota first - use FOR UPDATE to prevent race conditions
@@ -3884,12 +3954,12 @@ async def _record_single_event(
                 session_name=session_name,
                 workspace_name=workspace_name,
                 usage_type="compute_seconds",
-                quantity=event.duration_seconds or event.quantity,
+                quantity=duration_seconds,
                 unit="seconds",
-                unit_price_cents=event.unit_price_cents,
+                unit_price_cents=unit_price_cents,
                 base_cost_cents=base_cost,
                 total_cost_cents=total_cost,
-                tier=event.tier,
+                tier=tier,
                 is_overage=is_overage,
                 record_metadata=event.metadata,
             )

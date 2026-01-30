@@ -4,12 +4,13 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
 from src.middleware.auth import get_current_user
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
 router = APIRouter(prefix="/hooks", tags=["hooks"])
 
@@ -100,7 +101,10 @@ def _get_hook_by_id(hook_id: str) -> dict[str, Any] | None:
 
 
 @router.get("", response_model=list[HookResponse])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_hooks(
+    request: Request,
+    response: Response,
     current_user: CurrentUser,
     _db: DbSession,
     hook_type: str | None = None,
@@ -121,8 +125,11 @@ async def list_hooks(
 
 
 @router.post("", response_model=HookResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def create_hook(
-    request: CreateHookRequest,
+    request: Request,
+    response: Response,
+    body: CreateHookRequest,
     current_user: CurrentUser,
     _db: DbSession,
 ) -> dict[str, Any]:
@@ -142,7 +149,7 @@ async def create_hook(
         "message_received",
         "response_generated",
     ]
-    if request.hook_type not in valid_types:
+    if body.hook_type not in valid_types:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid hook type. Must be one of: {valid_types}",
@@ -150,7 +157,7 @@ async def create_hook(
 
     # Validate trigger type
     valid_triggers = ["always", "on_tool", "on_file_type", "on_pattern"]
-    if request.condition.trigger not in valid_triggers:
+    if body.condition.trigger not in valid_triggers:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid trigger type. Must be one of: {valid_triggers}",
@@ -160,19 +167,19 @@ async def create_hook(
     hook = {
         "id": str(uuid.uuid4()),
         "user_id": user_id,
-        "name": request.name,
-        "description": request.description,
-        "hook_type": request.hook_type,
-        "command": request.command,
+        "name": body.name,
+        "description": body.description,
+        "hook_type": body.hook_type,
+        "command": body.command,
         "condition": {
-            "trigger": request.condition.trigger,
-            "tool_names": request.condition.tool_names,
-            "file_extensions": request.condition.file_extensions,
-            "pattern": request.condition.pattern,
+            "trigger": body.condition.trigger,
+            "tool_names": body.condition.tool_names,
+            "file_extensions": body.condition.file_extensions,
+            "pattern": body.condition.pattern,
         },
         "enabled": True,
-        "timeout_ms": request.timeout_ms,
-        "run_async": request.run_async,
+        "timeout_ms": body.timeout_ms,
+        "run_async": body.run_async,
         "created_at": now,
         "updated_at": now,
     }
@@ -187,8 +194,11 @@ async def create_hook(
 
 
 @router.get("/{hook_id}", response_model=HookResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_hook(
     hook_id: str,
+    request: Request,
+    response: Response,
     current_user: CurrentUser,
     _db: DbSession,
 ) -> dict[str, Any]:
@@ -203,9 +213,12 @@ async def get_hook(
 
 
 @router.patch("/{hook_id}", response_model=HookResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def update_hook(
     hook_id: str,
-    request: UpdateHookRequest,
+    request: Request,
+    response: Response,
+    body: UpdateHookRequest,
     current_user: CurrentUser,
     _db: DbSession,
 ) -> dict[str, Any]:
@@ -217,25 +230,25 @@ async def update_hook(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Hook not found")
 
     # Update fields
-    if request.name is not None:
-        hook["name"] = request.name
-    if request.description is not None:
-        hook["description"] = request.description
-    if request.command is not None:
-        hook["command"] = request.command
-    if request.condition is not None:
+    if body.name is not None:
+        hook["name"] = body.name
+    if body.description is not None:
+        hook["description"] = body.description
+    if body.command is not None:
+        hook["command"] = body.command
+    if body.condition is not None:
         hook["condition"] = {
-            "trigger": request.condition.trigger,
-            "tool_names": request.condition.tool_names,
-            "file_extensions": request.condition.file_extensions,
-            "pattern": request.condition.pattern,
+            "trigger": body.condition.trigger,
+            "tool_names": body.condition.tool_names,
+            "file_extensions": body.condition.file_extensions,
+            "pattern": body.condition.pattern,
         }
-    if request.enabled is not None:
-        hook["enabled"] = request.enabled
-    if request.timeout_ms is not None:
-        hook["timeout_ms"] = request.timeout_ms
-    if request.run_async is not None:
-        hook["run_async"] = request.run_async
+    if body.enabled is not None:
+        hook["enabled"] = body.enabled
+    if body.timeout_ms is not None:
+        hook["timeout_ms"] = body.timeout_ms
+    if body.run_async is not None:
+        hook["run_async"] = body.run_async
 
     hook["updated_at"] = datetime.now(UTC).isoformat()
 
@@ -243,8 +256,11 @@ async def update_hook(
 
 
 @router.delete("/{hook_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def delete_hook(
     hook_id: str,
+    request: Request,
+    response: Response,
     current_user: CurrentUser,
     _db: DbSession,
 ) -> None:
@@ -262,8 +278,11 @@ async def delete_hook(
 
 
 @router.post("/{hook_id}/enable", response_model=HookResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def enable_hook(
     hook_id: str,
+    request: Request,
+    response: Response,
     current_user: CurrentUser,
     _db: DbSession,
 ) -> dict[str, Any]:
@@ -281,8 +300,11 @@ async def enable_hook(
 
 
 @router.post("/{hook_id}/disable", response_model=HookResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def disable_hook(
     hook_id: str,
+    request: Request,
+    response: Response,
     current_user: CurrentUser,
     _db: DbSession,
 ) -> dict[str, Any]:
@@ -300,8 +322,11 @@ async def disable_hook(
 
 
 @router.post("/{hook_id}/test", response_model=HookExecutionResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def run_hook_test(
     hook_id: str,
+    request: Request,
+    response: Response,
     current_user: CurrentUser,
     _db: DbSession,
 ) -> HookExecutionResponse:
@@ -354,8 +379,11 @@ async def run_hook_test(
 
 
 @router.get("/{hook_id}/history", response_model=list[HookExecutionResponse])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_hook_history(
     hook_id: str,
+    request: Request,
+    response: Response,
     current_user: CurrentUser,
     _db: DbSession,
     _limit: int = 20,
@@ -374,7 +402,8 @@ async def get_hook_history(
 
 # Hook types reference endpoint
 @router.get("/types/list")
-async def list_hook_types() -> dict[str, Any]:
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def list_hook_types(request: Request, response: Response) -> dict[str, Any]:
     """List all available hook types with descriptions."""
     return {
         "hook_types": [

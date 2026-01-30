@@ -833,6 +833,21 @@ export async function listConversations(sessionId: string): Promise<Conversation
   return api.get<ConversationSummary[]>(`/api/sessions/${sessionId}/conversations`);
 }
 
+export interface CreateConversationRequest {
+  name?: string;
+  first_message?: string;
+}
+
+export async function createConversation(
+  sessionId: string,
+  data?: CreateConversationRequest
+): Promise<ConversationSummary> {
+  return api.post<ConversationSummary>(
+    `/api/sessions/${sessionId}/conversations`,
+    data ?? { name: 'New Session' }
+  );
+}
+
 export async function getConversation(
   sessionId: string,
   conversationId: string
@@ -2743,8 +2758,7 @@ export interface HardwareSpecResponse {
   gpu_type: string | null;
   gpu_memory_gb: number | null;
   gpu_count: number;
-  storage_gb_default: number;
-  storage_gb_max: number;
+  storage_gb: number;
   bandwidth_mbps: number | null; // Network bandwidth allocation in Mbps
   hourly_rate: number; // Base cost (provider cost)
   is_available: boolean;
@@ -6250,4 +6264,37 @@ export interface RegionCapacityResponse {
  */
 export async function getRegionCapacity(region: string): Promise<RegionCapacityResponse> {
   return api.get<RegionCapacityResponse>(`/api/servers/capacity/${region}`);
+}
+
+// ============================================================================
+// Admin Server Workspaces (per-server workspace metrics)
+// ============================================================================
+
+export interface ServerWorkspaceInfo {
+  workspace_id: string;
+  user_id: string;
+  user_email: string | null;
+  tier: string | null;
+  status: string;
+  assigned_cpu: number | null;
+  assigned_memory_mb: number | null;
+  assigned_bandwidth_mbps: number | null;
+  created_at: string;
+  last_activity: string | null;
+}
+
+export interface ServerWorkspacesResponse {
+  server_id: string;
+  server_name: string;
+  region: string | null;
+  workspaces: ServerWorkspaceInfo[];
+  total_count: number;
+}
+
+/**
+ * Get all workspaces running on a specific server.
+ * Admin endpoint for viewing which users/workspaces are on a server.
+ */
+export async function getServerWorkspaces(serverId: string): Promise<ServerWorkspacesResponse> {
+  return api.get<ServerWorkspacesResponse>(`/api/servers/${serverId}/workspaces`);
 }

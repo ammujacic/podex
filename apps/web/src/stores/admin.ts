@@ -11,9 +11,11 @@ import {
   updateAdminMCPServer,
   deleteAdminMCPServer,
   toggleAdminMCPServer,
+  getServerWorkspaces,
   type AdminDefaultMCPServer,
   type CreateAdminMCPServerRequest,
   type UpdateAdminMCPServerRequest,
+  type ServerWorkspaceInfo,
 } from '@/lib/api';
 
 // ============================================================================
@@ -184,8 +186,7 @@ export interface AdminHardwareSpec {
   gpu_type: string | null;
   gpu_memory_gb: number | null;
   gpu_count: number;
-  storage_gb_default: number;
-  storage_gb_max: number;
+  storage_gb: number;
   bandwidth_mbps: number | null;
   hourly_rate_cents: number;
   is_available: boolean;
@@ -375,6 +376,9 @@ interface AdminState {
   workspaceServersLoading: boolean;
   clusterStatus: ClusterStatus | null;
   clusterStatusLoading: boolean;
+  // Per-server workspace details (keyed by server ID)
+  serverWorkspaces: Record<string, ServerWorkspaceInfo[]>;
+  serverWorkspacesLoading: Record<string, boolean>;
 
   // Error
   error: string | null;
@@ -451,6 +455,7 @@ interface AdminState {
   deleteWorkspaceServer: (serverId: string, force?: boolean) => Promise<void>;
   drainWorkspaceServer: (serverId: string) => Promise<void>;
   activateWorkspaceServer: (serverId: string) => Promise<void>;
+  fetchServerWorkspaces: (serverId: string) => Promise<ServerWorkspaceInfo[]>;
   clearError: () => void;
 }
 
@@ -489,6 +494,8 @@ export const useAdminStore = create<AdminState>()(
       workspaceServersLoading: false,
       clusterStatus: null,
       clusterStatusLoading: false,
+      serverWorkspaces: {},
+      serverWorkspacesLoading: {},
       error: null,
 
       // Actions
@@ -923,6 +930,28 @@ export const useAdminStore = create<AdminState>()(
         }
       },
 
+      fetchServerWorkspaces: async (serverId: string) => {
+        // Set loading state for this specific server
+        set((state) => ({
+          serverWorkspacesLoading: { ...state.serverWorkspacesLoading, [serverId]: true },
+          error: null,
+        }));
+        try {
+          const response = await getServerWorkspaces(serverId);
+          set((state) => ({
+            serverWorkspaces: { ...state.serverWorkspaces, [serverId]: response.workspaces },
+            serverWorkspacesLoading: { ...state.serverWorkspacesLoading, [serverId]: false },
+          }));
+          return response.workspaces;
+        } catch (err) {
+          set((state) => ({
+            error: (err as Error).message,
+            serverWorkspacesLoading: { ...state.serverWorkspacesLoading, [serverId]: false },
+          }));
+          throw err;
+        }
+      },
+
       // User sponsorship and credits actions
       sponsorUser: async (userId: string, planId: string, reason?: string) => {
         set({ error: null });
@@ -993,4 +1022,8 @@ export const useAdminProviders = () => useAdminStore((state) => state.providers)
 export const useAdminMCPServers = () => useAdminStore((state) => state.mcpServers);
 export const useAdminWorkspaceServers = () => useAdminStore((state) => state.workspaceServers);
 export const useAdminClusterStatus = () => useAdminStore((state) => state.clusterStatus);
+export const useAdminServerWorkspaces = (serverId: string) =>
+  useAdminStore((state) => state.serverWorkspaces[serverId] ?? []);
+export const useAdminServerWorkspacesLoading = (serverId: string) =>
+  useAdminStore((state) => state.serverWorkspacesLoading[serverId] ?? false);
 export const useAdminError = () => useAdminStore((state) => state.error);

@@ -756,6 +756,53 @@ class ComputeClient:
             )
             yield f"Error: {e}"
 
+    # ==================== Tunnel Operations ====================
+
+    async def start_tunnel(
+        self,
+        workspace_id: str,
+        user_id: str,
+        token: str,
+        port: int,
+        service_type: str = "http",
+    ) -> dict[str, Any]:
+        """Start a cloudflared tunnel via compute service."""
+        result: dict[str, Any] = await self._request(
+            "POST",
+            f"/workspaces/{workspace_id}/tunnels/start",
+            user_id=user_id,
+            json={"token": token, "port": port, "service_type": service_type},
+        )
+        return result
+
+    async def stop_tunnel(
+        self,
+        workspace_id: str,
+        user_id: str,
+        port: int,
+    ) -> dict[str, Any]:
+        """Stop a cloudflared tunnel via compute service."""
+        result: dict[str, Any] = await self._request(
+            "POST",
+            f"/workspaces/{workspace_id}/tunnels/stop",
+            user_id=user_id,
+            json={"port": port},
+        )
+        return result
+
+    async def get_tunnel_status(
+        self,
+        workspace_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        """Get tunnel status via compute service."""
+        result: dict[str, Any] = await self._request(
+            "GET",
+            f"/workspaces/{workspace_id}/tunnels/status",
+            user_id=user_id,
+        )
+        return result
+
     # ==================== Git Operations ====================
 
     async def git_status(

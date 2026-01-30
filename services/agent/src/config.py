@@ -98,38 +98,16 @@ class Settings(BaseSettings):
 
 
 # ==========================================
-# Model Configuration (Fallback Only)
+# Model Configuration
 # ==========================================
-# NOTE: All model configuration is admin-controlled via the database.
-# These hardcoded values are ONLY used as fallback when the API service
-# is unavailable (e.g., during initial startup or network issues).
+# All model configuration is admin-controlled via the database.
+# The agent service fetches capabilities from the API on startup and
+# caches them in Redis. If capabilities are unknown for a model,
+# we default to False (safe default).
+#
 # Admins manage models and defaults via:
 # - /admin/models - Add/edit/delete available models
 # - /admin/models/agent-defaults - Set default model per agent type
-
-# Fallback: Models that support vision (used if API unavailable)
-_FALLBACK_VISION_CAPABLE_MODELS = frozenset(
-    [
-        # Claude 4.5 family
-        "claude-opus-4-5",
-        "claude-sonnet-4-5",
-        "claude-haiku-4-5",
-        # Gemini
-        "gemini-2.0-flash",
-        "gemini-2.5-pro-preview",
-    ]
-)
-
-# Fallback: Models that support extended thinking (used if API unavailable)
-_FALLBACK_THINKING_CAPABLE_MODELS = frozenset(
-    [
-        "claude-opus-4-5",
-        "claude-sonnet-4-5",
-        "claude-haiku-4-5",
-        "gemini-2.0-flash",
-        "gemini-2.5-pro-preview",
-    ]
-)
 
 # Redis cache key for platform settings (same as API service)
 PLATFORM_SETTINGS_CACHE_KEY = "podex:cache:platform_settings:all"
@@ -351,24 +329,32 @@ class ModelCapabilitiesCache:
         return None
 
     async def supports_vision(self, model_id: str) -> bool:
-        """Check if a model supports vision from Redis cache or fallback."""
+        """Check if a model supports vision from Redis cache.
+
+        Returns False if capabilities are not cached (safe default).
+        """
         cached = await self._get_from_redis()
         if cached:
             caps = cached.get(model_id)
             if caps:
                 return bool(caps.get("supports_vision", False))
-        # Fallback to hardcoded values
-        return model_id in _FALLBACK_VISION_CAPABLE_MODELS
+        # Safe default: assume no vision support if unknown
+        logger.debug("Model capabilities not cached, defaulting to no vision", model_id=model_id)
+        return False
 
     async def supports_thinking(self, model_id: str) -> bool:
-        """Check if a model supports extended thinking from Redis cache or fallback."""
+        """Check if a model supports extended thinking from Redis cache.
+
+        Returns False if capabilities are not cached (safe default).
+        """
         cached = await self._get_from_redis()
         if cached:
             caps = cached.get(model_id)
             if caps:
                 return bool(caps.get("supports_thinking", False))
-        # Fallback to hardcoded values
-        return model_id in _FALLBACK_THINKING_CAPABLE_MODELS
+        # Safe default: assume no thinking support if unknown
+        logger.debug("Model capabilities not cached, defaulting to no thinking", model_id=model_id)
+        return False
 
 
 # Global capabilities cache instance
@@ -383,36 +369,18 @@ async def refresh_model_capabilities(force: bool = False) -> None:
     await _model_capabilities_cache.refresh(force=force)
 
 
-def supports_vision(model_id: str) -> bool:
+async def supports_vision_async(model_id: str) -> bool:
     """Check if a model supports vision/image input.
 
-    Synchronous wrapper - uses hardcoded fallback values.
-    For async code, use _model_capabilities_cache.supports_vision() directly.
-    """
-    return model_id in _FALLBACK_VISION_CAPABLE_MODELS
-
-
-def supports_thinking(model_id: str) -> bool:
-    """Check if a model supports extended thinking.
-
-    Synchronous wrapper - uses hardcoded fallback values.
-    For async code, use _model_capabilities_cache.supports_thinking() directly.
-    """
-    return model_id in _FALLBACK_THINKING_CAPABLE_MODELS
-
-
-async def supports_vision_async(model_id: str) -> bool:
-    """Check if a model supports vision/image input (async version).
-
-    Uses cached capabilities from Redis if available, otherwise falls back to hardcoded values.
+    Uses cached capabilities from Redis. Returns False if not cached (safe default).
     """
     return await _model_capabilities_cache.supports_vision(model_id)
 
 
 async def supports_thinking_async(model_id: str) -> bool:
-    """Check if a model supports extended thinking (async version).
+    """Check if a model supports extended thinking.
 
-    Uses cached capabilities from Redis if available, otherwise falls back to hardcoded values.
+    Uses cached capabilities from Redis. Returns False if not cached (safe default).
     """
     return await _model_capabilities_cache.supports_thinking(model_id)
 

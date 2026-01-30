@@ -150,8 +150,7 @@ export interface HardwareSpec {
   gpuType: string | null;
   gpuMemoryGb: number | null;
   gpuCount: number;
-  storageGbDefault: number;
-  storageGbMax: number;
+  storageGb: number;
   hourlyRate: number;
   isAvailable: boolean;
   requiresSubscription: string | null;

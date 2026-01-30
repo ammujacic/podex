@@ -10,6 +10,7 @@ from src.routes.terminal import (
 from src.routes.terminal import (
     router as terminal_router,
 )
+from src.routes.tunnels import router as tunnels_router
 from src.routes.websocket_proxy import router as websocket_router
 from src.routes.workspaces import router as workspaces_router
 
@@ -20,6 +21,7 @@ __all__ = [
     "reset_terminal_manager",
     "shutdown_terminal_sessions",
     "terminal_router",
+    "tunnels_router",
     "websocket_router",
     "workspaces_router",
 ]

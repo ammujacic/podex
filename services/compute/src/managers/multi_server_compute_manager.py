@@ -375,26 +375,22 @@ class MultiServerComputeManager(ComputeManager):
         workspace: WorkspaceInfo,
         duration_seconds: int,
     ) -> None:
-        """Track compute usage for billing."""
+        """Track compute usage for billing.
+
+        Note: Only usage data (tier, duration) is sent. The API calculates
+        pricing server-side based on the tier's hourly rate in the database.
+        """
         tracker = get_usage_tracker()
         if not tracker:
             return
 
         try:
-            provider = get_hardware_specs_provider()
-            hardware_spec = await provider.get_spec(workspace.tier)
-            default_rate_cents = 5
-            hourly_rate_cents = (
-                hardware_spec.hourly_rate_cents if hardware_spec else default_rate_cents
-            )
-
             params = ComputeUsageParams(
                 user_id=workspace.user_id,
                 tier=workspace.tier,
                 duration_seconds=duration_seconds,
                 session_id=workspace.session_id,
                 workspace_id=workspace.id,
-                hourly_rate_cents=hourly_rate_cents,
                 metadata={
                     "container_id": workspace.container_id,
                     "server_id": workspace.server_id,
@@ -595,3 +591,113 @@ class MultiServerComputeManager(ComputeManager):
     async def get_cluster_status(self) -> dict[str, Any]:
         """Get overall cluster status including all servers."""
         return await self._orchestrator.get_cluster_status()
+
+    # --- Tunnel Management Methods ---
+
+    async def start_tunnel(
+        self,
+        workspace_id: str,
+        token: str,
+        port: int,
+        service_type: str = "http",
+    ) -> dict[str, Any]:
+        """Start cloudflared tunnel inside the workspace container."""
+        workspace = await self._get_workspace(workspace_id)
+        if not workspace:
+            raise ValueError(f"Workspace {workspace_id} not found")
+
+        if not workspace.container_id or not workspace.server_id:
+            raise ValueError(f"Workspace {workspace_id} has no container/server")
+
+        # Build cloudflared command based on service type
+        if service_type == "ssh":
+            # SSH tunnels: config managed via Cloudflare API
+            cmd = f"cloudflared tunnel run --token {token}"
+        else:
+            # HTTP tunnels: use --url flag for local service
+            cmd = f"cloudflared tunnel run --token {token} --url http://localhost:{port}"
+
+        # Start cloudflared in background, capture PID
+        # Use nohup and redirect output to avoid blocking
+        full_cmd = f"nohup {cmd} > /tmp/cloudflared-{port}.log 2>&1 & echo $!"
+
+        _exit_code, stdout, _stderr = await self._docker.run_in_container(
+            workspace.server_id,
+            workspace.container_id,
+            full_cmd,
+        )
+
+        stdout = stdout.strip()
+        try:
+            pid = int(stdout)
+            logger.info(
+                "Started cloudflared tunnel",
+                workspace_id=workspace_id,
+                port=port,
+                service_type=service_type,
+                pid=pid,
+            )
+            return {"status": "running", "pid": pid}
+        except ValueError:
+            return {"status": "error", "error": f"Failed to get PID: {stdout}"}
+
+    async def stop_tunnel(
+        self,
+        workspace_id: str,
+        port: int,
+    ) -> dict[str, Any]:
+        """Stop cloudflared tunnel by killing the process."""
+        workspace = await self._get_workspace(workspace_id)
+        if not workspace:
+            raise ValueError(f"Workspace {workspace_id} not found")
+
+        if not workspace.container_id or not workspace.server_id:
+            raise ValueError(f"Workspace {workspace_id} has no container/server")
+
+        # Find and kill cloudflared process for this port
+        # Use pkill with pattern matching on the port argument
+        cmd = f"pkill -f 'cloudflared.*localhost:{port}' || pkill -f 'cloudflared.*--token' || true"
+
+        await self._docker.run_in_container(
+            workspace.server_id,
+            workspace.container_id,
+            cmd,
+        )
+
+        logger.info("Stopped cloudflared tunnel", workspace_id=workspace_id, port=port)
+        return {"status": "stopped"}
+
+    async def get_tunnel_status(
+        self,
+        workspace_id: str,
+    ) -> dict[str, Any]:
+        """Get status of cloudflared processes in container."""
+        workspace = await self._get_workspace(workspace_id)
+        if not workspace:
+            raise ValueError(f"Workspace {workspace_id} not found")
+
+        if not workspace.container_id or not workspace.server_id:
+            return {"status": "error", "error": "No container/server"}
+
+        # Check for running cloudflared processes
+        cmd = "pgrep -a cloudflared || echo 'none'"
+
+        _exit_code, stdout, _stderr = await self._docker.run_in_container(
+            workspace.server_id,
+            workspace.container_id,
+            cmd,
+        )
+
+        stdout = stdout.strip()
+        if stdout == "none" or not stdout:
+            return {"status": "stopped", "processes": []}
+
+        # Parse process list
+        processes = []
+        for line in stdout.split("\n"):
+            if line.strip():
+                parts = line.split(None, 1)
+                if len(parts) >= 2:
+                    processes.append({"pid": int(parts[0]), "cmd": parts[1]})
+
+        return {"status": "running", "processes": processes}

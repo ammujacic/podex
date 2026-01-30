@@ -36,7 +36,7 @@ interface MoltBotWidgetProps {
   localPodId: string | null;
 }
 
-export function MoltBotWidget({ workspaceId, localPodId }: MoltBotWidgetProps) {
+export function MoltBotWidget({ workspaceId, localPodId: _localPodId }: MoltBotWidgetProps) {
   const openModal = useUIStore((s) => s.openModal);
   const sendTerminalCommand = useUIStore((s) => s.sendTerminalCommand);
   const { tunnels, loading, error, unexposePort, refetch } = useTunnels(workspaceId);
@@ -44,9 +44,9 @@ export function MoltBotWidget({ workspaceId, localPodId }: MoltBotWidgetProps) {
   const [copied, setCopied] = useState(false);
 
   const tunnel = tunnels.find((t) => t.port === MOLTBOT_GATEWAY_PORT);
-  const isLocalPod = !!localPodId;
   const hasWorkspace = !!workspaceId;
-  const canSetup = isLocalPod && hasWorkspace;
+  // Tunnels now work with both local pods and compute workspaces
+  const canSetup = hasWorkspace;
   const connected = !!tunnel;
 
   const copyUrl = async () => {
@@ -87,14 +87,9 @@ export function MoltBotWidget({ workspaceId, localPodId }: MoltBotWidgetProps) {
           </div>
         </div>
         <p className="text-sm text-text-secondary">
-          MoltBot needs a workspace on a <strong>local pod</strong> for tunnels. Start a session
-          with a local pod, then return here to set it up.
+          MoltBot needs a running workspace for tunnels. Start a session first, then return here to
+          set it up.
         </p>
-        {!hasWorkspace && (
-          <p className="text-xs text-text-muted">
-            No workspace yet. Start a session with a workspace first.
-          </p>
-        )}
       </div>
     );
   }

@@ -1,21 +1,16 @@
 'use client';
 
 import React from 'react';
-import Link from 'next/link';
 import {
   Bell,
   Brain,
-  ChevronDown,
   ClipboardList,
   Copy,
   Globe,
-  ImageOff,
-  Link2,
   Loader2,
   MoreVertical,
   Pencil,
   RefreshCw,
-  Settings2,
   Shield,
   Trash2,
   Undo2,
@@ -27,26 +22,22 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@podex/ui';
 import { cn } from '@/lib/utils';
 import { getRoleIcon, getAgentTextColor, getModeConfig } from '@/lib/agentConstants';
 import { ContextUsageRing } from './ContextUsageRing';
 import { WorktreeStatus } from './WorktreeStatus';
-import { ModelTooltip, ModelCapabilityBadges } from './ModelTooltip';
 import { SessionDropdown } from './SessionDropdown';
 import { RoleDropdown } from './RoleDropdown';
+import { ModelSelectorPopover } from '@/components/model-selector';
 import type { Agent, AgentRole, ConversationSession } from '@/stores/session';
 import { getAgentDisplayTitle } from '@/stores/session';
 import type { ModelInfo } from '@podex/shared';
 import type { Worktree } from '@/stores/worktrees';
 import type { Checkpoint } from '@/stores/checkpoints';
+import type { PublicModel, UserProviderModel } from '@/lib/api';
 
 // Extended ModelInfo with user API flag
 type ExtendedModelInfo = ModelInfo & { isUserKey?: boolean };
@@ -59,14 +50,9 @@ interface AgentCardHeaderProps {
   // Current model info
   currentModelInfo: ExtendedModelInfo | undefined;
   getModelDisplayName: (modelId: string) => string;
-  // Models by tier
-  modelsByTier: {
-    flagship: ExtendedModelInfo[];
-    balanced: ExtendedModelInfo[];
-    fast: ExtendedModelInfo[];
-    userApi: ExtendedModelInfo[];
-    local: ExtendedModelInfo[];
-  };
+  // Models for the new ModelSelector
+  publicModels: PublicModel[];
+  userKeyModels: UserProviderModel[];
   // State flags
   isDeleting: boolean;
   isDuplicating: boolean;
@@ -115,7 +101,8 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
   conversationSession,
   currentModelInfo,
   getModelDisplayName,
-  modelsByTier,
+  publicModels,
+  userKeyModels,
   isDeleting,
   isDuplicating,
   isTogglingPlanMode,
@@ -228,147 +215,14 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
             />
 
             {/* Model selector */}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  className={cn(
-                    'flex items-center gap-1.5 rounded px-2 py-1 text-xs transition-colors',
-                    'bg-elevated text-text-secondary hover:bg-overlay hover:text-text-primary'
-                  )}
-                >
-                  <span>{getModelDisplayName(agent.model)}</span>
-                  {currentModelInfo && <ModelCapabilityBadges model={currentModelInfo} compact />}
-                  {!currentModelInfo?.supportsVision && (
-                    <span
-                      className="text-yellow-500/70"
-                      title={`${currentModelInfo?.displayName ?? 'This model'} does not support image input`}
-                    >
-                      <ImageOff className="h-3 w-3" />
-                    </span>
-                  )}
-                  <ChevronDown className="h-3 w-3 text-text-muted" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-64">
-                <DropdownMenuSeparator />
-
-                {/* Flagship Tier */}
-                <DropdownMenuLabel className="text-xs text-text-primary">
-                  Flagship
-                </DropdownMenuLabel>
-                <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                  {modelsByTier.flagship.map((model) => (
-                    <ModelTooltip key={model.id} model={model} side="right">
-                      <DropdownMenuRadioItem
-                        value={model.id}
-                        className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
-                      >
-                        <span>{model.shortName}</span>
-                        <ModelCapabilityBadges model={model} compact />
-                      </DropdownMenuRadioItem>
-                    </ModelTooltip>
-                  ))}
-                </DropdownMenuRadioGroup>
-                <DropdownMenuSeparator />
-
-                {/* Balanced Tier */}
-                <DropdownMenuLabel className="text-xs text-text-primary">
-                  Balanced
-                </DropdownMenuLabel>
-                <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                  {modelsByTier.balanced.map((model) => (
-                    <ModelTooltip key={model.id} model={model} side="right">
-                      <DropdownMenuRadioItem
-                        value={model.id}
-                        className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
-                      >
-                        <span>{model.shortName}</span>
-                        <ModelCapabilityBadges model={model} compact />
-                      </DropdownMenuRadioItem>
-                    </ModelTooltip>
-                  ))}
-                </DropdownMenuRadioGroup>
-                <DropdownMenuSeparator />
-
-                {/* Fast Tier */}
-                <DropdownMenuLabel className="text-xs text-text-primary">Fast</DropdownMenuLabel>
-                <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                  {modelsByTier.fast.map((model) => (
-                    <ModelTooltip key={model.id} model={model} side="right">
-                      <DropdownMenuRadioItem
-                        value={model.id}
-                        className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
-                      >
-                        <span>{model.shortName}</span>
-                        <ModelCapabilityBadges model={model} compact />
-                      </DropdownMenuRadioItem>
-                    </ModelTooltip>
-                  ))}
-                </DropdownMenuRadioGroup>
-
-                {/* Local (Ollama / LM Studio) */}
-                {modelsByTier.local.length > 0 && (
-                  <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuLabel className="text-xs text-accent-success">
-                      Local
-                    </DropdownMenuLabel>
-                    <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                      {modelsByTier.local.map((model) => (
-                        <ModelTooltip key={model.id} model={model} side="right">
-                          <DropdownMenuRadioItem
-                            value={model.id}
-                            className="flex items-center justify-between cursor-pointer hover:bg-green-500/20 data-[state=checked]:bg-green-500/30"
-                          >
-                            <span>{model.shortName}</span>
-                            <ModelCapabilityBadges model={model} compact />
-                          </DropdownMenuRadioItem>
-                        </ModelTooltip>
-                      ))}
-                    </DropdownMenuRadioGroup>
-                  </>
-                )}
-
-                {/* Your API Keys */}
-                {modelsByTier.userApi.length > 0 && (
-                  <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuLabel className="text-xs text-accent-primary">
-                      Your API Keys
-                    </DropdownMenuLabel>
-                    <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                      {modelsByTier.userApi.map((model) => (
-                        <ModelTooltip key={model.id} model={model} side="right">
-                          <DropdownMenuRadioItem
-                            value={model.id}
-                            className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
-                          >
-                            <span>{model.shortName}</span>
-                            <ModelCapabilityBadges model={model} compact />
-                          </DropdownMenuRadioItem>
-                        </ModelTooltip>
-                      ))}
-                    </DropdownMenuRadioGroup>
-                  </>
-                )}
-
-                {/* Connect Providers Link */}
-                <DropdownMenuSeparator />
-                <DropdownMenuItem asChild className="cursor-pointer">
-                  <Link
-                    href="/settings/connections"
-                    className="flex items-center gap-2 text-text-secondary hover:text-text-primary"
-                  >
-                    <Link2 className="h-4 w-4" />
-                    <span>
-                      {modelsByTier.userApi.length > 0
-                        ? 'Manage Connected Accounts'
-                        : 'Connect Your API Keys'}
-                    </span>
-                  </Link>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <ModelSelectorPopover
+              models={publicModels}
+              userKeyModels={userKeyModels}
+              selectedModelId={agent.model}
+              selectedModelDisplayName={getModelDisplayName(agent.model)}
+              currentModelInfo={currentModelInfo}
+              onSelectModel={onChangeModel}
+            />
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
@@ -530,116 +384,6 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
               )}
             </DropdownMenuItem>
           )}
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger>
-              <Settings2 className="mr-2 h-4 w-4" />
-              Change Model
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="w-64">
-              {/* Flagship */}
-              <DropdownMenuLabel className="text-xs text-text-primary">Flagship</DropdownMenuLabel>
-              <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                {modelsByTier.flagship.map((model) => (
-                  <DropdownMenuRadioItem
-                    key={model.id}
-                    value={model.id}
-                    className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
-                  >
-                    <span>{model.shortName}</span>
-                    <ModelCapabilityBadges model={model} compact />
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-              <DropdownMenuSeparator />
-              {/* Balanced */}
-              <DropdownMenuLabel className="text-xs text-text-primary">Balanced</DropdownMenuLabel>
-              <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                {modelsByTier.balanced.map((model) => (
-                  <DropdownMenuRadioItem
-                    key={model.id}
-                    value={model.id}
-                    className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
-                  >
-                    <span>{model.shortName}</span>
-                    <ModelCapabilityBadges model={model} compact />
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-              <DropdownMenuSeparator />
-              {/* Fast */}
-              <DropdownMenuLabel className="text-xs text-text-primary">Fast</DropdownMenuLabel>
-              <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                {modelsByTier.fast.map((model) => (
-                  <DropdownMenuRadioItem
-                    key={model.id}
-                    value={model.id}
-                    className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
-                  >
-                    <span>{model.shortName}</span>
-                    <ModelCapabilityBadges model={model} compact />
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-              {/* Local (Ollama / LM Studio) */}
-              {modelsByTier.local.length > 0 && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuLabel className="text-xs text-accent-success">
-                    Local
-                  </DropdownMenuLabel>
-                  <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                    {modelsByTier.local.map((model) => (
-                      <DropdownMenuRadioItem
-                        key={model.id}
-                        value={model.id}
-                        className="flex items-center justify-between cursor-pointer hover:bg-green-500/20 data-[state=checked]:bg-green-500/30"
-                      >
-                        <span>{model.shortName}</span>
-                        <ModelCapabilityBadges model={model} compact />
-                      </DropdownMenuRadioItem>
-                    ))}
-                  </DropdownMenuRadioGroup>
-                </>
-              )}
-              {/* Your API Keys */}
-              {modelsByTier.userApi.length > 0 && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuLabel className="text-xs text-accent-primary">
-                    Your API Keys
-                  </DropdownMenuLabel>
-                  <DropdownMenuRadioGroup value={agent.model} onValueChange={onChangeModel}>
-                    {modelsByTier.userApi.map((model) => (
-                      <DropdownMenuRadioItem
-                        key={model.id}
-                        value={model.id}
-                        className="flex items-center justify-between cursor-pointer hover:bg-purple-500/20 data-[state=checked]:bg-purple-500/30"
-                      >
-                        <span>{model.shortName}</span>
-                        <ModelCapabilityBadges model={model} compact />
-                      </DropdownMenuRadioItem>
-                    ))}
-                  </DropdownMenuRadioGroup>
-                </>
-              )}
-
-              {/* Connect Providers Link */}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem asChild className="cursor-pointer">
-                <Link
-                  href="/settings/connections"
-                  className="flex items-center gap-2 text-text-secondary hover:text-text-primary"
-                >
-                  <Link2 className="h-4 w-4" />
-                  <span>
-                    {modelsByTier.userApi.length > 0
-                      ? 'Manage Connected Accounts'
-                      : 'Connect Your API Keys'}
-                  </span>
-                </Link>
-              </DropdownMenuItem>
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
           <DropdownMenuItem onClick={onOpenVoiceSettings} className="cursor-pointer">
             <Volume2 className="mr-2 h-4 w-4" />
             Voice Settings

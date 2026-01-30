@@ -13,9 +13,16 @@ import structlog
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from src.config import settings
-from src.database.models import HardwareSpec, ServerStatus, Workspace, WorkspaceServer
+from src.database.models import (
+    HardwareSpec,
+    ServerStatus,
+    Session,
+    Workspace,
+    WorkspaceServer,
+)
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 from src.routes.dependencies import DbSession, get_current_user_id
 
@@ -128,7 +135,7 @@ def _server_to_response(server: WorkspaceServer) -> ServerResponse:
         id=server.id,
         name=server.name,
         hostname=server.hostname,
-        ip_address=server.ip_address,
+        ip_address=str(server.ip_address),
         docker_port=server.docker_port,
         status=server.status,
         total_cpu=server.total_cpu,
@@ -762,10 +769,11 @@ async def get_server_workspaces(
         raise HTTPException(status_code=404, detail="Server not found")
 
     # Get all workspaces on this server with user info
-    # Use selectinload to eagerly load relationships
+    # Use selectinload to eagerly load session and owner relationships
     workspaces_result = await db.execute(
         select(Workspace)
         .where(Workspace.server_id == server_id)
+        .options(selectinload(Workspace.session).selectinload(Session.owner))
         .order_by(Workspace.created_at.desc())
     )
     workspaces = list(workspaces_result.scalars().all())

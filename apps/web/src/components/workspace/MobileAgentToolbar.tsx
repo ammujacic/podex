@@ -22,7 +22,6 @@ import { useAttentionStore } from '@/stores/attention';
 import {
   getAvailableModels,
   getUserProviderModels,
-  getLocalLLMConfig,
   updateAgentSettings,
   togglePlanMode,
   deleteAgent as deleteAgentApi,
@@ -33,7 +32,7 @@ import {
 } from '@/lib/api';
 import { ContextUsageRing } from './ContextUsageRing';
 import { MobileBottomSheet } from '@/components/ui/MobileBottomSheet';
-import { ModelTierSection, UserModelsSection, LocalModelsSection } from './ModelTierSection';
+import { ModelSelector } from '@/components/model-selector';
 import type { ThinkingConfig } from '@podex/shared';
 
 interface MobileAgentToolbarProps {
@@ -114,31 +113,13 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
   const unreadCount = getUnreadCountForAgent(sessionId, agent.id);
   const hasUnread = hasUnreadForAgent(sessionId, agent.id);
 
-  // Local (Ollama / LM Studio) models from saved config
-  const [localModels, setLocalModels] = useState<{ model_id: string; display_name: string }[]>([]);
-
   // Load models
   useEffect(() => {
     const loadModels = async () => {
       try {
-        const [pub, user, localConfig] = await Promise.all([
-          getAvailableModels(),
-          getUserProviderModels(),
-          getLocalLLMConfig().catch(() => ({})),
-        ]);
+        const [pub, user] = await Promise.all([getAvailableModels(), getUserProviderModels()]);
         setPublicModels(pub);
         setUserModels(user);
-        const providerLabels: Record<string, string> = { ollama: 'Ollama', lmstudio: 'LM Studio' };
-        const local: { model_id: string; display_name: string }[] = [];
-        for (const [provider, cfg] of Object.entries(localConfig)) {
-          if (!cfg?.models?.length) continue;
-          const label = providerLabels[provider] ?? provider;
-          for (const m of cfg.models) {
-            const name = m.id || m.name;
-            local.push({ model_id: `${provider}/${name}`, display_name: `${name} (${label})` });
-          }
-        }
-        setLocalModels(local);
       } catch (err) {
         console.error('Failed to load models:', err);
       }
@@ -146,24 +127,14 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
     loadModels();
   }, []);
 
-  // Find current model info (platform, user API, or local)
+  // Find current model info (platform or user API)
   const currentModelInfo = useMemo(() => {
     const pubModel = publicModels.find((m) => m.model_id === agent.model);
     if (pubModel) return pubModel;
     const userModel = userModels.find((m) => m.model_id === agent.model);
     if (userModel) return userModel;
-    const localModel = localModels.find((m) => m.model_id === agent.model);
-    if (localModel) return { display_name: localModel.display_name } as PublicModel;
     return null;
-  }, [publicModels, userModels, localModels, agent.model]);
-
-  // Group models by tier
-  const modelsByTier = useMemo(() => {
-    const flagship = publicModels.filter((m) => m.cost_tier === 'premium');
-    const balanced = publicModels.filter((m) => m.cost_tier === 'high' || m.cost_tier === 'medium');
-    const fast = publicModels.filter((m) => m.cost_tier === 'low');
-    return { flagship, balanced, fast };
-  }, [publicModels]);
+  }, [publicModels, userModels, agent.model]);
 
   const currentModeConfig = MODE_CONFIG[agent.mode] || MODE_CONFIG.ask;
   const supportsThinking = currentModelInfo?.capabilities?.thinking === true;
@@ -177,15 +148,14 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
         updateAgent(sessionId, agent.id, { model: modelId });
         const pub = publicModels.find((m) => m.model_id === modelId);
         const user = userModels.find((m) => m.model_id === modelId);
-        const local = localModels.find((m) => m.model_id === modelId);
-        const label = pub?.display_name || user?.display_name || local?.display_name || modelId;
+        const label = pub?.display_name || user?.display_name || modelId;
         toast.success(`Model changed to ${label}`);
       } catch (err) {
         console.error('Failed to change model:', err);
         toast.error('Failed to change model');
       }
     },
-    [sessionId, agent.id, updateAgent, publicModels, userModels, localModels]
+    [sessionId, agent.id, updateAgent, publicModels, userModels]
   );
 
   const handleChangeMode = useCallback(
@@ -415,41 +385,15 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
       <MobileBottomSheet
         isOpen={showModelMenu}
         onClose={() => setShowModelMenu(false)}
-        height="auto"
+        height="full"
       >
-        <div className="space-y-4">
-          <ModelTierSection
-            title="Flagship"
-            titleColor="text-text-primary"
-            models={modelsByTier.flagship}
-            currentModel={agent.model}
-            onSelect={handleChangeModel}
-          />
-          <ModelTierSection
-            title="Balanced"
-            titleColor="text-text-primary"
-            models={modelsByTier.balanced}
-            currentModel={agent.model}
-            onSelect={handleChangeModel}
-          />
-          <ModelTierSection
-            title="Fast"
-            titleColor="text-text-primary"
-            models={modelsByTier.fast}
-            currentModel={agent.model}
-            onSelect={handleChangeModel}
-          />
-          <LocalModelsSection
-            models={localModels}
-            currentModel={agent.model}
-            onSelect={handleChangeModel}
-          />
-          <UserModelsSection
-            models={userModels}
-            currentModel={agent.model}
-            onSelect={handleChangeModel}
-          />
-        </div>
+        <ModelSelector
+          models={publicModels}
+          userKeyModels={userModels as unknown as typeof publicModels}
+          selectedModelId={agent.model}
+          onSelectModel={handleChangeModel}
+          className="h-full"
+        />
       </MobileBottomSheet>
 
       {/* Mode selection sheet */}

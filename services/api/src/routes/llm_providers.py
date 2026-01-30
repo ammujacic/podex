@@ -7,7 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_db
 from src.database.models import CustomLLMProvider
 from src.middleware.auth import get_current_user
+from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
 router = APIRouter(prefix="/llm-providers", tags=["llm-providers"])
 
@@ -228,7 +229,10 @@ async def test_provider_connection(
 
 
 @router.get("", response_model=list[LLMProviderResponse])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_providers(
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> list[LLMProviderResponse]:
@@ -248,8 +252,11 @@ async def list_providers(
 
 
 @router.get("/{provider_id}", response_model=LLMProviderResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def get_provider(
     provider_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> LLMProviderResponse:
@@ -273,8 +280,11 @@ async def get_provider(
 
 
 @router.post("", response_model=LLMProviderResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def create_provider(
-    request: LLMProviderCreate,
+    request: Request,
+    response: Response,
+    body: LLMProviderCreate,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> LLMProviderResponse:
@@ -282,29 +292,29 @@ async def create_provider(
     user_id = user["id"]
 
     # Ensure available_models includes default_model
-    available_models = list(request.available_models)
-    if request.default_model not in available_models:
-        available_models.insert(0, request.default_model)
+    available_models = list(body.available_models)
+    if body.default_model not in available_models:
+        available_models.insert(0, body.default_model)
 
     provider = CustomLLMProvider(
         id=str(uuid4()),
         user_id=user_id,
-        name=request.name,
-        provider_type=request.provider_type,
-        base_url=str(request.base_url),
-        api_key=request.api_key,
-        auth_header=request.auth_header,
-        auth_scheme=request.auth_scheme,
-        default_model=request.default_model,
+        name=body.name,
+        provider_type=body.provider_type,
+        base_url=str(body.base_url),
+        api_key=body.api_key,
+        auth_header=body.auth_header,
+        auth_scheme=body.auth_scheme,
+        default_model=body.default_model,
         available_models=available_models,
-        context_window=request.context_window,
-        max_output_tokens=request.max_output_tokens,
-        supports_streaming=request.supports_streaming,
-        supports_tools=request.supports_tools,
-        supports_vision=request.supports_vision,
-        request_timeout_seconds=request.request_timeout_seconds,
-        extra_headers=request.extra_headers,
-        extra_body_params=request.extra_body_params,
+        context_window=body.context_window,
+        max_output_tokens=body.max_output_tokens,
+        supports_streaming=body.supports_streaming,
+        supports_tools=body.supports_tools,
+        supports_vision=body.supports_vision,
+        request_timeout_seconds=body.request_timeout_seconds,
+        extra_headers=body.extra_headers,
+        extra_body_params=body.extra_body_params,
         is_enabled=True,
     )
 
@@ -316,9 +326,12 @@ async def create_provider(
 
 
 @router.patch("/{provider_id}", response_model=LLMProviderResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def update_provider(
     provider_id: str,
-    request: LLMProviderUpdate,
+    request: Request,
+    response: Response,
+    body: LLMProviderUpdate,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> LLMProviderResponse:
@@ -338,7 +351,7 @@ async def update_provider(
             detail="Provider not found",
         )
 
-    update_data = request.model_dump(exclude_unset=True)
+    update_data = body.model_dump(exclude_unset=True)
     if update_data:
         await db.execute(
             update(CustomLLMProvider)
@@ -352,8 +365,11 @@ async def update_provider(
 
 
 @router.delete("/{provider_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def delete_provider(
     provider_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> None:
@@ -376,9 +392,12 @@ async def delete_provider(
 
 
 @router.post("/{provider_id}/test", response_model=TestConnectionResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def test_connection(
     provider_id: str,
-    request: TestConnectionRequest | None = None,
+    request: Request,
+    response: Response,
+    body: TestConnectionRequest | None = None,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> TestConnectionResponse:
@@ -398,7 +417,7 @@ async def test_connection(
             detail="Provider not found",
         )
 
-    prompt = request.prompt if request else "Hello, please respond with 'OK'."
+    prompt = body.prompt if body else "Hello, please respond with 'OK'."
     test_result = await test_provider_connection(provider, prompt)
 
     # Update provider with test results
@@ -417,8 +436,11 @@ async def test_connection(
 
 
 @router.get("/{provider_id}/models", response_model=list[str])
+@limiter.limit(RATE_LIMIT_STANDARD)
 async def list_available_models(
     provider_id: str,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     user: dict[str, str | None] = Depends(get_current_user),
 ) -> list[str]:
@@ -450,12 +472,12 @@ async def list_available_models(
             headers.update(provider.extra_headers)
 
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(
+            api_response = await client.get(
                 f"{provider.base_url.rstrip('/')}/models",
                 headers=headers,
             )
-            response.raise_for_status()
-            data = response.json()
+            api_response.raise_for_status()
+            data = api_response.json()
 
         # Extract model IDs (OpenAI format)
         models = [m.get("id", m.get("name", "")) for m in data.get("data", [])]

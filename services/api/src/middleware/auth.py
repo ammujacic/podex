@@ -63,7 +63,6 @@ INTERNAL_TOKEN_PATHS: list[tuple[str, bool]] = [
     ("/api/v1/models/capabilities", True),
     ("/api/v1/agent-tools", True),
     ("/api/agent-tools", True),
-    ("/api/servers", True),  # Server heartbeats from compute service
 ]
 
 INTERNAL_OR_USER_PATHS: list[tuple[str, bool]] = [
@@ -71,6 +70,8 @@ INTERNAL_OR_USER_PATHS: list[tuple[str, bool]] = [
     ("/api/skills/available", False),
     ("/api/v1/agent-roles", True),
     ("/api/agent-roles", True),
+    ("/api/servers", True),  # Internal heartbeats + admin UI access
+    ("/api/billing/hardware-specs", False),  # Compute service fetches hardware specs
 ]
 
 

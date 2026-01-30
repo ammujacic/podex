@@ -10,8 +10,6 @@ from fastapi import FastAPI
 from podex_shared import SentryConfig, init_sentry, init_usage_tracker, shutdown_usage_tracker
 from podex_shared.redis_client import get_redis_client
 from src.config import refresh_model_capabilities, settings
-from src.context.manager import create_context_manager_with_settings, set_context_manager
-from src.providers.llm import LLMProvider
 from src.queue.task_queue import TaskQueue
 from src.queue.worker import TaskWorker, set_task_worker
 from src.routes import agents, health, mcp_skills
@@ -77,28 +75,12 @@ class ServiceManager:
         await cls._task_worker.start()
         logger.info("Task worker started")
 
-        # Initialize context manager with settings from Redis cache.
-        # The context manager requires an explicit model to be provided by the
-        # calling service (API) rather than inferring one from local settings.
-        # For now, if no model is configured, we start without a global context
-        # manager so the agent service can still run and callers can provide
-        # a model-specific manager in the future.
-        llm_provider = LLMProvider()
-        try:
-            cls._context_manager = await create_context_manager_with_settings(
-                llm_provider=llm_provider,
-                model=None,
-            )
-            set_context_manager(cls._context_manager)
-            logger.info("Context manager initialized")
-        except ValueError as e:
-            # This typically indicates that no model was provided to the
-            # context manager. Log and continue without global context management.
-            cls._context_manager = None
-            logger.warning(
-                "Context manager not initialized - model must be provided by API service",
-                error=str(e),
-            )
+        # Note: Context manager is created per-request with the model specified
+        # for each agent run. A global context manager is not used because
+        # different agent types have different default models (admin-controlled
+        # via the database). The ContextWindowManager requires a specific model
+        # for its tokenizer, so it must be instantiated when the model is known.
+        cls._context_manager = None
 
         # Initialize skill registry and load skills from API (with retry)
         skill_registry = SkillRegistryHolder.get()

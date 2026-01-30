@@ -330,7 +330,11 @@ async def create_conversation(
     await emit_to_session(
         session_id,
         "conversation_created",
-        {"conversation": ConversationSessionResponse.model_validate(conversation).model_dump()},
+        {
+            "conversation": ConversationSessionResponse.model_validate(conversation).model_dump(
+                mode="json"
+            )
+        },
     )
 
     logger.info("conversation_created", conversation_id=conversation.id, session_id=session_id)

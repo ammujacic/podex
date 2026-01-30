@@ -195,7 +195,7 @@ services:
       - ws-local-1-data:/var/lib/docker
       - ws-local-1-workspaces:/var/lib/podex/workspaces
     healthcheck:
-      test: ["CMD", "docker", "info"]
+      test: ["CMD", "docker", "-H", "tcp://localhost:2375", "info"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -212,7 +212,7 @@ services:
       - ws-local-2-data:/var/lib/docker
       - ws-local-2-workspaces:/var/lib/podex/workspaces
     healthcheck:
-      test: ["CMD", "docker", "info"]
+      test: ["CMD", "docker", "-H", "tcp://localhost:2375", "info"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -245,7 +245,8 @@ services:
             "max_cpu": 4.0,
             "max_memory_mb": 8192,
             "max_workspaces": 10,
-            "architecture": "amd64",
+            "architecture": "arm64",
+            "region": "eu",
             "labels": {"zone": "local-1"}
           },
           {
@@ -256,7 +257,8 @@ services:
             "max_cpu": 4.0,
             "max_memory_mb": 8192,
             "max_workspaces": 10,
-            "architecture": "amd64",
+            "architecture": "arm64",
+            "region": "eu",
             "labels": {"zone": "local-2"}
           }
         ]
@@ -265,6 +267,10 @@ services:
       COMPUTE_MAX_WORKSPACES: 10
       COMPUTE_WORKSPACE_TIMEOUT: 3600
       COMPUTE_WORKSPACE_IMAGE: podex/workspace:latest
+      # Workspace images per architecture (for production, use your registry)
+      # Multi-arch manifests auto-select correct arch, so both can point to same image
+      COMPUTE_WORKSPACE_IMAGE_ARM64: ${COMPUTE_WORKSPACE_IMAGE_ARM64:-podex/workspace:latest-arm64}
+      COMPUTE_WORKSPACE_IMAGE_AMD64: ${COMPUTE_WORKSPACE_IMAGE_AMD64:-podex/workspace:latest-amd64}
       # Redis
       COMPUTE_REDIS_URL: redis://redis:6379
       # Internal API key (for secure inter-service communication)
@@ -283,6 +289,8 @@ services:
       - ./services/shared/src:/app/services/shared/src
       # Note: No docker.sock mount - we connect to workspace servers over the network
     depends_on:
+      api:
+        condition: service_healthy
       redis:
         condition: service_healthy
       ws-local-1:

@@ -56,21 +56,41 @@ async def _get_local_pod_id(db: AsyncSession, workspace_id: str) -> str | None:
     return r.scalar_one_or_none()
 
 
+async def _get_workspace_type(db: AsyncSession, workspace_id: str) -> tuple[str | None, str | None]:
+    """Get workspace type: returns (local_pod_id, server_id).
+
+    One of these will be set depending on workspace type.
+    """
+    r = await db.execute(
+        select(Workspace.local_pod_id, Workspace.server_id).where(Workspace.id == workspace_id)
+    )
+    row = r.one_or_none()
+    if not row:
+        return None, None
+    return row.local_pod_id, row.server_id
+
+
 async def create_tunnel_for_workspace(
     db: AsyncSession,
     workspace_id: str,
     port: int,
 ) -> WorkspaceTunnel:
-    """Create Cloudflare tunnel, DNS, DB record, and start daemon on workspace's pod.
+    """Create Cloudflare tunnel, DNS, DB record, and start daemon on workspace.
 
-    Supports local-pod workspaces only. Compute support TBD.
+    Supports both local-pod and compute workspaces.
     """
-    pod_id = await _get_local_pod_id(db, workspace_id)
-    if not pod_id:
-        msg = "Tunnels only supported for workspaces on a local pod"
+    from src.compute_client import compute_client  # noqa: PLC0415
+    from src.database.models import Session as SessionModel  # noqa: PLC0415
+
+    local_pod_id, server_id = await _get_workspace_type(db, workspace_id)
+
+    if not local_pod_id and not server_id:
+        msg = "Workspace not found or has no assigned pod/server"
         raise RuntimeError(msg)
-    if not is_pod_online(str(pod_id)):
-        raise PodNotConnectedError(str(pod_id))
+
+    # For local pods, verify pod is online
+    if local_pod_id and not is_pod_online(str(local_pod_id)):
+        raise PodNotConnectedError(str(local_pod_id))
 
     name = f"podex-{workspace_id}-{port}"
     hostname = _hostname(workspace_id, port)
@@ -105,24 +125,45 @@ async def create_tunnel_for_workspace(
     await db.commit()
     await db.refresh(rec)
 
+    # For compute workspaces, get owner_id before starting (outside try block for TRY301)
+    owner_id: str | None = None
+    if not local_pod_id:
+        r = await db.execute(
+            select(SessionModel.owner_id).where(SessionModel.workspace_id == workspace_id)
+        )
+        owner_id = r.scalar_one_or_none()
+        if not owner_id:
+            msg = "Could not determine owner_id for workspace"
+            raise RuntimeError(msg)
+
+    # Start the tunnel daemon on the appropriate backend
     try:
-        await call_pod(
-            str(pod_id),
-            RPCMethods.TUNNEL_START,
-            {
-                "workspace_id": workspace_id,
-                "config": {
-                    "token": token,
-                    "port": port,
-                    "hostname": hostname,
+        if local_pod_id:
+            # Local pod: use WebSocket RPC
+            await call_pod(
+                str(local_pod_id),
+                RPCMethods.TUNNEL_START,
+                {
+                    "workspace_id": workspace_id,
+                    "config": {
+                        "token": token,
+                        "port": port,
+                        "hostname": hostname,
+                    },
                 },
-            },
-            rpc_timeout=RPC_TIMEOUT,
-        )
+                rpc_timeout=RPC_TIMEOUT,
+            )
+        else:
+            # Compute workspace: use HTTP API
+            await compute_client.start_tunnel(
+                workspace_id=workspace_id,
+                user_id=owner_id,  # type: ignore[arg-type]  # validated above
+                token=token,
+                port=port,
+                service_type="http",
+            )
     except Exception as e:
-        logger.warning(
-            "tunnel.start RPC failed, cleaning up", workspace_id=workspace_id, error=str(e)
-        )
+        logger.warning("tunnel start failed, cleaning up", workspace_id=workspace_id, error=str(e))
         await delete_tunnel_for_workspace(db, workspace_id, port)
         msg = f"Failed to start tunnel daemon: {e}"
         raise RuntimeError(msg) from e
@@ -139,27 +180,48 @@ async def delete_tunnel_for_workspace(
     port: int,
 ) -> None:
     """Stop daemon, delete DNS, delete Cloudflare tunnel, remove DB record."""
-    r = await db.execute(
+    from src.compute_client import compute_client  # noqa: PLC0415
+    from src.database.models import Session as SessionModel  # noqa: PLC0415
+
+    tunnel_result = await db.execute(
         select(WorkspaceTunnel).where(
             WorkspaceTunnel.workspace_id == workspace_id,
             WorkspaceTunnel.port == port,
         )
     )
-    rec = r.scalar_one_or_none()
+    rec = tunnel_result.scalar_one_or_none()
     if not rec:
         return
 
-    pod_id = await _get_local_pod_id(db, workspace_id)
-    if pod_id and is_pod_online(str(pod_id)):
+    local_pod_id, server_id = await _get_workspace_type(db, workspace_id)
+
+    # Stop the tunnel daemon on the appropriate backend
+    if local_pod_id and is_pod_online(str(local_pod_id)):
         try:
             await call_pod(
-                str(pod_id),
+                str(local_pod_id),
                 RPCMethods.TUNNEL_STOP,
                 {"workspace_id": workspace_id, "port": port},
                 rpc_timeout=RPC_TIMEOUT,
             )
         except Exception as e:
             logger.warning("tunnel.stop RPC failed", workspace_id=workspace_id, error=str(e))
+    elif server_id:
+        try:
+            session_result = await db.execute(
+                select(SessionModel.owner_id).where(SessionModel.workspace_id == workspace_id)
+            )
+            session_owner_id = session_result.scalar_one_or_none()
+            if session_owner_id:
+                await compute_client.stop_tunnel(
+                    workspace_id=workspace_id,
+                    user_id=session_owner_id,
+                    port=port,
+                )
+        except Exception as e:
+            logger.warning(
+                "tunnel stop via compute failed", workspace_id=workspace_id, error=str(e)
+            )
 
     hostname = _hostname(workspace_id, port)
     try:
@@ -184,23 +246,50 @@ async def list_tunnels(db: AsyncSession, workspace_id: str) -> list[WorkspaceTun
 
 
 async def get_tunnel_status(workspace_id: str) -> dict[str, Any]:
-    """Query daemon health via RPC. Requires workspace on local pod."""
-    async with get_db_context() as db:
-        pod_id = await _get_local_pod_id(db, workspace_id)
-    if not pod_id or not is_pod_online(str(pod_id)):
-        return {"status": "offline", "connected": False}
+    """Query daemon health via RPC or compute service."""
+    from src.compute_client import compute_client  # noqa: PLC0415
+    from src.database.models import Session as SessionModel  # noqa: PLC0415
 
-    try:
-        out = await call_pod(
-            str(pod_id),
-            RPCMethods.TUNNEL_STATUS,
-            {"workspace_id": workspace_id},
-            rpc_timeout=10.0,
-        )
-        return out if isinstance(out, dict) else {"status": "unknown", "connected": False}
-    except Exception as e:
-        logger.warning("tunnel.status RPC failed", workspace_id=workspace_id, error=str(e))
-        return {"status": "error", "connected": False, "error": str(e)}
+    async with get_db_context() as db:
+        local_pod_id, server_id = await _get_workspace_type(db, workspace_id)
+
+        if local_pod_id:
+            # Local pod: use WebSocket RPC
+            if not is_pod_online(str(local_pod_id)):
+                return {"status": "offline", "connected": False}
+
+            try:
+                out = await call_pod(
+                    str(local_pod_id),
+                    RPCMethods.TUNNEL_STATUS,
+                    {"workspace_id": workspace_id},
+                    rpc_timeout=10.0,
+                )
+                return out if isinstance(out, dict) else {"status": "unknown", "connected": False}
+            except Exception as e:
+                logger.warning("tunnel.status RPC failed", workspace_id=workspace_id, error=str(e))
+                return {"status": "error", "connected": False, "error": str(e)}
+        elif server_id:
+            # Compute workspace: use HTTP API
+            try:
+                r = await db.execute(
+                    select(SessionModel.owner_id).where(SessionModel.workspace_id == workspace_id)
+                )
+                owner_id = r.scalar_one_or_none()
+                if not owner_id:
+                    return {"status": "error", "connected": False, "error": "No owner_id"}
+
+                return await compute_client.get_tunnel_status(
+                    workspace_id=workspace_id,
+                    user_id=owner_id,
+                )
+            except Exception as e:
+                logger.warning(
+                    "tunnel.status via compute failed", workspace_id=workspace_id, error=str(e)
+                )
+                return {"status": "error", "connected": False, "error": str(e)}
+        else:
+            return {"status": "offline", "connected": False}
 
 
 # SSH port constant
@@ -214,18 +303,24 @@ async def create_ssh_tunnel_for_workspace(
     """Create SSH tunnel for a workspace (port 22, ssh:// service type).
 
     Creates Cloudflare tunnel configured for SSH TCP passthrough, DNS CNAME,
-    DB record, and starts the cloudflared daemon on the workspace's pod.
+    DB record, and starts the cloudflared daemon on the workspace.
 
     This enables VS Code Remote-SSH access via cloudflared ProxyCommand.
 
-    Supports local-pod workspaces only.
+    Supports both local-pod and compute workspaces.
     """
-    pod_id = await _get_local_pod_id(db, workspace_id)
-    if not pod_id:
-        msg = "SSH tunnels only supported for workspaces on a local pod"
+    from src.compute_client import compute_client  # noqa: PLC0415
+    from src.database.models import Session as SessionModel  # noqa: PLC0415
+
+    local_pod_id, server_id = await _get_workspace_type(db, workspace_id)
+
+    if not local_pod_id and not server_id:
+        msg = "Workspace not found or has no assigned pod/server"
         raise RuntimeError(msg)
-    if not is_pod_online(str(pod_id)):
-        raise PodNotConnectedError(str(pod_id))
+
+    # For local pods, verify pod is online
+    if local_pod_id and not is_pod_online(str(local_pod_id)):
+        raise PodNotConnectedError(str(local_pod_id))
 
     name = f"podex-{workspace_id}-ssh"
     hostname = _ssh_hostname(workspace_id)
@@ -265,25 +360,47 @@ async def create_ssh_tunnel_for_workspace(
     await db.commit()
     await db.refresh(rec)
 
-    # Start cloudflared daemon on the pod
-    try:
-        await call_pod(
-            str(pod_id),
-            RPCMethods.TUNNEL_START,
-            {
-                "workspace_id": workspace_id,
-                "config": {
-                    "token": token,
-                    "port": SSH_PORT,
-                    "hostname": hostname,
-                    "service_type": "ssh",  # Tell RPC handler this is SSH
-                },
-            },
-            rpc_timeout=RPC_TIMEOUT,
+    # For compute workspaces, get owner_id before starting (outside try block for TRY301)
+    ssh_owner_id: str | None = None
+    if not local_pod_id:
+        r = await db.execute(
+            select(SessionModel.owner_id).where(SessionModel.workspace_id == workspace_id)
         )
+        ssh_owner_id = r.scalar_one_or_none()
+        if not ssh_owner_id:
+            msg = "Could not determine owner_id for workspace"
+            raise RuntimeError(msg)
+
+    # Start cloudflared daemon on the appropriate backend
+    try:
+        if local_pod_id:
+            # Local pod: use WebSocket RPC
+            await call_pod(
+                str(local_pod_id),
+                RPCMethods.TUNNEL_START,
+                {
+                    "workspace_id": workspace_id,
+                    "config": {
+                        "token": token,
+                        "port": SSH_PORT,
+                        "hostname": hostname,
+                        "service_type": "ssh",  # Tell RPC handler this is SSH
+                    },
+                },
+                rpc_timeout=RPC_TIMEOUT,
+            )
+        else:
+            # Compute workspace: use HTTP API
+            await compute_client.start_tunnel(
+                workspace_id=workspace_id,
+                user_id=ssh_owner_id,  # type: ignore[arg-type]  # validated above
+                token=token,
+                port=SSH_PORT,
+                service_type="ssh",
+            )
     except Exception as e:
         logger.warning(
-            "SSH tunnel.start RPC failed, cleaning up", workspace_id=workspace_id, error=str(e)
+            "SSH tunnel start failed, cleaning up", workspace_id=workspace_id, error=str(e)
         )
         await delete_tunnel_for_workspace(db, workspace_id, SSH_PORT)
         msg = f"Failed to start SSH tunnel daemon: {e}"

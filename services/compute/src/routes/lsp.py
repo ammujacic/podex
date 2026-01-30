@@ -12,7 +12,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from src.deps import get_compute_manager, verify_internal_api_key
+from src.deps import OrchestratorSingleton, get_compute_manager, verify_internal_api_key
 from src.managers.lsp_manager import (
     LSP_SERVER_COMMANDS,
     LSPDiagnostic,
@@ -21,6 +21,8 @@ from src.managers.lsp_manager import (
 from src.models.workspace import WorkspaceStatus
 
 if TYPE_CHECKING:
+    from docker.models.containers import Container
+
     from src.managers.base import ComputeManager
 
 logger = structlog.get_logger()
@@ -82,6 +84,74 @@ def _diagnostic_to_response(diag: LSPDiagnostic) -> DiagnosticResponse:
     )
 
 
+async def _get_workspace_container(
+    workspace_id: str,
+    compute_manager: ComputeManager,
+) -> Container:
+    """Get the Docker container for a workspace.
+
+    Uses the workspace's server_id to get the correct Docker client from
+    the MultiServerDockerManager, then retrieves the container.
+
+    Args:
+        workspace_id: The workspace ID
+        compute_manager: The compute manager
+
+    Returns:
+        The Docker container object
+
+    Raises:
+        HTTPException: If workspace not found, not running, or container unavailable
+    """
+    workspace = await compute_manager.get_workspace(workspace_id)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    if workspace.status != WorkspaceStatus.RUNNING:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Workspace is not running (status: {workspace.status})",
+        )
+
+    if not workspace.server_id or not workspace.container_id:
+        raise HTTPException(
+            status_code=404,
+            detail="Workspace has no server or container assigned",
+        )
+
+    # Get Docker client for the workspace's server
+    docker_manager = OrchestratorSingleton.get_docker_manager()
+    docker_client = docker_manager.get_client(workspace.server_id)
+    if not docker_client:
+        logger.error(
+            "No Docker client available for server",
+            workspace_id=workspace_id,
+            server_id=workspace.server_id,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Workspace server not available",
+        )
+
+    try:
+        container = await asyncio.to_thread(
+            docker_client.containers.get,
+            workspace.container_id,
+        )
+        return container
+    except Exception as e:
+        logger.error(
+            "Failed to get container",
+            workspace_id=workspace_id,
+            container_id=workspace.container_id,
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=404,
+            detail="Workspace container not found",
+        ) from e
+
+
 @router.get("/workspaces/{workspace_id}/diagnostics", response_model=DiagnosticsResponse)
 async def get_file_diagnostics(
     workspace_id: str,
@@ -101,21 +171,7 @@ async def get_file_diagnostics(
     Returns:
         Diagnostics for the file
     """
-    # Get workspace info
-    workspace = await compute_manager.get_workspace(workspace_id)
-    if not workspace:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-
-    if workspace.status != WorkspaceStatus.RUNNING:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Workspace is not running (status: {workspace.status})",
-        )
-
-    # Get container
-    container = await compute_manager.get_container(workspace_id)  # type: ignore[attr-defined]
-    if not container:
-        raise HTTPException(status_code=404, detail="Workspace container not found")
+    container = await _get_workspace_container(workspace_id, compute_manager)
 
     lsp_manager = get_lsp_manager()
     language = lsp_manager.get_language_for_file(file_path)
@@ -151,21 +207,7 @@ async def get_batch_diagnostics(
     Returns:
         Diagnostics for all requested files
     """
-    # Get workspace info
-    workspace = await compute_manager.get_workspace(workspace_id)
-    if not workspace:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-
-    if workspace.status != WorkspaceStatus.RUNNING:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Workspace is not running (status: {workspace.status})",
-        )
-
-    # Get container
-    container = await compute_manager.get_container(workspace_id)  # type: ignore[attr-defined]
-    if not container:
-        raise HTTPException(status_code=404, detail="Workspace container not found")
+    container = await _get_workspace_container(workspace_id, compute_manager)
 
     lsp_manager = get_lsp_manager()
     results: list[DiagnosticsResponse] = []
@@ -226,21 +268,7 @@ async def start_file_watching(
     Returns:
         Watch status with active patterns
     """
-    # Get workspace info
-    workspace = await compute_manager.get_workspace(workspace_id)
-    if not workspace:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-
-    if workspace.status != WorkspaceStatus.RUNNING:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Workspace is not running (status: {workspace.status})",
-        )
-
-    # Get container
-    container = await compute_manager.get_container(workspace_id)  # type: ignore[attr-defined]
-    if not container:
-        raise HTTPException(status_code=404, detail="Workspace container not found")
+    container = await _get_workspace_container(workspace_id, compute_manager)
 
     lsp_manager = get_lsp_manager()
 
@@ -337,21 +365,7 @@ async def get_supported_languages(
     Returns:
         Dictionary with supported languages and their installation status
     """
-    # Get workspace info
-    workspace = await compute_manager.get_workspace(workspace_id)
-    if not workspace:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-
-    if workspace.status != WorkspaceStatus.RUNNING:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Workspace is not running (status: {workspace.status})",
-        )
-
-    # Get container
-    container = await compute_manager.get_container(workspace_id)  # type: ignore[attr-defined]
-    if not container:
-        raise HTTPException(status_code=404, detail="Workspace container not found")
+    container = await _get_workspace_container(workspace_id, compute_manager)
 
     # Check which LSP servers are installed
     languages: dict[str, dict[str, Any]] = {}

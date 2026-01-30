@@ -3,7 +3,7 @@
 import json
 from typing import Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -22,6 +22,7 @@ class WorkspaceServerConfig:
         max_workspaces: int = 50,
         labels: dict[str, str] | None = None,
         architecture: str = "amd64",
+        region: str | None = None,
         # GPU configuration
         has_gpu: bool = False,
         gpu_type: str | None = None,
@@ -37,6 +38,7 @@ class WorkspaceServerConfig:
         self.max_workspaces = max_workspaces
         self.labels = labels or {}
         self.architecture = architecture
+        self.region = region
         # GPU
         self.has_gpu = has_gpu
         self.gpu_type = gpu_type
@@ -63,12 +65,16 @@ class Settings(BaseSettings):
 
     # Workspace servers configuration (JSON array)
     # Each server: {"server_id", "host", "docker_port", "tls_enabled", "cert_path", ...}
-    workspace_servers_json: str = Field(default="[]", validation_alias="COMPUTE_WORKSPACE_SERVERS")
+    workspace_servers_json: str = Field(
+        default="[]",
+        validation_alias=AliasChoices("workspace_servers", "COMPUTE_WORKSPACE_SERVERS"),
+    )
 
     # Workspace settings
     max_workspaces: int = 10  # Max workspaces per server (soft limit)
     workspace_timeout: int = 3600  # 1 hour idle timeout
     shutdown_timeout: int = 60  # Max seconds for graceful shutdown before forcing exit
+    # Base workspace image (used as fallback)
     workspace_image: str = "podex/workspace:latest"
 
     # Container runtime for workspace isolation (runsc for gVisor, runc for standard)
@@ -99,6 +105,7 @@ class Settings(BaseSettings):
                     max_workspaces=s.get("max_workspaces", 50),
                     labels=s.get("labels", {}),
                     architecture=s.get("architecture", "amd64"),
+                    region=s.get("region"),
                     # GPU configuration
                     has_gpu=s.get("has_gpu", False),
                     gpu_type=s.get("gpu_type"),
@@ -118,6 +125,10 @@ class Settings(BaseSettings):
     xfs_quotas_enabled: bool = False  # Set to True in production
 
     # Workspace container images for different architectures
+    # For production, set via environment variables:
+    #   COMPUTE_WORKSPACE_IMAGE_ARM64=ghcr.io/yourorg/workspace:latest
+    #   COMPUTE_WORKSPACE_IMAGE_AMD64=ghcr.io/yourorg/workspace:latest
+    # The multi-arch manifest will auto-select the correct architecture
     workspace_image_arm64: str = "podex/workspace:latest-arm64"
     workspace_image_amd64: str = "podex/workspace:latest-amd64"
     workspace_image_gpu: str = (

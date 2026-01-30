@@ -27,6 +27,7 @@ from src.routes import (
     reset_terminal_manager,
     shutdown_terminal_sessions,
     terminal_router,
+    tunnels_router,
     websocket_router,
     workspaces_router,
 )
@@ -226,6 +227,7 @@ app.add_middleware(
 # Include routers
 app.include_router(health_router)
 app.include_router(workspaces_router)
+app.include_router(tunnels_router)
 app.include_router(preview_router)
 app.include_router(terminal_router)
 app.include_router(websocket_router)

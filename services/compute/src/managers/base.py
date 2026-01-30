@@ -525,6 +525,61 @@ class ComputeManager(ABC):
         """
         pass
 
+    # --- Tunnel Management Methods ---
+
+    @abstractmethod
+    async def start_tunnel(
+        self,
+        workspace_id: str,
+        token: str,
+        port: int,
+        service_type: str = "http",
+    ) -> dict[str, Any]:
+        """Start a cloudflared tunnel for a workspace.
+
+        Args:
+            workspace_id: The workspace ID.
+            token: Cloudflare tunnel token.
+            port: Local port to tunnel.
+            service_type: "http" or "ssh".
+
+        Returns:
+            Dict with status and pid.
+        """
+        ...
+
+    @abstractmethod
+    async def stop_tunnel(
+        self,
+        workspace_id: str,
+        port: int,
+    ) -> dict[str, Any]:
+        """Stop a cloudflared tunnel.
+
+        Args:
+            workspace_id: The workspace ID.
+            port: Port of tunnel to stop.
+
+        Returns:
+            Dict with status.
+        """
+        ...
+
+    @abstractmethod
+    async def get_tunnel_status(
+        self,
+        workspace_id: str,
+    ) -> dict[str, Any]:
+        """Get status of all tunnels for a workspace.
+
+        Args:
+            workspace_id: The workspace ID.
+
+        Returns:
+            Dict with tunnel statuses.
+        """
+        ...
+
     async def exec_command_stream(
         self,
         workspace_id: str,
