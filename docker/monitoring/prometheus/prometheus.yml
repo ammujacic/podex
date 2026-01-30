@@ -46,35 +46,45 @@ scrape_configs:
       - targets: ['grafana:3000']
 
   # =================================================================
-  # WORKSPACE SERVERS
-  # Uncomment and add your workspace server private IPs here
-  # Each workspace server should run node-exporter on port 9100
+  # DOCKER SERVICE DISCOVERY
+  # Automatically discovers all containers via Docker socket
+  # Scrapes containers that have prometheus.scrape=true label
   # =================================================================
-  # - job_name: 'node-workspace'
-  #   static_configs:
-  #     - targets: ['10.0.1.10:9100']
-  #       labels:
-  #         server: 'ws-1'
-  #         role: 'workspace'
-  #     - targets: ['10.0.1.11:9100']
-  #       labels:
-  #         server: 'ws-2'
-  #         role: 'workspace'
-  #     - targets: ['10.0.1.12:9100']
-  #       labels:
-  #         server: 'ws-3'
-  #         role: 'workspace'
-
-  # =================================================================
-  # PODEX SERVICES
-  # Uncomment if your services expose /metrics endpoint
-  # =================================================================
-  # - job_name: 'podex-api'
-  #   static_configs:
-  #     - targets: ['podex-api:3001']
-  #   metrics_path: /metrics
-  #
-  # - job_name: 'podex-compute'
-  #   static_configs:
-  #     - targets: ['podex-compute:3003']
-  #   metrics_path: /metrics
+  - job_name: 'docker-containers'
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 15s
+    relabel_configs:
+      # Only scrape containers with prometheus.scrape=true label
+      - source_labels: [__meta_docker_container_label_prometheus_scrape]
+        regex: 'true'
+        action: keep
+      # Use prometheus.port label for port, default to 3001
+      - source_labels: [__meta_docker_container_label_prometheus_port]
+        regex: '(.+)'
+        target_label: __address__
+        replacement: '${1}'
+      - source_labels: [__meta_docker_container_name, __meta_docker_container_label_prometheus_port]
+        regex: '/(.+);(.+)'
+        target_label: __address__
+        replacement: '${1}:${2}'
+      # Use prometheus.path label for metrics path, default to /metrics
+      - source_labels: [__meta_docker_container_label_prometheus_path]
+        regex: '(.+)'
+        target_label: __metrics_path__
+        replacement: '${1}'
+      # Extract container name
+      - source_labels: [__meta_docker_container_name]
+        regex: '/(.+)'
+        target_label: container
+      # Extract compose service name
+      - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+        target_label: service
+      # Extract compose project
+      - source_labels: [__meta_docker_container_label_com_docker_compose_project]
+        target_label: project
+      # Extract Coolify labels
+      - source_labels: [__meta_docker_container_label_coolify_name]
+        target_label: coolify_name
+      - source_labels: [__meta_docker_container_label_coolify_serviceId]
+        target_label: coolify_service_id

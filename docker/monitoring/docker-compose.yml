@@ -16,6 +16,7 @@ services:
     volumes:
       - prometheus_data:/prometheus
       - ./prometheus:/etc/prometheus:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
