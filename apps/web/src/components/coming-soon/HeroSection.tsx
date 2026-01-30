@@ -14,8 +14,25 @@ import {
   FolderTree,
   Users,
 } from 'lucide-react';
+import { useEffect, useState } from 'react';
 
 import { PodexIcon } from '@/components/icons/PodexIcon';
+
+// Hook to detect if we're on desktop (avoids hydration mismatch by defaulting to false)
+function useIsDesktop() {
+  const [isDesktop, setIsDesktop] = useState(false);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(min-width: 768px)');
+    setIsDesktop(mediaQuery.matches);
+
+    const handler = (e: MediaQueryListEvent) => setIsDesktop(e.matches);
+    mediaQuery.addEventListener('change', handler);
+    return () => mediaQuery.removeEventListener('change', handler);
+  }, []);
+
+  return isDesktop;
+}
 
 // Floating UI element component
 function FloatingElement({
@@ -331,6 +348,8 @@ function FloatingPresence({ className, delay }: { className?: string; delay?: nu
 }
 
 export function HeroSection() {
+  const isDesktop = useIsDesktop();
+
   return (
     <section className="relative min-h-screen flex items-center justify-center overflow-hidden">
       {/* Gradient background */}
@@ -339,33 +358,37 @@ export function HeroSection() {
       {/* Subtle radial glow */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1000px] h-[1000px] bg-purple-500/5 rounded-full blur-[150px] pointer-events-none" />
 
-      {/* Floating UI elements - positioned around the hero */}
-      {/* Top row */}
-      <FloatingCodeBlock className="top-[8%] left-[5%]" delay={0} />
-      <FloatingPresence className="top-[5%] left-[30%]" delay={0.5} />
-      <FloatingTerminal className="top-[8%] right-[5%]" delay={1} />
+      {/* Floating UI elements - only rendered on desktop to avoid mobile performance issues */}
+      {isDesktop && (
+        <>
+          {/* Top row */}
+          <FloatingCodeBlock className="top-[8%] left-[5%]" delay={0} />
+          <FloatingPresence className="top-[5%] left-[30%]" delay={0.5} />
+          <FloatingTerminal className="top-[8%] right-[5%]" delay={1} />
 
-      {/* Upper middle */}
-      <FloatingAgentCard className="top-[22%] left-[3%]" delay={1.5} />
-      <FloatingChat className="top-[18%] right-[4%]" delay={2} />
+          {/* Upper middle */}
+          <FloatingAgentCard className="top-[22%] left-[3%]" delay={1.5} />
+          <FloatingChat className="top-[18%] right-[4%]" delay={2} />
 
-      {/* Middle sides */}
-      <FloatingMobile className="top-[45%] left-[2%]" delay={2.5} />
-      <FloatingFileTree className="top-[42%] right-[3%]" delay={3} />
+          {/* Middle sides */}
+          <FloatingMobile className="top-[45%] left-[2%]" delay={2.5} />
+          <FloatingFileTree className="top-[42%] right-[3%]" delay={3} />
 
-      {/* Lower middle */}
-      <FloatingCloud className="bottom-[25%] left-[4%]" delay={3.5} />
-      <FloatingLaptop className="bottom-[22%] right-[4%]" delay={4} />
+          {/* Lower middle */}
+          <FloatingCloud className="bottom-[25%] left-[4%]" delay={3.5} />
+          <FloatingLaptop className="bottom-[22%] right-[4%]" delay={4} />
 
-      {/* Bottom row */}
-      <FloatingWorkflow className="bottom-[8%] left-[15%]" delay={4.5} />
-      <FloatingMobile className="bottom-[6%] right-[38%]" delay={5} />
+          {/* Bottom row */}
+          <FloatingWorkflow className="bottom-[8%] left-[15%]" delay={4.5} />
+          <FloatingMobile className="bottom-[6%] right-[38%]" delay={5} />
 
-      {/* Additional elements on larger screens */}
-      <FloatingAgentCard className="hidden lg:block top-[12%] left-[22%]" delay={5.5} />
-      <FloatingFileTree className="hidden lg:block bottom-[8%] right-[15%]" delay={6} />
-      <FloatingChat className="hidden xl:block top-[28%] right-[20%]" delay={6.5} />
-      <FloatingCloud className="hidden xl:block bottom-[18%] left-[18%]" delay={7} />
+          {/* Additional elements on larger screens - using CSS for lg/xl breakpoints */}
+          <FloatingAgentCard className="hidden lg:block top-[12%] left-[22%]" delay={5.5} />
+          <FloatingFileTree className="hidden lg:block bottom-[8%] right-[15%]" delay={6} />
+          <FloatingChat className="hidden xl:block top-[28%] right-[20%]" delay={6.5} />
+          <FloatingCloud className="hidden xl:block bottom-[18%] left-[18%]" delay={7} />
+        </>
+      )}
 
       {/* Edge fade overlays - very subtle */}
       <div className="absolute inset-0 bg-gradient-to-r from-void/20 via-transparent to-void/20 pointer-events-none" />

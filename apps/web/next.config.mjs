@@ -65,7 +65,15 @@ const nextConfig = {
     '@codingame/monaco-vscode-make-default-extension',
   ],
   experimental: {
-    optimizePackageImports: ['lucide-react', '@radix-ui/react-icons'],
+    // Inline critical CSS to reduce render-blocking resources
+    optimizeCss: true,
+    // Tree-shake imports from large packages
+    optimizePackageImports: [
+      'lucide-react',
+      '@radix-ui/react-icons',
+      'framer-motion',
+      'date-fns',
+    ],
   },
   images: {
     remotePatterns: [

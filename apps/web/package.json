@@ -2,6 +2,13 @@
   "name": "@podex/web",
   "version": "0.1.0",
   "private": true,
+  "browserslist": [
+    "last 2 Chrome versions",
+    "last 2 Firefox versions",
+    "last 2 Safari versions",
+    "last 2 Edge versions",
+    "not dead"
+  ],
   "scripts": {
     "dev": "next dev --port 3000 -H 0.0.0.0",
     "build": "NODE_OPTIONS='--no-warnings' SERWIST_SUPPRESS_TURBOPACK_WARNING=1 next build",
@@ -123,6 +130,7 @@
     "@vitejs/plugin-react": "^4.7.0",
     "@vitest/coverage-v8": "^4.0.17",
     "autoprefixer": "^10.4.23",
+    "beasties": "^0.4.1",
     "esbuild": "^0.27.2",
     "eslint": "^9.39.2",
     "eslint-plugin-react-hooks": "^5.2.0",

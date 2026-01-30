@@ -1,11 +1,12 @@
 """Application configuration using Pydantic Settings."""
 
+import json
 import os
 import secrets
 import warnings
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.exceptions import DefaultSecretKeyError, ShortSecretKeyError
@@ -45,8 +46,30 @@ class Settings(BaseSettings):
     PORT: int = 3001
     DEBUG: bool = False
 
-    # CORS
-    CORS_ORIGINS: list[str] = ["http://localhost:3000"]
+    # CORS - stored as raw string to avoid pydantic-settings JSON parsing issues
+    CORS_ORIGINS_RAW: str = Field(
+        default='["http://localhost:3000"]',
+        validation_alias="CORS_ORIGINS",
+    )
+
+    @property
+    def CORS_ORIGINS(self) -> list[str]:  # noqa: N802 - matches env var name
+        """Parse CORS origins from JSON array, comma-separated, or plain string."""
+        v = self.CORS_ORIGINS_RAW.strip() if self.CORS_ORIGINS_RAW else ""
+        if not v:
+            return ["http://localhost:3000"]
+        # Try JSON array first
+        if v.startswith("["):
+            try:
+                parsed = json.loads(v)
+                return [str(x) for x in parsed] if isinstance(parsed, list) else [v]
+            except json.JSONDecodeError:
+                pass
+        # Comma-separated list (e.g., "https://a.com,https://b.com")
+        if "," in v:
+            return [origin.strip() for origin in v.split(",") if origin.strip()]
+        # Single origin
+        return [v]
 
     # Database
     # NOTE: In production, DATABASE_URL must be set via environment variable
