@@ -64,6 +64,11 @@ COPY services/agent/src ./src
 RUN adduser --disabled-password --gecos "" appuser
 USER appuser
 
+# Prometheus metrics labels (for Docker service discovery)
+LABEL prometheus.scrape="true"
+LABEL prometheus.port="3002"
+LABEL prometheus.path="/metrics"
+
 # Health check (start-period allows time for app initialization)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
     CMD curl -f http://localhost:3002/health || exit 1

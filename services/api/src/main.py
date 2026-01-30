@@ -1902,6 +1902,11 @@ app.add_middleware(CSRFMiddleware)  # Origin validation for state-changing reque
 app.add_middleware(RequestSizeLimitMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)  # Runs first, adds security headers to all responses
 
+# Configure Prometheus metrics endpoint
+from prometheus_fastapi_instrumentator import Instrumentator  # noqa: E402
+
+Instrumentator().instrument(app).expose(app)
+
 # Create versioned API router (v1)
 api_v1 = APIRouter()
 

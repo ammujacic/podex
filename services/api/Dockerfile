@@ -73,6 +73,11 @@ COPY services/api/migrations ./migrations
 RUN adduser --disabled-password --gecos "" appuser
 USER appuser
 
+# Prometheus metrics labels (for Docker service discovery)
+LABEL prometheus.scrape="true"
+LABEL prometheus.port="3001"
+LABEL prometheus.path="/metrics"
+
 # Health check (start-period allows time for migrations and app initialization)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:3001/health || exit 1

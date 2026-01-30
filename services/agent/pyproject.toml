@@ -22,6 +22,8 @@ dependencies = [
     "asyncpg>=0.29.0",
     "sqlalchemy[asyncio]>=2.0.25",
     "podex-shared",
+    # Prometheus metrics endpoint
+    "prometheus-fastapi-instrumentator>=6.1.0",
 ]
 
 [tool.uv.sources]
@@ -113,6 +115,8 @@ module = [
     "playwright.*",
     "aiohttp",
     "aiohttp.*",
+    "prometheus_fastapi_instrumentator",
+    "prometheus_fastapi_instrumentator.*",
 ]
 ignore_missing_imports = true
 

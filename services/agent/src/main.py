@@ -205,6 +205,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Configure Prometheus metrics endpoint
+from prometheus_fastapi_instrumentator import Instrumentator  # noqa: E402
+
+Instrumentator().instrument(app).expose(app)
+
 app.include_router(health.router, tags=["health"])
 app.include_router(agents.router, prefix="/agents", tags=["agents"])
 app.include_router(mcp_skills.router)

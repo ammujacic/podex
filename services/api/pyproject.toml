@@ -41,6 +41,8 @@ dependencies = [
     # Async email - non-blocking SMTP
     "aiosmtplib>=3.0.0",
     "python-dateutil>=2.9.0.post0",
+    # Prometheus metrics endpoint
+    "prometheus-fastapi-instrumentator>=6.1.0",
 ]
 
 [tool.uv.sources]
@@ -319,6 +321,8 @@ module = [
     "pywebpush.*",
     "aiosmtplib",
     "aiosmtplib.*",
+    "prometheus_fastapi_instrumentator",
+    "prometheus_fastapi_instrumentator.*",
 ]
 ignore_missing_imports = true
 

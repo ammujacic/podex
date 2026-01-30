@@ -17,6 +17,8 @@ dependencies = [
     "structlog>=24.1.0",
     "websockets>=12.0",
     "podex-shared",
+    # Prometheus metrics endpoint
+    "prometheus-fastapi-instrumentator>=6.1.0",
 ]
 
 [tool.uv.sources]
@@ -108,6 +110,8 @@ module = [
     "podex_shared.*",
     "sentry_sdk.*",
     "google.*",
+    "prometheus_fastapi_instrumentator",
+    "prometheus_fastapi_instrumentator.*",
 ]
 ignore_missing_imports = true
 

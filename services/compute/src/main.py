@@ -223,6 +223,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Configure Prometheus metrics endpoint
+from prometheus_fastapi_instrumentator import Instrumentator  # noqa: E402
+
+Instrumentator().instrument(app).expose(app)
+
 # Include routers
 app.include_router(health_router)
 app.include_router(workspaces_router)
