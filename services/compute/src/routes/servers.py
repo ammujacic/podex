@@ -86,9 +86,16 @@ async def test_server_connection(
                         None,
                     )
 
+                # Explicit checks for type narrowing (mypy doesn't understand all())
+                cert_path = request.tls_cert_path
+                key_path = request.tls_key_path
+                ca_path = request.tls_ca_path
+                if cert_path is None or key_path is None or ca_path is None:
+                    return (False, "TLS paths are required", None)
+
                 tls_config = TLSConfig(
-                    client_cert=(request.tls_cert_path, request.tls_key_path),
-                    ca_cert=request.tls_ca_path,
+                    client_cert=(cert_path, key_path),
+                    ca_cert=ca_path,
                     verify=True,
                 )
                 base_url = f"https://{request.ip_address}:{request.docker_port}"
