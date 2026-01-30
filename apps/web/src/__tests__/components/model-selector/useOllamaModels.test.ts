@@ -208,12 +208,13 @@ describe('useOllamaModels', () => {
 
       const { result } = renderHook(() => useOllamaModels());
 
+      // Wait for discovery to complete - isConnected becomes true on success
       await waitFor(() => {
-        expect(result.current.isLoading).toBe(false);
+        expect(result.current.isConnected).toBe(true);
       });
 
       expect(result.current.models).toEqual([]);
-      expect(result.current.isConnected).toBe(true);
+      expect(result.current.isLoading).toBe(false);
     });
   });
 
