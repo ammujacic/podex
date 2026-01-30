@@ -80,8 +80,8 @@ services:
       # GCP Configuration
       GCP_PROJECT_ID: podex-test
       GCP_REGION: us-east1
-      # LLM Provider (Vertex AI)
-      LLM_PROVIDER: vertex
+      # LLM Provider (OpenRouter)
+      LLM_PROVIDER: openrouter
       # CORS
       CORS_ORIGINS: '["http://localhost:3000", "http://localhost:3010"]'
       # Auth
@@ -252,8 +252,8 @@ services:
       # GCP Configuration
       GCP_PROJECT_ID: podex-test
       GCP_REGION: us-east1
-      # LLM Provider (Vertex AI)
-      LLM_PROVIDER: vertex
+      # LLM Provider (OpenRouter)
+      LLM_PROVIDER: openrouter
       JWT_SECRET_KEY: test-secret-key-for-testing
       STRIPE_SECRET_KEY: sk_test_mock
       STRIPE_API_BASE: http://stripe-mock:12111

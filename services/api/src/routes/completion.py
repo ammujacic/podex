@@ -262,16 +262,17 @@ class CompletionProvider:
 
         Returns (provider, model_name) tuple.
         Model ID formats:
-        - None or empty: use default LLM_PROVIDER (openrouter)
         - "ollama:model-name": use Ollama with specified model
         - "lmstudio:model-name": use LMStudio with specified model
         - "anthropic:model-name": use direct Anthropic API
-        - "openai:model-name": use OpenAI API
         - "openrouter:model-name": use OpenRouter API
-        - Other: use OpenRouter with model
+
+        Raises:
+            ValueError: If model_id is empty or missing provider prefix
         """
         if not model_id:
-            return settings.LLM_PROVIDER, None
+            msg = "Model ID required (format: 'provider:model-name')"
+            raise ValueError(msg)
 
         # Check for provider prefix
         if ":" in model_id:
@@ -279,17 +280,16 @@ class CompletionProvider:
             provider_prefix = parts[0].lower()
             model_name = parts[1] if len(parts) > 1 else None
 
-            if provider_prefix in ("ollama", "lmstudio"):
+            valid_providers = ("ollama", "lmstudio", "anthropic", "openrouter")
+            if provider_prefix in valid_providers:
                 return provider_prefix, model_name
-            if provider_prefix == "anthropic":
-                return "anthropic", model_name
-            if provider_prefix == "openai":
-                return "openai", model_name
-            if provider_prefix == "openrouter":
-                return "openrouter", model_name
 
-        # No prefix - use OpenRouter (platform default)
-        return "openrouter", model_id
+            msg = f"Unknown provider '{provider_prefix}'. Valid: {', '.join(valid_providers)}"
+            raise ValueError(msg)
+
+        # No prefix - require explicit provider
+        msg = f"Model '{model_id}' missing provider prefix (format: 'provider:model')"
+        raise ValueError(msg)
 
     @classmethod
     async def complete_with_usage(
@@ -300,18 +300,21 @@ class CompletionProvider:
         temperature: float = 0.2,
         model_id: str | None = None,
     ) -> CompletionResult:
-        """Generate completion using configured provider with usage tracking.
+        """Generate completion using specified provider with usage tracking.
 
         Args:
             prompt: The user prompt
             system_prompt: System instructions
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature
-            model_id: Optional model ID to override default provider
-                - None: use LLM_PROVIDER setting
+            model_id: Model ID in format 'provider:model-name' (required)
                 - "ollama:model": use Ollama with model
                 - "lmstudio:model": use LMStudio with model
                 - "anthropic:model": use direct Anthropic API
+                - "openrouter:model": use OpenRouter API
+
+        Raises:
+            ValueError: If model_id is not provided or has invalid format
         """
         provider, model_name = cls._parse_model_id(model_id)
         logger.debug(
@@ -321,40 +324,22 @@ class CompletionProvider:
             original_model_id=model_id,
         )
 
-        try:
-            if provider in ("ollama", "lmstudio"):
-                return await cls._complete_ollama_with_usage(
-                    prompt, system_prompt, max_tokens, temperature, model_name, provider
-                )
-            if provider == "anthropic":
-                return await cls._complete_anthropic_with_usage(
-                    prompt, system_prompt, max_tokens, temperature, model_name
-                )
-            if provider == "openrouter":
-                return await cls._complete_openrouter_with_usage(
-                    prompt, system_prompt, max_tokens, temperature, model_name
-                )
-            # Fallback to openrouter for unknown provider (platform default)
-            logger.warning("Unknown LLM provider, falling back to openrouter", provider=provider)
+        if provider in ("ollama", "lmstudio"):
+            return await cls._complete_ollama_with_usage(
+                prompt, system_prompt, max_tokens, temperature, model_name, provider
+            )
+        if provider == "anthropic":
+            return await cls._complete_anthropic_with_usage(
+                prompt, system_prompt, max_tokens, temperature, model_name
+            )
+        if provider == "openrouter":
             return await cls._complete_openrouter_with_usage(
                 prompt, system_prompt, max_tokens, temperature, model_name
             )
-        except Exception as e:
-            # If primary provider fails and we have Ollama configured, try it as fallback
-            if provider not in ("ollama", "lmstudio") and settings.OLLAMA_URL:
-                logger.warning(
-                    "Primary provider failed, trying Ollama fallback",
-                    provider=provider,
-                    error=str(e),
-                )
-                try:
-                    return await cls._complete_ollama_with_usage(
-                        prompt, system_prompt, max_tokens, temperature
-                    )
-                except Exception as fallback_error:
-                    logger.exception("Ollama fallback also failed", error=str(fallback_error))
-                    raise e from fallback_error
-            raise
+
+        # No fallback - raise clear error
+        msg = f"Unsupported provider '{provider}'. Use: ollama, lmstudio, anthropic, openrouter"
+        raise ValueError(msg)
 
     @classmethod
     async def _complete_ollama(

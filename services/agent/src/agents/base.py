@@ -955,11 +955,9 @@ Use this context to provide more personalized and consistent responses.
                 tracker = get_usage_tracker()
                 if tracker:
                     try:
-                        # Use resolved provider (model_provider from API) not config default.
-                        # Config default (llm_provider.provider) is e.g. ollama; when using
-                        # Anthropic OAuth we resolve to anthropic and must report external.
+                        # Use model_provider from API (required, no fallback).
                         # vertex = included, ollama/lmstudio = local, anthropic/openai = external
-                        provider = self.model_provider or self.llm_provider.provider
+                        provider = self.model_provider or "unknown"
                         if provider in ("ollama", "lmstudio"):
                             usage_source = "local"
                         elif provider == "vertex":
@@ -1258,10 +1256,10 @@ Use this context to provide more personalized and consistent responses.
                         tracker = get_usage_tracker()
                         if tracker:
                             try:
-                                # Use resolved provider (model_provider from API),
-                                # not config default. vertex = included, ollama/lmstudio = local,
+                                # Use model_provider from API (required, no fallback).
+                                # vertex = included, ollama/lmstudio = local,
                                 # anthropic/openai = external
-                                provider = self.model_provider or self.llm_provider.provider
+                                provider = self.model_provider or "unknown"
                                 if provider in ("ollama", "lmstudio"):
                                     usage_source = "local"
                                 elif provider == "vertex":

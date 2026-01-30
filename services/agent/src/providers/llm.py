@@ -42,6 +42,7 @@ class UsageTrackingContext:
 
     user_id: str
     model: str
+    provider: str  # The actual provider used for the request
     usage: dict[str, int] = field(default_factory=dict)
     session_id: str | None = None
     workspace_id: str | None = None
@@ -78,7 +79,6 @@ class LLMProvider:
 
     def __init__(self) -> None:
         """Initialize LLM provider."""
-        self.provider = settings.LLM_PROVIDER
         self._anthropic_client: AsyncAnthropic | None = None
         self._openai_client: AsyncOpenAI | None = None
         self._ollama_client: AsyncOpenAI | None = None
@@ -203,57 +203,17 @@ class LLMProvider:
         return llm_api_keys.get(provider)
 
     def _resolve_anthropic_model_id(self, model: str) -> str:
-        """Map short Anthropic model aliases to full API model IDs.
+        """Extract Anthropic model ID from prefixed format.
 
         Args:
-            model: Model identifier (can be short alias like "opus" or full ID)
+            model: Model identifier (e.g., "anthropic-direct/claude-haiku-4-5")
 
         Returns:
-            Full Anthropic API model ID
+            Anthropic API model ID (part after slash, or original if no slash)
         """
-        model_lower = model.lower()
-
-        # Map short aliases to current Anthropic API model IDs
-        # Keep these in sync with the platform's canonical Claude 4.5 models.
-        alias_map = {
-            # Claude 4.5 Opus
-            "opus": "claude-opus-4-5",
-            # Claude 4.5 Sonnet
-            "sonnet": "claude-sonnet-4-5",
-            # Claude 4.5 Haiku (fast / low-cost)
-            "haiku": "claude-haiku-4-5",
-        }
-
-        return alias_map.get(model_lower, model)
-
-    def _get_provider_for_model(self, model: str) -> str:
-        """Determine the native provider for a given model ID.
-
-        Args:
-            model: Model identifier (e.g., "claude-sonnet-4-5-20250929", "sonnet", "gpt-4o")
-
-        Returns:
-            Provider name: "anthropic", "openai", "google", or empty string for unknown
-        """
-        model_lower = model.lower()
-
-        # Anthropic models - full names and short aliases
-        if model_lower.startswith("claude"):
-            return "anthropic"
-        # Short aliases for Anthropic models (used in user-key models)
-        if model_lower in ("sonnet", "haiku", "opus"):
-            return "anthropic"
-
-        # OpenAI models
-        if model_lower.startswith(("gpt-", "o1-", "o3-", "chatgpt-")):
-            return "openai"
-
-        # Google models
-        if model_lower.startswith("gemini"):
-            return "google"
-
-        # Unknown - will use default provider
-        return ""
+        if "/" in model:
+            return model.split("/", 1)[1]
+        return model
 
     def _resolve_provider(
         self,
@@ -264,21 +224,22 @@ class LLMProvider:
         """Resolve which provider to use based on database metadata and API keys.
 
         Priority:
-        1. **Always** use model_provider from the database when provided
+        1. **Always** use model_provider from the database (required)
         2. If user has an API key for that provider, use the user's key
-        3. If no model_provider is set, fall back to the configured default
-           LLM provider (settings.LLM_PROVIDER) without guessing from model ID
 
         This ensures the API/database is the single source of truth for which
-        provider backs a given model and avoids heuristics based on model name.
+        provider backs a given model. No fallback or guessing is performed.
 
         Args:
-            model: Model identifier (for logging only)
+            model: Model identifier (for error messages)
             llm_api_keys: User-provided API keys
-            model_provider: Model's registered provider from database
+            model_provider: Model's registered provider from database (required)
 
         Returns:
             Tuple of (provider_name, api_key_if_user_provided)
+
+        Raises:
+            ValueError: If model_provider is not set in the database
         """
         # Use database-provided provider as the source of truth.
         native_provider = (model_provider or "").strip().lower()
@@ -316,14 +277,11 @@ class LLMProvider:
             )
             return native_provider, None
 
-        # Case 2: no model_provider in DB - fall back to global default without guessing.
-        logger.warning(
-            "No model_provider from database; falling back to default LLM provider",
-            model=model,
-            default_provider=self.provider,
-            has_llm_keys=bool(llm_api_keys),
+        # Case 2: no model_provider in DB - raise an error, don't guess.
+        raise ValueError(
+            f"Model '{model}' does not have a configured provider. "
+            "Please ensure the model is registered in the database with a valid provider."
         )
-        return self.provider, None
 
     def _determine_usage_source(self, provider: str, llm_api_keys: dict[str, str] | None) -> str:
         """Determine the usage source for billing purposes.
@@ -419,6 +377,7 @@ class LLMProvider:
             tracking_context = UsageTrackingContext(
                 user_id=request.user_id,
                 model=request.model,
+                provider=resolved_provider,
                 usage=result["usage"],
                 session_id=request.session_id,
                 workspace_id=request.workspace_id,
@@ -435,10 +394,7 @@ class LLMProvider:
         """
         Stream a completion from the appropriate LLM provider.
 
-        Routes to the correct provider based on:
-        1. The model being requested (e.g., claude-* → anthropic)
-        2. Whether the user has provided an API key for that provider
-        3. Falls back to the configured default provider if no user key
+        The provider is determined by request.model_provider which must be set.
 
         Yields StreamEvent objects as tokens are generated.
 
@@ -447,6 +403,9 @@ class LLMProvider:
 
         Yields:
             StreamEvent objects for tokens, tool calls, and completion.
+
+        Raises:
+            ValueError: If model_provider is not set in the request.
         """
         # Resolve which provider to use based on model, database provider, and user's API keys
         resolved_provider, user_key = self._resolve_provider(
@@ -519,7 +478,7 @@ class LLMProvider:
                 session_id=context.session_id,
                 workspace_id=context.workspace_id,
                 agent_id=context.agent_id,
-                metadata={"provider": self.provider},
+                metadata={"provider": context.provider},
                 usage_source=context.usage_source,
             )
             await tracker.record_token_usage(params)
@@ -549,8 +508,9 @@ class LLMProvider:
         # Get appropriate client (with user key or platform default)
         client = self._get_anthropic_client(api_key)
 
-        # Resolve short model aliases to full API model IDs (e.g., "opus" -> "claude-opus-4-5")
+        # Resolve model ID (strip prefix if present)
         resolved_model = self._resolve_anthropic_model_id(model)
+        logger.info("Anthropic API call", original_model=model, resolved_model=resolved_model)
 
         # Extract system message
         system_message = ""
@@ -888,8 +848,9 @@ class LLMProvider:
         # Get appropriate client (with user key or platform default)
         client = self._get_anthropic_client(api_key)
 
-        # Resolve short model aliases to full API model IDs (e.g., "opus" -> "claude-opus-4-5")
+        # Resolve model ID (strip prefix if present)
         resolved_model = self._resolve_anthropic_model_id(model)
+        logger.info("Anthropic API call", original_model=model, resolved_model=resolved_model)
 
         # Extract system message
         system_message = ""
@@ -924,6 +885,9 @@ class LLMProvider:
         async with client.messages.stream(**request_params) as stream:
             async for event in stream:
                 if event.type == "message_start":
+                    # Log the actual model returned by Anthropic API
+                    if hasattr(event, "message") and hasattr(event.message, "model"):
+                        logger.info("Anthropic response model", response_model=event.message.model)
                     # Capture input token count
                     if hasattr(event, "message") and hasattr(event.message, "usage"):
                         input_tokens = event.message.usage.input_tokens

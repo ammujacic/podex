@@ -2,7 +2,6 @@
 
 Tests cover:
 - ProviderRegistry initialization and provider management
-- Fallback behavior
 - Provider resolution
 - ProviderRegistryHolder singleton
 """
@@ -32,8 +31,6 @@ class TestProviderRegistryInit:
 
         registry = ProviderRegistry()
         assert registry._providers == {}
-        assert registry._fallback_order == []
-        assert registry._fallback_enabled is True
         assert registry._default_provider == "anthropic"
 
 
@@ -90,27 +87,8 @@ class TestProviderRegistration:
         assert result is None
 
 
-class TestFallbackConfiguration:
-    """Test fallback configuration."""
-
-    def test_set_fallback_order(self):
-        """Test setting fallback order."""
-        from src.providers.registry import ProviderRegistry
-
-        registry = ProviderRegistry()
-        registry.set_fallback_order(["ollama", "lmstudio", "anthropic"])
-        assert registry._fallback_order == ["ollama", "lmstudio", "anthropic"]
-
-    def test_set_fallback_enabled(self):
-        """Test enabling/disabling fallback."""
-        from src.providers.registry import ProviderRegistry
-
-        registry = ProviderRegistry()
-        registry.set_fallback_enabled(False)
-        assert registry._fallback_enabled is False
-
-        registry.set_fallback_enabled(True)
-        assert registry._fallback_enabled is True
+class TestDefaultProvider:
+    """Test default provider configuration."""
 
     def test_set_default_provider(self):
         """Test setting default provider."""
@@ -318,8 +296,8 @@ class TestProviderRegistryAsync:
         assert results["test"] is False
 
     @pytest.mark.asyncio
-    async def test_chat_with_fallback(self):
-        """Test chat with fallback support."""
+    async def test_chat(self):
+        """Test chat request."""
         from src.providers.registry import ProviderRegistry
         from src.providers.base import ChatMessage, ChatResponse
 
@@ -344,20 +322,38 @@ class TestProviderRegistryAsync:
         mock_provider.chat.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_chat_no_provider_available(self):
-        """Test chat when no provider is available."""
+    async def test_chat_no_provider_configured(self):
+        """Test chat when no provider is configured."""
         from src.providers.registry import ProviderRegistry
         from src.providers.base import ChatMessage
 
         registry = ProviderRegistry()
         messages = [ChatMessage(role="user", content="Hi")]
 
-        with pytest.raises(ValueError, match="No provider available"):
+        with pytest.raises(ValueError, match="No provider configured"):
             await registry.chat("unknown-model", messages)
 
     @pytest.mark.asyncio
-    async def test_completion_with_fallback(self):
-        """Test completion with fallback support."""
+    async def test_chat_provider_unavailable(self):
+        """Test chat when provider is not available."""
+        from src.providers.registry import ProviderRegistry
+        from src.providers.base import ChatMessage
+
+        registry = ProviderRegistry()
+
+        mock_provider = AsyncMock()
+        mock_provider.is_available = AsyncMock(return_value=False)
+
+        registry.register_provider("anthropic", mock_provider)
+
+        messages = [ChatMessage(role="user", content="Hi")]
+
+        with pytest.raises(RuntimeError, match="is not available"):
+            await registry.chat("claude-3-5-sonnet", messages)
+
+    @pytest.mark.asyncio
+    async def test_completion(self):
+        """Test completion request."""
         from src.providers.registry import ProviderRegistry
         from src.providers.base import ChatResponse
 
@@ -379,39 +375,6 @@ class TestProviderRegistryAsync:
 
         assert response.content == "Completed"
         mock_provider.completion.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_try_with_fallback_provider_fails(self):
-        """Test fallback when primary provider fails."""
-        from src.providers.registry import ProviderRegistry
-        from src.providers.base import ChatMessage, ChatResponse
-
-        registry = ProviderRegistry()
-
-        # Primary provider fails
-        mock_provider1 = AsyncMock()
-        mock_provider1.is_available = AsyncMock(return_value=True)
-        mock_provider1.chat = AsyncMock(side_effect=Exception("Primary failed"))
-
-        # Fallback provider succeeds
-        mock_provider2 = AsyncMock()
-        mock_provider2.is_available = AsyncMock(return_value=True)
-        mock_provider2.chat = AsyncMock(return_value=ChatResponse(
-            content="Fallback response",
-            model="test-model",
-            input_tokens=10,
-            output_tokens=5,
-            stop_reason="stop",
-        ))
-
-        registry.register_provider("anthropic", mock_provider1)
-        registry.register_provider("openai", mock_provider2)
-        registry.set_fallback_order(["anthropic", "openai"])
-
-        messages = [ChatMessage(role="user", content="Hi")]
-        response = await registry.chat("claude-3-5-sonnet", messages)
-
-        assert response.content == "Fallback response"
 
     @pytest.mark.asyncio
     async def test_close_all(self):
@@ -477,38 +440,33 @@ class TestChatStream:
 
     @pytest.mark.asyncio
     async def test_chat_stream_no_provider(self):
-        """Test chat streaming when no provider available."""
+        """Test chat streaming when no provider configured."""
         from src.providers.registry import ProviderRegistry
         from src.providers.base import ChatMessage
 
         registry = ProviderRegistry()
         messages = [ChatMessage(role="user", content="Hi")]
 
-        with pytest.raises(ValueError, match="No provider available"):
+        with pytest.raises(ValueError, match="No provider configured"):
             async for _ in registry.chat_stream("unknown-model", messages):
                 pass
 
     @pytest.mark.asyncio
-    async def test_chat_stream_all_providers_fail(self):
-        """Test chat streaming when all providers fail."""
+    async def test_chat_stream_provider_unavailable(self):
+        """Test chat streaming when provider is not available."""
         from src.providers.registry import ProviderRegistry
         from src.providers.base import ChatMessage
 
         registry = ProviderRegistry()
 
-        async def mock_stream(*args, **kwargs):
-            raise Exception("Stream failed")
-            yield  # Make it a generator
-
         mock_provider = AsyncMock()
-        mock_provider.is_available = AsyncMock(return_value=True)
-        mock_provider.chat_stream = mock_stream
+        mock_provider.is_available = AsyncMock(return_value=False)
 
         registry.register_provider("anthropic", mock_provider)
 
         messages = [ChatMessage(role="user", content="Hi")]
 
-        with pytest.raises(RuntimeError, match="No providers available"):
+        with pytest.raises(RuntimeError, match="is not available"):
             async for _ in registry.chat_stream("claude-3-5-sonnet", messages):
                 pass
 
@@ -541,13 +499,29 @@ class TestCompletionStream:
 
     @pytest.mark.asyncio
     async def test_completion_stream_no_provider(self):
-        """Test completion streaming when no provider available."""
+        """Test completion streaming when no provider configured."""
         from src.providers.registry import ProviderRegistry
 
         registry = ProviderRegistry()
 
-        with pytest.raises(ValueError, match="No provider available"):
+        with pytest.raises(ValueError, match="No provider configured"):
             async for _ in registry.completion_stream("unknown-model", "Hello"):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_completion_stream_provider_unavailable(self):
+        """Test completion streaming when provider is not available."""
+        from src.providers.registry import ProviderRegistry
+
+        registry = ProviderRegistry()
+
+        mock_provider = AsyncMock()
+        mock_provider.is_available = AsyncMock(return_value=False)
+
+        registry.register_provider("anthropic", mock_provider)
+
+        with pytest.raises(RuntimeError, match="is not available"):
+            async for _ in registry.completion_stream("claude-3-5-sonnet", "Hello"):
                 pass
 
 

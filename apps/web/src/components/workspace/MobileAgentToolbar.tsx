@@ -143,9 +143,10 @@ export function MobileAgentToolbar({ sessionId, agent }: MobileAgentToolbarProps
   const handleChangeModel = useCallback(
     async (modelId: string) => {
       setShowModelMenu(false);
+      // Clear modelDisplayName so we use the display_name from the model lookup
+      updateAgent(sessionId, agent.id, { model: modelId, modelDisplayName: undefined });
       try {
         await updateAgentSettings(sessionId, agent.id, { model: modelId });
-        updateAgent(sessionId, agent.id, { model: modelId });
         const pub = publicModels.find((m) => m.model_id === modelId);
         const user = userModels.find((m) => m.model_id === modelId);
         const label = pub?.display_name || user?.display_name || modelId;

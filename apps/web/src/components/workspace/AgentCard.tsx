@@ -385,21 +385,22 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
     if (userModel) return userModelToInfo(userModel);
     const backendModel = backendModels.find((m) => m.model_id === agent.model);
     if (backendModel) return backendModelToInfo(backendModel);
-    // Local model (ollama/name or lmstudio/name)
+    // Local model only: "ollama/name" or "lmstudio/name"
     if (agent.model.includes('/')) {
       const parts = agent.model.split('/', 2);
       const provider = parts[0];
       const name = parts[1];
       if (!provider || name === undefined) return undefined;
+      // Only handle known local LLM providers
+      if (provider !== 'ollama' && provider !== 'lmstudio') return undefined;
       const cfg = localLLMConfig[provider as keyof typeof localLLMConfig];
       const m = cfg?.models?.find((x: { id?: string; name: string }) => (x.id || x.name) === name);
       if (m) {
         const providerLabels: Record<string, string> = { ollama: 'Ollama', lmstudio: 'LM Studio' };
-        const label = providerLabels[provider] ?? provider;
         return {
           id: agent.model,
           provider: provider as LLMProvider,
-          displayName: `${m.name} (${label})`,
+          displayName: `${m.name} (${providerLabels[provider]})`,
           shortName: m.name,
           tier: 'fast',
           contextWindow: 4096,
@@ -409,7 +410,7 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
           thinkingStatus: 'not_supported',
           capabilities: ['chat', 'code'],
           goodFor: [],
-          description: `Local model via ${label}`,
+          description: `Local model via ${providerLabels[provider]}`,
           reasoningEffort: 'low',
           isUserKey: false,
         } as ExtendedModelInfo;
@@ -427,32 +428,23 @@ export function AgentCard({ agent, sessionId, expanded = false }: AgentCardProps
 
   const getModelDisplayName = useCallback(
     (modelId: string) => {
+      // Use cached display name from backend if available
       if (agent.modelDisplayName) {
         return agent.modelDisplayName;
       }
-      // Local models: "ollama/name" or "lmstudio/name"
-      if (modelId.includes('/')) {
-        const parts = modelId.split('/', 2);
-        const provider = parts[0];
-        const name = parts[1];
-        if (provider !== undefined && name !== undefined) {
-          const providerLabels: Record<string, string> = {
-            ollama: 'Ollama',
-            lmstudio: 'LM Studio',
-          };
-          const label = providerLabels[provider] ?? provider;
-          return `${name} (${label})`;
-        }
-      }
+      // Look up display_name from database models
       const userModel = userProviderModels.find((m) => m.model_id === modelId);
-      if (userModel) return userModel.display_name.replace(' (User API)', '');
+      if (userModel) return userModel.display_name;
       const backendModel = backendModels.find((m) => m.model_id === modelId);
       if (backendModel) return backendModel.display_name;
-      // If we don't have metadata yet, surface the raw ID as-is.
+      // For local models, use currentModelInfo's displayName if available
+      if (currentModelInfo?.displayName) {
+        return currentModelInfo.displayName;
+      }
+      // Fallback to raw model ID
       return modelId;
     },
-    // Include agent.model to ensure React.memo re-renders header when model changes
-    [agent.modelDisplayName, backendModels, userProviderModels]
+    [agent.modelDisplayName, backendModels, userProviderModels, currentModelInfo]
   );
 
   // Message handlers

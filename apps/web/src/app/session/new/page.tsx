@@ -507,6 +507,9 @@ export default function NewSessionPage() {
       return;
     }
 
+    // Reset selected tier when region changes since availability may differ
+    setSelectedTier(null);
+
     async function fetchCapacity() {
       try {
         const capacity = await getRegionCapacity(selectedRegion);
@@ -1945,7 +1948,7 @@ export default function NewSessionPage() {
                 <motion.div
                   initial={{ scale: 0.8 }}
                   animate={{ scale: 1 }}
-                  className="relative mx-auto mb-8"
+                  className="relative mx-auto mb-8 w-40 h-40 flex items-center justify-center"
                 >
                   <div className="w-24 h-24 rounded-3xl bg-gradient-to-br from-accent-primary to-accent-secondary flex items-center justify-center relative z-10">
                     {creatingProgress < 100 ? (
@@ -1970,7 +1973,7 @@ export default function NewSessionPage() {
                       repeat: Infinity,
                       ease: 'easeInOut',
                     }}
-                    className="absolute inset-0 rounded-3xl bg-gradient-to-br from-accent-primary to-accent-secondary blur-2xl"
+                    className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-24 h-24 rounded-3xl bg-gradient-to-br from-accent-primary to-accent-secondary blur-2xl"
                   />
                 </motion.div>
 

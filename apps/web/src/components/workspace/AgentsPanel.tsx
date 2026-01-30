@@ -10,7 +10,7 @@ interface AgentsPanelProps {
 }
 
 export function AgentsPanel({ sessionId }: AgentsPanelProps) {
-  const { sessions, setActiveAgent } = useSessionStore();
+  const { sessions, setActiveAgent, getConversationForAgent } = useSessionStore();
   const session = sessions[sessionId];
   const agents = session?.agents || [];
 
@@ -29,12 +29,14 @@ export function AgentsPanel({ sessionId }: AgentsPanelProps) {
           {agents.map((agent) => {
             const isActive = session?.activeAgentId === agent.id;
             const RoleIcon = getRoleIcon(agent.role);
+            const conversation = getConversationForAgent(sessionId, agent.id);
+            const sessionTitle = conversation?.name || 'New Session';
             return (
               <button
                 key={agent.id}
                 onClick={() => setActiveAgent(sessionId, agent.id)}
                 className={cn(
-                  'w-full flex items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors',
+                  'w-full flex items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors',
                   isActive ? 'bg-accent-primary text-text-inverse' : 'bg-elevated hover:bg-overlay'
                 )}
               >
@@ -44,27 +46,35 @@ export function AgentsPanel({ sessionId }: AgentsPanelProps) {
                     isActive ? 'text-text-inverse' : 'text-text-muted'
                   )}
                 />
-                <div className="flex-1 truncate">
+                <div className="flex-1 min-w-0">
                   <div
                     className={cn(
-                      'font-medium',
+                      'font-medium truncate',
                       isActive ? 'text-text-inverse' : 'text-text-primary'
                     )}
                   >
-                    {agent.name}
+                    {sessionTitle}
                   </div>
                   <div
                     className={cn(
-                      'text-xs capitalize',
+                      'text-xs capitalize truncate',
                       isActive ? 'text-text-inverse/70' : 'text-text-muted'
                     )}
                   >
                     {agent.role}
                   </div>
+                  <div
+                    className={cn(
+                      'text-xs truncate',
+                      isActive ? 'text-text-inverse/60' : 'text-text-muted/80'
+                    )}
+                  >
+                    {agent.modelDisplayName || agent.model}
+                  </div>
                 </div>
                 <div
                   className={cn(
-                    'h-2 w-2 rounded-full',
+                    'h-2 w-2 rounded-full shrink-0',
                     agent.status === 'active'
                       ? isActive
                         ? 'bg-text-inverse animate-pulse'

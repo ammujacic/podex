@@ -12,12 +12,10 @@ logger = logging.getLogger(__name__)
 
 
 class ProviderRegistry:
-    """Registry for managing multiple LLM providers with fallback support."""
+    """Registry for managing multiple LLM providers."""
 
     def __init__(self) -> None:
         self._providers: dict[str, BaseProvider] = {}
-        self._fallback_order: list[str] = []
-        self._fallback_enabled: bool = True
         self._default_provider: str = "anthropic"
 
     def register_provider(self, name: str, provider: BaseProvider) -> None:
@@ -32,14 +30,6 @@ class ProviderRegistry:
     def get_provider(self, name: str) -> BaseProvider | None:
         """Get a provider by name."""
         return self._providers.get(name)
-
-    def set_fallback_order(self, order: list[str]) -> None:
-        """Set the fallback order for providers."""
-        self._fallback_order = order
-
-    def set_fallback_enabled(self, enabled: bool) -> None:
-        """Enable or disable fallback."""
-        self._fallback_enabled = enabled
 
     def set_default_provider(self, name: str) -> None:
         """Set the default provider."""
@@ -81,48 +71,31 @@ class ProviderRegistry:
 
         return None
 
-    async def _try_with_fallback(
+    async def _execute_on_provider(
         self,
         model: str,
         operation: str,
         *args: Any,
         **kwargs: Any,
     ) -> Any:
-        """Try an operation with fallback to other providers."""
+        """Execute an operation on the appropriate provider for the model."""
         result = self._get_provider_for_model(model)
         if result is None:
-            raise ValueError(f"No provider available for model: {model}")
+            raise ValueError(
+                f"No provider configured for model '{model}'. "
+                f"Available providers: {list(self._providers.keys())}"
+            )
 
-        provider_name, _provider = result
-        providers_to_try = [provider_name]
+        provider_name, provider = result
 
-        # Add fallback providers if enabled
-        if self._fallback_enabled:
-            for fallback in self._fallback_order:
-                if fallback not in providers_to_try and fallback in self._providers:
-                    providers_to_try.append(fallback)
+        if not await provider.is_available():
+            raise RuntimeError(
+                f"Provider '{provider_name}' for model '{model}' is not available. "
+                "Please check that the provider service is running and accessible."
+            )
 
-        last_error = None
-        for name in providers_to_try:
-            prov = self._providers.get(name)
-            if prov is None:
-                continue
-
-            try:
-                if not await prov.is_available():
-                    logger.info(f"Provider {name} not available, trying next")
-                    continue
-
-                method = getattr(prov, operation)
-                return await method(model, *args, **kwargs)
-            except Exception as e:
-                logger.warning(f"Provider {name} failed: {e}")
-                last_error = e
-                continue
-
-        if last_error:
-            raise last_error
-        raise RuntimeError("No providers available")
+        method = getattr(provider, operation)
+        return await method(model, *args, **kwargs)
 
     async def chat(
         self,
@@ -130,10 +103,10 @@ class ProviderRegistry:
         messages: list[ChatMessage],
         **kwargs: Any,
     ) -> ChatResponse:
-        """Send chat request with fallback support."""
+        """Send chat request to the appropriate provider."""
         return cast(
             "ChatResponse",
-            await self._try_with_fallback(model, "chat", messages, **kwargs),
+            await self._execute_on_provider(model, "chat", messages, **kwargs),
         )
 
     async def chat_stream(
@@ -142,36 +115,24 @@ class ProviderRegistry:
         messages: list[ChatMessage],
         **kwargs: Any,
     ) -> AsyncGenerator[str, None]:
-        """Stream chat with fallback support."""
+        """Stream chat from the appropriate provider."""
         result = self._get_provider_for_model(model)
         if result is None:
-            raise ValueError(f"No provider available for model: {model}")
+            raise ValueError(
+                f"No provider configured for model '{model}'. "
+                f"Available providers: {list(self._providers.keys())}"
+            )
 
-        provider_name, _provider = result
-        providers_to_try = [provider_name]
+        provider_name, provider = result
 
-        if self._fallback_enabled:
-            for fallback in self._fallback_order:
-                if fallback not in providers_to_try and fallback in self._providers:
-                    providers_to_try.append(fallback)
+        if not await provider.is_available():
+            raise RuntimeError(
+                f"Provider '{provider_name}' for model '{model}' is not available. "
+                "Please check that the provider service is running and accessible."
+            )
 
-        for name in providers_to_try:
-            prov = self._providers.get(name)
-            if prov is None:
-                continue
-
-            try:
-                if not await prov.is_available():
-                    continue
-
-                async for chunk in prov.chat_stream(model, messages, **kwargs):
-                    yield chunk
-                return
-            except Exception as e:
-                logger.warning(f"Provider {name} stream failed: {e}")
-                continue
-
-        raise RuntimeError("No providers available for streaming")
+        async for chunk in provider.chat_stream(model, messages, **kwargs):
+            yield chunk
 
     async def completion(
         self,
@@ -179,10 +140,10 @@ class ProviderRegistry:
         prompt: str,
         **kwargs: Any,
     ) -> ChatResponse:
-        """Send completion request with fallback support."""
+        """Send completion request to the appropriate provider."""
         return cast(
             "ChatResponse",
-            await self._try_with_fallback(model, "completion", prompt, **kwargs),
+            await self._execute_on_provider(model, "completion", prompt, **kwargs),
         )
 
     async def completion_stream(
@@ -191,36 +152,24 @@ class ProviderRegistry:
         prompt: str,
         **kwargs: Any,
     ) -> AsyncGenerator[str, None]:
-        """Stream completion with fallback support."""
+        """Stream completion from the appropriate provider."""
         result = self._get_provider_for_model(model)
         if result is None:
-            raise ValueError(f"No provider available for model: {model}")
+            raise ValueError(
+                f"No provider configured for model '{model}'. "
+                f"Available providers: {list(self._providers.keys())}"
+            )
 
-        provider_name, _provider = result
-        providers_to_try = [provider_name]
+        provider_name, provider = result
 
-        if self._fallback_enabled:
-            for fallback in self._fallback_order:
-                if fallback not in providers_to_try and fallback in self._providers:
-                    providers_to_try.append(fallback)
+        if not await provider.is_available():
+            raise RuntimeError(
+                f"Provider '{provider_name}' for model '{model}' is not available. "
+                "Please check that the provider service is running and accessible."
+            )
 
-        for name in providers_to_try:
-            prov = self._providers.get(name)
-            if prov is None:
-                continue
-
-            try:
-                if not await prov.is_available():
-                    continue
-
-                async for chunk in prov.completion_stream(model, prompt, **kwargs):
-                    yield chunk
-                return
-            except Exception as e:
-                logger.warning(f"Provider {name} stream failed: {e}")
-                continue
-
-        raise RuntimeError("No providers available for streaming")
+        async for chunk in provider.completion_stream(model, prompt, **kwargs):
+            yield chunk
 
     async def close_all(self) -> None:
         """Close all providers."""
@@ -279,8 +228,5 @@ async def initialize_providers(
 
     # Cloud providers would be initialized here with their API keys
     # For now, we use the existing llm.py provider for Anthropic
-
-    # Set default fallback order (try local first)
-    registry.set_fallback_order(["ollama", "lmstudio", "anthropic", "openai", "google"])
 
     return registry

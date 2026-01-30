@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Search,
   Send,
@@ -86,6 +86,19 @@ interface WaitlistRowProps {
 
 function WaitlistRow({ entry, onInvite, onDelete }: WaitlistRowProps) {
   const [showMenu, setShowMenu] = useState(false);
+  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  const handleOpenMenu = () => {
+    if (buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      setMenuPosition({
+        top: rect.bottom + 4,
+        left: rect.right - 160, // 160px is min-w of menu, align right edge
+      });
+    }
+    setShowMenu(true);
+  };
 
   return (
     <tr className="border-b border-border-subtle hover:bg-overlay/30 transition-colors">
@@ -120,15 +133,19 @@ function WaitlistRow({ entry, onInvite, onDelete }: WaitlistRowProps) {
       <td className="px-4 py-4">
         <div className="relative">
           <button
-            onClick={() => setShowMenu(!showMenu)}
+            ref={buttonRef}
+            onClick={handleOpenMenu}
             className="p-1.5 hover:bg-elevated rounded-lg transition-colors"
           >
             <MoreVertical className="h-4 w-4 text-text-muted" />
           </button>
           {showMenu && (
             <>
-              <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
-              <div className="absolute right-0 top-8 bg-surface border border-border-subtle rounded-lg shadow-lg py-1 z-20 min-w-[160px]">
+              <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
+              <div
+                className="fixed bg-surface border border-border-subtle rounded-lg shadow-lg py-1 z-50 min-w-[160px]"
+                style={{ top: menuPosition.top, left: menuPosition.left }}
+              >
                 {entry.status === 'waiting' && (
                   <button
                     onClick={() => {

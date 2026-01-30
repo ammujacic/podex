@@ -47,7 +47,6 @@ class LLMProviderStatus(BaseModel):
 
     provider: str
     configured: bool
-    active: bool = Field(description="Whether this is the active provider")
     model: str | None = None
     details: dict[str, Any] | None = None
 
@@ -252,7 +251,11 @@ async def check_docker() -> ServiceHealth:
 
 
 def check_llm_providers() -> list[LLMProviderStatus]:
-    """Check LLM provider configurations."""
+    """Check LLM provider configurations.
+
+    Note: Each model specifies its own provider in the database.
+    This function shows which providers have their credentials configured.
+    """
     providers = []
 
     # Anthropic
@@ -261,7 +264,6 @@ def check_llm_providers() -> list[LLMProviderStatus]:
         LLMProviderStatus(
             provider="anthropic",
             configured=anthropic_configured,
-            active=settings.LLM_PROVIDER == "anthropic",
             model="claude-sonnet-4-20250514" if anthropic_configured else None,
             details={"api_key_set": anthropic_configured},
         )
@@ -273,9 +275,19 @@ def check_llm_providers() -> list[LLMProviderStatus]:
         LLMProviderStatus(
             provider="openai",
             configured=openai_configured,
-            active=settings.LLM_PROVIDER == "openai",
             model="gpt-4o" if openai_configured else None,
             details={"api_key_set": openai_configured},
+        )
+    )
+
+    # OpenRouter (platform default for routing to multiple providers)
+    openrouter_configured = bool(settings.OPENROUTER_API_KEY)
+    providers.append(
+        LLMProviderStatus(
+            provider="openrouter",
+            configured=openrouter_configured,
+            model=None,  # Multiple models available
+            details={"api_key_set": openrouter_configured},
         )
     )
 
@@ -284,7 +296,6 @@ def check_llm_providers() -> list[LLMProviderStatus]:
         LLMProviderStatus(
             provider="ollama",
             configured=True,  # Always available locally
-            active=settings.LLM_PROVIDER == "ollama",
             model=settings.OLLAMA_MODEL,
             details={"url": settings.OLLAMA_URL},
         )
@@ -327,19 +338,12 @@ def generate_recommendations(
                     "Docker is not running. Start Docker Desktop or the Docker daemon."
                 )
 
-    # Check active provider is configured
-    active_provider = next((p for p in providers if p.active), None)
-    if active_provider and not active_provider.configured:
+    # Check if at least one cloud provider is configured
+    cloud_providers = [p for p in providers if p.provider not in ("ollama", "lmstudio")]
+    if not any(p.configured for p in cloud_providers):
         recommendations.append(
-            f"Active LLM provider '{active_provider.provider}' is not configured. "
-            f"Set the required environment variables or change LLM_PROVIDER."
-        )
-
-    # Check if at least one provider is configured
-    if not any(p.configured for p in providers):
-        recommendations.append(
-            "No LLM providers are configured. Set ANTHROPIC_API_KEY, "
-            "OPENAI_API_KEY, or GCP_PROJECT_ID for Vertex AI."
+            "No cloud LLM providers are configured. Set ANTHROPIC_API_KEY, "
+            "OPENAI_API_KEY, or OPENROUTER_API_KEY to use cloud models."
         )
 
     return recommendations
@@ -462,5 +466,4 @@ async def quick_check(
         "status": "ok",
         "version": settings.VERSION,
         "environment": settings.ENVIRONMENT,
-        "llm_provider": settings.LLM_PROVIDER,
     }

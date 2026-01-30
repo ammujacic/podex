@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Bot, Copy, ExternalLink, Loader2, AlertTriangle, Play, Unplug, Shell } from 'lucide-react';
+import { Bot, Copy, ExternalLink, Loader2, AlertTriangle, Play, Unplug } from 'lucide-react';
 import { useTunnels } from '@/hooks/useTunnels';
 import { useUIStore } from '@/stores/ui';
 import { cn } from '@/lib/utils';
@@ -9,8 +9,26 @@ import { cn } from '@/lib/utils';
 const OPENCLAW_GATEWAY_PORT = 18789;
 const DISCORD_DEV_PORTAL = 'https://discord.com/developers/applications';
 
+// Custom OpenClaw icon using the official lobster logo, styled as a monochrome icon
 function OpenClawIcon({ className }: { className?: string }) {
-  return <Shell className={className} />;
+  return (
+    <span
+      aria-hidden="true"
+      className={cn('inline-block bg-current', className)}
+      style={{
+        WebkitMaskImage:
+          'url(https://mintcdn.com/clawdhub/4rYvG-uuZrMK_URE/assets/pixel-lobster.svg?fit=max&auto=format&n=4rYvG-uuZrMK_URE&q=85&s=da2032e9eac3b5d9bfe7eb96ca6a8a26)',
+        maskImage:
+          'url(https://mintcdn.com/clawdhub/4rYvG-uuZrMK_URE/assets/pixel-lobster.svg?fit=max&auto=format&n=4rYvG-uuZrMK_URE&q=85&s=da2032e9eac3b5d9bfe7eb96ca6a8a26)',
+        WebkitMaskSize: 'contain',
+        maskSize: 'contain',
+        WebkitMaskRepeat: 'no-repeat',
+        maskRepeat: 'no-repeat',
+        WebkitMaskPosition: 'center',
+        maskPosition: 'center',
+      }}
+    />
+  );
 }
 
 interface OpenClawWidgetProps {
