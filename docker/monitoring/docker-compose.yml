@@ -15,7 +15,7 @@ version: '3.8'
 services:
   prometheus:
     build:
-      context: ./prometheus
+      context: ./docker/monitoring/prometheus
       dockerfile: Dockerfile
     container_name: prometheus
     volumes:
@@ -32,7 +32,7 @@ services:
 
   grafana:
     build:
-      context: ./grafana
+      context: ./docker/monitoring/grafana
       dockerfile: Dockerfile
     container_name: grafana
     volumes:
@@ -65,7 +65,7 @@ services:
 
   loki:
     build:
-      context: ./loki
+      context: ./docker/monitoring/loki
       dockerfile: Dockerfile
     container_name: loki
     volumes:
@@ -81,7 +81,7 @@ services:
 
   promtail:
     build:
-      context: ./promtail
+      context: ./docker/monitoring/promtail
       dockerfile: Dockerfile
     container_name: promtail
     volumes:
