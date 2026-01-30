@@ -17,23 +17,26 @@ class TestInternalAuth:
     """Tests for internal authentication."""
 
     def test_internal_auth_no_key_configured_dev(self) -> None:
-        """Test no API key in development mode."""
+        """Test no API key in development mode - fails closed with 500.
+
+        SECURITY: Even in development, if no API key is configured,
+        the service should fail closed (500) rather than allowing access.
+        """
         mock_settings = MagicMock()
         mock_settings.internal_api_key = ""
         mock_settings.environment = "development"
 
         with patch("src.deps.settings", mock_settings):
-            # Should not raise in development
-            verify_internal_api_key(None)
+            with pytest.raises(HTTPException) as exc:
+                verify_internal_api_key(None)
+            assert exc.value.status_code == 500
+            assert "not configured" in exc.value.detail
 
     def test_internal_auth_no_key_configured_prod(self) -> None:
-        """Test no API key configured in production returns 401.
+        """Test no API key configured in production returns 500.
 
-        In production mode, authentication is required via:
-        - Bearer token (Authorization header) - primary
-        - API key (X-Internal-API-Key) - fallback
-
-        When neither is provided, it's an auth failure (401), not server error.
+        SECURITY: Fail closed - if no API key is configured, the service
+        returns 500 (misconfiguration) rather than allowing unauthenticated access.
         """
         mock_settings = MagicMock()
         mock_settings.internal_api_key = ""
@@ -42,7 +45,8 @@ class TestInternalAuth:
         with patch("src.deps.settings", mock_settings):
             with pytest.raises(HTTPException) as exc:
                 verify_internal_api_key(None)
-            assert exc.value.status_code == 401
+            assert exc.value.status_code == 500
+            assert "not configured" in exc.value.detail
 
     def test_internal_auth_missing_key(self) -> None:
         """Test missing API key when configured."""

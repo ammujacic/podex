@@ -481,6 +481,11 @@ class WorkspaceOrchestrator:
             )
 
         try:
+            # Ensure workspace directory exists with correct permissions before starting.
+            # This handles the case where the workspace server (DinD) was restarted and
+            # the bind mount directory was recreated with root ownership.
+            await self._docker.ensure_workspace_directory(workspace.server_id, workspace_id)
+
             await self._docker.start_container(workspace.server_id, workspace.container_id)
 
             # Update workspace status

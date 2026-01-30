@@ -1392,6 +1392,111 @@ class MultiServerDockerManager:
             )
             return False
 
+    async def ensure_workspace_directory(
+        self,
+        server_id: str,
+        workspace_id: str,
+    ) -> bool:
+        """Ensure workspace directory exists with correct permissions.
+
+        This is called before starting a workspace to handle the case where the
+        workspace server (DinD in development) was restarted and the bind mount
+        directory was recreated with root ownership.
+
+        Args:
+            server_id: Server identifier
+            workspace_id: Workspace ID
+
+        Returns:
+            True if successful, False otherwise
+        """
+        conn = self._connections.get(server_id)
+        if not conn:
+            logger.error("Server not found", server_id=server_id)
+            return False
+
+        data_path = settings.workspace_data_path
+        workspace_path = f"{data_path}/{workspace_id}"
+
+        if settings.environment == "development":
+            client = self.get_client(server_id)
+            if not client:
+                logger.warning(
+                    "No Docker client for server, skipping directory check",
+                    server_id=server_id,
+                )
+                return True
+
+            loop = asyncio.get_event_loop()
+
+            def _ensure_dir() -> bool:
+                try:
+                    # Run a temporary alpine container to ensure directory permissions
+                    cmd = f"mkdir -p {workspace_path}/home && chown -R 1000:1000 {workspace_path}"
+                    client.containers.run(
+                        "alpine:latest",
+                        ["sh", "-c", cmd],
+                        volumes={
+                            settings.workspace_data_path: {
+                                "bind": settings.workspace_data_path,
+                                "mode": "rw",
+                            }
+                        },
+                        remove=True,
+                        user="root",
+                    )
+                    return True
+                except Exception as e:
+                    logger.warning(
+                        "Failed to ensure workspace directory permissions",
+                        workspace_id=workspace_id[:12],
+                        error=str(e),
+                    )
+                    return False
+
+            try:
+                return await loop.run_in_executor(None, _ensure_dir)
+            except Exception as e:
+                logger.warning(
+                    "Failed to ensure workspace directory in dev",
+                    workspace_id=workspace_id[:12],
+                    error=str(e),
+                )
+                return False
+
+        # Production: SSH to server
+        loop = asyncio.get_event_loop()
+
+        def _ssh_ensure() -> bool:
+            cmd = [
+                "ssh",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "BatchMode=yes",
+                f"root@{conn.ip_address}",
+                f"mkdir -p {workspace_path}/home && chown -R 1000:1000 {workspace_path}",
+            ]
+            result = subprocess.run(cmd, capture_output=True, timeout=30, check=False)  # noqa: S603
+            if result.returncode != 0:
+                logger.error(
+                    "Failed to ensure directory permissions",
+                    stderr=result.stderr.decode(),
+                )
+                return False
+            return True
+
+        try:
+            return await loop.run_in_executor(None, _ssh_ensure)
+        except Exception as e:
+            logger.exception(
+                "Failed to ensure workspace directory",
+                server_id=server_id,
+                workspace_id=workspace_id[:12],
+                error=str(e),
+            )
+            return False
+
     async def update_xfs_quota(
         self,
         server_id: str,

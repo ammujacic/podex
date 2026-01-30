@@ -5,6 +5,8 @@ import { Bot, ChevronDown, Laptop, Smartphone, Users } from 'lucide-react';
 import Link from 'next/link';
 import { useRef } from 'react';
 
+import { PodexIcon } from '@/components/icons/PodexIcon';
+
 import { HeroSection } from './HeroSection';
 import { SneakPeekSection } from './SneakPeekSection';
 import { WaitlistForm } from './WaitlistForm';
@@ -33,7 +35,7 @@ const sneakPeeks = [
     title: 'Workspace',
     tagline: 'Where ideas become reality',
     description:
-      'Cloud-powered workspaces with intelligent tooling, ready in seconds from any device.',
+      'Choose your environment: spin up cloud pods instantly or connect to your local machine. Full flexibility, zero compromise.',
     color: '#22C55E',
     gradient: 'from-green-500/20 to-emerald-500/20',
   },
@@ -60,10 +62,13 @@ export function ComingSoonPage() {
       <header className="fixed top-0 left-0 right-0 z-50 px-6 py-4">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-violet-600 flex items-center justify-center">
-              <span className="text-white font-bold text-sm font-logo">P</span>
-            </div>
-            <span className="text-xl font-bold font-logo text-primary">Podex</span>
+            <PodexIcon size={32} />
+            <span
+              className="text-xl font-bold text-text-primary tracking-wider"
+              style={{ fontFamily: 'var(--font-logo), sans-serif' }}
+            >
+              PODEX
+            </span>
           </Link>
           <Link
             href="/auth/login"

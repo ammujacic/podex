@@ -1522,8 +1522,12 @@ class TestStreamOpenRouterMethod:
         assert len(tool_end) == 1
         assert tool_end[0].tool_input == {"path": "/test.py"}
 
-    async def test_stream_openrouter_model_mapping(self, provider: LLMProvider):
-        """Test OpenRouter streaming maps models correctly."""
+    async def test_stream_openrouter_model_passthrough(self, provider: LLMProvider):
+        """Test OpenRouter streaming passes model name directly.
+
+        Note: Model name mapping (e.g., claude-sonnet-4-5 -> anthropic/claude-sonnet-4-5)
+        is done by the caller, not by _stream_openrouter itself.
+        """
         chunks = [
             MagicMock(choices=[MagicMock(delta=MagicMock(content="Hi", tool_calls=None), finish_reason="stop")], usage=None),
             MagicMock(choices=[], usage=MagicMock(prompt_tokens=5, completion_tokens=1, total_tokens=6)),
@@ -1539,7 +1543,7 @@ class TestStreamOpenRouterMethod:
 
         results = []
         async for event in provider._stream_openrouter(
-            model="claude-sonnet-4-5",  # Should map to anthropic/claude-sonnet-4-5
+            model="anthropic/claude-sonnet-4-5",  # Full model name passed by caller
             messages=[{"role": "user", "content": "Hi"}],
         ):
             results.append(event)

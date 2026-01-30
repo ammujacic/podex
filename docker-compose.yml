@@ -266,6 +266,8 @@ services:
       COMPUTE_DOCKER_RUNTIME: ${COMPUTE_DOCKER_RUNTIME:-}
       COMPUTE_MAX_WORKSPACES: 10
       COMPUTE_WORKSPACE_TIMEOUT: 3600
+      # Workspace data path - use tmp for local dev (workspaces are ephemeral)
+      COMPUTE_WORKSPACE_DATA_PATH: /tmp/podex/workspaces
       COMPUTE_WORKSPACE_IMAGE: podex/workspace:latest
       # Workspace images per architecture (for production, use your registry)
       # Multi-arch manifests auto-select correct arch, so both can point to same image

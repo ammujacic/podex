@@ -31,18 +31,36 @@ export function SneakPeekSection({
     offset: ['start end', 'end start'],
   });
 
-  const y = useTransform(scrollYProgress, [0, 1], [100, -100]);
-  const opacity = useTransform(scrollYProgress, [0, 0.3, 0.7, 1], [0, 1, 1, 0]);
+  // Enhanced scroll-linked transforms
+  const y = useTransform(scrollYProgress, [0, 0.5, 1], [80, 0, -80]);
+  const opacity = useTransform(scrollYProgress, [0, 0.2, 0.8, 1], [0, 1, 1, 0]);
+  const scale = useTransform(scrollYProgress, [0, 0.3, 0.7, 1], [0.8, 1, 1, 0.8]);
+  const rotate = useTransform(
+    scrollYProgress,
+    [0, 0.5, 1],
+    [isReversed ? 5 : -5, 0, isReversed ? -5 : 5]
+  );
+  const x = useTransform(
+    scrollYProgress,
+    [0, 0.5, 1],
+    [isReversed ? -30 : 30, 0, isReversed ? 30 : -30]
+  );
+
+  // Background gradient animation
+  const gradientOpacity = useTransform(scrollYProgress, [0, 0.3, 0.7, 1], [0, 0.4, 0.4, 0]);
+  const gradientScale = useTransform(scrollYProgress, [0, 0.5, 1], [0.8, 1.2, 0.8]);
 
   return (
     <section
       ref={sectionRef}
-      className="relative min-h-[70vh] flex items-center py-20 px-6 overflow-hidden"
+      className="relative min-h-[50vh] flex items-center py-12 px-6 overflow-hidden"
     >
-      {/* Background gradient */}
-      <div
-        className={`absolute inset-0 bg-gradient-to-br ${gradient} opacity-30`}
+      {/* Background gradient - scroll animated */}
+      <motion.div
+        className={`absolute inset-0 bg-gradient-to-br ${gradient}`}
         style={{
+          opacity: gradientOpacity,
+          scale: gradientScale,
           maskImage: 'radial-gradient(ellipse at center, black 30%, transparent 70%)',
           WebkitMaskImage: 'radial-gradient(ellipse at center, black 30%, transparent 70%)',
         }}
@@ -50,11 +68,11 @@ export function SneakPeekSection({
 
       <div className="max-w-6xl mx-auto w-full">
         <div
-          className={`flex flex-col ${isReversed ? 'md:flex-row-reverse' : 'md:flex-row'} items-center gap-12 md:gap-20`}
+          className={`flex flex-col ${isReversed ? 'md:flex-row-reverse' : 'md:flex-row'} items-center gap-8 md:gap-12`}
         >
           {/* Visual */}
-          <motion.div className="flex-1 relative" style={{ y, opacity }}>
-            <div className="relative w-64 h-64 mx-auto">
+          <motion.div className="flex-1 relative" style={{ y, opacity, scale, rotate, x }}>
+            <div className="relative w-56 h-56 mx-auto">
               {/* Outer glow ring */}
               <motion.div
                 className="absolute inset-0 rounded-full"
@@ -138,7 +156,7 @@ export function SneakPeekSection({
 
             {/* Decorative line */}
             <motion.div
-              className="mt-8 h-px w-24"
+              className="mt-6 h-px w-24"
               style={{ backgroundColor: color }}
               initial={{ scaleX: 0 }}
               whileInView={{ scaleX: 1 }}
