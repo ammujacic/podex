@@ -3,8 +3,8 @@ version: '3.8'
 # Podex Monitoring Stack
 # Deploy via Coolify Docker Compose from GitHub
 #
-# NOTE: This config uses default/minimal configs that work with Coolify.
-# Config files from the repo are NOT mounted (Coolify doesn't support this).
+# All configs are baked into custom images at build time.
+# No manual configuration required after deployment.
 #
 # Services exposed:
 #   - Grafana (dashboards): port 9000 -> grafana.yourdomain.com
@@ -14,19 +14,13 @@ version: '3.8'
 
 services:
   prometheus:
-    image: prom/prometheus:v2.48.0
+    build:
+      context: ./prometheus
+      dockerfile: Dockerfile
     container_name: prometheus
     volumes:
       - prometheus_data:/prometheus
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    command:
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=30d'
-      - '--web.enable-lifecycle'
-      - '--web.enable-admin-api'
-      # Use web config for basic scraping (self + Docker service discovery)
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
     ports:
       - "9090:9090"
     restart: unless-stopped
@@ -37,7 +31,9 @@ services:
       - "coolify.service=prometheus"
 
   grafana:
-    image: grafana/grafana:10.2.0
+    build:
+      context: ./grafana
+      dockerfile: Dockerfile
     container_name: grafana
     volumes:
       - grafana_data:/var/lib/grafana
@@ -47,8 +43,6 @@ services:
       - GF_SERVER_ROOT_URL=${GRAFANA_URL:-http://localhost:3000}
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_AUTH_ANONYMOUS_ENABLED=false
-      # Auto-provision Prometheus and Loki datasources
-      - GF_DATASOURCES_DEFAULT_NAME=Prometheus
       # SMTP for alerts (optional)
       - GF_SMTP_ENABLED=${SMTP_ENABLED:-false}
       - GF_SMTP_HOST=${SMTP_HOST:-}
@@ -70,12 +64,12 @@ services:
       - "coolify.service=grafana"
 
   loki:
-    image: grafana/loki:2.9.0
+    build:
+      context: ./loki
+      dockerfile: Dockerfile
     container_name: loki
     volumes:
       - loki_data:/loki
-    # Use Loki's built-in default config - works out of the box
-    command: -config.file=/etc/loki/local-config.yaml
     ports:
       - "3100:3100"
     restart: unless-stopped
@@ -86,18 +80,14 @@ services:
       - "coolify.service=loki"
 
   promtail:
-    image: grafana/promtail:2.9.0
+    build:
+      context: ./promtail
+      dockerfile: Dockerfile
     container_name: promtail
     volumes:
       - /var/log:/var/log:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    # Use inline config via command line args
-    command:
-      - '-config.expand-env=true'
-      - '-print-config-stderr'
-      - '-client.url=http://loki:3100/loki/api/v1/push'
-      - '-positions.filename=/tmp/positions.yaml'
     restart: unless-stopped
     depends_on:
       - loki
