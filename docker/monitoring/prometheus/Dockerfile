@@ -1,5 +1,5 @@
 # Custom Prometheus image with config baked in
-FROM prom/prometheus:v2.48.0
+FROM prom/prometheus:v3.9.1
 
 # Copy config files into the image
 COPY prometheus.yml /etc/prometheus/prometheus.yml

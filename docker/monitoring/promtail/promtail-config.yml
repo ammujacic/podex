@@ -25,9 +25,9 @@ scrape_configs:
       # Extract log stream (stdout/stderr)
       - source_labels: ['__meta_docker_container_log_stream']
         target_label: 'stream'
-      # Extract compose service name
+      # Extract compose service name (service_name is Grafana Logs Drilldown default)
       - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
-        target_label: 'service'
+        target_label: 'service_name'
       # Extract compose project name
       - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
         target_label: 'project'
