@@ -10,7 +10,6 @@ export function WaitlistForm() {
   const [email, setEmail] = useState('');
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [message, setMessage] = useState('');
-  const [position, setPosition] = useState<number | null>(null);
   const [isPending, startTransition] = useTransition();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -31,7 +30,6 @@ export function WaitlistForm() {
         if (result.success) {
           setStatus('success');
           setMessage(result.message);
-          setPosition(result.position ?? null);
           setEmail('');
         } else {
           setStatus('error');
@@ -68,17 +66,6 @@ export function WaitlistForm() {
             </motion.div>
             <h3 className="text-xl font-bold text-primary mb-2">You&apos;re on the list!</h3>
             <p className="text-muted">{message}</p>
-            {position && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 0.3 }}
-                className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-purple-500/10 border border-purple-500/20"
-              >
-                <span className="text-sm text-muted">Your position:</span>
-                <span className="text-lg font-bold text-accent-primary">#{position}</span>
-              </motion.div>
-            )}
           </motion.div>
         ) : (
           <motion.form

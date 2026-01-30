@@ -116,8 +116,41 @@ export function ComingSoonPage() {
       </div>
 
       {/* Waitlist CTA Section */}
-      <section className="relative py-32 px-6">
+      <section className="relative py-32 px-6 overflow-hidden">
         <div className="absolute inset-0 bg-gradient-to-b from-transparent via-purple-500/5 to-transparent" />
+
+        {/* Floating decorative elements */}
+        <motion.div
+          className="absolute top-[15%] left-[8%] w-2 h-2 rounded-full bg-purple-500/60"
+          animate={{ y: [0, -15, 0], opacity: [0.4, 0.8, 0.4] }}
+          transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
+        />
+        <motion.div
+          className="absolute top-[25%] right-[10%] w-3 h-3 rounded-full bg-cyan-500/50"
+          animate={{ y: [0, 12, 0], opacity: [0.3, 0.7, 0.3] }}
+          transition={{ duration: 5, repeat: Infinity, ease: 'easeInOut', delay: 1 }}
+        />
+        <motion.div
+          className="absolute bottom-[20%] left-[12%] w-2.5 h-2.5 rounded-full bg-green-500/50"
+          animate={{ y: [0, -10, 0], opacity: [0.4, 0.7, 0.4] }}
+          transition={{ duration: 4.5, repeat: Infinity, ease: 'easeInOut', delay: 2 }}
+        />
+        <motion.div
+          className="absolute bottom-[30%] right-[8%] w-2 h-2 rounded-full bg-amber-500/50"
+          animate={{ y: [0, 10, 0], opacity: [0.3, 0.6, 0.3] }}
+          transition={{ duration: 3.5, repeat: Infinity, ease: 'easeInOut', delay: 0.5 }}
+        />
+        <motion.div
+          className="absolute top-[40%] left-[5%] w-1.5 h-1.5 rounded-full bg-violet-500/60"
+          animate={{ y: [0, -8, 0], opacity: [0.5, 0.9, 0.5] }}
+          transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut', delay: 1.5 }}
+        />
+        <motion.div
+          className="absolute bottom-[15%] right-[15%] w-2 h-2 rounded-full bg-pink-500/40"
+          animate={{ y: [0, 12, 0], opacity: [0.3, 0.6, 0.3] }}
+          transition={{ duration: 5.5, repeat: Infinity, ease: 'easeInOut', delay: 3 }}
+        />
+
         <div className="max-w-xl mx-auto text-center relative z-10">
           <motion.div
             initial={{ opacity: 0, y: 20 }}

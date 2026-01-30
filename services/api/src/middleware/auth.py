@@ -55,6 +55,9 @@ PUBLIC_PATHS: list[tuple[str, bool]] = [
     ("/api/oauth/google", True),  # Google OAuth endpoints (all subpaths)
     ("/api/webhooks", True),  # Stripe webhooks (has own auth)
     ("/socket.io", True),  # Socket.IO has subpaths
+    # Waitlist signup (public - for coming soon page)
+    ("/api/waitlist", True),  # Public waitlist signup and position check
+    ("/api/v1/waitlist", True),  # v1 API version
 ]
 
 INTERNAL_TOKEN_PATHS: list[tuple[str, bool]] = [

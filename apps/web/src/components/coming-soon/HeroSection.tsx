@@ -1,7 +1,19 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { Bot, GitBranch, Terminal, Smartphone, Laptop, Code, Zap, Cloud } from 'lucide-react';
+import {
+  Bot,
+  GitBranch,
+  Terminal,
+  Smartphone,
+  Laptop,
+  Code,
+  Zap,
+  Cloud,
+  MessageSquare,
+  FolderTree,
+  Users,
+} from 'lucide-react';
 
 import { PodexIcon } from '@/components/icons/PodexIcon';
 
@@ -10,9 +22,9 @@ function FloatingElement({
   children,
   className,
   delay = 0,
-  duration = 20,
-  x = [0, 20, 0],
-  y = [0, -15, 0],
+  duration = 8,
+  x = [0, 15, 0],
+  y = [0, -10, 0],
 }: {
   children: React.ReactNode;
   className?: string;
@@ -23,12 +35,18 @@ function FloatingElement({
 }) {
   return (
     <motion.div
-      className={`absolute pointer-events-none ${className}`}
-      initial={{ opacity: 0 }}
+      className={`absolute cursor-pointer ${className}`}
+      initial={{ opacity: 1, filter: 'brightness(1.1)' }}
       animate={{
-        opacity: [0, 1, 1, 0],
+        opacity: [0.95, 1, 1, 0.95],
         x,
         y,
+      }}
+      whileHover={{
+        opacity: 1,
+        filter: 'brightness(2)',
+        scale: 1.12,
+        transition: { duration: 0.1 },
       }}
       transition={{
         duration,
@@ -45,7 +63,7 @@ function FloatingElement({
 // Code block floating element
 function FloatingCodeBlock({ className, delay }: { className?: string; delay?: number }) {
   return (
-    <FloatingElement className={className} delay={delay} duration={25} y={[0, -20, 0]}>
+    <FloatingElement className={className} delay={delay} duration={6} y={[0, -12, 0]}>
       <div className="bg-elevated/80 backdrop-blur-sm border border-border-subtle/60 rounded-lg p-3 w-48">
         <div className="flex items-center gap-2 mb-2">
           <div className="w-2 h-2 rounded-full bg-red-400/60" />
@@ -65,13 +83,7 @@ function FloatingCodeBlock({ className, delay }: { className?: string; delay?: n
 // Terminal floating element
 function FloatingTerminal({ className, delay }: { className?: string; delay?: number }) {
   return (
-    <FloatingElement
-      className={className}
-      delay={delay}
-      duration={22}
-      x={[0, -15, 0]}
-      y={[0, 10, 0]}
-    >
+    <FloatingElement className={className} delay={delay} duration={7} x={[0, -10, 0]} y={[0, 8, 0]}>
       <div className="bg-void/90 backdrop-blur-sm border border-purple-500/50 rounded-lg p-3 w-44">
         <div className="flex items-center gap-2 mb-2">
           <Terminal className="w-3 h-3 text-purple-400" />
@@ -96,13 +108,7 @@ function FloatingTerminal({ className, delay }: { className?: string; delay?: nu
 // Agent status card
 function FloatingAgentCard({ className, delay }: { className?: string; delay?: number }) {
   return (
-    <FloatingElement
-      className={className}
-      delay={delay}
-      duration={18}
-      x={[0, 10, 0]}
-      y={[0, -25, 0]}
-    >
+    <FloatingElement className={className} delay={delay} duration={5} x={[0, 8, 0]} y={[0, -10, 0]}>
       <div className="bg-elevated/80 backdrop-blur-sm border border-purple-500/60 rounded-xl p-3 w-40">
         <div className="flex items-center gap-2 mb-2">
           <div className="w-6 h-6 rounded-full bg-purple-500/30 flex items-center justify-center">
@@ -129,13 +135,7 @@ function FloatingAgentCard({ className, delay }: { className?: string; delay?: n
 // Mobile device mockup
 function FloatingMobile({ className, delay }: { className?: string; delay?: number }) {
   return (
-    <FloatingElement
-      className={className}
-      delay={delay}
-      duration={24}
-      x={[0, -10, 0]}
-      y={[0, 15, 0]}
-    >
+    <FloatingElement className={className} delay={delay} duration={6} x={[0, -8, 0]} y={[0, 10, 0]}>
       <div className="bg-void/95 backdrop-blur-sm border-2 border-cyan-500/50 rounded-2xl p-1.5 w-20">
         <div className="bg-elevated/60 rounded-xl h-36 p-2 flex flex-col">
           <div className="flex items-center gap-1 mb-2">
@@ -163,13 +163,7 @@ function FloatingMobile({ className, delay }: { className?: string; delay?: numb
 // Workflow node connection
 function FloatingWorkflow({ className, delay }: { className?: string; delay?: number }) {
   return (
-    <FloatingElement
-      className={className}
-      delay={delay}
-      duration={20}
-      x={[0, 15, 0]}
-      y={[0, -10, 0]}
-    >
+    <FloatingElement className={className} delay={delay} duration={7} x={[0, 10, 0]} y={[0, -8, 0]}>
       <div className="flex items-center gap-2">
         <div className="w-8 h-8 rounded-lg bg-purple-500/40 border border-purple-500/60 flex items-center justify-center">
           <Code className="w-4 h-4 text-purple-400" />
@@ -209,9 +203,9 @@ function FloatingCloud({ className, delay }: { className?: string; delay?: numbe
     <FloatingElement
       className={className}
       delay={delay}
-      duration={26}
-      x={[0, -20, 0]}
-      y={[0, 20, 0]}
+      duration={8}
+      x={[0, -12, 0]}
+      y={[0, 10, 0]}
     >
       <div className="bg-elevated/80 backdrop-blur-sm border border-green-500/60 rounded-lg p-2 flex items-center gap-2">
         <div className="w-6 h-6 rounded-full bg-green-500/40 flex items-center justify-center">
@@ -234,13 +228,7 @@ function FloatingCloud({ className, delay }: { className?: string; delay?: numbe
 // Laptop mockup
 function FloatingLaptop({ className, delay }: { className?: string; delay?: number }) {
   return (
-    <FloatingElement
-      className={className}
-      delay={delay}
-      duration={28}
-      x={[0, 12, 0]}
-      y={[0, -18, 0]}
-    >
+    <FloatingElement className={className} delay={delay} duration={8} x={[0, 12, 0]} y={[0, -8, 0]}>
       <div className="relative">
         {/* Screen */}
         <div className="bg-void/95 backdrop-blur-sm border border-purple-500/50 rounded-t-lg p-1 w-32">
@@ -264,6 +252,84 @@ function FloatingLaptop({ className, delay }: { className?: string; delay?: numb
   );
 }
 
+// Chat/AI conversation widget
+function FloatingChat({ className, delay }: { className?: string; delay?: number }) {
+  return (
+    <FloatingElement className={className} delay={delay} duration={7} x={[0, -8, 0]} y={[0, 12, 0]}>
+      <div className="bg-elevated/80 backdrop-blur-sm border border-amber-500/60 rounded-lg p-2 w-36">
+        <div className="flex items-center gap-2 mb-2">
+          <MessageSquare className="w-3 h-3 text-amber-400" />
+          <span className="text-[9px] text-amber-400 font-medium">AI Chat</span>
+        </div>
+        <div className="space-y-1.5">
+          <div className="bg-amber-500/20 rounded px-2 py-1 text-[8px] text-text-muted">
+            Fix the auth bug
+          </div>
+          <div className="bg-purple-500/20 rounded px-2 py-1 text-[8px] text-purple-300">
+            Found 3 issues...
+          </div>
+        </div>
+      </div>
+    </FloatingElement>
+  );
+}
+
+// File tree widget
+function FloatingFileTree({ className, delay }: { className?: string; delay?: number }) {
+  return (
+    <FloatingElement
+      className={className}
+      delay={delay}
+      duration={6}
+      x={[0, 10, 0]}
+      y={[0, -10, 0]}
+    >
+      <div className="bg-elevated/80 backdrop-blur-sm border border-cyan-500/60 rounded-lg p-2 w-32">
+        <div className="flex items-center gap-2 mb-2">
+          <FolderTree className="w-3 h-3 text-cyan-400" />
+          <span className="text-[9px] text-cyan-400 font-medium">Files</span>
+        </div>
+        <div className="space-y-1 text-[8px] font-mono text-text-muted">
+          <div className="flex items-center gap-1">
+            <span className="text-cyan-400">📁</span> src/
+          </div>
+          <div className="flex items-center gap-1 pl-2">
+            <span className="text-purple-400">📄</span> index.ts
+          </div>
+          <div className="flex items-center gap-1 pl-2">
+            <span className="text-green-400">📄</span> api.ts
+          </div>
+        </div>
+      </div>
+    </FloatingElement>
+  );
+}
+
+// Collaboration/presence widget
+function FloatingPresence({ className, delay }: { className?: string; delay?: number }) {
+  return (
+    <FloatingElement className={className} delay={delay} duration={5} x={[0, -6, 0]} y={[0, 8, 0]}>
+      <div className="bg-elevated/80 backdrop-blur-sm border border-green-500/60 rounded-lg p-2">
+        <div className="flex items-center gap-2 mb-2">
+          <Users className="w-3 h-3 text-green-400" />
+          <span className="text-[9px] text-green-400 font-medium">Team</span>
+        </div>
+        <div className="flex -space-x-2">
+          <div className="w-5 h-5 rounded-full bg-purple-500/60 border border-void flex items-center justify-center text-[7px] text-white">
+            A
+          </div>
+          <div className="w-5 h-5 rounded-full bg-cyan-500/60 border border-void flex items-center justify-center text-[7px] text-white">
+            M
+          </div>
+          <div className="w-5 h-5 rounded-full bg-green-500/60 border border-void flex items-center justify-center text-[7px] text-white">
+            +2
+          </div>
+        </div>
+      </div>
+    </FloatingElement>
+  );
+}
+
 export function HeroSection() {
   return (
     <section className="relative min-h-screen flex items-center justify-center overflow-hidden">
@@ -273,23 +339,37 @@ export function HeroSection() {
       {/* Subtle radial glow */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1000px] h-[1000px] bg-purple-500/5 rounded-full blur-[150px] pointer-events-none" />
 
-      {/* Floating UI elements - positioned around the edges */}
-      <FloatingCodeBlock className="top-[15%] left-[5%]" delay={0} />
-      <FloatingTerminal className="top-[20%] right-[8%]" delay={2} />
-      <FloatingAgentCard className="bottom-[25%] left-[8%]" delay={4} />
-      <FloatingMobile className="top-[35%] right-[5%]" delay={1} />
-      <FloatingWorkflow className="bottom-[20%] right-[10%]" delay={3} />
-      <FloatingCloud className="top-[60%] left-[3%]" delay={5} />
-      <FloatingLaptop className="bottom-[35%] right-[3%]" delay={2.5} />
+      {/* Floating UI elements - positioned around the hero */}
+      {/* Top row */}
+      <FloatingCodeBlock className="top-[8%] left-[5%]" delay={0} />
+      <FloatingPresence className="top-[5%] left-[30%]" delay={0.5} />
+      <FloatingTerminal className="top-[8%] right-[5%]" delay={1} />
+
+      {/* Upper middle */}
+      <FloatingAgentCard className="top-[22%] left-[3%]" delay={1.5} />
+      <FloatingChat className="top-[18%] right-[4%]" delay={2} />
+
+      {/* Middle sides */}
+      <FloatingMobile className="top-[45%] left-[2%]" delay={2.5} />
+      <FloatingFileTree className="top-[42%] right-[3%]" delay={3} />
+
+      {/* Lower middle */}
+      <FloatingCloud className="bottom-[25%] left-[4%]" delay={3.5} />
+      <FloatingLaptop className="bottom-[22%] right-[4%]" delay={4} />
+
+      {/* Bottom row */}
+      <FloatingWorkflow className="bottom-[8%] left-[15%]" delay={4.5} />
+      <FloatingMobile className="bottom-[6%] right-[38%]" delay={5} />
 
       {/* Additional elements on larger screens */}
-      <FloatingCodeBlock className="hidden lg:block bottom-[15%] left-[15%]" delay={6} />
-      <FloatingAgentCard className="hidden lg:block top-[10%] left-[25%]" delay={7} />
-      <FloatingWorkflow className="hidden xl:block top-[15%] right-[25%]" delay={8} />
+      <FloatingAgentCard className="hidden lg:block top-[12%] left-[22%]" delay={5.5} />
+      <FloatingFileTree className="hidden lg:block bottom-[8%] right-[15%]" delay={6} />
+      <FloatingChat className="hidden xl:block top-[28%] right-[20%]" delay={6.5} />
+      <FloatingCloud className="hidden xl:block bottom-[18%] left-[18%]" delay={7} />
 
-      {/* Edge fade overlays - subtle to keep floating elements visible */}
-      <div className="absolute inset-0 bg-gradient-to-r from-void/50 via-transparent to-void/50 pointer-events-none" />
-      <div className="absolute inset-0 bg-gradient-to-b from-void/30 via-transparent to-void/30 pointer-events-none" />
+      {/* Edge fade overlays - very subtle */}
+      <div className="absolute inset-0 bg-gradient-to-r from-void/20 via-transparent to-void/20 pointer-events-none" />
+      <div className="absolute inset-0 bg-gradient-to-b from-void/10 via-transparent to-void/10 pointer-events-none" />
 
       {/* Content */}
       <div className="relative z-10 text-center px-6 max-w-4xl mx-auto">
@@ -339,9 +419,8 @@ export function HeroSection() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.5, duration: 0.8 }}
         >
-          AI-powered agents, cloud workspaces, and seamless collaboration.
-          <br className="hidden md:block" />
-          Coming soon.
+          AI-powered agents, mobile-first development, and code from anywhere. Invite only.... For
+          now!
         </motion.p>
       </div>
     </section>
