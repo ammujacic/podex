@@ -82,13 +82,16 @@ groups:
   - name: containers
     rules:
       - alert: ContainerKilled
-        expr: time() - container_last_seen > 60
-        for: 0m
+        # Alert on containers that disappeared unexpectedly
+        # Filters: named containers only, excludes pause/POD/buildkit containers
+        # Threshold: 2 minutes missing, must persist for 2 more minutes
+        expr: time() - container_last_seen{name!="", name!~".*POD.*|.*pause.*|.*buildkit.*|.*-build-.*"} > 120
+        for: 2m
         labels:
           severity: warning
         annotations:
           summary: "Container killed ({{ $labels.name }})"
-          description: "Container {{ $labels.name }} has disappeared"
+          description: "Container {{ $labels.name }} has been missing for more than 4 minutes"
 
       - alert: ContainerHighCpu
         expr: (sum(rate(container_cpu_usage_seconds_total{name!=""}[3m])) BY (instance, name) * 100) > 80

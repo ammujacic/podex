@@ -161,8 +161,13 @@ services:
       - /:/rootfs:ro
       - /var/run:/var/run:ro
       - /sys:/sys:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
       - /var/lib/docker/:/var/lib/docker:ro
       - /dev/disk/:/dev/disk:ro
+      - /etc/machine-id:/etc/machine-id:ro
+      - /etc/localtime:/etc/localtime:ro
+    devices:
+      - /dev/kmsg
     ports:
       - "9080:8080"
     restart: unless-stopped
@@ -171,6 +176,11 @@ services:
     labels:
       - "coolify.managed=true"
       - "coolify.service=cadvisor"
+    deploy:
+      mode: global
+      resources:
+        limits:
+          memory: 128M
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/healthz"]
       interval: 30s

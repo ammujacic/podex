@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import ssl
 from typing import Any
 
 import docker
@@ -91,7 +90,6 @@ async def test_server_connection(
                     client_cert=(request.tls_cert_path, request.tls_key_path),
                     ca_cert=request.tls_ca_path,
                     verify=True,
-                    ssl_version=ssl.PROTOCOL_TLS_CLIENT,  # type: ignore[call-arg]
                 )
                 base_url = f"https://{request.ip_address}:{request.docker_port}"
                 client = docker.DockerClient(base_url=base_url, tls=tls_config, timeout=10)

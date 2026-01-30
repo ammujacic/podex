@@ -7,7 +7,6 @@ supporting TLS-secured connections and connection pooling.
 from __future__ import annotations
 
 import asyncio
-import ssl
 import subprocess
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -251,7 +250,6 @@ class MultiServerDockerManager:
                     client_cert=(tls_cert_path, tls_key_path),
                     ca_cert=tls_ca_path,
                     verify=True,
-                    ssl_version=ssl.PROTOCOL_TLS_CLIENT,  # type: ignore[call-arg]
                 )
                 base_url = f"https://{ip_address}:{docker_port}"
                 return docker.DockerClient(base_url=base_url, tls=tls_config)
