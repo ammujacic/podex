@@ -324,8 +324,11 @@ class TestCustomSettings:
 
     def test_custom_cors_origins(self) -> None:
         """Test custom CORS origins."""
-        settings = Settings(CORS_ORIGINS=["https://example.com", "https://api.example.com"])
+        # CORS_ORIGINS is stored as a raw string and parsed via property
+        settings = Settings(CORS_ORIGINS='["https://example.com", "https://api.example.com"]')
         assert len(settings.CORS_ORIGINS) == 2
+        assert "https://example.com" in settings.CORS_ORIGINS
+        assert "https://api.example.com" in settings.CORS_ORIGINS
 
     def test_custom_rate_limit(self) -> None:
         """Test custom rate limit."""

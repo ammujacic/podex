@@ -1,8 +1,11 @@
 """Dependency injection for compute service."""
 
+import asyncio
+import contextlib
 import secrets
-from typing import Annotated
+from typing import Annotated, Any
 
+import httpx
 import structlog
 from fastapi import Depends, Header, HTTPException, status
 
@@ -196,65 +199,153 @@ def get_compute_manager() -> ComputeManager:
     return OrchestratorSingleton.get_compute_manager()
 
 
+# Background task handle for server sync
+_server_sync_task: asyncio.Task[None] | None = None
+
+
+async def fetch_servers_from_api() -> list[dict[str, Any]]:
+    """Fetch workspace servers from API service.
+
+    Returns list of server configurations from the API's internal endpoint.
+    """
+    if not settings.internal_api_key:
+        logger.warning("No internal API key configured, cannot fetch servers from API")
+        return []
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.api_base_url}/api/servers/internal/list",
+                headers={"X-Internal-API-Key": settings.internal_api_key},
+                timeout=10.0,
+            )
+            response.raise_for_status()
+            data: list[dict[str, Any]] = response.json()
+            return data
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            "Failed to fetch servers from API",
+            status_code=e.response.status_code,
+            detail=e.response.text[:200] if e.response.text else None,
+        )
+        return []
+    except httpx.RequestError as e:
+        logger.error("Failed to connect to API service", error=str(e))
+        return []
+
+
+async def sync_servers() -> int:
+    """Sync servers from API to Docker manager.
+
+    Returns number of servers successfully registered.
+    """
+    docker_manager = OrchestratorSingleton.get_docker_manager()
+    servers = await fetch_servers_from_api()
+
+    if not servers:
+        logger.debug("No servers returned from API")
+        return 0
+
+    registered_count = 0
+    for server in servers:
+        success = await docker_manager.add_server(
+            server_id=server["id"],
+            hostname=server["hostname"],
+            ip_address=server["ip_address"],
+            docker_port=server["docker_port"],
+            architecture=server["architecture"],
+            region=server.get("region"),
+            tls_enabled=server["tls_enabled"],
+            tls_cert_path=server.get("tls_cert_path"),
+            tls_key_path=server.get("tls_key_path"),
+            tls_ca_path=server.get("tls_ca_path"),
+        )
+        if success:
+            logger.info(
+                "Registered workspace server",
+                server_id=server["id"],
+                hostname=server["hostname"],
+                ip_address=server["ip_address"],
+                port=server["docker_port"],
+                architecture=server["architecture"],
+                region=server.get("region"),
+                tls=server["tls_enabled"],
+            )
+            registered_count += 1
+        else:
+            logger.debug(
+                "Server already registered or failed to connect",
+                server_id=server["id"],
+                hostname=server["hostname"],
+            )
+
+    return registered_count
+
+
+async def _periodic_server_sync() -> None:
+    """Background task to periodically sync servers from API."""
+    while True:
+        try:
+            await asyncio.sleep(settings.server_sync_interval)
+            count = await sync_servers()
+            if count > 0:
+                logger.info("Periodic server sync completed", new_servers=count)
+        except asyncio.CancelledError:
+            logger.info("Server sync task cancelled")
+            break
+        except Exception as e:
+            logger.error("Error in periodic server sync", error=str(e))
+
+
 async def init_compute_manager() -> None:
     """Initialize the compute service on startup.
 
-    Connects to Redis and registers all configured workspace servers.
+    Connects to Redis and fetches workspace servers from API service.
     """
+    global _server_sync_task
+
     # Initialize WorkspaceStore (connects to Redis)
     workspace_store = OrchestratorSingleton.get_workspace_store()
     await workspace_store._get_client()
     logger.info("WorkspaceStore initialized", redis_url=settings.redis_url)
 
-    # Get Docker manager and register servers from config
+    # Get Docker manager
     docker_manager = OrchestratorSingleton.get_docker_manager()
 
-    servers = settings.workspace_servers
-    if not servers:
+    # Sync servers from API at startup
+    registered_count = await sync_servers()
+    if registered_count == 0:
         logger.warning(
-            "No workspace servers configured. "
-            "Set COMPUTE_WORKSPACE_SERVERS env var with JSON array of servers."
+            "No workspace servers registered. Ensure servers are configured in the API admin panel."
         )
-    else:
-        for server in servers:
-            success = await docker_manager.add_server(
-                server_id=server.server_id,
-                hostname=server.host,
-                ip_address=server.host,  # hostname and ip_address are the same for Docker
-                docker_port=server.docker_port,
-                architecture=server.architecture,
-                region=server.region,
-                tls_enabled=server.tls_enabled,
-                cert_path=server.cert_path,
-            )
-            if success:
-                logger.info(
-                    "Registered workspace server",
-                    server_id=server.server_id,
-                    host=server.host,
-                    port=server.docker_port,
-                    architecture=server.architecture,
-                    region=server.region,
-                    tls=server.tls_enabled,
-                )
-            else:
-                logger.error(
-                    "Failed to register workspace server",
-                    server_id=server.server_id,
-                    host=server.host,
-                )
+
+    # Start periodic sync background task
+    _server_sync_task = asyncio.create_task(_periodic_server_sync())
+    logger.info(
+        "Started periodic server sync task",
+        interval_seconds=settings.server_sync_interval,
+    )
 
     # Initialize orchestrator
     OrchestratorSingleton.get_orchestrator()
     logger.info(
         "WorkspaceOrchestrator initialized",
         servers_registered=len(docker_manager.get_healthy_servers()),
-        total_servers=len(servers) if servers else 0,
     )
 
 
 async def cleanup_compute_manager() -> None:
     """Cleanup compute service on shutdown."""
+    global _server_sync_task
+
+    # Cancel the periodic server sync task
+    if _server_sync_task is not None and not _server_sync_task.done():
+        _server_sync_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _server_sync_task
+        _server_sync_task = None
+        logger.info("Cancelled server sync background task")
+
     docker_manager = OrchestratorSingleton._docker_manager
     if docker_manager is not None:
         await docker_manager.close_all()

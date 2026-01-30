@@ -21,6 +21,11 @@ DEV_WORKSPACE_SERVERS = [
         "architecture": "arm64",
         "region": "eu",
         "labels": {"zone": "eu-west-1a", "environment": "development"},
+        # TLS disabled for local development
+        "tls_enabled": False,
+        "tls_cert_path": None,
+        "tls_key_path": None,
+        "tls_ca_path": None,
     },
     {
         "id": "ws-local-2",  # Matches compute service server_id
@@ -36,5 +41,10 @@ DEV_WORKSPACE_SERVERS = [
         "architecture": "arm64",
         "region": "eu",
         "labels": {"zone": "eu-west-1b", "environment": "development"},
+        # TLS disabled for local development
+        "tls_enabled": False,
+        "tls_cert_path": None,
+        "tls_key_path": None,
+        "tls_ca_path": None,
     },
 ]

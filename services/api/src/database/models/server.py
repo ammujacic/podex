@@ -61,6 +61,12 @@ class WorkspaceServer(Base):
     docker_runtime: Mapped[str] = mapped_column(String(20), nullable=False, default="runsc")
     architecture: Mapped[str] = mapped_column(String(20), nullable=False, default="arm64")
 
+    # TLS Configuration for Docker API connection
+    tls_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    tls_cert_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    tls_key_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    tls_ca_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
     # Metadata
     labels: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     region: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -203,6 +209,10 @@ class WorkspaceServer(Base):
             "labels": self.labels,
             "region": self.region,
             "provider": self.provider,
+            "tls_enabled": self.tls_enabled,
+            "tls_cert_path": self.tls_cert_path,
+            "tls_key_path": self.tls_key_path,
+            "tls_ca_path": self.tls_ca_path,
             "is_healthy": self.is_healthy,
             "cpu_utilization": self.cpu_utilization,
             "memory_utilization": self.memory_utilization,

@@ -1,9 +1,9 @@
 """Compute service configuration."""
 
 import json
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 
@@ -85,12 +85,8 @@ class Settings(BaseSettings):
         # Single origin
         return [v]
 
-    # Workspace servers configuration (JSON array)
-    # Each server: {"server_id", "host", "docker_port", "tls_enabled", "cert_path", ...}
-    workspace_servers_json: str = Field(
-        default="[]",
-        validation_alias=AliasChoices("workspace_servers", "COMPUTE_WORKSPACE_SERVERS"),
-    )
+    # Server sync interval (seconds between syncing server list from API)
+    server_sync_interval: int = 30
 
     # Workspace settings
     max_workspaces: int = 10  # Max workspaces per server (soft limit)
@@ -101,42 +97,6 @@ class Settings(BaseSettings):
 
     # Container runtime for workspace isolation (runsc for gVisor, runc for standard)
     docker_runtime: str | None = "runsc"  # Set to None to use server default
-
-    @field_validator("workspace_servers_json", mode="before")
-    @classmethod
-    def parse_workspace_servers(cls, v: Any) -> str:
-        """Ensure workspace_servers is a string (JSON)."""
-        if isinstance(v, list):
-            return json.dumps(v)
-        return v or "[]"
-
-    @property
-    def workspace_servers(self) -> list[WorkspaceServerConfig]:
-        """Parse workspace servers from JSON config."""
-        try:
-            servers_data = json.loads(self.workspace_servers_json)
-            return [
-                WorkspaceServerConfig(
-                    server_id=s.get("server_id", s.get("name", f"server-{i}")),
-                    host=s.get("host", "localhost"),
-                    docker_port=s.get("docker_port", 2375),
-                    tls_enabled=s.get("tls_enabled", False),
-                    cert_path=s.get("cert_path"),
-                    max_cpu=s.get("max_cpu", 8.0),
-                    max_memory_mb=s.get("max_memory_mb", 16384),
-                    max_workspaces=s.get("max_workspaces", 50),
-                    labels=s.get("labels", {}),
-                    architecture=s.get("architecture", "amd64"),
-                    region=s.get("region"),
-                    # GPU configuration
-                    has_gpu=s.get("has_gpu", False),
-                    gpu_type=s.get("gpu_type"),
-                    gpu_count=s.get("gpu_count", 0),
-                )
-                for i, s in enumerate(servers_data)
-            ]
-        except (json.JSONDecodeError, TypeError):
-            return []
 
     # Redis for state management
     redis_url: str = "redis://localhost:6379"

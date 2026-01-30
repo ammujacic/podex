@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Self
 
 import structlog
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -50,6 +51,19 @@ class ServerRegisterRequest(BaseModel):
     has_gpu: bool = False
     gpu_type: str | None = None
     gpu_count: int = 0
+    # TLS configuration for Docker API connection
+    tls_enabled: bool = False
+    tls_cert_path: str | None = None
+    tls_key_path: str | None = None
+    tls_ca_path: str | None = None
+
+    @model_validator(mode="after")
+    def validate_tls_paths(self) -> Self:
+        """Validate that all TLS paths are provided when TLS is enabled."""
+        if self.tls_enabled and not all([self.tls_cert_path, self.tls_key_path, self.tls_ca_path]):
+            msg = "All TLS paths required when tls_enabled is True"
+            raise ValueError(msg)
+        return self
 
 
 class ServerUpdateRequest(BaseModel):
@@ -90,6 +104,10 @@ class ServerResponse(BaseModel):
     has_gpu: bool
     gpu_type: str | None
     gpu_count: int
+    tls_enabled: bool
+    tls_cert_path: str | None
+    tls_key_path: str | None
+    tls_ca_path: str | None
     created_at: str
     last_heartbeat: str | None
     is_healthy: bool
@@ -158,6 +176,10 @@ def _server_to_response(server: WorkspaceServer) -> ServerResponse:
         has_gpu=server.has_gpu,
         gpu_type=server.gpu_type,
         gpu_count=server.gpu_count,
+        tls_enabled=server.tls_enabled,
+        tls_cert_path=server.tls_cert_path,
+        tls_key_path=server.tls_key_path,
+        tls_ca_path=server.tls_ca_path,
         created_at=server.created_at.isoformat(),
         last_heartbeat=server.last_heartbeat.isoformat() if server.last_heartbeat else None,
         is_healthy=server.is_healthy,
@@ -257,6 +279,10 @@ async def register_server(
         has_gpu=data.has_gpu,
         gpu_type=data.gpu_type,
         gpu_count=data.gpu_count,
+        tls_enabled=data.tls_enabled,
+        tls_cert_path=data.tls_cert_path,
+        tls_key_path=data.tls_key_path,
+        tls_ca_path=data.tls_ca_path,
         created_at=datetime.now(UTC),
         last_heartbeat=datetime.now(UTC),
     )
@@ -812,3 +838,59 @@ async def get_server_workspaces(
         workspaces=workspace_infos,
         total_count=len(workspace_infos),
     )
+
+
+# ============== Internal Endpoints for Compute Service ==============
+
+
+class InternalServerResponse(BaseModel):
+    """Minimal server info for compute service."""
+
+    id: str
+    hostname: str
+    ip_address: str
+    docker_port: int
+    architecture: str
+    region: str | None
+    tls_enabled: bool
+    tls_cert_path: str | None
+    tls_key_path: str | None
+    tls_ca_path: str | None
+
+
+@router.get("/internal/list", response_model=list[InternalServerResponse], tags=["internal"])
+async def list_servers_for_compute(
+    request: Request,
+    db: DbSession,
+) -> list[InternalServerResponse]:
+    """Internal endpoint for compute service to fetch server configs.
+
+    Authenticated via X-Internal-API-Key header.
+    Returns all active servers with TLS configuration.
+    """
+    # Verify internal API key
+    api_key = request.headers.get("X-Internal-API-Key")
+    if not api_key or api_key != settings.COMPUTE_INTERNAL_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing internal API key")
+
+    # Get all active servers
+    result = await db.execute(
+        select(WorkspaceServer).where(WorkspaceServer.status == ServerStatus.ACTIVE)
+    )
+    servers = result.scalars().all()
+
+    return [
+        InternalServerResponse(
+            id=s.id,
+            hostname=s.hostname,
+            ip_address=str(s.ip_address),
+            docker_port=s.docker_port,
+            architecture=s.architecture,
+            region=s.region,
+            tls_enabled=s.tls_enabled,
+            tls_cert_path=s.tls_cert_path,
+            tls_key_path=s.tls_key_path,
+            tls_ca_path=s.tls_ca_path,
+        )
+        for s in servers
+    ]

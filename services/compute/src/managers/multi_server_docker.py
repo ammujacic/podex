@@ -10,7 +10,6 @@ import asyncio
 import ssl
 import subprocess
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import docker
@@ -37,7 +36,9 @@ class ServerConnection:
     architecture: str
     region: str | None = None
     tls_enabled: bool = False  # Per-server TLS setting
-    cert_path: str | None = None  # Path to TLS certs for this server
+    tls_cert_path: str | None = None  # Path to client certificate
+    tls_key_path: str | None = None  # Path to client key
+    tls_ca_path: str | None = None  # Path to CA certificate
     client: DockerClient | None = None
     last_error: str | None = None
     is_healthy: bool = False
@@ -92,7 +93,9 @@ class MultiServerDockerManager:
         architecture: str = "amd64",
         region: str | None = None,
         tls_enabled: bool = False,
-        cert_path: str | None = None,
+        tls_cert_path: str | None = None,
+        tls_key_path: str | None = None,
+        tls_ca_path: str | None = None,
     ) -> bool:
         """Add a server to the pool and establish connection.
 
@@ -104,11 +107,17 @@ class MultiServerDockerManager:
             architecture: Server architecture (arm64, amd64)
             region: Server region (e.g., eu, us-east)
             tls_enabled: Whether to use TLS for this server
-            cert_path: Path to TLS certificates (required if tls_enabled)
+            tls_cert_path: Path to client certificate (required if tls_enabled)
+            tls_key_path: Path to client key (required if tls_enabled)
+            tls_ca_path: Path to CA certificate (required if tls_enabled)
 
         Returns:
             True if connection successful, False otherwise
         """
+        # Skip if server already registered and healthy
+        if server_id in self._connections and self._connections[server_id].is_healthy:
+            return False
+
         async with self._lock:
             conn = ServerConnection(
                 server_id=server_id,
@@ -118,7 +127,9 @@ class MultiServerDockerManager:
                 architecture=architecture,
                 region=region,
                 tls_enabled=tls_enabled,
-                cert_path=cert_path,
+                tls_cert_path=tls_cert_path,
+                tls_key_path=tls_key_path,
+                tls_ca_path=tls_ca_path,
             )
 
             try:
@@ -126,7 +137,9 @@ class MultiServerDockerManager:
                     ip_address=ip_address,
                     docker_port=docker_port,
                     tls_enabled=tls_enabled,
-                    cert_path=cert_path,
+                    tls_cert_path=tls_cert_path,
+                    tls_key_path=tls_key_path,
+                    tls_ca_path=tls_ca_path,
                 )
                 conn.client = client
                 conn.is_healthy = True
@@ -203,7 +216,9 @@ class MultiServerDockerManager:
         ip_address: str,
         docker_port: int,
         tls_enabled: bool = False,
-        cert_path: str | None = None,
+        tls_cert_path: str | None = None,
+        tls_key_path: str | None = None,
+        tls_ca_path: str | None = None,
     ) -> DockerClient:
         """Create a Docker client connection.
 
@@ -211,29 +226,29 @@ class MultiServerDockerManager:
             ip_address: Server IP address or hostname
             docker_port: Docker API port
             tls_enabled: Whether to use TLS for this connection
-            cert_path: Path to TLS certificates (required if tls_enabled)
+            tls_cert_path: Path to client certificate (required if tls_enabled)
+            tls_key_path: Path to client key (required if tls_enabled)
+            tls_ca_path: Path to CA certificate (required if tls_enabled)
 
         Returns:
             Docker client instance
 
         Raises:
             DockerException: If connection fails
-            ValueError: If TLS enabled but no cert_path provided
+            ValueError: If TLS enabled but cert paths not provided
         """
         loop = asyncio.get_event_loop()
 
         def _connect() -> DockerClient:
             if tls_enabled:
                 # TLS-secured connection (production)
-                if not cert_path:
-                    raise ValueError(f"cert_path required for TLS connection to {ip_address}")
-                certs = Path(cert_path)
+                if not all([tls_cert_path, tls_key_path, tls_ca_path]):
+                    raise ValueError(
+                        f"All TLS paths (cert, key, ca) required for TLS connection to {ip_address}"
+                    )
                 tls_config = TLSConfig(
-                    client_cert=(
-                        str(certs / "cert.pem"),
-                        str(certs / "key.pem"),
-                    ),
-                    ca_cert=str(certs / "ca.pem"),
+                    client_cert=(tls_cert_path, tls_key_path),
+                    ca_cert=tls_ca_path,
                     verify=True,
                     ssl_version=ssl.PROTOCOL_TLS_CLIENT,  # type: ignore[call-arg]
                 )

@@ -229,35 +229,8 @@ services:
           cpus: '1.0'
     environment:
       COMPUTE_ENVIRONMENT: development
-      # Workspace servers configuration (JSON array)
-      # Each DinD container exposes Docker API on port 2375 (HTTP)
-      COMPUTE_WORKSPACE_SERVERS: >-
-        [
-          {
-            "server_id": "ws-local-1",
-            "host": "ws-local-1",
-            "docker_port": 2375,
-            "tls_enabled": false,
-            "max_cpu": 4.0,
-            "max_memory_mb": 8192,
-            "max_workspaces": 10,
-            "architecture": "arm64",
-            "region": "eu",
-            "labels": {"zone": "local-1"}
-          },
-          {
-            "server_id": "ws-local-2",
-            "host": "ws-local-2",
-            "docker_port": 2375,
-            "tls_enabled": false,
-            "max_cpu": 4.0,
-            "max_memory_mb": 8192,
-            "max_workspaces": 10,
-            "architecture": "arm64",
-            "region": "eu",
-            "labels": {"zone": "local-2"}
-          }
-        ]
+      # Workspace servers are now configured via API database (admin UI)
+      # Compute service fetches server list from API at startup and syncs periodically
       # Container runtime (null for DinD default, 'runsc' for gVisor in production)
       COMPUTE_DOCKER_RUNTIME: ${COMPUTE_DOCKER_RUNTIME:-}
       COMPUTE_MAX_WORKSPACES: 10

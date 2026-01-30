@@ -278,6 +278,11 @@ export interface AdminWorkspaceServer {
   has_gpu: boolean;
   gpu_type: string | null;
   gpu_count: number;
+  // TLS configuration for Docker API connection
+  tls_enabled: boolean;
+  tls_cert_path: string | null;
+  tls_key_path: string | null;
+  tls_ca_path: string | null;
   created_at: string;
   last_heartbeat: string | null;
   is_healthy: boolean;
@@ -323,6 +328,11 @@ export interface CreateServerRequest {
   has_gpu?: boolean;
   gpu_type?: string;
   gpu_count?: number;
+  // TLS configuration for Docker API connection
+  tls_enabled?: boolean;
+  tls_cert_path?: string;
+  tls_key_path?: string;
+  tls_ca_path?: string;
 }
 
 // ============================================================================

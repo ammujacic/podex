@@ -407,7 +407,7 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
     name: '',
     hostname: '',
     ip_address: '',
-    docker_port: 2376,
+    docker_port: 2375,
     total_cpu: 4,
     total_memory_mb: 8192,
     total_disk_gb: 100,
@@ -417,8 +417,40 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
     has_gpu: false,
     gpu_type: '',
     gpu_count: 0,
+    tls_enabled: false,
+    tls_cert_path: '',
+    tls_key_path: '',
+    tls_ca_path: '',
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Auto-fill TLS paths based on hostname
+  const updateTlsPaths = (hostname: string, tlsEnabled: boolean) => {
+    if (tlsEnabled && hostname) {
+      const basePath = `/etc/docker/workspace-certs/${hostname}`;
+      return {
+        tls_cert_path: `${basePath}/cert.pem`,
+        tls_key_path: `${basePath}/key.pem`,
+        tls_ca_path: `${basePath}/ca.pem`,
+      };
+    }
+    return {};
+  };
+
+  const handleHostnameChange = (hostname: string) => {
+    const tlsPaths = updateTlsPaths(hostname, formData.tls_enabled || false);
+    setFormData({ ...formData, hostname, ...tlsPaths });
+  };
+
+  const handleTlsToggle = (enabled: boolean) => {
+    const tlsPaths = updateTlsPaths(formData.hostname, enabled);
+    setFormData({
+      ...formData,
+      tls_enabled: enabled,
+      docker_port: enabled ? 2376 : 2375,
+      ...tlsPaths,
+    });
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -430,7 +462,7 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
         name: '',
         hostname: '',
         ip_address: '',
-        docker_port: 2376,
+        docker_port: 2375,
         total_cpu: 4,
         total_memory_mb: 8192,
         total_disk_gb: 100,
@@ -440,6 +472,10 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
         has_gpu: false,
         gpu_type: '',
         gpu_count: 0,
+        tls_enabled: false,
+        tls_cert_path: '',
+        tls_key_path: '',
+        tls_ca_path: '',
       });
     } finally {
       setIsSubmitting(false);
@@ -469,7 +505,7 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
               <input
                 type="text"
                 value={formData.hostname}
-                onChange={(e) => setFormData({ ...formData, hostname: e.target.value })}
+                onChange={(e) => handleHostnameChange(e.target.value)}
                 className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
                 required
               />
@@ -580,6 +616,61 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
             </div>
           </div>
 
+          {/* TLS Configuration */}
+          <div className="border-t border-border-subtle pt-4">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={formData.tls_enabled}
+                onChange={(e) => handleTlsToggle(e.target.checked)}
+                className="rounded border-border-subtle"
+              />
+              <span className="text-sm text-text-secondary">Enable TLS (Production)</span>
+            </label>
+
+            {formData.tls_enabled && (
+              <div className="space-y-3 mt-4">
+                <div>
+                  <label className="block text-sm text-text-secondary mb-1">Certificate Path</label>
+                  <input
+                    type="text"
+                    value={formData.tls_cert_path || ''}
+                    onChange={(e) => setFormData({ ...formData, tls_cert_path: e.target.value })}
+                    className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary text-sm font-mono"
+                    placeholder="/etc/docker/workspace-certs/server/cert.pem"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-text-secondary mb-1">Key Path</label>
+                  <input
+                    type="text"
+                    value={formData.tls_key_path || ''}
+                    onChange={(e) => setFormData({ ...formData, tls_key_path: e.target.value })}
+                    className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary text-sm font-mono"
+                    placeholder="/etc/docker/workspace-certs/server/key.pem"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-text-secondary mb-1">CA Path</label>
+                  <input
+                    type="text"
+                    value={formData.tls_ca_path || ''}
+                    onChange={(e) => setFormData({ ...formData, tls_ca_path: e.target.value })}
+                    className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary text-sm font-mono"
+                    placeholder="/etc/docker/workspace-certs/server/ca.pem"
+                    required
+                  />
+                </div>
+                <p className="text-xs text-text-muted">
+                  Paths are on the platform server where compute service runs
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* GPU Configuration */}
           <div className="border-t border-border-subtle pt-4">
             <label className="flex items-center gap-2 cursor-pointer">
               <input

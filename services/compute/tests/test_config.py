@@ -24,9 +24,9 @@ class TestSettingsDefaults:
         assert settings.max_workspaces == 10
         assert settings.workspace_timeout == 3600
         assert settings.workspace_image == "podex/workspace:latest"
-        # Multi-server mode: workspace servers are configured via JSON
-        assert settings.workspace_servers_json == "[]"
-        assert len(settings.workspace_servers) == 0
+        # Workspace servers are now fetched from API database (admin UI)
+        # Compute service syncs server list from API at startup and periodically
+        assert settings.server_sync_interval == 30
 
     def test_redis_settings_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test default Redis settings."""
@@ -64,11 +64,11 @@ class TestSettingsCustom:
         """Test custom workspace settings."""
         settings = Settings(
             max_workspaces=20,
-            workspace_servers='[{"server_id": "test-1", "host": "localhost", "docker_port": 2375}]',
+            server_sync_interval=60,
         )
         assert settings.max_workspaces == 20
-        assert len(settings.workspace_servers) == 1
-        assert settings.workspace_servers[0].server_id == "test-1"
+        # Servers are now fetched from API, not configured via env var
+        assert settings.server_sync_interval == 60
 
 class TestSettingsSentry:
     """Tests for Sentry configuration."""

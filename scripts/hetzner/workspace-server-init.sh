@@ -193,9 +193,10 @@ openssl x509 -req -days 3650 -sha256 \
     -extfile extfile.cnf
 
 # Generate client key (for platform server)
+# Named cert.pem/key.pem to match what compute service expects
 log_info "Generating client certificate..."
-openssl genrsa -out client-key.pem 4096
-openssl req -subj '/CN=client' -new -key client-key.pem -out client.csr
+openssl genrsa -out key.pem 4096
+openssl req -subj '/CN=client' -new -key key.pem -out client.csr
 
 cat > extfile-client.cnf << 'EOF'
 extendedKeyUsage = clientAuth
@@ -206,12 +207,12 @@ openssl x509 -req -days 3650 -sha256 \
     -CA ca.pem \
     -CAkey ca-key.pem \
     -CAcreateserial \
-    -out client-cert.pem \
+    -out cert.pem \
     -extfile extfile-client.cnf
 
 # Set permissions
-chmod 0400 ca-key.pem server-key.pem client-key.pem
-chmod 0444 ca.pem server-cert.pem client-cert.pem
+chmod 0400 ca-key.pem server-key.pem key.pem
+chmod 0444 ca.pem server-cert.pem cert.pem
 
 # Cleanup CSR files
 rm -f server.csr client.csr extfile.cnf extfile-client.cnf
@@ -726,8 +727,8 @@ echo "Location: ${DOCKER_TLS_CERT_PATH}"
 echo ""
 echo "Files to copy to platform server:"
 echo "  - ca.pem (CA certificate)"
-echo "  - client-cert.pem (client certificate)"
-echo "  - client-key.pem (client key)"
+echo "  - cert.pem (client certificate)"
+echo "  - key.pem (client key)"
 echo ""
 echo -e "${CYAN}To register this server with the platform:${NC}"
 echo ""
@@ -743,24 +744,21 @@ fi
 echo ""
 echo "1. Copy client certificates to platform server (run from your laptop):"
 echo "   ssh ${SERVER_NAME}.podex.dev \"cat ${DOCKER_TLS_CERT_PATH}/ca.pem\" | ssh podex-platform \"mkdir -p /etc/docker/workspace-certs/${SERVER_NAME} && cat > /etc/docker/workspace-certs/${SERVER_NAME}/ca.pem\" && \\"
-echo "   ssh ${SERVER_NAME}.podex.dev \"cat ${DOCKER_TLS_CERT_PATH}/client-cert.pem\" | ssh podex-platform \"cat > /etc/docker/workspace-certs/${SERVER_NAME}/client-cert.pem\" && \\"
-echo "   ssh ${SERVER_NAME}.podex.dev \"cat ${DOCKER_TLS_CERT_PATH}/client-key.pem\" | ssh podex-platform \"cat > /etc/docker/workspace-certs/${SERVER_NAME}/client-key.pem\""
+echo "   ssh ${SERVER_NAME}.podex.dev \"cat ${DOCKER_TLS_CERT_PATH}/cert.pem\" | ssh podex-platform \"cat > /etc/docker/workspace-certs/${SERVER_NAME}/cert.pem\" && \\"
+echo "   ssh ${SERVER_NAME}.podex.dev \"cat ${DOCKER_TLS_CERT_PATH}/key.pem\" | ssh podex-platform \"cat > /etc/docker/workspace-certs/${SERVER_NAME}/key.pem\""
 echo ""
-echo "2. In your Podex admin panel or compute service config, add:"
-echo "   {"
-echo "     \"server_id\": \"${SERVER_NAME}\","
-echo "     \"host\": \"${DOCKER_HOST_IP}\","
-echo "     \"port\": 2376,"
-echo "     \"tls_ca\": \"/etc/docker/workspace-certs/${SERVER_NAME}/ca.pem\","
-echo "     \"tls_cert\": \"/etc/docker/workspace-certs/${SERVER_NAME}/client-cert.pem\","
-echo "     \"tls_key\": \"/etc/docker/workspace-certs/${SERVER_NAME}/client-key.pem\""
-echo "   }"
+echo "2. In your Podex admin panel, add server with TLS enabled and paths:"
+echo "   - IP Address: ${DOCKER_HOST_IP}"
+echo "   - Docker Port: 2376"
+echo "   - TLS Cert Path: /etc/docker/workspace-certs/${SERVER_NAME}/cert.pem"
+echo "   - TLS Key Path: /etc/docker/workspace-certs/${SERVER_NAME}/key.pem"
+echo "   - TLS CA Path: /etc/docker/workspace-certs/${SERVER_NAME}/ca.pem"
 echo ""
 echo "3. Test Docker connection from platform:"
 echo "   docker --tlsverify \\
      --tlscacert=/etc/docker/workspace-certs/${SERVER_NAME}/ca.pem \\
-     --tlscert=/etc/docker/workspace-certs/${SERVER_NAME}/client-cert.pem \\
-     --tlskey=/etc/docker/workspace-certs/${SERVER_NAME}/client-key.pem \\
+     --tlscert=/etc/docker/workspace-certs/${SERVER_NAME}/cert.pem \\
+     --tlskey=/etc/docker/workspace-certs/${SERVER_NAME}/key.pem \\
      -H=tcp://${DOCKER_HOST_IP}:2376 info"
 echo ""
 echo -e "${CYAN}Quick Commands:${NC}"
