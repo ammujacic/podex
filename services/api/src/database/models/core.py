@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from .agent_config import AgentTemplate
     from .conversation import ConversationSession
     from .extensions import UserExtension, WorkspaceExtension
-    from .infrastructure import GitHubIntegration, LocalPod
+    from .infrastructure import GitHubIntegration, GoogleIntegration, LocalPod
     from .organization import OrganizationMember
 
 
@@ -102,6 +102,13 @@ class User(Base):
     # GitHub integration (one-to-one)
     github_integration: Mapped["GitHubIntegration | None"] = relationship(
         "GitHubIntegration",
+        back_populates="owner",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    # Google integration (one-to-one)
+    google_integration: Mapped["GoogleIntegration | None"] = relationship(
+        "GoogleIntegration",
         back_populates="owner",
         uselist=False,
         cascade="all, delete-orphan",

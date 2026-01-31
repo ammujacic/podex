@@ -1,0 +1,106 @@
+name: Publish podex-pod CLI to PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 0.1.0)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run (build only, no publish)'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  build-and-publish:
+    name: Build and publish to PyPI
+    runs-on: ubuntu-latest
+
+    # Required for OIDC trusted publishing
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      PACKAGE_VERSION: ${{ inputs.version }}
+      DRY_RUN: ${{ inputs.dry_run }}
+
+    steps:
+      - name: Validate version format
+        run: |
+          if ! echo "$PACKAGE_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+            echo "Error: Invalid version format. Expected semver like 0.1.0 or 0.1.0-beta.1"
+            exit 1
+          fi
+          echo "Version format valid: $PACKAGE_VERSION"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Update version in pyproject.toml
+        working-directory: services/local-pod
+        run: |
+          echo "Setting version to: $PACKAGE_VERSION"
+          sed -i "s/^version = .*/version = \"$PACKAGE_VERSION\"/" pyproject.toml
+          grep "^version" pyproject.toml
+
+      - name: Update version in __init__.py
+        working-directory: services/local-pod
+        run: |
+          echo "__version__ = \"$PACKAGE_VERSION\"" > src/podex_local_pod/__init__.py
+          cat src/podex_local_pod/__init__.py
+
+      - name: Build package
+        working-directory: services/local-pod
+        run: |
+          python -m build
+          echo "Built packages:"
+          ls -la dist/
+
+      - name: Check package with twine
+        working-directory: services/local-pod
+        run: |
+          twine check dist/*
+
+      - name: Publish to PyPI
+        if: ${{ !inputs.dry_run }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: services/local-pod/dist/
+          # Uses OIDC trusted publishing - no API token needed!
+          # Configure at: https://pypi.org/manage/project/podex-pod/settings/publishing/
+
+      - name: Build summary
+        run: |
+          echo "## podex-pod CLI Package" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Package | \`podex-pod\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | \`$PACKAGE_VERSION\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dry run | $DRY_RUN |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "> **Note:** This was a dry run. Package was built but not published." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### Installation" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+            echo "pip install podex-pod==$PACKAGE_VERSION" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi

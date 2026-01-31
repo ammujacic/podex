@@ -7,9 +7,7 @@ import Image from 'next/image';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plus,
-  Clock,
   GitBranch,
-  MoreVertical,
   Play,
   Trash2,
   Loader2,
@@ -27,7 +25,6 @@ import {
   Coins,
   Bot,
   Pin,
-  PinOff,
   Bell,
   Keyboard,
   FileCode,
@@ -62,6 +59,8 @@ import {
   getUsageHistory,
   getWorkspaceStatus,
   startWorkspace,
+  stopWorkspace,
+  updateSession,
   logout,
   type Session,
   type PodTemplate,
@@ -71,6 +70,7 @@ import {
   type UsageDataPoint,
   type PodUsageSeries,
 } from '@/lib/api';
+import { PodCard } from '@/components/pods';
 import { useUser, useAuthStore } from '@/stores/auth';
 import { useConfigStore } from '@/stores/config';
 import { DashboardSkeleton } from '@/components/ui/Skeleton';
@@ -243,13 +243,13 @@ export default function DashboardPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [searchQuery, setSearchQuery] = useState('');
-  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [searchFocused, setSearchFocused] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [pinningSession, setPinningSession] = useState<string | null>(null);
   const [startingSession, setStartingSession] = useState<string | null>(null);
+  const [stoppingSession, setStoppingSession] = useState<string | null>(null);
   const [selectedPeriod, setSelectedPeriod] = useState('30d');
   const [loadingUsage, setLoadingUsage] = useState(false);
   const [visiblePods, setVisiblePods] = useState<Set<string>>(new Set());
@@ -584,7 +584,6 @@ export default function DashboardPage() {
       // Handle error
     } finally {
       setDeleting(null);
-      setOpenMenuId(null);
     }
   };
 
@@ -609,7 +608,29 @@ export default function DashboardPage() {
       console.error('Failed to start session:', error);
     } finally {
       setStartingSession(null);
-      setOpenMenuId(null);
+    }
+  };
+
+  const handleStopSession = async (sessionId: string, workspaceId: string) => {
+    setStoppingSession(sessionId);
+    try {
+      await stopWorkspace(workspaceId);
+      setSessions((prev) =>
+        prev.map((s) => (s.id === sessionId ? { ...s, status: 'stopped' } : s))
+      );
+    } catch (error) {
+      console.error('Failed to stop session:', error);
+    } finally {
+      setStoppingSession(null);
+    }
+  };
+
+  const handleRenameSession = async (sessionId: string, newName: string) => {
+    try {
+      await updateSession(sessionId, { name: newName });
+      setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, name: newName } : s)));
+    } catch (error) {
+      console.error('Failed to rename session:', error);
     }
   };
 
@@ -1008,109 +1029,37 @@ export default function DashboardPage() {
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
               {pinnedSessions.map((session, index) => {
                 const template = getTemplateForSession(session);
-                const status = getStatus(
-                  getDisplayStatusForSession(session, workspaceStatusByWorkspaceId)
-                );
+                const displayStatus = getDisplayStatusForSession(
+                  session,
+                  workspaceStatusByWorkspaceId
+                ) as 'running' | 'stopped' | 'pending' | 'error' | 'offline';
                 return (
                   <motion.div
                     key={session.id}
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: index * 0.05 }}
-                    className="relative group"
                   >
-                    <div
-                      onClick={() => router.push(`/session/${session.id}`)}
-                      className="bg-surface border border-accent-primary/30 rounded-xl p-4 hover:border-accent-primary hover:bg-elevated transition-all cursor-pointer min-h-[160px] flex flex-col relative"
-                    >
-                      <div className="flex items-start justify-between mb-2">
-                        <div className="w-10 h-10 rounded-lg bg-overlay flex items-center justify-center">
-                          <TemplateIcon
-                            icon={template?.icon || null}
-                            iconUrl={template?.icon_url}
-                          />
-                        </div>
-                        <div
-                          className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs ${status.color} ${status.bg}`}
-                        >
-                          {status.icon}
-                          {status.label}
-                        </div>
-                      </div>
-                      <h3 className="font-medium text-text-primary mb-2 line-clamp-2 group-hover:text-accent-primary transition-colors min-h-[2.5rem]">
-                        {session.name}
-                      </h3>
-                      <div className="mt-auto space-y-1">
-                        <div className="flex items-center gap-2 text-xs text-text-muted">
-                          <Clock className="w-3 h-3" />
-                          {formatDate(session.updated_at)}
-                        </div>
-                        {(() => {
-                          const gitInfo = getGitHubInfo(session.git_url, session.branch);
-                          return gitInfo ? (
-                            <div className="flex items-center gap-2 text-xs text-text-muted flex-wrap">
-                              <a
-                                href={gitInfo.repoUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                onClick={(e) => e.stopPropagation()}
-                                className="flex items-center gap-1 hover:text-accent-primary transition-colors"
-                              >
-                                <FolderGit2 className="w-3 h-3" />
-                                <span className="truncate max-w-[120px]">{gitInfo.repoName}</span>
-                                <ExternalLink className="w-2.5 h-2.5" />
-                              </a>
-                              <span className="text-text-muted/50">·</span>
-                              <a
-                                href={gitInfo.branchUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                onClick={(e) => e.stopPropagation()}
-                                className="flex items-center gap-1 hover:text-accent-primary transition-colors"
-                              >
-                                <GitBranch className="w-3 h-3" />
-                                <span className="truncate">{gitInfo.branch}</span>
-                                <ExternalLink className="w-2.5 h-2.5" />
-                              </a>
-                            </div>
-                          ) : null;
-                        })()}
-                        {/* Local pod info */}
-                        {session.local_pod_id && (
-                          <div className="flex items-center gap-2 text-xs text-text-muted">
-                            <Server className="w-3 h-3 text-accent-secondary" />
-                            <span className="truncate">
-                              {session.local_pod_name || 'Local Pod'}
-                            </span>
-                            {session.mount_path && (
-                              <>
-                                <span className="text-text-muted/50">·</span>
-                                <span
-                                  className="font-mono truncate max-w-[100px]"
-                                  title={session.mount_path}
-                                >
-                                  {session.mount_path.split('/').pop()}
-                                </span>
-                              </>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    <button
-                      onClick={(e) => {
-                        e.preventDefault();
-                        handlePinSession(session.id, true);
-                      }}
-                      disabled={pinningSession === session.id}
-                      className="absolute top-2 right-2 p-1.5 rounded bg-surface/80 text-accent-primary opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      {pinningSession === session.id ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <PinOff className="w-4 h-4" />
-                      )}
-                    </button>
+                    <PodCard
+                      session={session}
+                      template={template || null}
+                      displayStatus={displayStatus}
+                      isPinned={true}
+                      variant="pinned"
+                      onStart={() =>
+                        session.workspace_id && handleStartSession(session.id, session.workspace_id)
+                      }
+                      onStop={() =>
+                        session.workspace_id && handleStopSession(session.id, session.workspace_id)
+                      }
+                      onRename={(newName) => handleRenameSession(session.id, newName)}
+                      onTogglePin={() => handlePinSession(session.id, true)}
+                      onDelete={() => handleDeleteSession(session)}
+                      isStarting={startingSession === session.id}
+                      isStopping={stoppingSession === session.id}
+                      isPinning={pinningSession === session.id}
+                      isDeleting={deleting === session.id}
+                    />
                   </motion.div>
                 );
               })}
@@ -1157,9 +1106,10 @@ export default function DashboardPage() {
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                 {recentSessions.map((session, index) => {
                   const template = getTemplateForSession(session);
-                  const status = getStatus(
-                    getDisplayStatusForSession(session, workspaceStatusByWorkspaceId)
-                  );
+                  const displayStatus = getDisplayStatusForSession(
+                    session,
+                    workspaceStatusByWorkspaceId
+                  ) as 'running' | 'stopped' | 'pending' | 'error' | 'offline';
 
                   return (
                     <motion.div
@@ -1168,84 +1118,27 @@ export default function DashboardPage() {
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: index * 0.05 }}
                     >
-                      <div
-                        onClick={() => router.push(`/session/${session.id}`)}
-                        className="bg-surface border border-border-default rounded-xl p-4 hover:border-accent-primary/50 hover:bg-elevated transition-all cursor-pointer group min-h-[160px] flex flex-col relative"
-                      >
-                        <div className="flex items-start justify-between mb-2">
-                          <div className="w-10 h-10 rounded-lg bg-overlay flex items-center justify-center">
-                            <TemplateIcon
-                              icon={template?.icon || null}
-                              iconUrl={template?.icon_url}
-                            />
-                          </div>
-                          <div
-                            className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs ${status.color} ${status.bg}`}
-                          >
-                            {status.icon}
-                            {status.label}
-                          </div>
-                        </div>
-                        <h3 className="font-medium text-text-primary mb-2 line-clamp-2 group-hover:text-accent-primary transition-colors min-h-[2.5rem]">
-                          {session.name}
-                        </h3>
-                        <div className="mt-auto space-y-1">
-                          <div className="flex items-center gap-2 text-xs text-text-muted">
-                            <Clock className="w-3 h-3" />
-                            {formatDate(session.updated_at)}
-                          </div>
-                          {(() => {
-                            const gitInfo = getGitHubInfo(session.git_url, session.branch);
-                            return gitInfo ? (
-                              <div className="flex items-center gap-2 text-xs text-text-muted flex-wrap">
-                                <a
-                                  href={gitInfo.repoUrl}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  onClick={(e) => e.stopPropagation()}
-                                  className="flex items-center gap-1 hover:text-accent-primary transition-colors"
-                                >
-                                  <FolderGit2 className="w-3 h-3" />
-                                  <span className="truncate max-w-[120px]">{gitInfo.repoName}</span>
-                                  <ExternalLink className="w-2.5 h-2.5" />
-                                </a>
-                                <span className="text-text-muted/50">·</span>
-                                <a
-                                  href={gitInfo.branchUrl}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  onClick={(e) => e.stopPropagation()}
-                                  className="flex items-center gap-1 hover:text-accent-primary transition-colors"
-                                >
-                                  <GitBranch className="w-3 h-3" />
-                                  <span className="truncate">{gitInfo.branch}</span>
-                                  <ExternalLink className="w-2.5 h-2.5" />
-                                </a>
-                              </div>
-                            ) : null;
-                          })()}
-                          {/* Local pod info */}
-                          {session.local_pod_id && (
-                            <div className="flex items-center gap-2 text-xs text-text-muted">
-                              <Server className="w-3 h-3 text-accent-secondary" />
-                              <span className="truncate">
-                                {session.local_pod_name || 'Local Pod'}
-                              </span>
-                              {session.mount_path && (
-                                <>
-                                  <span className="text-text-muted/50">·</span>
-                                  <span
-                                    className="font-mono truncate max-w-[100px]"
-                                    title={session.mount_path}
-                                  >
-                                    {session.mount_path.split('/').pop()}
-                                  </span>
-                                </>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </div>
+                      <PodCard
+                        session={session}
+                        template={template || null}
+                        displayStatus={displayStatus}
+                        isPinned={!!session.pinned}
+                        onStart={() =>
+                          session.workspace_id &&
+                          handleStartSession(session.id, session.workspace_id)
+                        }
+                        onStop={() =>
+                          session.workspace_id &&
+                          handleStopSession(session.id, session.workspace_id)
+                        }
+                        onRename={(newName) => handleRenameSession(session.id, newName)}
+                        onTogglePin={() => handlePinSession(session.id, !!session.pinned)}
+                        onDelete={() => handleDeleteSession(session)}
+                        isStarting={startingSession === session.id}
+                        isStopping={stoppingSession === session.id}
+                        isPinning={pinningSession === session.id}
+                        isDeleting={deleting === session.id}
+                      />
                     </motion.div>
                   );
                 })}
@@ -1257,7 +1150,7 @@ export default function DashboardPage() {
                   transition={{ delay: recentSessions.length * 0.05 }}
                 >
                   <Link href="/session/new">
-                    <div className="bg-surface border-2 border-dashed border-border-default rounded-xl p-4 hover:border-accent-primary hover:bg-elevated transition-all cursor-pointer min-h-[165px] flex flex-col items-center justify-center gap-2">
+                    <div className="bg-surface border-2 border-dashed border-border-default rounded-xl p-4 hover:border-accent-primary hover:bg-elevated transition-all cursor-pointer min-h-[160px] flex flex-col items-center justify-center gap-2">
                       <div className="w-10 h-10 rounded-lg bg-accent-primary/10 flex items-center justify-center">
                         <Plus className="w-5 h-5 text-accent-primary" />
                       </div>
@@ -1300,9 +1193,10 @@ export default function DashboardPage() {
                   <AnimatePresence>
                     {allSessions.map((session, index) => {
                       const template = getTemplateForSession(session);
-                      const status = getStatus(
-                        getDisplayStatusForSession(session, workspaceStatusByWorkspaceId)
-                      );
+                      const displayStatus = getDisplayStatusForSession(
+                        session,
+                        workspaceStatusByWorkspaceId
+                      ) as 'running' | 'stopped' | 'pending' | 'error' | 'offline';
 
                       return (
                         <motion.div
@@ -1311,164 +1205,28 @@ export default function DashboardPage() {
                           animate={{ opacity: 1, scale: 1 }}
                           exit={{ opacity: 0, scale: 0.95 }}
                           transition={{ delay: index * 0.02 }}
-                          className="bg-surface border border-border-default rounded-xl p-4 hover:border-border-hover transition-all group relative"
                         >
-                          {/* Menu Button */}
-                          <div className="absolute top-3 right-3">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setOpenMenuId(openMenuId === session.id ? null : session.id);
-                              }}
-                              className="p-1.5 rounded hover:bg-overlay text-text-muted hover:text-text-secondary opacity-0 group-hover:opacity-100 transition-opacity"
-                            >
-                              <MoreVertical className="w-4 h-4" />
-                            </button>
-                            {openMenuId === session.id && (
-                              <div className="absolute right-0 mt-1 w-40 bg-elevated border border-border-default rounded-lg shadow-lg py-1 z-10">
-                                <Link
-                                  href={`/session/${session.id}`}
-                                  className="flex items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-overlay"
-                                >
-                                  <Play className="w-4 h-4" />
-                                  Open
-                                </Link>
-                                {session.status === 'stopped' && session.workspace_id && (
-                                  <button
-                                    onClick={() =>
-                                      handleStartSession(session.id, session.workspace_id!)
-                                    }
-                                    disabled={startingSession === session.id}
-                                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-overlay"
-                                  >
-                                    {startingSession === session.id ? (
-                                      <Loader2 className="w-4 h-4 animate-spin" />
-                                    ) : (
-                                      <Play className="w-4 h-4" />
-                                    )}
-                                    Start
-                                  </button>
-                                )}
-                                <button
-                                  onClick={() => {
-                                    handlePinSession(session.id, !!session.pinned);
-                                    setOpenMenuId(null);
-                                  }}
-                                  disabled={pinningSession === session.id}
-                                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-overlay"
-                                >
-                                  {pinningSession === session.id ? (
-                                    <Loader2 className="w-4 h-4 animate-spin" />
-                                  ) : session.pinned ? (
-                                    <PinOff className="w-4 h-4" />
-                                  ) : (
-                                    <Pin className="w-4 h-4" />
-                                  )}
-                                  {session.pinned ? 'Unpin' : 'Pin'}
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteSession(session)}
-                                  disabled={deleting === session.id}
-                                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-accent-error hover:bg-overlay"
-                                >
-                                  {deleting === session.id ? (
-                                    <Loader2 className="w-4 h-4 animate-spin" />
-                                  ) : (
-                                    <Trash2 className="w-4 h-4" />
-                                  )}
-                                  Delete
-                                </button>
-                              </div>
-                            )}
-                          </div>
-
-                          <div
-                            onClick={() => router.push(`/session/${session.id}`)}
-                            className="cursor-pointer"
-                          >
-                            <div className="flex items-start gap-3 mb-3">
-                              <div className="w-10 h-10 rounded-lg bg-overlay flex items-center justify-center flex-shrink-0">
-                                <TemplateIcon
-                                  icon={template?.icon || null}
-                                  iconUrl={template?.icon_url}
-                                />
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <h3 className="font-medium text-text-primary line-clamp-2 group-hover:text-accent-primary transition-colors">
-                                  {session.name}
-                                </h3>
-                                <p className="text-xs text-text-muted">
-                                  {template?.name || 'Custom template'}
-                                </p>
-                              </div>
-                            </div>
-                            <div className="space-y-2">
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-2 text-xs text-text-muted">
-                                  <Clock className="w-3 h-3" />
-                                  {formatDate(session.updated_at)}
-                                </div>
-                                <div
-                                  className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs ${status.color} ${status.bg}`}
-                                >
-                                  {status.icon}
-                                  {status.label}
-                                </div>
-                              </div>
-                              {(() => {
-                                const gitInfo = getGitHubInfo(session.git_url, session.branch);
-                                return gitInfo ? (
-                                  <div className="flex items-center gap-2 text-xs text-text-muted flex-wrap">
-                                    <a
-                                      href={gitInfo.repoUrl}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="flex items-center gap-1 hover:text-accent-primary transition-colors"
-                                    >
-                                      <FolderGit2 className="w-3 h-3" />
-                                      <span className="truncate max-w-[100px]">
-                                        {gitInfo.repoName}
-                                      </span>
-                                      <ExternalLink className="w-2.5 h-2.5" />
-                                    </a>
-                                    <span className="text-text-muted/50">·</span>
-                                    <a
-                                      href={gitInfo.branchUrl}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="flex items-center gap-1 hover:text-accent-primary transition-colors"
-                                    >
-                                      <GitBranch className="w-3 h-3" />
-                                      <span className="truncate">{gitInfo.branch}</span>
-                                      <ExternalLink className="w-2.5 h-2.5" />
-                                    </a>
-                                  </div>
-                                ) : null;
-                              })()}
-                              {/* Local pod info */}
-                              {session.local_pod_id && (
-                                <div className="flex items-center gap-2 text-xs text-text-muted">
-                                  <Server className="w-3 h-3 text-accent-secondary" />
-                                  <span className="truncate">
-                                    {session.local_pod_name || 'Local Pod'}
-                                  </span>
-                                  {session.mount_path && (
-                                    <>
-                                      <span className="text-text-muted/50">·</span>
-                                      <span
-                                        className="font-mono truncate max-w-[100px]"
-                                        title={session.mount_path}
-                                      >
-                                        {session.mount_path.split('/').pop()}
-                                      </span>
-                                    </>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          </div>
+                          <PodCard
+                            session={session}
+                            template={template || null}
+                            displayStatus={displayStatus}
+                            isPinned={!!session.pinned}
+                            onStart={() =>
+                              session.workspace_id &&
+                              handleStartSession(session.id, session.workspace_id)
+                            }
+                            onStop={() =>
+                              session.workspace_id &&
+                              handleStopSession(session.id, session.workspace_id)
+                            }
+                            onRename={(newName) => handleRenameSession(session.id, newName)}
+                            onTogglePin={() => handlePinSession(session.id, !!session.pinned)}
+                            onDelete={() => handleDeleteSession(session)}
+                            isStarting={startingSession === session.id}
+                            isStopping={stoppingSession === session.id}
+                            isPinning={pinningSession === session.id}
+                            isDeleting={deleting === session.id}
+                          />
                         </motion.div>
                       );
                     })}

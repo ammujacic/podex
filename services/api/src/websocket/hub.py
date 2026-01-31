@@ -1873,6 +1873,50 @@ async def agent_attention_dismiss(_sid: str, data: dict[str, Any]) -> None:
     logger.debug("Agent attention dismissed", attention_id=attention_id)
 
 
+# ============== User Notification Events ==============
+
+
+async def emit_notification_to_user(
+    user_id: str,
+    notification_id: str,
+    title: str,
+    message: str,
+    notification_type: str,
+    action_url: str | None,
+) -> None:
+    """Emit a notification to a specific user's devices.
+
+    This emits to the user:{user_id} room, which clients join via extension_subscribe.
+
+    Args:
+        user_id: The target user ID.
+        notification_id: The notification ID from the database.
+        title: Notification title.
+        message: Notification body.
+        notification_type: Type of notification (info, warning, error, success).
+        action_url: Optional URL for the notification action.
+    """
+    await sio.emit(
+        "notification",
+        {
+            "id": notification_id,
+            "title": title,
+            "message": message,
+            "type": notification_type,
+            "action_url": action_url,
+            "timestamp": datetime.now(UTC).isoformat(),
+        },
+        room=f"user:{user_id}",
+    )
+
+    logger.debug(
+        "User notification emitted",
+        user_id=user_id,
+        notification_id=notification_id,
+        notification_type=notification_type,
+    )
+
+
 # ============== Extension Sync Events ==============
 
 

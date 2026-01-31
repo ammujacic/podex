@@ -1,14 +1,15 @@
 """Provider registry for managing LLM providers."""
 
-import logging
 from collections.abc import AsyncGenerator
 from typing import Any, cast
+
+import structlog
 
 from .base import BaseProvider, ChatMessage, ChatResponse, ModelInfo
 from .lmstudio import LMStudioProvider
 from .ollama import OllamaProvider
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class ProviderRegistry:

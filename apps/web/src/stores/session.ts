@@ -12,6 +12,7 @@ import {
   type GridSpan,
   type Session,
   type StreamingMessage,
+  type TerminalWindow,
   type ToolCall,
   deriveSessionName,
   getLanguageFromPath,
@@ -33,13 +34,22 @@ export type {
   GridSpan,
   Session,
   StreamingMessage,
+  TerminalWindow,
+  TerminalWindowStatus,
   ToolCall,
   ViewMode,
+  WindowType,
   WorkspaceStatus,
 } from './sessionTypes';
 
 // Re-export helpers
-export { deriveSessionName, formatRelativeTime, getAgentDisplayTitle } from './sessionTypes';
+export {
+  deriveSessionName,
+  formatRelativeTime,
+  getAgentDisplayTitle,
+  getWindowById,
+  getWindowType,
+} from './sessionTypes';
 
 // ============================================================================
 // Session State Interface
@@ -69,6 +79,25 @@ interface SessionState {
   ) => void;
   updateAgentGridSpan: (sessionId: string, agentId: string, gridSpan: GridSpan) => void;
   bringAgentToFront: (sessionId: string, agentId: string) => void;
+
+  // Terminal window actions
+  addTerminalWindow: (sessionId: string, name?: string) => string;
+  removeTerminalWindow: (sessionId: string, terminalId: string) => void;
+  updateTerminalWindow: (
+    sessionId: string,
+    terminalId: string,
+    updates: Partial<TerminalWindow>
+  ) => void;
+  updateTerminalWindowGridSpan: (sessionId: string, terminalId: string, gridSpan: GridSpan) => void;
+  updateTerminalWindowPosition: (
+    sessionId: string,
+    terminalId: string,
+    position: Partial<AgentPosition>
+  ) => void;
+  bringTerminalWindowToFront: (sessionId: string, terminalId: string) => void;
+
+  // Unified window focus (replaces setActiveAgent for new code)
+  setActiveWindow: (sessionId: string, windowId: string | null) => void;
 
   // Conversation session actions
   createConversationSession: (
@@ -134,12 +163,6 @@ interface SessionState {
   removeEditorGridCard: (sessionId: string) => void;
   updateEditorGridSpan: (sessionId: string, gridSpan: GridSpan) => void;
   updateEditorFreeformPosition: (sessionId: string, position: Partial<AgentPosition>) => void;
-
-  // Preview grid card actions (live preview in grid)
-  createPreviewGridCard: (sessionId: string) => string;
-  removePreviewGridCard: (sessionId: string) => void;
-  updatePreviewGridSpan: (sessionId: string, gridSpan: GridSpan) => void;
-  updatePreviewFreeformPosition: (sessionId: string, position: Partial<AgentPosition>) => void;
 
   // Recent files
   addRecentFile: (path: string) => void;
@@ -306,6 +329,7 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
             ...session,
             agents: session.agents.filter((a) => a.id !== agentId),
             activeAgentId: session.activeAgentId === agentId ? null : session.activeAgentId,
+            activeWindowId: session.activeWindowId === agentId ? null : session.activeWindowId,
             conversationSessions: updatedConversations,
           },
         },
@@ -334,7 +358,12 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
       return {
         sessions: {
           ...state.sessions,
-          [sessionId]: { ...session, activeAgentId: agentId },
+          [sessionId]: {
+            ...session,
+            activeAgentId: agentId,
+            // Keep activeWindowId in sync with activeAgentId
+            activeWindowId: agentId,
+          },
         },
       };
     }),
@@ -945,6 +974,163 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
     }),
 
   // ========================================================================
+  // Terminal Window Actions
+  // ========================================================================
+
+  addTerminalWindow: (sessionId, name) => {
+    const id = `terminal-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const now = new Date().toISOString();
+
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+
+      // Generate default name based on existing terminal count
+      const terminalCount = session.terminalWindows?.length ?? 0;
+      const terminalName = name || `Terminal ${terminalCount + 1}`;
+
+      const terminalWindow: TerminalWindow = {
+        id,
+        name: terminalName,
+        shell: 'bash', // Default shell, will be updated when connected
+        status: 'disconnected',
+        createdAt: now,
+      };
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            terminalWindows: [...(session.terminalWindows ?? []), terminalWindow],
+          },
+        },
+      };
+    });
+
+    return id;
+  },
+
+  removeTerminalWindow: (sessionId, terminalId) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+
+      // Clear activeWindowId if it was pointing to this terminal
+      const newActiveWindowId =
+        session.activeWindowId === terminalId ? null : session.activeWindowId;
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            terminalWindows: (session.terminalWindows ?? []).filter((t) => t.id !== terminalId),
+            activeWindowId: newActiveWindowId,
+          },
+        },
+      };
+    }),
+
+  updateTerminalWindow: (sessionId, terminalId, updates) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            terminalWindows: (session.terminalWindows ?? []).map((t) =>
+              t.id === terminalId ? { ...t, ...updates } : t
+            ),
+          },
+        },
+      };
+    }),
+
+  updateTerminalWindowGridSpan: (sessionId, terminalId, gridSpan) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            terminalWindows: (session.terminalWindows ?? []).map((t) =>
+              t.id === terminalId ? { ...t, gridSpan } : t
+            ),
+          },
+        },
+      };
+    }),
+
+  updateTerminalWindowPosition: (sessionId, terminalId, position) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            terminalWindows: (session.terminalWindows ?? []).map((t) =>
+              t.id === terminalId
+                ? { ...t, position: { ...t.position, ...position } as AgentPosition }
+                : t
+            ),
+          },
+        },
+      };
+    }),
+
+  bringTerminalWindowToFront: (sessionId, terminalId) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+
+      // Get max zIndex across both agents and terminals for unified stacking
+      const agentMaxZ = Math.max(...session.agents.map((a) => a.position?.zIndex ?? 0), 0);
+      const terminalMaxZ = Math.max(
+        ...(session.terminalWindows ?? []).map((t) => t.position?.zIndex ?? 0),
+        0
+      );
+      const maxZ = Math.max(agentMaxZ, terminalMaxZ);
+
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            terminalWindows: (session.terminalWindows ?? []).map((t) =>
+              t.id === terminalId
+                ? { ...t, position: { ...t.position, zIndex: maxZ + 1 } as AgentPosition }
+                : t
+            ),
+          },
+        },
+      };
+    }),
+
+  setActiveWindow: (sessionId, windowId) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return state;
+      return {
+        sessions: {
+          ...state.sessions,
+          [sessionId]: {
+            ...session,
+            activeWindowId: windowId,
+            // Keep activeAgentId in sync for backwards compatibility
+            activeAgentId: session.agents.some((a) => a.id === windowId) ? windowId : null,
+          },
+        },
+      };
+    }),
+
+  // ========================================================================
   // File Preview Actions
   // ========================================================================
 
@@ -1162,82 +1348,6 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
           [sessionId]: {
             ...session,
             editorFreeformPosition: { ...currentPosition, ...position },
-          },
-        },
-      };
-    }),
-
-  // ========================================================================
-  // Preview Grid Card Actions
-  // ========================================================================
-
-  createPreviewGridCard: (sessionId) => {
-    const id = `preview-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-    set((state) => {
-      const session = state.sessions[sessionId];
-      if (!session) return state;
-      return {
-        sessions: {
-          ...state.sessions,
-          [sessionId]: {
-            ...session,
-            previewGridCardId: id,
-            previewGridSpan: { colSpan: 2, rowSpan: 2 },
-          },
-        },
-      };
-    });
-    return id;
-  },
-
-  removePreviewGridCard: (sessionId) =>
-    set((state) => {
-      const session = state.sessions[sessionId];
-      if (!session) return state;
-      return {
-        sessions: {
-          ...state.sessions,
-          [sessionId]: {
-            ...session,
-            previewGridCardId: null,
-            previewGridSpan: undefined,
-          },
-        },
-      };
-    }),
-
-  updatePreviewGridSpan: (sessionId, gridSpan) =>
-    set((state) => {
-      const session = state.sessions[sessionId];
-      if (!session) return state;
-      return {
-        sessions: {
-          ...state.sessions,
-          [sessionId]: {
-            ...session,
-            previewGridSpan: gridSpan,
-          },
-        },
-      };
-    }),
-
-  updatePreviewFreeformPosition: (sessionId, position) =>
-    set((state) => {
-      const session = state.sessions[sessionId];
-      if (!session) return state;
-      const currentPosition = session.previewFreeformPosition ?? {
-        x: 150,
-        y: 150,
-        width: 500,
-        height: 400,
-        zIndex: 1,
-      };
-      return {
-        sessions: {
-          ...state.sessions,
-          [sessionId]: {
-            ...session,
-            previewFreeformPosition: { ...currentPosition, ...position },
           },
         },
       };
@@ -1522,6 +1632,8 @@ const persistedSessionStore = persist(sessionStoreCreator, {
           // Agents no longer have messages - they reference conversation sessions
           // Backend data (id, name, role, model, status, conversationSessionId) always wins
           agents: session.agents,
+          // Terminal windows persist their layout state
+          terminalWindows: session.terminalWindows ?? [],
           // Limit messages per conversation for persistence (for offline/quick load)
           // But backend fetch always replaces this with fresh data
           conversationSessions: (session.conversationSessions ?? []).map((conv) => ({

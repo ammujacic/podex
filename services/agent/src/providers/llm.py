@@ -1,6 +1,7 @@
 """Unified LLM provider interface supporting multiple providers."""
 
 import json
+import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -10,6 +11,7 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from podex_shared import TokenUsageParams, get_usage_tracker
+from podex_shared.sentry import LLMUsageMetrics, track_llm_usage
 from src.config import settings
 
 logger = structlog.get_logger()
@@ -332,6 +334,9 @@ class LLMProvider:
             request.model, request.llm_api_keys, request.model_provider
         )
 
+        # Track latency for metrics
+        llm_start_time = time.perf_counter()
+
         if resolved_provider == "anthropic":
             result = await self._complete_anthropic(
                 model=request.model,
@@ -369,6 +374,9 @@ class LLMProvider:
         else:
             raise ValueError(f"Unknown provider: {resolved_provider}")
 
+        # Calculate latency
+        llm_latency_ms = (time.perf_counter() - llm_start_time) * 1000
+
         # Track usage if user context is provided
         if request.user_id and result.get("usage"):
             # Determine usage source for billing
@@ -384,7 +392,7 @@ class LLMProvider:
                 agent_id=request.agent_id,
                 usage_source=usage_source,
             )
-            await self._track_usage(tracking_context)
+            await self._track_usage(tracking_context, latency_ms=llm_latency_ms)
 
         return result
 
@@ -458,12 +466,34 @@ class LLMProvider:
             logger.exception("Streaming error", provider=resolved_provider)
             yield StreamEvent(type="error", error=str(e))
 
-    async def _track_usage(self, context: UsageTrackingContext) -> None:
-        """Track token usage for billing.
+    async def _track_usage(
+        self, context: UsageTrackingContext, latency_ms: float = 0, cost_cents: float = 0
+    ) -> None:
+        """Track token usage for billing and metrics.
 
         Args:
             context: UsageTrackingContext containing user, model, and usage data.
+            latency_ms: Latency of the LLM call in milliseconds.
+            cost_cents: Estimated cost in cents.
         """
+        input_tokens = context.usage.get("input_tokens", 0)
+        output_tokens = context.usage.get("output_tokens", 0)
+        cached_tokens = context.usage.get("cached_tokens", 0)
+
+        # Track Sentry metrics
+        metrics = LLMUsageMetrics(
+            model=context.model,
+            provider=context.provider,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=cached_tokens,
+            cost_cents=cost_cents,
+            latency_ms=latency_ms,
+            session_id=context.session_id,
+        )
+        track_llm_usage(metrics)
+
+        # Track billing usage
         tracker = get_usage_tracker()
         if not tracker:
             logger.debug("Usage tracker not initialized, skipping usage recording")
@@ -473,8 +503,8 @@ class LLMProvider:
             params = TokenUsageParams(
                 user_id=context.user_id,
                 model=context.model,
-                input_tokens=context.usage.get("input_tokens", 0),
-                output_tokens=context.usage.get("output_tokens", 0),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
                 session_id=context.session_id,
                 workspace_id=context.workspace_id,
                 agent_id=context.agent_id,

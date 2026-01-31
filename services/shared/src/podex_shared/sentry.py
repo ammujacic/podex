@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -11,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
 import sentry_sdk
+import structlog
 from sentry_sdk.integrations.asyncio import AsyncioIntegration
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.httpx import HttpxIntegration
@@ -31,6 +33,152 @@ DEFAULT_PROFILES_SAMPLE_RATE = 0.1  # 10% of profiled transactions
 DEFAULT_ERROR_SAMPLE_RATE = 1.0  # 100% of errors
 DEV_TRACES_SAMPLE_RATE = 1.0  # 100% in development
 
+# File size bucket thresholds
+FILE_SIZE_SMALL_THRESHOLD = 1024  # 1 KB
+FILE_SIZE_MEDIUM_THRESHOLD = 1024 * 1024  # 1 MB
+
+
+def configure_logging(
+    service_name: str,
+    log_level: int = logging.INFO,
+    json_format: bool | None = None,
+) -> structlog.stdlib.BoundLogger:
+    """
+    Configure unified logging for Podex services.
+
+    Sets up both Python's standard logging and structlog to work together,
+    with proper Sentry integration. Call this once at service startup,
+    AFTER init_sentry().
+
+    Args:
+        service_name: Name of the service for log context
+        log_level: Minimum log level (default: INFO)
+        json_format: Use JSON output (True) or console format (False).
+                     If None (default), auto-detect based on ENVIRONMENT:
+                     - development: console format with colors
+                     - production: JSON format for log aggregation
+
+    Returns:
+        Configured structlog logger
+
+    Example:
+        from podex_shared import init_sentry, configure_logging, SentryConfig
+
+        init_sentry("my-service", SentryConfig(...))
+        logger = configure_logging("my-service")
+        logger.info("Service started", port=8080)
+    """
+    # Auto-detect format based on environment if not specified
+    if json_format is None:
+        environment = os.environ.get("ENVIRONMENT", "development")
+        json_format = environment != "development"
+    # Configure Python's root logger to output to stdout
+    # This is required for structlog's stdlib integration to work
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+
+    # Remove existing handlers to avoid duplicates on hot reload
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+
+    # Add stdout handler
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(log_level)
+
+    # Use a simple format - structlog handles the actual formatting
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    root_logger.addHandler(handler)
+
+    # Build structlog processors
+    processors: list[Any] = [
+        # Filter by log level
+        structlog.stdlib.filter_by_level,
+        # Add logger name and level
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        # Handle positional arguments
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        # Add timestamp
+        structlog.processors.TimeStamper(fmt="iso"),
+        # Add stack info for exceptions
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        # Decode unicode
+        structlog.processors.UnicodeDecoder(),
+        # Add service context
+        structlog.processors.CallsiteParameterAdder(
+            [
+                structlog.processors.CallsiteParameter.FILENAME,
+                structlog.processors.CallsiteParameter.LINENO,
+            ]
+        ),
+    ]
+
+    # Add Sentry integration processor
+    processors.extend(_get_sentry_processors())
+
+    # Add final renderer
+    if json_format:
+        processors.append(structlog.processors.JSONRenderer())
+    else:
+        processors.append(structlog.dev.ConsoleRenderer(colors=True))
+
+    # Configure structlog
+    structlog.configure(
+        processors=processors,
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
+
+    # Return a logger bound with service name
+    return cast("structlog.stdlib.BoundLogger", structlog.get_logger(service_name))
+
+
+def _get_sentry_processors() -> list[Any]:
+    """Get structlog processors for Sentry integration."""
+
+    def add_sentry_context(
+        _logger: Any,
+        method_name: str,
+        event_dict: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Add structlog event data to Sentry breadcrumbs and capture errors."""
+        # Add as breadcrumb for context
+        level = event_dict.get("level", "info")
+        message = event_dict.get("event", "")
+
+        # Extract extra data (everything except standard keys)
+        standard_keys = {"event", "level", "timestamp", "logger", "filename", "lineno"}
+        extra_data = {k: v for k, v in event_dict.items() if k not in standard_keys}
+
+        sentry_sdk.add_breadcrumb(
+            message=str(message),
+            category="log",
+            level=level,
+            data=extra_data if extra_data else None,
+        )
+
+        # For errors, capture to Sentry
+        if method_name in ("error", "exception", "critical"):
+            exc_info = event_dict.get("exc_info")
+            if exc_info:
+                sentry_sdk.capture_exception(exc_info[1] if isinstance(exc_info, tuple) else None)
+            else:
+                # Capture as message with extra context
+                with sentry_sdk.push_scope() as scope:
+                    for key, value in extra_data.items():
+                        scope.set_extra(key, value)
+                    sentry_sdk.capture_message(
+                        str(message),
+                        level="error" if method_name == "error" else "fatal",
+                    )
+
+        return event_dict
+
+    return [add_sentry_context]
+
 
 @dataclass
 class SentryConfig:
@@ -49,6 +197,37 @@ class SentryConfig:
     additional_integrations: list[Any] = field(default_factory=list)
     before_send: EventCallback | None = None
     before_send_transaction: EventCallback | None = None
+
+
+def _build_integrations(cfg: SentryConfig) -> list[Any]:
+    """Build the list of Sentry integrations based on configuration."""
+    integrations: list[Any] = [
+        # Web framework integrations
+        StarletteIntegration(transaction_style="endpoint"),
+        FastApiIntegration(transaction_style="endpoint"),
+        # HTTP client integration
+        HttpxIntegration(),
+        # Async support
+        AsyncioIntegration(),
+        # Logging integration - captures Python logging as breadcrumbs and sends errors
+        LoggingIntegration(
+            level=logging.INFO,  # Capture INFO+ as breadcrumbs
+            event_level=logging.ERROR,  # Send ERROR+ to Sentry
+        ),
+    ]
+
+    # Optional integrations
+    if cfg.enable_db_tracing:
+        integrations.append(SqlalchemyIntegration())
+
+    if cfg.enable_redis_tracing:
+        integrations.append(RedisIntegration())
+
+    # Add any additional integrations
+    if cfg.additional_integrations:
+        integrations.extend(cfg.additional_integrations)
+
+    return integrations
 
 
 def init_sentry(
@@ -98,31 +277,7 @@ def init_sentry(
         )
 
     # Build integrations list
-    integrations: list[Any] = [
-        # Web framework integrations
-        StarletteIntegration(transaction_style="endpoint"),
-        FastApiIntegration(transaction_style="endpoint"),
-        # HTTP client integration
-        HttpxIntegration(),
-        # Async support
-        AsyncioIntegration(),
-        # Logging integration - captures Python logging as breadcrumbs and sends errors
-        LoggingIntegration(
-            level=logging.INFO,  # Capture INFO+ as breadcrumbs
-            event_level=logging.ERROR,  # Send ERROR+ to Sentry
-        ),
-    ]
-
-    # Optional integrations
-    if cfg.enable_db_tracing:
-        integrations.append(SqlalchemyIntegration())
-
-    if cfg.enable_redis_tracing:
-        integrations.append(RedisIntegration())
-
-    # Add any additional integrations
-    if cfg.additional_integrations:
-        integrations.extend(cfg.additional_integrations)
+    integrations = _build_integrations(cfg)
 
     # Default before_send to scrub sensitive data
     def default_before_send(
@@ -185,9 +340,11 @@ def init_sentry(
     }
 
     # Enable Spotlight for local development (Sentry's local debugging tool)
+    # In Docker, we need to use the spotlight container URL instead of localhost
     spotlight_setting: bool | str = False
     if cfg.enable_spotlight and is_development:
-        spotlight_setting = True
+        spotlight_url = os.environ.get("SENTRY_SPOTLIGHT_URL")
+        spotlight_setting = spotlight_url or True
 
     # Initialize Sentry
     sentry_sdk.init(
@@ -200,7 +357,9 @@ def init_sentry(
         error_sampler=lambda _event, _hint: DEFAULT_ERROR_SAMPLE_RATE,
         # Profiling (requires traces)
         profiles_sample_rate=effective_profiles_rate,
-        # Enable Sentry Logs (beta feature - sends logs to Sentry)
+        # Enable Sentry structured logs (requires SDK 2.35.0+)
+        enable_logs=cfg.enable_logs,
+        # Experiments for continuous profiling
         _experiments=experiments,  # type: ignore[arg-type]
         # Spotlight for local dev
         spotlight=spotlight_setting,
@@ -641,3 +800,246 @@ def close() -> None:
     client = sentry_sdk.get_client()
     if client:
         client.close(timeout=2.0)
+
+
+# =============================================================================
+# Podex Business Metrics Helpers
+# =============================================================================
+# Typed helpers for common metrics with standard naming convention:
+# podex.<service>.<category>.<metric_name>
+
+
+def track_workspace_created(tier: str, server_id: str, duration_ms: float) -> None:
+    """Track workspace creation with duration."""
+    tags = {"tier": tier, "server_id": server_id}
+    distribution(
+        "podex.compute.workspace.creation_duration",
+        duration_ms,
+        unit="millisecond",
+        tags=tags,
+    )
+    incr("podex.compute.workspace.created", tags=tags)
+
+
+def track_workspace_failed(tier: str, reason: str) -> None:
+    """Track workspace creation failure."""
+    incr(
+        "podex.compute.workspace.creation_failed",
+        tags={"tier": tier, "reason": reason},
+    )
+
+
+def track_workspace_health_check_failed(workspace_id: str, server_id: str) -> None:
+    """Track workspace health check failure."""
+    incr(
+        "podex.compute.workspace.health_check_failed",
+        tags={"workspace_id": workspace_id, "server_id": server_id},
+    )
+
+
+def track_workspace_active(tier: str, server_id: str, count: int) -> None:
+    """Track active workspace count."""
+    gauge(
+        "podex.compute.workspace.active",
+        float(count),
+        tags={"tier": tier, "server_id": server_id},
+    )
+
+
+@dataclass
+class LLMUsageMetrics:
+    """Metrics for an LLM call."""
+
+    model: str
+    provider: str
+    input_tokens: int
+    output_tokens: int
+    cached_tokens: int
+    cost_cents: float
+    latency_ms: float
+    session_id: str | None = None
+
+
+def track_llm_usage(metrics: LLMUsageMetrics) -> None:
+    """Track LLM call metrics."""
+    tags: dict[str, str] = {"model": metrics.model, "provider": metrics.provider}
+    if metrics.session_id:
+        tags["session_id"] = metrics.session_id
+
+    incr("podex.billing.tokens.input", metrics.input_tokens, tags=tags)
+    incr("podex.billing.tokens.output", metrics.output_tokens, tags=tags)
+    if metrics.cached_tokens > 0:
+        incr("podex.billing.tokens.cached", metrics.cached_tokens, tags=tags)
+    distribution("podex.billing.cost.llm", metrics.cost_cents, tags=tags)
+    distribution("podex.agent.llm.latency", metrics.latency_ms, unit="millisecond", tags=tags)
+
+
+def track_agent_run(
+    model: str,
+    role: str,
+    duration_ms: float,
+    success: bool,
+    error_type: str | None = None,
+) -> None:
+    """Track agent run metrics."""
+    tags = {"model": model, "role": role}
+    distribution("podex.agent.run.duration", duration_ms, unit="millisecond", tags=tags)
+    if not success and error_type:
+        incr("podex.agent.run.failed", tags={**tags, "error_type": error_type})
+
+
+def track_agent_stuck_recovered(role: str, stuck_duration_seconds: float) -> None:
+    """Track agent stuck recovery."""
+    incr(
+        "podex.agent.stuck_recovered",
+        tags={"role": role, "stuck_duration": str(int(stuck_duration_seconds))},
+    )
+
+
+def track_terminal_command(
+    workspace_id: str,
+    duration_ms: float,
+    success: bool,
+    reason: str | None = None,
+) -> None:
+    """Track terminal command metrics."""
+    distribution(
+        "podex.compute.terminal.command_duration",
+        duration_ms,
+        unit="millisecond",
+        tags={"workspace_id": workspace_id},
+    )
+    if not success and reason:
+        incr("podex.compute.terminal.session_failed", tags={"reason": reason})
+
+
+def track_terminal_reconnect(workspace_id: str) -> None:
+    """Track terminal session reconnection."""
+    incr("podex.compute.terminal.reconnect", tags={"workspace_id": workspace_id})
+
+
+def track_background_task(
+    task_name: str,
+    duration_ms: float,
+    success: bool,
+    error_type: str | None = None,
+) -> None:
+    """Track background task metrics."""
+    distribution(
+        "podex.api.task.duration",
+        duration_ms,
+        unit="millisecond",
+        tags={"task_name": task_name},
+    )
+    if not success and error_type:
+        incr("podex.api.task.failed", tags={"task_name": task_name, "error_type": error_type})
+
+
+def track_credits_consumed(user_id: str, resource_type: str, amount_cents: float) -> None:
+    """Track credit consumption."""
+    incr(
+        "podex.billing.credits.consumed",
+        amount_cents,
+        tags={"user_id": user_id, "resource_type": resource_type},
+    )
+
+
+def track_credits_granted(reason: str, amount_cents: float) -> None:
+    """Track credit grants."""
+    incr("podex.billing.credits.granted", amount_cents, tags={"reason": reason})
+
+
+def track_credits_expired(user_id: str, amount_cents: float) -> None:
+    """Track expired credits."""
+    incr("podex.billing.credits.expired", amount_cents, tags={"user_id": user_id})
+
+
+def track_quota_exceeded(quota_type: str, user_id: str) -> None:
+    """Track quota enforcement events."""
+    incr("podex.billing.quota.exceeded", tags={"quota_type": quota_type, "user_id": user_id})
+
+
+def track_subscription_renewed(plan: str, period: str) -> None:
+    """Track subscription renewal."""
+    incr("podex.billing.subscription.renewed", tags={"plan": plan, "period": period})
+
+
+def track_subscription_churned(plan: str, reason: str) -> None:
+    """Track subscription churn."""
+    incr("podex.billing.subscription.churned", tags={"plan": plan, "reason": reason})
+
+
+def track_session_time_to_active(template_id: str, tier: str, duration_ms: float) -> None:
+    """Track session activation time."""
+    distribution(
+        "podex.api.session.time_to_active",
+        duration_ms,
+        unit="millisecond",
+        tags={"template_id": template_id, "tier": tier},
+    )
+
+
+def track_file_operation(
+    operation: str,
+    duration_ms: float,
+    size_bytes: int,
+    success: bool,
+    reason: str | None = None,
+) -> None:
+    """Track file operation metrics."""
+    # Bucket sizes: small (<1KB), medium (1KB-1MB), large (>1MB)
+    if size_bytes < FILE_SIZE_SMALL_THRESHOLD:
+        size_bucket = "small"
+    elif size_bytes < FILE_SIZE_MEDIUM_THRESHOLD:
+        size_bucket = "medium"
+    else:
+        size_bucket = "large"
+
+    metric_name = f"podex.compute.file.{operation}_duration"
+    distribution(metric_name, duration_ms, unit="millisecond", tags={"size_bucket": size_bucket})
+
+    if not success and reason:
+        incr(
+            "podex.compute.file.operation_failed",
+            tags={"operation": operation, "reason": reason},
+        )
+
+
+def track_db_query(operation: str, table: str, duration_ms: float) -> None:
+    """Track database query performance."""
+    distribution(
+        "podex.infra.db.query_duration",
+        duration_ms,
+        unit="millisecond",
+        tags={"operation": operation, "table": table},
+    )
+
+
+def track_db_pool_active(service: str, count: int) -> None:
+    """Track database connection pool usage."""
+    gauge("podex.infra.db.pool.active", float(count), tags={"service": service})
+
+
+def track_redis_operation(operation: str, duration_ms: float) -> None:
+    """Track Redis operation performance."""
+    distribution(
+        "podex.infra.redis.operation_duration",
+        duration_ms,
+        unit="millisecond",
+        tags={"operation": operation},
+    )
+
+
+def track_websocket_connections(service: str, count: int) -> None:
+    """Track active WebSocket connections."""
+    gauge("podex.infra.websocket.connections", float(count), tags={"service": service})
+
+
+def track_http_latency(endpoint: str, method: str, duration_ms: float) -> None:
+    """Track HTTP endpoint latency."""
+    distribution(
+        "podex.infra.http.latency",
+        duration_ms,
+        unit="millisecond",
+        tags={"endpoint": endpoint, "method": method},
+    )

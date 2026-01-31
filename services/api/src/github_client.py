@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Self
 
 import httpx
+import structlog
 from pydantic import BaseModel
 
 from src.config import settings
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 GITHUB_API_BASE = settings.GITHUB_API_URL
 
@@ -201,7 +201,7 @@ class GitHubClient:
         self.access_token = access_token
         self._client: httpx.AsyncClient | None = None
 
-    async def __aenter__(self) -> "GitHubClient":
+    async def __aenter__(self) -> Self:
         self._client = httpx.AsyncClient(
             base_url=GITHUB_API_BASE,
             headers={

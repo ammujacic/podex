@@ -73,7 +73,7 @@ class RedisClient:
                 await self._listen_task
 
         if self._pubsub:
-            await self._pubsub.close()
+            await self._pubsub.aclose()
             self._pubsub = None
 
         if self._client:

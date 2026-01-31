@@ -1,5 +1,5 @@
 [project]
-name = "podex-local-pod"
+name = "podex-pod"
 version = "0.1.0"
 description = "Podex Local Pod - Self-hosted compute agent for Podex"
 readme = "README.md"
@@ -23,13 +23,13 @@ dependencies = [
     "click>=8.1.0",
     "python-socketio[asyncio_client]>=5.10.0",
     "docker>=7.0.0",
-    "psutil>=5.9.0",
+    "psutil>=7.2.2",
     "structlog>=24.1.0",
     "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
     "httpx>=0.26.0",
     "aiofiles>=23.2.0",
-    "sentry-sdk>=2.23.0",
+    "sentry-sdk>=2.51.0",
     "watchdog>=4.0.0",
 ]
 
@@ -38,12 +38,12 @@ dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.1.0",
-    "ruff>=0.1.0",
+    "ruff>=0.14.14",
     "mypy>=1.7.0",
 ]
 
 [project.scripts]
-podex-local-pod = "podex_local_pod.main:cli"
+podex-pod = "podex_local_pod.main:cli"
 
 [project.urls]
 Homepage = "https://podex.dev"

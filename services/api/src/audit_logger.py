@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, UTC
 from functools import wraps
 from typing import Any, Callable
 from uuid import uuid4
 
+import structlog
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database.models import AuditLog
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 # ============================================================================

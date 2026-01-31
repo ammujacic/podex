@@ -584,6 +584,17 @@ export interface ConversationMessageEvent {
   };
 }
 
+export interface NotificationCreatedEvent {
+  id: string;
+  type: 'info' | 'warning' | 'error' | 'success';
+  title: string;
+  message: string;
+  action_url?: string;
+  action_label?: string;
+  read: boolean;
+  created_at: string;
+}
+
 export interface SocketEvents {
   agent_message: (data: AgentMessageEvent) => void;
   agent_status: (data: AgentStatusEvent) => void;
@@ -659,6 +670,8 @@ export interface SocketEvents {
   conversation_attached: (data: ConversationAttachedEvent) => void;
   conversation_detached: (data: ConversationDetachedEvent) => void;
   conversation_message: (data: ConversationMessageEvent) => void;
+  // Notification events
+  notification_created: (data: NotificationCreatedEvent) => void;
 }
 
 // Track active session for auto-rejoin on reconnect

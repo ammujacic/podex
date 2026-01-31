@@ -288,3 +288,52 @@ class GitHubIntegration(Base):
 
     # Relationships
     owner: Mapped["User"] = relationship("User", back_populates="github_integration")
+
+
+class GoogleIntegration(Base):
+    """Google OAuth integration for Google account linking."""
+
+    __tablename__ = "google_integrations"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    # Google user info
+    google_user_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    google_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    google_name: Mapped[str | None] = mapped_column(String(255))
+    google_avatar_url: Mapped[str | None] = mapped_column(Text)
+
+    # OAuth tokens - encrypted at rest
+    access_token: Mapped[str] = mapped_column(EncryptedString, nullable=False)
+    refresh_token: Mapped[str | None] = mapped_column(EncryptedString)
+    token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Scopes granted during OAuth
+    scopes: Mapped[list[str] | None] = mapped_column(JSONB)
+
+    # Status
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    # Relationships
+    owner: Mapped["User"] = relationship("User", back_populates="google_integration")

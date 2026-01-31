@@ -6,12 +6,14 @@ integrating placement decisions, server health, and container management.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from podex_shared.sentry import track_workspace_created, track_workspace_failed
 from src.config import settings
 from src.managers.hardware_specs_provider import get_hardware_specs_provider
 from src.managers.placement import (
@@ -178,6 +180,7 @@ class WorkspaceOrchestrator:
         import uuid
 
         workspace_id = workspace_id or str(uuid.uuid4())
+        creation_start_time = time.perf_counter()
 
         logger.info(
             "Creating workspace",
@@ -193,6 +196,7 @@ class WorkspaceOrchestrator:
         servers = await self.get_server_capacities()
 
         if not servers:
+            track_workspace_failed(config.tier, "no_servers_available")
             return OrchestrationResult(
                 success=False,
                 workspace_id=workspace_id,
@@ -209,6 +213,7 @@ class WorkspaceOrchestrator:
         )
 
         if not placement.success or not placement.server_id:
+            track_workspace_failed(config.tier, "placement_failed")
             return OrchestrationResult(
                 success=False,
                 workspace_id=workspace_id,
@@ -231,6 +236,7 @@ class WorkspaceOrchestrator:
         )
 
         if not dir_created:
+            track_workspace_failed(config.tier, "directory_creation_failed")
             return OrchestrationResult(
                 success=False,
                 workspace_id=workspace_id,
@@ -264,6 +270,7 @@ class WorkspaceOrchestrator:
                 server_id=placement.server_id,
                 image=workspace_image,
             )
+            track_workspace_failed(config.tier, "image_not_found")
             return OrchestrationResult(
                 success=False,
                 workspace_id=workspace_id,
@@ -326,6 +333,7 @@ class WorkspaceOrchestrator:
                 workspace_id=workspace_id[:12],
                 server_id=placement.server_id,
             )
+            track_workspace_failed(config.tier, "container_creation_failed")
             return OrchestrationResult(
                 success=False,
                 workspace_id=workspace_id,
@@ -336,6 +344,7 @@ class WorkspaceOrchestrator:
         # Get container ID (may be None if creation returned None)
         container_id = container.id if container else None
         if not container_id:
+            track_workspace_failed(config.tier, "no_container_id")
             return OrchestrationResult(
                 success=False,
                 workspace_id=workspace_id,
@@ -352,6 +361,7 @@ class WorkspaceOrchestrator:
                 server_id=placement.server_id,
                 container_id=container_id[:12],
             )
+            track_workspace_failed(config.tier, "container_start_failed")
             return OrchestrationResult(
                 success=False,
                 workspace_id=workspace_id,
@@ -380,11 +390,16 @@ class WorkspaceOrchestrator:
         if self._workspace_store:
             await self._workspace_store.save(workspace)
 
+        # Track successful workspace creation
+        creation_duration_ms = (time.perf_counter() - creation_start_time) * 1000
+        track_workspace_created(config.tier, placement.server_id, creation_duration_ms)
+
         logger.info(
             "Workspace created successfully",
             workspace_id=workspace_id[:12],
             server_id=placement.server_id,
             container_id=container_id[:12],
+            duration_ms=creation_duration_ms,
         )
 
         return OrchestrationResult(

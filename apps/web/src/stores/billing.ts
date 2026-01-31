@@ -248,6 +248,9 @@ interface BillingState {
   showCreditExhaustedModal: (errorDetail: BillingErrorDetail) => void;
   hideCreditExhaustedModal: () => void;
 
+  // TODO: Implement billing config when credit packages feature is complete
+  fetchBillingConfig: () => Promise<void>;
+
   // Computed helpers
   getQuotaByType: (type: string) => Quota | undefined;
   getPlanBySlug: (slug: string) => SubscriptionPlan | undefined;
@@ -350,6 +353,11 @@ export const useBillingStore = create<BillingState>()(
       hideCreditExhaustedModal: () =>
         set({ creditExhaustedModalOpen: false, creditExhaustedErrorDetail: null }),
 
+      // TODO: Implement billing config when credit packages feature is complete
+      fetchBillingConfig: async () => {
+        // Stub - implement when credit packages API is available
+      },
+
       // Helpers
       getQuotaByType: (type) => get().quotas.find((q) => q.quotaType === type),
       getPlanBySlug: (slug) => get().plans.find((p) => p.slug === slug),
@@ -380,6 +388,13 @@ export const useBillingStore = create<BillingState>()(
 export const useSubscription = () => useBillingStore((state) => state.subscription);
 export const usePlans = () => useBillingStore((state) => state.plans);
 export const useUsageSummary = () => useBillingStore((state) => state.usageSummary);
+// TODO: Implement billing config properly when credit packages feature is complete
+export const useBillingConfig = () =>
+  null as {
+    creditPackages?: { amountCents: number; label: string }[];
+    minCreditPurchaseCents?: number;
+    maxCreditPurchaseCents?: number;
+  } | null;
 export const useQuotas = () => useBillingStore((state) => state.quotas);
 export const useCreditBalance = () => useBillingStore((state) => state.creditBalance);
 export const useInvoices = () => useBillingStore((state) => state.invoices);

@@ -536,7 +536,8 @@ run:
 	echo "  API:               http://localhost:3001 (or http://$$HOST_IP:3001 from mobile)"; \
 	echo "  Compute:           http://localhost:3003"; \
 	echo "  Workspace Servers: ws-local-1, ws-local-2 (internal Docker-in-Docker)"; \
-	echo "  Ollama:            http://localhost:11434"
+	echo "  Ollama:            http://localhost:11434"; \
+	echo "  Sentry Spotlight:  http://localhost:8969 (local Sentry debugging UI)"
 	@echo ""
 	@echo "$(CYAN)To view logs: make logs$(NC)"
 	@echo "$(CYAN)To stop: make stop$(NC)"

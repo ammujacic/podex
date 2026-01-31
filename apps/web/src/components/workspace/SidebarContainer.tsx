@@ -7,7 +7,6 @@ import {
   Bot,
   Box,
   Cable,
-  FileCode,
   FolderTree,
   GitBranch,
   Github,
@@ -97,7 +96,6 @@ const panelConfig: Record<
   files: { icon: FolderTree, label: 'Files' },
   git: { icon: GitBranch, label: 'Git' },
   github: { icon: Github, label: 'GitHub' },
-  preview: { icon: FileCode, label: 'Preview' },
   mcp: { icon: Plug, label: 'Integrations (MCP)' },
   extensions: { icon: Box, label: 'Extensions' },
   search: { icon: Search, label: 'Search' },
@@ -121,7 +119,6 @@ const rightPanelIds: PanelId[] = [
   'extensions',
   'usage',
   'openclaw',
-  'preview',
 ];
 
 // Panels that show badge counts
@@ -229,10 +226,6 @@ function SidebarPanel({
         return <TunnelWidget workspaceId={workspaceId} />;
       case 'openclaw':
         return <OpenClawWidget workspaceId={workspaceId} localPodId={localPodId ?? null} />;
-      case 'preview':
-        // Preview is now rendered as a grid card, not a sidebar panel
-        // This case should not be reached since handleIconClick returns early for preview
-        return null;
       case 'sentry':
         return <SentryPanel sessionId={sessionId} />;
       case 'skills':
@@ -396,26 +389,14 @@ export function SidebarContainer({
 }: SidebarContainerProps) {
   const { sidebarLayout, toggleSidebar, addPanel, removePanel, toggleTerminal, terminalVisible } =
     useUIStore();
-  const { sessions, createPreviewGridCard, removePreviewGridCard } = useSessionStore();
+  const { sessions } = useSessionStore();
   const config = sidebarLayout[side];
   const badgeCounts = useSidebarBadges(sessionId);
   const [isHovering, setIsHovering] = useState(false);
 
-  // Check if preview grid card exists for this session
-  const previewGridCardId = sessions[sessionId]?.previewGridCardId;
   const workspaceId = sessions[sessionId]?.workspaceId ?? null;
 
   const handleIconClick = (panelId: PanelId) => {
-    // Special handling for preview panel - creates/removes preview grid card instead of sidebar panel
-    if (panelId === 'preview') {
-      if (previewGridCardId) {
-        removePreviewGridCard(sessionId);
-      } else {
-        createPreviewGridCard(sessionId);
-      }
-      return;
-    }
-
     const isOnThisSide = config.panels.some((p) => p.panelId === panelId);
     if (isOnThisSide) {
       // Panel is already here - toggle it off
@@ -456,11 +437,7 @@ export function SidebarContainer({
             {(side === 'left' ? leftPanelIds : rightPanelIds).map((panelId) => {
               const panelConf = panelConfig[panelId];
               const Icon = panelConf.icon;
-              // Preview panel uses session's preview grid card state
-              const isActive =
-                panelId === 'preview'
-                  ? !!previewGridCardId
-                  : config.panels.some((p) => p.panelId === panelId);
+              const isActive = config.panels.some((p) => p.panelId === panelId);
               const showBadge = badgePanelIds.includes(panelId);
               return (
                 <button
@@ -533,11 +510,7 @@ export function SidebarContainer({
           {(side === 'left' ? leftPanelIds : rightPanelIds).map((panelId) => {
             const panelConf = panelConfig[panelId];
             const Icon = panelConf.icon;
-            // Preview panel uses session's preview grid card state
-            const isActive =
-              panelId === 'preview'
-                ? !!previewGridCardId
-                : config.panels.some((p) => p.panelId === panelId);
+            const isActive = config.panels.some((p) => p.panelId === panelId);
             const showBadge = badgePanelIds.includes(panelId);
             return (
               <button

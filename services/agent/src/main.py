@@ -3,11 +3,16 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-import structlog
 import uvicorn
 from fastapi import FastAPI
 
-from podex_shared import SentryConfig, init_sentry, init_usage_tracker, shutdown_usage_tracker
+from podex_shared import (
+    SentryConfig,
+    configure_logging,
+    init_sentry,
+    init_usage_tracker,
+    shutdown_usage_tracker,
+)
 from podex_shared.redis_client import get_redis_client
 from src.config import refresh_model_capabilities, settings
 from src.queue.task_queue import TaskQueue
@@ -36,7 +41,8 @@ def _init_sentry() -> None:
 # Initialize Sentry at module load time
 _init_sentry()
 
-logger = structlog.get_logger()
+# Configure unified logging (structlog + Python logging + Sentry integration)
+logger = configure_logging("podex-agent")
 
 
 class ServiceManager:

@@ -27,7 +27,6 @@ export type PanelId =
   | 'files'
   | 'git'
   | 'github'
-  | 'preview'
   | 'mcp'
   | 'extensions'
   | 'search'

@@ -441,7 +441,8 @@ export default function SessionPage() {
                 zIndex: layout.editor_freeform_position.z_index ?? 1,
               }
             : undefined,
-          previewGridCardId: null, // TODO: Add to backend layout if needed
+          terminalWindows: [], // Terminal windows managed by frontend for now
+          activeWindowId: layout.active_agent_id ?? null, // Active window (agent or terminal)
           localPodId: data.local_pod_id ?? null,
           localPodName: data.local_pod_name ?? null,
           mount_path: data.mount_path ?? null,

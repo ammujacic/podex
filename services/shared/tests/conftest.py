@@ -107,7 +107,7 @@ async def real_redis_client() -> AsyncIterator[redis.Redis]:
         yield client
     finally:
         await client.flushdb()  # Clean up test data
-        await client.close()
+        await client.aclose()
 
 
 @pytest.fixture
@@ -125,7 +125,7 @@ async def redis_with_encryption() -> AsyncIterator[redis.Redis]:
         yield client
     finally:
         await client.flushdb()
-        await client.close()
+        await client.aclose()
         # Clean up env var
         if "REDIS_ENCRYPTION_KEY" in os.environ:
             del os.environ["REDIS_ENCRYPTION_KEY"]
