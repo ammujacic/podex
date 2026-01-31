@@ -1,5 +1,5 @@
 [project]
-name = "podex-local-pod"
+name = "podex-pod"
 version = "0.1.0"
 description = "Podex Local Pod - Self-hosted compute agent for Podex"
 readme = "README.md"
@@ -43,7 +43,7 @@ dev = [
 ]
 
 [project.scripts]
-podex-local-pod = "podex_local_pod.main:cli"
+podex-pod = "podex_local_pod.main:cli"
 
 [project.urls]
 Homepage = "https://podex.dev"

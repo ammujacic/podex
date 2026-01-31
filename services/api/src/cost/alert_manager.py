@@ -1,7 +1,6 @@
 """Budget alert management for cost tracking."""
 
 import asyncio
-import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -10,9 +9,11 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any
 
+import structlog
+
 from .realtime_tracker import CostBreakdown, get_cost_tracker
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Minimum number of days of usage data required for spike detection
 MIN_DAYS_FOR_SPIKE_DETECTION = 3

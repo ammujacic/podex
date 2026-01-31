@@ -7,10 +7,10 @@ Supports multiple voice providers:
 
 import base64
 import contextlib
-import logging
 from typing import Any
 
 import httpx
+import structlog
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -24,7 +24,7 @@ from src.database.models import Session as SessionModel
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, RATE_LIMIT_UPLOAD, limiter
 from src.routes.dependencies import DbSession, get_current_user_id
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 router = APIRouter()
 
 # Maximum characters allowed for neural voice synthesis

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -11,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
 import sentry_sdk
+import structlog
 from sentry_sdk.integrations.asyncio import AsyncioIntegration
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.httpx import HttpxIntegration
@@ -36,6 +38,148 @@ FILE_SIZE_SMALL_THRESHOLD = 1024  # 1 KB
 FILE_SIZE_MEDIUM_THRESHOLD = 1024 * 1024  # 1 MB
 
 
+def configure_logging(
+    service_name: str,
+    log_level: int = logging.INFO,
+    json_format: bool | None = None,
+) -> structlog.stdlib.BoundLogger:
+    """
+    Configure unified logging for Podex services.
+
+    Sets up both Python's standard logging and structlog to work together,
+    with proper Sentry integration. Call this once at service startup,
+    AFTER init_sentry().
+
+    Args:
+        service_name: Name of the service for log context
+        log_level: Minimum log level (default: INFO)
+        json_format: Use JSON output (True) or console format (False).
+                     If None (default), auto-detect based on ENVIRONMENT:
+                     - development: console format with colors
+                     - production: JSON format for log aggregation
+
+    Returns:
+        Configured structlog logger
+
+    Example:
+        from podex_shared import init_sentry, configure_logging, SentryConfig
+
+        init_sentry("my-service", SentryConfig(...))
+        logger = configure_logging("my-service")
+        logger.info("Service started", port=8080)
+    """
+    # Auto-detect format based on environment if not specified
+    if json_format is None:
+        environment = os.environ.get("ENVIRONMENT", "development")
+        json_format = environment != "development"
+    # Configure Python's root logger to output to stdout
+    # This is required for structlog's stdlib integration to work
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+
+    # Remove existing handlers to avoid duplicates on hot reload
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+
+    # Add stdout handler
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(log_level)
+
+    # Use a simple format - structlog handles the actual formatting
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    root_logger.addHandler(handler)
+
+    # Build structlog processors
+    processors: list[Any] = [
+        # Filter by log level
+        structlog.stdlib.filter_by_level,
+        # Add logger name and level
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        # Handle positional arguments
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        # Add timestamp
+        structlog.processors.TimeStamper(fmt="iso"),
+        # Add stack info for exceptions
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        # Decode unicode
+        structlog.processors.UnicodeDecoder(),
+        # Add service context
+        structlog.processors.CallsiteParameterAdder(
+            [
+                structlog.processors.CallsiteParameter.FILENAME,
+                structlog.processors.CallsiteParameter.LINENO,
+            ]
+        ),
+    ]
+
+    # Add Sentry integration processor
+    processors.extend(_get_sentry_processors())
+
+    # Add final renderer
+    if json_format:
+        processors.append(structlog.processors.JSONRenderer())
+    else:
+        processors.append(structlog.dev.ConsoleRenderer(colors=True))
+
+    # Configure structlog
+    structlog.configure(
+        processors=processors,
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
+
+    # Return a logger bound with service name
+    return cast("structlog.stdlib.BoundLogger", structlog.get_logger(service_name))
+
+
+def _get_sentry_processors() -> list[Any]:
+    """Get structlog processors for Sentry integration."""
+
+    def add_sentry_context(
+        _logger: Any,
+        method_name: str,
+        event_dict: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Add structlog event data to Sentry breadcrumbs and capture errors."""
+        # Add as breadcrumb for context
+        level = event_dict.get("level", "info")
+        message = event_dict.get("event", "")
+
+        # Extract extra data (everything except standard keys)
+        standard_keys = {"event", "level", "timestamp", "logger", "filename", "lineno"}
+        extra_data = {k: v for k, v in event_dict.items() if k not in standard_keys}
+
+        sentry_sdk.add_breadcrumb(
+            message=str(message),
+            category="log",
+            level=level,
+            data=extra_data if extra_data else None,
+        )
+
+        # For errors, capture to Sentry
+        if method_name in ("error", "exception", "critical"):
+            exc_info = event_dict.get("exc_info")
+            if exc_info:
+                sentry_sdk.capture_exception(exc_info[1] if isinstance(exc_info, tuple) else None)
+            else:
+                # Capture as message with extra context
+                with sentry_sdk.push_scope() as scope:
+                    for key, value in extra_data.items():
+                        scope.set_extra(key, value)
+                    sentry_sdk.capture_message(
+                        str(message),
+                        level="error" if method_name == "error" else "fatal",
+                    )
+
+        return event_dict
+
+    return [add_sentry_context]
+
+
 @dataclass
 class SentryConfig:
     """Configuration for Sentry SDK initialization."""
@@ -53,6 +197,37 @@ class SentryConfig:
     additional_integrations: list[Any] = field(default_factory=list)
     before_send: EventCallback | None = None
     before_send_transaction: EventCallback | None = None
+
+
+def _build_integrations(cfg: SentryConfig) -> list[Any]:
+    """Build the list of Sentry integrations based on configuration."""
+    integrations: list[Any] = [
+        # Web framework integrations
+        StarletteIntegration(transaction_style="endpoint"),
+        FastApiIntegration(transaction_style="endpoint"),
+        # HTTP client integration
+        HttpxIntegration(),
+        # Async support
+        AsyncioIntegration(),
+        # Logging integration - captures Python logging as breadcrumbs and sends errors
+        LoggingIntegration(
+            level=logging.INFO,  # Capture INFO+ as breadcrumbs
+            event_level=logging.ERROR,  # Send ERROR+ to Sentry
+        ),
+    ]
+
+    # Optional integrations
+    if cfg.enable_db_tracing:
+        integrations.append(SqlalchemyIntegration())
+
+    if cfg.enable_redis_tracing:
+        integrations.append(RedisIntegration())
+
+    # Add any additional integrations
+    if cfg.additional_integrations:
+        integrations.extend(cfg.additional_integrations)
+
+    return integrations
 
 
 def init_sentry(
@@ -102,31 +277,7 @@ def init_sentry(
         )
 
     # Build integrations list
-    integrations: list[Any] = [
-        # Web framework integrations
-        StarletteIntegration(transaction_style="endpoint"),
-        FastApiIntegration(transaction_style="endpoint"),
-        # HTTP client integration
-        HttpxIntegration(),
-        # Async support
-        AsyncioIntegration(),
-        # Logging integration - captures Python logging as breadcrumbs and sends errors
-        LoggingIntegration(
-            level=logging.INFO,  # Capture INFO+ as breadcrumbs
-            event_level=logging.ERROR,  # Send ERROR+ to Sentry
-        ),
-    ]
-
-    # Optional integrations
-    if cfg.enable_db_tracing:
-        integrations.append(SqlalchemyIntegration())
-
-    if cfg.enable_redis_tracing:
-        integrations.append(RedisIntegration())
-
-    # Add any additional integrations
-    if cfg.additional_integrations:
-        integrations.extend(cfg.additional_integrations)
+    integrations = _build_integrations(cfg)
 
     # Default before_send to scrub sensitive data
     def default_before_send(
@@ -189,9 +340,11 @@ def init_sentry(
     }
 
     # Enable Spotlight for local development (Sentry's local debugging tool)
+    # In Docker, we need to use the spotlight container URL instead of localhost
     spotlight_setting: bool | str = False
     if cfg.enable_spotlight and is_development:
-        spotlight_setting = True
+        spotlight_url = os.environ.get("SENTRY_SPOTLIGHT_URL")
+        spotlight_setting = spotlight_url or True
 
     # Initialize Sentry
     sentry_sdk.init(

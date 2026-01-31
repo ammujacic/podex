@@ -132,8 +132,11 @@ class MultiServerDockerManager:
             )
 
             try:
+                # For non-TLS (local dev), use hostname which resolves via Docker DNS
+                # For TLS (production), use ip_address for direct connection
+                connection_host = hostname if not tls_enabled else ip_address
                 client = await self._create_docker_client(
-                    ip_address=ip_address,
+                    ip_address=connection_host,
                     docker_port=docker_port,
                     tls_enabled=tls_enabled,
                     tls_cert_path=tls_cert_path,
@@ -149,6 +152,7 @@ class MultiServerDockerManager:
                     server_id=server_id,
                     hostname=hostname,
                     ip_address=ip_address,
+                    connection_host=connection_host,
                     tls_enabled=tls_enabled,
                 )
                 return True

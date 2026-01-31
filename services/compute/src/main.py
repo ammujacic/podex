@@ -5,11 +5,16 @@ import contextlib
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from podex_shared import SentryConfig, init_sentry, init_usage_tracker, shutdown_usage_tracker
+from podex_shared import (
+    SentryConfig,
+    configure_logging,
+    init_sentry,
+    init_usage_tracker,
+    shutdown_usage_tracker,
+)
 from src.config import settings
 from src.deps import (
     InternalAuth,
@@ -45,26 +50,8 @@ _sentry_config = SentryConfig(
 )
 init_sentry("podex-compute", _sentry_config)
 
-# Configure structured logging
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer(),
-    ],
-    wrapper_class=structlog.stdlib.BoundLogger,
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    cache_logger_on_first_use=True,
-)
-
-logger = structlog.get_logger()
+# Configure unified logging (structlog + Python logging + Sentry integration)
+logger = configure_logging("podex-compute")
 
 
 async def cleanup_task() -> None:

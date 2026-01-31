@@ -30,6 +30,20 @@ services:
       timeout: 5s
       retries: 5
 
+  # === SENTRY SPOTLIGHT (Local Dev Debugging) ===
+  # Provides local UI for viewing Sentry events without sending to cloud
+  spotlight:
+    image: getsentry/spotlight:latest
+    container_name: spotlight
+    ports:
+      - "8969:8969"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8969/stream"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
   # === LOCAL LLM (Ollama) - Optional ===
   ollama:
     image: ollama/ollama:latest
@@ -68,6 +82,7 @@ services:
     environment:
       ENVIRONMENT: development
       PORT: 3001
+      RUN_MIGRATIONS: "false"  # Local dev uses SQLAlchemy create_all()
       DATABASE_URL: postgresql+asyncpg://podex:${POSTGRES_PASSWORD:-localdev_change_in_prod}@postgres:5432/podex
       REDIS_URL: redis://redis:6379
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
@@ -105,6 +120,7 @@ services:
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-1.0}
       SENTRY_PROFILES_SAMPLE_RATE: ${SENTRY_PROFILES_SAMPLE_RATE:-1.0}
+      SENTRY_SPOTLIGHT_URL: http://spotlight:8969
       # Auth Cookies (httpOnly cookies for XSS protection)
       COOKIE_SECURE: "false"
       COOKIE_SAMESITE: "lax"
@@ -159,6 +175,7 @@ services:
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-1.0}
       SENTRY_PROFILES_SAMPLE_RATE: ${SENTRY_PROFILES_SAMPLE_RATE:-1.0}
+      SENTRY_SPOTLIGHT_URL: http://spotlight:8969
       # API Service (for usage tracking)
       API_BASE_URL: http://api:3001
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-service-token}
@@ -251,6 +268,7 @@ services:
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-1.0}
       SENTRY_PROFILES_SAMPLE_RATE: ${SENTRY_PROFILES_SAMPLE_RATE:-1.0}
+      SENTRY_SPOTLIGHT_URL: http://spotlight:8969
     volumes:
       - ./services/compute/src:/app/services/compute/src
       - ./services/shared/src:/app/services/shared/src

@@ -1,4 +1,4 @@
-name: Publish Podex CLI to PyPI
+name: Publish podex-pod CLI to PyPI
 
 on:
   workflow_dispatch:
@@ -83,15 +83,15 @@ jobs:
         with:
           packages-dir: services/local-pod/dist/
           # Uses OIDC trusted publishing - no API token needed!
-          # Configure at: https://pypi.org/manage/project/podex/settings/publishing/
+          # Configure at: https://pypi.org/manage/project/podex-pod/settings/publishing/
 
       - name: Build summary
         run: |
-          echo "## Podex CLI Package" >> $GITHUB_STEP_SUMMARY
+          echo "## podex-pod CLI Package" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Package | \`podex\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Package | \`podex-pod\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Version | \`$PACKAGE_VERSION\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Dry run | $DRY_RUN |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -101,6 +101,6 @@ jobs:
             echo "### Installation" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-            echo "pip install podex==$PACKAGE_VERSION" >> $GITHUB_STEP_SUMMARY
+            echo "pip install podex-pod==$PACKAGE_VERSION" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           fi

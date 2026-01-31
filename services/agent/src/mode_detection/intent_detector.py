@@ -5,18 +5,13 @@ Uses a hybrid approach: fast keyword-based detection first, with optional LLM
 fallback for ambiguous cases.
 """
 
-import logging
 import re
 from dataclasses import dataclass
 from enum import Enum
 
-try:
-    import structlog
+import structlog
 
-    logger = structlog.get_logger()
-except ImportError:
-    # Fall back to standard logging if structlog not available
-    logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class IntendedMode(str, Enum):

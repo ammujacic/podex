@@ -42,8 +42,8 @@ COPY services/api/src ./src
 COPY services/api/alembic.ini ./
 COPY services/api/migrations ./migrations
 
-# Run migrations and start with hot reload
-CMD ["sh", "-c", "alembic upgrade head && uvicorn src.main:socket_app --host 0.0.0.0 --port 3001 --reload"]
+# Start with hot reload (migrations controlled by RUN_MIGRATIONS env var in app)
+CMD ["sh", "-c", "if [ \"$RUN_MIGRATIONS\" = \"true\" ]; then alembic upgrade head; fi && uvicorn src.main:socket_app --host 0.0.0.0 --port 3001 --reload"]
 
 # Production stage
 FROM base AS production
@@ -82,5 +82,5 @@ LABEL prometheus.path="/metrics"
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:3001/health || exit 1
 
-# Run migrations and start with gunicorn
-CMD ["sh", "-c", "alembic upgrade head && gunicorn src.main:socket_app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:3001 --workers 4 --threads 4"]
+# Start with gunicorn (migrations controlled by RUN_MIGRATIONS env var in app)
+CMD ["sh", "-c", "if [ \"$RUN_MIGRATIONS\" = \"true\" ]; then alembic upgrade head; fi && gunicorn src.main:socket_app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:3001 --workers 4 --threads 4"]

@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 import socketio
-import structlog
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
@@ -24,7 +23,7 @@ from slowapi import _rate_limit_exceeded_handler as _slowapi_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from podex_shared import SentryConfig, init_sentry
+from podex_shared import SentryConfig, configure_logging, init_sentry
 from podex_shared.sentry import track_background_task
 from src.config import settings
 from src.cost.realtime_tracker import get_cost_tracker
@@ -122,9 +121,6 @@ def _rate_limit_exceeded_handler(request: Request, exc: Exception) -> Response:
     if isinstance(exc, RateLimitExceeded):
         return _slowapi_handler(request, exc)  # type: ignore[no-any-return]
     raise exc
-
-
-logger = structlog.get_logger()
 
 
 async def _global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -1341,7 +1337,8 @@ def _init_sentry() -> None:
 # Initialize Sentry
 _init_sentry()
 
-logger = structlog.get_logger()
+# Configure unified logging (structlog + Python logging + Sentry integration)
+logger = configure_logging("podex-api")
 
 # Maximum request body size (10MB)
 MAX_REQUEST_BODY_SIZE = 10 * 1024 * 1024
@@ -1622,7 +1619,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     # Tables are created from models, but we still run migrations to:
     # 1. Stamp existing migrations as applied if tables already exist
     # 2. Apply any new migrations for future changes
-    run_migrations()
+    if settings.RUN_MIGRATIONS:
+        run_migrations()
+    else:
+        logger.info("Skipping migrations (RUN_MIGRATIONS=false)")
 
     # Seed default data (plans, hardware, templates, settings)
     await seed_database()

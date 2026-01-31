@@ -75,6 +75,7 @@ services:
     environment:
       ENVIRONMENT: test
       PORT: 3001
+      RUN_MIGRATIONS: "false"  # Tests use SQLAlchemy create_all()
       DATABASE_URL: postgresql+asyncpg://test:test@postgres-test:5432/podex_test
       REDIS_URL: redis://redis-test:6379
       # GCP Configuration

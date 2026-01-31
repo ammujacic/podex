@@ -7,6 +7,7 @@ import os
 import signal
 import socket
 import sys
+from typing import cast
 
 import click
 import sentry_sdk
@@ -31,7 +32,7 @@ def _init_sentry() -> bool:
     sentry_sdk.init(
         dsn=dsn,
         environment=environment,
-        release=f"podex-local-pod@{__version__}",
+        release=f"podex-pod@{__version__}",
         traces_sample_rate=1.0 if environment == "development" else 0.2,
         profiles_sample_rate=1.0 if environment == "development" else 0.1,
         integrations=[
@@ -42,7 +43,7 @@ def _init_sentry() -> bool:
         send_default_pii=False,
         attach_stacktrace=True,
         max_breadcrumbs=50,
-        server_name="podex-local-pod",
+        server_name="podex-pod",
         ignore_errors=[
             "ConnectionRefusedError",
             "ConnectionResetError",
@@ -53,34 +54,62 @@ def _init_sentry() -> bool:
         ],
     )
 
-    sentry_sdk.set_tag("service", "podex-local-pod")
+    sentry_sdk.set_tag("service", "podex-pod")
     return True
 
 
 # Initialize Sentry at module load time
 _sentry_enabled = _init_sentry()
 
-# Configure structlog
-structlog.configure(
-    processors=[
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.dev.ConsoleRenderer(colors=True),
-    ],
-    wrapper_class=structlog.stdlib.BoundLogger,
-    context_class=dict,
-    logger_factory=structlog.PrintLoggerFactory(),
-    cache_logger_on_first_use=True,
-)
 
-logger = structlog.get_logger()
+def _configure_logging() -> structlog.stdlib.BoundLogger:
+    """Configure logging for local-pod CLI.
+
+    Sets up Python's stdlib logging (required for Sentry integration)
+    with structlog for nice console output.
+    """
+    # Configure Python's root logger to output to stderr
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    # Remove existing handlers to avoid duplicates
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+
+    # Add stderr handler with simple format (structlog handles formatting)
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    root_logger.addHandler(handler)
+
+    # Configure structlog with stdlib integration
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.PositionalArgumentsFormatter(),
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.UnicodeDecoder(),
+            # Console renderer for nice CLI output
+            structlog.dev.ConsoleRenderer(colors=True),
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
+
+    return cast("structlog.stdlib.BoundLogger", structlog.get_logger("podex-pod"))
+
+
+logger = _configure_logging()
 
 
 @click.group()
-@click.version_option(version=__version__, prog_name="podex-local-pod")
+@click.version_option(version=__version__, prog_name="podex-pod")
 def cli() -> None:
     """Podex Local Pod - Self-hosted compute agent for Podex.
 
@@ -144,7 +173,7 @@ def start(
             "  1. Go to Settings > Local Pods\n"
             "  2. Click 'Add Pod' and copy the token\n\n"
             "Then run:\n"
-            "  podex-local-pod start --token pdx_pod_xxx\n\n"
+            "  podex-pod start --token pdx_pod_xxx\n\n"
             "Or set the PODEX_POD_TOKEN environment variable.",
             err=True,
         )
@@ -268,7 +297,7 @@ def check() -> None:
 @cli.command()
 def version() -> None:
     """Show version information."""
-    click.echo(f"podex-local-pod v{__version__}")
+    click.echo(f"podex-pod v{__version__}")
 
 
 if __name__ == "__main__":

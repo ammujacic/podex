@@ -2,7 +2,6 @@
 
 import asyncio
 import contextlib
-import logging
 import uuid
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
@@ -12,9 +11,11 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any
 
+import structlog
+
 from src.services.pricing import get_all_pricing_from_cache, get_pricing_from_cache
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Memory management configuration
 MAX_USAGE_RECORDS_PER_SESSION = 1000  # Maximum usage records to keep per session

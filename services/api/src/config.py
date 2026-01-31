@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     PORT: int = 3001
     DEBUG: bool = False
+    RUN_MIGRATIONS: bool = True  # Run Alembic migrations on startup; set False for local dev
 
     # CORS - stored as raw string to avoid pydantic-settings JSON parsing issues
     CORS_ORIGINS_RAW: str = Field(
