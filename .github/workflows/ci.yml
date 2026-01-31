@@ -83,7 +83,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [shared, api-client, state, ui, local-pod-discovery, cli]
+        package: [shared, api-client, state, ui, local-pod-discovery]
     steps:
       - uses: actions/checkout@v4
 
@@ -100,11 +100,32 @@ jobs:
       - name: Run tests with coverage (90% required)
         run: pnpm --filter @podex/${{ matrix.package }} test:coverage
 
+  # CLI unit tests with coverage (separate because package name is 'podex' not '@podex/cli')
+  cli-test:
+    name: CLI Unit Tests
+    runs-on: ubuntu-latest
+    needs: [frontend-lint, frontend-typecheck, frontend-format]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests with coverage
+        run: pnpm --filter podex test:coverage
+
   # CLI E2E Tests
   cli-e2e-test:
     name: CLI E2E Tests
     runs-on: ubuntu-latest
-    needs: [frontend-packages-test]
+    needs: [cli-test]
     steps:
       - uses: actions/checkout@v4
 
@@ -607,6 +628,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - frontend-packages-test
+      - cli-test
       - frontend-test
       - cli-e2e-test
       - backend-api-test

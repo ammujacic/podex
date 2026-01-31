@@ -46,6 +46,8 @@ dependencies = [
     # GeoIP lookup for device location
     "geoip2>=4.8.0",
     "maxminddb>=2.6.0",
+    # User agent parsing for device identification
+    "user-agents>=2.2.0",
 ]
 
 [tool.uv.sources]
@@ -326,6 +328,8 @@ module = [
     "aiosmtplib.*",
     "prometheus_fastapi_instrumentator",
     "prometheus_fastapi_instrumentator.*",
+    "user_agents",
+    "user_agents.*",
 ]
 ignore_missing_imports = true
 
