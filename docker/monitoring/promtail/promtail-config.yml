@@ -38,9 +38,34 @@ scrape_configs:
         target_label: 'coolify_application_id'
       - source_labels: ['__meta_docker_container_label_coolify_name']
         target_label: 'coolify_name'
+      # Use Coolify name as service_name if compose service name is empty
+      # This provides a fallback for Coolify-managed containers
+      - source_labels: ['__meta_docker_container_label_coolify_name']
+        regex: '(.+)'
+        target_label: 'service_name'
       # Extract image name
       - source_labels: ['__meta_docker_container_image']
         target_label: 'image'
+      # =================================================================
+      # Map exposed ports to known services (fallback identification)
+      # Ports: api=3001, agent=3002, compute=3003, web=3000
+      # =================================================================
+      - source_labels: ['__meta_docker_port_private']
+        regex: '3000'
+        target_label: 'app'
+        replacement: 'web'
+      - source_labels: ['__meta_docker_port_private']
+        regex: '3001'
+        target_label: 'app'
+        replacement: 'api'
+      - source_labels: ['__meta_docker_port_private']
+        regex: '3002'
+        target_label: 'app'
+        replacement: 'agent'
+      - source_labels: ['__meta_docker_port_private']
+        regex: '3003'
+        target_label: 'app'
+        replacement: 'compute'
     pipeline_stages:
       # Parse JSON logs (Docker default format)
       - json:
@@ -54,6 +79,28 @@ scrape_configs:
       # Output the actual log message
       - output:
           source: log
+      # =================================================================
+      # Parse structlog JSON fields and extract as labels
+      # This enables fast label-based filtering in Loki/Grafana
+      # =================================================================
+      - match:
+          # Only process lines that look like JSON (start with {)
+          selector: '{job="docker"}'
+          stages:
+            - json:
+                expressions:
+                  structlog_service: service_name
+                  structlog_level: level
+                  structlog_event: event
+                  structlog_request_id: request_id
+                  structlog_filename: filename
+            - labels:
+                # Log level for filtering (info, warning, error, etc.)
+                level: structlog_level
+                # Service name from structlog (podex-api, podex-agent, podex-compute)
+                app_service: structlog_service
+                # Source filename for debugging
+                source_file: structlog_filename
 
   # =================================================================
   # System Logs
