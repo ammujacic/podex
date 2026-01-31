@@ -83,8 +83,8 @@
         {
           "datasource": { "type": "loki", "uid": "loki" },
           "editorMode": "code",
-          "expr": "sum by (level, app) (count_over_time({app=~\"$app\"} | json [$__interval]))",
-          "legendFormat": "{{app}} - {{level}}",
+          "expr": "sum by (level, service_name) (count_over_time({app=~\"$app\"} |~ \"podex\" | json | __error__=\"\" [$__interval]))",
+          "legendFormat": "{{service_name}} - {{level}}",
           "queryType": "range",
           "refId": "A"
         }
@@ -119,7 +119,7 @@
         {
           "datasource": { "type": "loki", "uid": "loki" },
           "editorMode": "code",
-          "expr": "sum(count_over_time({app=~\"$app\"} | json | level=\"error\" [$__range]))",
+          "expr": "sum(count_over_time({app=~\"$app\"} |~ \"podex\" | json | __error__=\"\" | level=\"error\" [$__range]))",
           "legendFormat": "Errors",
           "queryType": "instant",
           "refId": "A"
@@ -155,7 +155,7 @@
         {
           "datasource": { "type": "loki", "uid": "loki" },
           "editorMode": "code",
-          "expr": "sum(count_over_time({app=~\"$app\"} | json | level=~\"warning|warn\" [$__range]))",
+          "expr": "sum(count_over_time({app=~\"$app\"} |~ \"podex\" | json | __error__=\"\" | level=~\"warning|warn\" [$__range]))",
           "legendFormat": "Warnings",
           "queryType": "instant",
           "refId": "A"
@@ -191,7 +191,7 @@
         {
           "datasource": { "type": "loki", "uid": "loki" },
           "editorMode": "code",
-          "expr": "sum(count_over_time({app=~\"$app\"} | json [$__range]))",
+          "expr": "sum(count_over_time({app=~\"$app\"} |~ \"podex\" | json | __error__=\"\" [$__range]))",
           "legendFormat": "Total",
           "queryType": "instant",
           "refId": "A"
@@ -224,8 +224,8 @@
         {
           "datasource": { "type": "loki", "uid": "loki" },
           "editorMode": "code",
-          "expr": "sum by (app) (count_over_time({app=~\"$app\"} [$__range]))",
-          "legendFormat": "{{app}}",
+          "expr": "sum by (service_name) (count_over_time({app=~\"$app\"} |~ \"podex\" | json | __error__=\"\" [$__range]))",
+          "legendFormat": "{{service_name}}",
           "queryType": "instant",
           "refId": "A"
         }
@@ -243,14 +243,14 @@
     },
     {
       "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 10 },
+      "gridPos": { "h": 18, "w": 24, "x": 0, "y": 10 },
       "id": 5,
       "options": {
         "dedupStrategy": "none",
         "enableLogDetails": true,
         "prettifyLogMessage": true,
         "showCommonLabels": false,
-        "showLabels": true,
+        "showLabels": false,
         "showTime": true,
         "sortOrder": "Descending",
         "wrapLogMessage": true
@@ -259,163 +259,27 @@
         {
           "datasource": { "type": "loki", "uid": "loki" },
           "editorMode": "code",
-          "expr": "{app=~\"$app\"} | json | level=~\"$level\" | line_format \"[{{.level | upper}}] [{{.service_name}}] {{.event}}{{if .path}} path={{.path}}{{end}}{{if .request_id}} req={{.request_id}}{{end}}\"",
+          "expr": "{app=~\"$app\"} |~ \"podex\" | json | __error__=\"\" | level=~\"$level\" | line_format \"[{{.level | upper}}] [{{.service_name}}] {{.event}}{{if .path}} path={{.path}}{{end}}{{if .request_id}} req={{.request_id}}{{end}}\"",
           "legendFormat": "",
           "queryType": "range",
           "refId": "A"
         }
       ],
-      "title": "Application Logs (Formatted)",
+      "title": "Application Logs",
       "transformations": [],
       "type": "logs"
     },
     {
-      "datasource": { "type": "loki", "uid": "loki" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "align": "auto",
-            "cellOptions": { "type": "auto" },
-            "inspect": false
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [{ "color": "green", "value": null }]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": { "id": "byName", "options": "level" },
-            "properties": [
-              { "id": "custom.width", "value": 80 },
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "options": { "error": { "color": "red", "index": 0, "text": "ERROR" } },
-                    "type": "value"
-                  },
-                  {
-                    "options": { "warning": { "color": "yellow", "index": 1, "text": "WARN" } },
-                    "type": "value"
-                  },
-                  {
-                    "options": { "info": { "color": "green", "index": 2, "text": "INFO" } },
-                    "type": "value"
-                  },
-                  {
-                    "options": { "debug": { "color": "blue", "index": 3, "text": "DEBUG" } },
-                    "type": "value"
-                  }
-                ]
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": { "mode": "basic", "type": "color-background" }
-              }
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "service_name" },
-            "properties": [{ "id": "custom.width", "value": 120 }]
-          },
-          {
-            "matcher": { "id": "byName", "options": "timestamp" },
-            "properties": [{ "id": "custom.width", "value": 200 }]
-          },
-          {
-            "matcher": { "id": "byName", "options": "filename" },
-            "properties": [{ "id": "custom.width", "value": 150 }]
-          },
-          {
-            "matcher": { "id": "byName", "options": "request_id" },
-            "properties": [{ "id": "custom.width", "value": 300 }]
-          },
-          {
-            "matcher": { "id": "byName", "options": "event" },
-            "properties": [{ "id": "custom.width", "value": 400 }]
-          }
-        ]
-      },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 24 },
-      "id": 6,
-      "options": {
-        "cellHeight": "sm",
-        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
-        "showHeader": true,
-        "sortBy": [{ "desc": true, "displayName": "timestamp" }]
-      },
-      "targets": [
-        {
-          "datasource": { "type": "loki", "uid": "loki" },
-          "editorMode": "code",
-          "expr": "{app=~\"$app\"} | json | level=~\"$level\"",
-          "legendFormat": "",
-          "queryType": "range",
-          "refId": "A"
-        }
-      ],
-      "title": "Structured Log Details (Table View)",
-      "transformations": [
-        {
-          "id": "extractFields",
-          "options": {
-            "format": "json",
-            "jsonPaths": [
-              { "alias": "timestamp", "path": "timestamp" },
-              { "alias": "level", "path": "level" },
-              { "alias": "service_name", "path": "service_name" },
-              { "alias": "event", "path": "event" },
-              { "alias": "filename", "path": "filename" },
-              { "alias": "lineno", "path": "lineno" },
-              { "alias": "request_id", "path": "request_id" },
-              { "alias": "path", "path": "path" },
-              { "alias": "method", "path": "method" }
-            ],
-            "replace": false,
-            "source": "Line"
-          }
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Line": true,
-              "Time": false,
-              "id": true,
-              "labels": true,
-              "tsNs": true
-            },
-            "indexByName": {
-              "timestamp": 0,
-              "level": 1,
-              "service_name": 2,
-              "event": 3,
-              "request_id": 4,
-              "path": 5,
-              "method": 6,
-              "filename": 7,
-              "lineno": 8
-            },
-            "renameByName": {}
-          }
-        }
-      ],
-      "type": "table"
-    },
-    {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 28 },
       "id": 22,
       "panels": [],
-      "title": "Errors & Debugging",
+      "title": "Errors",
       "type": "row"
     },
     {
       "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 35 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 29 },
       "id": 7,
       "options": {
         "dedupStrategy": "none",
@@ -431,7 +295,7 @@
         {
           "datasource": { "type": "loki", "uid": "loki" },
           "editorMode": "code",
-          "expr": "{app=~\"$app\"} | json | level=\"error\" | line_format \"ERROR [{{.service_name}}:{{.filename}}:{{.lineno}}] {{.event}}\"",
+          "expr": "{app=~\"$app\"} |~ \"podex\" | json | __error__=\"\" | level=\"error\" | line_format \"[{{.service_name}}:{{.filename}}:{{.lineno}}] {{.event}}\"",
           "legendFormat": "",
           "queryType": "range",
           "refId": "A"
@@ -441,9 +305,17 @@
       "type": "logs"
     },
     {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 39 },
+      "id": 23,
+      "panels": [],
+      "title": "Request Tracing",
+      "type": "row"
+    },
+    {
       "datasource": { "type": "loki", "uid": "loki" },
       "description": "Enter a request_id or correlation_id to trace a request across services",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 45 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 40 },
       "id": 8,
       "options": {
         "dedupStrategy": "none",
@@ -459,13 +331,13 @@
         {
           "datasource": { "type": "loki", "uid": "loki" },
           "editorMode": "code",
-          "expr": "{app=~\".+\"} |~ \"$trace_id\" | json | line_format \"{{.timestamp}} [{{.level | upper}}] {{.service_name}} | {{.event}}\"",
+          "expr": "{app=~\".+\"} |~ \"$trace_id\" |~ \"podex\" | json | __error__=\"\" | line_format \"{{.timestamp}} [{{.level | upper}}] [{{.service_name}}] {{.event}}\"",
           "legendFormat": "",
           "queryType": "range",
           "refId": "A"
         }
       ],
-      "title": "Request Trace (by request_id or correlation_id)",
+      "title": "Request Trace (by request_id)",
       "type": "logs"
     }
   ],
