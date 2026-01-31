@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -12,6 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
+from podex_shared.sentry import track_file_operation
 from src.config import settings
 from src.mcp.integration import extract_mcp_qualified_name, is_mcp_tool_name
 
@@ -635,16 +637,26 @@ class ToolExecutor:
             }
 
         if tool_name == "read_file":
-            return await remote_tools.read_file(
+            start_time = time.perf_counter()
+            result = await remote_tools.read_file(
                 client=self._compute_client,
                 path=arguments.get("path", ""),
             )
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            content_size = len(result.get("content", "")) if result.get("success") else 0
+            track_file_operation("read", duration_ms, content_size, result.get("success", False))
+            return result
         if tool_name == "write_file":
-            return await remote_tools.write_file(
+            content = arguments.get("content", "")
+            start_time = time.perf_counter()
+            result = await remote_tools.write_file(
                 client=self._compute_client,
                 path=arguments.get("path", ""),
-                content=arguments.get("content", ""),
+                content=content,
             )
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            track_file_operation("write", duration_ms, len(content), result.get("success", False))
+            return result
         if tool_name == "list_directory":
             return await remote_tools.list_directory(
                 client=self._compute_client,
@@ -680,12 +692,17 @@ class ToolExecutor:
                 context_lines=arguments.get("context_lines", 2),
             )
         if tool_name == "apply_patch":
-            return await remote_tools.apply_patch(
+            patch = arguments.get("patch", "")
+            start_time = time.perf_counter()
+            result = await remote_tools.apply_patch(
                 client=self._compute_client,
                 path=arguments.get("path", ""),
-                patch=arguments.get("patch", ""),
+                patch=patch,
                 reverse=arguments.get("reverse", False),
             )
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            track_file_operation("patch", duration_ms, len(patch), result.get("success", False))
+            return result
         if tool_name == "file_fetch_url":
             # fetch_url doesn't need remote execution - it fetches external URLs
             return await remote_tools.fetch_url(

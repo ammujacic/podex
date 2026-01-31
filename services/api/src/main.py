@@ -7,6 +7,7 @@ import contextlib
 import os
 import shutil
 import subprocess
+import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -24,6 +25,7 @@ from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from podex_shared import SentryConfig, init_sentry
+from podex_shared.sentry import track_background_task
 from src.config import settings
 from src.cost.realtime_tracker import get_cost_tracker
 from src.database import close_database, get_db, init_database, seed_database
@@ -214,6 +216,7 @@ def _report_background_error(
     message: str,
     exc: Exception | None = None,
     extra: dict[str, Any] | None = None,
+    duration_ms: float = 0,
 ) -> None:
     """Report background task errors to error tracking (Sentry) if configured.
 
@@ -225,7 +228,12 @@ def _report_background_error(
         message: Error message
         exc: Optional exception object
         extra: Optional extra context data
+        duration_ms: Optional duration of the failed task in milliseconds
     """
+    # Track metric for failed task
+    error_type = type(exc).__name__ if exc else "error"
+    track_background_task(task_name, duration_ms, success=False, error_type=error_type)
+
     try:
         import sentry_sdk
 
@@ -251,6 +259,16 @@ def _report_background_error(
         logger.warning("Failed to report error to Sentry", error=str(e))
 
 
+def _report_background_success(task_name: str, duration_ms: float) -> None:
+    """Report successful background task completion for metrics.
+
+    Args:
+        task_name: Name of the background task that completed
+        duration_ms: Duration of the task in milliseconds
+    """
+    track_background_task(task_name, duration_ms, success=True)
+
+
 async def quota_reset_background_task() -> None:
     """Background task to periodically reset expired quotas.
 
@@ -263,6 +281,7 @@ async def quota_reset_background_task() -> None:
     while True:
         try:
             await asyncio.sleep(settings.BG_TASK_QUOTA_RESET_INTERVAL)
+            task_start = time.perf_counter()
 
             async for db in get_db():
                 try:
@@ -277,23 +296,26 @@ async def quota_reset_background_task() -> None:
                             timeout=settings.BG_TASK_DB_TIMEOUT,
                         )
                         logger.info("Reset expired quotas", count=reset_count)
+                    duration_ms = (time.perf_counter() - task_start) * 1000
+                    _report_background_success("quota_reset", duration_ms)
                 except TimeoutError:
                     await db.rollback()
                     logger.exception("Quota reset timed out - possible DB connection issue")
-                    # MEDIUM FIX: Report to error tracking for alerting
-                    _report_background_error("quota_reset", "Database operation timed out")
+                    duration_ms = (time.perf_counter() - task_start) * 1000
+                    _report_background_error(
+                        "quota_reset", "Database operation timed out", duration_ms=duration_ms
+                    )
                 except Exception as e:
                     await db.rollback()
                     logger.exception("Failed to reset quotas", error=str(e))
-                    # MEDIUM FIX: Report to error tracking for alerting
-                    _report_background_error("quota_reset", str(e), exc=e)
+                    duration_ms = (time.perf_counter() - task_start) * 1000
+                    _report_background_error("quota_reset", str(e), exc=e, duration_ms=duration_ms)
 
         except asyncio.CancelledError:
             logger.info("Quota reset task cancelled")
             break
         except Exception as e:
             logger.exception("Error in quota reset task", error=str(e))
-            # MEDIUM FIX: Report to error tracking for alerting
             _report_background_error("quota_reset", str(e), exc=e)
             # Continue running despite errors
             await asyncio.sleep(60)  # Wait a bit before retrying

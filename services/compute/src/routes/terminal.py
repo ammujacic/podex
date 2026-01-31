@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import struct
+import time
 from typing import Annotated, Any, ClassVar
 
 import docker
@@ -15,6 +16,7 @@ import structlog
 from docker import DockerClient
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, status
 
+from podex_shared.sentry import track_terminal_command
 from src.deps import OrchestratorSingleton, get_compute_manager, verify_internal_auth
 from src.managers.base import (
     ComputeManager,  # noqa: TC001 - FastAPI needs this at runtime for Depends()
@@ -679,6 +681,8 @@ async def terminal_websocket(
     # This allows multiple independent terminal sessions per workspace
     tmux_session_name = f"podex-{session_id}" if session_id else f"podex-{workspace_id}"
 
+    terminal_start_time = time.perf_counter()
+
     logger.info(
         "Terminal WebSocket connected",
         workspace_id=workspace_id,
@@ -706,6 +710,7 @@ async def terminal_websocket(
         shell=shell,
     )
     if not await session.start():
+        track_terminal_command(workspace_id, 0, success=False, reason="session_start_failed")
         await websocket.close(
             code=status.WS_1011_INTERNAL_ERROR,
             reason="Failed to start terminal session",
@@ -794,10 +799,16 @@ async def terminal_websocket(
         await tmux_manager.unregister_active_session(session)
 
         await session.close()
+
+        # Track terminal session duration
+        session_duration_ms = (time.perf_counter() - terminal_start_time) * 1000
+        track_terminal_command(workspace_id, session_duration_ms, success=True)
+
         logger.info(
             "Terminal WebSocket closed (tmux session persists)",
             workspace_id=workspace_id,
             session_id=session_id,
+            duration_ms=session_duration_ms,
         )
 
 

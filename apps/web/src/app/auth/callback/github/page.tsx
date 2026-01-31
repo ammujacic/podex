@@ -3,12 +3,12 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Loader2, CheckCircle } from 'lucide-react';
-import { handleOAuthCallback, handleGitHubLinkCallback } from '@/lib/api';
+import { handleGitHubCallbackAuto } from '@/lib/api';
 import { toast } from 'sonner';
 
 type CallbackState = 'loading' | 'processing' | 'success' | 'link-success' | 'error';
 
-// Session storage key for tracking callback attempts
+// Session storage key for tracking callback attempts (prevents double execution)
 const CALLBACK_ATTEMPT_KEY = 'github_oauth_callback_attempted';
 
 function GitHubCallbackContent() {
@@ -49,44 +49,35 @@ function GitHubCallbackContent() {
       return;
     }
 
-    // Determine flow type BEFORE starting the callback
-    const storedLinkState =
-      typeof window !== 'undefined' ? sessionStorage.getItem('github_link_state') : null;
-
-    const isLink = storedLinkState === stateParam;
-    setIsLinkFlow(isLink);
     setState('processing');
 
-    if (isLink) {
-      // Account linking flow
-      handleGitHubLinkCallback(code, stateParam)
-        .then((response) => {
-          setLinkMessage(response.message);
+    // Use the unified callback endpoint that auto-detects flow type server-side
+    // This is more reliable than sessionStorage-based detection
+    handleGitHubCallbackAuto(code, stateParam)
+      .then((response) => {
+        if (response.flow_type === 'link') {
+          // Account linking flow
+          setIsLinkFlow(true);
+          setLinkMessage(response.link_message || 'GitHub account linked successfully');
           setState('link-success');
           toast.success(`Successfully linked GitHub account @${response.github_username}`);
           // Redirect to settings after showing success
           setTimeout(() => {
             router.push('/settings');
           }, 1500);
-        })
-        .catch((err) => {
-          setError(err.message || 'Failed to link GitHub account');
-          setState('error');
-        });
-    } else {
-      // Login/signup flow
-      handleOAuthCallback('github', code, stateParam)
-        .then(() => {
+        } else {
+          // Login/signup flow
+          setIsLinkFlow(false);
           setState('success');
           toast.success('Successfully signed in with GitHub!');
           // Redirect immediately for login
           router.push('/dashboard');
-        })
-        .catch((err) => {
-          setError(err.message || 'Failed to complete OAuth flow');
-          setState('error');
-        });
-    }
+        }
+      })
+      .catch((err) => {
+        setError(err.message || 'Failed to complete GitHub authentication');
+        setState('error');
+      });
   }, [searchParams, router]);
 
   // Clear stored states on completion (success or error)
@@ -95,6 +86,7 @@ function GitHubCallbackContent() {
       (state === 'error' || state === 'success' || state === 'link-success') &&
       typeof window !== 'undefined'
     ) {
+      // Clean up any leftover sessionStorage (for hygiene, no longer relied upon)
       sessionStorage.removeItem('github_link_state');
       // Clean up callback attempt markers for this state param
       const stateParam = searchParams.get('state');
@@ -110,9 +102,7 @@ function GitHubCallbackContent() {
       <div className="min-h-screen flex items-center justify-center bg-void">
         <div className="text-center">
           <Loader2 className="w-8 h-8 animate-spin text-accent-primary mx-auto mb-4" />
-          <p className="text-text-secondary">
-            {isLinkFlow ? 'Linking your GitHub account...' : 'Completing GitHub sign in...'}
-          </p>
+          <p className="text-text-secondary">Completing GitHub authentication...</p>
         </div>
       </div>
     );

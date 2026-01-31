@@ -27,6 +27,10 @@ export { TerminalPanel } from './TerminalPanel';
 // Agent components
 export { AgentCard } from './AgentCard';
 export { AgentGrid } from './AgentGrid';
+
+// Terminal window components
+export { TerminalCard } from './TerminalCard';
+export { DraggableTerminalCard } from './DraggableTerminalCard';
 export { AgentModeSelector } from './AgentModeSelector';
 export { ApprovalDialog } from './ApprovalDialog';
 export { PlanApprovalActions } from './PlanApprovalActions';

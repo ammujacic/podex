@@ -22,6 +22,7 @@ from src.config import settings
 from src.database.connection import get_db
 from src.database.models import (
     GitHubIntegration,
+    GoogleIntegration,
     PlatformInvitation,
     PlatformSetting,
     Session,
@@ -693,100 +694,8 @@ async def github_authorize(
     return OAuthURLResponse(url=url, state=state)
 
 
-@router.post("/github/callback", response_model=OAuthTokenResponse)
-@limiter.limit(RATE_LIMIT_OAUTH)
-async def github_callback(
-    body: OAuthCallbackRequest,
-    request: Request,
-    response: Response,
-    db: DbSession,
-) -> OAuthTokenResponse:
-    """Handle GitHub OAuth callback."""
-    if not settings.GITHUB_CLIENT_ID or not settings.GITHUB_CLIENT_SECRET:
-        raise HTTPException(status_code=501, detail="GitHub OAuth not configured")
-
-    # Validate state from Redis (one-time use)
-    if not await validate_oauth_state(body.state, "github"):
-        raise HTTPException(status_code=400, detail="Invalid or expired state parameter")
-
-    access_token = await _exchange_github_code_for_token(body.code)
-    user_data = await _fetch_github_user_data(access_token)
-
-    oauth_user_info = OAuthUserInfo(
-        provider="github",
-        oauth_id=user_data.user_id,
-        email=user_data.email,
-        name=user_data.name,
-        avatar_url=user_data.avatar_url,
-    )
-    user = await _find_or_create_oauth_user(db, oauth_user_info)
-
-    integration_result = await db.execute(
-        select(GitHubIntegration).where(GitHubIntegration.user_id == user.id)
-    )
-    integration = integration_result.scalar_one_or_none()
-
-    if integration:
-        integration.github_user_id = int(user_data.user_id)
-        integration.github_username = user_data.login
-        integration.github_avatar_url = user_data.avatar_url
-        integration.github_email = user_data.email
-        integration.access_token = access_token
-        integration.refresh_token = None
-        integration.token_expires_at = None
-        integration.scopes = user_data.scopes
-        integration.is_active = True
-    else:
-        integration = GitHubIntegration(
-            user_id=user.id,
-            github_user_id=int(user_data.user_id),
-            github_username=user_data.login,
-            github_avatar_url=user_data.avatar_url,
-            github_email=user_data.email,
-            access_token=access_token,
-            refresh_token=None,
-            token_expires_at=None,
-            scopes=user_data.scopes,
-            is_active=True,
-        )
-        db.add(integration)
-
-    await db.commit()
-
-    # Update git config from GitHub data
-    await _update_git_config_from_github(
-        db,
-        user.id,
-        user_data.name,
-        user_data.email,
-    )
-
-    # Update all existing workspaces with GitHub token configuration
-    await _update_workspaces_with_github_token(
-        db,
-        user.id,
-        access_token,
-    )
-
-    # Log token info for debugging
-    token_preview = (
-        f"{access_token[:4]}...{access_token[-4:]}" if len(access_token) > 8 else "SHORT"
-    )
-    logger.info(
-        "Saved GitHub integration after OAuth login",
-        user_id=str(user.id),
-        github_username=user_data.login,
-        token_preview=token_preview,
-        token_length=len(access_token),
-        scopes=user_data.scopes,
-    )
-
-    return _build_token_response(user, request, response)
-
-
 # ============== GitHub Account Linking ==============
-# These endpoints are for linking GitHub to an existing authenticated Podex account
-# (as opposed to the above endpoints which are for login/signup via GitHub)
+# The link-authorize endpoint is used to start the link flow for logged-in users
 
 
 class GitHubLinkResponse(BaseModel):
@@ -827,77 +736,159 @@ async def github_link_authorize(
     return OAuthURLResponse(url=url, state=state)
 
 
-@router.post("/github/link-callback", response_model=GitHubLinkResponse)
-@limiter.limit(RATE_LIMIT_OAUTH)
-async def github_link_callback(
-    body: OAuthCallbackRequest,
-    request: Request,  # noqa: ARG001
-    response: Response,  # noqa: ARG001
-    db: DbSession,
-) -> GitHubLinkResponse:
-    """Handle GitHub OAuth callback for account linking.
+# ============== Unified GitHub Callback ==============
+# Auto-detects whether this is a link flow or login flow based on Redis state
 
-    Links the GitHub account to the user who initiated the link flow.
-    Does NOT create a new user or log the user in with new credentials.
+
+class GitHubUnifiedCallbackResponse(BaseModel):
+    """Response for unified GitHub callback that handles both link and login flows.
+
+    The frontend should check `flow_type` to determine how to handle the response:
+    - "link": Account linking completed, redirect to settings
+    - "login": Login/signup completed, redirect to dashboard
+    """
+
+    flow_type: str  # "link" or "login"
+    # Link flow fields (present when flow_type == "link")
+    github_username: str | None = None
+    link_message: str | None = None
+    # Login flow fields (present when flow_type == "login")
+    access_token: str | None = None
+    refresh_token: str | None = None
+    token_type: str = "bearer"
+    expires_in: int | None = None
+    user: dict[str, Any] | None = None
+
+
+@router.post("/github/callback-auto", response_model=GitHubUnifiedCallbackResponse)
+@limiter.limit(RATE_LIMIT_OAUTH)
+async def github_callback_auto(
+    body: OAuthCallbackRequest,
+    request: Request,
+    response: Response,
+    db: DbSession,
+) -> GitHubUnifiedCallbackResponse:
+    """Unified GitHub OAuth callback that auto-detects link vs login flow.
+
+    This endpoint checks the state token against both Redis stores:
+    1. First checks if it's a "link" state (user linking GitHub to existing account)
+    2. If not, checks if it's a "login" state (user logging in or signing up)
+
+    This eliminates the need for frontend sessionStorage to track flow type,
+    making the OAuth flow more reliable across redirects.
     """
     if not settings.GITHUB_CLIENT_ID or not settings.GITHUB_CLIENT_SECRET:
         raise HTTPException(status_code=501, detail="GitHub OAuth not configured")
 
-    # Validate state and get the user_id who initiated the link
-    user_id = await validate_oauth_link_state(body.state, "github")
-    if not user_id:
-        raise HTTPException(status_code=400, detail="Invalid or expired state parameter")
+    # First, check if this is an account linking flow
+    link_user_id = await validate_oauth_link_state(body.state, "github")
 
-    # Exchange code for GitHub access token using the same redirect URI as login
-    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-        token_response = await client.post(
-            "https://github.com/login/oauth/access_token",
-            data={
-                "client_id": settings.GITHUB_CLIENT_ID,
-                "client_secret": settings.GITHUB_CLIENT_SECRET,
-                "code": body.code,
-                "redirect_uri": settings.GITHUB_REDIRECT_URI,
-            },
-            headers={"Accept": "application/json"},
+    if link_user_id:
+        # === LINK FLOW ===
+        # This is an account linking request from a logged-in user
+        logger.info(
+            "GitHub callback: detected link flow",
+            user_id=link_user_id[:8],
+            state=body.state[:8],
         )
 
-        if token_response.status_code != HTTPStatus.OK:
-            raise HTTPException(status_code=400, detail="Failed to exchange code for token")
+        # Exchange code for token
+        access_token = await _exchange_github_code_for_token(body.code)
+        user_data = await _fetch_github_user_data(access_token)
 
-        token_data = token_response.json()
-        if "error" in token_data:
+        # Verify the user exists
+        result = await db.execute(select(User).where(User.id == link_user_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Check if this GitHub account is already linked to another user
+        existing_integration = await db.execute(
+            select(GitHubIntegration).where(
+                GitHubIntegration.github_user_id == int(user_data.user_id),
+                GitHubIntegration.user_id != link_user_id,
+            )
+        )
+        if existing_integration.scalar_one_or_none():
             raise HTTPException(
-                status_code=400,
-                detail=token_data.get("error_description", "OAuth error"),
+                status_code=409,
+                detail="This GitHub account is already linked to another Podex account",
             )
 
-        access_token = str(token_data["access_token"])
+        # Create or update the GitHub integration
+        integration_result = await db.execute(
+            select(GitHubIntegration).where(GitHubIntegration.user_id == link_user_id)
+        )
+        integration = integration_result.scalar_one_or_none()
 
-    # Fetch GitHub user data
+        if integration:
+            integration.github_user_id = int(user_data.user_id)
+            integration.github_username = user_data.login
+            integration.github_avatar_url = user_data.avatar_url
+            integration.github_email = user_data.email
+            integration.access_token = access_token
+            integration.refresh_token = None
+            integration.token_expires_at = None
+            integration.scopes = user_data.scopes
+            integration.is_active = True
+        else:
+            integration = GitHubIntegration(
+                user_id=link_user_id,
+                github_user_id=int(user_data.user_id),
+                github_username=user_data.login,
+                github_avatar_url=user_data.avatar_url,
+                github_email=user_data.email,
+                access_token=access_token,
+                refresh_token=None,
+                token_expires_at=None,
+                scopes=user_data.scopes,
+                is_active=True,
+            )
+            db.add(integration)
+
+        await db.commit()
+
+        # Update git config and workspaces
+        await _update_git_config_from_github(db, link_user_id, user_data.name, user_data.email)
+        await _update_workspaces_with_github_token(db, link_user_id, access_token)
+
+        logger.info(
+            "GitHub account linked successfully via unified callback",
+            user_id=link_user_id,
+            github_username=user_data.login,
+        )
+
+        return GitHubUnifiedCallbackResponse(
+            flow_type="link",
+            github_username=user_data.login,
+            link_message=f"Successfully linked GitHub account @{user_data.login}",
+        )
+
+    # Not a link flow, check if it's a login flow
+    if not await validate_oauth_state(body.state, "github"):
+        raise HTTPException(status_code=400, detail="Invalid or expired state parameter")
+
+    # === LOGIN FLOW ===
+    logger.info(
+        "GitHub callback: detected login flow",
+        state=body.state[:8],
+    )
+
+    access_token = await _exchange_github_code_for_token(body.code)
     user_data = await _fetch_github_user_data(access_token)
 
-    # Verify the user exists
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    # Check if this GitHub account is already linked to another user
-    existing_integration = await db.execute(
-        select(GitHubIntegration).where(
-            GitHubIntegration.github_user_id == int(user_data.user_id),
-            GitHubIntegration.user_id != user_id,
-        )
+    oauth_user_info = OAuthUserInfo(
+        provider="github",
+        oauth_id=user_data.user_id,
+        email=user_data.email,
+        name=user_data.name,
+        avatar_url=user_data.avatar_url,
     )
-    if existing_integration.scalar_one_or_none():
-        raise HTTPException(
-            status_code=409,
-            detail="This GitHub account is already linked to another Podex account",
-        )
+    user = await _find_or_create_oauth_user(db, oauth_user_info)
 
-    # Create or update the GitHub integration for this user
+    # Create/update GitHub integration
     integration_result = await db.execute(
-        select(GitHubIntegration).where(GitHubIntegration.user_id == user_id)
+        select(GitHubIntegration).where(GitHubIntegration.user_id == user.id)
     )
     integration = integration_result.scalar_one_or_none()
 
@@ -913,7 +904,7 @@ async def github_link_callback(
         integration.is_active = True
     else:
         integration = GitHubIntegration(
-            user_id=user_id,
+            user_id=user.id,
             github_user_id=int(user_data.user_id),
             github_username=user_data.login,
             github_avatar_url=user_data.avatar_url,
@@ -928,31 +919,26 @@ async def github_link_callback(
 
     await db.commit()
 
-    # Update git config from GitHub data
-    await _update_git_config_from_github(
-        db,
-        user_id,
-        user_data.name,
-        user_data.email,
-    )
-
-    # Update all existing workspaces with GitHub token configuration
-    await _update_workspaces_with_github_token(
-        db,
-        user_id,
-        access_token,
-    )
+    # Update git config and workspaces
+    await _update_git_config_from_github(db, user.id, user_data.name, user_data.email)
+    await _update_workspaces_with_github_token(db, user.id, access_token)
 
     logger.info(
-        "GitHub account linked successfully",
-        user_id=user_id,
+        "GitHub login completed via unified callback",
+        user_id=str(user.id),
         github_username=user_data.login,
     )
 
-    return GitHubLinkResponse(
-        success=True,
-        github_username=user_data.login,
-        message=f"Successfully linked GitHub account @{user_data.login}",
+    # Build token response
+    token_response = _build_token_response(user, request, response)
+
+    return GitHubUnifiedCallbackResponse(
+        flow_type="login",
+        access_token=token_response.access_token,
+        refresh_token=token_response.refresh_token,
+        token_type=token_response.token_type,
+        expires_in=token_response.expires_in,
+        user=token_response.user,
     )
 
 
@@ -965,7 +951,7 @@ async def google_authorize(
     request: Request,  # noqa: ARG001
     response: Response,  # noqa: ARG001
 ) -> OAuthURLResponse:
-    """Get Google OAuth authorization URL."""
+    """Get Google OAuth authorization URL for login/signup."""
     if not settings.GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=501, detail="Google OAuth not configured")
 
@@ -985,21 +971,178 @@ async def google_authorize(
     return OAuthURLResponse(url=url, state=state)
 
 
-@router.post("/google/callback", response_model=OAuthTokenResponse)
+# ============== Google Account Linking ==============
+# The link-authorize endpoint is used to start the link flow for logged-in users
+
+
+class GoogleLinkResponse(BaseModel):
+    """Response for Google account linking."""
+
+    success: bool
+    google_email: str
+    message: str
+
+
+@router.get("/google/link-authorize", response_model=OAuthURLResponse)
 @limiter.limit(RATE_LIMIT_OAUTH)
-async def google_callback(
+async def google_link_authorize(
+    request: Request,  # noqa: ARG001
+    response: Response,  # noqa: ARG001
+    user: dict[str, Any] = Depends(get_current_user),
+) -> OAuthURLResponse:
+    """Get Google OAuth authorization URL for account linking.
+
+    This endpoint is for logged-in users who want to link their Google
+    account to their existing Podex account (not for login/signup).
+    """
+    if not settings.GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=501, detail="Google OAuth not configured")
+
+    state = secrets.token_urlsafe(32)
+    # Store state with user_id for linking
+    await store_oauth_link_state(state, "google", user["id"])
+
+    params = {
+        "client_id": settings.GOOGLE_CLIENT_ID,
+        "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+
+    url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
+    return OAuthURLResponse(url=url, state=state)
+
+
+# ============== Unified Google Callback ==============
+# Auto-detects whether this is a link flow or login flow based on Redis state
+
+
+class GoogleUnifiedCallbackResponse(BaseModel):
+    """Response for unified Google callback that handles both link and login flows.
+
+    The frontend should check `flow_type` to determine how to handle the response:
+    - "link": Account linking completed, redirect to settings
+    - "login": Login/signup completed, redirect to dashboard
+    """
+
+    flow_type: str  # "link" or "login"
+    # Link flow fields (present when flow_type == "link")
+    google_email: str | None = None
+    link_message: str | None = None
+    # Login flow fields (present when flow_type == "login")
+    access_token: str | None = None
+    refresh_token: str | None = None
+    token_type: str = "bearer"
+    expires_in: int | None = None
+    user: dict[str, Any] | None = None
+
+
+@router.post("/google/callback-auto", response_model=GoogleUnifiedCallbackResponse)
+@limiter.limit(RATE_LIMIT_OAUTH)
+async def google_callback_auto(
     body: OAuthCallbackRequest,
     request: Request,
     response: Response,
     db: DbSession,
-) -> OAuthTokenResponse:
-    """Handle Google OAuth callback."""
+) -> GoogleUnifiedCallbackResponse:
+    """Unified Google OAuth callback that auto-detects link vs login flow.
+
+    This endpoint checks the state token against both Redis stores:
+    1. First checks if it's a "link" state (user linking Google to existing account)
+    2. If not, checks if it's a "login" state (user logging in or signing up)
+
+    This eliminates the need for frontend sessionStorage to track flow type,
+    making the OAuth flow more reliable across redirects.
+    """
     if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
         raise HTTPException(status_code=501, detail="Google OAuth not configured")
 
-    # Validate state from Redis (one-time use)
+    # First, check if this is an account linking flow
+    link_user_id = await validate_oauth_link_state(body.state, "google")
+
+    if link_user_id:
+        # === LINK FLOW ===
+        # This is an account linking request from a logged-in user
+        logger.info(
+            "Google callback: detected link flow",
+            user_id=link_user_id[:8],
+            state=body.state[:8],
+        )
+
+        # Exchange code for token
+        access_token = await _exchange_google_code_for_token(body.code)
+        user_data = await _fetch_google_user_data(access_token)
+
+        # Verify the user exists
+        result = await db.execute(select(User).where(User.id == link_user_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Check if this Google account is already linked to another user
+        existing_integration = await db.execute(
+            select(GoogleIntegration).where(
+                GoogleIntegration.google_user_id == user_data.user_id,
+                GoogleIntegration.user_id != link_user_id,
+            )
+        )
+        if existing_integration.scalar_one_or_none():
+            raise HTTPException(
+                status_code=409,
+                detail="This Google account is already linked to another Podex account",
+            )
+
+        # Create or update the Google integration
+        integration_result = await db.execute(
+            select(GoogleIntegration).where(GoogleIntegration.user_id == link_user_id)
+        )
+        integration = integration_result.scalar_one_or_none()
+
+        if integration:
+            integration.google_user_id = user_data.user_id
+            integration.google_email = user_data.email
+            integration.google_name = user_data.name
+            integration.google_avatar_url = user_data.avatar_url
+            integration.access_token = access_token
+            integration.is_active = True
+        else:
+            integration = GoogleIntegration(
+                user_id=link_user_id,
+                google_user_id=user_data.user_id,
+                google_email=user_data.email,
+                google_name=user_data.name,
+                google_avatar_url=user_data.avatar_url,
+                access_token=access_token,
+                is_active=True,
+            )
+            db.add(integration)
+
+        await db.commit()
+
+        logger.info(
+            "Google account linked successfully via unified callback",
+            user_id=link_user_id,
+            google_email=user_data.email,
+        )
+
+        return GoogleUnifiedCallbackResponse(
+            flow_type="link",
+            google_email=user_data.email,
+            link_message=f"Successfully linked Google account {user_data.email}",
+        )
+
+    # Not a link flow, check if it's a login flow
     if not await validate_oauth_state(body.state, "google"):
         raise HTTPException(status_code=400, detail="Invalid or expired state parameter")
+
+    # === LOGIN FLOW ===
+    logger.info(
+        "Google callback: detected login flow",
+        state=body.state[:8],
+    )
 
     access_token = await _exchange_google_code_for_token(body.code)
     user_data = await _fetch_google_user_data(access_token)
@@ -1013,4 +1156,20 @@ async def google_callback(
     )
     user = await _find_or_create_oauth_user(db, oauth_user_info)
 
-    return _build_token_response(user, request, response)
+    logger.info(
+        "Google login completed via unified callback",
+        user_id=str(user.id),
+        google_email=user_data.email,
+    )
+
+    # Build token response
+    token_response = _build_token_response(user, request, response)
+
+    return GoogleUnifiedCallbackResponse(
+        flow_type="login",
+        access_token=token_response.access_token,
+        refresh_token=token_response.refresh_token,
+        token_type=token_response.token_type,
+        expires_in=token_response.expires_in,
+        user=token_response.user,
+    )

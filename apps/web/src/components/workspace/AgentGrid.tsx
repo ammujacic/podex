@@ -2,17 +2,16 @@
 
 import { useRef, Component, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
-import { Plus, AlertTriangle, RefreshCw, FileCode, X, Globe } from 'lucide-react';
+import { Plus, AlertTriangle, RefreshCw, FileCode, X, Terminal } from 'lucide-react';
 import { useSessionStore, type Agent } from '@/stores/session';
 import { AgentCard } from './AgentCard';
+import { TerminalCard } from './TerminalCard';
 import { DraggableAgentCard } from './DraggableAgentCard';
+import { DraggableTerminalCard } from './DraggableTerminalCard';
 import { DraggableEditorCard } from './DraggableEditorCard';
-import { DraggablePreviewCard } from './DraggablePreviewCard';
 import { ResizableGridCard } from './ResizableGridCard';
 import { DockedFilePreviewCard } from './DockedFilePreviewCard';
 import { EditorGridCard } from './EditorGridCard';
-import { PreviewGridCard } from './PreviewGridCard';
-import { PreviewPanel } from './PreviewPanel';
 import { GridProvider } from './GridContext';
 import { useUIStore } from '@/stores/ui';
 import { deleteAgent as deleteAgentApi } from '@/lib/api';
@@ -168,8 +167,16 @@ const demoAgents: Agent[] = [
 ];
 
 export function AgentGrid({ sessionId }: AgentGridProps) {
-  const { sessions, setActiveAgent, closeFilePreview, removeAgent, removeEditorGridCard } =
-    useSessionStore();
+  const {
+    sessions,
+    setActiveAgent,
+    setActiveWindow,
+    closeFilePreview,
+    removeAgent,
+    addTerminalWindow,
+    removeTerminalWindow,
+    removeEditorGridCard,
+  } = useSessionStore();
   const { openModal, gridConfig } = useUIStore();
   const containerRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
@@ -190,16 +197,22 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
     }
     return true;
   });
+  // Get terminal windows
+  const terminalWindows = session?.terminalWindows ?? [];
   const viewMode = session?.viewMode ?? 'grid';
   const activeAgentId = session?.activeAgentId;
+  const activeWindowId = session?.activeWindowId;
   const workspaceId = session?.workspaceId ?? '';
   const filePreviews = session?.filePreviews ?? [];
   const dockedPreviews = filePreviews.filter((p) => p.docked);
   const editorGridCardId = session?.editorGridCardId;
-  const previewGridCardId = session?.previewGridCardId;
 
   const handleAddAgent = () => {
     openModal('create-agent');
+  };
+
+  const handleAddTerminal = () => {
+    addTerminalWindow(sessionId);
   };
 
   // Remove agent from both backend and frontend
@@ -235,69 +248,83 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
           );
         })}
 
+        {/* Draggable terminal cards in freeform mode */}
+        {terminalWindows.map((terminal) => (
+          <DraggableTerminalCard
+            key={terminal.id}
+            terminalWindow={terminal}
+            sessionId={sessionId}
+            workspaceId={workspaceId}
+            containerRef={containerRef}
+          />
+        ))}
+
         {/* Draggable editor card in freeform mode */}
         {editorGridCardId && (
           <DraggableEditorCard sessionId={sessionId} paneId="main" containerRef={containerRef} />
         )}
 
-        {/* Draggable preview card in freeform mode */}
-        {previewGridCardId && workspaceId && (
-          <DraggablePreviewCard
-            sessionId={sessionId}
-            workspaceId={workspaceId}
-            containerRef={containerRef}
-          />
-        )}
-
-        {/* Floating add agent button */}
-        <button
-          onClick={handleAddAgent}
-          className="absolute bottom-4 right-4 flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-primary text-text-inverse shadow-lg hover:bg-opacity-90 transition-colors z-50 cursor-pointer"
-        >
-          <Plus className="h-4 w-4" />
-          <span className="text-sm font-medium">Add Agent</span>
-        </button>
+        {/* Floating add buttons */}
+        <div className="absolute bottom-4 right-4 flex items-center gap-2 z-50">
+          <button
+            onClick={handleAddTerminal}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-zinc-800 text-zinc-200 shadow-lg hover:bg-zinc-700 transition-colors cursor-pointer"
+          >
+            <Terminal className="h-4 w-4 text-cyan-400" />
+            <span className="text-sm font-medium">Add Terminal</span>
+          </button>
+          <button
+            onClick={handleAddAgent}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-primary text-text-inverse shadow-lg hover:bg-opacity-90 transition-colors cursor-pointer"
+          >
+            <Plus className="h-4 w-4" />
+            <span className="text-sm font-medium">Add Agent</span>
+          </button>
+        </div>
       </div>
     );
   }
 
   // Focus mode: show only the active agent (or first agent if none selected)
-  // Also supports showing file previews, editor, and live preview as tabs
+  // Also supports showing file previews, editor, and terminal windows as tabs
   if (
     viewMode === 'focus' &&
-    (agents.length > 0 || dockedPreviews.length > 0 || editorGridCardId || previewGridCardId)
+    (agents.length > 0 ||
+      terminalWindows.length > 0 ||
+      dockedPreviews.length > 0 ||
+      editorGridCardId)
   ) {
-    // Find focused agent: if activeAgentId is set, try to find it; if not found (stale ID), fall back to first agent
+    // Check if activeWindowId is a terminal window
+    const focusedTerminal = activeWindowId
+      ? terminalWindows.find((t) => t.id === activeWindowId)
+      : null;
+    // Find focused agent: if activeWindowId is set, try to find it; if not found (stale ID), fall back to first agent
     const focusedAgent =
-      agents.length > 0
-        ? activeAgentId
-          ? (agents.find((a) => a.id === activeAgentId) ?? agents[0])
+      agents.length > 0 && !focusedTerminal
+        ? activeWindowId
+          ? (agents.find((a) => a.id === activeWindowId) ?? agents[0])
           : agents[0]
         : null;
-    // Check if activeAgentId is actually a file preview ID
-    const focusedFilePreview = activeAgentId
-      ? dockedPreviews.find((p) => p.id === activeAgentId)
-      : (dockedPreviews[0] ?? null);
-    // Check if activeAgentId is the editor
+    // Check if activeWindowId is actually a file preview ID
+    const focusedFilePreview =
+      activeWindowId && !focusedTerminal
+        ? dockedPreviews.find((p) => p.id === activeWindowId)
+        : null;
+    // Check if activeWindowId is the editor
     const isEditorFocused =
-      activeAgentId === 'editor' ||
-      (!activeAgentId && !focusedAgent && !focusedFilePreview && !!editorGridCardId);
-    // Check if activeAgentId is the live preview
-    const isPreviewFocused =
-      activeAgentId === 'preview' ||
-      (!activeAgentId &&
+      activeWindowId === 'editor' ||
+      (!activeWindowId &&
         !focusedAgent &&
+        !focusedTerminal &&
         !focusedFilePreview &&
-        !isEditorFocused &&
-        !!previewGridCardId);
+        !!editorGridCardId);
 
     if (
       focusedAgent ||
+      focusedTerminal ||
       focusedFilePreview ||
       isEditorFocused ||
-      isPreviewFocused ||
-      editorGridCardId ||
-      previewGridCardId
+      editorGridCardId
     ) {
       return (
         <div className="h-full flex flex-col" data-tour="agent-grid">
@@ -310,7 +337,7 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
               return (
                 <button
                   key={agent.id}
-                  onClick={() => setActiveAgent(sessionId, agent.id)}
+                  onClick={() => setActiveWindow(sessionId, agent.id)}
                   className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm whitespace-nowrap transition-colors cursor-pointer ${
                     isActive
                       ? 'bg-accent-primary text-text-inverse'
@@ -319,6 +346,41 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
                 >
                   <div className="h-2 w-2 rounded-full" style={{ backgroundColor: agent.color }} />
                   {agent.name}
+                </button>
+              );
+            })}
+
+            {/* Terminal window tabs */}
+            {terminalWindows.length > 0 && <div className="h-4 w-px bg-border-subtle mx-1" />}
+            {terminalWindows.map((terminal) => {
+              const isActive = terminal.id === activeWindowId;
+              return (
+                <button
+                  key={terminal.id}
+                  onClick={() => setActiveWindow(sessionId, terminal.id)}
+                  className={`group flex items-center gap-2 px-3 py-1.5 rounded-md text-sm whitespace-nowrap transition-colors cursor-pointer ${
+                    isActive
+                      ? 'bg-accent-primary text-text-inverse'
+                      : 'bg-elevated text-text-secondary hover:text-text-primary hover:bg-overlay'
+                  }`}
+                >
+                  <div
+                    className={`h-2 w-2 rounded-full shrink-0 ${
+                      terminal.status === 'connected'
+                        ? 'bg-green-500'
+                        : terminal.status === 'error'
+                          ? 'bg-red-500'
+                          : 'bg-zinc-500'
+                    }`}
+                  />
+                  <span className="max-w-[120px] truncate">{terminal.name}</span>
+                  <X
+                    className={`h-3.5 w-3.5 ${isActive ? 'text-text-inverse/70 hover:text-text-inverse' : 'text-text-muted hover:text-accent-error'}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeTerminalWindow(sessionId, terminal.id);
+                    }}
+                  />
                 </button>
               );
             })}
@@ -385,44 +447,24 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
               </>
             )}
 
-            {/* Live Preview tab */}
-            {previewGridCardId && (
-              <>
-                <div className="h-4 w-px bg-border-subtle mx-1" />
-                <button
-                  onClick={() => setActiveAgent(sessionId, 'preview')}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm whitespace-nowrap transition-colors cursor-pointer ${
-                    isPreviewFocused
-                      ? 'bg-accent-primary text-text-inverse'
-                      : 'bg-elevated text-text-secondary hover:text-text-primary hover:bg-overlay'
-                  }`}
-                >
-                  <Globe
-                    className={`h-3.5 w-3.5 ${isPreviewFocused ? 'text-text-inverse' : 'text-accent-secondary'}`}
-                  />
-                  Preview
-                </button>
-              </>
-            )}
-
+            <button
+              onClick={handleAddTerminal}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-md text-sm bg-elevated/50 border border-dashed border-border-default text-text-muted hover:text-text-primary hover:bg-elevated hover:border-border-strong cursor-pointer transition-colors"
+            >
+              <Terminal className="h-4 w-4 text-cyan-400" />
+            </button>
             <button
               onClick={handleAddAgent}
               className="flex items-center gap-1 px-3 py-1.5 rounded-md text-sm bg-elevated/50 border border-dashed border-border-default text-text-muted hover:text-text-primary hover:bg-elevated hover:border-border-strong cursor-pointer transition-colors"
             >
               <Plus className="h-4 w-4" />
-              Add
             </button>
           </div>
 
           {/* Focused content view */}
           <div className="flex-1 p-4 overflow-auto">
             <div className="h-full max-w-4xl mx-auto">
-              {isPreviewFocused && workspaceId ? (
-                // Render live preview
-                <div className="h-full rounded-lg border border-border-default bg-surface overflow-hidden flex flex-col">
-                  <PreviewPanel workspaceId={workspaceId} />
-                </div>
-              ) : isEditorFocused ? (
+              {isEditorFocused ? (
                 // Render editor
                 <div className="h-full rounded-lg border border-border-default bg-surface overflow-hidden flex flex-col">
                   <EnhancedCodeEditor paneId="main" className="h-full" />
@@ -451,6 +493,14 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
                     />
                   </div>
                 </div>
+              ) : focusedTerminal ? (
+                // Render terminal window
+                <TerminalCard
+                  terminalWindow={focusedTerminal}
+                  sessionId={sessionId}
+                  workspaceId={workspaceId}
+                  expanded
+                />
               ) : focusedAgent ? (
                 // Render agent
                 <AgentCardErrorBoundary
@@ -492,6 +542,23 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
             </AgentCardErrorBoundary>
           ))}
 
+          {/* Terminal windows */}
+          {terminalWindows.map((terminal) => (
+            <div
+              key={terminal.id}
+              style={{
+                gridColumn: `span ${terminal.gridSpan?.colSpan ?? 1}`,
+                gridRow: `span ${terminal.gridSpan?.rowSpan ?? 1}`,
+              }}
+            >
+              <TerminalCard
+                terminalWindow={terminal}
+                sessionId={sessionId}
+                workspaceId={workspaceId}
+              />
+            </div>
+          ))}
+
           {/* Docked file previews */}
           {dockedPreviews.map((preview) => (
             <DockedFilePreviewCard
@@ -512,15 +579,17 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
             />
           )}
 
-          {/* Live preview grid card */}
-          {previewGridCardId && workspaceId && (
-            <PreviewGridCard
-              key={previewGridCardId}
-              sessionId={sessionId}
-              workspaceId={workspaceId}
-              maxCols={dynamicMaxCols}
-            />
-          )}
+          {/* Add terminal button */}
+          <button
+            onClick={handleAddTerminal}
+            className="flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-border-default bg-surface/50 p-8 text-text-muted transition-colors hover:border-cyan-500/50 hover:text-text-secondary cursor-pointer"
+            style={{ minHeight: `${gridConfig.rowHeight}px` }}
+          >
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-elevated">
+              <Terminal className="h-6 w-6 text-cyan-400" />
+            </div>
+            <span className="text-sm font-medium">Add Terminal</span>
+          </button>
 
           {/* Add agent button */}
           <button

@@ -94,6 +94,7 @@ from .extensions import (
 from .infrastructure import (
     DefaultMCPServer,
     GitHubIntegration,
+    GoogleIntegration,
     LocalPod,
     MCPServer,
     PodTemplate,
@@ -204,6 +205,7 @@ __all__ = [
     "FileChange",
     "FileCheckpoint",
     "GitHubIntegration",
+    "GoogleIntegration",
     "HardwareSpec",
     "HealthCheck",
     "Invoice",

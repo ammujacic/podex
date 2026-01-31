@@ -56,6 +56,31 @@ export interface Agent {
 }
 
 // ============================================================================
+// Terminal Window Types
+// ============================================================================
+
+export type TerminalWindowStatus = 'connected' | 'disconnected' | 'error';
+
+/**
+ * A terminal window that can appear in Grid/Focus/Freeform layouts
+ * alongside agents. Each terminal window represents a single shell session.
+ */
+export interface TerminalWindow {
+  id: string;
+  name: string; // User-editable, e.g., "Build Server"
+  shell: string; // 'bash', 'zsh', etc.
+  status: TerminalWindowStatus;
+
+  // Layout properties (shared with agents)
+  gridSpan?: GridSpan;
+  position?: AgentPosition;
+
+  // Terminal-specific
+  workingDirectory?: string; // Current cwd to display
+  createdAt: string; // ISO timestamp
+}
+
+// ============================================================================
 // Message Types
 // ============================================================================
 
@@ -162,9 +187,11 @@ export interface Session {
   branch: string;
   gitUrl?: string | null;
   agents: Agent[];
+  terminalWindows: TerminalWindow[]; // Terminal windows in Grid/Focus/Freeform layouts
   conversationSessions: ConversationSession[]; // Portable conversation pool
   filePreviews: FilePreview[];
-  activeAgentId: string | null;
+  activeAgentId: string | null; // @deprecated Use activeWindowId instead
+  activeWindowId: string | null; // Can be agent ID or terminal window ID
   viewMode: ViewMode;
   // Workspace status tracking
   workspaceStatus: WorkspaceStatus;
@@ -175,11 +202,6 @@ export interface Session {
   editorGridSpan?: GridSpan;
   // Editor position for freeform mode
   editorFreeformPosition?: AgentPosition;
-  // Live Preview grid card
-  previewGridCardId: string | null;
-  previewGridSpan?: GridSpan;
-  // Preview position for freeform mode
-  previewFreeformPosition?: AgentPosition;
   // Local pod (null = cloud workspace)
   localPodId?: string | null;
   // Display name for the local pod
@@ -257,6 +279,35 @@ export function formatRelativeTime(dateString: string | null): string {
 
   // For older dates, show the date
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+/**
+ * Window type discriminator for unified window handling.
+ * Used to determine which component to render for a given window ID.
+ */
+export type WindowType = 'agent' | 'terminal' | 'editor' | 'file-preview';
+
+/**
+ * Determine the type of a window by its ID.
+ * Returns null if the ID doesn't match any known window.
+ */
+export function getWindowType(session: Session, windowId: string): WindowType | null {
+  if (session.agents.some((a) => a.id === windowId)) return 'agent';
+  if (session.terminalWindows.some((t) => t.id === windowId)) return 'terminal';
+  if (windowId === session.editorGridCardId) return 'editor';
+  if (session.filePreviews.some((f) => f.id === windowId)) return 'file-preview';
+  return null;
+}
+
+/**
+ * Get a window (agent or terminal) by its ID.
+ */
+export function getWindowById(session: Session, windowId: string): Agent | TerminalWindow | null {
+  const agent = session.agents.find((a) => a.id === windowId);
+  if (agent) return agent;
+  const terminal = session.terminalWindows.find((t) => t.id === windowId);
+  if (terminal) return terminal;
+  return null;
 }
 
 /** Get file extension language for syntax highlighting */

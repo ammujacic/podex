@@ -31,6 +31,10 @@ DEFAULT_PROFILES_SAMPLE_RATE = 0.1  # 10% of profiled transactions
 DEFAULT_ERROR_SAMPLE_RATE = 1.0  # 100% of errors
 DEV_TRACES_SAMPLE_RATE = 1.0  # 100% in development
 
+# File size bucket thresholds
+FILE_SIZE_SMALL_THRESHOLD = 1024  # 1 KB
+FILE_SIZE_MEDIUM_THRESHOLD = 1024 * 1024  # 1 MB
+
 
 @dataclass
 class SentryConfig:
@@ -200,7 +204,9 @@ def init_sentry(
         error_sampler=lambda _event, _hint: DEFAULT_ERROR_SAMPLE_RATE,
         # Profiling (requires traces)
         profiles_sample_rate=effective_profiles_rate,
-        # Enable Sentry Logs (beta feature - sends logs to Sentry)
+        # Enable Sentry structured logs (requires SDK 2.35.0+)
+        enable_logs=cfg.enable_logs,
+        # Experiments for continuous profiling
         _experiments=experiments,  # type: ignore[arg-type]
         # Spotlight for local dev
         spotlight=spotlight_setting,
@@ -641,3 +647,246 @@ def close() -> None:
     client = sentry_sdk.get_client()
     if client:
         client.close(timeout=2.0)
+
+
+# =============================================================================
+# Podex Business Metrics Helpers
+# =============================================================================
+# Typed helpers for common metrics with standard naming convention:
+# podex.<service>.<category>.<metric_name>
+
+
+def track_workspace_created(tier: str, server_id: str, duration_ms: float) -> None:
+    """Track workspace creation with duration."""
+    tags = {"tier": tier, "server_id": server_id}
+    distribution(
+        "podex.compute.workspace.creation_duration",
+        duration_ms,
+        unit="millisecond",
+        tags=tags,
+    )
+    incr("podex.compute.workspace.created", tags=tags)
+
+
+def track_workspace_failed(tier: str, reason: str) -> None:
+    """Track workspace creation failure."""
+    incr(
+        "podex.compute.workspace.creation_failed",
+        tags={"tier": tier, "reason": reason},
+    )
+
+
+def track_workspace_health_check_failed(workspace_id: str, server_id: str) -> None:
+    """Track workspace health check failure."""
+    incr(
+        "podex.compute.workspace.health_check_failed",
+        tags={"workspace_id": workspace_id, "server_id": server_id},
+    )
+
+
+def track_workspace_active(tier: str, server_id: str, count: int) -> None:
+    """Track active workspace count."""
+    gauge(
+        "podex.compute.workspace.active",
+        float(count),
+        tags={"tier": tier, "server_id": server_id},
+    )
+
+
+@dataclass
+class LLMUsageMetrics:
+    """Metrics for an LLM call."""
+
+    model: str
+    provider: str
+    input_tokens: int
+    output_tokens: int
+    cached_tokens: int
+    cost_cents: float
+    latency_ms: float
+    session_id: str | None = None
+
+
+def track_llm_usage(metrics: LLMUsageMetrics) -> None:
+    """Track LLM call metrics."""
+    tags: dict[str, str] = {"model": metrics.model, "provider": metrics.provider}
+    if metrics.session_id:
+        tags["session_id"] = metrics.session_id
+
+    incr("podex.billing.tokens.input", metrics.input_tokens, tags=tags)
+    incr("podex.billing.tokens.output", metrics.output_tokens, tags=tags)
+    if metrics.cached_tokens > 0:
+        incr("podex.billing.tokens.cached", metrics.cached_tokens, tags=tags)
+    distribution("podex.billing.cost.llm", metrics.cost_cents, tags=tags)
+    distribution("podex.agent.llm.latency", metrics.latency_ms, unit="millisecond", tags=tags)
+
+
+def track_agent_run(
+    model: str,
+    role: str,
+    duration_ms: float,
+    success: bool,
+    error_type: str | None = None,
+) -> None:
+    """Track agent run metrics."""
+    tags = {"model": model, "role": role}
+    distribution("podex.agent.run.duration", duration_ms, unit="millisecond", tags=tags)
+    if not success and error_type:
+        incr("podex.agent.run.failed", tags={**tags, "error_type": error_type})
+
+
+def track_agent_stuck_recovered(role: str, stuck_duration_seconds: float) -> None:
+    """Track agent stuck recovery."""
+    incr(
+        "podex.agent.stuck_recovered",
+        tags={"role": role, "stuck_duration": str(int(stuck_duration_seconds))},
+    )
+
+
+def track_terminal_command(
+    workspace_id: str,
+    duration_ms: float,
+    success: bool,
+    reason: str | None = None,
+) -> None:
+    """Track terminal command metrics."""
+    distribution(
+        "podex.compute.terminal.command_duration",
+        duration_ms,
+        unit="millisecond",
+        tags={"workspace_id": workspace_id},
+    )
+    if not success and reason:
+        incr("podex.compute.terminal.session_failed", tags={"reason": reason})
+
+
+def track_terminal_reconnect(workspace_id: str) -> None:
+    """Track terminal session reconnection."""
+    incr("podex.compute.terminal.reconnect", tags={"workspace_id": workspace_id})
+
+
+def track_background_task(
+    task_name: str,
+    duration_ms: float,
+    success: bool,
+    error_type: str | None = None,
+) -> None:
+    """Track background task metrics."""
+    distribution(
+        "podex.api.task.duration",
+        duration_ms,
+        unit="millisecond",
+        tags={"task_name": task_name},
+    )
+    if not success and error_type:
+        incr("podex.api.task.failed", tags={"task_name": task_name, "error_type": error_type})
+
+
+def track_credits_consumed(user_id: str, resource_type: str, amount_cents: float) -> None:
+    """Track credit consumption."""
+    incr(
+        "podex.billing.credits.consumed",
+        amount_cents,
+        tags={"user_id": user_id, "resource_type": resource_type},
+    )
+
+
+def track_credits_granted(reason: str, amount_cents: float) -> None:
+    """Track credit grants."""
+    incr("podex.billing.credits.granted", amount_cents, tags={"reason": reason})
+
+
+def track_credits_expired(user_id: str, amount_cents: float) -> None:
+    """Track expired credits."""
+    incr("podex.billing.credits.expired", amount_cents, tags={"user_id": user_id})
+
+
+def track_quota_exceeded(quota_type: str, user_id: str) -> None:
+    """Track quota enforcement events."""
+    incr("podex.billing.quota.exceeded", tags={"quota_type": quota_type, "user_id": user_id})
+
+
+def track_subscription_renewed(plan: str, period: str) -> None:
+    """Track subscription renewal."""
+    incr("podex.billing.subscription.renewed", tags={"plan": plan, "period": period})
+
+
+def track_subscription_churned(plan: str, reason: str) -> None:
+    """Track subscription churn."""
+    incr("podex.billing.subscription.churned", tags={"plan": plan, "reason": reason})
+
+
+def track_session_time_to_active(template_id: str, tier: str, duration_ms: float) -> None:
+    """Track session activation time."""
+    distribution(
+        "podex.api.session.time_to_active",
+        duration_ms,
+        unit="millisecond",
+        tags={"template_id": template_id, "tier": tier},
+    )
+
+
+def track_file_operation(
+    operation: str,
+    duration_ms: float,
+    size_bytes: int,
+    success: bool,
+    reason: str | None = None,
+) -> None:
+    """Track file operation metrics."""
+    # Bucket sizes: small (<1KB), medium (1KB-1MB), large (>1MB)
+    if size_bytes < FILE_SIZE_SMALL_THRESHOLD:
+        size_bucket = "small"
+    elif size_bytes < FILE_SIZE_MEDIUM_THRESHOLD:
+        size_bucket = "medium"
+    else:
+        size_bucket = "large"
+
+    metric_name = f"podex.compute.file.{operation}_duration"
+    distribution(metric_name, duration_ms, unit="millisecond", tags={"size_bucket": size_bucket})
+
+    if not success and reason:
+        incr(
+            "podex.compute.file.operation_failed",
+            tags={"operation": operation, "reason": reason},
+        )
+
+
+def track_db_query(operation: str, table: str, duration_ms: float) -> None:
+    """Track database query performance."""
+    distribution(
+        "podex.infra.db.query_duration",
+        duration_ms,
+        unit="millisecond",
+        tags={"operation": operation, "table": table},
+    )
+
+
+def track_db_pool_active(service: str, count: int) -> None:
+    """Track database connection pool usage."""
+    gauge("podex.infra.db.pool.active", float(count), tags={"service": service})
+
+
+def track_redis_operation(operation: str, duration_ms: float) -> None:
+    """Track Redis operation performance."""
+    distribution(
+        "podex.infra.redis.operation_duration",
+        duration_ms,
+        unit="millisecond",
+        tags={"operation": operation},
+    )
+
+
+def track_websocket_connections(service: str, count: int) -> None:
+    """Track active WebSocket connections."""
+    gauge("podex.infra.websocket.connections", float(count), tags={"service": service})
+
+
+def track_http_latency(endpoint: str, method: str, duration_ms: float) -> None:
+    """Track HTTP endpoint latency."""
+    distribution(
+        "podex.infra.http.latency",
+        duration_ms,
+        unit="millisecond",
+        tags={"endpoint": endpoint, "method": method},
+    )

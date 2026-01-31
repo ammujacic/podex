@@ -626,6 +626,157 @@ export async function handleGitHubLinkCallback(
   return api.post<GitHubLinkResponse>('/api/oauth/github/link-callback', { code, state });
 }
 
+// Unified GitHub callback that auto-detects link vs login flow
+// This is more reliable than sessionStorage-based flow detection
+export interface GitHubUnifiedCallbackResponse {
+  flow_type: 'link' | 'login';
+  // Link flow fields
+  github_username?: string;
+  link_message?: string;
+  // Login flow fields
+  access_token?: string | null;
+  refresh_token?: string | null;
+  token_type?: string;
+  expires_in?: number;
+  user?: {
+    id: string;
+    email: string;
+    name: string | null;
+    avatar_url: string | null;
+    role: string;
+  };
+}
+
+export async function handleGitHubCallbackAuto(
+  code: string,
+  state: string
+): Promise<GitHubUnifiedCallbackResponse> {
+  // Clean up any sessionStorage state (no longer needed but clean up for hygiene)
+  if (typeof window !== 'undefined') {
+    sessionStorage.removeItem('github_link_state');
+  }
+
+  const response = await api.post<GitHubUnifiedCallbackResponse>(
+    '/api/oauth/github/callback-auto',
+    { code, state }
+  );
+
+  // If this was a login flow, update the auth store
+  if (response.flow_type === 'login' && response.user) {
+    const store = useAuthStore.getState();
+    const user: User = {
+      id: response.user.id,
+      email: response.user.email,
+      name: response.user.name,
+      avatarUrl: response.user.avatar_url,
+      role: response.user.role,
+    };
+
+    const tokens: AuthTokens = {
+      accessToken: response.access_token ?? null,
+      refreshToken: response.refresh_token ?? null,
+      // Default to 1 hour if expires_in not provided (shouldn't happen for login flow)
+      expiresAt: calculateExpiry(response.expires_in ?? 3600),
+    };
+
+    store.setUser(user);
+    store.setTokens(tokens);
+  }
+
+  return response;
+}
+
+// Google account linking methods (for logged-in users to link Google to their account)
+export interface GoogleLinkResponse {
+  success: boolean;
+  google_email: string;
+  message: string;
+}
+
+export async function getGoogleLinkURL(): Promise<string> {
+  const response = await api.get<OAuthURLResponse>('/api/oauth/google/link-authorize');
+  // Store state in sessionStorage (backup, but server-side detection is primary)
+  if (typeof window !== 'undefined') {
+    sessionStorage.setItem('google_link_state', response.state);
+  }
+  return response.url;
+}
+
+// Unified Google callback that auto-detects link vs login flow
+export interface GoogleUnifiedCallbackResponse {
+  flow_type: 'link' | 'login';
+  // Link flow fields
+  google_email?: string;
+  link_message?: string;
+  // Login flow fields
+  access_token?: string | null;
+  refresh_token?: string | null;
+  token_type?: string;
+  expires_in?: number;
+  user?: {
+    id: string;
+    email: string;
+    name: string | null;
+    avatar_url: string | null;
+    role: string;
+  };
+}
+
+export async function handleGoogleCallbackAuto(
+  code: string,
+  state: string
+): Promise<GoogleUnifiedCallbackResponse> {
+  // Clean up any sessionStorage state (no longer needed but clean up for hygiene)
+  if (typeof window !== 'undefined') {
+    sessionStorage.removeItem('google_link_state');
+  }
+
+  const response = await api.post<GoogleUnifiedCallbackResponse>(
+    '/api/oauth/google/callback-auto',
+    { code, state }
+  );
+
+  // If this was a login flow, update the auth store
+  if (response.flow_type === 'login' && response.user) {
+    const store = useAuthStore.getState();
+    const user: User = {
+      id: response.user.id,
+      email: response.user.email,
+      name: response.user.name,
+      avatarUrl: response.user.avatar_url,
+      role: response.user.role,
+    };
+
+    const tokens: AuthTokens = {
+      accessToken: response.access_token ?? null,
+      refreshToken: response.refresh_token ?? null,
+      // Default to 1 hour if expires_in not provided
+      expiresAt: calculateExpiry(response.expires_in ?? 3600),
+    };
+
+    store.setUser(user);
+    store.setTokens(tokens);
+  }
+
+  return response;
+}
+
+// Google connection status and management
+export interface GoogleConnectionStatus {
+  connected: boolean;
+  email: string | null;
+  name: string | null;
+  avatar_url: string | null;
+}
+
+export async function getGoogleStatus(): Promise<GoogleConnectionStatus> {
+  return api.get<GoogleConnectionStatus>('/api/google/status');
+}
+
+export async function disconnectGoogle(): Promise<void> {
+  await api.delete('/api/google/disconnect');
+}
+
 // Marketplace methods
 
 // Skills methods
@@ -1544,6 +1695,17 @@ export async function deleteSession(sessionId: string): Promise<void> {
   await api.delete(`/api/sessions/${sessionId}`);
 }
 
+export interface UpdateSessionRequest {
+  name?: string;
+}
+
+export async function updateSession(
+  sessionId: string,
+  data: UpdateSessionRequest
+): Promise<Session> {
+  return api.patch<Session>(`/api/sessions/${sessionId}`, data);
+}
+
 // ==================== Workspace Status ====================
 
 export interface WorkspaceStatusResponse {
@@ -1554,6 +1716,10 @@ export interface WorkspaceStatusResponse {
 
 export async function startWorkspace(workspaceId: string): Promise<WorkspaceStatusResponse> {
   return api.post<WorkspaceStatusResponse>(`/api/workspaces/${workspaceId}/start`, {});
+}
+
+export async function stopWorkspace(workspaceId: string): Promise<WorkspaceStatusResponse> {
+  return api.post<WorkspaceStatusResponse>(`/api/workspaces/${workspaceId}/stop`, {});
 }
 
 export async function getWorkspaceStatus(workspaceId: string): Promise<WorkspaceStatusResponse> {
