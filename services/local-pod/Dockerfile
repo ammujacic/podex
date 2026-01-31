@@ -53,4 +53,4 @@ RUN adduser --disabled-password --gecos "" appuser
 USER appuser
 
 # Default command runs the CLI
-CMD ["podex-local-pod", "--help"]
+CMD ["podex-pod", "--help"]

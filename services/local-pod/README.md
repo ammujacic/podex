@@ -14,30 +14,31 @@ Self-hosted compute agent for Podex. Run workspaces on your own machine for fast
 
 ```bash
 # Using pip
-pip install podex-local-pod
+pip install podex-pod
 
 # Or using pipx (recommended)
-pipx install podex-local-pod
+pipx install podex-pod
 ```
 
 ### 3. Run
 
 ```bash
 # Start the agent
-podex-local-pod start --token pdx_pod_xxx
+podex-pod start --token pdx_pod_xxx
 
 # Or use environment variable
 export PODEX_POD_TOKEN=pdx_pod_xxx
-podex-local-pod start
+podex-pod start
 ```
 
-## Docker Installation
+## Docker Installation (Optional)
+
+You can run the pod agent itself inside Docker:
 
 ```bash
 docker run -d \
-  --name podex-local-pod \
+  --name podex-pod \
   -e PODEX_POD_TOKEN=pdx_pod_xxx \
-  -v /var/run/docker.sock:/var/run/docker.sock \
   podex/local-pod:latest
 ```
 
@@ -45,50 +46,46 @@ docker run -d \
 
 ```bash
 # Start the agent
-podex-local-pod start [OPTIONS]
+podex-pod start [OPTIONS]
 
 # Check system requirements
-podex-local-pod check
+podex-pod check
 
 # Show version
-podex-local-pod version
+podex-pod version
 ```
 
 ### Start Options
 
-| Option             | Environment Variable   | Description                                      |
-| ------------------ | ---------------------- | ------------------------------------------------ |
-| `--token`          | `PODEX_POD_TOKEN`      | Pod authentication token (required)              |
-| `--url`            | `PODEX_CLOUD_URL`      | Podex cloud URL (default: https://api.podex.dev) |
-| `--name`           | `PODEX_POD_NAME`       | Display name for this pod                        |
-| `--max-workspaces` | `PODEX_MAX_WORKSPACES` | Maximum concurrent workspaces (1-10, default: 3) |
-| `--config`         | -                      | Path to config file                              |
+| Option    | Environment Variable | Description                                      |
+| --------- | -------------------- | ------------------------------------------------ |
+| `--token` | `PODEX_POD_TOKEN`    | Pod authentication token (required)              |
+| `--url`   | `PODEX_CLOUD_URL`    | Podex cloud URL (default: https://api.podex.dev) |
+| `--name`  | `PODEX_POD_NAME`     | Display name for this pod                        |
 
 ## Configuration File
 
-You can use a TOML config file instead of command-line options:
-
-```toml
-# ~/.config/podex/local-pod.toml
-[podex]
-pod_token = "pdx_pod_xxx"
-cloud_url = "https://api.podex.dev"
-pod_name = "my-dev-machine"
-max_workspaces = 3
-docker_network = "podex-local"
-heartbeat_interval = 30
-```
-
-Then run:
+Create a `.env` file to save your configuration:
 
 ```bash
-podex-local-pod start --config ~/.config/podex/local-pod.toml
+# ~/.config/podex/.env
+PODEX_POD_TOKEN=pdx_pod_xxx
+PODEX_POD_NAME=my-dev-machine
+PODEX_CLOUD_URL=https://api.podex.dev
 ```
+
+Then run from that directory:
+
+```bash
+cd ~/.config/podex && podex-pod start
+```
+
+Or copy the `.env` file to your current working directory.
 
 ## Requirements
 
-- Docker (with access to `/var/run/docker.sock`)
 - Python 3.11+
+- tmux (required for terminal features)
 - 4GB+ RAM recommended
 - 2+ CPU cores recommended
 
@@ -97,7 +94,7 @@ podex-local-pod start --config ~/.config/podex/local-pod.toml
 1. **Registration**: You register a local pod in Podex Settings and receive a token
 2. **Connection**: The agent connects to Podex cloud via WebSocket (outbound connection)
 3. **Commands**: When you create a workspace targeting your local pod, Podex sends commands through the WebSocket
-4. **Workspaces**: The agent manages Docker containers on your machine for each workspace
+4. **Execution**: The agent executes commands natively on your machine using tmux for terminal sessions
 5. **Communication**: File operations, terminal, and port forwarding all work through the connection
 
 ## Security
@@ -105,17 +102,17 @@ podex-local-pod start --config ~/.config/podex/local-pod.toml
 - **Outbound only**: The agent initiates the connection - no inbound ports needed
 - **Token auth**: Tokens are hashed and verified on each connection
 - **User isolation**: Each pod only sees workspaces for its owner
-- **Container isolation**: Workspaces run in isolated Docker containers
+- **Native execution**: Commands run directly on your machine with your user permissions
 
 ## Troubleshooting
 
 ### Check Requirements
 
 ```bash
-podex-local-pod check
+podex-pod check
 ```
 
-This verifies Docker is available and shows system resources.
+This verifies tmux is available and shows system resources.
 
 ### Common Issues
 
@@ -125,14 +122,10 @@ This verifies Docker is available and shows system resources.
 - Verify the token is correct
 - Check if a firewall is blocking outbound WebSocket connections
 
-**Docker permission denied**
+**tmux not found**
 
-- Add your user to the docker group: `sudo usermod -aG docker $USER`
-- Or run with sudo (not recommended for production)
-
-**Image not found**
-
-- Pull the workspace image: `docker pull podex/workspace:latest`
+- Install tmux: `brew install tmux` (macOS) or `apt install tmux` (Linux)
+- tmux is required for terminal features to work properly
 
 ## Development
 
