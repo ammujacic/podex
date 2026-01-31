@@ -22,3 +22,6 @@ export {
   type StepStatus,
   type TaskProgress,
 } from './progress';
+
+// Session
+export { createSessionSlice, createSessionStore, type SessionState } from './session';

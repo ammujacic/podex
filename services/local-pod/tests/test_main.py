@@ -22,7 +22,7 @@ class TestSentryInitialization:
             result = _init_sentry()
             assert result is True
             mock_init.assert_called_once()
-            mock_tag.assert_called_with("service", "podex-local-pod")
+            mock_tag.assert_called_with("service", "podex-pod")
 
     def test_init_sentry_without_dsn(self):
         """Test Sentry initialization without DSN."""
@@ -68,7 +68,7 @@ class TestSentryInitialization:
             patch("sentry_sdk.set_tag") as mock_tag,
         ):
             _init_sentry()
-            mock_tag.assert_called_with("service", "podex-local-pod")
+            mock_tag.assert_called_with("service", "podex-pod")
 
     def test_init_sentry_ignored_errors(self):
         """Test that expected errors are ignored."""
@@ -97,7 +97,7 @@ class TestCLIGroup:
         """Test CLI version option."""
         result = cli_runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
-        assert "podex-local-pod" in result.output
+        assert "podex-pod" in result.output
 
 
 class TestStartCommand:
@@ -273,4 +273,4 @@ class TestVersionCommand:
         """Test that version command displays version."""
         result = cli_runner.invoke(cli, ["version"])
         assert result.exit_code == 0
-        assert "podex-local-pod" in result.output
+        assert "podex-pod" in result.output

@@ -83,7 +83,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [shared, api-client, state, ui]
+        package: [shared, api-client, state, ui, local-pod-discovery]
     steps:
       - uses: actions/checkout@v4
 

@@ -389,6 +389,10 @@ importers:
         version: 4.0.17(@opentelemetry/api@1.9.0)(@types/node@25.0.10)(happy-dom@15.11.7)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.46.0)
 
   packages/api-client:
+    dependencies:
+      socket.io-client:
+        specifier: ^4.8.3
+        version: 4.8.3
     devDependencies:
       '@eslint/js':
         specifier: ^9.18.0
@@ -400,6 +404,30 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(vitest@2.1.9)
       '@vitest/ui':
+        specifier: ^2.1.8
+        version: 2.1.9(vitest@2.1.9)
+      eslint:
+        specifier: ^9.39.2
+        version: 9.39.2(jiti@2.6.1)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      typescript-eslint:
+        specifier: ^8.53.0
+        version: 8.53.1(eslint@9.39.2(jiti@2.6.1))(typescript@5.9.3)
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@20.19.30)(@vitest/ui@2.1.9)(happy-dom@15.11.7)(lightningcss@1.30.2)(terser@5.46.0)
+
+  packages/local-pod-discovery:
+    devDependencies:
+      '@eslint/js':
+        specifier: ^9.18.0
+        version: 9.39.2
+      '@types/node':
+        specifier: ^20.11.0
+        version: 20.19.30
+      '@vitest/coverage-v8':
         specifier: ^2.1.8
         version: 2.1.9(vitest@2.1.9)
       eslint:
@@ -2469,9 +2497,6 @@ packages:
 
   '@types/node@20.19.30':
     resolution: {integrity: sha512-WJtwWJu7UdlvzEAUm484QNg5eAoq5QR08KDNx7g45Usrs2NtOPiX8ugDqmKdXkyL03rBqU5dYNYVQetEpBHq2g==}
-
-  '@types/node@22.19.7':
-    resolution: {integrity: sha512-MciR4AKGHWl7xwxkBa6xUGxQJ4VBOmPTF7sL+iGzuahOFaO0jHCsuEfS80pan1ef4gWId1oWOweIhrDEYLuaOw==}
 
   '@types/node@25.0.10':
     resolution: {integrity: sha512-zWW5KPngR/yvakJgGOmZ5vTBemDoSqF3AcV/LrO5u5wTWyEAVVh+IT39G4gtyAkh3CtTZs8aX/yRM82OfzHJRg==}
@@ -6575,7 +6600,7 @@ snapshots:
 
   '@types/connect@3.4.38':
     dependencies:
-      '@types/node': 25.0.10
+      '@types/node': 25.1.0
 
   '@types/deep-eql@4.0.2': {}
 
@@ -6599,13 +6624,9 @@ snapshots:
 
   '@types/mysql@2.15.27':
     dependencies:
-      '@types/node': 25.0.10
+      '@types/node': 25.1.0
 
   '@types/node@20.19.30':
-    dependencies:
-      undici-types: 6.21.0
-
-  '@types/node@22.19.7':
     dependencies:
       undici-types: 6.21.0
 
@@ -6623,7 +6644,7 @@ snapshots:
 
   '@types/pg@8.15.6':
     dependencies:
-      '@types/node': 25.0.10
+      '@types/node': 25.1.0
       pg-protocol: 1.11.0
       pg-types: 2.2.0
 
@@ -6643,7 +6664,7 @@ snapshots:
 
   '@types/tedious@4.0.14':
     dependencies:
-      '@types/node': 22.19.7
+      '@types/node': 25.1.0
 
   '@types/trusted-types@2.0.7': {}
 
