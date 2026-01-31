@@ -184,6 +184,31 @@ export async function register(
   }
 }
 
+// ==================== Password Reset API ====================
+
+export interface ForgotPasswordResponse {
+  message: string;
+}
+
+export interface ResetPasswordResponse {
+  message: string;
+}
+
+export async function forgotPassword(email: string): Promise<ForgotPasswordResponse> {
+  return api.post<ForgotPasswordResponse>('/api/auth/password/forgot', { email }, false);
+}
+
+export async function resetPassword(
+  token: string,
+  newPassword: string
+): Promise<ResetPasswordResponse> {
+  return api.post<ResetPasswordResponse>(
+    '/api/auth/password/reset',
+    { token, new_password: newPassword },
+    false
+  );
+}
+
 // ==================== Invitation API ====================
 
 export interface InvitationValidation {

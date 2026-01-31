@@ -26,6 +26,7 @@ import {
   Link2,
   KeyRound,
   Sparkles,
+  Smartphone,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -47,6 +48,7 @@ const settingsNavItems = [
   { href: '/settings/plans', label: 'Plans', icon: Package },
   { href: '/settings/billing', label: 'Billing', icon: CreditCard },
   { href: '/settings/account', label: 'Account', icon: User },
+  { href: '/settings/devices', label: 'Devices & Sessions', icon: Smartphone },
   { href: '/settings/notifications', label: 'Notifications', icon: Bell },
   { href: '/settings/privacy', label: 'Privacy & Security', icon: Shield },
 ];

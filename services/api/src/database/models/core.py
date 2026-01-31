@@ -22,6 +22,7 @@ from .base import Base, _generate_uuid
 if TYPE_CHECKING:
     from .agent_config import AgentTemplate
     from .conversation import ConversationSession
+    from .device_session import DeviceSession
     from .extensions import UserExtension, WorkspaceExtension
     from .infrastructure import GitHubIntegration, GoogleIntegration, LocalPod
     from .organization import OrganizationMember
@@ -111,6 +112,12 @@ class User(Base):
         "GoogleIntegration",
         back_populates="owner",
         uselist=False,
+        cascade="all, delete-orphan",
+    )
+    # Device sessions (active login sessions across devices)
+    device_sessions: Mapped[list["DeviceSession"]] = relationship(
+        "DeviceSession",
+        back_populates="user",
         cascade="all, delete-orphan",
     )
 

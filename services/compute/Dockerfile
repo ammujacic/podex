@@ -4,9 +4,11 @@ FROM python:3.12-slim AS base
 WORKDIR /app
 
 # Install system dependencies including Docker CLI for container management
+# openssh-client is needed for SSH to workspace servers in production
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     docker.io \
+    openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv for fast package management

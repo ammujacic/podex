@@ -537,7 +537,14 @@ export default function SessionPage() {
 
   // Trigger onboarding tour when workspace first loads
   useEffect(() => {
-    if (podStatus === 'running' && !hasTriggeredTourRef.current) {
+    // Only trigger tour when workspace is fully loaded and visible
+    // Check loading progress to ensure startup simulation is complete
+    if (
+      podStatus === 'running' &&
+      !loading &&
+      loadingProgress === 100 &&
+      !hasTriggeredTourRef.current
+    ) {
       hasTriggeredTourRef.current = true;
 
       // Small delay to ensure UI is fully rendered
@@ -552,7 +559,7 @@ export default function SessionPage() {
       return () => clearTimeout(timer);
     }
     return undefined;
-  }, [podStatus, hasCompleted, startTour, isMobile]);
+  }, [podStatus, loading, loadingProgress, hasCompleted, startTour, isMobile]);
 
   const handleRestart = async () => {
     setRestarting(true);

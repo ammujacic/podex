@@ -165,6 +165,26 @@ repos:
         types: [python]
         pass_filenames: false
 
+  # CLI-specific hooks (only run when CLI files change)
+  - repo: local
+    hooks:
+      - id: cli-lint
+        name: CLI Lint (ESLint)
+        entry: pnpm --filter podex lint
+        language: system
+        files: ^apps/cli/
+        types_or: [javascript, jsx, ts, tsx]
+        pass_filenames: false
+
+      - id: cli-typecheck
+        name: CLI Type Check
+        entry: pnpm --filter podex typecheck
+        language: system
+        files: ^apps/cli/
+        types_or: [ts, tsx]
+        exclude: (__tests__|\.test\.|\.spec\.)
+        pass_filenames: false
+
 # CI configuration
 ci:
   autofix_prs: false
