@@ -35,11 +35,17 @@ class TestIsPublicPath:
         assert _is_public_path("/api/auth/password/check") is True
 
     def test_oauth_endpoints_are_public(self) -> None:
-        """Test OAuth endpoints are public."""
-        assert _is_public_path("/api/oauth/github") is True
+        """Test OAuth login/signup endpoints are public (but link-authorize requires auth)."""
+        # Authorize endpoints for login/signup
+        assert _is_public_path("/api/oauth/github/authorize") is True
         assert _is_public_path("/api/oauth/github/callback") is True
-        assert _is_public_path("/api/oauth/google") is True
+        assert _is_public_path("/api/oauth/github/callback-auto") is True
+        assert _is_public_path("/api/oauth/google/authorize") is True
         assert _is_public_path("/api/oauth/google/callback") is True
+        assert _is_public_path("/api/oauth/google/callback-auto") is True
+        # Link-authorize requires authentication (for account linking)
+        assert _is_public_path("/api/oauth/github/link-authorize") is False
+        assert _is_public_path("/api/oauth/google/link-authorize") is False
 
     def test_preview_endpoints_require_auth(self) -> None:
         """Test preview endpoints are not public."""
@@ -76,10 +82,13 @@ class TestIsPublicPath:
 
     def test_prefix_match_with_slash(self) -> None:
         """Test prefix matching requires proper boundary."""
-        # /api/oauth/github is a prefix path, so /api/oauth/github/ works
-        assert _is_public_path("/api/oauth/github/") is True
+        # /socket.io is a prefix path, so subpaths work
+        assert _is_public_path("/socket.io/") is True
+        assert _is_public_path("/socket.io/connect") is True
         # But similar paths without proper boundary don't match
-        assert _is_public_path("/api/oauth/githubx") is False
+        assert _is_public_path("/socket.iox") is False
+        # OAuth paths are exact matches, not prefixes
+        assert _is_public_path("/api/oauth/github/callbackx") is False
 
     def test_admin_settings_public_requires_auth(self) -> None:
         """Test admin public settings endpoint is not public."""
@@ -318,11 +327,13 @@ class TestPublicPathsList:
                 assert is_prefix is False
                 break
 
-    def test_oauth_paths_are_prefix(self) -> None:
-        """Test OAuth paths allow subpaths."""
+    def test_oauth_paths_are_exact_match(self) -> None:
+        """Test OAuth paths are exact matches (not prefixes) for security."""
         for path, is_prefix in PUBLIC_PATHS:
             if "oauth" in path:
-                assert is_prefix is True
+                # All OAuth paths should be exact matches to prevent
+                # accidentally exposing link-authorize or other subpaths
+                assert is_prefix is False, f"{path} should be exact match"
 
     def test_socket_io_is_prefix(self) -> None:
         """Test socket.io allows subpaths."""
