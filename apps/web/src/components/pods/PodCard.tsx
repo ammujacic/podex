@@ -105,6 +105,7 @@ function TemplateIcon({
         width={size === 'sm' ? 16 : 20}
         height={size === 'sm' ? 16 : 20}
         className={sizeClass}
+        unoptimized
       />
     );
   }
