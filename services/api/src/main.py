@@ -56,6 +56,7 @@ from src.routes import (
     conversations,
     cost_insights,
     dashboard,
+    device_auth,
     doctor,
     extensions,
     git,
@@ -1934,6 +1935,7 @@ api_v1 = APIRouter()
 
 # Include all routes in v1 router
 api_v1.include_router(auth.router, prefix="/auth", tags=["auth"])
+api_v1.include_router(device_auth.router, prefix="/auth", tags=["auth"])  # Device auth & sessions
 api_v1.include_router(mfa.router)  # Already has prefix
 api_v1.include_router(
     auth_oauth.router, prefix="/oauth", tags=["oauth"]

@@ -4,12 +4,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal, cast
 from uuid import uuid4
 
+import structlog
 from dateutil.relativedelta import relativedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from jose import JWTError, jwt
 from passlib.hash import bcrypt
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import select
+from sqlalchemy import and_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.audit_logger import AuditAction, AuditLogger, AuditStatus
@@ -17,6 +18,7 @@ from src.auth_constants import COOKIE_ACCESS_TOKEN, COOKIE_REFRESH_TOKEN
 from src.config import settings
 from src.database.connection import get_db
 from src.database.models import (
+    DeviceSession,
     PlatformInvitation,
     PlatformSetting,
     SubscriptionPlan,
@@ -33,6 +35,8 @@ from src.services.token_blacklist import (
     revoke_token,
 )
 from src.utils.password_validator import get_password_strength, validate_password
+
+logger = structlog.get_logger()
 
 router = APIRouter()
 
@@ -668,10 +672,41 @@ async def refresh_token(
         if not old_jti:
             raise HTTPException(status_code=401, detail="Invalid token format")
 
-        # SECURITY: Check if this refresh token has been revoked BEFORE issuing new tokens
-        # This prevents reuse of compromised refresh tokens
+        # SECURITY: Refresh Token Reuse Detection
+        # If the token has already been revoked but someone is trying to use it again,
+        # this indicates potential token theft. The legitimate user already rotated the token,
+        # but an attacker is trying to use the stolen (now-revoked) token.
         if await is_token_revoked(old_jti):
-            raise HTTPException(status_code=401, detail="Token has been revoked")
+            logger.warning(
+                "Refresh token reuse detected - potential token theft",
+                user_id=user_id[:8] if user_id else None,
+                jti=old_jti[:8],
+            )
+
+            # SECURITY RESPONSE: Revoke ALL sessions for this user
+            # This forces re-authentication on all devices
+            await revoke_all_user_tokens(str(user_id))
+
+            # Also mark all device sessions as revoked in the database
+            await db.execute(
+                update(DeviceSession)
+                .where(
+                    and_(
+                        DeviceSession.user_id == user_id,
+                        DeviceSession.is_revoked == False,
+                    )
+                )
+                .values(is_revoked=True, revoked_at=datetime.now(UTC))
+            )
+            await db.commit()
+
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    "Security alert: Token reuse detected. "
+                    "All sessions have been revoked. Please log in again."
+                ),
+            )
 
         # Verify user still exists and is active
         result = await db.execute(select(User).where(User.id == user_id))
@@ -680,11 +715,16 @@ async def refresh_token(
         if not user or not user.is_active:
             raise HTTPException(status_code=401, detail="User not found or inactive")
 
+        # Find the device session for this refresh token
+        device_session_result = await db.execute(
+            select(DeviceSession).where(DeviceSession.refresh_token_jti == old_jti)
+        )
+        device_session = device_session_result.scalar_one_or_none()
+
         # Revoke the old refresh token to prevent reuse
-        if old_jti:
-            old_exp = payload.get("exp", 0)
-            remaining_ttl = max(int(old_exp - datetime.now(UTC).timestamp()), 0)
-            await revoke_token(old_jti, remaining_ttl)
+        old_exp = payload.get("exp", 0)
+        remaining_ttl = max(int(old_exp - datetime.now(UTC).timestamp()), 0)
+        await revoke_token(old_jti, remaining_ttl)
 
         # Get user's current role from database (not from old token)
         # This ensures role changes are reflected on token refresh
@@ -704,6 +744,13 @@ async def refresh_token(
         await register_user_token(
             str(user_id), new_refresh_token_info.jti, new_refresh_token_info.expires_in_seconds
         )
+
+        # Update device session with new refresh token JTI (token rotation)
+        if device_session:
+            device_session.refresh_token_jti = new_refresh_token_info.jti
+            device_session.last_active_at = datetime.now(UTC)
+            device_session.expires_at = datetime.now(UTC) + timedelta(seconds=refresh_ttl)
+            await db.commit()
 
         # Set new httpOnly cookies
         set_auth_cookies(
@@ -903,3 +950,211 @@ async def change_password(
         "message": "Password changed successfully. Please log in again.",
         "sessions_revoked": revoked_count,
     }
+
+
+# ============== Password Reset ==============
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Forgot password request."""
+
+    email: EmailStr
+
+
+class ForgotPasswordResponse(BaseModel):
+    """Forgot password response."""
+
+    message: str = "If an account exists with this email, a password reset link has been sent."
+
+
+class ResetPasswordRequest(BaseModel):
+    """Reset password request."""
+
+    token: str
+    new_password: str
+
+
+class ResetPasswordResponse(BaseModel):
+    """Reset password response."""
+
+    message: str = "Password reset successfully. Please log in with your new password."
+
+
+# Password reset token storage (using Redis)
+PASSWORD_RESET_PREFIX = "podex:password_reset:"
+PASSWORD_RESET_TTL = 3600  # 1 hour
+
+
+async def _store_password_reset_token(token: str, user_id: str, email: str) -> None:
+    """Store password reset token in Redis."""
+    import json  # noqa: PLC0415
+
+    from src.middleware.rate_limit import get_redis_client  # noqa: PLC0415
+
+    client = await get_redis_client()
+    key = f"{PASSWORD_RESET_PREFIX}{token}"
+    value = json.dumps({"user_id": user_id, "email": email})
+    await client.setex(key, PASSWORD_RESET_TTL, value)
+
+
+async def _validate_password_reset_token(token: str) -> dict[str, str] | None:
+    """Validate and consume password reset token from Redis.
+
+    Returns user_id and email if valid, None otherwise.
+    Token is consumed (deleted) on validation to prevent reuse.
+    """
+    import json  # noqa: PLC0415
+
+    from src.middleware.rate_limit import get_redis_client  # noqa: PLC0415
+
+    try:
+        client = await get_redis_client()
+        key = f"{PASSWORD_RESET_PREFIX}{token}"
+
+        # Get and delete atomically to prevent reuse
+        value = await client.getdel(key)
+
+        if not value:
+            return None
+
+        data = json.loads(value)
+        return {"user_id": data.get("user_id"), "email": data.get("email")}
+    except Exception:
+        return None
+
+
+@router.post("/password/forgot", response_model=ForgotPasswordResponse)
+@limiter.limit(RATE_LIMIT_AUTH)
+async def forgot_password(
+    body: ForgotPasswordRequest,
+    request: Request,
+    db: DbSession,
+) -> ForgotPasswordResponse:
+    """Request a password reset link.
+
+    Always returns success to prevent email enumeration.
+    Only sends email if user exists and has a password (not OAuth-only).
+    """
+    import secrets  # noqa: PLC0415
+
+    import structlog  # noqa: PLC0415
+
+    from src.services.email import EmailTemplate, get_email_service  # noqa: PLC0415
+
+    logger = structlog.get_logger()
+
+    # Look up user by email
+    result = await db.execute(select(User).where(User.email == body.email))
+    user = result.scalar_one_or_none()
+
+    # Only send reset email if user exists and has a password
+    # (OAuth-only users cannot reset password)
+    if user and user.password_hash:
+        # Generate secure reset token
+        reset_token = secrets.token_urlsafe(32)
+
+        # Store token in Redis with user info
+        await _store_password_reset_token(reset_token, user.id, user.email)
+
+        # Build reset URL
+        reset_url = f"{settings.FRONTEND_URL}/auth/reset-password?token={reset_token}"
+
+        # Send password reset email
+        email_service = get_email_service()
+        email_result = await email_service.send_email(
+            to_email=user.email,
+            template=EmailTemplate.PASSWORD_RESET,
+            context={
+                "name": user.name or "there",
+                "reset_url": reset_url,
+            },
+        )
+
+        if email_result.success:
+            logger.info("Password reset email sent", user_id=user.id[:8])
+        else:
+            logger.error(
+                "Failed to send password reset email",
+                user_id=user.id[:8],
+                error=email_result.error,
+            )
+    else:
+        # Log for security monitoring but don't reveal if user exists
+        logger = structlog.get_logger()
+        logger.info(
+            "Password reset requested for non-existent or OAuth user", email=body.email[:3] + "***"
+        )
+
+    # Always return success to prevent email enumeration
+    return ForgotPasswordResponse()
+
+
+@router.post("/password/reset", response_model=ResetPasswordResponse)
+@limiter.limit(RATE_LIMIT_SENSITIVE)
+async def reset_password(
+    body: ResetPasswordRequest,
+    request: Request,
+    db: DbSession,
+) -> ResetPasswordResponse:
+    """Reset password using a valid reset token."""
+    import structlog  # noqa: PLC0415
+
+    from src.services.email import EmailTemplate, get_email_service  # noqa: PLC0415
+
+    logger = structlog.get_logger()
+
+    # Validate token and get user info
+    token_data = await _validate_password_reset_token(body.token)
+    if not token_data:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired reset token. Please request a new password reset.",
+        )
+
+    user_id = token_data["user_id"]
+
+    # Get user from database
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid reset token")
+
+    # Validate new password complexity
+    password_validation = validate_password(body.new_password)
+    if not password_validation.is_valid:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Password does not meet requirements",
+                "errors": password_validation.errors,
+            },
+        )
+
+    # Update password
+    user.password_hash = hash_password(body.new_password)
+    await db.commit()
+
+    # Log password reset
+    audit = AuditLogger(db).set_context(request=request, user_id=user.id, user_email=user.email)
+    await audit.log_auth(
+        AuditAction.AUTH_PASSWORD_CHANGED,
+        status=AuditStatus.SUCCESS,
+        resource_id=user.id,
+        details={"method": "reset_token"},
+    )
+
+    # SECURITY: Revoke all existing tokens on password reset
+    await revoke_all_user_tokens(user_id)
+
+    # Send password changed notification email
+    email_service = get_email_service()
+    await email_service.send_email(
+        to_email=user.email,
+        template=EmailTemplate.PASSWORD_CHANGED,
+        context={"name": user.name or "there"},
+    )
+
+    logger.info("Password reset completed", user_id=user.id[:8])
+
+    return ResetPasswordResponse()

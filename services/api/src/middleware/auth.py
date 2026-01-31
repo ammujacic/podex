@@ -49,10 +49,16 @@ PUBLIC_PATHS: list[tuple[str, bool]] = [
     ("/api/auth/refresh", False),
     ("/api/auth/logout", False),  # Allow logout without valid token
     ("/api/auth/password/check", False),  # Public password strength check
+    ("/api/auth/password/forgot", False),  # Public forgot password request
+    ("/api/auth/password/reset", False),  # Public password reset with token
     ("/api/billing/plans", True),  # Public subscription plans
-    # OAuth login/signup endpoints (public)
-    ("/api/oauth/github", True),  # GitHub OAuth endpoints (all subpaths)
-    ("/api/oauth/google", True),  # Google OAuth endpoints (all subpaths)
+    # OAuth login/signup endpoints (public) - link-authorize requires auth so NOT included
+    ("/api/oauth/github/authorize", False),  # GitHub OAuth login/signup
+    ("/api/oauth/github/callback", False),  # GitHub OAuth callback (login)
+    ("/api/oauth/github/callback-auto", False),  # GitHub unified callback
+    ("/api/oauth/google/authorize", False),  # Google OAuth login/signup
+    ("/api/oauth/google/callback", False),  # Google OAuth callback (login)
+    ("/api/oauth/google/callback-auto", False),  # Google unified callback
     ("/api/webhooks", True),  # Stripe webhooks (has own auth)
     ("/socket.io", True),  # Socket.IO has subpaths
     # Waitlist signup (public - for coming soon page)

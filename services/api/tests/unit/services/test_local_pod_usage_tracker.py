@@ -375,11 +375,14 @@ async def test_track_local_pod_workspaces_handles_workspace_error():
         with patch("src.services.local_pod_usage_tracker.async_session_factory") as mock_factory:
             mock_factory.return_value.__aenter__.return_value = mock_db
 
-            with patch(
-                "src.services.local_pod_usage_tracker.is_pod_online", side_effect=[True, True]
-            ), patch(
-                "src.services.local_pod_usage_tracker._record_local_pod_usage"
-            ) as mock_record:
+            with (
+                patch(
+                    "src.services.local_pod_usage_tracker.is_pod_online", side_effect=[True, True]
+                ),
+                patch(
+                    "src.services.local_pod_usage_tracker._record_local_pod_usage"
+                ) as mock_record,
+            ):
                 # First call raises error, second succeeds
                 mock_record.side_effect = [Exception("Test error"), None]
 

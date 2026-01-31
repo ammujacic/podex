@@ -88,8 +88,8 @@ class Settings(BaseSettings):
     # Auth
     JWT_SECRET_KEY: str = _DEV_JWT_SECRET
     JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080  # 7 days (7 * 24 * 60) - same as browser
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 90  # Same as browser for consistent UX
     BROWSER_ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080  # 7 days (7 * 24 * 60)
     BROWSER_REFRESH_TOKEN_EXPIRE_DAYS: int = 90  # Extended to 90 days for better UX
 
@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     PASSWORD_MAX_LENGTH: int = 128
     PASSWORD_REQUIRE_COMPLEXITY: bool = True  # Require uppercase, lowercase, number, special char
     PASSWORD_CHECK_COMMON: bool = True  # Check against common password list
+
+    # GeoIP (MaxMind GeoLite2) - for device location tracking
+    # Download from: https://www.maxmind.com/en/geolite2/signup
+    GEOIP_DATABASE_PATH: str = "/data/GeoLite2-City.mmdb"
 
     @field_validator("JWT_SECRET_KEY")
     @classmethod

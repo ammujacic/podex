@@ -282,7 +282,7 @@ def auth_headers(
         async def execute(self, *args: Any, **kwargs: Any) -> _FakeResult:  # noqa: ARG002
             return _FakeResult()
 
-        async def __aenter__(self) -> "_FakeSession":
+        async def __aenter__(self) -> "_FakeSession":  # noqa: PYI034
             return self
 
         async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:

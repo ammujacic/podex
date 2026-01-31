@@ -174,6 +174,12 @@ from .user_preferences import (
     UserOAuthToken,
 )
 
+# Device session models
+from .device_session import (
+    DeviceCode,
+    DeviceSession,
+)
+
 __all__ = [
     "AccessReview",
     "Agent",
@@ -201,6 +207,8 @@ __all__ = [
     "DataExportRequest",
     "DataRetentionPolicy",
     "DefaultMCPServer",
+    "DeviceCode",
+    "DeviceSession",
     "ExecutionPlan",
     "FileChange",
     "FileCheckpoint",

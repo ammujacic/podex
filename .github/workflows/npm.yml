@@ -1,0 +1,286 @@
+name: Publish npm Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 0.1.0 or 0.1.0-beta.1)'
+        required: true
+        type: string
+      packages:
+        description: 'Packages to publish (comma-separated or "all")'
+        required: false
+        default: 'podex'
+        type: string
+      dry_run:
+        description: 'Dry run (build only, no publish)'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '10'
+
+jobs:
+  # ==========================================
+  # Validate inputs and prepare
+  # ==========================================
+  validate:
+    name: Validate Inputs
+    runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.parse.outputs.packages }}
+    steps:
+      - name: Validate version format
+        env:
+          PACKAGE_VERSION: ${{ inputs.version }}
+        run: |
+          if ! echo "$PACKAGE_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
+            echo "Error: Invalid version format. Expected semver like 0.1.0 or 0.1.0-beta.1"
+            exit 1
+          fi
+          echo "Version format valid: $PACKAGE_VERSION"
+
+      - name: Parse packages to publish
+        id: parse
+        env:
+          PACKAGES_INPUT: ${{ inputs.packages }}
+        run: |
+          if [ "$PACKAGES_INPUT" = "all" ]; then
+            PACKAGES='["podex"]'
+          else
+            PACKAGES=$(echo "$PACKAGES_INPUT" | tr ',' '\n' | jq -R . | jq -s .)
+          fi
+          echo "packages=$PACKAGES" >> $GITHUB_OUTPUT
+          echo "Packages to publish: $PACKAGES"
+
+  # ==========================================
+  # Build and Test
+  # ==========================================
+  build:
+    name: Build Packages
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run type checks
+        run: pnpm typecheck
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Build all packages
+        run: pnpm build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            apps/cli/dist
+            packages/*/dist
+          retention-days: 1
+
+  # ==========================================
+  # Publish to npm
+  # ==========================================
+  publish:
+    name: Publish ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    needs: [validate, build]
+    if: ${{ !inputs.dry_run }}
+
+    permissions:
+      contents: read
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJson(needs.validate.outputs.packages) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: .
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Determine package directory
+        id: pkg-dir
+        env:
+          PKG_NAME: ${{ matrix.package }}
+        run: |
+          if [ "$PKG_NAME" = "podex" ]; then
+            echo "dir=apps/cli" >> $GITHUB_OUTPUT
+          else
+            DIR=$(echo "$PKG_NAME" | sed 's/@podex\//packages\//')
+            echo "dir=$DIR" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update package version
+        working-directory: ${{ steps.pkg-dir.outputs.dir }}
+        env:
+          PACKAGE_VERSION: ${{ inputs.version }}
+        run: |
+          echo "Setting version to: $PACKAGE_VERSION"
+          npm version $PACKAGE_VERSION --no-git-tag-version --allow-same-version
+          cat package.json | jq '.version'
+
+      - name: Remove private flag
+        working-directory: ${{ steps.pkg-dir.outputs.dir }}
+        run: |
+          jq 'del(.private)' package.json > package.tmp.json
+          mv package.tmp.json package.json
+
+      - name: Publish to npm
+        working-directory: ${{ steps.pkg-dir.outputs.dir }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm publish --access public
+
+      - name: Verify publication
+        env:
+          PKG_NAME: ${{ matrix.package }}
+          PACKAGE_VERSION: ${{ inputs.version }}
+        run: |
+          echo "Waiting for npm registry to update..."
+          sleep 10
+          npm view "$PKG_NAME@$PACKAGE_VERSION" version || echo "Warning: Package not yet visible on registry"
+
+  # ==========================================
+  # Dry Run (build verification)
+  # ==========================================
+  dry-run:
+    name: Dry Run - ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    needs: [validate, build]
+    if: ${{ inputs.dry_run }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJson(needs.validate.outputs.packages) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: .
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Determine package directory
+        id: pkg-dir
+        env:
+          PKG_NAME: ${{ matrix.package }}
+        run: |
+          if [ "$PKG_NAME" = "podex" ]; then
+            echo "dir=apps/cli" >> $GITHUB_OUTPUT
+          else
+            DIR=$(echo "$PKG_NAME" | sed 's/@podex\//packages\//')
+            echo "dir=$DIR" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Simulate version update
+        working-directory: ${{ steps.pkg-dir.outputs.dir }}
+        env:
+          PACKAGE_VERSION: ${{ inputs.version }}
+        run: |
+          npm version $PACKAGE_VERSION --no-git-tag-version --allow-same-version
+
+      - name: Pack package (dry run)
+        working-directory: ${{ steps.pkg-dir.outputs.dir }}
+        run: |
+          npm pack --dry-run
+
+      - name: Show package contents
+        working-directory: ${{ steps.pkg-dir.outputs.dir }}
+        run: |
+          echo "Package contents:"
+          npm pack --json 2>/dev/null | jq '.' || npm pack --dry-run
+
+  # ==========================================
+  # Summary
+  # ==========================================
+  summary:
+    name: Publish Summary
+    runs-on: ubuntu-latest
+    needs: [validate, build, publish]
+    if: always() && !inputs.dry_run
+    steps:
+      - name: Generate summary
+        env:
+          PACKAGE_VERSION: ${{ inputs.version }}
+          PACKAGES: ${{ needs.validate.outputs.packages }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          echo "## npm Package Publication Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | \`$PACKAGE_VERSION\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | $PUBLISH_RESULT |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dry run | $DRY_RUN |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$PUBLISH_RESULT" = "success" ]; then
+            echo "### Installation" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+            echo "npm install -g podex@$PACKAGE_VERSION" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi

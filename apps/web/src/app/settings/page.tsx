@@ -30,7 +30,6 @@ import {
 } from '@/lib/api';
 import { useUser, useAuthStore } from '@/stores/auth';
 import { useOnboardingTour } from '@/components/ui/OnboardingTour';
-import { ExternalAgentSettings } from '@/components/settings/ExternalAgentSettings';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { cn } from '@/lib/utils';
 
@@ -47,19 +46,12 @@ const tabs: Tab[] = [
   { id: 'shell', label: 'Shell', icon: <Terminal className="w-4 h-4" /> },
   { id: 'git', label: 'Git Config', icon: <GitBranch className="w-4 h-4" /> },
   { id: 'templates', label: 'Pod Templates', icon: <FileCode className="w-4 h-4" /> },
-  { id: 'external-agents', label: 'External Agents', icon: <Box className="w-4 h-4" /> },
 ];
 
 const shellOptions = [
   { value: 'zsh', label: 'Zsh' },
   { value: 'bash', label: 'Bash' },
   { value: 'fish', label: 'Fish' },
-];
-
-const editorOptions = [
-  { value: 'vscode', label: 'VS Code (Monaco)' },
-  { value: 'vim', label: 'Vim' },
-  { value: 'neovim', label: 'Neovim' },
 ];
 
 // Template icon configuration with CDN URLs (Simple Icons)
@@ -357,46 +349,6 @@ export default function SettingsPage() {
                 </div>
 
                 <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium text-text-primary mb-1">
-                      Default Pod Template
-                    </label>
-                    <select
-                      value={formData.default_template_id || ''}
-                      onChange={(e) =>
-                        updateFormData('default_template_id', e.target.value || null)
-                      }
-                      className="w-full bg-surface border border-border-default rounded-md px-3 py-2 text-sm text-text-primary"
-                    >
-                      <option value="">None (choose each time)</option>
-                      {templates.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          {t.name} {t.is_official && '(Official)'}
-                        </option>
-                      ))}
-                    </select>
-                    <p className="text-xs text-text-muted mt-1">
-                      Pre-select a template when creating new pods
-                    </p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-text-primary mb-1">
-                      Default Editor
-                    </label>
-                    <select
-                      value={formData.default_editor || 'vscode'}
-                      onChange={(e) => updateFormData('default_editor', e.target.value)}
-                      className="w-full bg-surface border border-border-default rounded-md px-3 py-2 text-sm text-text-primary"
-                    >
-                      {editorOptions.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
                   <div className="pt-4 border-t border-border-subtle">
                     <div>
                       <p className="text-sm font-medium text-text-primary">Connected Accounts</p>
@@ -610,9 +562,6 @@ export default function SettingsPage() {
                 </div>
               </div>
             )}
-
-            {/* External Agents Tab */}
-            {effectiveTab === 'external-agents' && <ExternalAgentSettings />}
           </div>
         </div>
       </div>

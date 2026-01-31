@@ -60,6 +60,7 @@ class TestSettingsDefaults:
             if original:
                 os.environ["REDIS_URL"] = original
 
+
 class TestAuthSettings:
     """Tests for authentication settings."""
 
@@ -71,12 +72,12 @@ class TestAuthSettings:
     def test_access_token_expire_minutes_default(self) -> None:
         """Test default access token expiry."""
         settings = Settings()
-        assert settings.ACCESS_TOKEN_EXPIRE_MINUTES == 30
+        assert settings.ACCESS_TOKEN_EXPIRE_MINUTES == 10080  # 7 days
 
     def test_refresh_token_expire_days_default(self) -> None:
         """Test default refresh token expiry."""
         settings = Settings()
-        assert settings.REFRESH_TOKEN_EXPIRE_DAYS == 7
+        assert settings.REFRESH_TOKEN_EXPIRE_DAYS == 90
 
     def test_oauth_github_defaults(self) -> None:
         """Test GitHub OAuth defaults."""

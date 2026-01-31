@@ -25,6 +25,15 @@ logger = structlog.get_logger()
 # Methods that modify state and should have origin validation
 STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
+# Paths that should be exempt from CSRF validation (e.g., auth endpoints for CLI)
+# These endpoints are either:
+# - Initial auth endpoints where no credentials exist yet (device auth flow)
+# - Public endpoints with no harmful side effects
+CSRF_EXEMPT_PATHS = {
+    "/api/v1/auth/device/code",  # Device auth initiation (no creds yet)
+    "/api/v1/auth/device/token",  # Device auth token polling (uses device_code secret)
+}
+
 
 class CSRFMiddleware(BaseHTTPMiddleware):
     """Middleware for CSRF protection via Origin header validation.
@@ -57,6 +66,10 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         """Check if CSRF validation should be skipped for this request."""
         # Skip validation for non-state-changing methods
         if request.method not in STATE_CHANGING_METHODS:
+            return True
+
+        # Skip validation for exempt paths (auth endpoints for CLI, etc.)
+        if request.url.path in CSRF_EXEMPT_PATHS:
             return True
 
         # Skip CSRF check in development for easier testing

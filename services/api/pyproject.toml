@@ -43,6 +43,9 @@ dependencies = [
     "python-dateutil>=2.9.0.post0",
     # Prometheus metrics endpoint
     "prometheus-fastapi-instrumentator>=6.1.0",
+    # GeoIP lookup for device location
+    "geoip2>=4.8.0",
+    "maxminddb>=2.6.0",
 ]
 
 [tool.uv.sources]

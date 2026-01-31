@@ -29,7 +29,9 @@
       "cacache": "^20.0.3",
       "are-we-there-yet": "^4.0.2",
       "boolean": "npm:extra-boolean@^1.11.1",
-      "lodash.isequal": "npm:fast-is-equal@^1.2.3"
+      "lodash.isequal": "npm:fast-is-equal@^1.2.3",
+      "@types/react": "^19.2.9",
+      "@types/react-dom": "^19.2.3"
     }
   },
   "scripts": {

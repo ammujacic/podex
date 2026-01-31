@@ -1,4 +1,4 @@
-.PHONY: build build-workspace-images build-workspace-images-all push-workspace-images load-workspace-images-dind test check run stop logs clean help sync-venvs
+.PHONY: build build-workspace-images build-workspace-images-all push-workspace-images load-workspace-images-dind test check run stop logs clean help sync-venvs cli-dev cli-build cli-test
 
 # Colors for output
 CYAN := \033[0;36m
@@ -392,6 +392,40 @@ test-ui:
 	cd packages/ui && pnpm test:coverage
 
 # ============================================
+# CLI
+# ============================================
+
+## Run CLI in development mode (with tsx watch)
+cli-dev:
+	@echo "$(CYAN)Starting CLI in development mode...$(NC)"
+	cd apps/cli && pnpm dev
+
+## Build the CLI for production
+cli-build:
+	@echo "$(CYAN)Building CLI for production...$(NC)"
+	cd apps/cli && pnpm build
+	@echo "$(GREEN)CLI built! Binary at: apps/cli/dist/cli.js$(NC)"
+
+## Run CLI tests with coverage
+cli-test:
+	@echo "$(CYAN)Running CLI tests with coverage...$(NC)"
+	cd apps/cli && pnpm test:coverage
+	@echo "$(GREEN)CLI tests complete!$(NC)"
+
+## Run CLI E2E tests
+cli-test-e2e:
+	@echo "$(CYAN)Running CLI E2E tests...$(NC)"
+	cd apps/cli && pnpm test:e2e
+	@echo "$(GREEN)CLI E2E tests complete!$(NC)"
+
+## Run all CLI tests (unit + E2E)
+cli-test-all:
+	@echo "$(CYAN)Running all CLI tests...$(NC)"
+	$(MAKE) cli-test
+	$(MAKE) cli-test-e2e
+	@echo "$(GREEN)All CLI tests complete!$(NC)"
+
+# ============================================
 # SYNC
 # ============================================
 
@@ -633,6 +667,13 @@ help:
 	@echo "  $(GREEN)make test-compute-local$(NC) Run compute tests locally (requires Redis on port 6379)"
 	@echo "  $(GREEN)make test-packages$(NC)     Run all frontend package tests with coverage"
 	@echo "  $(GREEN)make test-agent$(NC)        Run comprehensive agent integration tests (local only)"
+	@echo ""
+	@echo "$(YELLOW)CLI:$(NC)"
+	@echo "  $(GREEN)make cli-dev$(NC)           Run CLI in development mode (with tsx watch)"
+	@echo "  $(GREEN)make cli-build$(NC)         Build the CLI for production"
+	@echo "  $(GREEN)make cli-test$(NC)          Run CLI tests with coverage"
+	@echo "  $(GREEN)make cli-test-e2e$(NC)      Run CLI E2E tests"
+	@echo "  $(GREEN)make cli-test-all$(NC)      Run all CLI tests (unit + E2E)"
 	@echo ""
 	@echo "$(YELLOW)Code Quality:$(NC)"
 	@echo "  $(GREEN)make sync-venvs$(NC)        Sync all Python venvs to match CI exactly"
