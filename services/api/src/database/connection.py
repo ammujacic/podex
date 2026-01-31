@@ -122,7 +122,15 @@ async_session_factory = async_sessionmaker(
 
 
 async def init_database() -> None:
-    """Initialize database connection and create tables if needed."""
+    """Initialize database connection and create tables if needed.
+
+    In development/test: Creates tables from models using create_all().
+    In production: Relies on Alembic migrations for schema management.
+
+    This separation is necessary because:
+    - create_all() can race with multiple gunicorn workers in production
+    - Alembic migrations should be the source of truth for production schema
+    """
     # Only log the database host, not port or path to minimize information disclosure
     try:
         db_host = settings.DATABASE_URL.split("@")[-1].split(":")[0].split("/")[0]
@@ -130,10 +138,15 @@ async def init_database() -> None:
         db_host = "unknown"
     logger.info("Initializing database connection", host=db_host)
 
-    async with engine.begin() as conn:
-        # Create all tables from models (idempotent - won't recreate existing tables)
-        await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database tables created/verified")
+    # Only use create_all() in development/test environments
+    # In production, Alembic migrations handle schema creation
+    if settings.ENVIRONMENT in ("development", "test"):
+        async with engine.begin() as conn:
+            # Create all tables from models (idempotent - won't recreate existing tables)
+            await conn.run_sync(Base.metadata.create_all)
+            logger.info("Database tables created/verified (development mode)")
+    else:
+        logger.info("Skipping create_all in production - Alembic manages schema")
 
 
 async def close_database() -> None:
