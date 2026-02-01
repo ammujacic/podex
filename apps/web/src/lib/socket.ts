@@ -691,7 +691,9 @@ export function getSocket(): Socket {
   if (!socket) {
     socket = io(SOCKET_URL, {
       autoConnect: false,
-      transports: ['websocket', 'polling'],
+      // Start with polling (HTTP) which sends SameSite=Lax cookies, then upgrade to WebSocket.
+      // Direct WebSocket connections don't send cookies due to Chrome's CSWSH protection.
+      transports: ['polling', 'websocket'],
       reconnection: true,
       // Exponential backoff: starts at 1s, doubles each attempt, max 30s
       reconnectionDelay: 1000,
