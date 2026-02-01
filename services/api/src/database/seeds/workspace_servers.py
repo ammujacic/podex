@@ -5,7 +5,7 @@ the Docker-in-Docker (DinD) workspace infrastructure.
 """
 
 # Default workspace image used for all servers
-DEFAULT_WORKSPACE_IMAGE = "ghcr.io/mujacic/workspace:latest"
+DEFAULT_WORKSPACE_IMAGE = "ghcr.io/mujacica/workspace:latest"
 
 # Local development workspace servers matching docker-compose.yml
 # Note: id uses hostname for consistency with compute service config

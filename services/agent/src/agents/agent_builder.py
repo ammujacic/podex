@@ -81,7 +81,7 @@ Which tools should this agent have access to? Available tools:
 
 ## 4. Model Selection
 Which AI model should power this agent?
-- **claude-opus-4-5-20251101**: Most capable, best for complex reasoning
+- **claude-opus-4.5-20251101**: Most capable, best for complex reasoning
 - **claude-sonnet-4-20250514**: Good balance of speed and capability (recommended default)
 - **gpt-4o**: OpenAI's flagship model
 - **gpt-4o-mini**: Faster, more economical

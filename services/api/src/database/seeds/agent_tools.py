@@ -795,6 +795,30 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "is_system": True,
         "is_read_operation": True,
     },
+    {
+        "name": "search_web",
+        "description": "Search the web for information using a search query",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query",
+                },
+                "num_results": {
+                    "type": "integer",
+                    "description": "Maximum number of results to return",
+                    "default": 5,
+                },
+            },
+            "required": ["query"],
+        },
+        "category": "web",
+        "sort_order": 610,
+        "is_enabled": True,
+        "is_system": True,
+        "is_read_operation": True,
+    },
     # ==================== Memory Tools ====================
     # Memory tools modify DB records, not workspace files - no file/command restrictions
     {
@@ -947,6 +971,571 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         },
         "category": "memory",
         "sort_order": 740,
+        "is_enabled": True,
+        "is_system": True,
+        "is_read_operation": True,
+    },
+    # ==================== GitHub Tools ====================
+    {
+        "name": "create_pr",
+        "description": "Create a pull request on GitHub",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "PR title",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "PR description/body",
+                },
+                "base": {
+                    "type": "string",
+                    "description": "Base branch to merge into",
+                    "default": "main",
+                },
+                "head": {
+                    "type": "string",
+                    "description": "Head branch with changes",
+                },
+                "draft": {
+                    "type": "boolean",
+                    "description": "Create as draft PR",
+                    "default": False,
+                },
+            },
+            "required": ["title", "head"],
+        },
+        "category": "git",
+        "sort_order": 160,
+        "is_enabled": True,
+        "is_system": True,
+        "is_write_operation": True,
+    },
+    # ==================== Skills Tools ====================
+    {
+        "name": "list_skills",
+        "description": "List available skills/templates that can be executed",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "description": "Filter by category",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of skills to return",
+                    "default": 20,
+                },
+            },
+            "required": [],
+        },
+        "category": "skills",
+        "sort_order": 800,
+        "is_enabled": True,
+        "is_system": True,
+        "is_read_operation": True,
+    },
+    {
+        "name": "get_skill",
+        "description": "Get detailed information about a specific skill",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "skill_id": {
+                    "type": "string",
+                    "description": "Skill ID or slug",
+                },
+            },
+            "required": ["skill_id"],
+        },
+        "category": "skills",
+        "sort_order": 810,
+        "is_enabled": True,
+        "is_system": True,
+        "is_read_operation": True,
+    },
+    {
+        "name": "match_skills",
+        "description": "Find skills that match a given task description",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Task description to match against",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of matches",
+                    "default": 5,
+                },
+            },
+            "required": ["task"],
+        },
+        "category": "skills",
+        "sort_order": 820,
+        "is_enabled": True,
+        "is_system": True,
+        "is_read_operation": True,
+    },
+    {
+        "name": "recommend_skills",
+        "description": "Get skill recommendations based on context",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "context": {
+                    "type": "string",
+                    "description": "Current context or task description",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum recommendations",
+                    "default": 3,
+                },
+            },
+            "required": ["context"],
+        },
+        "category": "skills",
+        "sort_order": 830,
+        "is_enabled": True,
+        "is_system": True,
+        "is_read_operation": True,
+    },
+    {
+        "name": "get_skill_stats",
+        "description": "Get usage statistics for skills",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "skill_id": {
+                    "type": "string",
+                    "description": "Optional skill ID for specific stats",
+                },
+            },
+            "required": [],
+        },
+        "category": "skills",
+        "sort_order": 840,
+        "is_enabled": True,
+        "is_system": True,
+        "is_read_operation": True,
+    },
+    {
+        "name": "execute_skill",
+        "description": "Execute a skill with given parameters",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "skill_id": {
+                    "type": "string",
+                    "description": "Skill ID or slug to execute",
+                },
+                "parameters": {
+                    "type": "object",
+                    "description": "Parameters to pass to the skill",
+                },
+            },
+            "required": ["skill_id"],
+        },
+        "category": "skills",
+        "sort_order": 850,
+        "is_enabled": True,
+        "is_system": True,
+        "is_command_operation": True,
+    },
+    {
+        "name": "create_skill",
+        "description": "Create a new reusable skill template",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Skill name",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "What the skill does",
+                },
+                "template": {
+                    "type": "string",
+                    "description": "Skill template content",
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Skill category",
+                },
+            },
+            "required": ["name", "description", "template"],
+        },
+        "category": "skills",
+        "sort_order": 860,
+        "is_enabled": True,
+        "is_system": True,
+        "is_write_operation": True,
+    },
+    {
+        "name": "delete_skill",
+        "description": "Delete a skill template",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "skill_id": {
+                    "type": "string",
+                    "description": "Skill ID to delete",
+                },
+            },
+            "required": ["skill_id"],
+        },
+        "category": "skills",
+        "sort_order": 870,
+        "is_enabled": True,
+        "is_system": True,
+        "is_write_operation": True,
+    },
+    # ==================== Deploy Tools ====================
+    {
+        "name": "deploy_preview",
+        "description": "Deploy a preview environment for testing",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string",
+                    "description": "Branch to deploy",
+                },
+                "environment": {
+                    "type": "string",
+                    "description": "Environment name",
+                    "default": "preview",
+                },
+            },
+            "required": [],
+        },
+        "category": "deploy",
+        "sort_order": 900,
+        "is_enabled": True,
+        "is_system": True,
+        "is_deploy_operation": True,
+    },
+    {
+        "name": "get_preview_status",
+        "description": "Get the status of a preview deployment",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "preview_id": {
+                    "type": "string",
+                    "description": "Preview deployment ID",
+                },
+            },
+            "required": ["preview_id"],
+        },
+        "category": "deploy",
+        "sort_order": 910,
+        "is_enabled": True,
+        "is_system": True,
+        "is_read_operation": True,
+    },
+    {
+        "name": "stop_preview",
+        "description": "Stop and remove a preview deployment",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "preview_id": {
+                    "type": "string",
+                    "description": "Preview deployment ID to stop",
+                },
+            },
+            "required": ["preview_id"],
+        },
+        "category": "deploy",
+        "sort_order": 920,
+        "is_enabled": True,
+        "is_system": True,
+        "is_deploy_operation": True,
+    },
+    {
+        "name": "run_e2e_tests",
+        "description": "Run end-to-end tests against a deployment",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "URL to test against",
+                },
+                "test_suite": {
+                    "type": "string",
+                    "description": "Test suite to run",
+                },
+            },
+            "required": ["url"],
+        },
+        "category": "deploy",
+        "sort_order": 930,
+        "is_enabled": True,
+        "is_system": True,
+        "is_command_operation": True,
+    },
+    {
+        "name": "rollback_deploy",
+        "description": "Rollback a deployment to a previous version",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "deployment_id": {
+                    "type": "string",
+                    "description": "Deployment to rollback",
+                },
+                "target_version": {
+                    "type": "string",
+                    "description": "Version to rollback to",
+                },
+            },
+            "required": ["deployment_id"],
+        },
+        "category": "deploy",
+        "sort_order": 940,
+        "is_enabled": True,
+        "is_system": True,
+        "is_deploy_operation": True,
+    },
+    {
+        "name": "check_deployment_health",
+        "description": "Check the health status of a deployment",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Deployment URL to check",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout in seconds",
+                    "default": 30,
+                },
+            },
+            "required": ["url"],
+        },
+        "category": "deploy",
+        "sort_order": 950,
+        "is_enabled": True,
+        "is_system": True,
+        "is_read_operation": True,
+    },
+    {
+        "name": "wait_for_deployment",
+        "description": "Wait for a deployment to be ready",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "deployment_id": {
+                    "type": "string",
+                    "description": "Deployment ID to wait for",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Maximum wait time in seconds",
+                    "default": 300,
+                },
+            },
+            "required": ["deployment_id"],
+        },
+        "category": "deploy",
+        "sort_order": 960,
+        "is_enabled": True,
+        "is_system": True,
+        "is_read_operation": True,
+    },
+    {
+        "name": "list_previews",
+        "description": "List all active preview deployments",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum previews to list",
+                    "default": 10,
+                },
+            },
+            "required": [],
+        },
+        "category": "deploy",
+        "sort_order": 970,
+        "is_enabled": True,
+        "is_system": True,
+        "is_read_operation": True,
+    },
+    {
+        "name": "get_preview_logs",
+        "description": "Get logs from a preview deployment",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "preview_id": {
+                    "type": "string",
+                    "description": "Preview deployment ID",
+                },
+                "lines": {
+                    "type": "integer",
+                    "description": "Number of log lines",
+                    "default": 100,
+                },
+            },
+            "required": ["preview_id"],
+        },
+        "category": "deploy",
+        "sort_order": 980,
+        "is_enabled": True,
+        "is_system": True,
+        "is_read_operation": True,
+    },
+    # ==================== Browser/Vision Tools ====================
+    {
+        "name": "screenshot_page",
+        "description": "Take a screenshot of a web page",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "URL to screenshot",
+                },
+                "full_page": {
+                    "type": "boolean",
+                    "description": "Capture full page",
+                    "default": False,
+                },
+                "viewport": {
+                    "type": "object",
+                    "properties": {
+                        "width": {"type": "integer"},
+                        "height": {"type": "integer"},
+                    },
+                    "description": "Viewport dimensions",
+                },
+            },
+            "required": ["url"],
+        },
+        "category": "browser",
+        "sort_order": 1000,
+        "is_enabled": True,
+        "is_system": True,
+        "is_read_operation": True,
+    },
+    {
+        "name": "interact_with_page",
+        "description": "Interact with elements on a web page (click, type, etc.)",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "URL of the page",
+                },
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["click", "type", "scroll", "wait"],
+                            },
+                            "selector": {"type": "string"},
+                            "value": {"type": "string"},
+                        },
+                    },
+                    "description": "List of actions to perform",
+                },
+            },
+            "required": ["url", "actions"],
+        },
+        "category": "browser",
+        "sort_order": 1010,
+        "is_enabled": True,
+        "is_system": True,
+        "is_command_operation": True,
+    },
+    {
+        "name": "extract_page_data",
+        "description": "Extract structured data from a web page",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "URL to extract from",
+                },
+                "selectors": {
+                    "type": "object",
+                    "description": "CSS selectors for data extraction",
+                },
+            },
+            "required": ["url"],
+        },
+        "category": "browser",
+        "sort_order": 1020,
+        "is_enabled": True,
+        "is_system": True,
+        "is_read_operation": True,
+    },
+    {
+        "name": "analyze_screenshot",
+        "description": "Analyze a screenshot using vision capabilities",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "image_path": {
+                    "type": "string",
+                    "description": "Path to screenshot image",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "What to analyze in the image",
+                },
+            },
+            "required": ["image_path"],
+        },
+        "category": "browser",
+        "sort_order": 1030,
+        "is_enabled": True,
+        "is_system": True,
+        "is_read_operation": True,
+    },
+    {
+        "name": "design_to_code",
+        "description": "Convert a design image/screenshot to code",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "image_path": {
+                    "type": "string",
+                    "description": "Path to design image",
+                },
+                "framework": {
+                    "type": "string",
+                    "description": "Target framework (react, vue, html, etc.)",
+                    "default": "react",
+                },
+                "style": {
+                    "type": "string",
+                    "description": "Styling approach (tailwind, css, styled-components)",
+                    "default": "tailwind",
+                },
+            },
+            "required": ["image_path"],
+        },
+        "category": "browser",
+        "sort_order": 1040,
         "is_enabled": True,
         "is_system": True,
         "is_read_operation": True,

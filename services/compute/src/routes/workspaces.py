@@ -175,6 +175,26 @@ async def delete_workspace(
     await compute.delete_workspace(workspace_id)
 
 
+@router.post("/{workspace_id}/mark-for-deletion", status_code=status.HTTP_202_ACCEPTED)
+async def mark_workspace_for_deletion(
+    workspace_id: str,
+    user_id: AuthenticatedUser,
+    _auth: InternalAuth,
+    compute: Annotated[ComputeManager, Depends(get_compute_manager)],
+) -> dict[str, str]:
+    """Mark a workspace for deletion by the cleanup task.
+
+    This is used when a session is deleted - the workspace gets marked for
+    cleanup rather than deleted immediately. The cleanup task will delete
+    the container and storage on its next run (within 60 seconds).
+    """
+    await verify_workspace_ownership(workspace_id, user_id, compute)
+    marked = await compute.mark_for_deletion(workspace_id)
+    if not marked:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
+    return {"status": "marked_for_deletion", "workspace_id": workspace_id}
+
+
 @router.post("/{workspace_id}/exec", response_model=WorkspaceExecResponse)
 async def exec_command(
     workspace_id: str,

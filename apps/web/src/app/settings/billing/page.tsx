@@ -260,7 +260,7 @@ export default function BillingPage() {
   }
 
   return (
-    <div className="max-w-6xl mx-auto px-8 py-8">
+    <div className="max-w-4xl mx-auto px-8 py-8">
       {/* Header */}
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-text-primary mb-2">Billing</h1>

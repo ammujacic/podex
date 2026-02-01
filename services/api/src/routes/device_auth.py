@@ -136,6 +136,7 @@ class DeviceCodeResponse(BaseModel):
 @limiter.limit(RATE_LIMIT_AUTH)
 async def request_device_code(
     request: Request,
+    response: Response,  # noqa: ARG001
     db: DbSession,
     body: DeviceCodeRequest | None = None,
 ) -> DeviceCodeResponse:
@@ -368,6 +369,7 @@ class AuthorizeDeviceResponse(BaseModel):
 @limiter.limit(RATE_LIMIT_SENSITIVE)
 async def authorize_device(
     request: Request,
+    response: Response,  # noqa: ARG001
     db: DbSession,
     body: AuthorizeDeviceRequest,
 ) -> AuthorizeDeviceResponse:
@@ -528,6 +530,7 @@ class RevokeSessionResponse(BaseModel):
 async def revoke_session(
     session_id: str,
     request: Request,
+    response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> RevokeSessionResponse:
     """Revoke a specific session by ID."""

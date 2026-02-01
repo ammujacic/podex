@@ -263,7 +263,7 @@ async def sync_servers() -> int:
             tls_cert_path=server.get("tls_cert_path"),
             tls_key_path=server.get("tls_key_path"),
             tls_ca_path=server.get("tls_ca_path"),
-            workspace_image=server.get("workspace_image", "ghcr.io/mujacic/workspace:latest"),
+            workspace_image=server.get("workspace_image", "ghcr.io/mujacica/workspace:latest"),
             workspace_image_arm64=server.get("workspace_image_arm64"),
             workspace_image_amd64=server.get("workspace_image_amd64"),
             workspace_image_gpu=server.get("workspace_image_gpu"),

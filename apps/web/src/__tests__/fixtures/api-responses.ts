@@ -49,7 +49,7 @@ export const mockAgent: Agent = {
   id: 'agent-1',
   name: 'Architect',
   role: 'architect',
-  model: 'claude-opus-4-5-20251101',
+  model: 'claude-opus-4.5-20251101',
   status: 'idle' as const,
   color: '#7C3AED',
   conversationSessionId: null,
@@ -445,8 +445,8 @@ export const mockUsageSummaryDetailed: UsageSummary = {
   apiCalls: 1500,
   totalCost: 13.35,
   usageByModel: {
-    'claude-opus-4-5': { input: 150000, output: 100000, cost: 6.0 },
-    'claude-sonnet-4-5': { input: 100000, output: 50000, cost: 2.0 },
+    'claude-opus-4.5': { input: 150000, output: 100000, cost: 6.0 },
+    'claude-sonnet-4.5': { input: 100000, output: 50000, cost: 2.0 },
   },
   usageByAgent: {
     'agent-1': { tokens: 200000, cost: 4.5 },
@@ -731,7 +731,7 @@ export const mockTokenUsageRecord: UsageRecord = {
   quantity: 50000,
   unit: 'tokens',
   cost: 1.0,
-  model: 'claude-opus-4-5',
+  model: 'claude-opus-4.5',
   tier: null,
   sessionId: 'session-1',
   agentId: 'agent-1',

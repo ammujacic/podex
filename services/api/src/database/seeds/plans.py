@@ -147,4 +147,56 @@ DEFAULT_PLANS = [
         "is_enterprise": False,
         "sort_order": 2,
     },
+    {
+        "name": "Ultra",
+        "slug": "ultra",
+        "description": "For power users and larger teams",
+        "price_monthly_cents": 19900,
+        "price_yearly_cents": 199000,
+        "currency": "USD",
+        "tokens_included": 15000000,
+        "compute_credits_cents_included": 15000,
+        "storage_gb_included": 500,
+        "max_agents": 50,
+        "max_sessions": 150,
+        "max_team_members": 50,
+        "overage_allowed": True,
+        "llm_margin_percent": 30,
+        "compute_margin_percent": 20,
+        "features": {
+            "private_projects": True,
+            "git_integration": True,
+            "team_collaboration": True,
+            "gpu_access": True,
+            "advanced_analytics": True,
+            "audit_logs": True,
+            "custom_agents": True,
+            "priority_support": True,
+            "dedicated_support": True,
+            "sla_guarantee": True,
+            "custom_integrations": True,
+        },
+        # New UI/display fields
+        "color": "#ec4899",  # pink-500
+        "icon": "Gem",
+        "cta_text": "Go Ultra",
+        "highlight_features": [
+            "15M tokens/month",
+            "50 AI agents",
+            "150 concurrent sessions",
+            "Dedicated support",
+            "99.9% SLA",
+        ],
+        # Session/workspace configuration
+        "session_timeout_options": [15, 30, 60, 120, None],  # All options including never
+        "max_thinking_tokens": 64000,  # Maximum thinking
+        "workspace_cpu_limit": 8000,  # 8 CPUs
+        "workspace_memory_limit": 16384,  # 16 GB
+        "workspace_disk_limit": 200,  # 200 GB
+        "max_session_duration_minutes": None,  # Unlimited
+        "is_active": True,
+        "is_popular": False,
+        "is_enterprise": False,
+        "sort_order": 3,
+    },
 ]

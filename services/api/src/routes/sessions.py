@@ -1211,6 +1211,42 @@ async def delete_session(
 
     # Capture session info before deletion for audit log
     session_name = session.name
+    workspace_id = str(session.workspace_id) if session.workspace_id else None
+
+    # Mark workspace for deletion in compute service (if exists)
+    if workspace_id:
+        try:
+            compute = await get_compute_client_for_workspace(workspace_id)
+            await compute.mark_workspace_for_deletion(workspace_id, user_id)
+            logger.info(
+                "Marked workspace for deletion",
+                workspace_id=workspace_id[:12],
+                session_id=session_id,
+            )
+        except Exception:
+            # Log but don't fail session deletion if compute cleanup fails
+            # The workspace will be cleaned up by stale cleanup eventually
+            logger.warning(
+                "Failed to mark workspace for deletion in compute service",
+                workspace_id=workspace_id[:12],
+                session_id=session_id,
+                exc_info=True,
+            )
+
+        # Delete workspace record from database
+        try:
+            workspace_result = await db.execute(
+                select(WorkspaceModel).where(WorkspaceModel.id == session.workspace_id)
+            )
+            workspace = workspace_result.scalar_one_or_none()
+            if workspace:
+                await db.delete(workspace)
+        except Exception:
+            logger.warning(
+                "Failed to delete workspace from database",
+                workspace_id=workspace_id[:12],
+                exc_info=True,
+            )
 
     await db.delete(session)
     await db.commit()
@@ -1220,7 +1256,7 @@ async def delete_session(
     await audit.log_session_event(
         AuditAction.SESSION_DELETED,
         session_id=session_id,
-        details={"name": session_name},
+        details={"name": session_name, "workspace_id": workspace_id},
     )
 
     # Invalidate caches
@@ -1835,6 +1871,13 @@ async def ensure_workspace_provisioned(
     # Cloud workspace - use compute service
     # If workspace has a server_id, use its compute service URL
     # Otherwise, we'll need to select a server during provisioning
+    workspace_record = None
+    if db:
+        result = await db.execute(
+            select(WorkspaceModel).where(WorkspaceModel.id == session.workspace_id)
+        )
+        workspace_record = result.scalar_one_or_none()
+
     if workspace_record and workspace_record.server_id:
         try:
             compute = await get_compute_client_for_workspace(workspace_id)

@@ -21,7 +21,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 # Default image for all servers
-DEFAULT_WORKSPACE_IMAGE = "ghcr.io/mujacic/workspace:latest"
+DEFAULT_WORKSPACE_IMAGE = "ghcr.io/mujacica/workspace:latest"
 
 
 def upgrade() -> None:

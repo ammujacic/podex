@@ -121,7 +121,7 @@ describe('useAgentSocket', () => {
             id: agentId,
             name: 'Test Agent',
             role: 'architect',
-            model: 'claude-opus-4-5-20251101',
+            model: 'claude-opus-4.5-20251101',
             status: 'idle',
             color: 'agent-1',
             mode: 'auto',
@@ -797,7 +797,7 @@ describe('useAgentSocket', () => {
         session_id: sessionId,
         agent_id: agentId,
         updates: {
-          model: 'claude-sonnet-4-5-20250929',
+          model: 'claude-sonnet-4.5-20250929',
         },
         source: 'cli',
         timestamp: new Date().toISOString(),
@@ -810,7 +810,7 @@ describe('useAgentSocket', () => {
           sessionId,
           agentId,
           expect.objectContaining({
-            model: 'claude-sonnet-4-5-20250929',
+            model: 'claude-sonnet-4.5-20250929',
           })
         );
       });
@@ -879,7 +879,7 @@ describe('useAgentSocket', () => {
         session_id: sessionId,
         agent_id: agentId,
         updates: {
-          model: 'claude-opus-4-5-20251101',
+          model: 'claude-opus-4.5-20251101',
         },
         source: 'user',
         timestamp: new Date().toISOString(),
@@ -900,7 +900,7 @@ describe('useAgentSocket', () => {
         session_id: 'other-session',
         agent_id: agentId,
         updates: {
-          model: 'claude-opus-4-5-20251101',
+          model: 'claude-opus-4.5-20251101',
         },
         source: 'cli',
         timestamp: new Date().toISOString(),

@@ -48,7 +48,7 @@ const mockGeneratedPlan: GeneratedPlan = {
   approachName: 'Component-based approach',
   approachSummary: 'Create reusable components with TypeScript',
   steps: [mockPlanStep],
-  modelUsed: 'claude-opus-4-5',
+  modelUsed: 'claude-opus-4.5',
   status: 'completed',
   totalEstimatedComplexity: 'medium',
   pros: ['Reusable', 'Type-safe'],
@@ -66,7 +66,7 @@ const mockGeneratedPlan2: GeneratedPlan = {
   approachName: 'Monolithic approach',
   approachSummary: 'Create a single large component',
   steps: [mockPlanStep, mockPlanStep2],
-  modelUsed: 'claude-sonnet-4-5',
+  modelUsed: 'claude-sonnet-4.5',
   status: 'completed',
   totalEstimatedComplexity: 'high',
   pros: ['Simple structure'],
@@ -82,7 +82,7 @@ const mockBackgroundTask: BackgroundPlanTask = {
   agentId: 'agent-1',
   taskDescription: 'Generate multiple approaches',
   numPlans: 3,
-  models: ['claude-opus-4-5', 'claude-sonnet-4-5', 'gpt-4o'],
+  models: ['claude-opus-4.5', 'claude-sonnet-4.5', 'gpt-4o'],
   status: 'running',
   planIds: ['plan-1'],
   createdAt: new Date('2024-01-01T00:00:00Z'),
@@ -126,8 +126,8 @@ describe('planningStore', () => {
         showComparisonView: false,
         comparisonPlanIds: [],
         settings: {
-          planningModel: 'claude-opus-4-5',
-          executionModel: 'claude-sonnet-4-5',
+          planningModel: 'claude-opus-4.5',
+          executionModel: 'claude-sonnet-4.5',
           parallelPlans: 3,
           backgroundPlanning: true,
           autoSelectSimplest: false,
@@ -168,8 +168,8 @@ describe('planningStore', () => {
 
     it('has default settings configured', () => {
       const { result } = renderHook(() => usePlanningStore());
-      expect(result.current.settings.planningModel).toBe('claude-opus-4-5');
-      expect(result.current.settings.executionModel).toBe('claude-sonnet-4-5');
+      expect(result.current.settings.planningModel).toBe('claude-opus-4.5');
+      expect(result.current.settings.executionModel).toBe('claude-sonnet-4.5');
       expect(result.current.settings.parallelPlans).toBe(3);
       expect(result.current.settings.backgroundPlanning).toBe(true);
       expect(result.current.settings.autoSelectSimplest).toBe(false);
@@ -1104,10 +1104,10 @@ describe('planningStore', () => {
         const { result } = renderHook(() => usePlanningStore());
 
         act(() => {
-          result.current.updateSettings({ executionModel: 'claude-opus-4-5' });
+          result.current.updateSettings({ executionModel: 'claude-opus-4.5' });
         });
 
-        expect(result.current.settings.executionModel).toBe('claude-opus-4-5');
+        expect(result.current.settings.executionModel).toBe('claude-opus-4.5');
       });
 
       it('updates parallel plans count', () => {
@@ -1163,7 +1163,7 @@ describe('planningStore', () => {
           result.current.updateSettings({ planningModel: 'gpt-4o' });
         });
 
-        expect(result.current.settings.executionModel).toBe('claude-sonnet-4-5');
+        expect(result.current.settings.executionModel).toBe('claude-sonnet-4.5');
         expect(result.current.settings.parallelPlans).toBe(3);
       });
     });

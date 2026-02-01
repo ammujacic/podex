@@ -230,8 +230,8 @@ const mockUsageMetrics: UsageMetrics = {
   input_tokens: 30000000,
   output_tokens: 20000000,
   tokens_by_model: [
-    { model: 'claude-opus-4-5', tokens: 30000000 },
-    { model: 'claude-sonnet-4-5', tokens: 20000000 },
+    { model: 'claude-opus-4.5', tokens: 30000000 },
+    { model: 'claude-sonnet-4.5', tokens: 20000000 },
   ],
   tokens_by_provider: [
     { provider: 'anthropic', tokens: 45000000 },

@@ -223,6 +223,26 @@ class WorkspaceStore:
         workspace.last_activity = now
         await self._write_workspace(client, workspace, now)
 
+    async def update_status(self, workspace_id: str, status: WorkspaceStatus) -> bool:
+        """Update workspace status.
+
+        Args:
+            workspace_id: The workspace ID
+            status: The new status
+
+        Returns:
+            True if updated, False if workspace not found
+        """
+        client = await self._get_client()
+        workspace = await self.get(workspace_id)
+        if not workspace:
+            return False
+
+        now = datetime.now(UTC)
+        workspace.status = status
+        await self._write_workspace(client, workspace, now)
+        return True
+
     async def cleanup_stale(self, max_age_seconds: int) -> list[str]:
         """Remove workspaces whose updated_at is too old.
 

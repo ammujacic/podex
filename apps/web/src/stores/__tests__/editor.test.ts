@@ -19,7 +19,7 @@ vi.mock('@/stores/config', () => ({
       getEditorAIConfig: () => ({
         completionsEnabled: true,
         completionsDebounceMs: 300,
-        defaultModel: 'claude-opus-4-5-20251101',
+        defaultModel: 'claude-opus-4.5-20251101',
       }),
     }),
   },

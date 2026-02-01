@@ -94,11 +94,10 @@ class Settings(BaseSettings):
 
     # Workspace settings
     max_workspaces: int = 10  # Max workspaces per server (soft limit)
-    workspace_timeout: int = 3600  # 1 hour idle timeout
     shutdown_timeout: int = 60  # Max seconds for graceful shutdown before forcing exit
     # Fallback workspace image (used only when server has no image configured)
     # In production, images are configured per-server in the database via admin UI
-    workspace_image: str = "ghcr.io/mujacic/workspace:latest"
+    workspace_image: str = "ghcr.io/mujacica/workspace:latest"
 
     # Container runtime for workspace isolation (runsc for gVisor, runc for standard)
     docker_runtime: str | None = "runsc"  # Set to None to use server default

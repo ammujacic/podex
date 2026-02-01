@@ -152,7 +152,7 @@ describe('AgentCard', () => {
     id: 'agent-123',
     name: 'Architect',
     role: 'architect',
-    model: 'claude-opus-4-5-20251101',
+    model: 'claude-opus-4.5-20251101',
     modelDisplayName: 'Opus 4.5',
     status: 'idle',
     color: 'agent-1',

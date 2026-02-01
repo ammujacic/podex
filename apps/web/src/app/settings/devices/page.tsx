@@ -122,7 +122,7 @@ export default function DevicesPage() {
   };
 
   return (
-    <div className="max-w-2xl mx-auto px-8 py-8">
+    <div className="max-w-4xl mx-auto px-8 py-8">
       <div className="mb-8">
         <h1 className="text-2xl font-semibold text-text-primary">Devices & Sessions</h1>
         <p className="text-text-muted mt-1">Manage your active sessions across all devices</p>

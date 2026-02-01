@@ -6,7 +6,6 @@ import base64
 import shlex
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -87,6 +86,17 @@ class ComputeManager(ABC):
         """Delete workspace from Redis store."""
         if self._workspace_store:
             await self._workspace_store.delete(workspace_id)
+
+    # --- Abstract Properties (must be implemented by subclasses) ---
+
+    @property
+    @abstractmethod
+    def managed_server_ids(self) -> set[str]:
+        """Return the set of server IDs this compute instance manages.
+
+        Used by cleanup tasks to only process workspaces on managed servers.
+        """
+        ...
 
     # --- Abstract Methods (must be implemented by subclasses) ---
 
@@ -349,43 +359,61 @@ class ComputeManager(ABC):
             await self._workspace_store.update_heartbeat(workspace_id)
         # No fallback needed - heartbeat is best-effort
 
-    async def cleanup_idle_workspaces(self, timeout_seconds: int) -> list[str]:
-        """Clean up workspaces that have been idle too long.
+    async def mark_for_deletion(self, workspace_id: str) -> bool:
+        """Mark a workspace for deletion by the cleanup task.
+
+        This sets the workspace status to PENDING_DELETION. The cleanup task
+        will then delete the container and storage on its next run.
 
         Args:
-            timeout_seconds: Idle timeout in seconds
+            workspace_id: The workspace ID
+
+        Returns:
+            True if marked, False if workspace not found
+        """
+        if self._workspace_store:
+            return await self._workspace_store.update_status(
+                workspace_id, WorkspaceStatus.PENDING_DELETION
+            )
+        return False
+
+    async def cleanup_deleted_workspaces(self) -> list[str]:
+        """Clean up workspaces that are marked for deletion.
+
+        Only cleans up workspaces with PENDING_DELETION status that are
+        on servers managed by this compute instance.
 
         Returns:
             List of workspace IDs that were cleaned up
         """
-        now = datetime.now(UTC)
         cleaned_up = []
+        managed_servers = self.managed_server_ids
 
         # Get all workspaces from store
         workspaces: list[WorkspaceInfo] = []
         if self._workspace_store:
             workspaces = await self._workspace_store.list_all()
 
-        # Filter workspaces that need cleanup
-        workspaces_to_cleanup = []
-        for workspace in workspaces:
-            idle_time = (now - workspace.last_activity).total_seconds()
-            if idle_time > timeout_seconds:
-                workspaces_to_cleanup.append((workspace, idle_time))
+        # Filter workspaces that are pending deletion AND on managed servers
+        workspaces_to_cleanup = [
+            ws
+            for ws in workspaces
+            if ws.status == WorkspaceStatus.PENDING_DELETION and ws.server_id in managed_servers
+        ]
 
         if workspaces_to_cleanup:
             logger.info(
                 "Starting workspace cleanup",
                 total_to_cleanup=len(workspaces_to_cleanup),
-                timeout_seconds=timeout_seconds,
+                managed_servers=list(managed_servers),
             )
 
-        for i, (workspace, idle_time) in enumerate(workspaces_to_cleanup, 1):
+        for i, workspace in enumerate(workspaces_to_cleanup, 1):
             logger.info(
-                "Cleaning up workspace",
+                "Cleaning up deleted workspace",
                 progress=f"{i}/{len(workspaces_to_cleanup)}",
                 workspace_id=workspace.id[:12],
-                idle_seconds=int(idle_time),
+                server_id=workspace.server_id,
             )
             try:
                 await self.delete_workspace(workspace.id)

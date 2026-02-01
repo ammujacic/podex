@@ -3304,7 +3304,7 @@ def _calculate_token_cost_from_db(
     Always uses database pricing, with fallback to default rates.
 
     Args:
-        model: Model ID (e.g., "claude-haiku-4-5")
+        model: Model ID (e.g., "claude-haiku-4.5")
         input_tokens: Number of input tokens
         output_tokens: Number of output tokens
 

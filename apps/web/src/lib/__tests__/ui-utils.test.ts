@@ -152,7 +152,7 @@ describe('getAgentColor', () => {
 
 describe('getModelDisplayName', () => {
   it('returns the raw model ID (no frontend inference)', () => {
-    expect(getModelDisplayName('claude-opus-4-5')).toBe('claude-opus-4-5');
+    expect(getModelDisplayName('claude-opus-4.5')).toBe('claude-opus-4.5');
     expect(getModelDisplayName('gpt-4o')).toBe('gpt-4o');
     expect(getModelDisplayName('unknown-model-name')).toBe('unknown-model-name');
   });

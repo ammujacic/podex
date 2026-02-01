@@ -527,6 +527,17 @@ class ComputeClient:
         """Delete a workspace."""
         await self._request("DELETE", f"/workspaces/{workspace_id}", user_id=user_id)
 
+    async def mark_workspace_for_deletion(self, workspace_id: str, user_id: str) -> None:
+        """Mark a workspace for deletion by the cleanup task.
+
+        The workspace will be deleted by the compute service's cleanup task
+        on its next run (within 60 seconds). This is used when a session is
+        deleted to ensure the workspace container and storage are cleaned up.
+        """
+        await self._request(
+            "POST", f"/workspaces/{workspace_id}/mark-for-deletion", user_id=user_id
+        )
+
     async def heartbeat(self, workspace_id: str, user_id: str) -> None:
         """Send heartbeat to keep workspace alive."""
         try:

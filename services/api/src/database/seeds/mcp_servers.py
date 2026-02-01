@@ -17,78 +17,23 @@ class MCPCategory(str, Enum):
 
     VERSION_CONTROL = "version_control"
     WEB = "web"
-    MEMORY = "memory"
     MONITORING = "monitoring"
     PRODUCTIVITY = "productivity"
 
 
-# Default MCP servers - full productivity suite
+# Default MCP servers
 # These can be enabled by users with one click (after providing required secrets)
 #
 # NOTE: Filesystem and Git MCP servers have been REMOVED.
 # Native agents use built-in tools (read_file, write_file, git_status, etc.)
 # that execute directly on the workspace container via the compute service.
 # This is more reliable and doesn't require MCP server processes.
+#
+# Web Fetch, Puppeteer, and GitHub servers were also removed:
+# - GitHub: Package mismatch issues and requires OAuth integration
+# - Puppeteer: Requires Chrome/Chromium in the container environment
+# - Web Fetch: Not essential, can be added back if needed
 DEFAULT_MCP_SERVERS: list[dict[str, Any]] = [
-    # ============== Version Control ==============
-    {
-        "slug": "github",
-        "name": "GitHub",
-        "description": "GitHub API: issues, PRs, repos, actions, and code search",
-        "category": MCPCategory.VERSION_CONTROL,
-        "transport": "stdio",
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-github"],
-        "env_vars": {},
-        "required_env": [],
-        "icon": "github",
-        "is_builtin": False,
-        "docs_url": "https://github.com/github/github-mcp-server",
-    },
-    # ============== Web ==============
-    {
-        "slug": "fetch",
-        "name": "Web Fetch",
-        "description": "Fetch and parse web pages, APIs, and documentation",
-        "category": MCPCategory.WEB,
-        "transport": "stdio",
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-fetch"],
-        "env_vars": {},
-        "required_env": [],
-        "icon": "globe",
-        "is_builtin": False,
-        "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
-    },
-    {
-        "slug": "puppeteer",
-        "name": "Puppeteer",
-        "description": "Browser automation, screenshots, and web scraping",
-        "category": MCPCategory.WEB,
-        "transport": "stdio",
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-puppeteer"],
-        "env_vars": {},
-        "required_env": [],
-        "icon": "chrome",
-        "is_builtin": False,
-        "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/puppeteer",
-    },
-    # ============== Memory & AI ==============
-    {
-        "slug": "memory",
-        "name": "Memory",
-        "description": "Persistent memory and knowledge graph for context retention",
-        "category": MCPCategory.MEMORY,
-        "transport": "stdio",
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-memory"],
-        "env_vars": {},
-        "required_env": [],
-        "icon": "brain",
-        "is_builtin": False,
-        "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
-    },
     # ============== Monitoring ==============
     {
         "slug": "sentry",
@@ -99,9 +44,11 @@ DEFAULT_MCP_SERVERS: list[dict[str, Any]] = [
         "command": "npx",
         "args": ["-y", "@sentry/mcp-server@latest"],
         "env_vars": {},
-        # SENTRY_ACCESS_TOKEN is required; SENTRY_HOST is optional for self-hosted
+        # SENTRY_ACCESS_TOKEN is required
+        # SENTRY_HOST is optional for self-hosted instances
+        # OPENAI_API_KEY is optional for AI-powered search (Seer)
         "required_env": ["SENTRY_ACCESS_TOKEN"],
-        "optional_env": ["SENTRY_HOST"],
+        "optional_env": ["SENTRY_HOST", "OPENAI_API_KEY"],
         "icon": "sentry",
         "is_builtin": False,
         "docs_url": "https://docs.sentry.io/product/sentry-mcp/",

@@ -85,7 +85,7 @@ def resolve_env_vars_for_server(
     2. Database-stored env_vars
 
     Args:
-        source_slug: The default server slug (e.g., "github") or None for custom
+        source_slug: The default server slug (e.g., "sentry") or None for custom
         db_env_vars: Environment variables stored in the database record
 
     Returns:
@@ -98,25 +98,17 @@ def resolve_env_vars_for_server(
         resolved.update(db_env_vars)
 
     # Override with settings-based secrets (from environment variables)
-    if source_slug == "github":
-        token = getattr(settings, "MCP_GITHUB_TOKEN", None)
+    # Currently only Sentry is supported as a default server.
+    # Sentry tokens are provided via the UI and stored in db_env_vars.
+    if source_slug == "sentry":
+        # Allow override from environment if configured
+        token = getattr(settings, "MCP_SENTRY_ACCESS_TOKEN", None)
         if token:
-            resolved["GITHUB_TOKEN"] = token
-    elif source_slug == "brave-search":
-        api_key = getattr(settings, "MCP_BRAVE_API_KEY", None)
-        if api_key:
-            resolved["BRAVE_API_KEY"] = api_key
-    elif source_slug == "slack":
-        bot_token = getattr(settings, "MCP_SLACK_BOT_TOKEN", None)
-        team_id = getattr(settings, "MCP_SLACK_TEAM_ID", None)
-        if bot_token:
-            resolved["SLACK_BOT_TOKEN"] = bot_token
-        if team_id:
-            resolved["SLACK_TEAM_ID"] = team_id
-    elif source_slug == "postgres":
-        conn_string = getattr(settings, "MCP_POSTGRES_CONNECTION_STRING", None)
-        if conn_string:
-            resolved["POSTGRES_CONNECTION_STRING"] = conn_string
+            resolved["SENTRY_ACCESS_TOKEN"] = token
+        host = getattr(settings, "MCP_SENTRY_HOST", None)
+        if host:
+            resolved["SENTRY_HOST"] = host
+
     return resolved
 
 

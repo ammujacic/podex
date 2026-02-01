@@ -280,7 +280,7 @@ export default function AgentTemplatesPage() {
 
   if (loading) {
     return (
-      <div className="p-6">
+      <div className="max-w-4xl mx-auto px-8 py-8">
         <div className="flex items-center justify-center py-12">
           <Loader2 className="h-6 w-6 animate-spin text-text-muted" />
         </div>
@@ -289,7 +289,7 @@ export default function AgentTemplatesPage() {
   }
 
   return (
-    <div className="p-6">
+    <div className="max-w-4xl mx-auto px-8 py-8">
       <div className="mb-6">
         <div className="flex items-center justify-between">
           <div>

@@ -181,3 +181,122 @@ async def test_server_connection(
             message="Internal error during connection test",
             error=str(e),
         )
+
+
+# --- Docker Image Management Endpoints ---
+
+
+class ImageInfo(BaseModel):
+    """Docker image information."""
+
+    id: str
+    tags: list[str]
+    size_mb: int
+    created: str | None = None
+
+
+class ListImagesResponse(BaseModel):
+    """Response containing images on a server."""
+
+    server_id: str
+    images: list[ImageInfo]
+    total_count: int
+
+
+class PullImageRequest(BaseModel):
+    """Request to pull a Docker image."""
+
+    image: str
+    tag: str = "latest"
+
+
+class PullImageResponse(BaseModel):
+    """Response from image pull operation."""
+
+    success: bool
+    message: str
+    image: str
+    server_id: str
+
+
+@router.get("/{server_id}/images", response_model=ListImagesResponse)
+async def list_server_images(
+    server_id: str,
+    _auth: InternalAuth,
+) -> ListImagesResponse:
+    """List Docker images on a specific server.
+
+    Args:
+        server_id: Server identifier
+        _auth: Internal service authentication
+
+    Returns:
+        ListImagesResponse with images on the server
+    """
+    from src.deps import OrchestratorSingleton  # noqa: PLC0415
+
+    docker_manager = OrchestratorSingleton.get_docker_manager()
+
+    images = await docker_manager.list_images(server_id)
+
+    logger.info(
+        "Listed images on server",
+        server_id=server_id,
+        image_count=len(images),
+    )
+
+    return ListImagesResponse(
+        server_id=server_id,
+        images=[ImageInfo(**img) for img in images],
+        total_count=len(images),
+    )
+
+
+@router.post("/{server_id}/images/pull", response_model=PullImageResponse)
+async def pull_image_on_server(
+    server_id: str,
+    request: PullImageRequest,
+    _auth: InternalAuth,
+) -> PullImageResponse:
+    """Pull a Docker image on a specific server.
+
+    Args:
+        server_id: Server identifier (from path)
+        request: Pull request with image and tag
+        _auth: Internal service authentication
+
+    Returns:
+        PullImageResponse with result of pull operation
+    """
+    from src.deps import OrchestratorSingleton  # noqa: PLC0415
+
+    docker_manager = OrchestratorSingleton.get_docker_manager()
+
+    full_image = f"{request.image}:{request.tag}"
+
+    logger.info(
+        "Starting image pull on server",
+        server_id=server_id,
+        image=full_image,
+    )
+
+    success, message = await docker_manager.pull_image(
+        server_id=server_id,
+        image=request.image,
+        tag=request.tag,
+    )
+
+    logger.info(
+        "Image pull completed",
+        server_id=server_id,
+        image=full_image,
+        success=success,
+        message=message,
+    )
+
+    return PullImageResponse(
+        success=success,
+        message=message,
+        image=full_image,
+        server_id=server_id,
+    )

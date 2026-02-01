@@ -60,7 +60,7 @@ class ServerRegisterRequest(BaseModel):
     tls_key_path: str | None = None
     tls_ca_path: str | None = None
     # Workspace container images
-    workspace_image: str = "ghcr.io/mujacic/workspace:latest"
+    workspace_image: str = "ghcr.io/mujacica/workspace:latest"
     workspace_image_arm64: str | None = None
     workspace_image_amd64: str | None = None
     workspace_image_gpu: str | None = None
@@ -1044,3 +1044,160 @@ async def test_server_connection(
             message="Failed to reach compute service",
             error=str(e),
         )
+
+
+# ============== Docker Image Management Endpoints ==============
+
+
+class ImageInfo(BaseModel):
+    """Docker image information."""
+
+    id: str
+    tags: list[str]
+    size_mb: int
+    created: str | None = None
+
+
+class ServerImagesResponse(BaseModel):
+    """Response containing images on a server."""
+
+    server_id: str
+    images: list[ImageInfo]
+    total_count: int
+    # Include configured images for comparison
+    configured_image: str
+    configured_image_arm64: str | None = None
+    configured_image_amd64: str | None = None
+    configured_image_gpu: str | None = None
+
+
+class PullImageRequest(BaseModel):
+    """Request to pull a Docker image."""
+
+    image: str
+    tag: str = "latest"
+
+
+class PullImageResponse(BaseModel):
+    """Response from image pull operation."""
+
+    success: bool
+    message: str
+    image: str
+    server_id: str
+
+
+@router.get("/{server_id}/images", response_model=ServerImagesResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
+async def get_server_images(
+    server_id: str,
+    request: Request,  # noqa: ARG001 - Required for rate limiter
+    response: Response,  # noqa: ARG001
+    db: DbSession,
+) -> ServerImagesResponse:
+    """Get Docker images on a workspace server.
+
+    Lists all images present on the server and includes configured images for comparison.
+    Proxies to the compute service for the actual Docker query.
+    """
+    # Get server from DB for compute_service_url and configured images
+    result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
+    server = result.scalar_one_or_none()
+
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    # Proxy to compute service
+    try:
+        async with httpx.AsyncClient(
+            base_url=server.compute_service_url,
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        ) as client:
+            compute_response = await client.get(
+                f"/servers/{server_id}/images",
+                headers={"X-Internal-Service-Token": settings.INTERNAL_SERVICE_TOKEN},
+            )
+
+            if compute_response.status_code == 200:
+                data = compute_response.json()
+                return ServerImagesResponse(
+                    server_id=server_id,
+                    images=[ImageInfo(**img) for img in data.get("images", [])],
+                    total_count=data.get("total_count", 0),
+                    configured_image=server.workspace_image,
+                    configured_image_arm64=server.workspace_image_arm64,
+                    configured_image_amd64=server.workspace_image_amd64,
+                    configured_image_gpu=server.workspace_image_gpu,
+                )
+
+            raise HTTPException(
+                status_code=compute_response.status_code,
+                detail=f"Compute service error: {compute_response.text[:200]}",
+            )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Timeout connecting to compute service")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to reach compute service: {e}")
+
+
+@router.post("/{server_id}/images/pull", response_model=PullImageResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
+async def pull_server_image(
+    server_id: str,
+    request: Request,  # noqa: ARG001 - Required for rate limiter
+    response: Response,  # noqa: ARG001
+    data: PullImageRequest,
+    db: DbSession,
+) -> PullImageResponse:
+    """Pull a Docker image on a workspace server.
+
+    Triggers docker pull on the specified server. Use this to pre-load images
+    before assigning them to a server.
+    """
+    # Get server from DB for compute_service_url
+    result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
+    server = result.scalar_one_or_none()
+
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    full_image = f"{data.image}:{data.tag}"
+
+    logger.info(
+        "Initiating image pull on server",
+        server_id=server_id,
+        image=full_image,
+    )
+
+    # Proxy to compute service with longer timeout for pull
+    try:
+        async with httpx.AsyncClient(
+            base_url=server.compute_service_url,
+            timeout=httpx.Timeout(300.0, connect=10.0),  # 5 min timeout for pull
+        ) as client:
+            compute_response = await client.post(
+                f"/servers/{server_id}/images/pull",
+                headers={"X-Internal-Service-Token": settings.INTERNAL_SERVICE_TOKEN},
+                json={
+                    "image": data.image,
+                    "tag": data.tag,
+                },
+            )
+
+            if compute_response.status_code == 200:
+                result_data = compute_response.json()
+                return PullImageResponse(**result_data)
+
+            raise HTTPException(
+                status_code=compute_response.status_code,
+                detail=f"Compute service error: {compute_response.text[:200]}",
+            )
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=504,
+            detail="Image pull timed out - the image may still be downloading",
+        )
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to reach compute service: {e}")

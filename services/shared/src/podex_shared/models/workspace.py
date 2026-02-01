@@ -23,6 +23,7 @@ class WorkspaceStatus(str, Enum):
     STOPPING = "stopping"
     STOPPED = "stopped"
     ERROR = "error"
+    PENDING_DELETION = "pending_deletion"
 
 
 class WorkspaceConfig(BaseModel):

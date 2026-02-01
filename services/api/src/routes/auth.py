@@ -1116,6 +1116,7 @@ async def _validate_password_reset_token(token: str) -> dict[str, str] | None:
 async def forgot_password(
     body: ForgotPasswordRequest,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> ForgotPasswordResponse:
     """Request a password reset link.
@@ -1182,6 +1183,7 @@ async def forgot_password(
 async def reset_password(
     body: ResetPasswordRequest,
     request: Request,
+    response: Response,
     db: DbSession,
 ) -> ResetPasswordResponse:
     """Reset password using a valid reset token."""

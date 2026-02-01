@@ -39,7 +39,7 @@ class ServerConnection:
     tls_key_path: str | None = None  # Path to client key
     tls_ca_path: str | None = None  # Path to CA certificate
     # Workspace container images (per-server configuration from database)
-    workspace_image: str = "ghcr.io/mujacic/workspace:latest"
+    workspace_image: str = "ghcr.io/mujacica/workspace:latest"
     workspace_image_arm64: str | None = None
     workspace_image_amd64: str | None = None
     workspace_image_gpu: str | None = None
@@ -100,7 +100,7 @@ class MultiServerDockerManager:
         tls_cert_path: str | None = None,
         tls_key_path: str | None = None,
         tls_ca_path: str | None = None,
-        workspace_image: str = "ghcr.io/mujacic/workspace:latest",
+        workspace_image: str = "ghcr.io/mujacica/workspace:latest",
         workspace_image_arm64: str | None = None,
         workspace_image_amd64: str | None = None,
         workspace_image_gpu: str | None = None,
@@ -413,6 +413,114 @@ class MultiServerDockerManager:
 
         # Fall back to server's default workspace image
         return conn.workspace_image
+
+    async def list_images(self, server_id: str) -> list[dict[str, Any]]:
+        """List Docker images on a server.
+
+        Args:
+            server_id: Server identifier
+
+        Returns:
+            List of image info dicts with id, tags, size, created
+        """
+        client = self.get_client(server_id)
+        if not client:
+            logger.warning(
+                "Cannot list images - server not available",
+                server_id=server_id,
+                registered_servers=list(self._connections.keys()),
+            )
+            return []
+
+        loop = asyncio.get_event_loop()
+
+        def _list() -> list[dict[str, Any]]:
+            images = client.images.list()
+            return [
+                {
+                    "id": img.id[:12] if img.id else "",
+                    "tags": img.tags or [],
+                    "size_mb": img.attrs.get("Size", 0) // (1024 * 1024),
+                    "created": img.attrs.get("Created"),
+                }
+                for img in images
+            ]
+
+        try:
+            return await loop.run_in_executor(None, _list)
+        except Exception as e:
+            logger.exception(
+                "Failed to list images",
+                server_id=server_id,
+                error=str(e),
+            )
+            return []
+
+    async def pull_image(
+        self,
+        server_id: str,
+        image: str,
+        tag: str = "latest",
+    ) -> tuple[bool, str]:
+        """Pull a Docker image on a server.
+
+        Args:
+            server_id: Server identifier
+            image: Image name (e.g., "podex/workspace")
+            tag: Image tag (default: "latest")
+
+        Returns:
+            Tuple of (success, message)
+        """
+        client = self.get_client(server_id)
+        full_image = f"{image}:{tag}"
+
+        if not client:
+            logger.warning(
+                "Cannot pull image - server not available",
+                server_id=server_id,
+                image=full_image,
+                registered_servers=list(self._connections.keys()),
+            )
+            return (False, f"Server {server_id} not available in compute service")
+
+        loop = asyncio.get_event_loop()
+
+        logger.info(
+            "Starting Docker image pull",
+            server_id=server_id,
+            image=full_image,
+        )
+
+        def _pull() -> tuple[bool, str]:
+            try:
+                logger.info(
+                    "Pulling image from Docker daemon", image=full_image, server_id=server_id
+                )
+                client.images.pull(image, tag=tag)
+                logger.info(
+                    "Image pull completed successfully", image=full_image, server_id=server_id
+                )
+                return (True, f"Successfully pulled {full_image}")
+            except docker.errors.APIError as e:
+                logger.error("Docker API error during pull", image=full_image, error=str(e))
+                return (False, f"Docker API error: {e.explanation}")
+            except Exception as e:
+                logger.error("Unexpected error during pull", image=full_image, error=str(e))
+                return (False, str(e))
+
+        try:
+            result = await loop.run_in_executor(None, _pull)
+            logger.info("Pull operation finished", image=full_image, success=result[0])
+            return result
+        except Exception as e:
+            logger.exception(
+                "Failed to pull image",
+                server_id=server_id,
+                image=full_image,
+                error=str(e),
+            )
+            return (False, str(e))
 
     async def create_container(
         self,

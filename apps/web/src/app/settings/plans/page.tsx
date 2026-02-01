@@ -152,7 +152,7 @@ export default function PlansPage() {
       new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100);
 
     return (
-      <div className="max-w-4xl mx-auto px-8 py-8">
+      <div className="px-8 py-8">
         {/* Header */}
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-text-primary mb-2">Plans</h1>
@@ -353,7 +353,7 @@ export default function PlansPage() {
 
   if (error) {
     return (
-      <div className="max-w-4xl mx-auto px-8 py-8">
+      <div className="px-8 py-8">
         <div className="bg-accent-error/10 border border-accent-error/20 rounded-lg p-4">
           <div className="flex items-start gap-3">
             <AlertCircle className="w-5 h-5 text-accent-error flex-shrink-0 mt-0.5" />
@@ -382,7 +382,7 @@ export default function PlansPage() {
   // Show empty state if no plans available
   if (!loading && plans.length === 0) {
     return (
-      <div className="max-w-4xl mx-auto px-8 py-8">
+      <div className="px-8 py-8">
         <div className="bg-surface border border-border-default rounded-lg p-8 text-center">
           <AlertCircle className="w-12 h-12 text-text-muted mx-auto mb-4" />
           <h3 className="text-lg font-medium text-text-primary mb-2">No Plans Available</h3>
@@ -398,7 +398,7 @@ export default function PlansPage() {
   }
 
   return (
-    <div className="max-w-7xl mx-auto px-8 py-8">
+    <div className="px-8 py-8">
       {/* Header */}
       <div className="mb-8">
         <h1 className="text-3xl font-bold text-text-primary mb-2">Plans</h1>
@@ -522,7 +522,7 @@ export default function PlansPage() {
         >
           Yearly
           <span className="ml-2 text-xs bg-accent-success/20 text-accent-success px-2 py-0.5 rounded-full">
-            Save 20%
+            Save 17%
           </span>
         </button>
       </div>

@@ -821,7 +821,7 @@ class TestCompleteOpenRouterMethod:
         provider._openrouter_client = mock_client
 
         result = await provider._complete_openrouter(
-            model="claude-sonnet-4-5",
+            model="claude-sonnet-4.5",
             messages=[{"role": "user", "content": "Hello"}],
         )
 
@@ -1462,7 +1462,7 @@ class TestStreamOpenRouterMethod:
 
         results = []
         async for event in provider._stream_openrouter(
-            model="claude-sonnet-4-5",
+            model="claude-sonnet-4.5",
             messages=[{"role": "user", "content": "Hello"}],
         ):
             results.append(event)
@@ -1513,7 +1513,7 @@ class TestStreamOpenRouterMethod:
 
         results = []
         async for event in provider._stream_openrouter(
-            model="claude-sonnet-4-5",
+            model="claude-sonnet-4.5",
             messages=[{"role": "user", "content": "Read file"}],
         ):
             results.append(event)
@@ -1529,7 +1529,7 @@ class TestStreamOpenRouterMethod:
     async def test_stream_openrouter_model_passthrough(self, provider: LLMProvider):
         """Test OpenRouter streaming passes model name directly.
 
-        Note: Model name mapping (e.g., claude-sonnet-4-5 -> anthropic/claude-sonnet-4-5)
+        Note: Model name mapping (e.g., claude-sonnet-4.5 -> anthropic/claude-sonnet-4.5)
         is done by the caller, not by _stream_openrouter itself.
         """
         chunks = [
@@ -1547,13 +1547,13 @@ class TestStreamOpenRouterMethod:
 
         results = []
         async for event in provider._stream_openrouter(
-            model="anthropic/claude-sonnet-4-5",  # Full model name passed by caller
+            model="anthropic/claude-sonnet-4.5",  # Full model name passed by caller
             messages=[{"role": "user", "content": "Hi"}],
         ):
             results.append(event)
 
         call_kwargs = mock_client.chat.completions.create.call_args.kwargs
-        assert call_kwargs["model"] == "anthropic/claude-sonnet-4-5"
+        assert call_kwargs["model"] == "anthropic/claude-sonnet-4.5"
 
 
 class TestStreamOllamaMethod:

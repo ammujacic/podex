@@ -81,7 +81,7 @@ def test_model_pricing_dataclass():
 @pytest.mark.unit
 def test_normalize_model_id_with_date():
     """Test normalizing model ID with date suffix."""
-    assert _normalize_model_id("claude-opus-4-5-20251101") == "claude-opus-4-5"
+    assert _normalize_model_id("claude-opus-4.5-20251101") == "claude-opus-4.5"
     assert _normalize_model_id("claude-sonnet-4-20250514") == "claude-sonnet-4"
     assert _normalize_model_id("gpt-4-20241022") == "gpt-4"
 

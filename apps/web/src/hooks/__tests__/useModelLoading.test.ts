@@ -16,7 +16,7 @@ vi.mock('@/lib/api', () => ({
 
 // Mock PublicModel data
 const mockPremiumModel: PublicModel = {
-  model_id: 'claude-opus-4-5',
+  model_id: 'claude-opus-4.5',
   provider: 'anthropic',
   display_name: 'Claude Opus 4.5',
   cost_tier: 'premium',
@@ -54,7 +54,7 @@ const mockMediumModel: PublicModel = {
 };
 
 const mockLowModel: PublicModel = {
-  model_id: 'claude-haiku-4-5',
+  model_id: 'claude-haiku-4.5',
   provider: 'anthropic',
   display_name: 'Claude Haiku 4.5',
   cost_tier: 'low',
@@ -194,7 +194,7 @@ describe('useModelLoading', () => {
 
       await waitFor(() => {
         expect(result.current.backendModels).toHaveLength(2);
-        expect(result.current.backendModels[0]?.model_id).toBe('claude-opus-4-5');
+        expect(result.current.backendModels[0]?.model_id).toBe('claude-opus-4.5');
       });
     });
 
@@ -273,7 +273,7 @@ describe('useModelLoading', () => {
 
       const info = result.current.backendModelToInfo(mockPremiumModel);
 
-      expect(info.id).toBe('claude-opus-4-5');
+      expect(info.id).toBe('claude-opus-4.5');
       expect(info.provider).toBe('podex');
       expect(info.displayName).toBe('Claude Opus 4.5');
       expect(info.tier).toBe('flagship');
@@ -494,10 +494,10 @@ describe('useModelLoading', () => {
         expect(result.current.isLoading).toBe(false);
       });
 
-      const info = result.current.getModelInfo('claude-opus-4-5');
+      const info = result.current.getModelInfo('claude-opus-4.5');
 
       expect(info).toBeDefined();
-      expect(info?.id).toBe('claude-opus-4-5');
+      expect(info?.id).toBe('claude-opus-4.5');
     });
 
     it('should return model info for user model', async () => {
@@ -596,7 +596,7 @@ describe('useModelLoading', () => {
       });
 
       // Returns backend model's display_name directly
-      const name = result.current.getModelDisplayName('claude-opus-4-5');
+      const name = result.current.getModelDisplayName('claude-opus-4.5');
 
       expect(name).toBe('Claude Opus 4.5');
     });
@@ -671,7 +671,7 @@ describe('useModelLoading', () => {
       });
 
       expect(result.current.modelsByTier.flagship).toHaveLength(1);
-      expect(result.current.modelsByTier.flagship[0]?.id).toBe('claude-opus-4-5');
+      expect(result.current.modelsByTier.flagship[0]?.id).toBe('claude-opus-4.5');
     });
 
     it('should put high models in flagship tier', async () => {

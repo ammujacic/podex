@@ -87,18 +87,19 @@ const ENV_VAR_HINTS: Record<string, { placeholder: string; hint: string; link?: 
     placeholder: 'postgresql://user:pass@host:5432/db',
     hint: 'Full PostgreSQL connection string',
   },
-  SENTRY_AUTH_TOKEN: {
+  SENTRY_ACCESS_TOKEN: {
     placeholder: 'sntrys_xxxxxxxxxxxxxxxxxx',
-    hint: 'Sentry authentication token',
+    hint: 'Sentry auth token with scopes: org:read, project:read, project:write, team:read, event:write',
     link: 'https://sentry.io/settings/account/api/auth-tokens/',
   },
-  SENTRY_ORG: {
-    placeholder: 'my-organization',
-    hint: 'Your Sentry organization slug',
+  SENTRY_HOST: {
+    placeholder: 'sentry.example.com',
+    hint: 'Only for self-hosted Sentry (without https://)',
   },
-  SENTRY_PROJECT: {
-    placeholder: 'my-project',
-    hint: 'Your Sentry project slug',
+  OPENAI_API_KEY: {
+    placeholder: 'sk-xxxxxxxxxxxxxxxxxx',
+    hint: 'Optional: enables AI-powered issue search (Seer)',
+    link: 'https://platform.openai.com/api-keys',
   },
 };
 

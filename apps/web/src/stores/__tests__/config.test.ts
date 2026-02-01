@@ -59,7 +59,7 @@ const mockProviders: LLMProvider[] = [
     models: [
       {
         id: 'model-1',
-        name: 'claude-opus-4-5-20251101',
+        name: 'claude-opus-4.5-20251101',
         display_name: 'Claude Opus 4.5',
         input_cost_per_1k: 0.015,
         output_cost_per_1k: 0.075,
@@ -72,7 +72,7 @@ const mockProviders: LLMProvider[] = [
       },
       {
         id: 'model-2',
-        name: 'claude-sonnet-4-5-20250929',
+        name: 'claude-sonnet-4.5-20250929',
         display_name: 'Claude Sonnet 4.5',
         input_cost_per_1k: 0.003,
         output_cost_per_1k: 0.015,
@@ -195,20 +195,20 @@ const mockDefaultDotfiles: string[] = ['.bashrc', '.zshrc', '.gitconfig'];
 
 const mockAICompletionConfig: AICompletionConfig = {
   enabled: true,
-  model: 'claude-sonnet-4-5-20250929',
+  model: 'claude-sonnet-4.5-20250929',
   trigger_delay_ms: 500,
   max_suggestions: 3,
 };
 
 const mockCodeGeneratorConfig: CodeGeneratorConfig = {
-  model: 'claude-opus-4-5-20251101',
+  model: 'claude-opus-4.5-20251101',
   temperature: 0.3,
   max_tokens: 4096,
 };
 
 const mockBugDetectorConfig: BugDetectorConfig = {
   enabled: true,
-  model: 'claude-sonnet-4-5-20250929',
+  model: 'claude-sonnet-4.5-20250929',
   scan_on_save: false,
   severity_threshold: 'medium',
 };
@@ -959,7 +959,7 @@ describe('configStore', () => {
       const { result } = renderHook(() => useConfigStore());
       const config = result.current.getAICompletionConfig();
       expect(config?.enabled).toBe(true);
-      expect(config?.model).toBe('claude-sonnet-4-5-20250929');
+      expect(config?.model).toBe('claude-sonnet-4.5-20250929');
       expect(config?.trigger_delay_ms).toBe(500);
     });
   });

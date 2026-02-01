@@ -29,12 +29,12 @@ const mockCostBreakdown: CostBreakdown = {
   cachedInputTokens: 50000,
   callCount: 25,
   byModel: {
-    'claude-opus-4-5': {
+    'claude-opus-4.5': {
       inputTokens: 150000,
       outputTokens: 100000,
       cost: 8.0,
     },
-    'claude-sonnet-4-5': {
+    'claude-sonnet-4.5': {
       inputTokens: 150000,
       outputTokens: 100000,
       cost: 7.5,
@@ -110,7 +110,7 @@ const mockCriticalAlert: BudgetAlert = {
 
 const mockUsageEntry: UsageEntry = {
   callId: 'call-1',
-  model: 'claude-opus-4-5',
+  model: 'claude-opus-4.5',
   inputTokens: 10000,
   outputTokens: 5000,
   cachedInputTokens: 1000,

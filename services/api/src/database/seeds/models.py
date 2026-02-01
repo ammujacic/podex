@@ -884,7 +884,7 @@ DEFAULT_MODELS = [
     # These are shown in the "Your Keys" tab
     # ====================
     {
-        "model_id": "anthropic-direct/claude-sonnet-4-5",
+        "model_id": "anthropic-direct/claude-sonnet-4.5",
         "display_name": "Claude Sonnet 4.5 (Direct)",
         "provider": "anthropic",
         "family": "anthropic",
@@ -910,7 +910,7 @@ DEFAULT_MODELS = [
         },
     },
     {
-        "model_id": "anthropic-direct/claude-opus-4-5",
+        "model_id": "anthropic-direct/claude-opus-4.5",
         "display_name": "Claude Opus 4.5 (Direct)",
         "provider": "anthropic",
         "family": "anthropic",
@@ -936,7 +936,7 @@ DEFAULT_MODELS = [
         },
     },
     {
-        "model_id": "anthropic-direct/claude-haiku-4-5",
+        "model_id": "anthropic-direct/claude-haiku-4.5",
         "display_name": "Claude Haiku 4.5 (Direct)",
         "provider": "anthropic",
         "family": "anthropic",

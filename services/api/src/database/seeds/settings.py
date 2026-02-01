@@ -86,57 +86,57 @@ DEFAULT_SETTINGS = [
         "key": "agent_model_defaults",
         "value": {
             "architect": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.7,
                 "max_tokens": 8192,
             },
             "coder": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.3,
                 "max_tokens": 4096,
             },
             "reviewer": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.5,
                 "max_tokens": 4096,
             },
             "tester": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.3,
                 "max_tokens": 4096,
             },
             "chat": {
-                "model_id": "anthropic/claude-haiku-4-5",
+                "model_id": "anthropic/claude-haiku-4.5",
                 "temperature": 0.7,
                 "max_tokens": 4096,
             },
             "security": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.3,
                 "max_tokens": 4096,
             },
             "devops": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.5,
                 "max_tokens": 4096,
             },
             "documentator": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.7,
                 "max_tokens": 4096,
             },
             "agent_builder": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.5,
                 "max_tokens": 8192,
             },
             "orchestrator": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.5,
                 "max_tokens": 8192,
             },
             "custom": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.5,
                 "max_tokens": 4096,
             },
@@ -570,9 +570,9 @@ DEFAULT_SETTINGS = [
             "maxParallelPlans": 5,
             "defaultModels": [
                 # Use Claude Sonnet 4.5 + Opus 4.5 as planning defaults
-                "claude-sonnet-4-5",
+                "claude-sonnet-4.5",
                 "gpt-4o",
-                "claude-opus-4-5",
+                "claude-opus-4.5",
             ],
         },
         "description": "Configuration for parallel plan generation",
