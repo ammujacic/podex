@@ -6,7 +6,6 @@ import * as Tabs from '@radix-ui/react-tabs';
 import { RefreshCw, Settings } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ModelSearch } from './ModelSearch';
-import { ModelFilters } from './ModelFilters';
 import { ModelList } from './ModelList';
 import { useModelFavorites } from './hooks/useModelFavorites';
 import { useModelSearch } from './hooks/useModelSearch';
@@ -87,7 +86,6 @@ export function ModelSelector({
   defaultTab = 'podex',
 }: ModelSelectorProps) {
   const [activeTab, setActiveTab] = useState<ModelTab>(defaultTab);
-  const [showAllModels, setShowAllModels] = useState(true);
 
   // Favorites hook
   const { favorites } = useModelFavorites();
@@ -96,7 +94,7 @@ export function ModelSelector({
   const podexSearch = useModelSearch({
     models,
     favorites,
-    showAllModels,
+    showAllModels: true,
   });
 
   // Your Keys search hook (simpler - no category filters)
@@ -127,11 +125,6 @@ export function ModelSelector({
     favorites,
     showAllModels: true, // Always show all for local
   });
-
-  // Handle show all toggle
-  const handleToggleShowAll = useCallback(() => {
-    setShowAllModels((prev) => !prev);
-  }, []);
 
   // Handle refresh for local tab
   const handleRefreshLocal = useCallback(() => {
@@ -199,17 +192,6 @@ export function ModelSelector({
               value={podexSearch.searchQuery}
               onChange={podexSearch.setSearchQuery}
               placeholder="Search models..."
-            />
-          </div>
-
-          {/* Filters */}
-          <div className="px-3 pb-2">
-            <ModelFilters
-              activeCategories={podexSearch.activeCategories}
-              onToggleCategory={podexSearch.toggleCategory}
-              showAllToggle={true}
-              showAll={showAllModels}
-              onToggleShowAll={handleToggleShowAll}
             />
           </div>
 

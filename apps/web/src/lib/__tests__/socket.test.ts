@@ -28,6 +28,11 @@ vi.mock('socket.io-client', () => ({
   io: vi.fn(() => mockSocket),
 }));
 
+// Mock the API module for WebSocket token fetching
+vi.mock('@/lib/api', () => ({
+  getWebSocketToken: vi.fn(() => Promise.resolve('mock-ws-token')),
+}));
+
 describe('Socket Module', () => {
   // We need to dynamically import the module after mocking to capture handlers
   let socketModule: typeof import('../socket');
@@ -341,28 +346,36 @@ describe('Socket Module', () => {
   });
 
   describe('Session Management', () => {
-    it('should join session when socket is connected', () => {
+    it('should join session when socket is connected', async () => {
       mockSocket.connected = true;
       socketModule.getSocket();
 
       socketModule.joinSession('session-123', 'user-456');
 
+      // Wait for async token fetch to complete
+      await vi.runAllTimersAsync();
+
       expect(mockSocket.emit).toHaveBeenCalledWith('session_join', {
         session_id: 'session-123',
         user_id: 'user-456',
+        auth_token: 'mock-ws-token',
       });
     });
 
-    it('should join session with auth token when provided', () => {
+    it('should join session with ws token (auth token param is ignored)', async () => {
       mockSocket.connected = true;
       socketModule.getSocket();
 
+      // Note: The auth token parameter is deprecated; ws token is fetched internally
       socketModule.joinSession('session-123', 'user-456', 'auth-token-789');
+
+      // Wait for async token fetch to complete
+      await vi.runAllTimersAsync();
 
       expect(mockSocket.emit).toHaveBeenCalledWith('session_join', {
         session_id: 'session-123',
         user_id: 'user-456',
-        auth_token: 'auth-token-789',
+        auth_token: 'mock-ws-token',
       });
     });
 
@@ -377,7 +390,7 @@ describe('Socket Module', () => {
       expect(mockSocket.emit).not.toHaveBeenCalledWith('session_join', expect.any(Object));
     });
 
-    it('should emit join after connection established', () => {
+    it('should emit join after connection established', async () => {
       mockSocket.connected = false;
       socketModule.getSocket();
 
@@ -387,18 +400,23 @@ describe('Socket Module', () => {
       const onceConnectHandler = eventHandlers.get('once:connect');
       onceConnectHandler?.();
 
+      // Wait for async token fetch to complete
+      await vi.runAllTimersAsync();
+
       expect(mockSocket.emit).toHaveBeenCalledWith('session_join', {
         session_id: 'session-123',
         user_id: 'user-456',
+        auth_token: 'mock-ws-token',
       });
     });
 
-    it('should leave session and clear active session', () => {
+    it('should leave session and clear active session', async () => {
       mockSocket.connected = true;
       socketModule.getSocket();
 
       // First join
       socketModule.joinSession('session-123', 'user-456');
+      await vi.runAllTimersAsync();
 
       // Then leave
       socketModule.leaveSession('session-123', 'user-456');
@@ -409,33 +427,40 @@ describe('Socket Module', () => {
       });
     });
 
-    it('should auto-rejoin session after reconnection', () => {
+    it('should auto-rejoin session after reconnection', async () => {
       mockSocket.connected = true;
       socketModule.getSocket();
 
       // Join session
       socketModule.joinSession('session-123', 'user-456', 'token-abc');
 
+      // Wait for initial join to complete
+      await vi.runAllTimersAsync();
+
       // Clear previous emit calls
       (mockSocket.emit as Mock).mockClear();
 
-      // Simulate reconnection
+      // Simulate reconnection (reconnect handler is async)
       const reconnectHandler = managerEventHandlers.get('reconnect');
       reconnectHandler?.();
+
+      // Wait for async token fetch to complete
+      await vi.runAllTimersAsync();
 
       expect(mockSocket.emit).toHaveBeenCalledWith('session_join', {
         session_id: 'session-123',
         user_id: 'user-456',
-        auth_token: 'token-abc',
+        auth_token: 'mock-ws-token',
       });
     });
 
-    it('should not auto-rejoin after leaving session', () => {
+    it('should not auto-rejoin after leaving session', async () => {
       mockSocket.connected = true;
       socketModule.getSocket();
 
       // Join then leave
       socketModule.joinSession('session-123', 'user-456');
+      await vi.runAllTimersAsync();
       socketModule.leaveSession('session-123', 'user-456');
 
       // Clear previous emit calls
@@ -444,6 +469,8 @@ describe('Socket Module', () => {
       // Simulate reconnection
       const reconnectHandler = managerEventHandlers.get('reconnect');
       reconnectHandler?.();
+
+      await vi.runAllTimersAsync();
 
       expect(mockSocket.emit).not.toHaveBeenCalledWith('session_join', expect.any(Object));
     });

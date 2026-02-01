@@ -271,14 +271,6 @@ describe('ModelSelector', () => {
       expect(screen.getByLabelText('Search models')).toBeInTheDocument();
     });
 
-    it('shows filter chips', async () => {
-      render(<ModelSelector {...defaultProps} />);
-
-      expect(screen.getByRole('button', { name: 'Fast' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Reasoning' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Code' })).toBeInTheDocument();
-    });
-
     it('does not show "Show all" toggle (removed for simplicity)', async () => {
       render(<ModelSelector {...defaultProps} />);
 
