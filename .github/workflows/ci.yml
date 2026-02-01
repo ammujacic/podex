@@ -118,11 +118,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Create coverage temp directory
-        run: mkdir -p apps/cli/coverage/.tmp
-
       - name: Run tests with coverage
-        run: pnpm --filter podex test:coverage
+        working-directory: apps/cli
+        run: pnpm vitest run --coverage
 
   # VSCode extension tests
   vscode-extension-test:
