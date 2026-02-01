@@ -64,7 +64,8 @@ def set_auth_cookies(
     - secure: Only sent over HTTPS (in production)
     - sameSite: Lax for CSRF protection while allowing normal navigation
     """
-    # Access token cookie - used for API requests
+    # Access token cookie - used for API requests and WebSocket connections
+    # Path must be "/" to include /socket.io/ endpoint for WebSocket auth
     response.set_cookie(
         key=COOKIE_ACCESS_TOKEN,
         value=access_token,
@@ -72,7 +73,7 @@ def set_auth_cookies(
         secure=settings.COOKIE_SECURE,
         samesite=cast("Literal['lax', 'strict', 'none']", settings.COOKIE_SAMESITE),
         max_age=access_max_age_seconds or settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        path="/api",
+        path="/",
         domain=settings.COOKIE_DOMAIN,
     )
 
@@ -93,7 +94,7 @@ def clear_auth_cookies(response: Response) -> None:
     """Clear authentication cookies on logout."""
     response.delete_cookie(
         key=COOKIE_ACCESS_TOKEN,
-        path="/api",
+        path="/",
         domain=settings.COOKIE_DOMAIN,
     )
     response.delete_cookie(
