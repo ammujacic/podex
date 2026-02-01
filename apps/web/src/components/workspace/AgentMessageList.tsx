@@ -72,7 +72,10 @@ export const AgentMessageList = React.memo<AgentMessageListProps>(
       }
     }, []);
 
-    if (messages.length === 0) {
+    // Filter out empty messages (e.g., from errors that produced no content)
+    const nonEmptyMessages = messages.filter((msg) => msg.content && msg.content.trim().length > 0);
+
+    if (nonEmptyMessages.length === 0) {
       return (
         <div className="flex h-full items-center justify-center text-sm text-text-muted">
           <p>No messages yet. Start a conversation.</p>
@@ -81,7 +84,7 @@ export const AgentMessageList = React.memo<AgentMessageListProps>(
     }
     return (
       <>
-        {messages.map((msg, index) => (
+        {nonEmptyMessages.map((msg, index) => (
           <div key={msg.id || `msg-${index}`} className="space-y-2 group/message">
             {/* Thinking block - collapsible for assistant messages */}
             {msg.role === 'assistant' && msg.thinking && (

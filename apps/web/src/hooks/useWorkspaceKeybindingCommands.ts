@@ -17,6 +17,7 @@ export function useWorkspaceKeybindingCommands(sessionId: string) {
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const addPanel = useUIStore((s) => s.addPanel);
   const announce = useUIStore((s) => s.announce);
+  const defaultShell = useUIStore((s) => s.defaultShell);
 
   const getTabsForPane = useEditorStore((s) => s.getTabsForPane);
   const getActiveTab = useEditorStore((s) => s.getActiveTab);
@@ -136,7 +137,7 @@ export function useWorkspaceKeybindingCommands(sessionId: string) {
 
     // ==================== Terminal ====================
     keybindingManager.registerCommand('terminal.new', () => {
-      addTerminalWindow(sessionId);
+      addTerminalWindow(sessionId, 'panel', undefined, defaultShell);
       announce('New terminal created');
     });
 
@@ -271,6 +272,7 @@ export function useWorkspaceKeybindingCommands(sessionId: string) {
     addTerminalWindow,
     announce,
     closeTab,
+    defaultShell,
     getActiveTab,
     getTabsForPane,
     paneOrder,

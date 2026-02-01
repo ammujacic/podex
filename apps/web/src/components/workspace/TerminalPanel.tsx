@@ -4,7 +4,8 @@ import { useEffect, useCallback, useState, useRef } from 'react';
 import { Plus, X, Terminal as TerminalIcon, RefreshCw, Maximize2, Minimize2 } from 'lucide-react';
 import { useUIStore } from '@/stores/ui';
 import { useSessionStore } from '@/stores/session';
-import { TerminalInstance } from './TerminalInstance';
+import { TerminalView } from './TerminalView';
+import { useTerminalManager } from '@/contexts/TerminalManager';
 import { cn } from '@/lib/utils';
 
 const MIN_HEIGHT = 150;
@@ -15,21 +16,23 @@ export interface TerminalPanelProps {
 }
 
 export function TerminalPanel({ sessionId }: TerminalPanelProps) {
-  const { setTerminalVisible, terminalHeight, setTerminalHeight } = useUIStore();
+  const { setTerminalVisible, terminalHeight, setTerminalHeight, defaultShell } = useUIStore();
   const session = useSessionStore((state) => state.sessions[sessionId]);
   const { addTerminalWindow, removeTerminalWindow, setActiveWindow } = useSessionStore();
+  const { reconnectTerminal, destroyTerminal } = useTerminalManager();
 
   const [isDragging, setIsDragging] = useState(false);
   const dragStartY = useRef(0);
   const dragStartHeight = useRef(0);
-  const terminalRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
-  // Get terminals and active terminal from session
-  const terminalWindows = session?.terminalWindows ?? [];
+  // Get panel terminals only (not grid terminals)
+  // Default to 'panel' for terminals without location (migration case)
+  const allTerminalWindows = session?.terminalWindows ?? [];
+  const terminalWindows = allTerminalWindows.filter((t) => !t.location || t.location === 'panel');
   const activeWindowId = session?.activeWindowId;
   const workspaceId = session?.workspaceId;
 
-  // Find active terminal - default to first if none selected or if selected is not a terminal
+  // Find active terminal - default to first panel terminal if none selected
   const activeTerminal = terminalWindows.find((t) => t.id === activeWindowId) ?? terminalWindows[0];
   const activeTerminalId = activeTerminal?.id;
 
@@ -66,18 +69,21 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
     };
   }, [isDragging, setTerminalHeight]);
 
-  // Add a new terminal
+  // Add a new panel terminal
   const handleAddTerminal = useCallback(() => {
-    addTerminalWindow(sessionId);
-  }, [sessionId, addTerminalWindow]);
+    addTerminalWindow(sessionId, 'panel', undefined, defaultShell);
+  }, [sessionId, addTerminalWindow, defaultShell]);
 
   // Close a terminal tab
   const handleCloseTab = useCallback(
     (terminalId: string, e: React.MouseEvent) => {
       e.stopPropagation();
+      // Destroy the terminal connection first
+      destroyTerminal(terminalId);
+      // Then remove from session store
       removeTerminalWindow(sessionId, terminalId);
     },
-    [sessionId, removeTerminalWindow]
+    [sessionId, removeTerminalWindow, destroyTerminal]
   );
 
   // Switch to a terminal tab
@@ -91,11 +97,8 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
   // Reconnect terminal
   const handleReconnect = useCallback(() => {
     if (!activeTerminalId) return;
-    const container = terminalRefs.current[activeTerminalId] as HTMLDivElement & {
-      reconnect?: () => void;
-    };
-    container?.reconnect?.();
-  }, [activeTerminalId]);
+    reconnectTerminal(activeTerminalId);
+  }, [activeTerminalId, reconnectTerminal]);
 
   // Wait for valid workspaceId before rendering
   if (!workspaceId) {
@@ -216,27 +219,18 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
         </div>
       </div>
 
-      {/* Terminal instances */}
+      {/* Terminal instances - only render active terminal to prevent duplicates */}
       <div className="flex-1 relative" style={{ minHeight: 0 }}>
-        {terminalWindows.map((terminal) => (
-          <div
-            key={terminal.id}
-            ref={(el) => {
-              terminalRefs.current[terminal.id] = el;
-            }}
-            className={cn(
-              'absolute inset-0',
-              activeTerminalId === terminal.id ? 'block' : 'hidden'
-            )}
-          >
-            <TerminalInstance
+        {activeTerminal && (
+          <div className="absolute inset-0">
+            <TerminalView
+              terminalId={activeTerminal.id}
               workspaceId={workspaceId}
-              tabId={terminal.id}
-              shell={terminal.shell}
-              isActive={activeTerminalId === terminal.id}
+              shell={activeTerminal.shell}
+              isActive={true}
             />
           </div>
-        ))}
+        )}
       </div>
     </div>
   );

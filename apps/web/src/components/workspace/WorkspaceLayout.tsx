@@ -23,6 +23,7 @@ import { NotificationCenter } from './NotificationCenter';
 import { MobileWorkspaceLayout } from './MobileWorkspaceLayout';
 import { WorkspaceStatusOverlay } from './WorkspaceStatusOverlay';
 import { WorkspaceErrorBanner } from './WorkspaceErrorBanner';
+import { TerminalManagerProvider } from '@/contexts/TerminalManager';
 
 interface WorkspaceLayoutProps {
   sessionId: string;
@@ -67,94 +68,98 @@ export function WorkspaceLayout({ sessionId, children }: WorkspaceLayoutProps) {
   // Render mobile layout on small screens
   if (isMobile) {
     return (
-      <LayoutSyncProvider sessionId={sessionId}>
-        <WorkspaceErrorBanner sessionId={sessionId} onRetry={() => window.location.reload()} />
-        <MobileWorkspaceLayout sessionId={sessionId} />
-        {/* Keep modal layer for dialogs */}
-        <ModalLayer sessionId={sessionId} />
-        <WorkspaceStatusOverlay
-          sessionId={sessionId}
-          status={workspaceStatus}
-          isCheckingStatus={workspaceStatusChecking}
-          sessionName={session?.name}
-          workspaceId={session?.workspaceId}
-        />
-      </LayoutSyncProvider>
+      <TerminalManagerProvider>
+        <LayoutSyncProvider sessionId={sessionId}>
+          <WorkspaceErrorBanner sessionId={sessionId} onRetry={() => window.location.reload()} />
+          <MobileWorkspaceLayout sessionId={sessionId} />
+          {/* Keep modal layer for dialogs */}
+          <ModalLayer sessionId={sessionId} />
+          <WorkspaceStatusOverlay
+            sessionId={sessionId}
+            status={workspaceStatus}
+            isCheckingStatus={workspaceStatusChecking}
+            sessionName={session?.name}
+            workspaceId={session?.workspaceId}
+          />
+        </LayoutSyncProvider>
+      </TerminalManagerProvider>
     );
   }
 
   // Desktop layout
   return (
-    <LayoutSyncProvider sessionId={sessionId}>
-      <div className="flex h-screen flex-col bg-void">
-        {/* Header */}
-        <WorkspaceHeader sessionId={sessionId} />
+    <TerminalManagerProvider>
+      <LayoutSyncProvider sessionId={sessionId}>
+        <div className="flex h-screen flex-col bg-void">
+          {/* Header */}
+          <WorkspaceHeader sessionId={sessionId} />
 
-        {/* Workspace error banner */}
-        <WorkspaceErrorBanner sessionId={sessionId} onRetry={() => window.location.reload()} />
+          {/* Workspace error banner */}
+          <WorkspaceErrorBanner sessionId={sessionId} onRetry={() => window.location.reload()} />
 
-        {/* Main content area */}
-        <div className="flex flex-1 overflow-hidden">
-          {/* Left Sidebar */}
-          <SidebarContainer
-            side="left"
-            sessionId={sessionId}
-            localPodId={localPodId}
-            mountPath={mountPath}
-          />
+          {/* Main content area */}
+          <div className="flex flex-1 overflow-hidden">
+            {/* Left Sidebar */}
+            <SidebarContainer
+              side="left"
+              sessionId={sessionId}
+              localPodId={localPodId}
+              mountPath={mountPath}
+            />
 
-          {/* Main workspace */}
-          <div className="flex flex-1 flex-col overflow-hidden">
-            {/* Agent grid / content */}
-            <div
-              className="flex-1 overflow-hidden"
-              style={{
-                height: terminalVisible ? `calc(100% - ${terminalHeight}px)` : '100%',
-              }}
-            >
-              {children}
+            {/* Main workspace */}
+            <div className="flex flex-1 flex-col overflow-hidden">
+              {/* Agent grid / content */}
+              <div
+                className="flex-1 overflow-hidden"
+                style={{
+                  height: terminalVisible ? `calc(100% - ${terminalHeight}px)` : '100%',
+                }}
+              >
+                {children}
+              </div>
+
+              {/* Terminal */}
+              {terminalVisible && (
+                <div className="border-t border-border-subtle" style={{ height: terminalHeight }}>
+                  <TerminalPanel sessionId={sessionId} />
+                </div>
+              )}
             </div>
 
-            {/* Terminal */}
-            {terminalVisible && (
-              <div className="border-t border-border-subtle" style={{ height: terminalHeight }}>
-                <TerminalPanel sessionId={sessionId} />
-              </div>
-            )}
+            {/* Right Sidebar */}
+            <SidebarContainer
+              side="right"
+              sessionId={sessionId}
+              localPodId={localPodId}
+              mountPath={mountPath}
+            />
           </div>
 
-          {/* Right Sidebar */}
-          <SidebarContainer
-            side="right"
+          {/* Floating file previews */}
+          <FilePreviewLayer sessionId={sessionId} />
+
+          {/* Modal layer */}
+          <ModalLayer sessionId={sessionId} />
+
+          {/* Command palette */}
+          <CommandPalette />
+
+          {/* Quick open (Cmd+P) */}
+          <QuickOpen />
+
+          {/* Notification center panel */}
+          <NotificationCenter sessionId={sessionId} />
+
+          <WorkspaceStatusOverlay
             sessionId={sessionId}
-            localPodId={localPodId}
-            mountPath={mountPath}
+            status={workspaceStatus}
+            isCheckingStatus={workspaceStatusChecking}
+            sessionName={session?.name}
+            workspaceId={session?.workspaceId}
           />
         </div>
-
-        {/* Floating file previews */}
-        <FilePreviewLayer sessionId={sessionId} />
-
-        {/* Modal layer */}
-        <ModalLayer sessionId={sessionId} />
-
-        {/* Command palette */}
-        <CommandPalette />
-
-        {/* Quick open (Cmd+P) */}
-        <QuickOpen />
-
-        {/* Notification center panel */}
-        <NotificationCenter sessionId={sessionId} />
-
-        <WorkspaceStatusOverlay
-          sessionId={sessionId}
-          status={workspaceStatus}
-          isCheckingStatus={workspaceStatusChecking}
-          sessionName={session?.name}
-          workspaceId={session?.workspaceId}
-        />
-      </div>
-    </LayoutSyncProvider>
+      </LayoutSyncProvider>
+    </TerminalManagerProvider>
   );
 }

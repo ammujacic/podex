@@ -3,6 +3,7 @@
 import { useRef, Component, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
 import { Plus, AlertTriangle, RefreshCw, FileCode, X, Terminal } from 'lucide-react';
+import { getRoleIcon, getAgentTextColor } from '@/lib/agentConstants';
 import { useSessionStore, type Agent } from '@/stores/session';
 import { AgentCard } from './AgentCard';
 import { TerminalCard } from './TerminalCard';
@@ -10,6 +11,7 @@ import { DraggableAgentCard } from './DraggableAgentCard';
 import { DraggableTerminalCard } from './DraggableTerminalCard';
 import { DraggableEditorCard } from './DraggableEditorCard';
 import { ResizableGridCard } from './ResizableGridCard';
+import { ResizableTerminalGridCard } from './ResizableTerminalGridCard';
 import { DockedFilePreviewCard } from './DockedFilePreviewCard';
 import { EditorGridCard } from './EditorGridCard';
 import { GridProvider } from './GridContext';
@@ -177,7 +179,7 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
     removeTerminalWindow,
     removeEditorGridCard,
   } = useSessionStore();
-  const { openModal, gridConfig } = useUIStore();
+  const { openModal, gridConfig, terminalVisible, defaultShell } = useUIStore();
   const containerRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
 
@@ -197,8 +199,9 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
     }
     return true;
   });
-  // Get terminal windows
-  const terminalWindows = session?.terminalWindows ?? [];
+  // Get grid terminal windows only (not panel terminals)
+  const allTerminalWindows = session?.terminalWindows ?? [];
+  const terminalWindows = allTerminalWindows.filter((t) => t.location === 'grid');
   const viewMode = session?.viewMode ?? 'grid';
   const activeAgentId = session?.activeAgentId;
   const activeWindowId = session?.activeWindowId;
@@ -212,7 +215,7 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
   };
 
   const handleAddTerminal = () => {
-    addTerminalWindow(sessionId);
+    addTerminalWindow(sessionId, 'grid', undefined, defaultShell);
   };
 
   // Remove agent from both backend and frontend
@@ -248,16 +251,17 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
           );
         })}
 
-        {/* Draggable terminal cards in freeform mode */}
-        {terminalWindows.map((terminal) => (
-          <DraggableTerminalCard
-            key={terminal.id}
-            terminalWindow={terminal}
-            sessionId={sessionId}
-            workspaceId={workspaceId}
-            containerRef={containerRef}
-          />
-        ))}
+        {/* Draggable terminal cards in freeform mode (only when terminal panel is hidden) */}
+        {!terminalVisible &&
+          terminalWindows.map((terminal) => (
+            <DraggableTerminalCard
+              key={terminal.id}
+              terminalWindow={terminal}
+              sessionId={sessionId}
+              workspaceId={workspaceId}
+              containerRef={containerRef}
+            />
+          ))}
 
         {/* Draggable editor card in freeform mode */}
         {editorGridCardId && (
@@ -334,6 +338,7 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
             {agents.map((agent) => {
               // Use focusedAgent.id for highlighting since activeAgentId might be stale
               const isActive = agent.id === focusedAgent?.id && !focusedFilePreview;
+              const RoleIcon = getRoleIcon(agent.role);
               return (
                 <button
                   key={agent.id}
@@ -344,46 +349,53 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
                       : 'bg-elevated text-text-secondary hover:text-text-primary hover:bg-overlay'
                   }`}
                 >
-                  <div className="h-2 w-2 rounded-full" style={{ backgroundColor: agent.color }} />
+                  <RoleIcon
+                    className={`h-4 w-4 shrink-0 ${
+                      isActive ? 'text-text-inverse' : getAgentTextColor(agent.color)
+                    }`}
+                  />
                   {agent.name}
                 </button>
               );
             })}
 
-            {/* Terminal window tabs */}
-            {terminalWindows.length > 0 && <div className="h-4 w-px bg-border-subtle mx-1" />}
-            {terminalWindows.map((terminal) => {
-              const isActive = terminal.id === activeWindowId;
-              return (
-                <button
-                  key={terminal.id}
-                  onClick={() => setActiveWindow(sessionId, terminal.id)}
-                  className={`group flex items-center gap-2 px-3 py-1.5 rounded-md text-sm whitespace-nowrap transition-colors cursor-pointer ${
-                    isActive
-                      ? 'bg-accent-primary text-text-inverse'
-                      : 'bg-elevated text-text-secondary hover:text-text-primary hover:bg-overlay'
-                  }`}
-                >
-                  <div
-                    className={`h-2 w-2 rounded-full shrink-0 ${
-                      terminal.status === 'connected'
-                        ? 'bg-green-500'
-                        : terminal.status === 'error'
-                          ? 'bg-red-500'
-                          : 'bg-zinc-500'
+            {/* Terminal window tabs (only when terminal panel is hidden) */}
+            {!terminalVisible && terminalWindows.length > 0 && (
+              <div className="h-4 w-px bg-border-subtle mx-1" />
+            )}
+            {!terminalVisible &&
+              terminalWindows.map((terminal) => {
+                const isActive = terminal.id === activeWindowId;
+                return (
+                  <button
+                    key={terminal.id}
+                    onClick={() => setActiveWindow(sessionId, terminal.id)}
+                    className={`group flex items-center gap-2 px-3 py-1.5 rounded-md text-sm whitespace-nowrap transition-colors cursor-pointer ${
+                      isActive
+                        ? 'bg-accent-primary text-text-inverse'
+                        : 'bg-elevated text-text-secondary hover:text-text-primary hover:bg-overlay'
                     }`}
-                  />
-                  <span className="max-w-[120px] truncate">{terminal.name}</span>
-                  <X
-                    className={`h-3.5 w-3.5 ${isActive ? 'text-text-inverse/70 hover:text-text-inverse' : 'text-text-muted hover:text-accent-error'}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      removeTerminalWindow(sessionId, terminal.id);
-                    }}
-                  />
-                </button>
-              );
-            })}
+                  >
+                    <div
+                      className={`h-2 w-2 rounded-full shrink-0 ${
+                        terminal.status === 'connected'
+                          ? 'bg-green-500'
+                          : terminal.status === 'error'
+                            ? 'bg-red-500'
+                            : 'bg-zinc-500'
+                      }`}
+                    />
+                    <span className="max-w-[120px] truncate">{terminal.name}</span>
+                    <X
+                      className={`h-3.5 w-3.5 ${isActive ? 'text-text-inverse/70 hover:text-text-inverse' : 'text-text-muted hover:text-accent-error'}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeTerminalWindow(sessionId, terminal.id);
+                      }}
+                    />
+                  </button>
+                );
+              })}
 
             {/* File preview tabs */}
             {dockedPreviews.length > 0 && (
@@ -493,8 +505,8 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
                     />
                   </div>
                 </div>
-              ) : focusedTerminal ? (
-                // Render terminal window
+              ) : focusedTerminal && !terminalVisible ? (
+                // Render terminal window (only when terminal panel is hidden)
                 <TerminalCard
                   terminalWindow={focusedTerminal}
                   sessionId={sessionId}
@@ -544,19 +556,13 @@ export function AgentGrid({ sessionId }: AgentGridProps) {
 
           {/* Terminal windows */}
           {terminalWindows.map((terminal) => (
-            <div
+            <ResizableTerminalGridCard
               key={terminal.id}
-              style={{
-                gridColumn: `span ${terminal.gridSpan?.colSpan ?? 1}`,
-                gridRow: `span ${terminal.gridSpan?.rowSpan ?? 1}`,
-              }}
-            >
-              <TerminalCard
-                terminalWindow={terminal}
-                sessionId={sessionId}
-                workspaceId={workspaceId}
-              />
-            </div>
+              terminalWindow={terminal}
+              sessionId={sessionId}
+              workspaceId={workspaceId}
+              maxCols={dynamicMaxCols}
+            />
           ))}
 
           {/* Docked file previews */}

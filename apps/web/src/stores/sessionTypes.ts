@@ -56,6 +56,11 @@ export interface Agent {
 export type TerminalWindowStatus = 'connected' | 'disconnected' | 'error';
 
 /**
+ * Where the terminal is displayed - panel (bottom) or grid (main area)
+ */
+export type TerminalLocation = 'panel' | 'grid';
+
+/**
  * A terminal window that can appear in Grid/Focus/Freeform layouts
  * alongside agents. Each terminal window represents a single shell session.
  */
@@ -64,6 +69,7 @@ export interface TerminalWindow {
   name: string; // User-editable, e.g., "Build Server"
   shell: string; // 'bash', 'zsh', etc.
   status: TerminalWindowStatus;
+  location: TerminalLocation; // Where the terminal is displayed
 
   // Layout properties (shared with agents)
   gridSpan?: GridSpan;

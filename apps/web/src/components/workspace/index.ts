@@ -31,6 +31,7 @@ export { AgentGrid } from './AgentGrid';
 // Terminal window components
 export { TerminalCard } from './TerminalCard';
 export { DraggableTerminalCard } from './DraggableTerminalCard';
+export { ResizableTerminalGridCard } from './ResizableTerminalGridCard';
 export { AgentModeSelector } from './AgentModeSelector';
 export { ApprovalDialog } from './ApprovalDialog';
 export { PlanApprovalActions } from './PlanApprovalActions';

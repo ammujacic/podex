@@ -37,6 +37,7 @@ const mockUIStore = {
   toggleSidebar: vi.fn(),
   addPanel: vi.fn(),
   announce: vi.fn(),
+  defaultShell: 'bash' as const,
 };
 
 const mockEditorStore = {
@@ -548,7 +549,12 @@ describe('useWorkspaceKeybindingCommands', () => {
 
       handler();
 
-      expect(mockSessionStore.addTerminalWindow).toHaveBeenCalledWith(mockSessionId);
+      expect(mockSessionStore.addTerminalWindow).toHaveBeenCalledWith(
+        mockSessionId,
+        'panel',
+        undefined,
+        'bash'
+      );
       expect(mockUIStore.announce).toHaveBeenCalledWith('New terminal created');
     });
 

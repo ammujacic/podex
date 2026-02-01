@@ -11,7 +11,8 @@ import {
 } from '@podex/ui';
 import { cn } from '@/lib/utils';
 import { useSessionStore, type TerminalWindow } from '@/stores/session';
-import { TerminalInstance } from './TerminalInstance';
+import { TerminalView } from './TerminalView';
+import { useTerminalManager } from '@/contexts/TerminalManager';
 import { ConfirmDialog, PromptDialog } from '@/components/ui/Dialogs';
 
 export interface TerminalCardProps {
@@ -37,6 +38,7 @@ export function TerminalCard({
 
   // Store actions
   const { removeTerminalWindow, updateTerminalWindow, setActiveWindow } = useSessionStore();
+  const { destroyTerminal } = useTerminalManager();
 
   // Handle terminal ready
   const handleReady = useCallback(() => {
@@ -56,9 +58,12 @@ export function TerminalCard({
 
   // Handle delete
   const handleDelete = useCallback(() => {
+    // Destroy the terminal connection first
+    destroyTerminal(terminalWindow.id);
+    // Then remove from session store
     removeTerminalWindow(sessionId, terminalWindow.id);
     setDeleteDialogOpen(false);
-  }, [sessionId, terminalWindow.id, removeTerminalWindow]);
+  }, [sessionId, terminalWindow.id, removeTerminalWindow, destroyTerminal]);
 
   // Handle card click to set active
   const handleCardClick = useCallback(() => {
@@ -136,11 +141,11 @@ export function TerminalCard({
           </div>
         </div>
 
-        {/* Body: Terminal Instance */}
+        {/* Body: Terminal View */}
         <div className="min-h-0 flex-1">
-          <TerminalInstance
+          <TerminalView
+            terminalId={terminalWindow.id}
             workspaceId={workspaceId}
-            tabId={terminalWindow.id}
             shell={terminalWindow.shell}
             isActive={true}
             onReady={handleReady}

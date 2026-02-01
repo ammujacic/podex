@@ -1,5 +1,15 @@
 'use client';
 
+/**
+ * @deprecated Use TerminalView with TerminalManager instead.
+ * This component creates a new socket connection on every mount,
+ * which causes duplication issues when the same terminal is rendered
+ * in multiple places (e.g., grid and panel simultaneously).
+ *
+ * The new architecture uses TerminalManager (context) + TerminalView (component)
+ * which ensures each terminal has exactly one persistent socket connection.
+ */
+
 import { useEffect, useRef, useCallback } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { useUIStore } from '@/stores/ui';

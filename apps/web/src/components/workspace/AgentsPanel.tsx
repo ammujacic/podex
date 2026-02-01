@@ -4,6 +4,7 @@ import { Bot, Terminal } from 'lucide-react';
 import { useSessionStore } from '@/stores/session';
 import { cn } from '@/lib/utils';
 import { getRoleIcon, getAgentTextColor } from '@/lib/agentConstants';
+import { parseModelIdToDisplayName } from '@/lib/model-utils';
 
 interface AgentsPanelProps {
   sessionId: string;
@@ -74,7 +75,7 @@ export function AgentsPanel({ sessionId }: AgentsPanelProps) {
                       isActive ? 'text-text-inverse/60' : 'text-text-muted/80'
                     )}
                   >
-                    {agent.modelDisplayName || agent.model}
+                    {parseModelIdToDisplayName(agent.model)}
                   </div>
                 </div>
                 <div

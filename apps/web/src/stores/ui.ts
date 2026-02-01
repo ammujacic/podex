@@ -153,10 +153,12 @@ interface UIState {
   // Terminal
   terminalVisible: boolean;
   terminalHeight: number;
+  defaultShell: 'bash' | 'zsh' | 'fish';
   pendingTerminalCommand: string | null;
   toggleTerminal: () => void;
   setTerminalVisible: (visible: boolean) => void;
   setTerminalHeight: (height: number) => void;
+  setDefaultShell: (shell: 'bash' | 'zsh' | 'fish') => void;
   sendTerminalCommand: (command: string) => void;
   clearPendingTerminalCommand: () => void;
 
@@ -294,6 +296,11 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
 
       if (serverPrefs.terminalHeight !== undefined) {
         updates.terminalHeight = serverPrefs.terminalHeight;
+      }
+
+      // Load default shell from top-level config (not ui_preferences)
+      if (config.default_shell && ['bash', 'zsh', 'fish'].includes(config.default_shell)) {
+        updates.defaultShell = config.default_shell as 'bash' | 'zsh' | 'fish';
       }
 
       if (serverPrefs.panelHeight !== undefined) {
@@ -652,6 +659,7 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
   // Terminal
   terminalVisible: false,
   terminalHeight: 300,
+  defaultShell: 'bash',
   pendingTerminalCommand: null,
   toggleTerminal: () => {
     const newState = !get().terminalVisible;
@@ -661,6 +669,10 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
   setTerminalVisible: (visible) => set({ terminalVisible: visible }),
   setTerminalHeight: (height) => {
     set({ terminalHeight: Math.max(100, Math.min(600, height)) });
+    debouncedSync(get());
+  },
+  setDefaultShell: (shell) => {
+    set({ defaultShell: shell });
     debouncedSync(get());
   },
   sendTerminalCommand: (command) => {

@@ -12,6 +12,7 @@ import {
   type GridSpan,
   type Session,
   type StreamingMessage,
+  type TerminalLocation,
   type TerminalWindow,
   type ToolCall,
   deriveSessionName,
@@ -34,6 +35,7 @@ export type {
   GridSpan,
   Session,
   StreamingMessage,
+  TerminalLocation,
   TerminalWindow,
   TerminalWindowStatus,
   ToolCall,
@@ -81,7 +83,12 @@ interface SessionState {
   bringAgentToFront: (sessionId: string, agentId: string) => void;
 
   // Terminal window actions
-  addTerminalWindow: (sessionId: string, name?: string) => string;
+  addTerminalWindow: (
+    sessionId: string,
+    location: TerminalLocation,
+    name?: string,
+    shell?: string
+  ) => string;
   removeTerminalWindow: (sessionId: string, terminalId: string) => void;
   updateTerminalWindow: (
     sessionId: string,
@@ -977,7 +984,7 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
   // Terminal Window Actions
   // ========================================================================
 
-  addTerminalWindow: (sessionId, name) => {
+  addTerminalWindow: (sessionId, location, name, shell = 'bash') => {
     const id = `terminal-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const now = new Date().toISOString();
 
@@ -985,15 +992,18 @@ const sessionStoreCreator: StateCreator<SessionState> = (set, _get) => ({
       const session = state.sessions[sessionId];
       if (!session) return state;
 
-      // Generate default name based on existing terminal count
-      const terminalCount = session.terminalWindows?.length ?? 0;
-      const terminalName = name || `Terminal ${terminalCount + 1}`;
+      // Generate default name based on location and existing terminal count
+      const terminalCount =
+        session.terminalWindows?.filter((t) => t.location === location).length ?? 0;
+      const prefix = location === 'panel' ? 'Terminal' : 'Grid Terminal';
+      const terminalName = name || `${prefix} ${terminalCount + 1}`;
 
       const terminalWindow: TerminalWindow = {
         id,
         name: terminalName,
-        shell: 'bash', // Default shell, will be updated when connected
+        shell, // Use user's preferred shell
         status: 'disconnected',
+        location,
         createdAt: now,
       };
 

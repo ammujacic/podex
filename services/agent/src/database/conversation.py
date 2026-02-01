@@ -59,9 +59,13 @@ async def load_conversation_history(
     )
     messages = messages_result.scalars().all()
 
-    # Reverse to get chronological order
+    # Reverse to get chronological order and filter out empty messages
+    # Empty messages can occur from errors and cause API rejections
     history = []
     for msg in reversed(messages):
+        # Skip messages with empty or whitespace-only content
+        if not msg.content or not msg.content.strip():
+            continue
         history.append(
             {
                 "role": msg.role,
