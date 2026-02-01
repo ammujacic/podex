@@ -631,12 +631,44 @@ jobs:
         run: pnpm build
 
   docker-build:
-    name: Docker Build Test
+    name: Docker Build Test (${{ matrix.service }})
     runs-on: ubuntu-latest
     needs: [backend-api-test, backend-agent-test]
     strategy:
       matrix:
-        service: [api, agent]
+        include:
+          - service: api
+            dockerfile: ./services/api/Dockerfile
+            context: .
+            target: production
+          - service: agent
+            dockerfile: ./services/agent/Dockerfile
+            context: .
+            target: production
+          - service: compute
+            dockerfile: ./services/compute/Dockerfile
+            context: .
+            target: production
+          - service: web
+            dockerfile: ./apps/web/Dockerfile
+            context: .
+            target: production
+          - service: grafana
+            dockerfile: ./docker/monitoring/grafana/Dockerfile
+            context: ./docker/monitoring/grafana
+            target: ''
+          - service: prometheus
+            dockerfile: ./docker/monitoring/prometheus/Dockerfile
+            context: ./docker/monitoring/prometheus
+            target: ''
+          - service: loki
+            dockerfile: ./docker/monitoring/loki/Dockerfile
+            context: ./docker/monitoring/loki
+            target: ''
+          - service: promtail
+            dockerfile: ./docker/monitoring/promtail/Dockerfile
+            context: ./docker/monitoring/promtail
+            target: ''
     steps:
       - uses: actions/checkout@v4
 
@@ -646,9 +678,9 @@ jobs:
       - name: Build Docker image
         uses: docker/build-push-action@v5
         with:
-          context: .
-          file: ./services/${{ matrix.service }}/Dockerfile
-          target: production
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
