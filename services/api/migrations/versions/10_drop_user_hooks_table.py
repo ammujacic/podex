@@ -1,7 +1,7 @@
 """Drop user_hooks table - hooks system removed.
 
-Revision ID: 10_drop_user_hooks_table
-Revises: 9_add_user_deleted_at
+Revision ID: 10
+Revises: 9
 Create Date: 2024-01-01 00:00:00.000000
 
 """
@@ -13,8 +13,8 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = "10_drop_user_hooks_table"
-down_revision: str | None = "9_add_user_deleted_at"
+revision: str = "10"
+down_revision: str | None = "9"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
