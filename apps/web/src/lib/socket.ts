@@ -4,8 +4,45 @@
 
 import type { Socket } from 'socket.io-client';
 import { io } from 'socket.io-client';
+import { getWebSocketToken } from './api';
 
 const SOCKET_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+// WebSocket token for authentication (fetched via HTTP, used for WebSocket handshake)
+let wsToken: string | null = null;
+let wsTokenFetchPromise: Promise<string | null> | null = null;
+
+/**
+ * Get a WebSocket token, fetching a new one if needed.
+ * Uses a promise to deduplicate concurrent requests.
+ */
+async function getWsToken(): Promise<string | null> {
+  // If we have a valid token, return it
+  if (wsToken) {
+    return wsToken;
+  }
+
+  // If a fetch is already in progress, wait for it
+  if (wsTokenFetchPromise) {
+    return wsTokenFetchPromise;
+  }
+
+  // Fetch a new token using the API client
+  wsTokenFetchPromise = getWebSocketToken();
+  try {
+    wsToken = await wsTokenFetchPromise;
+    return wsToken;
+  } finally {
+    wsTokenFetchPromise = null;
+  }
+}
+
+/**
+ * Clear the cached WebSocket token (called after use - tokens are one-time use).
+ */
+function clearWsToken(): void {
+  wsToken = null;
+}
 
 // Socket.IO client instance
 let socket: Socket | null = null;
@@ -675,10 +712,11 @@ export interface SocketEvents {
 }
 
 // Track active session for auto-rejoin on reconnect
+// Note: authToken is deprecated, we now use WebSocket tokens fetched via /api/auth/ws-token
 interface ActiveSession {
   sessionId: string;
   userId: string;
-  authToken?: string;
+  authToken?: string; // Deprecated, kept for backwards compatibility
 }
 
 let activeSession: ActiveSession | null = null;
@@ -691,9 +729,7 @@ export function getSocket(): Socket {
   if (!socket) {
     socket = io(SOCKET_URL, {
       autoConnect: false,
-      // Start with polling (HTTP) which sends SameSite=Lax cookies, then upgrade to WebSocket.
-      // Direct WebSocket connections don't send cookies due to Chrome's CSWSH protection.
-      transports: ['polling', 'websocket'],
+      transports: ['websocket', 'polling'],
       reconnection: true,
       // Exponential backoff: starts at 1s, doubles each attempt, max 30s
       reconnectionDelay: 1000,
@@ -733,20 +769,24 @@ export function getSocket(): Socket {
       notifyConnectionListeners();
     });
 
-    socket.io.on('reconnect', () => {
+    socket.io.on('reconnect', async () => {
       connectionState.reconnecting = false;
       connectionState.reconnectAttempt = 0;
       connectionState.error = null;
       notifyConnectionListeners();
 
-      // Auto-rejoin session after reconnection
+      // Auto-rejoin session after reconnection with fresh token
       if (activeSession) {
-        const { sessionId, userId, authToken } = activeSession;
+        const { sessionId, userId } = activeSession;
+        // Fetch a fresh WebSocket token for authentication
+        const token = await getWsToken();
         socket?.emit('session_join', {
           session_id: sessionId,
           user_id: userId,
-          ...(authToken && { auth_token: authToken }),
+          ...(token && { auth_token: token }),
         });
+        // Clear the token after use (it's one-time use)
+        clearWsToken();
       }
     });
 
@@ -800,18 +840,16 @@ export function disconnectSocket(): void {
 
 /**
  * Join a session room to receive updates.
- * Waits for socket connection before emitting join event.
- * Stores session info for automatic rejoin after reconnection.
+ * Fetches a WebSocket token via HTTP (which sends cookies), then uses it for WebSocket auth.
+ * This works around browsers not sending cookies with cross-origin WebSocket handshakes.
  *
- * Security Note: Auth token is transmitted via WebSocket. The connection
- * should always use WSS (WebSocket Secure) in production. The token is
- * validated server-side and not stored in the socket state.
+ * Security Note: The WebSocket token is short-lived (30s) and one-time use.
  */
-export function joinSession(sessionId: string, userId: string, authToken?: string): void {
+export function joinSession(sessionId: string, userId: string, _authToken?: string): void {
   const sock = getSocket();
 
-  // Store session info for auto-rejoin on reconnect
-  activeSession = { sessionId, userId, authToken };
+  // Store session info for auto-rejoin on reconnect (authToken not needed, we use ws-token)
+  activeSession = { sessionId, userId };
 
   // Warn in development if not using secure connection
   if (
@@ -819,19 +857,23 @@ export function joinSession(sessionId: string, userId: string, authToken?: strin
     window.location.protocol === 'http:' &&
     process.env.NODE_ENV === 'production'
   ) {
-    console.warn(
-      '[Socket] Warning: Using insecure WebSocket connection in production. Auth tokens may be exposed.'
-    );
+    console.warn('[Socket] Warning: Using insecure WebSocket connection in production.');
   }
 
-  const emitJoin = () => {
-    // Only send token if present; server should validate via secure session cookie as fallback
+  const emitJoin = async () => {
+    // Fetch a fresh WebSocket token for authentication
+    // This HTTP request sends cookies (SameSite=Lax works for HTTP)
+    const token = await getWsToken();
+
     sock.emit('session_join', {
       session_id: sessionId,
       user_id: userId,
-      // Token sent for backwards compatibility; prefer cookie-based auth when available
-      ...(authToken && { auth_token: authToken }),
+      // Use the WebSocket token for authentication
+      ...(token && { auth_token: token }),
     });
+
+    // Clear the token after use (it's one-time use)
+    clearWsToken();
   };
 
   // If already connected, emit immediately

@@ -16,6 +16,7 @@ from user_agents import parse as parse_user_agent  # type: ignore[import-not-fou
 
 from src.audit_logger import AuditAction, AuditLogger, AuditStatus
 from src.auth_constants import COOKIE_ACCESS_TOKEN, COOKIE_REFRESH_TOKEN
+from src.cache import cache_delete, cache_get, cache_set
 from src.config import settings
 from src.database.connection import get_db
 from src.database.models import (
@@ -929,6 +930,77 @@ async def get_current_user(request: Request, db: DbSession) -> UserResponse:
         avatar_url=user.avatar_url,
         role=getattr(request.state, "user_role", "member"),
     )
+
+
+# WebSocket token for secure cross-origin WebSocket authentication
+WS_TOKEN_TTL_SECONDS = 30  # Short-lived, one-time use
+WS_TOKEN_PREFIX = "ws_token:"
+
+
+class WebSocketTokenResponse(BaseModel):
+    """Response containing a short-lived WebSocket authentication token."""
+
+    token: str
+    expires_in: int  # seconds
+
+
+@router.post("/ws-token", response_model=WebSocketTokenResponse)
+@limiter.limit("30/minute")  # Allow frequent reconnects but prevent abuse
+async def get_websocket_token(request: Request, response: Response) -> WebSocketTokenResponse:
+    """Get a short-lived token for WebSocket authentication.
+
+    This endpoint is called via regular HTTP (which sends cookies with SameSite=Lax),
+    and returns a one-time token that can be used to authenticate the WebSocket connection.
+    This avoids the browser's restriction on sending cookies with WebSocket handshakes.
+
+    The token:
+    - Expires in 30 seconds
+    - Can only be used once
+    - Is tied to the authenticated user
+    """
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # Generate a random token
+    token = f"wst_{uuid4().hex}"
+    cache_key = f"{WS_TOKEN_PREFIX}{token}"
+
+    # Store user_id with the token in Redis
+    await cache_set(cache_key, {"user_id": user_id}, ttl=WS_TOKEN_TTL_SECONDS)
+
+    logger.info("WebSocket token generated", user_id=user_id[:8] + "...")
+
+    # Set cache headers to prevent caching of tokens
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+
+    return WebSocketTokenResponse(token=token, expires_in=WS_TOKEN_TTL_SECONDS)
+
+
+async def validate_ws_token(token: str) -> str | None:
+    """Validate and consume a WebSocket token.
+
+    Returns the user_id if valid, None otherwise.
+    The token is deleted after validation (one-time use).
+    """
+    if not token or not token.startswith("wst_"):
+        return None
+
+    cache_key = f"{WS_TOKEN_PREFIX}{token}"
+    data = await cache_get(cache_key)
+
+    if not data or not isinstance(data, dict):
+        return None
+
+    user_id = data.get("user_id")
+    if not isinstance(user_id, str):
+        return None
+
+    # Delete token immediately (one-time use)
+    await cache_delete(cache_key)
+
+    return user_id
 
 
 class PasswordStrengthRequest(BaseModel):

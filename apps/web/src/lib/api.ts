@@ -516,6 +516,35 @@ export async function logout(): Promise<void> {
   useAuthStore.getState().logout();
 }
 
+// WebSocket authentication token
+// Used for cross-origin WebSocket connections where cookies aren't sent
+
+interface WebSocketTokenResponse {
+  token: string;
+  expires_in: number;
+}
+
+/**
+ * Fetch a short-lived WebSocket authentication token.
+ * This is called via HTTP (which sends cookies with SameSite=Lax), then the token
+ * is used for WebSocket auth. This works around browsers not sending cookies
+ * with cross-origin WebSocket handshakes.
+ *
+ * The token:
+ * - Expires in 30 seconds
+ * - Can only be used once
+ * - Is tied to the authenticated user
+ */
+export async function getWebSocketToken(): Promise<string | null> {
+  try {
+    const response = await api.post<WebSocketTokenResponse>('/api/auth/ws-token', {});
+    return response.token || null;
+  } catch (error) {
+    console.warn('[API] Failed to fetch WebSocket token:', error);
+    return null;
+  }
+}
+
 // OAuth types
 interface OAuthURLResponse {
   url: string;

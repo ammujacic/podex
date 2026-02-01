@@ -42,13 +42,17 @@ class AgentAttentionInfo:
 
 
 async def _verify_auth_token(token: str | None) -> str | None:
-    """Verify JWT auth token and extract user ID.
+    """Verify auth token and extract user ID.
+
+    Supports two token types:
+    1. JWT access tokens (from httpOnly cookies) - standard JWT validation
+    2. WebSocket tokens (wst_*) - short-lived tokens from /api/auth/ws-token endpoint
 
     SECURITY: Also checks token blacklist to ensure revoked tokens
     (from logout, password change, etc.) cannot be used for WebSocket connections.
 
     Args:
-        token: JWT token to verify
+        token: JWT token or WebSocket token to verify
 
     Returns:
         User ID if valid and not revoked, None otherwise
@@ -56,6 +60,16 @@ async def _verify_auth_token(token: str | None) -> str | None:
     if not token:
         return None
 
+    # Check for WebSocket token (wst_*) - short-lived token from /api/auth/ws-token
+    if token.startswith("wst_"):
+        from src.routes.auth import validate_ws_token
+
+        user_id = await validate_ws_token(token)
+        if user_id:
+            logger.debug("WebSocket token validated", user_id=user_id[:8] + "...")
+        return user_id
+
+    # Standard JWT validation
     try:
         payload: dict[str, Any] = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=["HS256"])
 
@@ -66,9 +80,9 @@ async def _verify_auth_token(token: str | None) -> str | None:
             logger.warning("Non-access token used for WebSocket auth", token_type=token_type)
             return None
 
-        user_id: str | None = payload.get("sub") or payload.get("user_id")
+        user_id_jwt: str | None = payload.get("sub") or payload.get("user_id")
 
-        if not user_id:
+        if not user_id_jwt:
             return None
 
         # SECURITY: Check token blacklist using jti claim
@@ -80,7 +94,7 @@ async def _verify_auth_token(token: str | None) -> str | None:
             if await is_token_revoked(token_jti):
                 logger.warning(
                     "Revoked token used for WebSocket auth",
-                    user_id=user_id,
+                    user_id=user_id_jwt,
                     jti=token_jti[:8] + "...",
                 )
                 return None
@@ -88,7 +102,7 @@ async def _verify_auth_token(token: str | None) -> str | None:
     except JWTError:
         return None
     else:
-        return user_id
+        return user_id_jwt
 
 
 def _extract_cookie_token(environ: dict[str, Any]) -> str | None:
