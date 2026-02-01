@@ -23,6 +23,21 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     """Add compute_service_url column to workspace_servers."""
+    conn = op.get_bind()
+
+    # Check if column already exists
+    result = conn.execute(
+        sa.text(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'workspace_servers' AND column_name = 'compute_service_url'
+            """
+        )
+    )
+    if result.fetchone():
+        # Column already exists, skip
+        return
+
     # Add column as nullable first
     op.add_column(
         "workspace_servers",

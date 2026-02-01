@@ -26,6 +26,21 @@ DEFAULT_WORKSPACE_IMAGE = "ghcr.io/mujacica/workspace:latest"
 
 def upgrade() -> None:
     """Add workspace image columns to workspace_servers."""
+    conn = op.get_bind()
+
+    # Check if column already exists
+    result = conn.execute(
+        sa.text(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'workspace_servers' AND column_name = 'workspace_image'
+            """
+        )
+    )
+    if result.fetchone():
+        # Column already exists, skip
+        return
+
     # Add workspace_image as nullable first
     op.add_column(
         "workspace_servers",

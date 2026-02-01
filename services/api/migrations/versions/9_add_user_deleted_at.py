@@ -22,6 +22,21 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     """Add deleted_at column to users table."""
+    conn = op.get_bind()
+
+    # Check if column already exists
+    result = conn.execute(
+        sa.text(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'users' AND column_name = 'deleted_at'
+            """
+        )
+    )
+    if result.fetchone():
+        # Column already exists, skip
+        return
+
     op.add_column(
         "users",
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
