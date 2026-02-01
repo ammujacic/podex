@@ -138,6 +138,19 @@ async def _get_auth_token(sid: str, data: dict[str, str]) -> str | None:
     return session.get("auth_token") if session else None
 
 
+async def _get_cached_user_id(sid: str) -> str | None:
+    """Get cached user_id from socket session (set after successful auth)."""
+    session = await sio.get_session(sid)
+    return session.get("user_id") if session else None
+
+
+async def _cache_user_id(sid: str, user_id: str) -> None:
+    """Cache user_id in socket session for subsequent requests."""
+    session = await sio.get_session(sid) or {}
+    session["user_id"] = user_id
+    await sio.save_session(sid, session)
+
+
 async def _verify_session_access(session_id: str, user_id: str) -> bool:
     """Verify user has access to the session.
 
@@ -639,6 +652,9 @@ async def session_join(sid: str, data: dict[str, str]) -> None:
         await sio.emit("error", {"error": "Authentication required"}, to=sid)
         return
 
+    # Cache user_id in socket session for subsequent events (e.g., terminal_attach)
+    await _cache_user_id(sid, user_id)
+
     # Verify user has access to this session
     has_access = await _verify_session_access(session_id, user_id)
     if not has_access:
@@ -818,7 +834,6 @@ async def agent_message(sid: str, data: dict[str, Any]) -> None:
 async def terminal_attach(sid: str, data: dict[str, str]) -> None:
     """Attach to terminal session with authentication and authorization."""
     workspace_id = data.get("workspace_id")
-    auth_token = await _get_auth_token(sid, data)
     shell = data.get("shell", "bash")  # Default to bash if not specified
 
     if not workspace_id:
@@ -830,8 +845,11 @@ async def terminal_attach(sid: str, data: dict[str, str]) -> None:
     if shell not in valid_shells:
         shell = "bash"
 
-    # Verify auth token and get user ID (also checks token blacklist)
-    user_id = await _verify_auth_token(auth_token)
+    # Try cached user_id first (set during session_join), fall back to token verification
+    user_id = await _get_cached_user_id(sid)
+    if not user_id:
+        auth_token = await _get_auth_token(sid, data)
+        user_id = await _verify_auth_token(auth_token)
     if not user_id:
         await sio.emit("terminal_error", {"error": "Authentication required"}, to=sid)
         return
