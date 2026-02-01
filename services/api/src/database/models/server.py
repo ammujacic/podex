@@ -72,6 +72,18 @@ class WorkspaceServer(Base):
     region: Mapped[str | None] = mapped_column(String(50), nullable=True)
     provider: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
+    # Compute service URL that manages this server
+    # Each regional compute service has its own URL (e.g., https://compute-us.podex.io)
+    compute_service_url: Mapped[str] = mapped_column(String(500), nullable=False)
+
+    # Workspace container images - per-server configuration
+    # The primary image used for workspaces on this server
+    workspace_image: Mapped[str] = mapped_column(String(500), nullable=False)
+    # Architecture-specific images (optional - if not set, uses workspace_image)
+    workspace_image_arm64: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    workspace_image_amd64: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    workspace_image_gpu: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -209,10 +221,15 @@ class WorkspaceServer(Base):
             "labels": self.labels,
             "region": self.region,
             "provider": self.provider,
+            "compute_service_url": self.compute_service_url,
             "tls_enabled": self.tls_enabled,
             "tls_cert_path": self.tls_cert_path,
             "tls_key_path": self.tls_key_path,
             "tls_ca_path": self.tls_ca_path,
+            "workspace_image": self.workspace_image,
+            "workspace_image_arm64": self.workspace_image_arm64,
+            "workspace_image_amd64": self.workspace_image_amd64,
+            "workspace_image_gpu": self.workspace_image_gpu,
             "is_healthy": self.is_healthy,
             "cpu_utilization": self.cpu_utilization,
             "memory_utilization": self.memory_utilization,

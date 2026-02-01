@@ -165,7 +165,11 @@ class TestOrchestratorAgentManagement:
             mode="ask",
         )
 
-        with patch("src.orchestrator.create_database_agent", new_callable=AsyncMock) as mock_create:
+        mock_config_reader = MagicMock()
+        mock_config_reader.get_special_agent_roles = AsyncMock(return_value={})
+
+        with patch("src.orchestrator.create_database_agent", new_callable=AsyncMock) as mock_create, \
+             patch("src.orchestrator.get_config_reader", return_value=mock_config_reader):
             mock_agent = MagicMock()
             mock_agent.session_id = "session-123"
             mock_agent.role = "architect"
@@ -244,7 +248,11 @@ class TestOrchestratorAgentManagement:
             mode="ask",
         )
 
-        with patch("src.orchestrator.create_database_agent", new_callable=AsyncMock) as mock_create:
+        mock_config_reader = MagicMock()
+        mock_config_reader.get_special_agent_roles = AsyncMock(return_value={})
+
+        with patch("src.orchestrator.create_database_agent", new_callable=AsyncMock) as mock_create, \
+             patch("src.orchestrator.get_config_reader", return_value=mock_config_reader):
             mock_agent = MagicMock()
             mock_agent.session_id = "session-123"
             mock_agent.role = "architect"
@@ -829,8 +837,8 @@ class TestOrchestratorDelegateToAgents:
         assert task1.context["role"] == "architect"
 
     async def test_delegate_to_agents_default_values(self, orchestrator: AgentOrchestrator):
-        """Test delegation with default role (model is required)."""
-        agents = [{"id": "agent-1", "model": "claude-3-5-sonnet"}]
+        """Test delegation with required role and model."""
+        agents = [{"id": "agent-1", "role": "coder", "model": "claude-3-5-sonnet"}]
 
         task_ids = await orchestrator.delegate_to_agents(
             session_id="session-123",
@@ -839,7 +847,7 @@ class TestOrchestratorDelegateToAgents:
         )
 
         task = orchestrator.tasks[task_ids[0]]
-        assert task.context["role"] == "coder"  # Default role
+        assert task.context["role"] == "coder"  # Role as provided
         assert task.context["model"] == "claude-3-5-sonnet"  # Model as provided
 
 
@@ -1175,7 +1183,11 @@ class TestOrchestratorAgentCreationParams:
 
     async def test_get_or_create_agent_updates_command_allowlist(self, orchestrator: AgentOrchestrator):
         """Test that get_or_create_agent updates command allowlist on cached agent."""
-        with patch("src.orchestrator.create_database_agent", new_callable=AsyncMock) as mock_create:
+        mock_config_reader = MagicMock()
+        mock_config_reader.get_special_agent_roles = AsyncMock(return_value={})
+
+        with patch("src.orchestrator.create_database_agent", new_callable=AsyncMock) as mock_create, \
+             patch("src.orchestrator.get_config_reader", return_value=mock_config_reader):
             mock_executor = MagicMock()
             mock_agent = MagicMock()
             mock_agent.session_id = "session-123"

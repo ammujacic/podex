@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from src.compute_client import compute_client
+from src.compute_client import get_compute_client_for_workspace
 from src.database.models import AgentWorktree
 from src.database.models import Session as SessionModel
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
@@ -202,7 +202,8 @@ async def merge_worktree(
         if not session.workspace_id:
             raise HTTPException(status_code=400, detail="workspace_id required")  # noqa: TRY301
 
-        merge_result = await compute_client.git_worktree_merge(
+        compute = await get_compute_client_for_workspace(session.workspace_id)
+        merge_result = await compute.git_worktree_merge(
             session.workspace_id,
             user_id,
             worktree.branch_name,
@@ -324,7 +325,8 @@ async def delete_worktree(
         if not session.workspace_id:
             raise HTTPException(status_code=400, detail="workspace_id required")  # noqa: TRY301
 
-        delete_result = await compute_client.git_worktree_delete(
+        compute = await get_compute_client_for_workspace(session.workspace_id)
+        delete_result = await compute.git_worktree_delete(
             session.workspace_id,
             user_id,
             worktree.worktree_path,
@@ -415,7 +417,8 @@ async def check_worktree_conflicts(
         if not session.workspace_id:
             raise HTTPException(status_code=400, detail="workspace_id required")  # noqa: TRY301
 
-        conflicts_result = await compute_client.git_worktree_check_conflicts(
+        compute = await get_compute_client_for_workspace(session.workspace_id)
+        conflicts_result = await compute.git_worktree_check_conflicts(
             session.workspace_id,
             user_id,
             worktree.branch_name,

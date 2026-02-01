@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.compute_client import compute_client
+from src.compute_client import get_compute_client_for_workspace
 from src.database import Session as SessionModel
 from src.database import get_db
 from src.database.models import UsageQuota
@@ -430,7 +430,8 @@ async def upload_file(
                 # Binary content - encode as base64 with marker
                 file_content = f"__base64__:{base64.b64encode(content).decode('ascii')}"
 
-            await compute_client.write_file(
+            compute = await get_compute_client_for_workspace(session.workspace_id)
+            await compute.write_file(
                 session.workspace_id,
                 user_id,
                 full_path,
@@ -542,7 +543,8 @@ async def upload_image(
         try:
             # Images are binary - encode as base64
             file_content = f"__base64__:{base64.b64encode(content).decode('ascii')}"
-            await compute_client.write_file(
+            compute = await get_compute_client_for_workspace(session.workspace_id)
+            await compute.write_file(
                 session.workspace_id,
                 user_id,
                 full_path,
@@ -656,7 +658,8 @@ async def upload_files_bulk(
                 else:
                     file_content = f"__base64__:{base64.b64encode(content).decode('ascii')}"
 
-                await compute_client.write_file(
+                compute = await get_compute_client_for_workspace(session.workspace_id)
+                await compute.write_file(
                     session.workspace_id,
                     user_id,
                     full_path,
@@ -794,7 +797,8 @@ async def upload_image_base64(
     if session.workspace_id:
         try:
             file_content = f"__base64__:{base64.b64encode(content).decode('ascii')}"
-            await compute_client.write_file(
+            compute = await get_compute_client_for_workspace(session.workspace_id)
+            await compute.write_file(
                 session.workspace_id,
                 user_id,
                 full_path,

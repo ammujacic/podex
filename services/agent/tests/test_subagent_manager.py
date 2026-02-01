@@ -2,7 +2,6 @@
 
 Tests cover:
 - SubagentStatus enum
-- SubagentType enum
 - SubagentContext dataclass
 - Subagent dataclass
 - parse_subagent_invocations function
@@ -33,26 +32,6 @@ class TestSubagentStatusEnum:
         assert SubagentStatus.COMPLETED.value == "completed"
         assert SubagentStatus.FAILED.value == "failed"
         assert SubagentStatus.CANCELLED.value == "cancelled"
-
-
-class TestSubagentTypeEnum:
-    """Test SubagentType enum."""
-
-    def test_subagent_type_exists(self):
-        """Test SubagentType enum exists."""
-        from src.subagent.manager import SubagentType
-        assert SubagentType is not None
-
-    def test_subagent_type_values(self):
-        """Test SubagentType enum values."""
-        from src.subagent.manager import SubagentType
-
-        assert SubagentType.RESEARCHER.value == "researcher"
-        assert SubagentType.CODER.value == "coder"
-        assert SubagentType.REVIEWER.value == "reviewer"
-        assert SubagentType.TESTER.value == "tester"
-        assert SubagentType.PLANNER.value == "planner"
-        assert SubagentType.CUSTOM.value == "custom"
 
 
 class TestSubagentContext:
@@ -176,14 +155,14 @@ class TestSubagent:
 
     def test_subagent_creation(self):
         """Test creating Subagent."""
-        from src.subagent.manager import Subagent, SubagentType, SubagentStatus, SubagentContext
+        from src.subagent.manager import Subagent, SubagentStatus, SubagentContext
 
         subagent = Subagent(
             id="sub-123",
             parent_agent_id="agent-456",
             session_id="session-789",
             name="Research Agent",
-            type=SubagentType.RESEARCHER,
+            role="researcher",
             task="Research AI",
             context=SubagentContext(),
         )
@@ -191,20 +170,20 @@ class TestSubagent:
         assert subagent.id == "sub-123"
         assert subagent.parent_agent_id == "agent-456"
         assert subagent.session_id == "session-789"
-        assert subagent.type == SubagentType.RESEARCHER
+        assert subagent.role == "researcher"
         assert subagent.task == "Research AI"
         assert subagent.status == SubagentStatus.PENDING
 
     def test_subagent_to_dict(self):
         """Test Subagent to_dict method."""
-        from src.subagent.manager import Subagent, SubagentType, SubagentContext
+        from src.subagent.manager import Subagent, SubagentContext
 
         subagent = Subagent(
             id="sub-123",
             parent_agent_id="agent-456",
             session_id="session-789",
             name="Coder Agent",
-            type=SubagentType.CODER,
+            role="coder",
             task="Write code",
             context=SubagentContext(),
         )
@@ -213,7 +192,7 @@ class TestSubagent:
 
         assert data["id"] == "sub-123"
         assert data["parent_agent_id"] == "agent-456"
-        assert data["type"] == "coder"
+        assert data["role"] == "coder"
         assert data["task"] == "Write code"
 
 
@@ -275,7 +254,8 @@ class TestSubagentManager:
     @pytest.mark.asyncio
     async def test_spawn_subagent(self):
         """Test spawn_subagent method."""
-        from src.subagent.manager import SubagentManager, SubagentType
+        from unittest.mock import patch
+        from src.subagent.manager import SubagentManager
 
         manager = SubagentManager()
 
@@ -283,17 +263,30 @@ class TestSubagentManager:
         executor = AsyncMock(return_value="Task completed")
         manager.set_executor(executor)
 
-        subagent = await manager.spawn_subagent(
-            parent_agent_id="agent-123",
-            session_id="session-456",
-            subagent_type="researcher",
-            task="Research something",
-            background=False,
-        )
+        # Mock the config reader to avoid Redis calls
+        mock_config_reader = MagicMock()
+        mock_config_reader.is_delegatable_role = AsyncMock(return_value=True)
+        mock_config_reader.get_delegatable_roles = AsyncMock(return_value={
+            "researcher": {"name": "researcher", "description": "Research tasks"}
+        })
+        # Mock role_def with attributes (not dict)
+        mock_role_def = MagicMock()
+        mock_role_def.name = "Researcher"
+        mock_role_def.system_prompt = "You are a researcher"
+        mock_config_reader.get_role = AsyncMock(return_value=mock_role_def)
+
+        with patch("src.subagent.manager.get_config_reader", return_value=mock_config_reader):
+            subagent = await manager.spawn_subagent(
+                parent_agent_id="agent-123",
+                session_id="session-456",
+                role="researcher",
+                task="Research something",
+                background=False,
+            )
 
         assert subagent is not None
         assert subagent.task == "Research something"
-        assert subagent.type == SubagentType.RESEARCHER
+        assert subagent.role == "researcher"
 
     def test_get_subagent(self):
         """Test get_subagent method."""
@@ -339,7 +332,7 @@ class TestSubagentManager:
 
     def test_cleanup_parent(self):
         """Test cleanup_parent method."""
-        from src.subagent.manager import SubagentManager, Subagent, SubagentType, SubagentContext
+        from src.subagent.manager import SubagentManager, Subagent, SubagentContext
 
         manager = SubagentManager()
         # Create a subagent and add it to the manager
@@ -348,7 +341,7 @@ class TestSubagentManager:
             parent_agent_id="agent-123",
             session_id="session-456",
             name="Test Agent",
-            type=SubagentType.RESEARCHER,
+            role="researcher",
             task="Test task",
             context=SubagentContext(),
         )
@@ -358,37 +351,6 @@ class TestSubagentManager:
         manager.cleanup_parent("agent-123")
 
         assert "agent-123" not in manager._subagents
-
-
-class TestSubagentManagerDefaultPrompts:
-    """Test SubagentManager default prompts."""
-
-    def test_get_default_prompt_researcher(self):
-        """Test default prompt for researcher."""
-        from src.subagent.manager import SubagentManager, SubagentType
-
-        manager = SubagentManager()
-        prompt = manager._get_default_prompt(SubagentType.RESEARCHER)
-
-        assert "research" in prompt.lower() or "information" in prompt.lower()
-
-    def test_get_default_prompt_coder(self):
-        """Test default prompt for coder."""
-        from src.subagent.manager import SubagentManager, SubagentType
-
-        manager = SubagentManager()
-        prompt = manager._get_default_prompt(SubagentType.CODER)
-
-        assert "code" in prompt.lower() or "implement" in prompt.lower()
-
-    def test_get_default_prompt_reviewer(self):
-        """Test default prompt for reviewer."""
-        from src.subagent.manager import SubagentManager, SubagentType
-
-        manager = SubagentManager()
-        prompt = manager._get_default_prompt(SubagentType.REVIEWER)
-
-        assert "review" in prompt.lower()
 
 
 class TestGetSubagentManager:

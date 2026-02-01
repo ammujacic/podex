@@ -61,8 +61,7 @@ const FEATURE_FLAG_META: Record<
   },
   anthropic_prompt_caching_enabled: {
     label: 'Anthropic prompt caching',
-    description:
-      'Use Anthropic prompt caching for conversation summaries (reduces cost and latency for long sessions)',
+    description: 'Use Anthropic prompt caching.',
     icon: Settings,
   },
 };
@@ -295,7 +294,7 @@ export default function SettingsManagement() {
   };
 
   return (
-    <div className="p-8">
+    <div className="px-8 py-8">
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-semibold text-text-primary">Platform Settings</h1>

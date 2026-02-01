@@ -1,7 +1,7 @@
 """Checkpoint manager for file change tracking and restoration."""
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -35,7 +35,7 @@ class Checkpoint:
     description: str
     action_type: str  # 'file_edit', 'file_create', 'batch_edit', 'command'
     files: list[FileChange] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     status: str = "active"  # 'active', 'restored', 'superseded'
     metadata: dict[str, Any] = field(default_factory=dict)
 

@@ -6,12 +6,10 @@ import { Check, Sparkles, Zap, Users, Building2 } from 'lucide-react';
 import { listSubscriptionPlans, type SubscriptionPlanResponse } from '@/lib/api';
 
 // Map feature keys to human-readable labels
+// Note: agent_memory, planning_mode, vision_analysis were removed - they're available to all users
 const featureLabels: Record<string, string> = {
   private_projects: 'Private projects',
   git_integration: 'Git integration',
-  agent_memory: 'Agent memory',
-  planning_mode: 'Planning mode',
-  vision_analysis: 'Vision analysis',
   team_collaboration: 'Team collaboration',
   gpu_access: 'GPU access',
   advanced_analytics: 'Advanced analytics',

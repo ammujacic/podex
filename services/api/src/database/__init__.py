@@ -17,7 +17,9 @@ from src.database.models import (
     AgentAttention,
     AgentPendingApproval,
     # Agent config
+    AgentRoleConfig,
     AgentTemplate,
+    AgentTool,
     AgentWorktree,
     # Base
     Base,
@@ -68,7 +70,6 @@ from src.database.models import (
     UserCorrection,
     # Extensions
     UserExtension,
-    UserHook,
     UserSubscription,
     WikiDocument,
     Workspace,
@@ -82,7 +83,9 @@ __all__ = [
     "AgentAttention",
     "AgentPendingApproval",
     # Agent config
+    "AgentRoleConfig",
     "AgentTemplate",
+    "AgentTool",
     "AgentWorktree",
     # Base
     "Base",
@@ -134,7 +137,6 @@ __all__ = [
     "UserCorrection",
     # Extensions
     "UserExtension",
-    "UserHook",
     "UserSubscription",
     # Knowledge
     "WikiDocument",

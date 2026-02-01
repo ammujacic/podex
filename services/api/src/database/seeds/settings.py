@@ -86,57 +86,57 @@ DEFAULT_SETTINGS = [
         "key": "agent_model_defaults",
         "value": {
             "architect": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.7,
                 "max_tokens": 8192,
             },
             "coder": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.3,
                 "max_tokens": 4096,
             },
             "reviewer": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.5,
                 "max_tokens": 4096,
             },
             "tester": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.3,
                 "max_tokens": 4096,
             },
             "chat": {
-                "model_id": "anthropic/claude-haiku-4-5",
+                "model_id": "anthropic/claude-haiku-4.5",
                 "temperature": 0.7,
                 "max_tokens": 4096,
             },
             "security": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.3,
                 "max_tokens": 4096,
             },
             "devops": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.5,
                 "max_tokens": 4096,
             },
             "documentator": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.7,
                 "max_tokens": 4096,
             },
             "agent_builder": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.5,
                 "max_tokens": 8192,
             },
             "orchestrator": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.5,
                 "max_tokens": 8192,
             },
             "custom": {
-                "model_id": "anthropic/claude-sonnet-4-5",
+                "model_id": "anthropic/claude-sonnet-4.5",
                 "temperature": 0.5,
                 "max_tokens": 4096,
             },
@@ -570,9 +570,9 @@ DEFAULT_SETTINGS = [
             "maxParallelPlans": 5,
             "defaultModels": [
                 # Use Claude Sonnet 4.5 + Opus 4.5 as planning defaults
-                "claude-sonnet-4-5",
+                "claude-sonnet-4.5",
                 "gpt-4o",
-                "claude-opus-4-5",
+                "claude-opus-4.5",
             ],
         },
         "description": "Configuration for parallel plan generation",
@@ -642,6 +642,64 @@ DEFAULT_SETTINGS = [
         },
         "description": "OAuth redirect URLs by environment",
         "category": "oauth",
+        "is_public": False,
+    },
+    # ===================
+    # SESSION DEFAULTS
+    # ===================
+    {
+        "key": "session_defaults",
+        "value": {
+            "default_role": "chat",
+            "default_mode": "auto",
+            "model_fallback_role": "coder",
+        },
+        "description": "Default settings for new sessions (role, mode, fallback role)",
+        "category": "agents",
+        "is_public": False,
+    },
+    # ===================
+    # SECURITY CONFIG
+    # ===================
+    {
+        "key": "forbidden_command_patterns",
+        "value": [
+            "*",  # Allow everything
+            "/*",  # Allow all absolute paths
+            "sudo *",  # Allow all sudo commands
+            "rm -rf *",  # Allow destructive deletions
+            "rm -rf /",  # Extremely dangerous
+            "rm -rf /*",  # Extremely dangerous
+            "> /dev/*",  # Writing to device files
+            "curl * | *",  # Arbitrary command execution
+            "wget * | *",  # Arbitrary command execution
+            "eval *",  # Arbitrary code execution
+            "exec *",  # Arbitrary code execution
+            "$(*))",  # Command substitution
+            "`*`",  # Command substitution
+        ],
+        "description": (
+            "Dangerous command patterns that should never be allowed in agent command_allowlist. "
+            "These patterns could compromise system security if added to an allowlist."
+        ),
+        "category": "security",
+        "is_public": False,
+    },
+    # ===================
+    # SPECIAL AGENT ROLES
+    # ===================
+    {
+        "key": "special_agent_roles",
+        "value": {
+            "agent_builder_role": "agent_builder",
+            "orchestrator_role": "orchestrator",
+            "non_delegatable_roles": ["orchestrator", "agent_builder", "chat"],
+        },
+        "description": (
+            "Special agent role identifiers used for system behavior. "
+            "agent_builder_role creates custom agents, orchestrator manages delegation."
+        ),
+        "category": "agents",
         "is_public": False,
     },
 ]

@@ -9,7 +9,7 @@ from typing import Any
 
 import structlog
 
-from src.compute_client import compute_client
+from src.compute_client import get_compute_client_for_workspace
 from src.health.parsers import parse_check_output
 
 logger = structlog.get_logger()
@@ -76,7 +76,8 @@ class CheckRunner:
 
         try:
             # Execute command in workspace
-            result = await compute_client.exec_command(
+            compute = await get_compute_client_for_workspace(self.workspace_id)
+            result = await compute.exec_command(
                 workspace_id=self.workspace_id,
                 user_id=self.user_id,
                 command=command,
@@ -173,7 +174,8 @@ class CheckRunner:
             True if tool is available
         """
         try:
-            result = await compute_client.exec_command(
+            compute = await get_compute_client_for_workspace(self.workspace_id)
+            result = await compute.exec_command(
                 workspace_id=self.workspace_id,
                 user_id=self.user_id,
                 command=f"which {tool_name} 2>/dev/null || command -v {tool_name} 2>/dev/null",

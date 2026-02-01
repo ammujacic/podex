@@ -11,7 +11,7 @@ import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -54,7 +54,7 @@ class ProgressStep:
     def elapsed_ms(self) -> int | None:
         """Time elapsed since start, if in progress."""
         if self.started_at and not self.completed_at:
-            return int((datetime.utcnow() - self.started_at).total_seconds() * 1000)
+            return int((datetime.now(UTC) - self.started_at).total_seconds() * 1000)
         return None
 
     def to_dict(self) -> dict[str, Any]:
@@ -82,7 +82,7 @@ class TaskProgress:
     session_id: str
     title: str
     steps: list[ProgressStep]
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     completed_at: datetime | None = None
     status: str = "pending"  # pending, in_progress, completed, failed
 
@@ -288,7 +288,7 @@ class ProgressTracker:
 
         step = progress.steps[step_index]
         step.status = StepStatus.IN_PROGRESS
-        step.started_at = datetime.utcnow()
+        step.started_at = datetime.now(UTC)
         progress.status = "in_progress"
 
         logger.info(
@@ -313,7 +313,7 @@ class ProgressTracker:
 
         step = progress.steps[step_index]
         step.status = StepStatus.COMPLETED
-        step.completed_at = datetime.utcnow()
+        step.completed_at = datetime.now(UTC)
 
         logger.info(
             "step_completed",
@@ -341,7 +341,7 @@ class ProgressTracker:
 
         step = progress.steps[step_index]
         step.status = StepStatus.FAILED
-        step.completed_at = datetime.utcnow()
+        step.completed_at = datetime.now(UTC)
         step.error = error
         progress.status = "failed"
 
@@ -363,7 +363,7 @@ class ProgressTracker:
 
         step = progress.steps[step_index]
         step.status = StepStatus.SKIPPED
-        step.completed_at = datetime.utcnow()
+        step.completed_at = datetime.now(UTC)
 
         self._emit_event("task_step_skipped", progress, step)
         return True
@@ -371,7 +371,7 @@ class ProgressTracker:
     def _complete_progress(self, progress: TaskProgress) -> None:
         """Mark the entire task as completed."""
         progress.status = "completed"
-        progress.completed_at = datetime.utcnow()
+        progress.completed_at = datetime.now(UTC)
 
         logger.info(
             "progress_completed",

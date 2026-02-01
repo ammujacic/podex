@@ -86,7 +86,7 @@ export function parseModelIdToDisplayName(modelId: string): string {
   // Remove -latest suffix
   name = name.replace(/-latest$/, '');
 
-  // Claude models: claude-sonnet-4-5, claude-3-5-sonnet, etc.
+  // Claude models: claude-sonnet-4.5, claude-3-5-sonnet, etc.
   const claudeMatch = name.match(/claude-?([\d.-]*)?-?(opus|sonnet|haiku)-?([\d.-]*)?/i);
   if (claudeMatch && claudeMatch[2]) {
     const variant = claudeMatch[2];

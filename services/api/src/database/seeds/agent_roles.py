@@ -365,6 +365,49 @@ You have NO access to files, commands, or any external tools - you are purely co
 Focus on being helpful, clear, and engaging in your responses. If asked about code or technical
 topics, discuss them conceptually without offering to read or modify files."""
 
+RESEARCHER_SYSTEM_PROMPT = """You are a research specialist. Your role is to:
+
+1. **Find Information**: Search code, documentation, and web resources to gather relevant context.
+
+2. **Analyze Patterns**: Identify patterns, dependencies, and relationships in codebases.
+
+3. **Document Findings**: Summarize research findings in clear, organized reports.
+
+4. **Cite Sources**: Always reference file paths, URLs, or other sources for your findings.
+
+5. **Answer Questions**: Provide accurate, well-researched answers to technical questions.
+
+When researching:
+- Be thorough but concise in your findings
+- Organize information logically
+- Highlight the most relevant details
+- Note any gaps or uncertainties in your research
+- Suggest follow-up research if needed
+
+You focus on gathering and synthesizing information, not on writing or modifying code."""
+
+PLANNER_SYSTEM_PROMPT = """You are a planning and task breakdown specialist. Your role is to:
+
+1. **Analyze Requirements**: Understand what needs to be accomplished and break it down.
+
+2. **Create Plans**: Develop step-by-step implementation plans with clear milestones.
+
+3. **Identify Dependencies**: Map out task dependencies and optimal execution order.
+
+4. **Estimate Complexity**: Assess the complexity and potential challenges of each task.
+
+5. **Define Acceptance Criteria**: Specify clear criteria for task completion.
+
+When planning:
+- Break complex tasks into small, actionable items
+- Consider edge cases and potential blockers
+- Prioritize tasks logically (dependencies first)
+- Include testing and validation steps
+- Be specific about what each task should accomplish
+
+Your plans should be detailed enough that another agent can execute them independently.
+You focus on planning and organization, not on implementing the code yourself."""
+
 
 # Default agent role configurations
 # These are the single source of truth - frontend fetches these via the API
@@ -795,6 +838,80 @@ DEFAULT_AGENT_ROLES: list[AgentRoleData] = [
         ],
         "requires_subscription": None,
         "sort_order": 100,
+        "is_enabled": True,
+        "is_system": True,
+    },
+    {
+        "role": "researcher",
+        "name": "Researcher",
+        # Blue accent for information gathering
+        "color": "#3b82f6",
+        "icon": "Search",
+        "description": "Finds information, searches documentation, gathers context",
+        "system_prompt": RESEARCHER_SYSTEM_PROMPT,
+        "tools": [
+            "read_file",
+            "list_directory",
+            "search_code",
+            "glob_files",
+            "grep",
+            "git_status",
+            "git_diff",
+            "git_log",
+            "fetch_url",
+            "search_web",
+            "store_memory",
+            "recall_memory",
+        ],
+        "category": "development",
+        "gradient_start": "#3b82f6",
+        "gradient_end": "#2563eb",
+        "features": ["Code search", "Web research", "Documentation lookup"],
+        "example_prompts": [
+            "Research how authentication works in this codebase",
+            "Find all API endpoints related to users",
+            "Search for best practices on error handling",
+        ],
+        "requires_subscription": None,
+        "sort_order": 45,
+        "is_enabled": True,
+        "is_system": True,
+    },
+    {
+        "role": "planner",
+        "name": "Planner",
+        # Teal accent for planning and organization
+        "color": "#14b8a6",
+        "icon": "ListTodo",
+        "description": "Creates implementation plans and breaks down complex tasks",
+        "system_prompt": PLANNER_SYSTEM_PROMPT,
+        "tools": [
+            # File tools (read-only for analysis)
+            "read_file",
+            "list_directory",
+            "search_code",
+            "glob_files",
+            "grep",
+            # Git (read-only for understanding state)
+            "git_status",
+            "git_log",
+            # Task creation
+            "create_task",
+            # Memory
+            "store_memory",
+            "recall_memory",
+        ],
+        "category": "development",
+        "gradient_start": "#14b8a6",
+        "gradient_end": "#0d9488",
+        "features": ["Task breakdown", "Dependency analysis", "Planning"],
+        "example_prompts": [
+            "Plan the implementation of user authentication",
+            "Break down this feature into smaller tasks",
+            "Create a testing plan for this module",
+        ],
+        "requires_subscription": None,
+        "sort_order": 15,
         "is_enabled": True,
         "is_system": True,
     },

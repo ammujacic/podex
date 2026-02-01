@@ -589,8 +589,8 @@ describe('billingStore', () => {
         });
 
         expect(result.current.usageSummary?.usageByModel).toBeDefined();
-        expect(result.current.usageSummary?.usageByModel['claude-opus-4-5']).toBeDefined();
-        expect(result.current.usageSummary?.usageByModel['claude-sonnet-4-5']).toBeDefined();
+        expect(result.current.usageSummary?.usageByModel['claude-opus-4.5']).toBeDefined();
+        expect(result.current.usageSummary?.usageByModel['claude-sonnet-4.5']).toBeDefined();
       });
 
       it('tracks usage by agent', () => {

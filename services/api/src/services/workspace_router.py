@@ -14,8 +14,9 @@ from typing import Any
 
 import structlog
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
-from src.compute_client import ComputeClient, compute_client
+from src.compute_client import ComputeClient
 from src.database.connection import get_db_context
 from src.database.models import Workspace
 from src.websocket.local_pod_hub import (
@@ -38,10 +39,46 @@ class WorkspaceRouter:
 
     Checks if a workspace is running on a local pod and routes operations
     via WebSocket RPC if so, otherwise routes to the cloud compute service.
+
+    The compute service URL is determined by the workspace's assigned server.
     """
 
-    def __init__(self, compute: ComputeClient | None = None) -> None:
-        self.compute = compute or compute_client
+    def __init__(self) -> None:
+        pass
+
+    async def _get_compute_client(self, workspace_id: str) -> ComputeClient:
+        """Get the compute client for a workspace based on its server's compute_service_url.
+
+        Args:
+            workspace_id: The workspace ID.
+
+        Returns:
+            A ComputeClient configured for the workspace's compute service.
+
+        Raises:
+            ValueError: If the workspace has no server assigned or no compute_service_url.
+        """
+        async with get_db_context() as db:
+            result = await db.execute(
+                select(Workspace)
+                .options(selectinload(Workspace.server))
+                .where(Workspace.id == workspace_id)
+            )
+            workspace = result.scalar_one_or_none()
+
+            if not workspace:
+                msg = f"Workspace {workspace_id} not found"
+                raise ValueError(msg)
+
+            if not workspace.server:
+                msg = f"Workspace {workspace_id} has no server assigned"
+                raise ValueError(msg)
+
+            if not workspace.server.compute_service_url:
+                msg = f"Server {workspace.server.id} has no compute_service_url configured"
+                raise ValueError(msg)
+
+            return ComputeClient(workspace.server.compute_service_url)
 
     async def _get_local_pod_id(self, workspace_id: str) -> str | None:
         """Get the local_pod_id for a workspace, if any."""
@@ -107,7 +144,8 @@ class WorkspaceRouter:
             )
             return result if isinstance(result, dict) else None
 
-        return await self.compute.get_workspace(workspace_id, user_id)
+        compute = await self._get_compute_client(workspace_id)
+        return await compute.get_workspace(workspace_id, user_id)
 
     async def update_workspace(
         self,
@@ -150,7 +188,8 @@ class WorkspaceRouter:
             )
             return
 
-        await self.compute.stop_workspace(workspace_id, user_id)
+        compute = await self._get_compute_client(workspace_id)
+        await compute.stop_workspace(workspace_id, user_id)
 
     async def restart_workspace(self, workspace_id: str, user_id: str) -> dict[str, Any]:
         """Restart a stopped/standby workspace."""
@@ -165,7 +204,8 @@ class WorkspaceRouter:
             )
             return result if isinstance(result, dict) else {}
 
-        return await self.compute.restart_workspace(workspace_id, user_id)
+        compute = await self._get_compute_client(workspace_id)
+        return await compute.restart_workspace(workspace_id, user_id)
 
     async def delete_workspace(self, workspace_id: str, user_id: str) -> None:
         """Delete a workspace."""
@@ -180,7 +220,8 @@ class WorkspaceRouter:
             )
             return
 
-        await self.compute.delete_workspace(workspace_id, user_id)
+        compute = await self._get_compute_client(workspace_id)
+        await compute.delete_workspace(workspace_id, user_id)
 
     async def heartbeat(self, workspace_id: str, user_id: str) -> None:
         """Send heartbeat to keep workspace alive."""
@@ -195,7 +236,8 @@ class WorkspaceRouter:
             )
             return
 
-        await self.compute.heartbeat(workspace_id, user_id)
+        compute = await self._get_compute_client(workspace_id)
+        await compute.heartbeat(workspace_id, user_id)
 
     async def health_check_workspace(
         self,
@@ -233,7 +275,8 @@ class WorkspaceRouter:
                     "error": str(e)[:200],
                 }
 
-        return await self.compute.health_check_workspace(workspace_id, user_id, timeout_seconds)
+        compute = await self._get_compute_client(workspace_id)
+        return await compute.health_check_workspace(workspace_id, user_id, timeout_seconds)
 
     # ==================== File Operations ====================
 
@@ -257,7 +300,8 @@ class WorkspaceRouter:
             )
             return result if isinstance(result, list) else []
 
-        return await self.compute.list_files(workspace_id, user_id, path)
+        compute = await self._get_compute_client(workspace_id)
+        return await compute.list_files(workspace_id, user_id, path)
 
     async def read_file(
         self,
@@ -282,7 +326,8 @@ class WorkspaceRouter:
             # Normalize response format
             return {"path": path, "content": str(result) if result else ""}
 
-        return await self.compute.read_file(workspace_id, user_id, path)
+        compute = await self._get_compute_client(workspace_id)
+        return await compute.read_file(workspace_id, user_id, path)
 
     async def write_file(
         self,
@@ -310,7 +355,8 @@ class WorkspaceRouter:
             )
             return
 
-        await self.compute.write_file(workspace_id, user_id, path, content)
+        compute = await self._get_compute_client(workspace_id)
+        await compute.write_file(workspace_id, user_id, path, content)
 
     async def delete_file(
         self,
@@ -337,7 +383,8 @@ class WorkspaceRouter:
             )
             return
 
-        await self.compute.delete_file(workspace_id, user_id, path)
+        compute = await self._get_compute_client(workspace_id)
+        await compute.delete_file(workspace_id, user_id, path)
 
     # ==================== Command Execution ====================
 
@@ -372,9 +419,8 @@ class WorkspaceRouter:
                 "stderr": "",
             }
 
-        return await self.compute.exec_command(
-            workspace_id, user_id, command, working_dir, exec_timeout
-        )
+        compute = await self._get_compute_client(workspace_id)
+        return await compute.exec_command(workspace_id, user_id, command, working_dir, exec_timeout)
 
     async def exec_command_stream(
         self,
@@ -401,7 +447,8 @@ class WorkspaceRouter:
                 yield result.get("stderr", "")
             return
 
-        async for chunk in self.compute.exec_command_stream(
+        compute = await self._get_compute_client(workspace_id)
+        async for chunk in compute.exec_command_stream(
             workspace_id, user_id, command, working_dir, exec_timeout
         ):
             yield chunk
@@ -424,7 +471,7 @@ class WorkspaceRouter:
             "git status --porcelain -b",
             working_dir=actual_working_dir,
         )
-        status = self.compute._parse_git_status(result.get("stdout", ""))
+        status = ComputeClient._parse_git_status(result.get("stdout", ""))
 
         # Include the actual working directory used
         status["working_dir"] = actual_working_dir
@@ -444,7 +491,7 @@ class WorkspaceRouter:
             "git branch -a --format='%(refname:short)|%(objectname:short)|%(HEAD)'",
             working_dir=actual_working_dir,
         )
-        return self.compute._parse_git_branches(result.get("stdout", ""))
+        return ComputeClient._parse_git_branches(result.get("stdout", ""))
 
     async def git_log(
         self,
@@ -461,7 +508,7 @@ class WorkspaceRouter:
             f"git log --format='%H|%h|%s|%an|%aI' -n {limit}",
             working_dir=actual_working_dir,
         )
-        return self.compute._parse_git_log(result.get("stdout", ""))
+        return ComputeClient._parse_git_log(result.get("stdout", ""))
 
     async def git_diff(
         self,
@@ -482,12 +529,12 @@ class WorkspaceRouter:
             f"git diff {flag} --numstat",
             working_dir=actual_working_dir,
         )
-        files = self.compute._parse_git_diff(result.get("stdout", ""))
+        files = ComputeClient._parse_git_diff(result.get("stdout", ""))
 
         # Then get actual diff content for each file
         for file_info in files:
             file_path = file_info["path"]
-            escaped_path = self.compute._escape_shell_arg(file_path)
+            escaped_path = ComputeClient._escape_shell_arg(file_path)
             diff_result = await self.exec_command(
                 workspace_id,
                 user_id,
@@ -507,7 +554,7 @@ class WorkspaceRouter:
     ) -> None:
         """Stage files for commit."""
         actual_working_dir = await self._resolve_working_dir(workspace_id, user_id, working_dir)
-        escaped_files = [self.compute._escape_shell_arg(f) for f in files]
+        escaped_files = [ComputeClient._escape_shell_arg(f) for f in files]
         files_str = " ".join(escaped_files)
         await self.exec_command(
             workspace_id, user_id, f"git add -- {files_str}", working_dir=actual_working_dir
@@ -522,7 +569,7 @@ class WorkspaceRouter:
     ) -> None:
         """Unstage files."""
         actual_working_dir = await self._resolve_working_dir(workspace_id, user_id, working_dir)
-        escaped_files = [self.compute._escape_shell_arg(f) for f in files]
+        escaped_files = [ComputeClient._escape_shell_arg(f) for f in files]
         files_str = " ".join(escaped_files)
         await self.exec_command(
             workspace_id, user_id, f"git reset HEAD -- {files_str}", working_dir=actual_working_dir
@@ -537,7 +584,7 @@ class WorkspaceRouter:
     ) -> dict[str, str]:
         """Create a git commit."""
         actual_working_dir = await self._resolve_working_dir(workspace_id, user_id, working_dir)
-        safe_message = self.compute._escape_shell_arg(message)
+        safe_message = ComputeClient._escape_shell_arg(message)
         result = await self.exec_command(
             workspace_id,
             user_id,

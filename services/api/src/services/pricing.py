@@ -275,7 +275,7 @@ def _normalize_model_id(model_id: str) -> str:
     """Normalize model ID for lookup.
 
     Handles common variations like:
-    - claude-opus-4-5-20251101 -> claude-opus-4-5
+    - claude-opus-4.5-20251101 -> claude-opus-4.5
     - claude-sonnet-4-20250514 -> claude-sonnet-4
 
     Args:

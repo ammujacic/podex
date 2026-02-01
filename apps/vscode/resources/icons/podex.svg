@@ -1,0 +1,8 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Podex logo - Px -->
+  <!-- Large P -->
+  <path d="M5 4H12C14.7614 4 17 6.23858 17 9C17 11.7614 14.7614 14 12 14H8V17H5V4Z" fill="currentColor" opacity="0.9"/>
+  <path d="M8 7H11.5C12.6046 7 13.5 7.89543 13.5 9C13.5 10.1046 12.6046 11 11.5 11H8V7Z" fill="var(--vscode-editor-background, #1e1e1e)"/>
+  <!-- Small x -->
+  <path d="M12 15L16 19M16 15L12 19" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+</svg>

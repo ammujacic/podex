@@ -283,6 +283,13 @@ export interface AdminWorkspaceServer {
   tls_cert_path: string | null;
   tls_key_path: string | null;
   tls_ca_path: string | null;
+  // Docker workspace images
+  workspace_image: string;
+  workspace_image_arm64: string | null;
+  workspace_image_amd64: string | null;
+  workspace_image_gpu: string | null;
+  // Compute service URL for multi-region routing
+  compute_service_url: string;
   created_at: string;
   last_heartbeat: string | null;
   is_healthy: boolean;
@@ -333,6 +340,13 @@ export interface CreateServerRequest {
   tls_cert_path?: string;
   tls_key_path?: string;
   tls_ca_path?: string;
+  // Docker workspace images
+  workspace_image?: string;
+  workspace_image_arm64?: string;
+  workspace_image_amd64?: string;
+  workspace_image_gpu?: string;
+  // Compute service URL for multi-region routing
+  compute_service_url?: string;
 }
 
 export interface TestServerConnectionRequest {
@@ -357,6 +371,30 @@ export interface TestServerConnectionResponse {
     cpus?: number;
   };
   error?: string;
+}
+
+export interface DockerImageInfo {
+  id: string;
+  tags: string[];
+  size_mb: number;
+  created: string | null;
+}
+
+export interface ServerImagesResponse {
+  server_id: string;
+  images: DockerImageInfo[];
+  total_count: number;
+  configured_image: string;
+  configured_image_arm64: string | null;
+  configured_image_amd64: string | null;
+  configured_image_gpu: string | null;
+}
+
+export interface PullImageResponse {
+  success: boolean;
+  message: string;
+  image: string;
+  server_id: string;
 }
 
 // ============================================================================
@@ -413,6 +451,10 @@ interface AdminState {
   // Per-server workspace details (keyed by server ID)
   serverWorkspaces: Record<string, ServerWorkspaceInfo[]>;
   serverWorkspacesLoading: Record<string, boolean>;
+  // Per-server Docker images (keyed by server ID)
+  serverImages: Record<string, ServerImagesResponse>;
+  serverImagesLoading: Record<string, boolean>;
+  imagePullLoading: Record<string, boolean>;
 
   // Error
   error: string | null;
@@ -493,6 +535,9 @@ interface AdminState {
   testServerConnection: (
     data: TestServerConnectionRequest
   ) => Promise<TestServerConnectionResponse>;
+  // Docker image management
+  fetchServerImages: (serverId: string) => Promise<ServerImagesResponse>;
+  pullServerImage: (serverId: string, image: string, tag?: string) => Promise<PullImageResponse>;
   clearError: () => void;
 }
 
@@ -533,6 +578,9 @@ export const useAdminStore = create<AdminState>()(
       clusterStatusLoading: false,
       serverWorkspaces: {},
       serverWorkspacesLoading: {},
+      serverImages: {},
+      serverImagesLoading: {},
+      imagePullLoading: {},
       error: null,
 
       // Actions
@@ -1010,6 +1058,57 @@ export const useAdminStore = create<AdminState>()(
         }
       },
 
+      // Docker image management
+      fetchServerImages: async (serverId: string): Promise<ServerImagesResponse> => {
+        set((state) => ({
+          serverImagesLoading: { ...state.serverImagesLoading, [serverId]: true },
+          error: null,
+        }));
+        try {
+          const response = await api.get<ServerImagesResponse>(`/api/servers/${serverId}/images`);
+          set((state) => ({
+            serverImages: { ...state.serverImages, [serverId]: response },
+            serverImagesLoading: { ...state.serverImagesLoading, [serverId]: false },
+          }));
+          return response;
+        } catch (err) {
+          set((state) => ({
+            error: (err as Error).message,
+            serverImagesLoading: { ...state.serverImagesLoading, [serverId]: false },
+          }));
+          throw err;
+        }
+      },
+
+      pullServerImage: async (
+        serverId: string,
+        image: string,
+        tag: string = 'latest'
+      ): Promise<PullImageResponse> => {
+        set((state) => ({
+          imagePullLoading: { ...state.imagePullLoading, [serverId]: true },
+          error: null,
+        }));
+        try {
+          const response = await api.post<PullImageResponse>(
+            `/api/servers/${serverId}/images/pull`,
+            { image, tag }
+          );
+          set((state) => ({
+            imagePullLoading: { ...state.imagePullLoading, [serverId]: false },
+          }));
+          // Refresh images after pull
+          await get().fetchServerImages(serverId);
+          return response;
+        } catch (err) {
+          set((state) => ({
+            error: (err as Error).message,
+            imagePullLoading: { ...state.imagePullLoading, [serverId]: false },
+          }));
+          throw err;
+        }
+      },
+
       // User sponsorship and credits actions
       sponsorUser: async (userId: string, planId: string, reason?: string) => {
         set({ error: null });
@@ -1084,4 +1183,10 @@ export const useAdminServerWorkspaces = (serverId: string) =>
   useAdminStore((state) => state.serverWorkspaces[serverId] ?? []);
 export const useAdminServerWorkspacesLoading = (serverId: string) =>
   useAdminStore((state) => state.serverWorkspacesLoading[serverId] ?? false);
+export const useAdminServerImages = (serverId: string) =>
+  useAdminStore((state) => state.serverImages[serverId] ?? null);
+export const useAdminServerImagesLoading = (serverId: string) =>
+  useAdminStore((state) => state.serverImagesLoading[serverId] ?? false);
+export const useAdminImagePullLoading = (serverId: string) =>
+  useAdminStore((state) => state.imagePullLoading[serverId] ?? false);
 export const useAdminError = () => useAdminStore((state) => state.error);

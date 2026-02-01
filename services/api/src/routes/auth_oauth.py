@@ -17,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.cache import cache_delete, user_config_key
-from src.compute_client import compute_client
+from src.compute_client import get_compute_client_for_workspace
 from src.config import settings
 from src.database.connection import get_db
 from src.database.models import (
@@ -42,6 +42,7 @@ from src.middleware.rate_limit import (
 )
 from src.routes.auth import (
     _OAUTH2_TYPE_STR,
+    _create_device_session,
     _get_token_ttls,
     _should_return_tokens,
     create_access_token,
@@ -49,6 +50,7 @@ from src.routes.auth import (
     set_auth_cookies,
 )
 from src.routes.billing import sync_quotas_from_plan
+from src.services.token_blacklist import register_user_token
 
 logger = structlog.get_logger()
 
@@ -520,6 +522,7 @@ async def _update_workspaces_with_github_token(
 
             try:
                 workspace_id = session.workspace_id
+                compute = await get_compute_client_for_workspace(workspace_id)
 
                 # Export GITHUB_TOKEN in .zshrc and .bashrc
                 # First, check if it's already exported to avoid duplicates
@@ -532,16 +535,14 @@ async def _update_workspaces_with_github_token(
                     f'sh -c \'grep -q "GITHUB_TOKEN" ~/.bashrc 2>/dev/null || '
                     f'echo "{export_cmd}" >> ~/.bashrc\''
                 )
-                await compute_client.exec_command(
-                    workspace_id, user_id, bashrc_cmd, exec_timeout=10
-                )
+                await compute.exec_command(workspace_id, user_id, bashrc_cmd, exec_timeout=10)
 
                 # Add to .zshrc if not already present
                 zshrc_cmd = (
                     f'sh -c \'grep -q "GITHUB_TOKEN" ~/.zshrc 2>/dev/null || '
                     f'echo "{export_cmd}" >> ~/.zshrc\''
                 )
-                await compute_client.exec_command(workspace_id, user_id, zshrc_cmd, exec_timeout=10)
+                await compute.exec_command(workspace_id, user_id, zshrc_cmd, exec_timeout=10)
 
                 # Set up git credential helper
                 credential_helper_script = """#!/bin/bash
@@ -555,7 +556,7 @@ fi
 
                 # Create credential helper script
                 script_path = "~/.local/bin/git-credential-github-token"
-                await compute_client.exec_command(
+                await compute.exec_command(
                     workspace_id,
                     user_id,
                     "mkdir -p ~/.local/bin",
@@ -568,7 +569,7 @@ fi
                     f"mkdir -p ~/.local/bin && cat > {script_path} << 'SCRIPT_EOF'\n"
                     f"{credential_helper_script}SCRIPT_EOF"
                 )
-                await compute_client.exec_command(
+                await compute.exec_command(
                     workspace_id,
                     user_id,
                     script_cmd,
@@ -576,7 +577,7 @@ fi
                 )
 
                 # Make it executable
-                await compute_client.exec_command(
+                await compute.exec_command(
                     workspace_id,
                     user_id,
                     f"chmod +x {script_path}",
@@ -588,7 +589,7 @@ fi
                     "git config --global credential.https://github.com.helper "
                     "'!~/.local/bin/git-credential-github-token'"
                 )
-                await compute_client.exec_command(
+                await compute.exec_command(
                     workspace_id,
                     user_id,
                     helper_cmd,
@@ -629,10 +630,11 @@ fi
         )
 
 
-def _build_token_response(
+async def _build_token_response(
     user: User,
     request: Request,
     response: Response,
+    db: AsyncSession,
 ) -> OAuthTokenResponse:
     """Build OAuth token response for authenticated user."""
     # Get user role from database
@@ -642,6 +644,16 @@ def _build_token_response(
     access_ttl, refresh_ttl = _get_token_ttls(return_tokens)
     access_token_info = create_access_token(user.id, role=user_role, expires_in_seconds=access_ttl)
     refresh_token_info = create_refresh_token(user.id, expires_in_seconds=refresh_ttl)
+
+    # Register tokens for bulk revocation support
+    await register_user_token(user.id, access_token_info.jti, access_token_info.expires_in_seconds)
+    await register_user_token(
+        user.id, refresh_token_info.jti, refresh_token_info.expires_in_seconds
+    )
+
+    # Create device session for tracking
+    await _create_device_session(db, user.id, refresh_token_info.jti, refresh_ttl, request)
+    await db.commit()
 
     # Set httpOnly cookies for authentication (same as login/register)
     set_auth_cookies(
@@ -930,7 +942,7 @@ async def github_callback_auto(
     )
 
     # Build token response
-    token_response = _build_token_response(user, request, response)
+    token_response = await _build_token_response(user, request, response, db)
 
     return GitHubUnifiedCallbackResponse(
         flow_type="login",
@@ -1163,7 +1175,7 @@ async def google_callback_auto(
     )
 
     # Build token response
-    token_response = _build_token_response(user, request, response)
+    token_response = await _build_token_response(user, request, response, db)
 
     return GoogleUnifiedCallbackResponse(
         flow_type="login",

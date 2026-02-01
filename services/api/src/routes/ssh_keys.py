@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -107,6 +107,7 @@ async def get_current_user(request: Request, db: AsyncSession) -> User:
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def list_ssh_keys(
     request: Request,
+    response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> SSHKeyListResponse:
     """List all SSH keys for the current user."""
@@ -132,6 +133,7 @@ async def list_ssh_keys(
 @limiter.limit(RATE_LIMIT_STANDARD)
 async def add_ssh_key(
     request: Request,
+    response: Response,  # noqa: ARG001
     body: SSHKeyCreate,
     db: DbSession,
 ) -> SSHKeyResponse:
@@ -181,6 +183,7 @@ async def add_ssh_key(
 async def delete_ssh_key(
     fingerprint: str,
     request: Request,
+    response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> None:
     """Delete an SSH key by fingerprint."""

@@ -25,6 +25,8 @@ import {
   Lock,
   Unlock,
   Settings,
+  Package,
+  Download,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -183,7 +185,17 @@ interface ServerCardProps {
 function ServerCard({ server, onDrain, onActivate, onDelete, onEdit }: ServerCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
-  const { serverWorkspaces, serverWorkspacesLoading, fetchServerWorkspaces } = useAdminStore();
+  const [showImages, setShowImages] = useState(false);
+  const {
+    serverWorkspaces,
+    serverWorkspacesLoading,
+    fetchServerWorkspaces,
+    serverImages,
+    serverImagesLoading,
+    imagePullLoading,
+    fetchServerImages,
+    pullServerImage,
+  } = useAdminStore();
 
   const workspaces = serverWorkspaces[server.id] ?? [];
   const isLoadingWorkspaces = serverWorkspacesLoading[server.id] ?? false;
@@ -195,6 +207,38 @@ function ServerCard({ server, onDrain, onActivate, onDelete, onEdit }: ServerCar
     // Lazy load workspaces when expanding for the first time
     if (newExpanded && !hasLoadedWorkspaces && server.active_workspaces > 0) {
       fetchServerWorkspaces(server.id);
+    }
+  };
+
+  // Docker images state
+  const images = serverImages[server.id];
+  const isLoadingImages = serverImagesLoading[server.id] ?? false;
+  const isPulling = imagePullLoading[server.id] ?? false;
+  const hasLoadedImages = server.id in serverImages;
+
+  const handleToggleImages = () => {
+    const newExpanded = !showImages;
+    setShowImages(newExpanded);
+    if (newExpanded && !hasLoadedImages) {
+      fetchServerImages(server.id);
+    }
+  };
+
+  // Check if a configured image is loaded on the server
+  const isImageLoaded = (imageName: string | null): boolean => {
+    if (!imageName || !images) return false;
+    return images.images.some((img) => img.tags.includes(imageName));
+  };
+
+  const handlePullImage = async (image: string) => {
+    // Parse image:tag format
+    const lastColonIndex = image.lastIndexOf(':');
+    const imageName = lastColonIndex > 0 ? image.slice(0, lastColonIndex) : image;
+    const tag = lastColonIndex > 0 ? image.slice(lastColonIndex + 1) : 'latest';
+    try {
+      await pullServerImage(server.id, imageName, tag);
+    } catch {
+      // Error handled in store
     }
   };
 
@@ -390,6 +434,15 @@ function ServerCard({ server, onDrain, onActivate, onDelete, onEdit }: ServerCar
                 <span className="text-text-muted">Port:</span>
                 <span className="ml-2 text-text-secondary font-mono">{server.docker_port}</span>
               </div>
+              <div className="col-span-2">
+                <span className="text-text-muted">Compute URL:</span>
+                <span
+                  className="ml-2 text-text-secondary font-mono text-[10px] break-all"
+                  title={server.compute_service_url}
+                >
+                  {server.compute_service_url}
+                </span>
+              </div>
               <div className="flex items-center gap-1">
                 <span className="text-text-muted">TLS:</span>
                 {server.tls_enabled ? (
@@ -427,6 +480,184 @@ function ServerCard({ server, onDrain, onActivate, onDelete, onEdit }: ServerCar
                 </div>
               </div>
             )}
+          </div>
+        )}
+      </div>
+
+      {/* Docker Images Section */}
+      <div className="mt-4 pt-4 border-t border-border-subtle">
+        <button
+          onClick={handleToggleImages}
+          className="text-xs font-medium text-text-muted cursor-pointer hover:text-text-primary flex items-center gap-1 w-full"
+        >
+          {showImages ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          <Package className="h-3 w-3 mr-1" />
+          Docker Images
+        </button>
+        {showImages && (
+          <div className="mt-3 space-y-3 text-xs bg-elevated/50 rounded-lg p-3">
+            {/* Configured Images */}
+            <div className="space-y-2">
+              <h4 className="text-text-muted font-medium">Configured Images</h4>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-text-muted">Default:</span>
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="font-mono text-text-secondary truncate max-w-[180px]"
+                      title={server.workspace_image}
+                    >
+                      {server.workspace_image}
+                    </span>
+                    {isPulling ? (
+                      <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
+                    ) : isImageLoaded(server.workspace_image) ? (
+                      <span title="Loaded">
+                        <Check className="h-3 w-3 text-green-500" />
+                      </span>
+                    ) : (
+                      <>
+                        <span title="Not loaded">
+                          <AlertTriangle className="h-3 w-3 text-yellow-500" />
+                        </span>
+                        <button
+                          onClick={() => handlePullImage(server.workspace_image)}
+                          disabled={isPulling}
+                          className="p-1 hover:bg-blue-500/10 rounded transition-colors disabled:opacity-50"
+                          title="Pull image"
+                        >
+                          <Download className="h-3 w-3 text-blue-500" />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+                {server.workspace_image_arm64 && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-text-muted">ARM64:</span>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="font-mono text-text-secondary truncate max-w-[180px]"
+                        title={server.workspace_image_arm64}
+                      >
+                        {server.workspace_image_arm64}
+                      </span>
+                      {isPulling ? (
+                        <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
+                      ) : isImageLoaded(server.workspace_image_arm64) ? (
+                        <span title="Loaded">
+                          <Check className="h-3 w-3 text-green-500" />
+                        </span>
+                      ) : (
+                        <>
+                          <span title="Not loaded">
+                            <AlertTriangle className="h-3 w-3 text-yellow-500" />
+                          </span>
+                          <button
+                            onClick={() => handlePullImage(server.workspace_image_arm64!)}
+                            disabled={isPulling}
+                            className="p-1 hover:bg-blue-500/10 rounded transition-colors disabled:opacity-50"
+                            title="Pull image"
+                          >
+                            <Download className="h-3 w-3 text-blue-500" />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {server.workspace_image_amd64 && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-text-muted">AMD64:</span>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="font-mono text-text-secondary truncate max-w-[180px]"
+                        title={server.workspace_image_amd64}
+                      >
+                        {server.workspace_image_amd64}
+                      </span>
+                      {isPulling ? (
+                        <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
+                      ) : isImageLoaded(server.workspace_image_amd64) ? (
+                        <span title="Loaded">
+                          <Check className="h-3 w-3 text-green-500" />
+                        </span>
+                      ) : (
+                        <>
+                          <span title="Not loaded">
+                            <AlertTriangle className="h-3 w-3 text-yellow-500" />
+                          </span>
+                          <button
+                            onClick={() => handlePullImage(server.workspace_image_amd64!)}
+                            disabled={isPulling}
+                            className="p-1 hover:bg-blue-500/10 rounded transition-colors disabled:opacity-50"
+                            title="Pull image"
+                          >
+                            <Download className="h-3 w-3 text-blue-500" />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {server.workspace_image_gpu && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-text-muted">GPU:</span>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="font-mono text-text-secondary truncate max-w-[180px]"
+                        title={server.workspace_image_gpu}
+                      >
+                        {server.workspace_image_gpu}
+                      </span>
+                      {isPulling ? (
+                        <Loader2 className="h-3 w-3 animate-spin text-blue-500" />
+                      ) : isImageLoaded(server.workspace_image_gpu) ? (
+                        <span title="Loaded">
+                          <Check className="h-3 w-3 text-green-500" />
+                        </span>
+                      ) : (
+                        <>
+                          <span title="Not loaded">
+                            <AlertTriangle className="h-3 w-3 text-yellow-500" />
+                          </span>
+                          <button
+                            onClick={() => handlePullImage(server.workspace_image_gpu!)}
+                            disabled={isPulling}
+                            className="p-1 hover:bg-blue-500/10 rounded transition-colors disabled:opacity-50"
+                            title="Pull image"
+                          >
+                            <Download className="h-3 w-3 text-blue-500" />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* All Images on Server */}
+            {isLoadingImages ? (
+              <div className="flex items-center justify-center py-2">
+                <Loader2 className="h-4 w-4 animate-spin text-text-muted" />
+                <span className="ml-2 text-text-muted">Loading images...</span>
+              </div>
+            ) : images && images.images.length > 0 ? (
+              <div className="space-y-2">
+                <h4 className="text-text-muted font-medium">All Images ({images.total_count})</h4>
+                <div className="max-h-32 overflow-y-auto space-y-1">
+                  {images.images.map((img) => (
+                    <div key={img.id} className="flex items-center justify-between text-[10px]">
+                      <span className="font-mono text-text-secondary truncate max-w-[180px]">
+                        {img.tags[0] || img.id}
+                      </span>
+                      <span className="text-text-muted">{img.size_mb} MB</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
         )}
       </div>
@@ -504,6 +735,11 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
     tls_cert_path: '',
     tls_key_path: '',
     tls_ca_path: '',
+    compute_service_url: 'http://compute:3003',
+    workspace_image: 'podex/workspace:latest',
+    workspace_image_arm64: '',
+    workspace_image_amd64: '',
+    workspace_image_gpu: '',
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
@@ -561,6 +797,11 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
         tls_cert_path: '',
         tls_key_path: '',
         tls_ca_path: '',
+        compute_service_url: 'http://compute:3003',
+        workspace_image: 'podex/workspace:latest',
+        workspace_image_arm64: '',
+        workspace_image_amd64: '',
+        workspace_image_gpu: '',
       });
       setTestResult(null);
     } finally {
@@ -729,6 +970,21 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
             </div>
           </div>
 
+          <div>
+            <label className="block text-sm text-text-secondary mb-1">Compute Service URL</label>
+            <input
+              type="url"
+              value={formData.compute_service_url || 'http://compute:3003'}
+              onChange={(e) => setFormData({ ...formData, compute_service_url: e.target.value })}
+              className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary font-mono text-sm"
+              placeholder="http://compute:3003"
+              required
+            />
+            <p className="text-xs text-text-muted mt-1">
+              URL of the regional compute service that manages this server
+            </p>
+          </div>
+
           {/* TLS Configuration */}
           <div className="border-t border-border-subtle pt-4">
             <label className="flex items-center gap-2 cursor-pointer">
@@ -895,6 +1151,67 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
             )}
           </div>
 
+          {/* Docker Images Configuration */}
+          <div className="border-t border-border-subtle pt-4">
+            <h3 className="text-sm font-medium text-text-primary mb-3 flex items-center gap-2">
+              <Package className="h-4 w-4" />
+              Workspace Images
+            </h3>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">
+                  Default Image <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={formData.workspace_image || ''}
+                  onChange={(e) => setFormData({ ...formData, workspace_image: e.target.value })}
+                  className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary font-mono text-sm"
+                  placeholder="podex/workspace:latest"
+                  required
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm text-text-secondary mb-1">ARM64 Image</label>
+                  <input
+                    type="text"
+                    value={formData.workspace_image_arm64 || ''}
+                    onChange={(e) =>
+                      setFormData({ ...formData, workspace_image_arm64: e.target.value })
+                    }
+                    className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary font-mono text-sm"
+                    placeholder="Optional"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-text-secondary mb-1">AMD64 Image</label>
+                  <input
+                    type="text"
+                    value={formData.workspace_image_amd64 || ''}
+                    onChange={(e) =>
+                      setFormData({ ...formData, workspace_image_amd64: e.target.value })
+                    }
+                    className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary font-mono text-sm"
+                    placeholder="Optional"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">GPU Image</label>
+                <input
+                  type="text"
+                  value={formData.workspace_image_gpu || ''}
+                  onChange={(e) =>
+                    setFormData({ ...formData, workspace_image_gpu: e.target.value })
+                  }
+                  className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary font-mono text-sm"
+                  placeholder="Optional - for GPU-enabled workspaces"
+                />
+              </div>
+            </div>
+          </div>
+
           <div className="flex justify-end gap-3 pt-4">
             <button
               type="button"
@@ -936,6 +1253,11 @@ function EditServerModal({ server, onClose, onSubmit }: EditServerModalProps) {
     tls_cert_path: '',
     tls_key_path: '',
     tls_ca_path: '',
+    compute_service_url: 'http://compute:3003',
+    workspace_image: 'podex/workspace:latest',
+    workspace_image_arm64: '',
+    workspace_image_amd64: '',
+    workspace_image_gpu: '',
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
@@ -955,6 +1277,11 @@ function EditServerModal({ server, onClose, onSubmit }: EditServerModalProps) {
         tls_cert_path: server.tls_cert_path || '',
         tls_key_path: server.tls_key_path || '',
         tls_ca_path: server.tls_ca_path || '',
+        compute_service_url: server.compute_service_url || 'http://compute:3003',
+        workspace_image: server.workspace_image || 'podex/workspace:latest',
+        workspace_image_arm64: server.workspace_image_arm64 || '',
+        workspace_image_amd64: server.workspace_image_amd64 || '',
+        workspace_image_gpu: server.workspace_image_gpu || '',
       });
       setTestResult(null);
     }
@@ -976,6 +1303,11 @@ function EditServerModal({ server, onClose, onSubmit }: EditServerModalProps) {
         tls_cert_path: formData.tls_cert_path || null,
         tls_key_path: formData.tls_key_path || null,
         tls_ca_path: formData.tls_ca_path || null,
+        compute_service_url: formData.compute_service_url,
+        workspace_image: formData.workspace_image,
+        workspace_image_arm64: formData.workspace_image_arm64 || null,
+        workspace_image_amd64: formData.workspace_image_amd64 || null,
+        workspace_image_gpu: formData.workspace_image_gpu || null,
       });
       onClose();
     } finally {
@@ -1122,6 +1454,21 @@ function EditServerModal({ server, onClose, onSubmit }: EditServerModalProps) {
             </div>
           </div>
 
+          <div>
+            <label className="block text-sm text-text-secondary mb-1">Compute Service URL</label>
+            <input
+              type="url"
+              value={formData.compute_service_url}
+              onChange={(e) => setFormData({ ...formData, compute_service_url: e.target.value })}
+              className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary font-mono text-sm"
+              placeholder="http://compute:3003"
+              required
+            />
+            <p className="text-xs text-text-muted mt-1">
+              URL of the regional compute service that manages this server
+            </p>
+          </div>
+
           {/* TLS Configuration */}
           <div className="border-t border-border-subtle pt-4">
             <label className="flex items-center gap-2 cursor-pointer">
@@ -1247,6 +1594,70 @@ function EditServerModal({ server, onClose, onSubmit }: EditServerModalProps) {
             </div>
           </div>
 
+          {/* Docker Images Configuration */}
+          <div className="border-t border-border-subtle pt-4">
+            <h3 className="text-sm font-medium text-text-primary mb-3 flex items-center gap-2">
+              <Package className="h-4 w-4" />
+              Workspace Images
+            </h3>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">
+                  Default Image <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={formData.workspace_image}
+                  onChange={(e) => setFormData({ ...formData, workspace_image: e.target.value })}
+                  className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary font-mono text-sm"
+                  placeholder="podex/workspace:latest"
+                  required
+                />
+                <p className="text-[10px] text-text-muted mt-1">
+                  Used when no architecture-specific image is set
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm text-text-secondary mb-1">ARM64 Image</label>
+                  <input
+                    type="text"
+                    value={formData.workspace_image_arm64}
+                    onChange={(e) =>
+                      setFormData({ ...formData, workspace_image_arm64: e.target.value })
+                    }
+                    className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary font-mono text-sm"
+                    placeholder="Optional"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-text-secondary mb-1">AMD64 Image</label>
+                  <input
+                    type="text"
+                    value={formData.workspace_image_amd64}
+                    onChange={(e) =>
+                      setFormData({ ...formData, workspace_image_amd64: e.target.value })
+                    }
+                    className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary font-mono text-sm"
+                    placeholder="Optional"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">GPU Image</label>
+                <input
+                  type="text"
+                  value={formData.workspace_image_gpu}
+                  onChange={(e) =>
+                    setFormData({ ...formData, workspace_image_gpu: e.target.value })
+                  }
+                  className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary font-mono text-sm"
+                  placeholder="Optional - for GPU-enabled workspaces"
+                />
+              </div>
+            </div>
+          </div>
+
           <div className="flex justify-end gap-3 pt-4">
             <button
               type="button"
@@ -1332,12 +1743,12 @@ export default function ServersManagement() {
     }
   };
 
-  const filteredServers = statusFilter
-    ? workspaceServers.filter((s) => s.status === statusFilter)
-    : workspaceServers;
+  const filteredServers = (
+    statusFilter ? workspaceServers.filter((s) => s.status === statusFilter) : workspaceServers
+  ).sort((a, b) => a.name.localeCompare(b.name));
 
   return (
-    <div className="p-8">
+    <div className="px-8 py-8">
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-semibold text-text-primary">Workspace Servers</h1>

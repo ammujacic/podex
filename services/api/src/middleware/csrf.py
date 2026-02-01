@@ -32,6 +32,8 @@ STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 CSRF_EXEMPT_PATHS = {
     "/api/v1/auth/device/code",  # Device auth initiation (no creds yet)
     "/api/v1/auth/device/token",  # Device auth token polling (uses device_code secret)
+    "/api/auth/device/code",  # Device auth initiation (no creds yet)
+    "/api/auth/device/token",  # Device auth token polling (uses device_code secret)
 }
 
 

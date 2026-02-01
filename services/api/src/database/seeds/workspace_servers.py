@@ -4,6 +4,9 @@ These servers are only seeded in development mode to support
 the Docker-in-Docker (DinD) workspace infrastructure.
 """
 
+# Default workspace image used for all servers
+DEFAULT_WORKSPACE_IMAGE = "ghcr.io/mujacica/workspace:latest"
+
 # Local development workspace servers matching docker-compose.yml
 # Note: id uses hostname for consistency with compute service config
 DEV_WORKSPACE_SERVERS = [
@@ -21,11 +24,18 @@ DEV_WORKSPACE_SERVERS = [
         "architecture": "arm64",
         "region": "eu",
         "labels": {"zone": "eu-west-1a", "environment": "development"},
+        # Compute service URL for this server
+        "compute_service_url": "http://compute:3003",
         # TLS disabled for local development
         "tls_enabled": False,
         "tls_cert_path": None,
         "tls_key_path": None,
         "tls_ca_path": None,
+        # Workspace container images
+        "workspace_image": DEFAULT_WORKSPACE_IMAGE,
+        "workspace_image_arm64": None,
+        "workspace_image_amd64": None,
+        "workspace_image_gpu": None,
     },
     {
         "id": "ws-local-2",  # Matches compute service server_id
@@ -41,10 +51,17 @@ DEV_WORKSPACE_SERVERS = [
         "architecture": "arm64",
         "region": "eu",
         "labels": {"zone": "eu-west-1b", "environment": "development"},
+        # Compute service URL for this server
+        "compute_service_url": "http://compute:3003",
         # TLS disabled for local development
         "tls_enabled": False,
         "tls_cert_path": None,
         "tls_key_path": None,
         "tls_ca_path": None,
+        # Workspace container images
+        "workspace_image": DEFAULT_WORKSPACE_IMAGE,
+        "workspace_image_arm64": None,
+        "workspace_image_amd64": None,
+        "workspace_image_gpu": None,
     },
 ]

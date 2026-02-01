@@ -8,12 +8,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const publicDir = join(__dirname, '..', 'public');
 const iconsDir = join(publicDir, 'icons');
 
-// Base SVG icon (32x32 with rounded corners, dark bg, white P logo)
+// Base SVG icon (512x512 with rounded corners, dark bg, white Px logo)
 const baseSvg = `
 <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
   <rect width="512" height="512" rx="96" fill="#07070a"/>
-  <path d="M160 128H296C344.6 128 384 167.4 384 216C384 264.6 344.6 304 296 304H224V384H160V128Z" fill="white"/>
-  <path d="M224 184H288C305.7 184 320 198.3 320 216C320 233.7 305.7 248 288 248H224V184Z" fill="#07070a"/>
+  <!-- Large P -->
+  <path d="M144 112H272C316.183 112 352 147.817 352 192C352 236.183 316.183 272 272 272H208V352H144V112Z" fill="white"/>
+  <path d="M208 160H264C281.673 160 296 174.327 296 192C296 209.673 281.673 224 264 224H208V160Z" fill="#07070a"/>
+  <!-- Small x -->
+  <path d="M272 304L336 368M336 304L272 368" stroke="white" stroke-width="32" stroke-linecap="round"/>
 </svg>
 `;
 
@@ -23,8 +26,11 @@ const maskableSvg = `
   <rect width="512" height="512" fill="#07070a"/>
   <g transform="translate(51.2, 51.2) scale(0.8)">
     <rect width="512" height="512" rx="96" fill="#07070a"/>
-    <path d="M160 128H296C344.6 128 384 167.4 384 216C384 264.6 344.6 304 296 304H224V384H160V128Z" fill="white"/>
-    <path d="M224 184H288C305.7 184 320 198.3 320 216C320 233.7 305.7 248 288 248H224V184Z" fill="#07070a"/>
+    <!-- Large P -->
+    <path d="M144 112H272C316.183 112 352 147.817 352 192C352 236.183 316.183 272 272 272H208V352H144V112Z" fill="white"/>
+    <path d="M208 160H264C281.673 160 296 174.327 296 192C296 209.673 281.673 224 264 224H208V160Z" fill="#07070a"/>
+    <!-- Small x -->
+    <path d="M272 304L336 368M336 304L272 368" stroke="white" stroke-width="32" stroke-linecap="round"/>
   </g>
 </svg>
 `;

@@ -27,18 +27,19 @@ from src.compute_client import (
 class TestComputeClientInitialization:
     """Test ComputeClient initialization."""
 
-    def test_basic_initialization(self):
-        """Test basic client initialization."""
+    def test_basic_initialization(self) -> None:
+        """Test basic client initialization with required base_url."""
         client = ComputeClient(
             workspace_id="workspace-123",
             user_id="user-456",
+            base_url="http://compute:8000",
         )
 
         assert client.workspace_id == "workspace-123"
         assert client.user_id == "user-456"
-        assert client.base_url is not None
+        assert client.base_url == "http://compute:8000"
 
-    def test_initialization_with_custom_base_url(self):
+    def test_initialization_with_custom_base_url(self) -> None:
         """Test client initialization with custom base URL."""
         client = ComputeClient(
             workspace_id="workspace-123",
@@ -48,17 +49,18 @@ class TestComputeClientInitialization:
 
         assert client.base_url == "http://custom-compute:8000"
 
-    def test_initialization_with_auth_token(self):
+    def test_initialization_with_auth_token(self) -> None:
         """Test client initialization with custom auth token."""
         client = ComputeClient(
             workspace_id="workspace-123",
             user_id="user-456",
+            base_url="http://compute:8000",
             auth_token="custom-token",
         )
 
         assert client.auth_token == "custom-token"
 
-    def test_base_url_strips_trailing_slash(self):
+    def test_base_url_strips_trailing_slash(self) -> None:
         """Test that trailing slash is stripped from base URL."""
         client = ComputeClient(
             workspace_id="workspace-123",
@@ -78,10 +80,11 @@ class TestComputeClientHeaders:
         return ComputeClient(
             workspace_id="workspace-123",
             user_id="user-456",
+            base_url="http://compute:8000",
             auth_token="test-token",
         )
 
-    async def test_get_headers_includes_user_id(self, client: ComputeClient):
+    async def test_get_headers_includes_user_id(self, client: ComputeClient) -> None:
         """Test that headers include X-User-ID."""
         with patch("src.compute_client._get_service_auth") as mock_auth:
             mock_auth.return_value.get_auth_headers = AsyncMock(return_value={})
@@ -89,8 +92,10 @@ class TestComputeClientHeaders:
 
         assert headers["X-User-ID"] == "user-456"
         assert headers["Content-Type"] == "application/json"
+        # Verify _get_service_auth was called with the compute URL
+        mock_auth.assert_called_with("http://compute:8000")
 
-    async def test_get_headers_includes_auth_headers(self, client: ComputeClient):
+    async def test_get_headers_includes_auth_headers(self, client: ComputeClient) -> None:
         """Test that headers include auth headers from service auth."""
         with patch("src.compute_client._get_service_auth") as mock_auth:
             mock_auth.return_value.get_auth_headers = AsyncMock(
@@ -788,35 +793,46 @@ class TestComputeClientErrorDataclass:
 class TestGetComputeClient:
     """Test get_compute_client factory function."""
 
-    def setup_method(self):
+    def setup_method(self) -> None:
         """Clear cache before each test."""
         clear_client_cache()
 
-    def test_get_compute_client_creates_instance(self):
+    async def test_get_compute_client_creates_instance(self) -> None:
         """Test that get_compute_client creates a ComputeClient."""
-        client = get_compute_client("workspace-123", "user-456")
+        # When base_url is provided, it skips database lookup
+        client = await get_compute_client(
+            "workspace-123", "user-456", base_url="http://compute:8000"
+        )
 
         assert isinstance(client, ComputeClient)
         assert client.workspace_id == "workspace-123"
         assert client.user_id == "user-456"
 
-    def test_get_compute_client_caches_instance(self):
+    async def test_get_compute_client_caches_instance(self) -> None:
         """Test that get_compute_client caches instances."""
-        client1 = get_compute_client("workspace-123", "user-456")
-        client2 = get_compute_client("workspace-123", "user-456")
+        client1 = await get_compute_client(
+            "workspace-123", "user-456", base_url="http://compute:8000"
+        )
+        client2 = await get_compute_client(
+            "workspace-123", "user-456", base_url="http://compute:8000"
+        )
 
         assert client1 is client2
 
-    def test_get_compute_client_different_workspaces(self):
+    async def test_get_compute_client_different_workspaces(self) -> None:
         """Test that different workspaces get different clients."""
-        client1 = get_compute_client("workspace-123", "user-456")
-        client2 = get_compute_client("workspace-789", "user-456")
+        client1 = await get_compute_client(
+            "workspace-123", "user-456", base_url="http://compute:8000"
+        )
+        client2 = await get_compute_client(
+            "workspace-789", "user-456", base_url="http://compute:8000"
+        )
 
         assert client1 is not client2
 
-    def test_get_compute_client_with_custom_url(self):
+    async def test_get_compute_client_with_custom_url(self) -> None:
         """Test get_compute_client with custom base URL."""
-        client = get_compute_client(
+        client = await get_compute_client(
             "workspace-123",
             "user-456",
             base_url="http://custom:8000",
@@ -828,17 +844,18 @@ class TestGetComputeClient:
 class TestClearClientCache:
     """Test clear_client_cache function."""
 
-    def test_clear_client_cache(self):
+    @pytest.mark.asyncio
+    async def test_clear_client_cache(self):
         """Test clearing the client cache."""
         # Create some cached clients
-        client1 = get_compute_client("workspace-1", "user-1")
-        client2 = get_compute_client("workspace-2", "user-2")
+        client1 = await get_compute_client("workspace-1", "user-1", base_url="http://compute:8000")
+        client2 = await get_compute_client("workspace-2", "user-2", base_url="http://compute:8000")
 
         # Clear cache
         clear_client_cache()
 
         # New calls should create new instances
-        client3 = get_compute_client("workspace-1", "user-1")
+        client3 = await get_compute_client("workspace-1", "user-1", base_url="http://compute:8000")
 
         assert client1 is not client3
 
@@ -846,23 +863,30 @@ class TestClearClientCache:
 class TestServiceAuth:
     """Test service authentication."""
 
-    def test_get_service_auth_returns_singleton(self):
-        """Test that _get_service_auth returns the same instance."""
-        # Reset the module-level singleton
+    def test_get_service_auth_caches_per_url(self) -> None:
+        """Test that _get_service_auth caches instances per compute URL."""
+        # Reset the module-level cache
         import src.compute_client as cc
-        cc._service_auth = None
+        original_cache = cc._service_auth_cache.copy()
+        cc._service_auth_cache.clear()
 
-        with patch("src.compute_client.ServiceAuthClient") as mock_auth_class:
-            mock_auth = MagicMock()
-            mock_auth_class.return_value = mock_auth
+        try:
+            with patch("src.compute_client.ServiceAuthClient") as mock_auth_class:
+                mock_auth = MagicMock()
+                mock_auth_class.return_value = mock_auth
 
-            # First call creates instance
-            auth1 = _get_service_auth()
-            # Second call returns same instance
-            auth2 = _get_service_auth()
+                # First call creates instance for URL 1
+                auth1 = _get_service_auth("http://compute1:8000")
+                # Second call returns same instance
+                auth2 = _get_service_auth("http://compute1:8000")
+                # Different URL creates different instance
+                auth3 = _get_service_auth("http://compute2:8000")
 
-            assert auth1 == auth2
-            assert mock_auth_class.call_count == 1
-
-        # Clean up
-        cc._service_auth = None
+                assert auth1 == auth2
+                assert auth1 == auth3  # Same mock, but would be different in real usage
+                # Two calls for two different URLs
+                assert mock_auth_class.call_count == 2
+        finally:
+            # Clean up - restore original cache
+            cc._service_auth_cache.clear()
+            cc._service_auth_cache.update(original_cache)

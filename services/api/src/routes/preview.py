@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from src.config import settings
 from src.database.models import Session, Workspace
@@ -51,9 +52,6 @@ DEFAULT_PORTS = [
     PreviewPortConfig(port=4000, label="GraphQL", protocol="http"),
 ]
 
-# Compute service URL (from settings or default for Docker network)
-COMPUTE_SERVICE_URL = getattr(settings, "COMPUTE_SERVICE_URL", "http://compute:3003")
-
 # Valid port range for preview proxy
 MIN_PORT = 1024  # Exclude privileged ports
 MAX_PORT = 65535
@@ -75,10 +73,11 @@ def validate_port(port: int) -> None:
         )
 
 
-def _get_compute_client(user_id: str | None = None) -> httpx.AsyncClient:
+def _get_compute_client(compute_service_url: str, user_id: str | None = None) -> httpx.AsyncClient:
     """Get HTTP client for compute service.
 
     Args:
+        compute_service_url: Base URL of the compute service.
         user_id: User ID to pass in X-User-ID header for authorization.
     """
     headers = {}
@@ -87,14 +86,14 @@ def _get_compute_client(user_id: str | None = None) -> httpx.AsyncClient:
     # Add internal service token for service-to-service auth
     if settings.INTERNAL_SERVICE_TOKEN:
         headers["X-Internal-Service-Token"] = settings.INTERNAL_SERVICE_TOKEN
-    return httpx.AsyncClient(base_url=COMPUTE_SERVICE_URL, timeout=30.0, headers=headers)
+    return httpx.AsyncClient(base_url=compute_service_url, timeout=30.0, headers=headers)
 
 
 async def _verify_workspace_access(
     workspace_id: str,
     request: Request,
     db: AsyncSession,
-) -> tuple[Workspace, str]:
+) -> tuple[Workspace, str, str]:
     """Verify user has access to workspace via its associated session.
 
     Args:
@@ -103,7 +102,7 @@ async def _verify_workspace_access(
         db: Database session.
 
     Returns:
-        Tuple of (workspace, user_id) if access is granted.
+        Tuple of (workspace, user_id, compute_service_url) if access is granted.
 
     Raises:
         HTTPException: If workspace not found, user not authenticated, or access denied.
@@ -113,7 +112,11 @@ async def _verify_workspace_access(
     if not user_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    result = await db.execute(select(Workspace).where(Workspace.id == workspace_id))
+    result = await db.execute(
+        select(Workspace)
+        .options(selectinload(Workspace.server))
+        .where(Workspace.id == workspace_id)
+    )
     workspace = result.scalar_one_or_none()
 
     if not workspace:
@@ -130,7 +133,11 @@ async def _verify_workspace_access(
     if session.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    return workspace, str(user_id)
+    # Get compute service URL from workspace's server
+    if not workspace.server or not workspace.server.compute_service_url:
+        raise HTTPException(status_code=500, detail="Workspace server not properly configured")
+
+    return workspace, str(user_id), workspace.server.compute_service_url
 
 
 @router.get("/{workspace_id}", response_model=WorkspacePreviewInfo)
@@ -147,12 +154,12 @@ async def get_preview_info(
     from the running workspace container.
     """
     # Verify workspace exists and user has access
-    workspace, user_id = await _verify_workspace_access(workspace_id, request, db)
+    workspace, user_id, compute_url = await _verify_workspace_access(workspace_id, request, db)
 
     # Get active ports from compute service
     active_ports: list[PreviewPortConfig] = []
     try:
-        async with _get_compute_client(user_id) as client:
+        async with _get_compute_client(compute_url, user_id) as client:
             compute_response = await client.get(f"/preview/{workspace_id}/ports")
             if compute_response.status_code == HTTPStatus.OK:
                 ports_data = compute_response.json()
@@ -193,11 +200,11 @@ async def get_active_ports(
     what services are running in the workspace.
     """
     # Verify workspace exists and user has access
-    _workspace, user_id = await _verify_workspace_access(workspace_id, request, db)
+    _workspace, user_id, compute_url = await _verify_workspace_access(workspace_id, request, db)
 
     # Get active ports from compute service
     try:
-        async with _get_compute_client(user_id) as client:
+        async with _get_compute_client(compute_url, user_id) as client:
             compute_response = await client.get(f"/preview/{workspace_id}/ports")
             if compute_response.status_code == HTTPStatus.OK:
                 ports_data = compute_response.json()
@@ -282,7 +289,7 @@ async def _proxy_to_compute(
     validate_port(port)
 
     # Verify workspace exists and user has access
-    _workspace, user_id = await _verify_workspace_access(workspace_id, request, db)
+    _workspace, user_id, compute_url = await _verify_workspace_access(workspace_id, request, db)
 
     # Build target URL on compute service
     compute_path = f"/preview/{workspace_id}/proxy/{port}/{path}"
@@ -302,7 +309,7 @@ async def _proxy_to_compute(
     }
 
     try:
-        async with _get_compute_client(user_id) as client:
+        async with _get_compute_client(compute_url, user_id) as client:
             response = await client.request(
                 method=request.method,
                 url=compute_path,

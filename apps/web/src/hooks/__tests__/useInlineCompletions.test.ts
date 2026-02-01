@@ -17,7 +17,7 @@ vi.mock('@/lib/editor/inlineCompletions', () => ({
 const mockEditorSettings = {
   completionsEnabled: true,
   completionsDebounceMs: 300,
-  aiActionModel: 'claude-sonnet-4-5-20250929',
+  aiActionModel: 'claude-sonnet-4.5-20250929',
 };
 
 const mockUpdateSettings = vi.fn();
@@ -54,7 +54,7 @@ describe('useInlineCompletions', () => {
     mockMonaco = createMockMonaco();
     mockEditorSettings.completionsEnabled = true;
     mockEditorSettings.completionsDebounceMs = 300;
-    mockEditorSettings.aiActionModel = 'claude-sonnet-4-5-20250929';
+    mockEditorSettings.aiActionModel = 'claude-sonnet-4.5-20250929';
   });
 
   afterEach(() => {
@@ -98,7 +98,7 @@ describe('useInlineCompletions', () => {
           debounceMs: 300,
           maxTokens: 256,
           minPrefixLength: 20,
-          model: 'claude-sonnet-4-5-20250929',
+          model: 'claude-sonnet-4.5-20250929',
         })
       );
     });
@@ -168,7 +168,7 @@ describe('useInlineCompletions', () => {
     });
 
     it('should pass aiActionModel from store', () => {
-      mockEditorSettings.aiActionModel = 'claude-opus-4-5-20251101';
+      mockEditorSettings.aiActionModel = 'claude-opus-4.5-20251101';
 
       renderHook(() =>
         useInlineCompletions({
@@ -179,7 +179,7 @@ describe('useInlineCompletions', () => {
       expect(inlineCompletions.registerInlineCompletionsProvider).toHaveBeenCalledWith(
         mockMonaco,
         expect.objectContaining({
-          model: 'claude-opus-4-5-20251101',
+          model: 'claude-opus-4.5-20251101',
         })
       );
     });
@@ -550,12 +550,12 @@ describe('useInlineCompletions', () => {
             monaco: mockMonaco as unknown as Parameters<typeof useInlineCompletions>[0]['monaco'],
           });
         },
-        { initialProps: { model: 'claude-sonnet-4-5-20250929' } }
+        { initialProps: { model: 'claude-sonnet-4.5-20250929' } }
       );
 
       expect(inlineCompletions.registerInlineCompletionsProvider).toHaveBeenCalledTimes(1);
 
-      rerender({ model: 'claude-opus-4-5-20251101' });
+      rerender({ model: 'claude-opus-4.5-20251101' });
 
       expect(inlineCompletions.registerInlineCompletionsProvider).toHaveBeenCalledTimes(2);
     });

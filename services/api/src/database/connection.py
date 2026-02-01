@@ -348,10 +348,11 @@ async def seed_database() -> None:
 
             # Seed agent tools (must come before agent roles since roles reference tools)
             for tool_data in DEFAULT_AGENT_TOOLS:
-                result = await db.execute(
+                tool_result = await db.execute(
                     select(AgentTool).where(AgentTool.name == tool_data["name"])
                 )
-                if not result.scalar_one_or_none():
+                existing_tool = tool_result.scalar_one_or_none()
+                if not existing_tool:
                     db.add(
                         AgentTool(
                             name=tool_data["name"],
@@ -361,9 +362,23 @@ async def seed_database() -> None:
                             sort_order=tool_data.get("sort_order", 0),
                             is_enabled=tool_data.get("is_enabled", True),
                             is_system=tool_data.get("is_system", True),
+                            # Permission flags for mode-based access control
+                            is_read_operation=tool_data.get("is_read_operation", True),
+                            is_write_operation=tool_data.get("is_write_operation", False),
+                            is_command_operation=tool_data.get("is_command_operation", False),
+                            is_deploy_operation=tool_data.get("is_deploy_operation", False),
                         )
                     )
                     totals["agent_tools"] += 1
+                elif existing_tool.is_system:
+                    # Update permission flags for existing system tools (fixes tools seeded
+                    # before permission flags were added)
+                    existing_tool.is_read_operation = tool_data.get("is_read_operation", True)
+                    existing_tool.is_write_operation = tool_data.get("is_write_operation", False)
+                    existing_tool.is_command_operation = tool_data.get(
+                        "is_command_operation", False
+                    )
+                    existing_tool.is_deploy_operation = tool_data.get("is_deploy_operation", False)
 
             # Seed agent role configurations
             for role_data in DEFAULT_AGENT_ROLES:

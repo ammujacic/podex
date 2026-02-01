@@ -278,60 +278,6 @@ class TestMemoryTools:
 
 
 # ============================================================================
-# TASK TOOLS TESTS
-# ============================================================================
-
-
-class TestTaskTools:
-    """Tests for task management tools."""
-
-    @pytest.mark.asyncio
-    async def test_create_task_tool_exists(self) -> None:
-        """Test create_task tool exists."""
-        from src.tools.task_tools import create_task
-
-        assert create_task is not None
-        assert callable(create_task)
-
-    @pytest.mark.asyncio
-    async def test_complete_task_tool_exists(self) -> None:
-        """Test complete_task tool exists."""
-        from src.tools.task_tools import complete_task
-
-        assert complete_task is not None
-        assert callable(complete_task)
-
-    @pytest.mark.asyncio
-    async def test_get_task_tool_exists(self) -> None:
-        """Test get_task tool exists."""
-        from src.tools.task_tools import get_task
-
-        assert get_task is not None
-        assert callable(get_task)
-
-    @pytest.mark.asyncio
-    async def test_cancel_task_tool_exists(self) -> None:
-        """Test cancel_task tool exists."""
-        from src.tools.task_tools import cancel_task
-
-        assert cancel_task is not None
-        assert callable(cancel_task)
-
-    def test_task_config_dataclass(self) -> None:
-        """Test TaskConfig dataclass."""
-        from src.tools.task_tools import TaskConfig
-
-        config = TaskConfig(
-            session_id="session-123",
-            agent_role="coder",
-            description="A test task",
-        )
-        assert config.session_id == "session-123"
-        assert config.agent_role == "coder"
-        assert config.description == "A test task"
-
-
-# ============================================================================
 # VISION TOOLS TESTS
 # ============================================================================
 

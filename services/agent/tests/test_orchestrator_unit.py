@@ -397,7 +397,11 @@ class TestAgentOrchestratorAgentManagement:
             mode="ask",
         )
 
-        with patch("src.orchestrator.create_database_agent", new_callable=AsyncMock) as mock_create:
+        mock_config_reader = MagicMock()
+        mock_config_reader.get_special_agent_roles = AsyncMock(return_value={})
+
+        with patch("src.orchestrator.create_database_agent", new_callable=AsyncMock) as mock_create, \
+             patch("src.orchestrator.get_config_reader", return_value=mock_config_reader):
             mock_agent = MagicMock()
             mock_agent.session_id = "session-456"
             mock_create.return_value = mock_agent
@@ -420,7 +424,11 @@ class TestAgentOrchestratorAgentManagement:
             session_id="session-new",
         )
 
-        with patch("src.orchestrator.create_database_agent", new_callable=AsyncMock) as mock_create:
+        mock_config_reader = MagicMock()
+        mock_config_reader.get_special_agent_roles = AsyncMock(return_value={})
+
+        with patch("src.orchestrator.create_database_agent", new_callable=AsyncMock) as mock_create, \
+             patch("src.orchestrator.get_config_reader", return_value=mock_config_reader):
             mock_agent = MagicMock()
             mock_agent.session_id = "session-new"
             mock_create.return_value = mock_agent

@@ -88,43 +88,6 @@ class UserConfig(Base):
     )
 
 
-class UserHook(Base):
-    """User-defined hooks for agent lifecycle events."""
-
-    __tablename__ = "user_hooks"
-
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
-    user_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    hook_type: Mapped[str] = mapped_column(
-        String(50), nullable=False, index=True
-    )  # pre_tool_call, post_tool_call, pre_compact, session_start, subagent_stop
-    name: Mapped[str] = mapped_column(String(100), nullable=False)
-    description: Mapped[str | None] = mapped_column(Text)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    priority: Mapped[int] = mapped_column(
-        Integer, default=100, nullable=False
-    )  # Lower = runs first
-    config: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, nullable=False
-    )  # code, tool_name, tool_args, prompt_addition, filters
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
-
-
 class CustomCommand(Base):
     """User-defined custom commands (slash commands) for agents.
 

@@ -426,6 +426,45 @@ cli-test-all:
 	@echo "$(GREEN)All CLI tests complete!$(NC)"
 
 # ============================================
+# VSCODE EXTENSION
+# ============================================
+
+## Lint the VSCode extension
+vscode-lint:
+	@echo "$(CYAN)Linting VSCode extension...$(NC)"
+	cd apps/vscode && pnpm lint
+	@echo "$(GREEN)VSCode extension lint complete!$(NC)"
+
+## Build the VSCode extension
+vscode-build:
+	@echo "$(CYAN)Building VSCode extension...$(NC)"
+	cd apps/vscode && pnpm build
+	@echo "$(GREEN)VSCode extension built!$(NC)"
+
+## Run VSCode extension tests
+vscode-test:
+	@echo "$(CYAN)Running VSCode extension tests...$(NC)"
+	cd apps/vscode && pnpm test
+	@echo "$(GREEN)VSCode extension tests complete!$(NC)"
+
+## Run VSCode extension type check
+vscode-typecheck:
+	@echo "$(CYAN)Running VSCode extension type check...$(NC)"
+	cd apps/vscode && pnpm typecheck
+	@echo "$(GREEN)VSCode extension type check complete!$(NC)"
+
+## Package the VSCode extension (.vsix)
+vscode-package:
+	@echo "$(CYAN)Packaging VSCode extension...$(NC)"
+	cd apps/vscode && pnpm package
+	@echo "$(GREEN)VSCode extension packaged! See apps/vscode/*.vsix$(NC)"
+
+## Run VSCode extension in dev mode (watch)
+vscode-dev:
+	@echo "$(CYAN)Starting VSCode extension in development mode...$(NC)"
+	cd apps/vscode && pnpm dev
+
+# ============================================
 # SYNC
 # ============================================
 

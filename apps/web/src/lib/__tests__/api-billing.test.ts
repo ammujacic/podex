@@ -1677,8 +1677,8 @@ describe('API - Cost Insights', () => {
 
   describe('Model Comparison', () => {
     const mockComparison = {
-      current_model: 'claude-opus-4-5',
-      alternatives: [{ model: 'claude-sonnet-4-5' }],
+      current_model: 'claude-opus-4.5',
+      alternatives: [{ model: 'claude-sonnet-4.5' }],
     };
 
     it('should get model comparison', async () => {
@@ -2418,7 +2418,7 @@ describe('API - Admin Models', () => {
   const mockModels = [
     {
       id: 'model-1',
-      model_id: 'claude-opus-4-5',
+      model_id: 'claude-opus-4.5',
       display_name: 'Claude Opus 4.5',
       is_enabled: true,
     },
@@ -2472,7 +2472,7 @@ describe('API - Admin Models', () => {
     const result = await adminGetModel('model-1');
 
     expect(mockApiClient.get).toHaveBeenCalledWith('/api/admin/models/model-1');
-    expect(result.model_id).toBe('claude-opus-4-5');
+    expect(result.model_id).toBe('claude-opus-4.5');
   });
 
   it('should update admin model', async () => {
@@ -2496,7 +2496,7 @@ describe('API - Admin Models', () => {
   });
 
   it('should get agent defaults', async () => {
-    const defaults = { coder: { model_id: 'claude-opus-4-5' } };
+    const defaults = { coder: { model_id: 'claude-opus-4.5' } };
     mockApiClient.get.mockResolvedValue(defaults);
 
     const result = await adminGetAgentDefaults();
@@ -2506,13 +2506,13 @@ describe('API - Admin Models', () => {
   });
 
   it('should update agent defaults', async () => {
-    const updated = { coder: { model_id: 'claude-sonnet-4-5' } };
+    const updated = { coder: { model_id: 'claude-sonnet-4.5' } };
     mockApiClient.put.mockResolvedValue(updated);
 
-    const result = await adminUpdateAgentDefaults('coder', { model_id: 'claude-sonnet-4-5' });
+    const result = await adminUpdateAgentDefaults('coder', { model_id: 'claude-sonnet-4.5' });
 
     expect(mockApiClient.put).toHaveBeenCalledWith('/api/admin/models/agent-defaults/coder', {
-      model_id: 'claude-sonnet-4-5',
+      model_id: 'claude-sonnet-4.5',
     });
     expect(result).toEqual(updated);
   });

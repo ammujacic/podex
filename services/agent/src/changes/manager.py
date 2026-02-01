@@ -7,7 +7,7 @@ review, accept, or reject changes in bulk before they're applied.
 import difflib
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -82,7 +82,7 @@ class ChangeSet:
     agent_name: str
     description: str
     files: list[FileChange]
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     status: str = "pending"  # pending, applied, rejected
 
     @property

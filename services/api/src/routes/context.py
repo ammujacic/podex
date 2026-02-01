@@ -9,7 +9,6 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.agent_client import agent_client
 from src.database.models import (
     Agent,
     CompactionLog,
@@ -20,6 +19,7 @@ from src.database.models import (
 )
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 from src.routes.dependencies import DbSession, get_current_user_id
+from src.services.task_queue import get_compaction_task_queue
 from src.websocket.hub import emit_to_session
 
 logger = structlog.get_logger()
@@ -153,20 +153,29 @@ async def maybe_trigger_auto_compaction(
     )
 
     try:
-        # Call agent service to perform compaction
-        result = await agent_client._request(
-            "POST",
-            f"/agents/{agent.id}/compact",
-            json={
-                "custom_instructions": custom_instructions,
-                "preserve_recent_messages": preserve_recent,
-            },
+        # Enqueue compaction task to Redis queue
+        compaction_queue = get_compaction_task_queue()
+        task = await compaction_queue.enqueue(
+            agent_id=str(agent.id),
+            session_id=session_id,
+            custom_instructions=custom_instructions,
+            preserve_recent_messages=preserve_recent,
         )
 
-        tokens_after = result.get("tokens_after", tokens_used)
-        messages_removed = result.get("messages_removed", 0)
-        messages_preserved = result.get("messages_preserved", 0)
-        summary = result.get("summary")
+        # Wait for completion (worker processes and publishes result via pub/sub)
+        completed_task = await compaction_queue.wait_for_completion(
+            task.id,
+            timeout=120.0,  # 2 minutes max for compaction
+        )
+
+        if not completed_task or completed_task.status.value != "completed":
+            error_msg = completed_task.error if completed_task else "Compaction timed out"
+            raise RuntimeError(error_msg)  # noqa: TRY301
+
+        tokens_after = completed_task.tokens_after
+        messages_removed = completed_task.messages_removed
+        messages_preserved = completed_task.messages_preserved
+        summary = completed_task.summary
 
         # Update agent context usage
         agent.context_tokens_used = tokens_after
@@ -444,19 +453,29 @@ async def compact_agent_context(
         preserve_recent = settings.preserve_recent_messages if settings else 15
 
     try:
-        # Call agent service to perform compaction
-        result = await agent_client._request(
-            "POST",
-            f"/agents/{agent_id}/compact",
-            json={
-                "custom_instructions": compact_data.custom_instructions,
-                "preserve_recent_messages": preserve_recent,
-            },
+        # Enqueue compaction task to Redis queue
+        compaction_queue = get_compaction_task_queue()
+        task = await compaction_queue.enqueue(
+            agent_id=agent_id,
+            session_id=str(agent.session_id),
+            custom_instructions=compact_data.custom_instructions,
+            preserve_recent_messages=preserve_recent,
         )
 
-        tokens_after = result.get("tokens_after", tokens_before)
-        messages_removed = result.get("messages_removed", 0)
-        summary = result.get("summary")
+        # Wait for completion (worker processes and publishes result via pub/sub)
+        completed_task = await compaction_queue.wait_for_completion(
+            task.id,
+            timeout=120.0,  # 2 minutes max for compaction
+        )
+
+        if not completed_task or completed_task.status.value != "completed":
+            error_msg = completed_task.error if completed_task else "Compaction timed out"
+            raise RuntimeError(error_msg)  # noqa: TRY301
+
+        tokens_after = completed_task.tokens_after
+        messages_removed = completed_task.messages_removed
+        messages_preserved = completed_task.messages_preserved
+        summary = completed_task.summary
 
         # Update agent context usage
         agent.context_tokens_used = tokens_after
@@ -469,7 +488,7 @@ async def compact_agent_context(
             tokens_before=tokens_before,
             tokens_after=tokens_after,
             messages_removed=messages_removed,
-            messages_preserved=result.get("messages_preserved", 0),
+            messages_preserved=messages_preserved,
             summary_text=summary,
             trigger_type="manual",
         )

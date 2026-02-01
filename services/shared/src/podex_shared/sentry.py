@@ -167,7 +167,8 @@ def _get_sentry_processors() -> list[Any]:
                 sentry_sdk.capture_exception(exc_info[1] if isinstance(exc_info, tuple) else None)
             else:
                 # Capture as message with extra context
-                with sentry_sdk.push_scope() as scope:
+                # Use isolation_scope for isolation (new API replacing push_scope)
+                with sentry_sdk.isolation_scope() as scope:
                     for key, value in extra_data.items():
                         scope.set_extra(key, value)
                     sentry_sdk.capture_message(

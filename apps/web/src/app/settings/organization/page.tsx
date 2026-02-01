@@ -64,7 +64,7 @@ export default function OrganizationPage() {
   // Not in an organization - show create/join options
   if (!isInOrg) {
     return (
-      <div className="max-w-2xl mx-auto px-8 py-8">
+      <div className="max-w-4xl mx-auto px-8 py-8">
         <div className="mb-8">
           <h1 className="text-2xl font-semibold text-text-primary">Organization</h1>
           <p className="text-text-muted mt-1">

@@ -2,7 +2,7 @@
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,8 +22,8 @@ class WikiPage:
     source_files: list[str]
     category: str
     tags: list[str] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     auto_generated: bool = True
 
     def to_dict(self) -> dict[str, Any]:
@@ -489,7 +489,7 @@ This documentation was auto-generated from the codebase.
 
 ## Last Updated
 
-{datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")}
+{datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")}
 """
 
         return WikiPage(

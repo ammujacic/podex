@@ -208,7 +208,7 @@ class LLMProvider:
         """Extract Anthropic model ID from prefixed format.
 
         Args:
-            model: Model identifier (e.g., "anthropic-direct/claude-haiku-4-5")
+            model: Model identifier (e.g., "anthropic-direct/claude-haiku-4.5")
 
         Returns:
             Anthropic API model ID (part after slash, or original if no slash)
@@ -637,7 +637,7 @@ class LLMProvider:
         # Map model names if needed (Anthropic -> OpenAI equivalent)
         model_mapping = {
             "claude-sonnet-4-20250514": "gpt-4o",
-            "claude-opus-4-5-20251101": "gpt-4o",
+            "claude-opus-4.5-20251101": "gpt-4o",
             "claude-3-5-sonnet-20241022": "gpt-4o",
         }
         openai_model = model_mapping.get(model, model)
@@ -1026,7 +1026,7 @@ class LLMProvider:
         # Map model names if needed
         model_mapping = {
             "claude-sonnet-4-20250514": "gpt-4o",
-            "claude-opus-4-5-20251101": "gpt-4o",
+            "claude-opus-4.5-20251101": "gpt-4o",
             "claude-3-5-sonnet-20241022": "gpt-4o",
         }
         openai_model = model_mapping.get(model, model)

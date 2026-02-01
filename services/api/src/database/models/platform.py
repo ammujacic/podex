@@ -101,7 +101,7 @@ class LLMModel(Base):
     __tablename__ = "llm_models"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_generate_uuid)
-    # Unique model identifier (e.g., "claude-opus-4-5")
+    # Unique model identifier (e.g., "claude-opus-4.5")
     model_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     # User-friendly display name (e.g., "Claude Opus 4.5")
     display_name: Mapped[str] = mapped_column(String(100), nullable=False)

@@ -395,6 +395,7 @@ interface GitHubConnectionStatus {
 
 interface GitHubRepo {
   id: number;
+  name: string;
   full_name: string;
   private: boolean;
   html_url: string;
@@ -1799,8 +1800,12 @@ export default function NewSessionPage() {
                                 setGitUrl(selectedUrl);
                                 setUseCustomBranch(false);
                                 const repo = githubRepos.find((r) => r.html_url === selectedUrl);
-                                if (repo?.default_branch) {
-                                  setBranch(repo.default_branch);
+                                if (repo) {
+                                  if (repo.default_branch) {
+                                    setBranch(repo.default_branch);
+                                  }
+                                  // Auto-update project name to repo name
+                                  setSessionName(repo.name);
                                 }
                               }}
                               className="w-full px-3 py-2 bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:border-accent-primary"

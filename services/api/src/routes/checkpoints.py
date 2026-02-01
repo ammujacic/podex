@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from src.compute_client import compute_client
+from src.compute_client import get_compute_client_for_workspace
 from src.database.models import (
     FileCheckpoint,
 )
@@ -282,7 +282,8 @@ async def restore_checkpoint(
         raise HTTPException(status_code=400, detail="Session has no workspace")
 
     # Get workspace information from compute service
-    workspace_info = await compute_client.get_workspace(session.workspace_id, user_id)
+    compute = await get_compute_client_for_workspace(session.workspace_id)
+    workspace_info = await compute.get_workspace(session.workspace_id, user_id)
 
     if not workspace_info:
         raise HTTPException(status_code=404, detail="Workspace not found")

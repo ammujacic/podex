@@ -116,8 +116,8 @@ export const usePlanningStore = create<PlanningState>()(
       comparisonPlanIds: [],
       settings: {
         // Use Claude Opus 4.5 for planning and Sonnet 4.5 for execution by default
-        planningModel: 'claude-opus-4-5',
-        executionModel: 'claude-sonnet-4-5',
+        planningModel: 'claude-opus-4.5',
+        executionModel: 'claude-sonnet-4.5',
         parallelPlans: 3,
         backgroundPlanning: true,
         autoSelectSimplest: false,

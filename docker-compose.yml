@@ -33,7 +33,7 @@ services:
   # === SENTRY SPOTLIGHT (Local Dev Debugging) ===
   # Provides local UI for viewing Sentry events without sending to cloud
   spotlight:
-    image: getsentry/spotlight:latest
+    image: ghcr.io/getsentry/spotlight:latest
     container_name: spotlight
     ports:
       - "8969:8969"

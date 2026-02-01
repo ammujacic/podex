@@ -5,6 +5,9 @@ This module enables spawning isolated subagents that:
 - Return only summaries to the parent (not full context)
 - Can run in the background (non-blocking)
 - Support @ syntax invocation
+
+Subagent roles are defined in the database and synced to Redis.
+The ConfigReader is used to fetch role definitions including system prompts.
 """
 
 import asyncio
@@ -12,11 +15,13 @@ import re
 import uuid
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
 import structlog
+
+from src.config_reader import get_config_reader
 
 logger = structlog.get_logger()
 
@@ -29,17 +34,6 @@ class SubagentStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
-
-
-class SubagentType(str, Enum):
-    """Type of subagent specialization."""
-
-    RESEARCHER = "researcher"
-    CODER = "coder"
-    REVIEWER = "reviewer"
-    TESTER = "tester"
-    PLANNER = "planner"
-    CUSTOM = "custom"
 
 
 @dataclass
@@ -57,7 +51,7 @@ class SubagentContext:
             {
                 "role": role,
                 "content": content,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             }
         )
         # Estimate token count (rough approximation)
@@ -99,12 +93,12 @@ class Subagent:
     parent_agent_id: str
     session_id: str
     name: str
-    type: SubagentType
+    role: str  # Role name from database (loaded via ConfigReader)
     task: str
     context: SubagentContext
     status: SubagentStatus = SubagentStatus.PENDING
     background: bool = False
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     completed_at: datetime | None = None
     result_summary: str | None = None
     error: str | None = None
@@ -116,7 +110,7 @@ class Subagent:
             "parent_agent_id": self.parent_agent_id,
             "session_id": self.session_id,
             "name": self.name,
-            "type": self.type.value,
+            "role": self.role,
             "task": self.task,
             "status": self.status.value,
             "background": self.background,
@@ -130,8 +124,9 @@ class Subagent:
 
 # @ syntax pattern for invoking subagents
 # Matches: @researcher search for X, @coder implement Y, etc.
+# Role names are validated against Redis when spawning, not in the pattern.
 SUBAGENT_PATTERN = re.compile(
-    r"@(researcher|coder|reviewer|tester|planner|[\w]+)\s+(.+?)(?=@[\w]+\s|$)",
+    r"@([\w]+)\s+(.+?)(?=@[\w]+\s|$)",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -140,7 +135,8 @@ def parse_subagent_invocations(text: str) -> list[tuple[str, str]]:
     """
     Parse @ syntax invocations from text.
 
-    Returns list of (subagent_type, task) tuples.
+    Returns list of (role, task) tuples.
+    Role validation happens when spawning via ConfigReader.
     """
     matches = SUBAGENT_PATTERN.findall(text)
     return [(m[0].lower(), m[1].strip()) for m in matches]
@@ -178,7 +174,7 @@ class SubagentManager:
         self,
         parent_agent_id: str,
         session_id: str,
-        subagent_type: str,
+        role: str,
         task: str,
         background: bool = False,
         system_prompt: str | None = None,
@@ -189,16 +185,16 @@ class SubagentManager:
         Args:
             parent_agent_id: ID of the parent agent
             session_id: Current session ID
-            subagent_type: Type of subagent (researcher, coder, etc.)
+            role: Role name (must exist in database/Redis)
             task: The task to perform
             background: If True, run asynchronously
-            system_prompt: Optional custom system prompt
+            system_prompt: Optional custom system prompt (overrides role's prompt)
 
         Returns:
             The created Subagent instance
 
         Raises:
-            ValueError: If max concurrent subagents exceeded
+            ValueError: If max concurrent subagents exceeded or role not found
         """
         # Check concurrent limit
         active = self.get_active_subagents(parent_agent_id)
@@ -207,15 +203,26 @@ class SubagentManager:
                 f"Maximum {self.MAX_CONCURRENT_SUBAGENTS} concurrent subagents exceeded"
             )
 
-        # Map type string to enum
-        try:
-            agent_type = SubagentType(subagent_type.lower())
-        except ValueError:
-            agent_type = SubagentType.CUSTOM
+        # Validate role and get definition from Redis
+        config = get_config_reader()
+        role_name = role.lower()
 
-        # Create isolated context
+        if not await config.is_delegatable_role(role_name):
+            delegatable = await config.get_delegatable_roles()
+            valid_roles = [r["role"] for r in delegatable]
+            raise ValueError(
+                f"Role '{role_name}' is not valid for delegation. Available roles: {valid_roles}"
+            )
+
+        role_def = await config.get_role(role_name)
+        if not role_def:
+            raise ValueError(
+                f"Role '{role_name}' not found in configuration. Ensure config is synced to Redis."
+            )
+
+        # Create isolated context with role's system prompt
         context = SubagentContext(
-            system_prompt=system_prompt or self._get_default_prompt(agent_type),
+            system_prompt=system_prompt or role_def.system_prompt,
         )
 
         # Create subagent
@@ -223,8 +230,8 @@ class SubagentManager:
             id=str(uuid.uuid4()),
             parent_agent_id=parent_agent_id,
             session_id=session_id,
-            name=f"{subagent_type.capitalize()} Subagent",
-            type=agent_type,
+            name=role_def.name,
+            role=role_name,
             task=task,
             context=context,
             background=background,
@@ -240,7 +247,7 @@ class SubagentManager:
             "subagent_spawned",
             subagent_id=subagent.id,
             parent_agent_id=parent_agent_id,
-            type=subagent_type,
+            role=role_name,
             background=background,
         )
 
@@ -274,7 +281,7 @@ class SubagentManager:
 
             # Complete and generate summary
             subagent.status = SubagentStatus.COMPLETED
-            subagent.completed_at = datetime.utcnow()
+            subagent.completed_at = datetime.now(UTC)
             subagent.result_summary = subagent.context.summarize()
 
             logger.info(
@@ -287,7 +294,7 @@ class SubagentManager:
             logger.error("subagent_failed", subagent_id=subagent.id, error=str(e))
             subagent.status = SubagentStatus.FAILED
             subagent.error = str(e)
-            subagent.completed_at = datetime.utcnow()
+            subagent.completed_at = datetime.now(UTC)
 
         finally:
             # Clean up background task reference
@@ -335,7 +342,7 @@ class SubagentManager:
             del self._background_tasks[subagent_id]
 
         subagent.status = SubagentStatus.CANCELLED
-        subagent.completed_at = datetime.utcnow()
+        subagent.completed_at = datetime.now(UTC)
 
         logger.info("subagent_cancelled", subagent_id=subagent_id)
         return True
@@ -371,33 +378,6 @@ class SubagentManager:
                 del self._subagent_by_id[subagent.id]
 
         logger.info("subagents_cleaned_up", parent_agent_id=parent_agent_id, count=len(subagents))
-
-    def _get_default_prompt(self, agent_type: SubagentType) -> str:
-        """Get the default system prompt for a subagent type."""
-        prompts = {
-            SubagentType.RESEARCHER: (
-                "You are a research assistant. Your job is to find information, "
-                "search documentation, and gather relevant context. Be thorough "
-                "but concise in your findings."
-            ),
-            SubagentType.CODER: (
-                "You are a coding assistant. Your job is to write, modify, or "
-                "review code. Focus on clean, maintainable solutions."
-            ),
-            SubagentType.REVIEWER: (
-                "You are a code reviewer. Your job is to analyze code for bugs, "
-                "security issues, and improvements. Be specific and actionable."
-            ),
-            SubagentType.TESTER: (
-                "You are a testing assistant. Your job is to write tests, "
-                "identify test cases, and verify code correctness."
-            ),
-            SubagentType.PLANNER: (
-                "You are a planning assistant. Your job is to break down tasks, "
-                "create implementation plans, and identify dependencies."
-            ),
-        }
-        return prompts.get(agent_type, "You are a helpful assistant.")
 
 
 # Global instance

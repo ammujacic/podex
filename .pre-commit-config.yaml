@@ -185,6 +185,26 @@ repos:
         exclude: (__tests__|\.test\.|\.spec\.)
         pass_filenames: false
 
+  # VSCode extension-specific hooks (only run when VSCode files change)
+  - repo: local
+    hooks:
+      - id: vscode-lint
+        name: VSCode Extension Lint (ESLint)
+        entry: pnpm --filter podex-vscode lint
+        language: system
+        files: ^apps/vscode/
+        types_or: [javascript, jsx, ts, tsx]
+        pass_filenames: false
+
+      - id: vscode-typecheck
+        name: VSCode Extension Type Check
+        entry: pnpm --filter podex-vscode typecheck
+        language: system
+        files: ^apps/vscode/
+        types_or: [ts, tsx]
+        exclude: (__tests__|\.test\.|\.spec\.)
+        pass_filenames: false
+
 # CI configuration
 ci:
   autofix_prs: false

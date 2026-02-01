@@ -122,14 +122,20 @@ export default function OrganizationBillingPage() {
   };
 
   const handlePurchaseCredits = async () => {
+    if (!orgContext) return;
     setPurchaseLoading(true);
     try {
-      // Create Stripe checkout session for credits purchase
-      const session = (await api.post('/api/billing/checkout/credits', {
-        amount_cents: purchaseAmount * 100,
-      })) as { checkout_url: string };
+      // Create Stripe checkout session for organization credits purchase
+      const session = (await api.post(
+        `/api/organizations/${orgContext.organization.id}/billing/checkout/credits`,
+        {
+          amount_cents: purchaseAmount * 100,
+          success_url: `${window.location.origin}/settings/organization/billing?success=true`,
+          cancel_url: `${window.location.origin}/settings/organization/billing`,
+        }
+      )) as { url: string; session_id: string };
       // Redirect to Stripe Checkout
-      window.location.href = session.checkout_url;
+      window.location.href = session.url;
     } finally {
       setPurchaseLoading(false);
     }

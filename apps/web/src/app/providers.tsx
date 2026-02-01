@@ -16,6 +16,7 @@ import { IOSInstallModal, OfflineIndicator } from '@/components/pwa';
 import { useInitializeConfig } from '@/stores/config';
 import { useEditorStore } from '@/stores/editor';
 import { GlobalCreditExhaustedModal } from '@/components/billing/GlobalCreditExhaustedModal';
+import { useKeybindingsSync } from '@/hooks/useKeybindingsSync';
 
 interface ProvidersProps {
   children: ReactNode;
@@ -108,6 +109,9 @@ function ConfigGate({ children }: { children: ReactNode }) {
       initializeEditorSettings();
     }
   }, [isInitialized, isLoading, error, initializeEditorSettings]);
+
+  // Sync keybindings from store to KeybindingManager
+  useKeybindingsSync();
 
   // For unauthenticated users, don't gate - config isn't needed
   if (!user || !authInitialized) {

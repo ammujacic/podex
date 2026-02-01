@@ -47,6 +47,7 @@ class AuditAction:
     AUTH_MFA_DISABLED = "auth.mfa_disabled"
     AUTH_TOKEN_CREATED = "auth.token_created"
     AUTH_TOKEN_REVOKED = "auth.token_revoked"
+    AUTH_ACCOUNT_DELETED = "auth.account_deleted"
 
     # File operations
     FILE_READ = "file.read"

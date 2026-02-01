@@ -25,63 +25,12 @@ import {
   deleteAgentTemplate,
   createShareLink,
   getLLMProviders,
+  getAvailableAgentTools,
   type AgentTemplate,
   type CreateAgentTemplateRequest,
   type LLMProviderResponse,
+  type ToolInfo,
 } from '@/lib/api';
-
-// Available tools - should match the backend VALID_TOOLS
-const AVAILABLE_TOOLS: Record<string, { name: string; description: string; category: string }> = {
-  // File tools
-  read_file: { name: 'Read File', description: 'Read files from the workspace', category: 'File' },
-  write_file: { name: 'Write File', description: 'Create or modify files', category: 'File' },
-  list_directory: {
-    name: 'List Directory',
-    description: 'Browse directory contents',
-    category: 'File',
-  },
-  search_code: { name: 'Search Code', description: 'Search for code patterns', category: 'File' },
-  glob_files: { name: 'Glob Files', description: 'Find files matching patterns', category: 'File' },
-  grep: { name: 'Grep', description: 'Search file contents with regex', category: 'File' },
-  apply_patch: { name: 'Apply Patch', description: 'Apply unified diff patches', category: 'File' },
-  // Command tools
-  run_command: { name: 'Run Command', description: 'Execute shell commands', category: 'Command' },
-  // Git tools
-  git_status: { name: 'Git Status', description: 'Check git status', category: 'Git' },
-  git_commit: { name: 'Git Commit', description: 'Create commits', category: 'Git' },
-  git_push: { name: 'Git Push', description: 'Push to remote', category: 'Git' },
-  git_branch: { name: 'Git Branch', description: 'Manage branches', category: 'Git' },
-  git_diff: { name: 'Git Diff', description: 'Show changes', category: 'Git' },
-  git_log: { name: 'Git Log', description: 'View commit history', category: 'Git' },
-  create_pr: { name: 'Create PR', description: 'Create pull requests', category: 'Git' },
-  // Memory tools
-  store_memory: {
-    name: 'Store Memory',
-    description: 'Store facts for later recall',
-    category: 'Memory',
-  },
-  recall_memory: {
-    name: 'Recall Memory',
-    description: 'Search stored memories',
-    category: 'Memory',
-  },
-  // Task tools
-  create_task: {
-    name: 'Create Task',
-    description: 'Delegate tasks to other agents',
-    category: 'Task',
-  },
-  delegate_task: {
-    name: 'Delegate Task',
-    description: 'Delegate to specific agent role',
-    category: 'Task',
-  },
-  // Web tools
-  fetch_url: { name: 'Fetch URL', description: 'Fetch web content', category: 'Web' },
-  search_web: { name: 'Search Web', description: 'Search the internet', category: 'Web' },
-};
-
-const TOOL_CATEGORIES = ['File', 'Command', 'Git', 'Memory', 'Task', 'Web'];
 
 interface TemplateForm {
   name: string;
@@ -110,6 +59,7 @@ const defaultForm: TemplateForm = {
 export default function AgentTemplatesPage() {
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
   const [providers, setProviders] = useState<LLMProviderResponse[]>([]);
+  const [toolsByCategory, setToolsByCategory] = useState<Record<string, ToolInfo[]>>({});
   const [loading, setLoading] = useState(true);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<AgentTemplate | null>(null);
@@ -122,6 +72,11 @@ export default function AgentTemplatesPage() {
   const [sharingId, setSharingId] = useState<string | null>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
+
+  // Get sorted tool categories
+  const toolCategories = useMemo(() => {
+    return Object.keys(toolsByCategory).sort();
+  }, [toolsByCategory]);
 
   // Get all available models from providers
   const availableModels = useMemo(() => {
@@ -140,12 +95,14 @@ export default function AgentTemplatesPage() {
 
   const loadData = useCallback(async () => {
     try {
-      const [templatesData, providersData] = await Promise.all([
+      const [templatesData, providersData, toolsData] = await Promise.all([
         listAgentTemplates(),
         getLLMProviders(),
+        getAvailableAgentTools(),
       ]);
       setTemplates(templatesData);
       setProviders(providersData);
+      setToolsByCategory(toolsData.tools_by_category);
 
       // Set default model if not set
       if (!formData.model && providersData.length > 0) {
@@ -323,7 +280,7 @@ export default function AgentTemplatesPage() {
 
   if (loading) {
     return (
-      <div className="p-6">
+      <div className="max-w-4xl mx-auto px-8 py-8">
         <div className="flex items-center justify-center py-12">
           <Loader2 className="h-6 w-6 animate-spin text-text-muted" />
         </div>
@@ -332,7 +289,7 @@ export default function AgentTemplatesPage() {
   }
 
   return (
-    <div className="p-6">
+    <div className="max-w-4xl mx-auto px-8 py-8">
       <div className="mb-6">
         <div className="flex items-center justify-between">
           <div>
@@ -507,10 +464,28 @@ export default function AgentTemplatesPage() {
 
               {expandedTools && (
                 <div className="space-y-4 p-4 bg-elevated rounded-lg border border-border-subtle">
-                  {TOOL_CATEGORIES.map((category) => {
-                    const categoryTools = Object.entries(AVAILABLE_TOOLS).filter(
-                      ([, tool]) => tool.category === category
-                    );
+                  {/* Permission badge legend */}
+                  <div className="flex items-center gap-4 text-xs text-text-muted pb-3 border-b border-border-subtle">
+                    <span>Permission badges:</span>
+                    <span className="px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded font-mono">
+                      R
+                    </span>
+                    <span>Read</span>
+                    <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-400 rounded font-mono">
+                      W
+                    </span>
+                    <span>Write</span>
+                    <span className="px-1.5 py-0.5 bg-red-500/20 text-red-400 rounded font-mono">
+                      C
+                    </span>
+                    <span>Command</span>
+                    <span className="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded font-mono">
+                      D
+                    </span>
+                    <span>Deploy</span>
+                  </div>
+                  {toolCategories.map((category) => {
+                    const categoryTools = toolsByCategory[category] || [];
                     if (categoryTools.length === 0) return null;
 
                     return (
@@ -519,19 +494,44 @@ export default function AgentTemplatesPage() {
                           {category}
                         </h4>
                         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2">
-                          {categoryTools.map(([toolId, tool]) => (
+                          {categoryTools.map((tool) => (
                             <button
-                              key={toolId}
+                              key={tool.name}
                               type="button"
-                              onClick={() => toggleTool(toolId)}
+                              onClick={() => toggleTool(tool.name)}
+                              title={tool.description}
                               className={cn(
                                 'p-2 text-left rounded-lg border transition-colors text-sm',
-                                formData.allowed_tools.includes(toolId)
+                                formData.allowed_tools.includes(tool.name)
                                   ? 'border-accent-primary bg-accent-primary/10 text-accent-primary'
                                   : 'border-border-subtle hover:border-border-default text-text-secondary'
                               )}
                             >
-                              <div className="font-medium">{tool.name}</div>
+                              <div className="flex items-center justify-between gap-1">
+                                <div className="font-medium truncate">{tool.name}</div>
+                                <div className="flex gap-0.5 flex-shrink-0">
+                                  {tool.is_read_operation && (
+                                    <span className="px-1 py-0.5 text-[10px] bg-blue-500/20 text-blue-400 rounded font-mono">
+                                      R
+                                    </span>
+                                  )}
+                                  {tool.is_write_operation && (
+                                    <span className="px-1 py-0.5 text-[10px] bg-amber-500/20 text-amber-400 rounded font-mono">
+                                      W
+                                    </span>
+                                  )}
+                                  {tool.is_command_operation && (
+                                    <span className="px-1 py-0.5 text-[10px] bg-red-500/20 text-red-400 rounded font-mono">
+                                      C
+                                    </span>
+                                  )}
+                                  {tool.is_deploy_operation && (
+                                    <span className="px-1 py-0.5 text-[10px] bg-purple-500/20 text-purple-400 rounded font-mono">
+                                      D
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
                               <div className="text-xs text-text-muted truncate">
                                 {tool.description}
                               </div>

@@ -1,7 +1,7 @@
 """Tests for custom agent module.
 
 Tests cover:
-- AVAILABLE_TOOLS registry
+- Tool loading functions
 - AgentTemplateConfig dataclass
 - CustomAgentContext dataclass
 - CustomAgentInitConfig dataclass
@@ -10,133 +10,83 @@ Tests cover:
 
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.agents.custom import (
-    AVAILABLE_TOOLS,
     AgentTemplateConfig,
     CustomAgent,
     CustomAgentContext,
     CustomAgentInitConfig,
+    _get_cached_tools,
 )
 from src.agents.base import Tool
 
 
-class TestAvailableToolsRegistry:
-    """Test AVAILABLE_TOOLS registry."""
+class TestToolLoadingFunctions:
+    """Test tool loading functions."""
 
-    def test_available_tools_is_dict(self):
-        """Test that AVAILABLE_TOOLS is a dictionary."""
-        assert isinstance(AVAILABLE_TOOLS, dict)
+    def test_get_cached_tools_returns_dict(self):
+        """Test _get_cached_tools returns a dictionary."""
+        result = _get_cached_tools()
+        assert isinstance(result, dict)
 
-    def test_available_tools_not_empty(self):
-        """Test that AVAILABLE_TOOLS has tools."""
-        assert len(AVAILABLE_TOOLS) > 0
+    def test_get_cached_tools_empty_when_not_loaded(self):
+        """Test _get_cached_tools returns empty dict when cache is None."""
+        import src.agents.custom as custom_module
+        original_cache = custom_module._tools_cache
 
-    def test_all_tools_are_tool_instances(self):
-        """Test that all values are Tool instances."""
-        for name, tool in AVAILABLE_TOOLS.items():
-            assert isinstance(tool, Tool), f"{name} is not a Tool instance"
-            assert tool.name == name, f"Tool name mismatch: {tool.name} != {name}"
+        try:
+            custom_module._tools_cache = None
+            result = _get_cached_tools()
+            assert result == {}
+        finally:
+            custom_module._tools_cache = original_cache
 
-    def test_read_file_tool_exists(self):
-        """Test read_file tool is registered."""
-        assert "read_file" in AVAILABLE_TOOLS
-        tool = AVAILABLE_TOOLS["read_file"]
-        assert tool.name == "read_file"
-        assert "path" in tool.parameters["properties"]
+    def test_get_cached_tools_returns_cache(self):
+        """Test _get_cached_tools returns cached tools."""
+        import src.agents.custom as custom_module
+        original_cache = custom_module._tools_cache
 
-    def test_write_file_tool_exists(self):
-        """Test write_file tool is registered."""
-        assert "write_file" in AVAILABLE_TOOLS
-        tool = AVAILABLE_TOOLS["write_file"]
-        assert tool.name == "write_file"
-        assert "path" in tool.parameters["properties"]
-        assert "content" in tool.parameters["properties"]
+        try:
+            custom_module._tools_cache = {
+                "read_file": Tool(
+                    name="read_file",
+                    description="Read file",
+                    parameters={"type": "object", "properties": {"path": {"type": "string"}}},
+                )
+            }
+            result = _get_cached_tools()
+            assert "read_file" in result
+            assert result["read_file"].name == "read_file"
+        finally:
+            custom_module._tools_cache = original_cache
 
-    def test_search_code_tool_exists(self):
-        """Test search_code tool is registered."""
-        assert "search_code" in AVAILABLE_TOOLS
-        tool = AVAILABLE_TOOLS["search_code"]
-        assert "query" in tool.parameters["properties"]
+    async def test_load_tools_from_config(self):
+        """Test _load_tools_from_config loads tools from Redis."""
+        from src.agents.custom import _load_tools_from_config
+        import src.agents.custom as custom_module
 
-    def test_run_command_tool_exists(self):
-        """Test run_command tool is registered."""
-        assert "run_command" in AVAILABLE_TOOLS
-        tool = AVAILABLE_TOOLS["run_command"]
-        assert "command" in tool.parameters["properties"]
+        original_cache = custom_module._tools_cache
 
-    def test_list_directory_tool_exists(self):
-        """Test list_directory tool is registered."""
-        assert "list_directory" in AVAILABLE_TOOLS
-        tool = AVAILABLE_TOOLS["list_directory"]
-        assert "path" in tool.parameters["properties"]
+        try:
+            custom_module._tools_cache = None
 
-    def test_create_task_tool_exists(self):
-        """Test create_task tool is registered."""
-        assert "create_task" in AVAILABLE_TOOLS
-        tool = AVAILABLE_TOOLS["create_task"]
-        assert "agent_role" in tool.parameters["properties"]
-        assert "description" in tool.parameters["properties"]
+            mock_tool_def = MagicMock()
+            mock_tool_def.name = "test_tool"
+            mock_tool_def.description = "A test tool"
+            mock_tool_def.parameters = {"type": "object", "properties": {}}
 
-    def test_delegate_task_tool_exists(self):
-        """Test delegate_task tool is registered."""
-        assert "delegate_task" in AVAILABLE_TOOLS
-        tool = AVAILABLE_TOOLS["delegate_task"]
-        assert "agent_role" in tool.parameters["properties"]
-        enum_values = tool.parameters["properties"]["agent_role"]["enum"]
-        assert "coder" in enum_values
-        assert "reviewer" in enum_values
-        assert "tester" in enum_values
+            with patch("src.agents.custom.get_config_reader") as mock_reader:
+                mock_config_reader = MagicMock()
+                mock_config_reader.get_all_tools = AsyncMock(return_value=[mock_tool_def])
+                mock_reader.return_value = mock_config_reader
 
-    def test_get_task_status_tool_exists(self):
-        """Test get_task_status tool is registered."""
-        assert "get_task_status" in AVAILABLE_TOOLS
-        tool = AVAILABLE_TOOLS["get_task_status"]
-        assert "task_id" in tool.parameters["properties"]
+                result = await _load_tools_from_config()
 
-    def test_wait_for_tasks_tool_exists(self):
-        """Test wait_for_tasks tool is registered."""
-        assert "wait_for_tasks" in AVAILABLE_TOOLS
-        tool = AVAILABLE_TOOLS["wait_for_tasks"]
-        assert "task_ids" in tool.parameters["properties"]
-
-    def test_git_tools_exist(self):
-        """Test git tools are registered."""
-        git_tools = ["git_status", "git_diff", "git_commit", "git_push", "git_branch", "git_log"]
-        for tool_name in git_tools:
-            assert tool_name in AVAILABLE_TOOLS, f"{tool_name} not found"
-
-    def test_glob_files_tool_exists(self):
-        """Test glob_files tool is registered."""
-        assert "glob_files" in AVAILABLE_TOOLS
-        tool = AVAILABLE_TOOLS["glob_files"]
-        assert "pattern" in tool.parameters["properties"]
-
-    def test_apply_patch_tool_exists(self):
-        """Test apply_patch tool is registered."""
-        assert "apply_patch" in AVAILABLE_TOOLS
-        tool = AVAILABLE_TOOLS["apply_patch"]
-        assert "path" in tool.parameters["properties"]
-        assert "patch" in tool.parameters["properties"]
-
-    def test_fetch_url_tool_exists(self):
-        """Test fetch_url tool is registered."""
-        assert "fetch_url" in AVAILABLE_TOOLS
-        tool = AVAILABLE_TOOLS["fetch_url"]
-        assert "url" in tool.parameters["properties"]
-
-    def test_grep_tool_exists(self):
-        """Test grep tool is registered."""
-        assert "grep" in AVAILABLE_TOOLS
-        tool = AVAILABLE_TOOLS["grep"]
-        assert "pattern" in tool.parameters["properties"]
-
-    def test_skill_tools_exist(self):
-        """Test skill management tools are registered."""
-        skill_tools = ["list_skills", "get_skill", "match_skills", "execute_skill", "recommend_skills"]
-        for tool_name in skill_tools:
-            assert tool_name in AVAILABLE_TOOLS, f"{tool_name} not found"
+                assert "test_tool" in result
+                assert result["test_tool"].name == "test_tool"
+        finally:
+            custom_module._tools_cache = original_cache
 
 
 class TestAgentTemplateConfig:
@@ -287,6 +237,39 @@ class TestCustomAgent:
         return MagicMock()
 
     @pytest.fixture
+    def mock_tools_cache(self):
+        """Create mock tools cache and inject it."""
+        import src.agents.custom as custom_module
+
+        tools = {
+            "read_file": Tool(
+                name="read_file",
+                description="Read file",
+                parameters={"type": "object", "properties": {"path": {"type": "string"}}},
+            ),
+            "write_file": Tool(
+                name="write_file",
+                description="Write file",
+                parameters={"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}},
+            ),
+            "search_code": Tool(
+                name="search_code",
+                description="Search code",
+                parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+            ),
+            "run_command": Tool(
+                name="run_command",
+                description="Run command",
+                parameters={"type": "object", "properties": {"command": {"type": "string"}}},
+            ),
+        }
+
+        original_cache = custom_module._tools_cache
+        custom_module._tools_cache = tools
+        yield tools
+        custom_module._tools_cache = original_cache
+
+    @pytest.fixture
     def template_config(self):
         """Create template config."""
         return AgentTemplateConfig(
@@ -313,7 +296,7 @@ class TestCustomAgent:
             ),
         )
 
-    def test_agent_initialization(self, init_config):
+    def test_agent_initialization(self, init_config, mock_tools_cache):
         """Test agent initialization."""
         with patch("src.agents.base.ToolExecutor"):
             agent = CustomAgent(init_config)
@@ -323,7 +306,7 @@ class TestCustomAgent:
             assert agent.model == "claude-3-5-sonnet"
             assert agent.agent_id == "agent-123"
 
-    def test_get_system_prompt(self, init_config):
+    def test_get_system_prompt(self, init_config, mock_tools_cache):
         """Test _get_system_prompt returns template prompt."""
         with patch("src.agents.base.ToolExecutor"):
             agent = CustomAgent(init_config)
@@ -332,7 +315,7 @@ class TestCustomAgent:
 
             assert prompt == "You are a test assistant."
 
-    def test_get_tools_filters_by_allowed(self, init_config):
+    def test_get_tools_filters_by_allowed(self, init_config, mock_tools_cache):
         """Test _get_tools only returns allowed tools."""
         with patch("src.agents.base.ToolExecutor"):
             agent = CustomAgent(init_config)
@@ -346,7 +329,7 @@ class TestCustomAgent:
             assert "run_command" not in tool_names  # Not in allowed_tools
             assert len(tools) == 3
 
-    def test_get_tools_with_unknown_tool(self, mock_llm_provider):
+    def test_get_tools_with_unknown_tool(self, mock_llm_provider, mock_tools_cache):
         """Test _get_tools skips unknown tools."""
         template_config = AgentTemplateConfig(
             name="test-agent",
@@ -371,21 +354,21 @@ class TestCustomAgent:
             assert "unknown_tool" not in tool_names
             assert len(tools) == 2
 
-    def test_temperature_property(self, init_config):
+    def test_temperature_property(self, init_config, mock_tools_cache):
         """Test temperature property returns template value."""
         with patch("src.agents.base.ToolExecutor"):
             agent = CustomAgent(init_config)
 
             assert agent.temperature == 0.7
 
-    def test_max_tokens_property(self, init_config):
+    def test_max_tokens_property(self, init_config, mock_tools_cache):
         """Test max_tokens property returns template value."""
         with patch("src.agents.base.ToolExecutor"):
             agent = CustomAgent(init_config)
 
             assert agent.max_tokens == 2000
 
-    def test_temperature_none_when_not_set(self, mock_llm_provider):
+    def test_temperature_none_when_not_set(self, mock_llm_provider, mock_tools_cache):
         """Test temperature returns None when not set in template."""
         template_config = AgentTemplateConfig(
             name="test-agent",
@@ -406,7 +389,7 @@ class TestCustomAgent:
             assert agent.temperature is None
             assert agent.max_tokens is None
 
-    def test_uses_template_model_when_specified(self, mock_llm_provider):
+    def test_uses_template_model_when_specified(self, mock_llm_provider, mock_tools_cache):
         """Test agent uses template's model over init_config model."""
         template_config = AgentTemplateConfig(
             name="test-agent",
@@ -427,7 +410,7 @@ class TestCustomAgent:
             # Should use template's model
             assert agent.model == "claude-3-5-sonnet"
 
-    def test_uses_init_model_when_template_empty(self, mock_llm_provider):
+    def test_uses_init_model_when_template_empty(self, mock_llm_provider, mock_tools_cache):
         """Test agent uses init_config model when template model is empty."""
         template_config = AgentTemplateConfig(
             name="test-agent",
@@ -448,7 +431,7 @@ class TestCustomAgent:
             # Should use init_config's model since template is empty
             assert agent.model == "claude-3-opus"
 
-    def test_user_id_from_init_config(self, mock_llm_provider):
+    def test_user_id_from_init_config(self, mock_llm_provider, mock_tools_cache):
         """Test user_id is taken from init_config when provided."""
         template_config = AgentTemplateConfig(
             name="test-agent",
@@ -474,7 +457,7 @@ class TestCustomAgent:
             # Should prefer init_config's user_id
             assert agent.user_id == "init-config-user"
 
-    def test_user_id_from_context(self, mock_llm_provider):
+    def test_user_id_from_context(self, mock_llm_provider, mock_tools_cache):
         """Test user_id is taken from context when not in init_config."""
         template_config = AgentTemplateConfig(
             name="test-agent",
@@ -500,7 +483,7 @@ class TestCustomAgent:
             # Should use context's user_id
             assert agent.user_id == "context-user"
 
-    def test_empty_allowed_tools(self, mock_llm_provider):
+    def test_empty_allowed_tools(self, mock_llm_provider, mock_tools_cache):
         """Test agent with no allowed tools."""
         template_config = AgentTemplateConfig(
             name="test-agent",

@@ -616,9 +616,9 @@ export default function LocalPodsSettingsPage() {
   const offlinePods = pods.filter((p) => p.status !== 'online');
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="max-w-4xl mx-auto px-8 py-8">
       {/* Header */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-border-subtle">
+      <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-accent-primary/10">
             <Server className="h-5 w-5 text-accent-primary" />

@@ -21,18 +21,12 @@ export interface GridSpan {
 /** Agent permission modes */
 export type AgentMode = 'plan' | 'ask' | 'auto' | 'sovereign';
 
-export type AgentRole =
-  | 'architect'
-  | 'coder'
-  | 'reviewer'
-  | 'tester'
-  | 'agent_builder'
-  | 'orchestrator'
-  | 'chat'
-  | 'security'
-  | 'devops'
-  | 'documentator'
-  | 'custom';
+/**
+ * Agent role identifier.
+ * Roles are now dynamic and fetched from the database via useConfigStore().agentRoles.
+ * This type is a string to support any role defined in the database.
+ */
+export type AgentRole = string;
 
 export interface Agent {
   id: string;

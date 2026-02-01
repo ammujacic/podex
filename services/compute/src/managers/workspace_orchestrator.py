@@ -247,19 +247,16 @@ class WorkspaceOrchestrator:
         # Create container spec
         from src.managers.multi_server_docker import ContainerSpec
 
-        # Determine image to use based on server architecture
-        # GPU workspaces should use a CUDA-enabled image
-        if requirements.gpu_required:
-            gpu_image = getattr(settings, "workspace_image_gpu", settings.workspace_image)
-            workspace_image = config.base_image or gpu_image or settings.workspace_image
-        else:
-            # Use architecture-specific image for non-GPU workspaces
-            workspace_image = self._docker.get_image_for_server(
-                placement.server_id, config.base_image
-            )
+        # Determine image to use based on server configuration
+        # Uses per-server image configuration from the database
+        workspace_image = self._docker.get_image_for_server(
+            placement.server_id,
+            base_image=config.base_image,
+            gpu_required=requirements.gpu_required,
+        )
 
         # Ensure we have a valid image string (cast to str for type safety)
-        workspace_image = str(workspace_image or settings.workspace_image)
+        workspace_image = str(workspace_image)
 
         # Check if the image exists on the target server before creating container
         image_exists = await self._docker.image_exists(placement.server_id, workspace_image)

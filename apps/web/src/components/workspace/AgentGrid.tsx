@@ -126,7 +126,7 @@ const demoAgents: Agent[] = [
     name: 'Architect',
     role: 'architect',
     // Use canonical Opus 4.5 ID
-    model: 'claude-opus-4-5',
+    model: 'claude-opus-4.5',
     status: 'active',
     color: 'agent-1',
     mode: 'auto',
@@ -137,7 +137,7 @@ const demoAgents: Agent[] = [
     name: 'Frontend Dev',
     role: 'coder',
     // Use canonical Sonnet 4.5 ID
-    model: 'claude-sonnet-4-5',
+    model: 'claude-sonnet-4.5',
     status: 'active',
     color: 'agent-2',
     mode: 'auto',
@@ -148,7 +148,7 @@ const demoAgents: Agent[] = [
     name: 'Backend Dev',
     role: 'coder',
     // Use canonical Sonnet 4.5 ID
-    model: 'claude-sonnet-4-5',
+    model: 'claude-sonnet-4.5',
     status: 'active',
     color: 'agent-3',
     mode: 'auto',

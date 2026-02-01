@@ -62,7 +62,6 @@ from src.routes import (
     git,
     github,
     health_checks,
-    hooks,
     knowledge,
     llm_providers,
     local_pods,
@@ -208,6 +207,63 @@ def create_monitored_task(coro: Any, name: str) -> asyncio.Task[None]:
     return task
 
 
+async def try_acquire_task_lock(task_name: str, ttl_seconds: int = 300) -> bool:
+    """Try to acquire a distributed lock for a background task.
+
+    Uses Redis SET NX EX for atomic lock acquisition. Lock auto-expires
+    after TTL to handle crashes. Only one instance can hold the lock.
+
+    For horizontal scaling: each background task cycle tries to acquire the lock.
+    If another instance has it, this instance skips this cycle. Natural timing
+    variance means different instances win different cycles.
+
+    Args:
+        task_name: Unique identifier for the task (e.g., "quota_reset")
+        ttl_seconds: Lock expiration time. Should be > max expected execution time.
+
+    Returns:
+        True if lock acquired (proceed with task), False if another instance has it.
+    """
+    from src.middleware.rate_limit import get_redis_client
+
+    try:
+        redis = await get_redis_client()
+        # SET NX = only if not exists, EX = expire after ttl_seconds
+        # Returns True if key was set, None/False if already exists
+        result = await redis.set(
+            f"podex:task:lock:{task_name}",
+            "1",
+            nx=True,
+            ex=ttl_seconds,
+        )
+    except Exception as e:
+        # If Redis fails, log and proceed (better to have duplicate work than no work)
+        logger.warning(
+            "Failed to acquire task lock, proceeding anyway", task=task_name, error=str(e)
+        )
+        return True
+    else:
+        return result is True
+
+
+async def release_task_lock(task_name: str) -> None:
+    """Release a distributed task lock.
+
+    Should be called after task completion. Lock also auto-expires via TTL.
+
+    Args:
+        task_name: The task lock to release.
+    """
+    from src.middleware.rate_limit import get_redis_client
+
+    try:
+        redis = await get_redis_client()
+        await redis.delete(f"podex:task:lock:{task_name}")
+    except Exception as e:
+        # Non-critical - lock will expire via TTL
+        logger.debug("Failed to release task lock", task=task_name, error=str(e))
+
+
 def _report_background_error(
     task_name: str,
     message: str,
@@ -274,39 +330,50 @@ async def quota_reset_background_task() -> None:
 
     RELIABILITY: Uses asyncio.wait_for() timeout to prevent connection pool
     exhaustion from hung database operations.
+
+    SCALING: Uses distributed locking so only one instance runs each cycle.
     """
     while True:
         try:
             await asyncio.sleep(settings.BG_TASK_QUOTA_RESET_INTERVAL)
-            task_start = time.perf_counter()
 
-            async for db in get_db():
-                try:
-                    # CRITICAL FIX: Add timeout to prevent pool exhaustion
-                    reset_count = await asyncio.wait_for(
-                        reset_expired_quotas(db),
-                        timeout=settings.BG_TASK_DB_TIMEOUT,
-                    )
-                    if reset_count > 0:
-                        await asyncio.wait_for(
-                            db.commit(),
+            # Distributed lock: only one instance runs per cycle
+            if not await try_acquire_task_lock("quota_reset", ttl_seconds=60):
+                continue  # Another instance is handling this cycle
+
+            task_start = time.perf_counter()
+            try:
+                async for db in get_db():
+                    try:
+                        # CRITICAL FIX: Add timeout to prevent pool exhaustion
+                        reset_count = await asyncio.wait_for(
+                            reset_expired_quotas(db),
                             timeout=settings.BG_TASK_DB_TIMEOUT,
                         )
-                        logger.info("Reset expired quotas", count=reset_count)
-                    duration_ms = (time.perf_counter() - task_start) * 1000
-                    _report_background_success("quota_reset", duration_ms)
-                except TimeoutError:
-                    await db.rollback()
-                    logger.exception("Quota reset timed out - possible DB connection issue")
-                    duration_ms = (time.perf_counter() - task_start) * 1000
-                    _report_background_error(
-                        "quota_reset", "Database operation timed out", duration_ms=duration_ms
-                    )
-                except Exception as e:
-                    await db.rollback()
-                    logger.exception("Failed to reset quotas", error=str(e))
-                    duration_ms = (time.perf_counter() - task_start) * 1000
-                    _report_background_error("quota_reset", str(e), exc=e, duration_ms=duration_ms)
+                        if reset_count > 0:
+                            await asyncio.wait_for(
+                                db.commit(),
+                                timeout=settings.BG_TASK_DB_TIMEOUT,
+                            )
+                            logger.info("Reset expired quotas", count=reset_count)
+                        duration_ms = (time.perf_counter() - task_start) * 1000
+                        _report_background_success("quota_reset", duration_ms)
+                    except TimeoutError:
+                        await db.rollback()
+                        logger.exception("Quota reset timed out - possible DB connection issue")
+                        duration_ms = (time.perf_counter() - task_start) * 1000
+                        _report_background_error(
+                            "quota_reset", "Database operation timed out", duration_ms=duration_ms
+                        )
+                    except Exception as e:
+                        await db.rollback()
+                        logger.exception("Failed to reset quotas", error=str(e))
+                        duration_ms = (time.perf_counter() - task_start) * 1000
+                        _report_background_error(
+                            "quota_reset", str(e), exc=e, duration_ms=duration_ms
+                        )
+            finally:
+                await release_task_lock("quota_reset")
 
         except asyncio.CancelledError:
             logger.info("Quota reset task cancelled")
@@ -326,6 +393,8 @@ async def oauth_token_refresh_background_task() -> None:
 
     RELIABILITY: Uses asyncio.wait_for() timeout to prevent connection pool
     exhaustion from hung operations.
+
+    SCALING: Uses distributed locking so only one instance runs each cycle.
     """
     from sqlalchemy import select
     from src.database.models import UserOAuthToken
@@ -333,99 +402,109 @@ async def oauth_token_refresh_background_task() -> None:
 
     while True:
         try:
-            async for db in get_db():
-                try:
-                    # Find tokens expiring within 1 hour
-                    import time
+            # Run every 30 minutes
+            await asyncio.sleep(30 * 60)
 
-                    one_hour_from_now = int(time.time()) + 3600
-                    logger.debug(
-                        "Checking for expiring OAuth tokens",
-                        current_time=int(time.time()),
-                        one_hour_from_now=one_hour_from_now,
-                    )
+            # Distributed lock: only one instance runs per cycle
+            if not await try_acquire_task_lock("oauth_refresh", ttl_seconds=120):
+                continue  # Another instance is handling this cycle
 
-                    result = await db.execute(
-                        select(UserOAuthToken)
-                        .where(
-                            UserOAuthToken.status.in_(["connected", "error"])
-                        )  # Also retry error tokens
-                        .where(UserOAuthToken.expires_at < one_hour_from_now)
-                        .where(UserOAuthToken.refresh_token.isnot(None))
-                    )
-                    expiring_tokens = result.scalars().all()
+            try:
+                async for db in get_db():
+                    try:
+                        # Find tokens expiring within 1 hour
+                        import time
 
-                    logger.debug(
-                        "Found expiring OAuth tokens"
-                        if expiring_tokens
-                        else "No expiring OAuth tokens found",
-                        count=len(expiring_tokens),
-                    )
+                        one_hour_from_now = int(time.time()) + 3600
+                        logger.debug(
+                            "Checking for expiring OAuth tokens",
+                            current_time=int(time.time()),
+                            one_hour_from_now=one_hour_from_now,
+                        )
 
-                    if not expiring_tokens:
-                        continue
+                        result = await db.execute(
+                            select(UserOAuthToken)
+                            .where(
+                                UserOAuthToken.status.in_(["connected", "error"])
+                            )  # Also retry error tokens
+                            .where(UserOAuthToken.expires_at < one_hour_from_now)
+                            .where(UserOAuthToken.refresh_token.isnot(None))
+                        )
+                        expiring_tokens = result.scalars().all()
 
-                    logger.info(
-                        "Refreshing expiring OAuth tokens",
-                        count=len(expiring_tokens),
-                    )
+                        logger.debug(
+                            "Found expiring OAuth tokens"
+                            if expiring_tokens
+                            else "No expiring OAuth tokens found",
+                            count=len(expiring_tokens),
+                        )
 
-                    for token in expiring_tokens:
-                        try:
-                            logger.debug(
-                                "Attempting to refresh token",
-                                provider=token.provider,
-                                refresh_token_prefix=token.refresh_token[:20]
-                                if token.refresh_token
-                                else None,
-                                refresh_token_len=len(token.refresh_token)
-                                if token.refresh_token
-                                else 0,
-                            )
-                            oauth_provider = get_oauth_provider(token.provider)
-                            if not token.refresh_token:
-                                continue
-                            credentials = await asyncio.wait_for(
-                                oauth_provider.refresh_token(token.refresh_token),
-                                timeout=30.0,
-                            )
+                        if not expiring_tokens:
+                            continue
 
-                            # Update token
-                            token.access_token = credentials.access_token
-                            if credentials.refresh_token:
-                                token.refresh_token = credentials.refresh_token
-                            token.expires_at = credentials.expires_at
-                            token.status = "connected"
-                            token.last_error = None
+                        logger.info(
+                            "Refreshing expiring OAuth tokens",
+                            count=len(expiring_tokens),
+                        )
 
-                            logger.info(
-                                "Refreshed OAuth token",
-                                provider=token.provider,
-                                user_id=token.user_id,
-                            )
-                        except Exception as e:
-                            token.status = "error"
-                            token.last_error = str(e)
-                            logger.warning(
-                                "Failed to refresh OAuth token",
-                                provider=token.provider,
-                                user_id=token.user_id,
-                                error=str(e),
-                            )
+                        for token in expiring_tokens:
+                            try:
+                                logger.debug(
+                                    "Attempting to refresh token",
+                                    provider=token.provider,
+                                    refresh_token_prefix=token.refresh_token[:20]
+                                    if token.refresh_token
+                                    else None,
+                                    refresh_token_len=len(token.refresh_token)
+                                    if token.refresh_token
+                                    else 0,
+                                )
+                                oauth_provider = get_oauth_provider(token.provider)
+                                if not token.refresh_token:
+                                    continue
+                                credentials = await asyncio.wait_for(
+                                    oauth_provider.refresh_token(token.refresh_token),
+                                    timeout=30.0,
+                                )
 
-                    await asyncio.wait_for(
-                        db.commit(),
-                        timeout=settings.BG_TASK_DB_TIMEOUT,
-                    )
+                                # Update token
+                                token.access_token = credentials.access_token
+                                if credentials.refresh_token:
+                                    token.refresh_token = credentials.refresh_token
+                                token.expires_at = credentials.expires_at
+                                token.status = "connected"
+                                token.last_error = None
 
-                except TimeoutError:
-                    await db.rollback()
-                    logger.exception("OAuth refresh timed out - possible DB connection issue")
-                    _report_background_error("oauth_refresh", "Database operation timed out")
-                except Exception as e:
-                    await db.rollback()
-                    logger.exception("Failed to refresh OAuth tokens", error=str(e))
-                    _report_background_error("oauth_refresh", str(e), exc=e)
+                                logger.info(
+                                    "Refreshed OAuth token",
+                                    provider=token.provider,
+                                    user_id=token.user_id,
+                                )
+                            except Exception as e:
+                                token.status = "error"
+                                token.last_error = str(e)
+                                logger.warning(
+                                    "Failed to refresh OAuth token",
+                                    provider=token.provider,
+                                    user_id=token.user_id,
+                                    error=str(e),
+                                )
+
+                        await asyncio.wait_for(
+                            db.commit(),
+                            timeout=settings.BG_TASK_DB_TIMEOUT,
+                        )
+
+                    except TimeoutError:
+                        await db.rollback()
+                        logger.exception("OAuth refresh timed out - possible DB connection issue")
+                        _report_background_error("oauth_refresh", "Database operation timed out")
+                    except Exception as e:
+                        await db.rollback()
+                        logger.exception("Failed to refresh OAuth tokens", error=str(e))
+                        _report_background_error("oauth_refresh", str(e), exc=e)
+            finally:
+                await release_task_lock("oauth_refresh")
 
         except asyncio.CancelledError:
             logger.info("OAuth refresh task cancelled")
@@ -434,10 +513,6 @@ async def oauth_token_refresh_background_task() -> None:
             logger.exception("Error in OAuth refresh task", error=str(e))
             _report_background_error("oauth_refresh", str(e), exc=e)
             await asyncio.sleep(60)
-            continue
-
-        # Run every 30 minutes
-        await asyncio.sleep(30 * 60)
 
 
 async def billing_maintenance_background_task() -> None:
@@ -453,80 +528,93 @@ async def billing_maintenance_background_task() -> None:
 
     RELIABILITY: Uses asyncio.wait_for() timeout to prevent connection pool
     exhaustion from hung database operations.
+
+    SCALING: Uses distributed locking so only one instance runs each cycle.
     """
     while True:
         try:
             await asyncio.sleep(settings.BG_TASK_BILLING_INTERVAL)
 
-            async for db in get_db():
-                try:
-                    # STEP 1: Renew non-Stripe subscriptions first
-                    # This extends period_end for Free plans and sponsored subscriptions
-                    renewed_count = await asyncio.wait_for(
-                        renew_subscription_periods(db),
-                        timeout=settings.BG_TASK_DB_TIMEOUT,
-                    )
-                    if renewed_count > 0:
-                        logger.info("Renewed subscription periods", count=renewed_count)
+            # Distributed lock: only one instance runs per cycle
+            if not await try_acquire_task_lock("billing_maintenance", ttl_seconds=120):
+                continue  # Another instance is handling this cycle
 
-                    # STEP 2: Grant monthly credits for new billing periods
-                    # This resets quotas and grants included allowances
-                    credits_granted = await asyncio.wait_for(
-                        grant_monthly_credits(db),
-                        timeout=settings.BG_TASK_DB_TIMEOUT,
-                    )
-                    if credits_granted > 0:
-                        logger.info("Granted monthly credits", count=credits_granted)
-
-                    # STEP 3: Process cancellations for subscriptions marked cancel_at_period_end
-                    canceled, trial_ended = await asyncio.wait_for(
-                        process_subscription_period_ends(db),
-                        timeout=settings.BG_TASK_DB_TIMEOUT,
-                    )
-                    if canceled > 0:
-                        logger.info("Canceled subscriptions at period end", count=canceled)
-                    if trial_ended > 0:
-                        logger.info("Processed ended trials", count=trial_ended)
-
-                    # STEP 4: Expire promotional/bonus credits that have passed expiration
-                    expired_count = await asyncio.wait_for(
-                        expire_credits(db),
-                        timeout=settings.BG_TASK_DB_TIMEOUT,
-                    )
-                    if expired_count > 0:
-                        logger.info("Expired credits", count=expired_count)
-
-                    # STEP 5: Update expiring soon counts for user notifications
-                    expiring_updated = await asyncio.wait_for(
-                        update_expiring_soon_credits(db),
-                        timeout=settings.BG_TASK_DB_TIMEOUT,
-                    )
-                    if expiring_updated > 0:
-                        logger.info("Updated expiring soon balances", count=expiring_updated)
-
-                    # CRITICAL FIX: Commit with timeout and verify success
+            try:
+                async for db in get_db():
                     try:
-                        await asyncio.wait_for(
-                            db.commit(),
+                        # STEP 1: Renew non-Stripe subscriptions first
+                        # This extends period_end for Free plans and sponsored subscriptions
+                        renewed_count = await asyncio.wait_for(
+                            renew_subscription_periods(db),
                             timeout=settings.BG_TASK_DB_TIMEOUT,
                         )
-                    except TimeoutError:
-                        logger.exception(
-                            "Billing commit timed out - transaction may be inconsistent"
-                        )
-                        await db.rollback()
-                        raise
+                        if renewed_count > 0:
+                            logger.info("Renewed subscription periods", count=renewed_count)
 
-                except TimeoutError:
-                    await db.rollback()
-                    logger.exception("Billing maintenance timed out - possible DB connection issue")
-                    # MEDIUM FIX: Report to error tracking for alerting
-                    _report_background_error("billing_maintenance", "Database operation timed out")
-                except Exception as e:
-                    await db.rollback()
-                    logger.exception("Failed in billing maintenance", error=str(e))
-                    # MEDIUM FIX: Report to error tracking for alerting
-                    _report_background_error("billing_maintenance", str(e), exc=e)
+                        # STEP 2: Grant monthly credits for new billing periods
+                        # This resets quotas and grants included allowances
+                        credits_granted = await asyncio.wait_for(
+                            grant_monthly_credits(db),
+                            timeout=settings.BG_TASK_DB_TIMEOUT,
+                        )
+                        if credits_granted > 0:
+                            logger.info("Granted monthly credits", count=credits_granted)
+
+                        # STEP 3: Process cancellations for end-of-period subscriptions
+                        canceled, trial_ended = await asyncio.wait_for(
+                            process_subscription_period_ends(db),
+                            timeout=settings.BG_TASK_DB_TIMEOUT,
+                        )
+                        if canceled > 0:
+                            logger.info("Canceled subscriptions at period end", count=canceled)
+                        if trial_ended > 0:
+                            logger.info("Processed ended trials", count=trial_ended)
+
+                        # STEP 4: Expire promotional/bonus credits that have passed expiration
+                        expired_count = await asyncio.wait_for(
+                            expire_credits(db),
+                            timeout=settings.BG_TASK_DB_TIMEOUT,
+                        )
+                        if expired_count > 0:
+                            logger.info("Expired credits", count=expired_count)
+
+                        # STEP 5: Update expiring soon counts for user notifications
+                        expiring_updated = await asyncio.wait_for(
+                            update_expiring_soon_credits(db),
+                            timeout=settings.BG_TASK_DB_TIMEOUT,
+                        )
+                        if expiring_updated > 0:
+                            logger.info("Updated expiring soon balances", count=expiring_updated)
+
+                        # CRITICAL FIX: Commit with timeout and verify success
+                        try:
+                            await asyncio.wait_for(
+                                db.commit(),
+                                timeout=settings.BG_TASK_DB_TIMEOUT,
+                            )
+                        except TimeoutError:
+                            logger.exception(
+                                "Billing commit timed out - transaction may be inconsistent"
+                            )
+                            await db.rollback()
+                            raise
+
+                    except TimeoutError:
+                        await db.rollback()
+                        logger.exception(
+                            "Billing maintenance timed out - possible DB connection issue"
+                        )
+                        # MEDIUM FIX: Report to error tracking for alerting
+                        _report_background_error(
+                            "billing_maintenance", "Database operation timed out"
+                        )
+                    except Exception as e:
+                        await db.rollback()
+                        logger.exception("Failed in billing maintenance", error=str(e))
+                        # MEDIUM FIX: Report to error tracking for alerting
+                        _report_background_error("billing_maintenance", str(e), exc=e)
+            finally:
+                await release_task_lock("billing_maintenance")
 
         except asyncio.CancelledError:
             logger.info("Billing maintenance task cancelled")
@@ -544,11 +632,13 @@ async def credit_enforcement_background_task() -> None:
     Runs every 5 minutes to check for users who have exhausted their compute credits
     (both plan quota and prepaid credits) and moves their running *compute-backed*
     workspaces from 'running' to 'stopped'. Local-pod workspaces are not affected.
+
+    SCALING: Uses distributed locking so only one instance runs each cycle.
     """
 
     from sqlalchemy import select
 
-    from src.compute_client import compute_client
+    from src.compute_client import get_compute_client_for_workspace
     from src.database.models import Session as SessionModel
     from src.database.models import Workspace
     from src.services.credit_enforcement import get_users_with_exhausted_credits
@@ -558,98 +648,108 @@ async def credit_enforcement_background_task() -> None:
         try:
             await asyncio.sleep(300)  # Check every 5 minutes
 
-            async for db in get_db():
-                try:
-                    standby_count = 0
+            # Distributed lock: only one instance runs per cycle
+            if not await try_acquire_task_lock("credit_enforcement", ttl_seconds=120):
+                continue  # Another instance is handling this cycle
 
-                    # Get users who have exhausted compute credits
-                    exhausted_users = await get_users_with_exhausted_credits(db, "compute")
+            try:
+                async for db in get_db():
+                    try:
+                        standby_count = 0
 
-                    if not exhausted_users:
-                        continue
+                        # Get users who have exhausted compute credits
+                        exhausted_users = await get_users_with_exhausted_credits(db, "compute")
 
-                    logger.info(
-                        "Found users with exhausted compute credits",
-                        user_count=len(exhausted_users),
-                    )
+                        if not exhausted_users:
+                            continue
 
-                    # For each exhausted user, find and stop their running compute workspaces
-                    for user_id in exhausted_users:
-                        # Find running *cloud* workspaces owned by this user
-                        query = (
-                            select(Workspace, SessionModel)
-                            .join(SessionModel, SessionModel.workspace_id == Workspace.id)
-                            .where(
-                                SessionModel.owner_id == user_id,
-                                Workspace.status == "running",
-                                Workspace.local_pod_id.is_(None),
-                            )
-                        )
-
-                        result = await db.execute(query)
-                        rows = result.all()
-
-                        for workspace, session in rows:
-                            try:
-                                from src.exceptions import ComputeServiceHTTPError
-
-                                # Stop the container in the compute service
-                                try:
-                                    await compute_client.stop_workspace(workspace.id, user_id)
-                                except ComputeServiceHTTPError as compute_error:
-                                    # If workspace doesn't exist (404), it's already stopped
-                                    if compute_error.status_code != 404:
-                                        raise compute_error  # noqa: TRY201
-
-                                # Update database: normalize to explicit 'stopped' state
-                                workspace.status = "stopped"
-                                workspace.standby_at = None
-
-                                # Notify connected clients about billing stop
-                                await emit_to_session(
-                                    str(session.id),
-                                    "workspace_billing_standby",
-                                    {
-                                        "workspace_id": workspace.id,
-                                        "status": "stopped",
-                                        "reason": "credit_exhaustion",
-                                        "message": (
-                                            "Your cloud workspace has been stopped due to "
-                                            "insufficient compute credits. Please upgrade your "
-                                            "plan or add credits to resume."
-                                        ),
-                                        "standby_at": None,
-                                        "upgrade_url": "/settings/plans",
-                                        "add_credits_url": "/settings/billing",
-                                    },
-                                )
-
-                                standby_count += 1
-                                logger.info(
-                                    "Stopped workspace due to credit exhaustion",
-                                    workspace_id=workspace.id,
-                                    session_id=str(session.id),
-                                    user_id=user_id,
-                                )
-
-                            except Exception as e:
-                                logger.exception(
-                                    "Failed to move workspace to standby for billing",
-                                    workspace_id=workspace.id,
-                                    user_id=user_id,
-                                    error=str(e),
-                                )
-
-                    if standby_count > 0:
-                        await db.commit()
                         logger.info(
-                            "Credit enforcement completed",
-                            workspaces_standby=standby_count,
+                            "Found users with exhausted compute credits",
+                            user_count=len(exhausted_users),
                         )
 
-                except Exception as e:
-                    await db.rollback()
-                    logger.exception("Failed in credit enforcement", error=str(e))
+                        # For each exhausted user, find and stop their running compute workspaces
+                        for user_id in exhausted_users:
+                            # Find running *cloud* workspaces owned by this user
+                            query = (
+                                select(Workspace, SessionModel)
+                                .join(SessionModel, SessionModel.workspace_id == Workspace.id)
+                                .where(
+                                    SessionModel.owner_id == user_id,
+                                    Workspace.status == "running",
+                                    Workspace.local_pod_id.is_(None),
+                                )
+                            )
+
+                            result = await db.execute(query)
+                            rows = result.all()
+
+                            for workspace, session in rows:
+                                try:
+                                    from src.exceptions import ComputeServiceHTTPError
+
+                                    # Stop the container in the compute service
+                                    try:
+                                        compute = await get_compute_client_for_workspace(
+                                            workspace.id
+                                        )
+                                        await compute.stop_workspace(workspace.id, user_id)
+                                    except ComputeServiceHTTPError as compute_error:
+                                        # If workspace doesn't exist (404), it's already stopped
+                                        if compute_error.status_code != 404:
+                                            raise compute_error  # noqa: TRY201
+
+                                    # Update database: normalize to explicit 'stopped' state
+                                    workspace.status = "stopped"
+                                    workspace.standby_at = None
+
+                                    # Notify connected clients about billing stop
+                                    await emit_to_session(
+                                        str(session.id),
+                                        "workspace_billing_standby",
+                                        {
+                                            "workspace_id": workspace.id,
+                                            "status": "stopped",
+                                            "reason": "credit_exhaustion",
+                                            "message": (
+                                                "Your cloud workspace has been stopped due to "
+                                                "insufficient compute credits. Please upgrade your "
+                                                "plan or add credits to resume."
+                                            ),
+                                            "standby_at": None,
+                                            "upgrade_url": "/settings/plans",
+                                            "add_credits_url": "/settings/billing",
+                                        },
+                                    )
+
+                                    standby_count += 1
+                                    logger.info(
+                                        "Stopped workspace due to credit exhaustion",
+                                        workspace_id=workspace.id,
+                                        session_id=str(session.id),
+                                        user_id=user_id,
+                                    )
+
+                                except Exception as e:
+                                    logger.exception(
+                                        "Failed to move workspace to standby for billing",
+                                        workspace_id=workspace.id,
+                                        user_id=user_id,
+                                        error=str(e),
+                                    )
+
+                        if standby_count > 0:
+                            await db.commit()
+                            logger.info(
+                                "Credit enforcement completed",
+                                workspaces_standby=standby_count,
+                            )
+
+                    except Exception as e:
+                        await db.rollback()
+                        logger.exception("Failed in credit enforcement", error=str(e))
+            finally:
+                await release_task_lock("credit_enforcement")
 
         except asyncio.CancelledError:
             logger.info("Credit enforcement task cancelled")
@@ -669,7 +769,7 @@ async def standby_background_task() -> None:
 
     from sqlalchemy import select
 
-    from src.compute_client import compute_client
+    from src.compute_client import get_compute_client_for_workspace
     from src.database.models import Session as SessionModel
     from src.database.models import UserConfig, Workspace
 
@@ -748,9 +848,8 @@ async def standby_background_task() -> None:
 
                                 # Stop the container (only once per workspace)
                                 try:
-                                    await compute_client.stop_workspace(
-                                        workspace.id, session.owner_id
-                                    )
+                                    compute = await get_compute_client_for_workspace(workspace.id)
+                                    await compute.stop_workspace(workspace.id, session.owner_id)
                                 except ComputeServiceHTTPError as compute_error:
                                     # If workspace doesn't exist in compute service (404),
                                     # it's already stopped, so we can still mark it as standby
@@ -822,12 +921,17 @@ async def workspace_provision_background_task() -> None:
 
     Optimized to batch workspace existence checks using asyncio.gather to
     avoid N+1 API calls.
+
+    SCALING: Uses distributed locking so only one instance runs each cycle.
     """
     from datetime import UTC, datetime
 
     from sqlalchemy import select
 
-    from src.compute_client import compute_client
+    from src.compute_client import (
+        get_compute_client_for_placement,
+        get_compute_client_for_workspace,
+    )
     from src.database.models import Session as SessionModel
     from src.database.models import Workspace
     from src.exceptions import ComputeServiceHTTPError
@@ -841,7 +945,11 @@ async def workspace_provision_background_task() -> None:
             Tuple of (workspace_id, exists, error_message).
         """
         try:
-            existing = await compute_client.get_workspace(workspace_id, owner_id)
+            compute = await get_compute_client_for_workspace(workspace_id)
+            existing = await compute.get_workspace(workspace_id, owner_id)
+        except ValueError:
+            # No server assigned yet - workspace definitely doesn't exist in compute
+            return (workspace_id, False, None)
         except ComputeServiceHTTPError as e:
             if e.status_code == 404:
                 return (workspace_id, False, None)
@@ -855,113 +963,130 @@ async def workspace_provision_background_task() -> None:
         try:
             await asyncio.sleep(60)  # Check every minute
 
-            async for db in get_db():
-                try:
-                    provisioned_count = 0
+            # Distributed lock: only one instance runs per cycle
+            if not await try_acquire_task_lock("workspace_provision", ttl_seconds=120):
+                continue  # Another instance is handling this cycle
 
-                    # Find active *cloud* sessions with workspaces that should be running.
-                    # IMPORTANT: Skip local-pod workspaces entirely - those are managed by the
-                    # local pod connection and should never be auto-provisioned via compute.
-                    # NOTE: Only check "running" status - "pending" and "creating" workspaces
-                    # are still being provisioned by another request, and checking them here
-                    # causes a race condition where we try to create them twice.
-                    query = (
-                        select(SessionModel, Workspace)
-                        .join(Workspace, SessionModel.workspace_id == Workspace.id)
-                        .where(
-                            SessionModel.status == "active",
-                            Workspace.status == "running",
-                            Workspace.local_pod_id.is_(None),
-                        )
-                    )
+            try:
+                async for db in get_db():
+                    try:
+                        provisioned_count = 0
 
-                    result = await db.execute(query)
-                    rows = result.all()
-
-                    if not rows:
-                        continue
-
-                    # Batch check workspace existence using asyncio.gather
-                    # This converts N sequential API calls into N parallel calls
-                    check_tasks = [
-                        check_workspace_exists(workspace.id, session.owner_id)
-                        for session, workspace in rows
-                    ]
-                    check_results = await asyncio.gather(*check_tasks)
-
-                    # Build lookup of which workspaces need provisioning
-                    needs_provision: dict[str, bool] = {}
-                    for workspace_id, exists, error in check_results:
-                        if error:
-                            logger.warning(
-                                "Error checking workspace existence",
-                                workspace_id=workspace_id,
-                                error=error,
+                        # Find active *cloud* sessions with workspaces that should be running.
+                        # IMPORTANT: Skip local-pod workspaces entirely - those are managed by the
+                        # local pod connection and should never be auto-provisioned via compute.
+                        # NOTE: Only check "running" status - "pending" and "creating" workspaces
+                        # are still being provisioned by another request, and checking them here
+                        # causes a race condition where we try to create them twice.
+                        query = (
+                            select(SessionModel, Workspace)
+                            .join(Workspace, SessionModel.workspace_id == Workspace.id)
+                            .where(
+                                SessionModel.status == "active",
+                                Workspace.status == "running",
+                                Workspace.local_pod_id.is_(None),
                             )
-                        needs_provision[workspace_id] = not exists and error is None
+                        )
 
-                    # Now provision only the workspaces that don't exist
-                    for session, workspace in rows:
-                        if not needs_provision.get(workspace.id, False):
+                        result = await db.execute(query)
+                        rows = result.all()
+
+                        if not rows:
                             continue
 
-                        try:
-                            # Use the existing build_workspace_config function
-                            from src.routes.sessions import (
-                                build_workspace_config,
-                            )
+                        # Batch check workspace existence using asyncio.gather
+                        # This converts N sequential API calls into N parallel calls
+                        check_tasks = [
+                            check_workspace_exists(workspace.id, session.owner_id)
+                            for session, workspace in rows
+                        ]
+                        check_results = await asyncio.gather(*check_tasks)
 
-                            # Determine tier from session settings
-                            tier = (
-                                session.settings.get("tier", "starter")
-                                if session.settings
-                                else "starter"
-                            )
+                        # Build lookup of which workspaces need provisioning
+                        needs_provision: dict[str, bool] = {}
+                        for workspace_id, exists, error in check_results:
+                            if error:
+                                logger.warning(
+                                    "Error checking workspace existence",
+                                    workspace_id=workspace_id,
+                                    error=error,
+                                )
+                            needs_provision[workspace_id] = not exists and error is None
 
-                            # Build workspace config using the helper
-                            workspace_config = await build_workspace_config(
-                                db,
-                                session.template_id,
-                                session.git_url,
-                                tier,
-                            )
+                        # Now provision only the workspaces that don't exist
+                        for session, workspace in rows:
+                            if not needs_provision.get(workspace.id, False):
+                                continue
 
+                            try:
+                                # Use the existing build_workspace_config function
+                                from src.routes.sessions import (
+                                    build_workspace_config,
+                                )
+
+                                # Determine tier from session settings
+                                tier = (
+                                    session.settings.get("tier", "starter")
+                                    if session.settings
+                                    else "starter"
+                                )
+
+                                # Build workspace config using the helper
+                                workspace_config = await build_workspace_config(
+                                    db,
+                                    session.template_id,
+                                    session.git_url,
+                                    tier,
+                                )
+
+                                logger.info(
+                                    "Auto-provisioning workspace for active session",
+                                    workspace_id=workspace.id,
+                                    session_id=str(session.id),
+                                    session_name=session.name,
+                                )
+
+                                # Select server and get compute client
+                                if workspace.server_id:
+                                    compute = await get_compute_client_for_workspace(workspace.id)
+                                else:
+                                    (
+                                        compute,
+                                        selected_server,
+                                    ) = await get_compute_client_for_placement()
+                                    workspace.server_id = selected_server.id
+
+                                await compute.create_workspace(
+                                    session_id=str(session.id),
+                                    user_id=session.owner_id,
+                                    workspace_id=workspace.id,
+                                    config=workspace_config,
+                                )
+
+                                # Update last activity
+                                workspace.last_activity = datetime.now(UTC)
+                                provisioned_count += 1
+
+                            except Exception as e:
+                                logger.warning(
+                                    "Failed to auto-provision workspace",
+                                    workspace_id=workspace.id,
+                                    session_id=str(session.id),
+                                    error=str(e),
+                                )
+
+                        if provisioned_count > 0:
+                            await db.commit()
                             logger.info(
-                                "Auto-provisioning workspace for active session",
-                                workspace_id=workspace.id,
-                                session_id=str(session.id),
-                                session_name=session.name,
+                                "Auto-provisioned workspaces for active sessions",
+                                count=provisioned_count,
                             )
 
-                            await compute_client.create_workspace(
-                                session_id=str(session.id),
-                                user_id=session.owner_id,
-                                workspace_id=workspace.id,
-                                config=workspace_config,
-                            )
-
-                            # Update last activity
-                            workspace.last_activity = datetime.now(UTC)
-                            provisioned_count += 1
-
-                        except Exception as e:
-                            logger.warning(
-                                "Failed to auto-provision workspace",
-                                workspace_id=workspace.id,
-                                session_id=str(session.id),
-                                error=str(e),
-                            )
-
-                    if provisioned_count > 0:
-                        await db.commit()
-                        logger.info(
-                            "Auto-provisioned workspaces for active sessions",
-                            count=provisioned_count,
-                        )
-
-                except Exception as e:
-                    await db.rollback()
-                    logger.exception("Failed to check workspace provisioning", error=str(e))
+                    except Exception as e:
+                        await db.rollback()
+                        logger.exception("Failed to check workspace provisioning", error=str(e))
+            finally:
+                await release_task_lock("workspace_provision")
 
         except asyncio.CancelledError:
             logger.info("Workspace provision task cancelled")
@@ -980,6 +1105,8 @@ async def agent_watchdog_background_task() -> None:
 
     This prevents agents from getting permanently stuck in a running state
     due to service crashes, network issues, or hung LLM calls.
+
+    SCALING: Uses distributed locking so only one instance runs each cycle.
     """
     from datetime import UTC, datetime, timedelta
 
@@ -996,89 +1123,100 @@ async def agent_watchdog_background_task() -> None:
             if not settings.AGENT_WATCHDOG_ENABLED:
                 continue
 
-            async for db in get_db():
-                try:
-                    now = datetime.now(UTC)
-                    timeout_threshold = now - timedelta(minutes=settings.AGENT_TIMEOUT_MINUTES)
-                    recovered_count = 0
+            # Distributed lock: only one instance runs per cycle
+            if not await try_acquire_task_lock("agent_watchdog", ttl_seconds=120):
+                continue  # Another instance is handling this cycle
 
-                    # Find stuck agents - in 'running' state with status_changed_at
-                    # older than threshold. Also check agents without
-                    # status_changed_at but updated_at is old (for backwards compat)
-                    query = (
-                        select(AgentModel, SessionModel)
-                        .join(SessionModel, SessionModel.id == AgentModel.session_id)
-                        .where(
-                            AgentModel.status == "running",
+            try:
+                async for db in get_db():
+                    try:
+                        now = datetime.now(UTC)
+                        timeout_threshold = now - timedelta(minutes=settings.AGENT_TIMEOUT_MINUTES)
+                        recovered_count = 0
+
+                        # Find stuck agents - in 'running' state with status_changed_at
+                        # older than threshold. Also check agents without
+                        # status_changed_at but updated_at is old (for backwards compat)
+                        query = (
+                            select(AgentModel, SessionModel)
+                            .join(SessionModel, SessionModel.id == AgentModel.session_id)
+                            .where(
+                                AgentModel.status == "running",
+                            )
                         )
-                    )
 
-                    result = await db.execute(query)
-                    potential_stuck = result.all()
+                        result = await db.execute(query)
+                        potential_stuck = result.all()
 
-                    for agent, session in potential_stuck:
-                        # Determine when status last changed
-                        status_time = agent.status_changed_at or agent.updated_at
-                        if status_time > timeout_threshold:
-                            # Not stuck yet
-                            continue
+                        for agent, session in potential_stuck:
+                            # Determine when status last changed
+                            status_time = agent.status_changed_at or agent.updated_at
+                            if status_time > timeout_threshold:
+                                # Not stuck yet
+                                continue
 
-                        # Agent is stuck - attempt recovery
-                        try:
-                            # Try to abort via agent service first (best effort)
-                            from src.agent_client import agent_client
-
+                            # Agent is stuck - attempt recovery
                             try:
-                                await agent_client.abort_agent(agent.id)
-                            except Exception as abort_error:
-                                logger.warning(
-                                    "Failed to abort stuck agent via service",
-                                    agent_id=agent.id,
-                                    error=str(abort_error),
+                                # Try to abort via agent service first (best effort)
+                                from src.agent_client import agent_client
+
+                                try:
+                                    await agent_client.abort_agent(agent.id)
+                                except Exception as abort_error:
+                                    logger.warning(
+                                        "Failed to abort stuck agent via service",
+                                        agent_id=agent.id,
+                                        error=str(abort_error),
+                                    )
+
+                                # Update agent to error state
+                                agent.status = "error"
+                                agent.status_changed_at = now
+
+                                # Notify via WebSocket
+                                timeout_msg = (
+                                    f"Agent timed out after "
+                                    f"{settings.AGENT_TIMEOUT_MINUTES} minutes in running state"
+                                )
+                                await emit_to_session(
+                                    str(session.id),
+                                    "agent_status",
+                                    {
+                                        "agent_id": agent.id,
+                                        "status": "error",
+                                        "error": timeout_msg,
+                                        "auto_recovered": True,
+                                    },
                                 )
 
-                            # Update agent to error state
-                            agent.status = "error"
-                            agent.status_changed_at = now
+                                recovered_count += 1
+                                logger.warning(
+                                    "Recovered stuck agent",
+                                    agent_id=agent.id,
+                                    session_id=str(session.id),
+                                    stuck_since=status_time.isoformat()
+                                    if status_time
+                                    else "unknown",
+                                )
 
-                            # Notify via WebSocket
-                            timeout_msg = (
-                                f"Agent timed out after "
-                                f"{settings.AGENT_TIMEOUT_MINUTES} minutes in running state"
-                            )
-                            await emit_to_session(
-                                str(session.id),
-                                "agent_status",
-                                {
-                                    "agent_id": agent.id,
-                                    "status": "error",
-                                    "error": timeout_msg,
-                                    "auto_recovered": True,
-                                },
-                            )
+                            except Exception as recover_error:
+                                logger.exception(
+                                    "Failed to recover stuck agent",
+                                    agent_id=agent.id,
+                                    error=str(recover_error),
+                                )
 
-                            recovered_count += 1
-                            logger.warning(
-                                "Recovered stuck agent",
-                                agent_id=agent.id,
-                                session_id=str(session.id),
-                                stuck_since=status_time.isoformat() if status_time else "unknown",
+                        if recovered_count > 0:
+                            await db.commit()
+                            logger.info(
+                                "Agent watchdog recovered stuck agents", count=recovered_count
                             )
 
-                        except Exception as recover_error:
-                            logger.exception(
-                                "Failed to recover stuck agent",
-                                agent_id=agent.id,
-                                error=str(recover_error),
-                            )
-
-                    if recovered_count > 0:
-                        await db.commit()
-                        logger.info("Agent watchdog recovered stuck agents", count=recovered_count)
-
-                except Exception as e:
-                    await db.rollback()
-                    logger.exception("Failed in agent watchdog", error=str(e))
+                    except Exception as e:
+                        await db.rollback()
+                        logger.exception("Failed in agent watchdog", error=str(e))
+            finally:
+                await release_task_lock("agent_watchdog")
 
         except asyncio.CancelledError:
             logger.info("Agent watchdog task cancelled")
@@ -1097,18 +1235,50 @@ async def container_health_check_background_task() -> None:
 
     This detects containers that have crashed or become unresponsive
     without the API service being notified.
+
+    SCALING: Uses distributed locking so only one instance runs each cycle.
     """
     from datetime import UTC, datetime, timedelta
 
     from sqlalchemy import select
 
-    from src.compute_client import compute_client
+    from src.compute_client import get_compute_client_for_workspace
     from src.database.models import Session as SessionModel
     from src.database.models import Workspace
+    from src.middleware.rate_limit import get_redis_client
     from src.websocket.hub import emit_to_session
 
-    # Track consecutive failures per workspace (in-memory, reset on restart)
-    failure_counts: dict[str, int] = {}
+    # Redis key prefix for health check failure counts
+    failure_count_prefix = "podex:health:failures:"
+    failure_count_ttl = 3600  # 1 hour TTL - auto-cleanup stale entries
+
+    async def get_failure_count(workspace_id: str) -> int:
+        """Get failure count from Redis."""
+        try:
+            redis = await get_redis_client()
+            count = await redis.get(f"{failure_count_prefix}{workspace_id}")
+            return int(count) if count else 0
+        except Exception:
+            return 0
+
+    async def increment_failure_count(workspace_id: str) -> int:
+        """Increment failure count in Redis, returns new value."""
+        try:
+            redis = await get_redis_client()
+            key = f"{failure_count_prefix}{workspace_id}"
+            new_count = await redis.incr(key)
+            await redis.expire(key, failure_count_ttl)
+            return int(new_count)
+        except Exception:
+            return 1
+
+    async def clear_failure_count(workspace_id: str) -> None:
+        """Clear failure count from Redis."""
+        try:
+            redis = await get_redis_client()
+            await redis.delete(f"{failure_count_prefix}{workspace_id}")
+        except Exception:
+            pass
 
     while True:
         try:
@@ -1117,83 +1287,89 @@ async def container_health_check_background_task() -> None:
             if not settings.CONTAINER_HEALTH_CHECK_ENABLED:
                 continue
 
-            async for db in get_db():
-                try:
-                    now = datetime.now(UTC)
-                    # Only check workspaces inactive for > 5 minutes
-                    inactive_threshold = now - timedelta(minutes=5)
+            # Distributed lock: only one instance runs per cycle
+            if not await try_acquire_task_lock("container_health_check", ttl_seconds=180):
+                continue  # Another instance is handling this cycle
 
-                    query = (
-                        select(Workspace, SessionModel)
-                        .join(SessionModel, SessionModel.workspace_id == Workspace.id)
-                        .where(
-                            Workspace.status == "running",
-                            Workspace.last_activity < inactive_threshold,
-                        )
-                    )
+            try:
+                async for db in get_db():
+                    try:
+                        now = datetime.now(UTC)
+                        # Only check workspaces inactive for > 5 minutes
+                        inactive_threshold = now - timedelta(minutes=5)
 
-                    result = await db.execute(query)
-                    workspaces = result.all()
-
-                    for workspace, session in workspaces:
-                        try:
-                            # Perform health check
-                            health = await compute_client.health_check_workspace(
-                                workspace.id,
-                                session.owner_id,
-                                timeout_seconds=settings.CONTAINER_HEALTH_CHECK_TIMEOUT,
+                        query = (
+                            select(Workspace, SessionModel)
+                            .join(SessionModel, SessionModel.workspace_id == Workspace.id)
+                            .where(
+                                Workspace.status == "running",
+                                Workspace.last_activity < inactive_threshold,
                             )
+                        )
 
-                            if health.get("healthy", False):
-                                # Clear failure count on success
-                                failure_counts.pop(workspace.id, None)
-                            else:
-                                # Increment failure count
-                                failure_counts[workspace.id] = (
-                                    failure_counts.get(workspace.id, 0) + 1
+                        result = await db.execute(query)
+                        workspaces = result.all()
+
+                        for workspace, session in workspaces:
+                            try:
+                                # Perform health check
+                                compute = await get_compute_client_for_workspace(workspace.id)
+                                health = await compute.health_check_workspace(
+                                    workspace.id,
+                                    session.owner_id,
+                                    timeout_seconds=settings.CONTAINER_HEALTH_CHECK_TIMEOUT,
                                 )
 
-                                if (
-                                    failure_counts[workspace.id]
-                                    >= settings.CONTAINER_UNRESPONSIVE_THRESHOLD
-                                ):
-                                    logger.warning(
-                                        "Workspace container unresponsive",
-                                        workspace_id=workspace.id,
-                                        failures=failure_counts[workspace.id],
-                                        error=health.get("error"),
-                                    )
+                                if health.get("healthy", False):
+                                    # Clear failure count on success
+                                    await clear_failure_count(workspace.id)
+                                else:
+                                    # Increment failure count (Redis-backed for consistency)
+                                    current_failures = await increment_failure_count(workspace.id)
 
-                                    # Move to error state
-                                    workspace.status = "error"
+                                    if (
+                                        current_failures
+                                        >= settings.CONTAINER_UNRESPONSIVE_THRESHOLD
+                                    ):
+                                        logger.warning(
+                                            "Workspace container unresponsive",
+                                            workspace_id=workspace.id,
+                                            failures=current_failures,
+                                            error=health.get("error"),
+                                        )
 
-                                    await emit_to_session(
-                                        str(session.id),
-                                        "workspace_status",
-                                        {
-                                            "workspace_id": workspace.id,
-                                            "status": "error",
-                                            "error": "Container became unresponsive",
-                                        },
-                                    )
+                                        # Move to error state
+                                        workspace.status = "error"
 
-                                    # Clear from tracking
-                                    del failure_counts[workspace.id]
+                                        await emit_to_session(
+                                            str(session.id),
+                                            "workspace_status",
+                                            {
+                                                "workspace_id": workspace.id,
+                                                "status": "error",
+                                                "error": "Container became unresponsive",
+                                            },
+                                        )
 
-                        except Exception as check_error:
-                            # Health check itself failed - count as failure
-                            failure_counts[workspace.id] = failure_counts.get(workspace.id, 0) + 1
-                            logger.warning(
-                                "Health check failed for workspace",
-                                workspace_id=workspace.id,
-                                error=str(check_error),
-                            )
+                                        # Clear from tracking
+                                        await clear_failure_count(workspace.id)
 
-                    await db.commit()
+                            except Exception as check_error:
+                                # Health check itself failed - count as failure
+                                await increment_failure_count(workspace.id)
+                                logger.warning(
+                                    "Health check failed for workspace",
+                                    workspace_id=workspace.id,
+                                    error=str(check_error),
+                                )
 
-                except Exception as e:
-                    await db.rollback()
-                    logger.exception("Failed in container health check", error=str(e))
+                        await db.commit()
+
+                    except Exception as e:
+                        await db.rollback()
+                        logger.exception("Failed in container health check", error=str(e))
+            finally:
+                await release_task_lock("container_health_check")
 
         except asyncio.CancelledError:
             logger.info("Container health check task cancelled")
@@ -1216,7 +1392,7 @@ async def standby_cleanup_background_task() -> None:
 
     from sqlalchemy import select
 
-    from src.compute_client import compute_client
+    from src.compute_client import get_compute_client_for_workspace
     from src.database.models import Session as SessionModel
     from src.database.models import UserConfig, Workspace
 
@@ -1264,8 +1440,9 @@ async def standby_cleanup_background_task() -> None:
                             try:
                                 # Delete workspace from compute service with timeout
                                 # MEDIUM FIX: Add timeout to prevent cleanup task from hanging
+                                compute = await get_compute_client_for_workspace(workspace.id)
                                 await asyncio.wait_for(
-                                    compute_client.delete_workspace(
+                                    compute.delete_workspace(
                                         workspace.id,
                                         session.owner_id,
                                     ),
@@ -1642,6 +1819,15 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         break
     logger.info("Platform settings cache initialized")
 
+    # Sync all config (tools, roles, modes, skills) from database to Redis
+    # Agent service reads directly from Redis for these configurations
+    async for db in get_db():
+        from src.services.config_sync import sync_config_to_redis
+
+        config_counts = await sync_config_to_redis(db)
+        break
+    logger.info("Config synced to Redis", **config_counts)
+
     # Seed development admin user (only in development mode)
     await seed_admin()
 
@@ -1993,7 +2179,6 @@ api_v1.include_router(worktrees.router, prefix="/worktrees", tags=["worktrees"])
 api_v1.include_router(changes.router, prefix="/changes", tags=["changes"])
 api_v1.include_router(pending_changes.router, tags=["pending-changes"])
 api_v1.include_router(subagents.router, tags=["subagents"])
-api_v1.include_router(hooks.router, tags=["hooks"])
 api_v1.include_router(commands.router, tags=["commands"])
 api_v1.include_router(project_init.router, tags=["init"])
 api_v1.include_router(doctor.router, tags=["doctor"])

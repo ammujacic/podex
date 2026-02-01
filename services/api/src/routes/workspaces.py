@@ -1154,7 +1154,7 @@ async def start_workspace(
     """
     from datetime import UTC, datetime
 
-    from src.compute_client import compute_client
+    from src.compute_client import get_compute_client_for_workspace
     from src.exceptions import ComputeServiceHTTPError
     from src.routes.sessions import build_workspace_config
     from src.services.workspace_router import workspace_router
@@ -1304,7 +1304,8 @@ async def start_workspace(
                 )
 
                 # Create the workspace in compute service (GCS bucket will be mounted)
-                await compute_client.create_workspace(
+                compute = await get_compute_client_for_workspace(workspace_id)
+                await compute.create_workspace(
                     session_id=str(session.id),
                     user_id=user_id,
                     workspace_id=workspace_id,

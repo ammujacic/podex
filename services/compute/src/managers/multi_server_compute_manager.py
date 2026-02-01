@@ -69,6 +69,11 @@ class MultiServerComputeManager(ComputeManager):
             server_count=len(docker_manager.servers),
         )
 
+    @property
+    def managed_server_ids(self) -> set[str]:
+        """Return the set of server IDs this compute instance manages."""
+        return set(self._docker.servers.keys())
+
     async def _get_http_client(self) -> httpx.AsyncClient:
         """Get shared HTTP client with connection pooling."""
         if self._http_client is None or self._http_client.is_closed:

@@ -3,14 +3,14 @@
 This module provides a comprehensive email service with:
 - Beautiful, responsive HTML templates matching the Podex design system
 - Plain text fallbacks for all emails
-- Multiple backend support (console, SMTP, SendGrid)
+- Multiple backend support (console, SMTP, Resend)
 - Email tracking and logging
 - Template rendering with Jinja2-style variables
 
 Backends:
 - console: Logs emails to console (development)
 - smtp: Uses standard SMTP (production - works with any SMTP relay)
-- sendgrid: Uses SendGrid API (recommended for production)
+- resend: Uses Resend API (recommended for production)
 """
 
 from dataclasses import dataclass
@@ -113,8 +113,8 @@ class EmailService:
             return await self._send_smtp(
                 to_email, from_address, subject, html_body, text_body, template, cc, bcc
             )
-        if self._backend == "sendgrid":
-            return await self._send_sendgrid(
+        if self._backend == "resend":
+            return await self._send_resend(
                 to_email, subject, html_body, text_body, template, cc, bcc
             )
         logger.warning("Unknown email backend: %s, using console", self._backend)
@@ -217,7 +217,7 @@ class EmailService:
             )
             return EmailResult(success=False, error=error_msg)
 
-    async def _send_sendgrid(
+    async def _send_resend(
         self,
         to_email: str,
         subject: str,
@@ -227,69 +227,56 @@ class EmailService:
         cc: list[str] | None,
         bcc: list[str] | None,
     ) -> EmailResult:
-        """Send email via SendGrid API (recommended for production)."""
+        """Send email via Resend API (recommended for production)."""
         import httpx  # noqa: PLC0415
 
-        api_key = getattr(settings, "SENDGRID_API_KEY", None)
+        api_key = getattr(settings, "RESEND_API_KEY", None)
         if not api_key:
-            logger.warning("SENDGRID_API_KEY not set, falling back to console")
+            logger.warning("RESEND_API_KEY not set, falling back to console")
             return await self._send_console(
                 to_email, subject, html_body, text_body, template, cc, bcc
             )
 
         try:
-            # Build SendGrid API payload
+            # Build Resend API payload
             payload: dict[str, Any] = {
-                "personalizations": [
-                    {
-                        "to": [{"email": to_email}],
-                    }
-                ],
-                "from": {
-                    "email": self._from_email,
-                    "name": self._from_name,
-                },
-                "reply_to": {
-                    "email": settings.EMAIL_REPLY_TO,
-                },
+                "from": f"{self._from_name} <{self._from_email}>",
+                "to": [to_email],
                 "subject": subject,
-                "content": [
-                    {"type": "text/plain", "value": text_body},
-                    {"type": "text/html", "value": html_body},
+                "html": html_body,
+                "text": text_body,
+                "reply_to": settings.EMAIL_REPLY_TO,
+                # Add tags for filtering in Resend dashboard
+                "tags": [
+                    {"name": "template", "value": template.value},
+                    {"name": "category", "value": "transactional"},
                 ],
-                # Track opens and clicks for analytics
-                "tracking_settings": {
-                    "click_tracking": {"enable": True},
-                    "open_tracking": {"enable": True},
-                },
-                # Add category for filtering in SendGrid dashboard
-                "categories": [template.value, "transactional"],
             }
 
             # Add CC/BCC if provided
             if cc:
-                payload["personalizations"][0]["cc"] = [{"email": e} for e in cc]
+                payload["cc"] = cc
             if bcc:
-                payload["personalizations"][0]["bcc"] = [{"email": e} for e in bcc]
+                payload["bcc"] = bcc
 
-            # Send via SendGrid API
+            # Send via Resend API
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    settings.SENDGRID_API_URL,
+                    settings.RESEND_API_URL,
                     json=payload,
                     headers={
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
-                    timeout=settings.HTTP_TIMEOUT_SENDGRID,
+                    timeout=settings.HTTP_TIMEOUT_RESEND,
                 )
 
-            # SendGrid returns 202 Accepted on success
-            if response.status_code == 202:
-                # Extract message ID from headers
-                message_id = response.headers.get("X-Message-Id", f"sg-{uuid4().hex[:12]}")
+            # Resend returns 200 OK with JSON body on success
+            if response.status_code == 200:
+                data = response.json()
+                message_id = data.get("id", f"resend-{uuid4().hex[:12]}")
                 logger.info(
-                    "Email sent via SendGrid",
+                    "Email sent via Resend",
                     to=to_email,
                     template=template.value,
                     message_id=message_id,
@@ -297,9 +284,9 @@ class EmailService:
                 return EmailResult(success=True, message_id=message_id)
 
             # Handle errors
-            error_msg = f"SendGrid API error: {response.status_code} - {response.text}"
+            error_msg = f"Resend API error: {response.status_code} - {response.text}"
             logger.error(
-                "SendGrid API error",
+                "Resend API error",
                 status_code=response.status_code,
                 response=response.text,
                 to=to_email,
@@ -310,7 +297,7 @@ class EmailService:
         except Exception as e:
             error_msg = str(e)
             logger.exception(
-                "Failed to send email via SendGrid",
+                "Failed to send email via Resend",
                 to=to_email,
                 template=template.value,
             )

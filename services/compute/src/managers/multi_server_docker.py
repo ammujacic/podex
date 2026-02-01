@@ -38,6 +38,11 @@ class ServerConnection:
     tls_cert_path: str | None = None  # Path to client certificate
     tls_key_path: str | None = None  # Path to client key
     tls_ca_path: str | None = None  # Path to CA certificate
+    # Workspace container images (per-server configuration from database)
+    workspace_image: str = "ghcr.io/mujacica/workspace:latest"
+    workspace_image_arm64: str | None = None
+    workspace_image_amd64: str | None = None
+    workspace_image_gpu: str | None = None
     client: DockerClient | None = None
     last_error: str | None = None
     is_healthy: bool = False
@@ -95,6 +100,10 @@ class MultiServerDockerManager:
         tls_cert_path: str | None = None,
         tls_key_path: str | None = None,
         tls_ca_path: str | None = None,
+        workspace_image: str = "ghcr.io/mujacica/workspace:latest",
+        workspace_image_arm64: str | None = None,
+        workspace_image_amd64: str | None = None,
+        workspace_image_gpu: str | None = None,
     ) -> bool:
         """Add a server to the pool and establish connection.
 
@@ -109,6 +118,10 @@ class MultiServerDockerManager:
             tls_cert_path: Path to client certificate (required if tls_enabled)
             tls_key_path: Path to client key (required if tls_enabled)
             tls_ca_path: Path to CA certificate (required if tls_enabled)
+            workspace_image: Default workspace container image
+            workspace_image_arm64: ARM64-specific image (optional)
+            workspace_image_amd64: AMD64-specific image (optional)
+            workspace_image_gpu: GPU-enabled image (optional)
 
         Returns:
             True if connection successful, False otherwise
@@ -129,6 +142,10 @@ class MultiServerDockerManager:
                 tls_cert_path=tls_cert_path,
                 tls_key_path=tls_key_path,
                 tls_ca_path=tls_ca_path,
+                workspace_image=workspace_image,
+                workspace_image_arm64=workspace_image_arm64,
+                workspace_image_amd64=workspace_image_amd64,
+                workspace_image_gpu=workspace_image_gpu,
             )
 
             try:
@@ -360,12 +377,18 @@ class MultiServerDockerManager:
         except Exception:
             return False
 
-    def get_image_for_server(self, server_id: str, base_image: str | None = None) -> str:
+    def get_image_for_server(
+        self, server_id: str, base_image: str | None = None, gpu_required: bool = False
+    ) -> str:
         """Get the appropriate workspace image for a server based on its architecture.
+
+        Uses per-server image configuration from the database, falling back to
+        the server's default workspace_image if architecture-specific images aren't set.
 
         Args:
             server_id: Server identifier
             base_image: Optional base image override
+            gpu_required: Whether a GPU-enabled image is needed
 
         Returns:
             Image name appropriate for the server's architecture
@@ -375,14 +398,129 @@ class MultiServerDockerManager:
 
         conn = self._connections.get(server_id)
         if not conn:
+            # Fallback to settings if server not found
             return settings.workspace_image
 
-        if conn.architecture == "arm64" and hasattr(settings, "workspace_image_arm64"):
-            return settings.workspace_image_arm64
-        elif conn.architecture == "amd64" and hasattr(settings, "workspace_image_amd64"):
-            return settings.workspace_image_amd64
+        # GPU workspaces need a CUDA-enabled image
+        if gpu_required and conn.workspace_image_gpu:
+            return conn.workspace_image_gpu
 
-        return settings.workspace_image
+        # Use architecture-specific image if available
+        if conn.architecture == "arm64" and conn.workspace_image_arm64:
+            return conn.workspace_image_arm64
+        elif conn.architecture == "amd64" and conn.workspace_image_amd64:
+            return conn.workspace_image_amd64
+
+        # Fall back to server's default workspace image
+        return conn.workspace_image
+
+    async def list_images(self, server_id: str) -> list[dict[str, Any]]:
+        """List Docker images on a server.
+
+        Args:
+            server_id: Server identifier
+
+        Returns:
+            List of image info dicts with id, tags, size, created
+        """
+        client = self.get_client(server_id)
+        if not client:
+            logger.warning(
+                "Cannot list images - server not available",
+                server_id=server_id,
+                registered_servers=list(self._connections.keys()),
+            )
+            return []
+
+        loop = asyncio.get_event_loop()
+
+        def _list() -> list[dict[str, Any]]:
+            images = client.images.list()
+            return [
+                {
+                    "id": img.id[:12] if img.id else "",
+                    "tags": img.tags or [],
+                    "size_mb": img.attrs.get("Size", 0) // (1024 * 1024),
+                    "created": img.attrs.get("Created"),
+                }
+                for img in images
+            ]
+
+        try:
+            return await loop.run_in_executor(None, _list)
+        except Exception as e:
+            logger.exception(
+                "Failed to list images",
+                server_id=server_id,
+                error=str(e),
+            )
+            return []
+
+    async def pull_image(
+        self,
+        server_id: str,
+        image: str,
+        tag: str = "latest",
+    ) -> tuple[bool, str]:
+        """Pull a Docker image on a server.
+
+        Args:
+            server_id: Server identifier
+            image: Image name (e.g., "podex/workspace")
+            tag: Image tag (default: "latest")
+
+        Returns:
+            Tuple of (success, message)
+        """
+        client = self.get_client(server_id)
+        full_image = f"{image}:{tag}"
+
+        if not client:
+            logger.warning(
+                "Cannot pull image - server not available",
+                server_id=server_id,
+                image=full_image,
+                registered_servers=list(self._connections.keys()),
+            )
+            return (False, f"Server {server_id} not available in compute service")
+
+        loop = asyncio.get_event_loop()
+
+        logger.info(
+            "Starting Docker image pull",
+            server_id=server_id,
+            image=full_image,
+        )
+
+        def _pull() -> tuple[bool, str]:
+            try:
+                logger.info(
+                    "Pulling image from Docker daemon", image=full_image, server_id=server_id
+                )
+                client.images.pull(image, tag=tag)
+                logger.info(
+                    "Image pull completed successfully", image=full_image, server_id=server_id
+                )
+                return (True, f"Successfully pulled {full_image}")
+            except docker.errors.APIError as e:
+                logger.error("Docker API error during pull", image=full_image, error=str(e))
+                return (False, f"Docker API error: {e.explanation}")
+            except Exception as e:
+                logger.error("Unexpected error during pull", image=full_image, error=str(e))
+                return (False, str(e))
+
+        try:
+            result = await loop.run_in_executor(None, _pull)
+            logger.info("Pull operation finished", image=full_image, success=result[0])
+            return result
+        except Exception as e:
+            logger.exception(
+                "Failed to pull image",
+                server_id=server_id,
+                image=full_image,
+                error=str(e),
+            )
+            return (False, str(e))
 
     async def create_container(
         self,
@@ -407,13 +545,21 @@ class MultiServerDockerManager:
         loop = asyncio.get_event_loop()
 
         def _create() -> Container:
-            # Select image based on architecture (GPU workspaces use x86_64)
+            # Select image based on architecture and GPU requirements
+            # Uses per-server image configuration from the database
             image = spec.image
             if not spec.gpu_enabled:
-                if conn.architecture == "arm64" and hasattr(settings, "workspace_image_arm64"):
-                    image = settings.workspace_image_arm64
-                elif conn.architecture == "amd64" and hasattr(settings, "workspace_image_amd64"):
-                    image = settings.workspace_image_amd64
+                # Use architecture-specific image if available
+                if conn.architecture == "arm64" and conn.workspace_image_arm64:
+                    image = conn.workspace_image_arm64
+                elif conn.architecture == "amd64" and conn.workspace_image_amd64:
+                    image = conn.workspace_image_amd64
+                elif not image or image == conn.workspace_image:
+                    # Fall back to server's default image
+                    image = conn.workspace_image
+            elif conn.workspace_image_gpu:
+                # GPU workspaces use GPU-specific image if available
+                image = conn.workspace_image_gpu
 
             # Convert CPU limit to nano-CPUs (1 CPU = 1e9 nano-CPUs)
             nano_cpus = int(spec.cpu_limit * 1e9)

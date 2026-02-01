@@ -3,7 +3,7 @@
 import asyncio
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -52,7 +52,7 @@ class GeneratedPlan:
     pros: list[str] = field(default_factory=list)
     cons: list[str] = field(default_factory=list)
     raw_response: str | None = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     generation_time_ms: int = 0
     error: str | None = None
 

@@ -67,10 +67,10 @@ async def cleanup_task() -> None:
             except Exception:
                 logger.exception("Error tracking workspace usage")
 
-            # Cleanup idle workspaces
-            cleaned = await manager.cleanup_idle_workspaces(settings.workspace_timeout)
+            # Cleanup workspaces marked for deletion
+            cleaned = await manager.cleanup_deleted_workspaces()
             if cleaned:
-                logger.info("Cleaned up idle workspaces", count=len(cleaned))
+                logger.info("Cleaned up deleted workspaces", count=len(cleaned))
 
             # Cleanup stale workspaces from Redis (defensive cleanup)
             workspace_store = OrchestratorSingleton._workspace_store

@@ -44,7 +44,7 @@ class AgentTemplate(Base):
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
     allowed_tools: Mapped[list[str]] = mapped_column(JSONB, nullable=False)  # List of tool names
     # Default to Claude Sonnet 4.5, the platform's balanced model
-    model: Mapped[str] = mapped_column(String(100), default="claude-sonnet-4-5")
+    model: Mapped[str] = mapped_column(String(100), default="claude-sonnet-4.5")
     temperature: Mapped[float | None] = mapped_column(Float)  # None means provider default
     max_tokens: Mapped[int | None] = mapped_column(Integer)
 
@@ -142,6 +142,25 @@ class AgentTool(Base):
     category: Mapped[str] = mapped_column(
         String(50), default="general", nullable=False
     )  # file, git, delegation, etc.
+
+    # Permission type flags - used for mode-based access control
+    # These determine how each tool behaves in different agent modes:
+    # - Plan mode: only is_read_operation=True allowed
+    # - Ask mode: requires approval for write/command/deploy operations
+    # - Auto mode: writes allowed, commands need allowlist, deploys need approval
+    # - Sovereign mode: everything allowed
+    is_read_operation: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )  # Read-only operations (allowed in Plan mode)
+    is_write_operation: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )  # Modifies files (write_file, apply_patch)
+    is_command_operation: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )  # Executes shell commands (run_command)
+    is_deploy_operation: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )  # Deployment operations (deploy_preview, etc.)
 
     # Ordering and visibility
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

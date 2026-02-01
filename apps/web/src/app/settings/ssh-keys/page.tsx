@@ -109,7 +109,7 @@ export default function SSHKeysPage() {
   };
 
   return (
-    <div className="max-w-2xl mx-auto px-8 py-8">
+    <div className="max-w-4xl mx-auto px-8 py-8">
       <div className="mb-8">
         <h1 className="text-2xl font-semibold text-text-primary">SSH Keys</h1>
         <p className="text-text-muted mt-1">

@@ -559,7 +559,7 @@ async def create_test_agent(
     from src.database import Agent
 
     # Get a default model
-    result = await db.execute(select(LLMModel).where(LLMModel.model_id == "claude-sonnet-4-5"))
+    result = await db.execute(select(LLMModel).where(LLMModel.model_id == "claude-sonnet-4.5"))
     model = result.scalar_one()
 
     agent_data = {

@@ -135,12 +135,17 @@ class TerminalManager:
             )
 
     def _get_compute_terminal_url(
-        self, workspace_id: str, session_id: str | None = None, shell: str = "bash"
+        self,
+        workspace_id: str,
+        compute_service_url: str,
+        session_id: str | None = None,
+        shell: str = "bash",
     ) -> str:
         """Get the WebSocket URL for the compute service terminal.
 
         Args:
             workspace_id: ID of the workspace container.
+            compute_service_url: Base URL of the compute service (e.g., http://compute:3003).
             session_id: Optional session ID for tmux session persistence.
             shell: Shell to use for the terminal (bash, zsh, fish).
 
@@ -148,11 +153,10 @@ class TerminalManager:
             WebSocket URL for the terminal endpoint.
         """
         # Convert HTTP URL to WebSocket URL
-        compute_url = settings.COMPUTE_SERVICE_URL
-        if compute_url.startswith("https://"):
-            ws_url = compute_url.replace("https://", "wss://")
+        if compute_service_url.startswith("https://"):
+            ws_url = compute_service_url.replace("https://", "wss://")
         else:
-            ws_url = compute_url.replace("http://", "ws://")
+            ws_url = compute_service_url.replace("http://", "ws://")
 
         url = f"{ws_url}/terminal/{workspace_id}"
 
@@ -161,6 +165,42 @@ class TerminalManager:
         if session_id:
             params["session_id"] = session_id
         return f"{url}?{urlencode(params)}"
+
+    async def _get_compute_url_for_workspace(self, workspace_id: str) -> str:
+        """Get the compute service URL for a workspace.
+
+        Args:
+            workspace_id: ID of the workspace.
+
+        Returns:
+            The compute service URL for the workspace's server.
+
+        Raises:
+            RuntimeError: If workspace has no server assigned.
+        """
+        from sqlalchemy import select  # noqa: PLC0415
+        from sqlalchemy.orm import selectinload  # noqa: PLC0415
+
+        from src.database.connection import get_db_context  # noqa: PLC0415
+        from src.database.models import Workspace  # noqa: PLC0415
+
+        async with get_db_context() as db:
+            result = await db.execute(
+                select(Workspace)
+                .options(selectinload(Workspace.server))
+                .where(Workspace.id == workspace_id)
+            )
+            workspace = result.scalar_one_or_none()
+
+            if not workspace or not workspace.server:
+                msg = f"Workspace {workspace_id} has no server assigned"
+                raise RuntimeError(msg)
+
+            if not workspace.server.compute_service_url:
+                msg = f"Server {workspace.server.id} has no compute_service_url configured"
+                raise RuntimeError(msg)
+
+            return str(workspace.server.compute_service_url)
 
     async def create_session(
         self,
@@ -230,7 +270,10 @@ class TerminalManager:
                 )
 
             # Connect to compute service terminal WebSocket (cloud workspaces)
-            terminal_url = self._get_compute_terminal_url(workspace_id, effective_session_id, shell)
+            compute_url = await self._get_compute_url_for_workspace(workspace_id)
+            terminal_url = self._get_compute_terminal_url(
+                workspace_id, compute_url, effective_session_id, shell
+            )
             logger.info(
                 "Connecting to compute terminal",
                 workspace_id=workspace_id,

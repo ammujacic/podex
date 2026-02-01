@@ -7,7 +7,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
 from typing import Annotated, Any, cast
 from uuid import uuid4
 
@@ -19,8 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from podex_shared import generate_tts_summary
-from src.agent_client import agent_client
 from src.audit_logger import AuditAction, AuditLogger
+from src.services.task_queue import get_agent_task_queue
 from src.config import settings
 from src.cache import cache_delete, user_config_key
 from src.database import Agent as AgentModel
@@ -37,9 +36,7 @@ from src.database import Session as SessionModel
 from src.database.connection import async_session_factory
 from src.database.models import ConversationMessage, ConversationSession, UserOAuthToken
 from src.exceptions import (
-    AgentClientError,
     EmptyMessageContentError,
-    InvalidAgentRoleError,
     MessageContentTooLargeError,
 )
 from src.mcp_config import get_effective_mcp_config
@@ -75,55 +72,66 @@ async def get_common_deps(request: Request, db: DbSession) -> CommonDeps:
 CommonDepsAnnotated = Annotated[CommonDeps, Depends(get_common_deps)]
 
 
-class AgentRole(str, Enum):
-    """Valid agent roles."""
+async def get_valid_agent_modes(db: AsyncSession) -> set[str]:
+    """Get valid agent modes from the database.
 
-    ARCHITECT = "architect"
-    CODER = "coder"
-    REVIEWER = "reviewer"
-    TESTER = "tester"
-    AGENT_BUILDER = "agent_builder"
-    ORCHESTRATOR = "orchestrator"
-    CHAT = "chat"
-    SECURITY = "security"
-    DEVOPS = "devops"
-    DOCUMENTATOR = "documentator"
-    CUSTOM = "custom"
+    Agent modes are synced to Redis via config_sync.py but we read from the
+    agent_mode_config platform setting for validation.
+    """
+    result = await db.execute(
+        select(PlatformSetting).where(PlatformSetting.key == "agent_mode_config")
+    )
+    setting = result.scalar_one_or_none()
 
+    if not setting or not isinstance(setting.value, dict):
+        raise HTTPException(
+            status_code=500,
+            detail="Agent mode config not found. Check agent_mode_config in settings.",
+        )
 
-class AgentMode(str, Enum):
-    """Agent operation modes with different permission levels."""
-
-    PLAN = "plan"  # Read-only: analyze codebase, no edits
-    ASK = "ask"  # Requires approval for file edits and commands
-    AUTO = "auto"  # Auto file edits, commands require allowlist or approval
-    SOVEREIGN = "sovereign"  # Full access: all operations allowed
+    return set(setting.value.keys())
 
 
-# Valid agent roles as a set for quick validation
-VALID_AGENT_ROLES = {role.value for role in AgentRole}
-VALID_AGENT_MODES = {mode.value for mode in AgentMode}
+async def get_valid_agent_roles(db: AsyncSession) -> set[str]:
+    """Get valid agent roles from the database.
+
+    Agent roles are defined in AgentRoleConfig table and should be the source of truth.
+    """
+    from src.database.models import AgentRoleConfig
+
+    result = await db.execute(
+        select(AgentRoleConfig.role).where(AgentRoleConfig.is_enabled == True)
+    )
+    roles = result.scalars().all()
+    return {role.lower() for role in roles}
+
 
 # Constants for attention message extraction
 MIN_SENTENCE_LENGTH = 20  # Minimum characters for a meaningful sentence
 MAX_SNIPPET_LENGTH = 150  # Maximum characters for attention message snippet
 
-# Dangerous command patterns that should never be allowed in command_allowlist
-FORBIDDEN_COMMAND_PATTERNS = {
-    "*",  # Allow everything
-    "/*",  # Allow all absolute paths
-    "sudo *",  # Allow all sudo commands
-    "rm -rf *",  # Allow destructive deletions
-    "rm -rf /",  # Extremely dangerous
-    "rm -rf /*",  # Extremely dangerous
-    "> /dev/*",  # Writing to device files
-    "curl * | *",  # Arbitrary command execution
-    "wget * | *",  # Arbitrary command execution
-    "eval *",  # Arbitrary code execution
-    "exec *",  # Arbitrary code execution
-    "$(*))",  # Command substitution
-    "`*`",  # Command substitution
-}
+
+async def get_forbidden_command_patterns(db: AsyncSession) -> set[str]:
+    """Get forbidden command patterns from platform settings.
+
+    These are dangerous command patterns that should never be allowed
+    in an agent's command_allowlist.
+    """
+    result = await db.execute(
+        select(PlatformSetting).where(PlatformSetting.key == "forbidden_command_patterns")
+    )
+    setting = result.scalar_one_or_none()
+
+    if not setting or not isinstance(setting.value, list):
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Forbidden command patterns not configured. "
+                "Check forbidden_command_patterns in platform settings."
+            ),
+        )
+
+    return set(setting.value)
 
 
 def sanitize_error_for_client(error: Exception | str, max_length: int = 200) -> str:
@@ -193,11 +201,15 @@ def _normalize_command_pattern(pattern: str) -> str:
     return normalized.lower()
 
 
-def validate_command_allowlist(allowlist: list[str] | None) -> list[str] | None:
+async def validate_command_allowlist(
+    allowlist: list[str] | None,
+    db: AsyncSession,
+) -> list[str] | None:
     """Validate command allowlist patterns for safety.
 
     Args:
         allowlist: List of command patterns to validate
+        db: Database session for fetching forbidden patterns from platform settings
 
     Returns:
         The validated allowlist
@@ -208,8 +220,11 @@ def validate_command_allowlist(allowlist: list[str] | None) -> list[str] | None:
     if not allowlist:
         return allowlist
 
+    # Get forbidden patterns from platform settings
+    forbidden_patterns = await get_forbidden_command_patterns(db)
+
     # Pre-normalize forbidden patterns for comparison
-    forbidden_normalized = {_normalize_command_pattern(p) for p in FORBIDDEN_COMMAND_PATTERNS}
+    forbidden_normalized = {_normalize_command_pattern(p) for p in forbidden_patterns}
 
     validated = []
     for pattern in allowlist:
@@ -363,7 +378,7 @@ class AgentCreate(BaseModel):
     """Create agent request."""
 
     name: str
-    role: str  # Validated: architect, coder, reviewer, tester, agent_builder, custom
+    role: str  # Validated against database roles at endpoint level
     model: str | None = None  # Optional - uses role default from platform settings if not provided
     mode: str = "ask"  # plan, ask, auto, sovereign
     command_allowlist: list[str] | None = None  # Allowed commands for Auto mode
@@ -372,21 +387,15 @@ class AgentCreate(BaseModel):
 
     @field_validator("role")
     @classmethod
-    def validate_role(cls, v: str) -> str:
-        """Validate role is a valid AgentRole enum value."""
-        role_lower = v.lower()
-        if role_lower not in VALID_AGENT_ROLES:
-            raise InvalidAgentRoleError(v, list(VALID_AGENT_ROLES))
-        return role_lower
+    def normalize_role(cls, v: str) -> str:
+        """Normalize role to lowercase. Full validation happens at endpoint level."""
+        return v.lower()
 
     @field_validator("mode")
     @classmethod
-    def validate_mode(cls, v: str) -> str:
-        """Validate mode is a valid AgentMode enum value."""
-        mode_lower = v.lower()
-        if mode_lower not in VALID_AGENT_MODES:
-            raise ValueError("Invalid agent mode")  # noqa: TRY003
-        return mode_lower
+    def normalize_mode(cls, v: str) -> str:
+        """Normalize mode to lowercase. Full validation happens at endpoint level."""
+        return v.lower()
 
 
 class AgentResponse(BaseModel):
@@ -417,12 +426,9 @@ class AgentModeUpdate(BaseModel):
 
     @field_validator("mode")
     @classmethod
-    def validate_mode(cls, v: str) -> str:
-        """Validate mode is a valid AgentMode enum value."""
-        mode_lower = v.lower()
-        if mode_lower not in VALID_AGENT_MODES:
-            raise ValueError("Invalid agent mode")  # noqa: TRY003
-        return mode_lower
+    def normalize_mode(cls, v: str) -> str:
+        """Normalize mode to lowercase. Full validation happens at endpoint level."""
+        return v.lower()
 
 
 class AgentUpdate(BaseModel):
@@ -1427,21 +1433,40 @@ async def process_agent_message(ctx: AgentMessageContext) -> None:
             # Notify frontend that streaming is starting
             await emit_agent_stream_start(ctx.session_id, ctx.agent_id, stream_message_id)
 
-            # Build context for agent service and call agent
+            # Build context for agent service and enqueue task to Redis
             agent_context = _build_agent_service_context(ctx, message_id=stream_message_id)
             tool_calls: list[dict[str, Any]] | None = None
             tokens_used: int = 0
             try:
-                # Use execute_streaming to get both response and tool calls
-                response_content, tool_calls, tokens_used = await agent_client.execute_streaming(
+                # Enqueue task to Redis queue - agent service worker will pick it up
+                task_queue = get_agent_task_queue()
+                task = await task_queue.enqueue(
                     session_id=ctx.session_id,
                     agent_id=ctx.agent_id,
                     message=ctx.user_message,
+                    message_id=stream_message_id,
                     context=agent_context,
                 )
-            except AgentClientError as e:
+
+                # Wait for task completion (streaming happens via Redis pub/sub)
+                completed_task = await task_queue.wait_for_completion(
+                    task.id,
+                    timeout=settings.AGENT_TASK_TIMEOUT,
+                )
+
+                if completed_task and completed_task.status.value == "completed":
+                    response_content = completed_task.response or ""
+                    tool_calls = completed_task.tool_calls
+                    tokens_used = completed_task.tokens_used
+                elif completed_task and completed_task.status.value == "failed":
+                    raise RuntimeError(completed_task.error or "Agent task failed")  # noqa: TRY301
+                else:
+                    msg = "Agent task timed out or was cancelled"
+                    raise RuntimeError(msg)  # noqa: TRY301
+
+            except Exception as e:
                 logger.warning(
-                    "Agent service call failed, using fallback",
+                    "Agent task failed",
                     agent_id=ctx.agent_id,
                     error=str(e),
                 )
@@ -1528,9 +1553,26 @@ async def create_agent(
     # Verify session exists and user has access
     session = await verify_session_access(session_id, request, db)
 
-    # Validate command_allowlist for security
+    # Validate role against database (unless using a template, which overrides to "custom")
+    if not data.template_id:
+        valid_roles = await get_valid_agent_roles(db)
+        if data.role not in valid_roles:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid agent role: {data.role}. Valid roles: {sorted(valid_roles)}",
+            )
+
+    # Validate mode against database
+    valid_modes = await get_valid_agent_modes(db)
+    if data.mode not in valid_modes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid agent mode: {data.mode}. Valid modes: {sorted(valid_modes)}",
+        )
+
+    # Validate command_allowlist for security (patterns checked against platform settings)
     try:
-        validated_allowlist = validate_command_allowlist(data.command_allowlist)
+        validated_allowlist = await validate_command_allowlist(data.command_allowlist, db)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -1777,6 +1819,14 @@ async def update_agent_mode(
     """
     # Verify user has access to session
     await verify_session_access(session_id, request, db)
+
+    # Validate mode against database
+    valid_modes = await get_valid_agent_modes(db)
+    if data.mode not in valid_modes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid agent mode: {data.mode}. Valid modes: {sorted(valid_modes)}",
+        )
 
     # Get the agent (eager-load conversation_session for _build_agent_response)
     query = (
@@ -2541,14 +2591,15 @@ async def abort_agent(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    # Call agent service to abort tasks
+    # Send abort command via Redis (broadcasts to all agent service instances)
     cancelled_count = 0
     try:
-        result = await agent_client.abort_agent(agent_id)
-        cancelled_count = result.get("cancelled_count", 0)
+        task_queue = get_agent_task_queue()
+        await task_queue.abort_agent(agent_id, session_id)
+        cancelled_count = 1  # We don't know exact count from pub/sub
     except Exception as e:
         logger.warning(
-            "Failed to abort agent tasks in agent service",
+            "Failed to abort agent tasks via Redis",
             agent_id=agent_id,
             error=str(e),
         )
@@ -2641,13 +2692,14 @@ async def force_stop_agent(
     previous_status = agent.status
     cancelled_count = 0
 
-    # Try to cancel via agent service (best effort - don't fail if this doesn't work)
+    # Send abort command via Redis (best effort - don't fail if this doesn't work)
     try:
-        result = await agent_client.abort_agent(agent_id)
-        cancelled_count = result.get("cancelled_count", 0)
+        task_queue = get_agent_task_queue()
+        await task_queue.abort_agent(agent_id, session_id)
+        cancelled_count = 1  # We don't know exact count from pub/sub
     except Exception as e:
         logger.warning(
-            "Agent service abort failed during force-stop",
+            "Redis abort failed during force-stop",
             agent_id=agent_id,
             error=str(e),
         )
@@ -2740,12 +2792,13 @@ async def pause_agent(
             detail=f"Cannot pause agent in '{agent.status}' state. Agent must be running.",
         )
 
-    # Call agent service to pause
+    # Send pause command via Redis (broadcasts to all agent service instances)
     try:
-        await agent_client.pause_agent(agent_id)
+        task_queue = get_agent_task_queue()
+        await task_queue.pause_agent(agent_id, session_id)
     except Exception as e:
         logger.warning(
-            "Failed to pause agent in agent service",
+            "Failed to pause agent via Redis",
             agent_id=agent_id,
             error=str(e),
         )
@@ -2832,12 +2885,13 @@ async def resume_agent(
             detail=f"Cannot resume agent in '{agent.status}' state. Agent must be paused.",
         )
 
-    # Call agent service to resume
+    # Send resume command via Redis (broadcasts to all agent service instances)
     try:
-        await agent_client.resume_agent(agent_id)
+        task_queue = get_agent_task_queue()
+        await task_queue.resume_agent(agent_id, session_id)
     except Exception as e:
         logger.warning(
-            "Failed to resume agent in agent service",
+            "Failed to resume agent via Redis",
             agent_id=agent_id,
             error=str(e),
         )

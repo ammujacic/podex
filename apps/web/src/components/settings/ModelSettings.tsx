@@ -120,7 +120,7 @@ function getProviderInfo(providerId: string, providers: LLMProvider[]): Provider
 // Colors come from agentRoles in config store
 // ============================================================================
 
-import { getRoleIcon } from '@/components/workspace/modals/agentConstants';
+import { getRoleIcon } from '@/lib/agentConstants';
 
 // ============================================================================
 // Default Provider Configuration (models come from API)
@@ -194,7 +194,7 @@ export const useModelSettings = create<ModelSettingsState>()(
     (set, get) => ({
       providers: defaultProviders,
       // Default to Claude Sonnet 4.5 (platform balanced model)
-      defaultModel: 'claude-sonnet-4-5',
+      defaultModel: 'claude-sonnet-4.5',
       agentModelOverrides: {},
       fallbackEnabled: true,
       fallbackOrder: ['ollama', 'lmstudio', 'anthropic'],

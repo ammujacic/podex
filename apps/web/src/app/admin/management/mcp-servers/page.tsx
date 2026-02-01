@@ -76,7 +76,6 @@ const ICON_MAP: Record<string, LucideIcon> = {
   slack: MessageSquare,
   docker: Container,
   kubernetes: Container,
-  'podex-skills': Zap,
   zap: Zap,
   plug: Plug,
   terminal: Terminal,

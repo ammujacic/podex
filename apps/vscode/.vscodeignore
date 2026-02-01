@@ -1,0 +1,35 @@
+# Source files
+src/**
+webview/**
+out/**
+
+# Config files
+*.config.ts
+*.config.mjs
+tsconfig*.json
+.eslintrc*
+eslint.config.*
+vitest.config.*
+
+# Development files
+.vscode/**
+.github/**
+test/**
+
+# Build artifacts
+node_modules/**
+*.vsix
+
+# Documentation
+*.md
+!README.md
+!CHANGELOG.md
+
+# Git
+.git/**
+.gitignore
+
+# Other
+.env*
+*.log
+coverage/**

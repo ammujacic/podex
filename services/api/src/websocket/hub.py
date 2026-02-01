@@ -391,11 +391,14 @@ async def _deferred_terminal_cleanup(workspace_id: str) -> None:
         _pending_terminal_cleanup.pop(workspace_id, None)
 
 
-# Create Socket.IO server
+# Create Socket.IO server with Redis adapter for horizontal scaling
+# Redis enables cross-instance message broadcasting (pub/sub)
 # CORS is configured via settings.CORS_ORIGINS environment variable
 # max_http_buffer_size increased from default 1MB to 50MB to handle large session responses
+_redis_manager = socketio.AsyncRedisManager(settings.REDIS_URL)
 sio = socketio.AsyncServer(
     async_mode="asgi",
+    client_manager=_redis_manager,
     cors_allowed_origins=settings.CORS_ORIGINS if settings.CORS_ORIGINS else "*",
     logger=False,
     engineio_logger=False,
@@ -2187,44 +2190,27 @@ async def native_approval_response(sid: str, data: dict[str, Any]) -> None:
     except Exception as e:
         logger.exception("Failed to update approval status in DB", error=str(e))
 
-    # Call agent service to resolve the approval
-    import httpx
-
-    from src.config import settings
-
-    agent_service_url = (
-        f"{settings.AGENT_SERVICE_URL}/agents/agents/{agent_id}/approvals/{approval_id}/resolve"
-    )
-    headers: dict[str, str] = {}
-    if settings.INTERNAL_SERVICE_TOKEN:
-        headers["Authorization"] = f"Bearer {settings.INTERNAL_SERVICE_TOKEN}"
-
+    # Publish approval response to Redis for distributed agent instances
+    # This replaces the previous HTTP call to a specific agent instance,
+    # enabling horizontal scaling of agent services
     try:
-        async with httpx.AsyncClient(timeout=30.0) as http_client:
-            response = await http_client.post(
-                agent_service_url,
-                json={
-                    "approved": approved,
-                    "add_to_allowlist": add_to_allowlist,
-                },
-                headers=headers,
-            )
-            response.raise_for_status()
-            result = response.json()
-            logger.info(
-                "Agent approval resolved",
-                approval_id=approval_id,
-                result=result,
-            )
-    except httpx.HTTPStatusError as e:
-        logger.exception(
-            "HTTP error resolving agent approval",
+        from src.services.task_queue import get_approval_queue
+
+        approval_queue = get_approval_queue()
+        await approval_queue.publish_response(
             approval_id=approval_id,
-            status=e.response.status_code,
-            error=str(e),
+            approved=approved,
+            add_to_allowlist=add_to_allowlist,
+        )
+        logger.info(
+            "Agent approval published to Redis",
+            approval_id=approval_id,
+            approved=approved,
         )
     except Exception as e:
-        logger.exception("Failed to resolve agent approval", approval_id=approval_id, error=str(e))
+        logger.exception(
+            "Failed to publish approval to Redis", approval_id=approval_id, error=str(e)
+        )
 
     # Broadcast the decision
     await sio.emit(

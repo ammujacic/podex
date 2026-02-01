@@ -7,17 +7,13 @@ Tests cover:
 - SearchEngine class
 """
 
-from datetime import datetime, UTC
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
 
 
 class TestWebScraperModule:
     """Test web scraper module exists."""
 
-    def test_web_scraper_module_exists(self):
+    def test_web_scraper_module_exists(self) -> None:
         """Test web scraper module can be imported."""
         from src.web import scraper
         assert scraper is not None
@@ -26,12 +22,12 @@ class TestWebScraperModule:
 class TestScrapedContent:
     """Test ScrapedContent dataclass."""
 
-    def test_scraped_content_class_exists(self):
+    def test_scraped_content_class_exists(self) -> None:
         """Test ScrapedContent class exists."""
         from src.web.scraper import ScrapedContent
         assert ScrapedContent is not None
 
-    def test_scraped_content_creation(self):
+    def test_scraped_content_creation(self) -> None:
         """Test ScrapedContent can be created."""
         from src.web.scraper import ScrapedContent
 
@@ -44,7 +40,7 @@ class TestScrapedContent:
         assert content.title == "Example Page"
         assert content.text == "Hello World"
 
-    def test_scraped_content_default_values(self):
+    def test_scraped_content_default_values(self) -> None:
         """Test ScrapedContent default values."""
         from src.web.scraper import ScrapedContent
 
@@ -62,7 +58,7 @@ class TestScrapedContent:
         assert content.metadata == {}
         assert content.word_count == 0
 
-    def test_scraped_content_with_all_fields(self):
+    def test_scraped_content_with_all_fields(self) -> None:
         """Test ScrapedContent with all fields."""
         from src.web.scraper import ScrapedContent
 
@@ -88,7 +84,7 @@ class TestScrapedContent:
         assert len(content.tables) == 1
         assert content.word_count == 3
 
-    def test_scraped_content_to_dict(self):
+    def test_scraped_content_to_dict(self) -> None:
         """Test ScrapedContent to_dict method."""
         from src.web.scraper import ScrapedContent
 
@@ -107,7 +103,7 @@ class TestScrapedContent:
         assert data["word_count"] == 2
         assert "scraped_at" in data
 
-    def test_scraped_content_to_markdown(self):
+    def test_scraped_content_to_markdown(self) -> None:
         """Test ScrapedContent to_markdown method."""
         from src.web.scraper import ScrapedContent
 
@@ -130,7 +126,7 @@ class TestScrapedContent:
 class TestContentScraperClass:
     """Test ContentScraper class."""
 
-    def test_content_scraper_class_exists(self):
+    def test_content_scraper_class_exists(self) -> None:
         """Test ContentScraper class exists."""
         from src.web.scraper import ContentScraper
         assert ContentScraper is not None
@@ -139,14 +135,14 @@ class TestContentScraperClass:
 class TestContentScraperInit:
     """Test ContentScraper initialization."""
 
-    def test_content_scraper_initialization(self):
+    def test_content_scraper_initialization(self) -> None:
         """Test ContentScraper can be instantiated."""
         from src.web.scraper import ContentScraper
 
         scraper = ContentScraper()
         assert scraper is not None
 
-    def test_content_scraper_has_scrape_method(self):
+    def test_content_scraper_has_scrape_method(self) -> None:
         """Test ContentScraper has scrape method."""
         from src.web.scraper import ContentScraper
 
@@ -154,7 +150,7 @@ class TestContentScraperInit:
         assert hasattr(scraper, "scrape")
         assert callable(scraper.scrape)
 
-    def test_content_scraper_has_bs4_check(self):
+    def test_content_scraper_has_bs4_check(self) -> None:
         """Test ContentScraper tracks bs4 availability."""
         from src.web.scraper import ContentScraper
 
@@ -165,7 +161,7 @@ class TestContentScraperInit:
 class TestContentScraperScrape:
     """Test ContentScraper scrape method."""
 
-    def test_scrape_basic_html(self):
+    def test_scrape_basic_html(self) -> None:
         """Test scraping basic HTML."""
         from src.web.scraper import ContentScraper, ScrapedContent
 
@@ -177,7 +173,7 @@ class TestContentScraperScrape:
         assert isinstance(result, ScrapedContent)
         assert result.url == "https://example.com"
 
-    def test_scrape_returns_scraped_content(self):
+    def test_scrape_returns_scraped_content(self) -> None:
         """Test scrape returns ScrapedContent instance."""
         from src.web.scraper import ContentScraper, ScrapedContent
 
@@ -188,7 +184,7 @@ class TestContentScraperScrape:
 
         assert isinstance(result, ScrapedContent)
 
-    def test_scrape_extracts_title(self):
+    def test_scrape_extracts_title(self) -> None:
         """Test scrape extracts title from HTML."""
         from src.web.scraper import ContentScraper
 
@@ -204,26 +200,26 @@ class TestContentScraperScrape:
 class TestSearchEngine:
     """Test SearchEngine class."""
 
-    def test_search_engine_class_exists(self):
+    def test_search_engine_class_exists(self) -> None:
         """Test SearchEngine class exists."""
         from src.web.scraper import SearchEngine
         assert SearchEngine is not None
 
-    def test_search_engine_initialization(self):
+    def test_search_engine_initialization(self) -> None:
         """Test SearchEngine initialization."""
         from src.web.scraper import SearchEngine
 
         engine = SearchEngine()
         assert engine is not None
 
-    def test_search_engine_with_provider(self):
+    def test_search_engine_with_provider(self) -> None:
         """Test SearchEngine with specific provider."""
         from src.web.scraper import SearchEngine
 
         engine = SearchEngine(provider="duckduckgo")
         assert engine._provider == "duckduckgo"
 
-    def test_search_engine_has_search_method(self):
+    def test_search_engine_has_search_method(self) -> None:
         """Test SearchEngine has search method."""
         from src.web.scraper import SearchEngine
 
@@ -231,7 +227,7 @@ class TestSearchEngine:
         assert hasattr(engine, "search")
 
     @pytest.mark.asyncio
-    async def test_search_returns_list(self):
+    async def test_search_returns_list(self) -> None:
         """Test search returns a list."""
         from src.web.scraper import SearchEngine
 
@@ -245,7 +241,7 @@ class TestSearchEngine:
 class TestContentScraperPrivateMethods:
     """Test ContentScraper private methods."""
 
-    def test_unescape_html_method(self):
+    def test_unescape_html_method(self) -> None:
         """Test _unescape_html method."""
         from src.web.scraper import ContentScraper
 
@@ -256,7 +252,7 @@ class TestContentScraperPrivateMethods:
         assert "<" in result
         assert ">" in result
 
-    def test_generate_summary_method(self):
+    def test_generate_summary_method(self) -> None:
         """Test _generate_summary method."""
         from src.web.scraper import ContentScraper
 
@@ -267,7 +263,7 @@ class TestContentScraperPrivateMethods:
 
         assert isinstance(summary, str)
 
-    def test_generate_summary_empty_text(self):
+    def test_generate_summary_empty_text(self) -> None:
         """Test _generate_summary with empty text."""
         from src.web.scraper import ContentScraper
 

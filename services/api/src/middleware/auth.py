@@ -66,6 +66,9 @@ PUBLIC_PATHS: list[tuple[str, bool]] = [
     # Waitlist signup (public - for coming soon page)
     ("/api/waitlist", True),  # Public waitlist signup and position check
     ("/api/v1/waitlist", True),  # v1 API version
+    # Device authorization flow (RFC 8628) - CLI/device auth without browser
+    ("/api/auth/device/code", False),  # CLI requests device code (no creds yet)
+    ("/api/auth/device/token", False),  # CLI polls for tokens (uses device_code secret)
 ]
 
 INTERNAL_TOKEN_PATHS: list[tuple[str, bool]] = [

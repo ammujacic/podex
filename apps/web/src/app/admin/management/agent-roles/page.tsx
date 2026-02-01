@@ -234,6 +234,11 @@ interface AgentTool {
   description: string;
   category: string;
   is_enabled: boolean;
+  // Permission flags for mode-based access control
+  is_read_operation: boolean;
+  is_write_operation: boolean;
+  is_command_operation: boolean;
+  is_deploy_operation: boolean;
 }
 
 interface CreateRoleForm {
@@ -395,6 +400,12 @@ export default function AgentRolesAdminPage() {
   // Get sorted roles by usage for stats
   const rolesByUsage = [...roles].sort((a, b) => b.usage_count - a.usage_count);
   const totalUsage = roles.reduce((sum, r) => sum + r.usage_count, 0);
+
+  // Helper to check if a role has disabled tools
+  const getDisabledToolsForRole = (role: AgentRoleConfig): string[] => {
+    const enabledToolNames = new Set(tools.filter((t) => t.is_enabled).map((t) => t.name));
+    return role.tools.filter((toolName) => !enabledToolNames.has(toolName));
+  };
 
   if (loading) {
     return (
@@ -805,6 +816,25 @@ export default function AgentRolesAdminPage() {
                 <label className="block text-sm font-medium text-text-primary mb-2">
                   Available Tools
                 </label>
+                <div className="mb-2 flex items-center gap-4 text-xs text-text-muted">
+                  <span>Permission badges:</span>
+                  <span className="px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded font-mono">
+                    R
+                  </span>
+                  <span>Read</span>
+                  <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-400 rounded font-mono">
+                    W
+                  </span>
+                  <span>Write</span>
+                  <span className="px-1.5 py-0.5 bg-red-500/20 text-red-400 rounded font-mono">
+                    C
+                  </span>
+                  <span>Command</span>
+                  <span className="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded font-mono">
+                    D
+                  </span>
+                  <span>Deploy</span>
+                </div>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                   {tools
                     .filter((t) => t.is_enabled)
@@ -815,11 +845,36 @@ export default function AgentRolesAdminPage() {
                         className={cn(
                           'p-2 text-left rounded-lg border transition-colors text-sm',
                           formData.tools.includes(tool.name)
-                            ? 'border-blue-500 bg-blue-50 text-blue-700'
+                            ? 'border-purple-500 bg-purple-500/20 text-text-primary'
                             : 'border-border-subtle hover:border-gray-300'
                         )}
+                        title={tool.description}
                       >
-                        <div className="font-medium">{tool.name}</div>
+                        <div className="flex items-center justify-between gap-1">
+                          <div className="font-medium truncate">{tool.name}</div>
+                          <div className="flex gap-0.5 flex-shrink-0">
+                            {tool.is_read_operation && (
+                              <span className="px-1 py-0.5 text-[10px] bg-blue-500/20 text-blue-400 rounded font-mono">
+                                R
+                              </span>
+                            )}
+                            {tool.is_write_operation && (
+                              <span className="px-1 py-0.5 text-[10px] bg-amber-500/20 text-amber-400 rounded font-mono">
+                                W
+                              </span>
+                            )}
+                            {tool.is_command_operation && (
+                              <span className="px-1 py-0.5 text-[10px] bg-red-500/20 text-red-400 rounded font-mono">
+                                C
+                              </span>
+                            )}
+                            {tool.is_deploy_operation && (
+                              <span className="px-1 py-0.5 text-[10px] bg-purple-500/20 text-purple-400 rounded font-mono">
+                                D
+                              </span>
+                            )}
+                          </div>
+                        </div>
                         <div className="text-xs text-text-muted truncate">{tool.category}</div>
                       </button>
                     ))}
@@ -903,12 +958,30 @@ export default function AgentRolesAdminPage() {
                     </p>
                   )}
 
+                  {/* Warning for disabled tools */}
+                  {(() => {
+                    const disabledTools = getDisabledToolsForRole(role);
+                    if (disabledTools.length > 0) {
+                      return (
+                        <div className="mt-3 p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+                          <p className="text-xs text-amber-400">
+                            ⚠️ {disabledTools.length} disabled tool
+                            {disabledTools.length > 1 ? 's' : ''}:{' '}
+                            {disabledTools.slice(0, 3).join(', ')}
+                            {disabledTools.length > 3 && ` +${disabledTools.length - 3} more`}
+                          </p>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
+
                   <div className="mt-4 pt-3 border-t border-border-subtle flex items-center justify-between">
                     <div className="text-xs text-text-muted">
                       <span className="font-semibold text-text-primary">
                         {formatNumber(role.usage_count)}
                       </span>{' '}
-                      uses
+                      uses • {role.tools.length} tools
                     </div>
                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button

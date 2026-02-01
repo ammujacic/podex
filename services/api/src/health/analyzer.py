@@ -96,7 +96,7 @@ class HealthAnalyzer:
         Returns:
             Project type string (nodejs, python, go, rust, etc.) or None
         """
-        from src.compute_client import compute_client  # noqa: PLC0415
+        from src.compute_client import get_compute_client_for_workspace  # noqa: PLC0415
 
         # Check for common project files
         checks = [
@@ -113,9 +113,10 @@ class HealthAnalyzer:
             ("vue.config.js", "vue"),
         ]
 
+        compute = await get_compute_client_for_workspace(self.workspace_id)
         for filename, project_type in checks:
             try:
-                result = await compute_client.exec_command(
+                result = await compute.exec_command(
                     workspace_id=self.workspace_id,
                     user_id=self.user_id,
                     command=f"test -f {filename} && echo 'found'",

@@ -119,7 +119,38 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run tests with coverage
-        run: pnpm --filter podex test:coverage
+        working-directory: apps/cli
+        run: pnpm vitest run --coverage
+
+  # VSCode extension tests
+  vscode-extension-test:
+    name: VSCode Extension Tests
+    runs-on: ubuntu-latest
+    needs: [frontend-lint, frontend-typecheck, frontend-format]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm typecheck
+        working-directory: apps/vscode
+
+      - name: Run unit tests
+        run: pnpm test
+        working-directory: apps/vscode
+
+      - name: Build extension
+        run: pnpm build
+        working-directory: apps/vscode
 
   # CLI E2E Tests
   cli-e2e-test:
@@ -598,12 +629,44 @@ jobs:
         run: pnpm build
 
   docker-build:
-    name: Docker Build Test
+    name: Docker Build Test (${{ matrix.service }})
     runs-on: ubuntu-latest
     needs: [backend-api-test, backend-agent-test]
     strategy:
       matrix:
-        service: [api, agent]
+        include:
+          - service: api
+            dockerfile: ./services/api/Dockerfile
+            context: .
+            target: production
+          - service: agent
+            dockerfile: ./services/agent/Dockerfile
+            context: .
+            target: production
+          - service: compute
+            dockerfile: ./services/compute/Dockerfile
+            context: .
+            target: production
+          - service: web
+            dockerfile: ./apps/web/Dockerfile
+            context: .
+            target: production
+          - service: grafana
+            dockerfile: ./docker/monitoring/grafana/Dockerfile
+            context: ./docker/monitoring/grafana
+            target: ''
+          - service: prometheus
+            dockerfile: ./docker/monitoring/prometheus/Dockerfile
+            context: ./docker/monitoring/prometheus
+            target: ''
+          - service: loki
+            dockerfile: ./docker/monitoring/loki/Dockerfile
+            context: ./docker/monitoring/loki
+            target: ''
+          - service: promtail
+            dockerfile: ./docker/monitoring/promtail/Dockerfile
+            context: ./docker/monitoring/promtail
+            target: ''
     steps:
       - uses: actions/checkout@v4
 
@@ -613,9 +676,9 @@ jobs:
       - name: Build Docker image
         uses: docker/build-push-action@v5
         with:
-          context: .
-          file: ./services/${{ matrix.service }}/Dockerfile
-          target: production
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -629,6 +692,7 @@ jobs:
     needs:
       - frontend-packages-test
       - cli-test
+      - vscode-extension-test
       - frontend-test
       - cli-e2e-test
       - backend-api-test
