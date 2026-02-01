@@ -58,7 +58,7 @@ def upgrade() -> None:
         text(
             """
             UPDATE subscription_plans
-            SET highlight_features = ARRAY['1M tokens/month', '5 AI agents', 'Private projects', 'Custom agent templates', 'Email support']
+            SET highlight_features = '["1M tokens/month", "5 AI agents", "Private projects", "Custom agent templates", "Email support"]'::jsonb
             WHERE slug = 'pro'
             """
         )
@@ -69,7 +69,7 @@ def upgrade() -> None:
         text(
             """
             UPDATE subscription_plans
-            SET highlight_features = ARRAY['5M tokens/month', '20 AI agents', 'GPU access', 'Audit logs', 'Priority support']
+            SET highlight_features = '["5M tokens/month", "20 AI agents", "GPU access", "Audit logs", "Priority support"]'::jsonb
             WHERE slug = 'max'
             """
         )
@@ -118,7 +118,7 @@ def downgrade() -> None:
         text(
             """
             UPDATE subscription_plans
-            SET highlight_features = ARRAY['1M tokens/month', '5 AI agents', 'Agent memory & context', 'Custom agent templates', 'Email support']
+            SET highlight_features = '["1M tokens/month", "5 AI agents", "Agent memory & context", "Custom agent templates", "Email support"]'::jsonb
             WHERE slug = 'pro'
             """
         )
@@ -129,7 +129,7 @@ def downgrade() -> None:
         text(
             """
             UPDATE subscription_plans
-            SET highlight_features = ARRAY['5M tokens/month', '20 AI agents', 'GPU access', 'Audit logs', '200 GB storage']
+            SET highlight_features = '["5M tokens/month", "20 AI agents", "GPU access", "Audit logs", "200 GB storage"]'::jsonb
             WHERE slug = 'max'
             """
         )
