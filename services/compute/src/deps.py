@@ -16,6 +16,7 @@ from src.managers.multi_server_docker import MultiServerDockerManager
 from src.managers.placement import PlacementService
 from src.managers.workspace_orchestrator import WorkspaceOrchestrator
 from src.storage.workspace_store import WorkspaceStore
+from src.utils.task_lock import release_task_lock, try_acquire_task_lock
 
 logger = structlog.get_logger()
 
@@ -291,13 +292,25 @@ async def sync_servers() -> int:
 
 
 async def _periodic_server_sync() -> None:
-    """Background task to periodically sync servers from API."""
+    """Background task to periodically sync servers from API.
+
+    Uses distributed locking so only one worker runs each cycle.
+    """
     while True:
         try:
             await asyncio.sleep(settings.server_sync_interval)
-            count = await sync_servers()
-            if count > 0:
-                logger.info("Periodic server sync completed", new_servers=count)
+
+            # Distributed lock: only one worker runs per cycle
+            if not await try_acquire_task_lock("server_sync", ttl_seconds=60):
+                continue  # Another worker is handling this cycle
+
+            try:
+                count = await sync_servers()
+                if count > 0:
+                    logger.info("Periodic server sync completed", new_servers=count)
+            finally:
+                await release_task_lock("server_sync")
+
         except asyncio.CancelledError:
             logger.info("Server sync task cancelled")
             break

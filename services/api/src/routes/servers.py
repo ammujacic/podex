@@ -81,6 +81,27 @@ class ServerUpdateRequest(BaseModel):
     status: str | None = Field(None, pattern=r"^(active|draining|maintenance|offline)$")
     labels: dict[str, str] | None = None
     max_workspaces: int | None = Field(None, ge=1)
+    # Network configuration
+    ip_address: str | None = Field(None, pattern=r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
+    docker_port: int | None = Field(None, ge=1, le=65535)
+    compute_service_url: str | None = None
+    # Hardware resources
+    total_cpu: int | None = Field(None, ge=1)
+    total_memory_mb: int | None = Field(None, ge=512)
+    total_disk_gb: int | None = Field(None, ge=1)
+    total_bandwidth_mbps: int | None = Field(None, ge=1)
+    # Server metadata
+    region: str | None = None
+    architecture: str | None = Field(None, pattern=r"^(amd64|arm64)$")
+    # GPU configuration
+    has_gpu: bool | None = None
+    gpu_type: str | None = None
+    gpu_count: int | None = Field(None, ge=0)
+    # TLS configuration
+    tls_enabled: bool | None = None
+    tls_cert_path: str | None = None
+    tls_key_path: str | None = None
+    tls_ca_path: str | None = None
     # Workspace container images
     workspace_image: str | None = None
     workspace_image_arm64: str | None = None
@@ -121,6 +142,7 @@ class ServerResponse(BaseModel):
     tls_cert_path: str | None
     tls_key_path: str | None
     tls_ca_path: str | None
+    compute_service_url: str
     workspace_image: str
     workspace_image_arm64: str | None
     workspace_image_amd64: str | None
@@ -229,6 +251,7 @@ def _server_to_response(server: WorkspaceServer) -> ServerResponse:
         tls_cert_path=server.tls_cert_path,
         tls_key_path=server.tls_key_path,
         tls_ca_path=server.tls_ca_path,
+        compute_service_url=server.compute_service_url,
         workspace_image=server.workspace_image,
         workspace_image_arm64=server.workspace_image_arm64,
         workspace_image_amd64=server.workspace_image_amd64,
@@ -390,6 +413,43 @@ async def update_server(
         server.labels = data.labels
     if data.max_workspaces is not None:
         server.max_workspaces = data.max_workspaces
+    # Network configuration updates
+    if data.ip_address is not None:
+        server.ip_address = data.ip_address
+    if data.docker_port is not None:
+        server.docker_port = data.docker_port
+    if data.compute_service_url is not None:
+        server.compute_service_url = data.compute_service_url
+    # Hardware resource updates
+    if data.total_cpu is not None:
+        server.total_cpu = data.total_cpu
+    if data.total_memory_mb is not None:
+        server.total_memory_mb = data.total_memory_mb
+    if data.total_disk_gb is not None:
+        server.total_disk_gb = data.total_disk_gb
+    if data.total_bandwidth_mbps is not None:
+        server.total_bandwidth_mbps = data.total_bandwidth_mbps
+    # Server metadata updates
+    if data.region is not None:
+        server.region = data.region
+    if data.architecture is not None:
+        server.architecture = data.architecture
+    # GPU configuration updates
+    if data.has_gpu is not None:
+        server.has_gpu = data.has_gpu
+    if data.gpu_type is not None:
+        server.gpu_type = data.gpu_type
+    if data.gpu_count is not None:
+        server.gpu_count = data.gpu_count
+    # TLS configuration updates
+    if data.tls_enabled is not None:
+        server.tls_enabled = data.tls_enabled
+    if data.tls_cert_path is not None:
+        server.tls_cert_path = data.tls_cert_path
+    if data.tls_key_path is not None:
+        server.tls_key_path = data.tls_key_path
+    if data.tls_ca_path is not None:
+        server.tls_ca_path = data.tls_ca_path
     # Workspace image updates
     if data.workspace_image is not None:
         server.workspace_image = data.workspace_image

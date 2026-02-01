@@ -22,6 +22,7 @@ import structlog
 
 from src.config import settings
 from src.models.workspace import WorkspaceStatus
+from src.utils.task_lock import release_task_lock, try_acquire_task_lock
 
 if TYPE_CHECKING:
     from src.managers.multi_server_docker import MultiServerDockerManager
@@ -669,24 +670,36 @@ class HeartbeatService:
         return ServerHealthStatus.HEALTHY
 
     async def _heartbeat_loop(self) -> None:
-        """Main heartbeat loop - runs periodically."""
+        """Main heartbeat loop - runs periodically.
+
+        Uses distributed locking so only one worker runs each cycle.
+        """
         while self._running:
             try:
-                self._heartbeat_count += 1
+                # Distributed lock: only one worker runs per cycle
+                if not await try_acquire_task_lock("heartbeat", ttl_seconds=60):
+                    # Another worker is handling this cycle, just wait
+                    await asyncio.sleep(self._config.interval_seconds)
+                    continue
 
-                # Check all servers
-                await self.check_all_servers()
+                try:
+                    self._heartbeat_count += 1
 
-                # Mark stale servers
-                self._mark_stale_servers()
+                    # Check all servers
+                    await self.check_all_servers()
 
-                # Check workspace containers periodically (every N heartbeats)
-                if (
-                    self._config.check_workspace_containers
-                    and self._heartbeat_count % self._config.workspace_check_interval_multiplier
-                    == 0
-                ):
-                    await self.check_all_workspace_containers()
+                    # Mark stale servers
+                    self._mark_stale_servers()
+
+                    # Check workspace containers periodically (every N heartbeats)
+                    if (
+                        self._config.check_workspace_containers
+                        and self._heartbeat_count % self._config.workspace_check_interval_multiplier
+                        == 0
+                    ):
+                        await self.check_all_workspace_containers()
+                finally:
+                    await release_task_lock("heartbeat")
 
             except Exception:
                 logger.exception("Error in heartbeat loop")

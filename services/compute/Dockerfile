@@ -82,6 +82,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 # Entrypoint handles SSH key permissions and user switching
 ENTRYPOINT ["/entrypoint.sh"]
 
-# Run with gunicorn
+# Run with gunicorn (background tasks use Redis distributed locking for safe scaling)
 CMD ["gunicorn", "src.main:app", "-k", "uvicorn.workers.UvicornWorker", \
      "--bind", "0.0.0.0:3003", "--workers", "4", "--threads", "4"]
