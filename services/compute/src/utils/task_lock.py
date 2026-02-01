@@ -27,15 +27,23 @@ async def _get_lock_client() -> RedisClient:
     return _lock_client
 
 
-async def try_acquire_task_lock(task_name: str, ttl_seconds: int = 300) -> bool:
+async def try_acquire_task_lock(
+    task_name: str,
+    ttl_seconds: int = 300,
+    fail_closed: bool = True,
+) -> bool:
     """Try to acquire a distributed lock for a background task.
 
     Args:
         task_name: Unique identifier for the task (e.g., "heartbeat", "server_sync")
         ttl_seconds: Lock expiration time. Should be > max expected execution time.
+        fail_closed: If True, return False on Redis errors (skip task).
+                     If False, return True on Redis errors (proceed anyway).
+                     Default is True for safety in horizontal scaling.
 
     Returns:
-        True if lock acquired (proceed with task), False if another instance has it.
+        True if lock acquired (proceed with task), False if another instance has it
+        or if Redis fails and fail_closed=True.
     """
     try:
         client = await _get_lock_client()
@@ -49,13 +57,20 @@ async def try_acquire_task_lock(task_name: str, ttl_seconds: int = 300) -> bool:
         )
         return result is True
     except Exception as e:
-        # If Redis fails, log and proceed (better to have duplicate work than no work)
-        logger.warning(
-            "Failed to acquire task lock, proceeding anyway",
-            task=task_name,
-            error=str(e),
-        )
-        return True
+        if fail_closed:
+            logger.warning(
+                "Failed to acquire task lock, skipping task (fail-closed)",
+                task=task_name,
+                error=str(e),
+            )
+            return False
+        else:
+            logger.warning(
+                "Failed to acquire task lock, proceeding anyway (fail-open)",
+                task=task_name,
+                error=str(e),
+            )
+            return True
 
 
 async def release_task_lock(task_name: str) -> None:

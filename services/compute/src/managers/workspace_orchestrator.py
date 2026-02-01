@@ -279,6 +279,33 @@ class WorkspaceOrchestrator:
                 ),
             )
 
+        # Build environment variables, including git configuration
+        container_env = {
+            "WORKSPACE_ID": workspace_id,
+            "USER_ID": user_id,
+            "SESSION_ID": session_id,
+            "WORKSPACE_TIER": config.tier,
+            **(config.environment or {}),
+        }
+
+        # Add git repos to clone (comma-separated)
+        if config.repos:
+            container_env["GIT_REPOS"] = ",".join(config.repos)
+
+        # Add git credentials for private repos (username:token)
+        if config.git_credentials:
+            container_env["GIT_CREDENTIALS"] = config.git_credentials
+
+        # Add git branch to checkout
+        if config.git_branch:
+            container_env["GIT_BRANCH"] = config.git_branch
+
+        # Add git identity for commits
+        if config.git_name:
+            container_env["GIT_USER_NAME"] = config.git_name
+        if config.git_email:
+            container_env["GIT_USER_EMAIL"] = config.git_email
+
         container_spec = ContainerSpec(
             name=f"workspace-{workspace_id[:12]}",
             image=workspace_image,
@@ -286,13 +313,7 @@ class WorkspaceOrchestrator:
             memory_limit_mb=requirements.memory_mb,
             disk_limit_gb=requirements.disk_gb,
             bandwidth_limit_mbps=requirements.bandwidth_mbps,
-            environment={
-                "WORKSPACE_ID": workspace_id,
-                "USER_ID": user_id,
-                "SESSION_ID": session_id,
-                "WORKSPACE_TIER": config.tier,
-                **(config.environment or {}),
-            },
+            environment=container_env,
             labels={
                 "podex.workspace": "true",
                 "podex.workspace_id": workspace_id,

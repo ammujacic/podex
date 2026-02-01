@@ -79,11 +79,96 @@ configure_git() {
         git config --global user.email "$GIT_USER_EMAIL"
     fi
 
-    # Set up credential helper for HTTPS
-    git config --global credential.helper 'cache --timeout=3600'
+    # Set up credential helper - use store for persistent credentials
+    git config --global credential.helper store
+
+    # If GITHUB_TOKEN is set, configure credentials for github.com
+    # This allows git push/pull to work without re-authentication
+    if [ -n "$GITHUB_TOKEN" ]; then
+        log_info "Configuring GitHub credentials for git operations"
+        # Extract username from GIT_CREDENTIALS if available, otherwise use 'x-access-token'
+        if [ -n "$GIT_CREDENTIALS" ]; then
+            github_user="${GIT_CREDENTIALS%%:*}"
+        else
+            github_user="x-access-token"
+        fi
+        # Write credentials to git credential store
+        echo "https://${github_user}:${GITHUB_TOKEN}@github.com" >> "$HOME/.git-credentials"
+        chmod 600 "$HOME/.git-credentials"
+    fi
 
     # Safe directory config for mounted volumes
     git config --global --add safe.directory '*'
+}
+
+# Clone git repositories from GIT_REPOS environment variable
+clone_repos() {
+    if [ -z "$GIT_REPOS" ]; then
+        log_info "No GIT_REPOS specified, skipping clone"
+        return 0
+    fi
+
+    log_info "Cloning repositories..."
+
+    # Split comma-separated repos
+    IFS=',' read -ra REPOS <<< "$GIT_REPOS"
+
+    for repo_url in "${REPOS[@]}"; do
+        # Trim whitespace
+        repo_url=$(echo "$repo_url" | xargs)
+
+        if [ -z "$repo_url" ]; then
+            continue
+        fi
+
+        # Extract repo name from URL (handles both HTTPS and SSH URLs)
+        # Examples:
+        #   https://github.com/user/repo.git -> repo
+        #   git@github.com:user/repo.git -> repo
+        repo_name=$(basename "$repo_url" .git)
+
+        target_dir="$HOME/projects/$repo_name"
+
+        # Skip if already cloned - don't touch existing repos to preserve user's work
+        if [ -d "$target_dir/.git" ]; then
+            log_info "Repository already exists: $target_dir (preserving user's work)"
+            continue
+        fi
+
+        # Build clone URL with credentials if provided (for HTTPS URLs)
+        clone_url="$repo_url"
+        if [ -n "$GIT_CREDENTIALS" ]; then
+            # Only inject credentials for HTTPS URLs
+            if [[ "$repo_url" == https://* ]]; then
+                # Extract host and path from URL
+                # https://github.com/user/repo.git -> github.com/user/repo.git
+                url_without_scheme="${repo_url#https://}"
+                clone_url="https://$GIT_CREDENTIALS@$url_without_scheme"
+                log_info "Cloning (with credentials): $repo_url -> $target_dir"
+            else
+                log_info "Cloning: $repo_url -> $target_dir"
+            fi
+        else
+            log_info "Cloning: $repo_url -> $target_dir"
+        fi
+
+        # Clone the repository
+        if git clone "$clone_url" "$target_dir" 2>&1; then
+            log_info "Successfully cloned: $repo_name"
+
+            # Checkout specific branch if specified
+            if [ -n "$GIT_BRANCH" ]; then
+                log_info "Checking out branch: $GIT_BRANCH"
+                cd "$target_dir"
+                git checkout "$GIT_BRANCH" 2>/dev/null || git checkout -b "$GIT_BRANCH" "origin/$GIT_BRANCH" 2>/dev/null || log_warn "Could not checkout branch $GIT_BRANCH"
+                cd - > /dev/null
+            fi
+        else
+            log_error "Failed to clone: $repo_url"
+        fi
+    done
+
+    log_info "Repository cloning complete"
 }
 
 # Configure SSH if keys are provided
@@ -170,6 +255,7 @@ main() {
     init_workspace
     configure_git
     configure_ssh
+    clone_repos
     start_sshd
     configure_shell
     apply_custom_env

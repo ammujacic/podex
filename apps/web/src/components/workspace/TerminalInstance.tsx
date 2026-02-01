@@ -110,6 +110,7 @@ export function TerminalInstance({
       reconnection: true,
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
+      withCredentials: true, // Required for cross-origin cookie authentication
     });
 
     socketRef.current = socket;

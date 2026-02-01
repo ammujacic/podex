@@ -221,13 +221,6 @@ async def get_anthropic_prompt_caching_enabled() -> bool:
     return True
 
 
-# Default thinking budget values (these are used by synchronous code
-# that can't call async functions). Should match database seed values.
-DEFAULT_THINKING_BUDGET = 8000
-MIN_THINKING_BUDGET = 1024
-MAX_THINKING_BUDGET = 32000
-
-
 # ==========================================
 # Model Capabilities Cache (Redis-backed)
 # ==========================================

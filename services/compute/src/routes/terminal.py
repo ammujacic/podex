@@ -16,7 +16,9 @@ import structlog
 from docker import DockerClient
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, status
 
+from podex_shared.redis_client import RedisClient, get_redis_client
 from podex_shared.sentry import track_terminal_command
+from src.config import settings
 from src.deps import OrchestratorSingleton, get_compute_manager, verify_internal_auth
 from src.managers.base import (
     ComputeManager,  # noqa: TC001 - FastAPI needs this at runtime for Depends()
@@ -34,21 +36,23 @@ router = APIRouter(
 
 
 class TmuxSessionManager:
-    """Manages tmux sessions across workspace containers.
+    """Redis-backed tmux session manager for horizontal scaling.
 
-    Tracks which tmux sessions exist and their active client counts.
-    Sessions persist even when no clients are connected.
+    Tracks tmux session client counts in Redis so multiple compute instances
+    can share session state. Local WebSocket connections are tracked in memory
+    for graceful shutdown.
     """
 
     _instance: TmuxSessionManager | None = None
+    REDIS_KEY_PREFIX = "compute:terminal:session:"
+    SESSION_TTL_SECONDS = 86400  # 24 hours
 
     def __init__(self) -> None:
-        # Map of (container_id, session_name) -> client_count
-        self._sessions: dict[tuple[str, str], int] = {}
-        # Track active TmuxTerminalSession objects for shutdown
-        self._active_sessions: set[TmuxTerminalSession] = set()
+        # Local tracking of WebSocket connections for graceful shutdown
+        self._local_sessions: set[TmuxTerminalSession] = set()
         self._lock = asyncio.Lock()
         self._shutdown_event = asyncio.Event()
+        self._redis_client: RedisClient | None = None
 
     @classmethod
     def get_instance(cls) -> TmuxSessionManager:
@@ -56,58 +60,96 @@ class TmuxSessionManager:
             cls._instance = cls()
         return cls._instance
 
+    async def _get_redis(self) -> RedisClient:
+        """Get or create the Redis client."""
+        if self._redis_client is None:
+            self._redis_client = get_redis_client(settings.redis_url)
+        await self._redis_client.connect()
+        return self._redis_client
+
+    def _make_redis_key(self, container_id: str, session_name: str) -> str:
+        """Create Redis key for a session."""
+        return f"{self.REDIS_KEY_PREFIX}{container_id}:{session_name}"
+
     async def register_client(self, container_id: str, session_name: str) -> None:
-        """Register a new client connection to a tmux session."""
-        async with self._lock:
-            key = (container_id, session_name)
-            self._sessions[key] = self._sessions.get(key, 0) + 1
+        """Register a new client connection to a tmux session (Redis-backed)."""
+        try:
+            client = await self._get_redis()
+            key = self._make_redis_key(container_id, session_name)
+            count = await client.client.hincrby(key, "client_count", 1)
+            await client.client.expire(key, self.SESSION_TTL_SECONDS)
             logger.info(
                 "Client registered to tmux session",
                 container_id=container_id[:12],
                 session_name=session_name,
-                client_count=self._sessions[key],
+                client_count=count,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to register client in Redis, continuing anyway",
+                container_id=container_id[:12],
+                session_name=session_name,
+                error=str(e),
             )
 
     async def unregister_client(self, container_id: str, session_name: str) -> int:
         """Unregister a client from a tmux session. Returns remaining client count."""
-        async with self._lock:
-            key = (container_id, session_name)
-            if key in self._sessions:
-                self._sessions[key] = max(0, self._sessions[key] - 1)
-                count = self._sessions[key]
-                logger.info(
-                    "Client unregistered from tmux session",
-                    container_id=container_id[:12],
-                    session_name=session_name,
-                    remaining_clients=count,
-                )
-                return count
+        try:
+            client = await self._get_redis()
+            key = self._make_redis_key(container_id, session_name)
+            raw_count = await client.client.hincrby(key, "client_count", -1)
+            count: int = max(0, int(raw_count))
+            logger.info(
+                "Client unregistered from tmux session",
+                container_id=container_id[:12],
+                session_name=session_name,
+                remaining_clients=count,
+            )
+            return count
+        except Exception as e:
+            logger.warning(
+                "Failed to unregister client in Redis",
+                container_id=container_id[:12],
+                session_name=session_name,
+                error=str(e),
+            )
             return 0
 
     async def get_client_count(self, container_id: str, session_name: str) -> int:
         """Get current client count for a session."""
-        async with self._lock:
-            return self._sessions.get((container_id, session_name), 0)
+        try:
+            client = await self._get_redis()
+            key = self._make_redis_key(container_id, session_name)
+            count = await client.client.hget(key, "client_count")
+            return int(count) if count else 0
+        except Exception as e:
+            logger.warning(
+                "Failed to get client count from Redis",
+                container_id=container_id[:12],
+                session_name=session_name,
+                error=str(e),
+            )
+            return 0
 
     async def register_active_session(self, session: TmuxTerminalSession) -> None:
-        """Register an active terminal session for shutdown tracking."""
+        """Register an active terminal session for local shutdown tracking."""
         async with self._lock:
-            self._active_sessions.add(session)
+            self._local_sessions.add(session)
 
     async def unregister_active_session(self, session: TmuxTerminalSession) -> None:
-        """Unregister a terminal session."""
+        """Unregister a terminal session from local tracking."""
         async with self._lock:
-            self._active_sessions.discard(session)
+            self._local_sessions.discard(session)
 
     def is_shutting_down(self) -> bool:
         """Check if shutdown is in progress."""
         return self._shutdown_event.is_set()
 
     async def shutdown_all_sessions(self) -> None:
-        """Close all active terminal sessions during shutdown."""
+        """Close all active terminal sessions on THIS instance during shutdown."""
         self._shutdown_event.set()
         async with self._lock:
-            sessions = list(self._active_sessions)
+            sessions = list(self._local_sessions)
 
         if sessions:
             logger.info("Closing active terminal sessions", count=len(sessions))

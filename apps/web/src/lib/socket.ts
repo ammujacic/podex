@@ -702,6 +702,7 @@ export function getSocket(): Socket {
       randomizationFactor: 0.5,
       // Timeout for connection attempts
       timeout: 20000,
+      withCredentials: true, // Required for cross-origin cookie authentication
     });
 
     socket.on('connect', () => {

@@ -401,9 +401,24 @@ async def get_scale_options(
     provider = get_hardware_specs_provider()
     all_specs = await provider.get_all_specs()
 
-    # Get current spec for architecture comparison
+    # Get current spec for architecture comparison and display
     current_spec = all_specs.get(current_tier)
     current_architecture = current_spec.architecture if current_spec else "x86_64"  # noqa: F841
+
+    # Build current tier info for the response
+    current_tier_info = None
+    if current_spec:
+        current_tier_info = {
+            "tier": current_tier,
+            "display_name": current_spec.display_name,
+            "cpu": current_spec.vcpu,
+            "memory_mb": current_spec.memory_mb,
+            "storage_gb": current_spec.storage_gb,
+            "bandwidth_mbps": current_spec.bandwidth_mbps,
+            "hourly_rate_cents": current_spec.hourly_rate_cents,
+            "is_gpu": current_spec.is_gpu,
+            "gpu_type": current_spec.gpu_type,
+        }
 
     available_tiers = []
     for tier_name, spec in all_specs.items():
@@ -490,6 +505,7 @@ async def get_scale_options(
 
     return {
         "current_tier": current_tier,
+        "current_tier_info": current_tier_info,
         "server_id": server_id,
         "available_tiers": available_tiers,
     }

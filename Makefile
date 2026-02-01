@@ -197,47 +197,66 @@ test:
 	@echo "$(GREEN)Test infrastructure ready and healthy$(NC)"
 	@echo ""
 	@# Run tests with proper cleanup on failure
-	@TEST_FAILED=0; \
+	@TESTS_PASSED=true; \
 	echo "$(CYAN)=== Shared Library Tests (with integration) ===$(NC)"; \
-	cd services/shared && \
+	if (cd services/shared && \
 		REDIS_URL=redis://localhost:6380 \
 		RUN_INTEGRATION_TESTS=true \
-		uv run pytest --cov=src --cov-report=term-missing --cov-report=html -v || TEST_FAILED=1; \
-	if [ $$TEST_FAILED -eq 0 ]; then \
+		uv run pytest --cov=src --cov-report=term-missing --cov-report=html -v); then \
 		echo "$(GREEN)Shared library tests passed ✓$(NC)"; \
 	else \
 		echo "$(RED)Shared library tests failed$(NC)"; \
+		TESTS_PASSED=false; \
 	fi; \
 	echo ""; \
-	echo "$(CYAN)=== API Service Tests ===$(NC)"; \
-	$(MAKE) test-api || TEST_FAILED=1; \
+	echo "$(CYAN)=== API Service Tests (Unit) ===$(NC)"; \
+	if (cd services/api && \
+		DATABASE_URL=postgresql+asyncpg://test:test@localhost:5433/podex_test \
+		REDIS_URL=redis://localhost:6380 \
+		ENVIRONMENT=test \
+		uv run pytest tests/unit/ -v --cov=src --cov-report=term-missing -m unit); then \
+		echo "$(GREEN)API unit tests passed ✓$(NC)"; \
+	else \
+		echo "$(RED)API unit tests failed$(NC)"; \
+		TESTS_PASSED=false; \
+	fi; \
 	echo ""; \
 	echo "$(CYAN)=== Agent Service Tests ===$(NC)"; \
-	cd services/agent && \
+	if (cd services/agent && \
 		DATABASE_URL=postgresql+asyncpg://test:test@localhost:5433/podex_test \
 		REDIS_URL=redis://localhost:6380 \
 		ENVIRONMENT=test \
 		API_URL=http://localhost:3001 \
 		INTERNAL_SERVICE_TOKEN=test-internal-service-token \
-		uv run pytest --cov=src --cov-report=term-missing --cov-report=html -v || TEST_FAILED=1; \
-	if [ $$TEST_FAILED -eq 0 ]; then \
+		uv run pytest --cov=src --cov-report=term-missing --cov-report=html -v); then \
 		echo "$(GREEN)Agent service tests passed ✓$(NC)"; \
+	else \
+		echo "$(RED)Agent service tests failed$(NC)"; \
+		TESTS_PASSED=false; \
 	fi; \
 	echo ""; \
 	echo "$(CYAN)=== Compute Service Tests ===$(NC)"; \
 	echo "$(YELLOW)Running compute tests with docker-compose...$(NC)"; \
-	docker-compose -f docker-compose.test.yml up --build test-compute --abort-on-container-exit || TEST_FAILED=1; \
-	docker-compose -f docker-compose.test.yml down test-compute; \
-	echo "$(GREEN)Compute service tests passed ✓$(NC)"; \
+	if docker-compose -f docker-compose.test.yml up --build test-compute --abort-on-container-exit; then \
+		echo "$(GREEN)Compute service tests passed ✓$(NC)"; \
+	else \
+		echo "$(RED)Compute service tests failed$(NC)"; \
+		TESTS_PASSED=false; \
+	fi; \
+	docker-compose -f docker-compose.test.yml down test-compute 2>/dev/null || true; \
 	echo ""; \
 	echo "$(CYAN)=== Local Pod Service Tests ===$(NC)"; \
-	cd services/local-pod && uv run pytest --cov=src --cov-report=term-missing --cov-report=html -v || TEST_FAILED=1; \
-	echo "$(GREEN)Local-pod service tests passed ✓$(NC)"; \
+	if (cd services/local-pod && uv run pytest --cov=src --cov-report=term-missing --cov-report=html -v); then \
+		echo "$(GREEN)Local-pod service tests passed ✓$(NC)"; \
+	else \
+		echo "$(RED)Local-pod service tests failed$(NC)"; \
+		TESTS_PASSED=false; \
+	fi; \
 	echo ""; \
 	echo "$(CYAN)Cleaning up test infrastructure...$(NC)"; \
-	$(MAKE) test-clean; \
+	docker-compose -f docker-compose.test.yml down -v 2>/dev/null || true; \
 	echo ""; \
-	if [ $$TEST_FAILED -eq 0 ]; then \
+	if [ "$$TESTS_PASSED" = "true" ]; then \
 		echo "$(GREEN)✓ All tests complete!$(NC)"; \
 	else \
 		echo "$(RED)✗ Some tests failed - see output above$(NC)"; \

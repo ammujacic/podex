@@ -1949,8 +1949,8 @@ async def get_terminal_history_endpoint(
     # Clamp limit to prevent large payloads
     limit = max(1, min(MAX_TERMINAL_HISTORY_ENTRIES, limit))
 
-    # Get history from hub
-    history = get_terminal_history(workspace_id, limit)
+    # Get history from hub (stored in Redis)
+    history = await get_terminal_history(workspace_id, limit)
 
     return TerminalHistoryResponse(
         workspace_id=workspace_id,
@@ -1986,8 +1986,8 @@ async def clear_terminal_history_endpoint(
     # Verify user has access to this workspace
     await verify_workspace_access(workspace_id, request, db)
 
-    # Clear history
-    clear_terminal_history(workspace_id)
+    # Clear history (from Redis)
+    await clear_terminal_history(workspace_id)
 
     return {"message": "Terminal history cleared"}
 

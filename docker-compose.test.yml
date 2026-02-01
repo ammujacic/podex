@@ -169,7 +169,7 @@ services:
     ports:
       - "3013:3003"
     environment:
-      COMPUTE_ENVIRONMENT: test
+      COMPUTE_ENVIRONMENT: development
       COMPUTE_MODE: mock
       COMPUTE_REDIS_URL: redis://redis-test:6379
       # GCP Configuration
@@ -319,17 +319,20 @@ services:
         echo 'Waiting for Redis...' &&
         sleep 5 &&
         echo 'Running Compute tests...' &&
-        uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html --cov-report=term-missing &&
-        echo 'Compute tests complete! - PASSED' ||
-        echo 'Compute tests complete! - FAILED'
+        uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html --cov-report=term-missing;
+        EXIT_CODE=$$?;
+        if [ $$EXIT_CODE -eq 0 ]; then
+          echo 'Compute tests complete! - PASSED';
+        else
+          echo 'Compute tests complete! - FAILED';
+        fi;
+        exit $$EXIT_CODE
       "
     environment:
-      COMPUTE_ENVIRONMENT: test
+      COMPUTE_ENVIRONMENT: development
       COMPUTE_MODE: docker
       COMPUTE_REDIS_URL: redis://redis-test:6379
       COMPUTE_DOCKER_HOST: unix:///var/run/docker.sock
-      COMPUTE_MAX_WORKSPACES: 5
-      COMPUTE_WORKSPACE_IMAGE: podex/workspace:test
       COMPUTE_API_BASE_URL: http://localhost:3001
       INTERNAL_SERVICE_TOKEN: test-internal-service-token
       # GCP Configuration (for tests)

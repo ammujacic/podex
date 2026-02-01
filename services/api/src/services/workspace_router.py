@@ -10,6 +10,7 @@ the workspace is running.
 
 import contextlib
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -1024,16 +1025,17 @@ class WorkspaceRouter:
         """Get the working directory for a workspace.
 
         For local pods, returns the actual host path from DB (mount_path).
-        For cloud workspaces, returns /home/dev.
+        For cloud workspaces with a git_url, returns /home/dev/projects/<repo_name>.
+        For cloud workspaces without git_url, returns /home/dev.
         """
+        from src.database import Session as SessionModel  # noqa: PLC0415
+        from src.database.connection import async_session_factory  # noqa: PLC0415
+
         is_local, pod_id = await self._is_local_pod_workspace(workspace_id)
 
         if is_local and pod_id:
             # Get mount_path from session.settings in DB
             # This is the authoritative source - don't rely on local pod state
-            from src.database import Session as SessionModel  # noqa: PLC0415
-            from src.database.connection import async_session_factory  # noqa: PLC0415
-
             async with async_session_factory() as db:
                 result = await db.execute(
                     select(SessionModel).where(SessionModel.workspace_id == workspace_id)
@@ -1053,6 +1055,20 @@ class WorkspaceRouter:
                 pass
 
             return "."
+
+        # Cloud workspace - check if there's a git_url to determine the repo directory
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(SessionModel).where(SessionModel.workspace_id == workspace_id)
+            )
+            session = result.scalar_one_or_none()
+            if session and session.git_url:
+                # Extract repo name from git URL
+                # Examples:
+                #   https://github.com/user/repo.git -> repo
+                #   git@github.com:user/repo.git -> repo
+                repo_name = Path(session.git_url).name.removesuffix(".git")
+                return f"/home/dev/projects/{repo_name}"
 
         return "/home/dev"
 

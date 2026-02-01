@@ -10,10 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.services.pricing import (
-    DEFAULT_INPUT_PRICE_PER_MILLION,
-    DEFAULT_OUTPUT_PRICE_PER_MILLION,
-    PRICING_CACHE_TTL,
     ModelPricing,
+    UnknownModelError,
     _normalize_model_id,
     calculate_token_cost,
     calculate_token_cost_sync,
@@ -50,12 +48,12 @@ async def clear_pricing_cache():
     """Clear pricing cache before each test."""
     import src.services.pricing as pricing_module
 
-    pricing_module._pricing_cache = {}
-    pricing_module._cache_updated_at = None
+    pricing_module._local_cache = {}
+    pricing_module._local_cache_updated_at = None
     yield
     # Clear after test as well
-    pricing_module._pricing_cache = {}
-    pricing_module._cache_updated_at = None
+    pricing_module._local_cache = {}
+    pricing_module._local_cache_updated_at = None
 
 
 @pytest.mark.unit
@@ -104,13 +102,12 @@ def test_normalize_model_id_no_change_needed():
 @pytest.mark.asyncio
 async def test_get_model_pricing_cache_hit(mock_db, sample_pricing):
     """Test getting model pricing from cache."""
-    import src.services.pricing as pricing_module
-
-    # Pre-populate cache
-    pricing_module._pricing_cache = {"claude-sonnet-4": sample_pricing}
-    pricing_module._cache_updated_at = datetime.now(UTC)
-
-    result = await get_model_pricing(mock_db, "claude-sonnet-4")
+    # Mock Redis to return the cached data
+    with patch(
+        "src.services.pricing._get_cache_from_redis",
+        return_value={"claude-sonnet-4": sample_pricing},
+    ):
+        result = await get_model_pricing(mock_db, "claude-sonnet-4")
 
     assert result == sample_pricing
     assert result.model_id == "claude-sonnet-4"
@@ -120,12 +117,9 @@ async def test_get_model_pricing_cache_hit(mock_db, sample_pricing):
 @pytest.mark.asyncio
 async def test_get_model_pricing_cache_miss(mock_db):
     """Test getting model pricing not in cache."""
-    import src.services.pricing as pricing_module
-
-    pricing_module._pricing_cache = {}
-    pricing_module._cache_updated_at = datetime.now(UTC)
-
-    result = await get_model_pricing(mock_db, "nonexistent-model")
+    # Mock Redis to return empty cache and DB to return nothing
+    with patch("src.services.pricing._get_cache_from_redis", return_value={}):
+        result = await get_model_pricing(mock_db, "nonexistent-model")
 
     assert result is None
 
@@ -134,12 +128,6 @@ async def test_get_model_pricing_cache_miss(mock_db):
 @pytest.mark.asyncio
 async def test_get_model_pricing_stale_cache_refresh(mock_db):
     """Test pricing cache refresh when stale."""
-    import src.services.pricing as pricing_module
-
-    # Set cache as stale
-    pricing_module._cache_updated_at = datetime.now(UTC) - timedelta(minutes=10)
-    pricing_module._pricing_cache = {}
-
     # Mock database query
     mock_model = MagicMock()
     mock_model.model_id = "test-model"
@@ -153,7 +141,28 @@ async def test_get_model_pricing_stale_cache_refresh(mock_db):
     mock_result.scalars().all.return_value = [mock_model]
     mock_db.execute = AsyncMock(return_value=mock_result)
 
-    result = await get_model_pricing(mock_db, "test-model")
+    expected_pricing = ModelPricing(
+        model_id="test-model",
+        display_name="Test Model",
+        provider="test",
+        input_price_per_million=Decimal("2.0"),
+        output_price_per_million=Decimal("10.0"),
+        cached_input_price_per_million=Decimal("0.2"),
+        is_available=True,
+    )
+
+    # First call returns None (cache miss), second call after DB load returns data
+    call_count = [0]
+
+    async def mock_get_cache():
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return None  # Cache miss
+        return {"test-model": expected_pricing}  # After DB load
+
+    with patch("src.services.pricing._get_cache_from_redis", side_effect=mock_get_cache):
+        with patch("src.services.pricing._set_cache_to_redis"):
+            result = await get_model_pricing(mock_db, "test-model")
 
     assert result is not None
     assert result.model_id == "test-model"
@@ -164,15 +173,13 @@ async def test_get_model_pricing_stale_cache_refresh(mock_db):
 @pytest.mark.asyncio
 async def test_get_all_model_pricing(mock_db, sample_pricing):
     """Test getting all model pricing."""
-    import src.services.pricing as pricing_module
-
-    pricing_module._pricing_cache = {
+    cache = {
         "model1": sample_pricing,
         "model2": sample_pricing,
     }
-    pricing_module._cache_updated_at = datetime.now(UTC)
 
-    result = await get_all_model_pricing(mock_db)
+    with patch("src.services.pricing._get_cache_from_redis", return_value=cache):
+        result = await get_all_model_pricing(mock_db)
 
     assert len(result) == 2
     assert "model1" in result
@@ -183,13 +190,12 @@ async def test_get_all_model_pricing(mock_db, sample_pricing):
 @pytest.mark.asyncio
 async def test_calculate_token_cost_with_known_model(mock_db, sample_pricing):
     """Test calculating token cost for known model."""
-    import src.services.pricing as pricing_module
-
-    pricing_module._pricing_cache = {"claude-sonnet-4": sample_pricing}
-    pricing_module._cache_updated_at = datetime.now(UTC)
-
-    # 1M input tokens = $3.00, 1M output tokens = $15.00
-    cost = await calculate_token_cost(mock_db, "claude-sonnet-4", 1000000, 1000000)
+    with patch(
+        "src.services.pricing._get_cache_from_redis",
+        return_value={"claude-sonnet-4": sample_pricing},
+    ):
+        # 1M input tokens = $3.00, 1M output tokens = $15.00
+        cost = await calculate_token_cost(mock_db, "claude-sonnet-4", 1000000, 1000000)
 
     assert cost == Decimal("18.00")
 
@@ -198,47 +204,48 @@ async def test_calculate_token_cost_with_known_model(mock_db, sample_pricing):
 @pytest.mark.asyncio
 async def test_calculate_token_cost_with_cached_tokens(mock_db, sample_pricing):
     """Test calculating token cost with cached input tokens."""
-    import src.services.pricing as pricing_module
-
-    pricing_module._pricing_cache = {"claude-sonnet-4": sample_pricing}
-    pricing_module._cache_updated_at = datetime.now(UTC)
-
-    # 1M input = $3, 1M output = $15, 1M cached = $0.30
-    cost = await calculate_token_cost(
-        mock_db, "claude-sonnet-4", 1000000, 1000000, cached_input_tokens=1000000
-    )
+    with patch(
+        "src.services.pricing._get_cache_from_redis",
+        return_value={"claude-sonnet-4": sample_pricing},
+    ):
+        # 1M input = $3, 1M output = $15, 1M cached = $0.30
+        cost = await calculate_token_cost(
+            mock_db, "claude-sonnet-4", 1000000, 1000000, cached_input_tokens=1000000
+        )
 
     assert cost == Decimal("18.30")
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_calculate_token_cost_unknown_model(mock_db):
-    """Test calculating token cost for unknown model uses defaults."""
+async def test_calculate_token_cost_unknown_model_raises_error(mock_db):
+    """Test calculating token cost for unknown model raises error."""
     import src.services.pricing as pricing_module
 
-    pricing_module._pricing_cache = {}
-    pricing_module._cache_updated_at = datetime.now(UTC)
+    pricing_module._local_cache = {}
+    pricing_module._local_cache_updated_at = datetime.now(UTC)
 
-    cost = await calculate_token_cost(mock_db, "unknown-model", 1000000, 1000000)
+    # Mock Redis to return None (cache miss) and DB to return empty
+    with patch("src.services.pricing._get_cache_from_redis", return_value=None):
+        with patch("src.services.pricing._load_pricing_from_db"):
+            with pytest.raises(UnknownModelError) as exc_info:
+                await calculate_token_cost(mock_db, "unknown-model", 1000000, 1000000)
 
-    # Should use default pricing
-    expected = DEFAULT_INPUT_PRICE_PER_MILLION + DEFAULT_OUTPUT_PRICE_PER_MILLION
-    assert cost == expected
+    assert exc_info.value.model_id == "unknown-model"
+    assert "Unknown model" in str(exc_info.value)
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_calculate_token_cost_normalized_model_id(mock_db, sample_pricing):
     """Test calculating cost with model ID that needs normalization."""
-    import src.services.pricing as pricing_module
-
     # Cache uses normalized ID
-    pricing_module._pricing_cache = {"claude-sonnet-4": sample_pricing}
-    pricing_module._cache_updated_at = datetime.now(UTC)
-
-    # Request with dated version
-    cost = await calculate_token_cost(mock_db, "claude-sonnet-4-20250514", 1000000, 1000000)
+    with patch(
+        "src.services.pricing._get_cache_from_redis",
+        return_value={"claude-sonnet-4": sample_pricing},
+    ):
+        # Request with dated version - should normalize and find it
+        cost = await calculate_token_cost(mock_db, "claude-sonnet-4-20250514", 1000000, 1000000)
 
     assert cost == Decimal("18.00")
 
@@ -254,12 +261,13 @@ def test_calculate_token_cost_sync_with_cache(sample_pricing):
 
 
 @pytest.mark.unit
-def test_calculate_token_cost_sync_without_cache():
-    """Test synchronous token cost calculation without cache."""
-    cost = calculate_token_cost_sync("unknown-model", 1000000, 1000000, pricing_cache={})
+def test_calculate_token_cost_sync_unknown_model_raises_error():
+    """Test synchronous token cost calculation for unknown model raises error."""
+    with pytest.raises(UnknownModelError) as exc_info:
+        calculate_token_cost_sync("unknown-model", 1000000, 1000000, pricing_cache={})
 
-    expected = DEFAULT_INPUT_PRICE_PER_MILLION + DEFAULT_OUTPUT_PRICE_PER_MILLION
-    assert cost == expected
+    assert exc_info.value.model_id == "unknown-model"
+    assert "Unknown model" in str(exc_info.value)
 
 
 @pytest.mark.unit
@@ -267,7 +275,7 @@ def test_calculate_token_cost_sync_global_cache(sample_pricing):
     """Test synchronous calculation using global cache."""
     import src.services.pricing as pricing_module
 
-    pricing_module._pricing_cache = {"test-model": sample_pricing}
+    pricing_module._local_cache = {"test-model": sample_pricing}
 
     cost = calculate_token_cost_sync("test-model", 500000, 500000)
 
@@ -290,7 +298,7 @@ def test_get_pricing_from_cache(sample_pricing):
     """Test getting pricing from cache without DB."""
     import src.services.pricing as pricing_module
 
-    pricing_module._pricing_cache = {"test-model": sample_pricing}
+    pricing_module._local_cache = {"test-model": sample_pricing}
 
     result = get_pricing_from_cache("test-model")
 
@@ -302,7 +310,7 @@ def test_get_pricing_from_cache_not_found():
     """Test getting pricing from cache when not found."""
     import src.services.pricing as pricing_module
 
-    pricing_module._pricing_cache = {}
+    pricing_module._local_cache = {}
 
     result = get_pricing_from_cache("nonexistent")
 
@@ -321,7 +329,7 @@ def test_get_pricing_from_cache_normalized():
         input_price_per_million=Decimal("10.00"),
         output_price_per_million=Decimal("50.00"),
     )
-    pricing_module._pricing_cache = {"claude-opus-4": sample}
+    pricing_module._local_cache = {"claude-opus-4": sample}
 
     result = get_pricing_from_cache("claude-opus-4-20251101")
 
@@ -333,7 +341,7 @@ def test_get_all_pricing_from_cache(sample_pricing):
     """Test getting all pricing from cache."""
     import src.services.pricing as pricing_module
 
-    pricing_module._pricing_cache = {
+    pricing_module._local_cache = {
         "model1": sample_pricing,
         "model2": sample_pricing,
     }
@@ -349,6 +357,8 @@ def test_get_all_pricing_from_cache(sample_pricing):
 @pytest.mark.asyncio
 async def test_refresh_pricing_cache(mock_db):
     """Test forcing pricing cache refresh."""
+    import src.services.pricing as pricing_module
+
     mock_model = MagicMock()
     mock_model.model_id = "test-model"
     mock_model.display_name = "Test"
@@ -361,9 +371,18 @@ async def test_refresh_pricing_cache(mock_db):
     mock_result.scalars().all.return_value = [mock_model]
     mock_db.execute = AsyncMock(return_value=mock_result)
 
-    await refresh_pricing_cache(mock_db)
+    # Capture what gets set to Redis
+    captured_cache = {}
 
-    # Check cache was populated
+    async def capture_set_cache(cache):
+        captured_cache.update(cache)
+        # Also update local cache as the real function does
+        pricing_module._local_cache = cache.copy()
+
+    with patch("src.services.pricing._set_cache_to_redis", side_effect=capture_set_cache):
+        await refresh_pricing_cache(mock_db)
+
+    # Check cache was populated (via local cache which is set by _set_cache_to_redis)
     result = get_pricing_from_cache("test-model")
     assert result is not None
     assert result.model_id == "test-model"
@@ -373,6 +392,8 @@ async def test_refresh_pricing_cache(mock_db):
 @pytest.mark.asyncio
 async def test_load_pricing_with_cached_input_price(mock_db):
     """Test loading pricing calculates cached input price."""
+    import src.services.pricing as pricing_module
+
     mock_model = MagicMock()
     mock_model.model_id = "test-model"
     mock_model.display_name = "Test"
@@ -385,7 +406,12 @@ async def test_load_pricing_with_cached_input_price(mock_db):
     mock_result.scalars().all.return_value = [mock_model]
     mock_db.execute = AsyncMock(return_value=mock_result)
 
-    await refresh_pricing_cache(mock_db)
+    # Capture what gets set to Redis
+    async def capture_set_cache(cache):
+        pricing_module._local_cache = cache.copy()
+
+    with patch("src.services.pricing._set_cache_to_redis", side_effect=capture_set_cache):
+        await refresh_pricing_cache(mock_db)
 
     pricing = get_pricing_from_cache("test-model")
     # Cached price should be 10% of input price
@@ -396,6 +422,8 @@ async def test_load_pricing_with_cached_input_price(mock_db):
 @pytest.mark.asyncio
 async def test_load_pricing_with_normalized_ids(mock_db):
     """Test loading pricing stores both original and normalized IDs."""
+    import src.services.pricing as pricing_module
+
     mock_model = MagicMock()
     mock_model.model_id = "claude-opus-4-20251101"
     mock_model.display_name = "Claude Opus 4"
@@ -408,7 +436,12 @@ async def test_load_pricing_with_normalized_ids(mock_db):
     mock_result.scalars().all.return_value = [mock_model]
     mock_db.execute = AsyncMock(return_value=mock_result)
 
-    await refresh_pricing_cache(mock_db)
+    # Capture what gets set to Redis
+    async def capture_set_cache(cache):
+        pricing_module._local_cache = cache.copy()
+
+    with patch("src.services.pricing._set_cache_to_redis", side_effect=capture_set_cache):
+        await refresh_pricing_cache(mock_db)
 
     # Both original and normalized should be in cache
     original = get_pricing_from_cache("claude-opus-4-20251101")
@@ -436,13 +469,12 @@ async def test_load_pricing_handles_database_error(mock_db):
 @pytest.mark.asyncio
 async def test_calculate_cost_partial_tokens(mock_db, sample_pricing):
     """Test calculating cost with partial million tokens."""
-    import src.services.pricing as pricing_module
-
-    pricing_module._pricing_cache = {"test-model": sample_pricing}
-    pricing_module._cache_updated_at = datetime.now(UTC)
-
-    # 100k input = $0.30, 200k output = $3.00
-    cost = await calculate_token_cost(mock_db, "test-model", 100000, 200000)
+    with patch(
+        "src.services.pricing._get_cache_from_redis",
+        return_value={"test-model": sample_pricing},
+    ):
+        # 100k input = $0.30, 200k output = $3.00
+        cost = await calculate_token_cost(mock_db, "test-model", 100000, 200000)
 
     assert cost == Decimal("3.30")
 
@@ -451,11 +483,10 @@ async def test_calculate_cost_partial_tokens(mock_db, sample_pricing):
 @pytest.mark.asyncio
 async def test_calculate_cost_zero_tokens(mock_db, sample_pricing):
     """Test calculating cost with zero tokens."""
-    import src.services.pricing as pricing_module
-
-    pricing_module._pricing_cache = {"test-model": sample_pricing}
-    pricing_module._cache_updated_at = datetime.now(UTC)
-
-    cost = await calculate_token_cost(mock_db, "test-model", 0, 0)
+    with patch(
+        "src.services.pricing._get_cache_from_redis",
+        return_value={"test-model": sample_pricing},
+    ):
+        cost = await calculate_token_cost(mock_db, "test-model", 0, 0)
 
     assert cost == Decimal("0.00")

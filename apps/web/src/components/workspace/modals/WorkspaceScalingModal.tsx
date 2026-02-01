@@ -1,10 +1,25 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { X, Cpu, Zap, AlertTriangle, Loader2, CheckCircle } from 'lucide-react';
+import {
+  X,
+  Cpu,
+  Zap,
+  AlertTriangle,
+  Loader2,
+  CheckCircle,
+  Server,
+  HardDrive,
+  MemoryStick,
+} from 'lucide-react';
 import { useSessionStore } from '@/stores/session';
-import type { WorkspaceTier, HardwareSpec } from '@podex/shared';
-import { scaleWorkspace, getHardwareSpecs } from '@/lib/api';
+import type { WorkspaceTier } from '@podex/shared';
+import {
+  scaleWorkspace,
+  getScaleOptions,
+  type ScaleOptionTier,
+  type CurrentTierInfo,
+} from '@/lib/api';
 
 interface WorkspaceScalingModalProps {
   sessionId: string;
@@ -15,6 +30,7 @@ interface WorkspaceScalingModalProps {
 
 /**
  * Modal for scaling a workspace's compute resources.
+ * Shows only tiers compatible with the workspace's current server.
  */
 export function WorkspaceScalingModal({
   sessionId,
@@ -25,26 +41,63 @@ export function WorkspaceScalingModal({
   const [isScaling, setIsScaling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedTier, setSelectedTier] = useState<WorkspaceTier>(currentTier);
-  const [hardwareSpecs, setHardwareSpecs] = useState<HardwareSpec[]>([]);
-  const [isLoadingSpecs, setIsLoadingSpecs] = useState(true);
+  const [scaleOptions, setScaleOptions] = useState<ScaleOptionTier[]>([]);
+  const [currentTierInfo, setCurrentTierInfo] = useState<CurrentTierInfo | null>(null);
+  const [serverId, setServerId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const { updateSessionWorkspaceTier } = useSessionStore();
 
-  // Fetch hardware specs on mount
+  // Fetch scale options on mount
   useEffect(() => {
-    const fetchHardwareSpecs = async () => {
+    const fetchScaleOptions = async () => {
       try {
-        const specs = await getHardwareSpecs();
-        setHardwareSpecs(specs);
+        const response = await getScaleOptions(sessionId);
+        setServerId(response.server_id);
+
+        if (response.error) {
+          setError(response.error);
+          return;
+        }
+
+        // Set current tier info from response
+        if (response.current_tier_info) {
+          setCurrentTierInfo(response.current_tier_info);
+        }
+
+        // Build the list including current tier for display
+        const allTiers = [...response.available_tiers];
+
+        // Add current tier to the list if we have info (for display in the tier list)
+        if (response.current_tier_info) {
+          allTiers.push({
+            tier: response.current_tier_info.tier,
+            display_name: response.current_tier_info.display_name,
+            can_scale: true, // Current tier is always "selectable" (to show as current)
+            reason: null,
+            cpu: response.current_tier_info.cpu,
+            memory_mb: response.current_tier_info.memory_mb,
+            storage_gb: response.current_tier_info.storage_gb,
+            bandwidth_mbps: response.current_tier_info.bandwidth_mbps,
+            hourly_rate_cents: response.current_tier_info.hourly_rate_cents,
+            is_gpu: response.current_tier_info.is_gpu,
+            gpu_type: response.current_tier_info.gpu_type,
+          });
+        }
+
+        // Sort by hourly rate
+        allTiers.sort((a, b) => a.hourly_rate_cents - b.hourly_rate_cents);
+
+        setScaleOptions(allTiers);
       } catch (err) {
-        console.error('Failed to fetch hardware specs:', err);
-        setError('Failed to load hardware specifications');
+        console.error('Failed to fetch scale options:', err);
+        setError('Failed to load scaling options');
       } finally {
-        setIsLoadingSpecs(false);
+        setIsLoading(false);
       }
     };
 
-    fetchHardwareSpecs();
-  }, []);
+    fetchScaleOptions();
+  }, [sessionId]);
 
   const handleScale = async () => {
     if (selectedTier === currentTier) {
@@ -59,7 +112,6 @@ export function WorkspaceScalingModal({
       const result = await scaleWorkspace(sessionId, selectedTier);
 
       if (result.success) {
-        // Update the session store with the new tier
         updateSessionWorkspaceTier(sessionId, selectedTier);
         onClose();
       } else {
@@ -73,37 +125,29 @@ export function WorkspaceScalingModal({
     }
   };
 
-  const getSpecByTier = (tier: WorkspaceTier): HardwareSpec | undefined => {
-    return hardwareSpecs.find((spec) => spec.tier === tier);
-  };
-
-  const getTierIcon = (tier: WorkspaceTier) => {
-    const spec = getSpecByTier(tier);
-    if (spec?.gpu_type && spec.gpu_type !== 'none') {
-      return <Zap className="h-4 w-4 text-purple-400" />;
+  const getTierIcon = (tier: ScaleOptionTier) => {
+    if (tier.is_gpu) {
+      return <Zap className="h-5 w-5 text-purple-400" />;
     }
-    return <Cpu className="h-4 w-4 text-blue-400" />;
+    return <Cpu className="h-5 w-5 text-blue-400" />;
   };
 
-  const getTierDescription = (tier: WorkspaceTier) => {
-    const spec = getSpecByTier(tier);
-    if (!spec) return '';
-
-    const gpuInfo = spec.gpu_memory_gb ? `, ${spec.gpu_memory_gb}GB GPU` : '';
-    return `${spec.vcpu} vCPU, ${spec.memory_mb}MB RAM${gpuInfo}`;
+  const formatMemory = (mb: number): string => {
+    if (mb >= 1024) {
+      return `${(mb / 1024).toFixed(0)}GB`;
+    }
+    return `${mb}MB`;
   };
 
-  const getTierDisplayName = (tier: WorkspaceTier) => {
-    const spec = getSpecByTier(tier);
-    return spec?.display_name || tier;
+  const formatPrice = (cents: number): string => {
+    return `$${(cents / 100).toFixed(3)}/hr`;
   };
 
-  const getTierPrice = (tier: WorkspaceTier) => {
-    const spec = getSpecByTier(tier);
-    return spec?.user_hourly_rate || spec?.hourly_rate || 0;
+  const getSelectedTierInfo = (): ScaleOptionTier | undefined => {
+    return scaleOptions.find((t) => t.tier === selectedTier);
   };
 
-  const availableTiers = hardwareSpecs.filter((spec) => spec.is_available).map((spec) => spec.tier);
+  const selectedInfo = getSelectedTierInfo();
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -116,13 +160,13 @@ export function WorkspaceScalingModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="workspace-scaling-title"
-        className="relative w-full max-w-lg rounded-xl border border-border-default bg-surface shadow-2xl"
+        className="relative w-full max-w-2xl rounded-xl border border-border-default bg-surface shadow-2xl"
       >
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-border-subtle">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-lg bg-blue-500/10">
-              <Cpu className="h-5 w-5 text-blue-400" />
+              <Server className="h-5 w-5 text-blue-400" />
             </div>
             <div>
               <h2 id="workspace-scaling-title" className="text-lg font-semibold text-text-primary">
@@ -144,68 +188,188 @@ export function WorkspaceScalingModal({
 
         {/* Content */}
         <div className="p-6">
-          {isLoadingSpecs ? (
-            <div className="flex items-center justify-center py-8">
+          {isLoading ? (
+            <div className="flex items-center justify-center py-12">
               <Loader2 className="h-6 w-6 animate-spin text-text-muted" />
-              <span className="ml-2 text-text-secondary">Loading hardware specifications...</span>
+              <span className="ml-2 text-text-secondary">Loading available options...</span>
             </div>
           ) : (
-            <div className="space-y-4">
-              <div className="text-sm text-text-secondary">
-                Current tier:{' '}
-                <span className="font-medium text-text-primary">
-                  {getTierDisplayName(currentTier)}
-                </span>
-              </div>
+            <div className="space-y-6">
+              {/* Server Info Banner */}
+              {serverId && (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-overlay border border-border-subtle">
+                  <Server className="h-4 w-4 text-text-muted" />
+                  <span className="text-sm text-text-secondary">
+                    Server: <span className="text-text-primary font-medium">{serverId}</span>
+                  </span>
+                  <span className="text-xs text-text-muted ml-auto">
+                    Only compatible tiers shown
+                  </span>
+                </div>
+              )}
 
+              {/* Current vs Selected Comparison */}
+              {currentTierInfo && selectedInfo && selectedTier !== currentTier && (
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Current */}
+                  <div className="p-4 rounded-lg bg-overlay border border-border-subtle">
+                    <div className="text-xs text-text-muted uppercase tracking-wider mb-2">
+                      Current
+                    </div>
+                    <div className="font-medium text-text-primary">
+                      {currentTierInfo.display_name}
+                    </div>
+                    <div className="mt-2 space-y-1 text-sm text-text-secondary">
+                      <div className="flex items-center gap-2">
+                        <Cpu className="h-3.5 w-3.5" />
+                        <span>{currentTierInfo.cpu} vCPU</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <MemoryStick className="h-3.5 w-3.5" />
+                        <span>{formatMemory(currentTierInfo.memory_mb)} RAM</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <HardDrive className="h-3.5 w-3.5" />
+                        <span>{currentTierInfo.storage_gb}GB storage</span>
+                      </div>
+                    </div>
+                    <div className="mt-2 text-sm font-medium text-text-muted">
+                      {formatPrice(currentTierInfo.hourly_rate_cents)}
+                    </div>
+                  </div>
+
+                  {/* Selected */}
+                  <div className="p-4 rounded-lg bg-blue-500/5 border border-blue-500/20">
+                    <div className="text-xs text-blue-400 uppercase tracking-wider mb-2">
+                      New Tier
+                    </div>
+                    <div className="font-medium text-text-primary">{selectedInfo.display_name}</div>
+                    <div className="mt-2 space-y-1 text-sm text-text-secondary">
+                      <div className="flex items-center gap-2">
+                        <Cpu className="h-3.5 w-3.5" />
+                        <span>
+                          {selectedInfo.cpu} vCPU
+                          {selectedInfo.cpu > currentTierInfo.cpu && (
+                            <span className="text-green-400 ml-1">
+                              (+{selectedInfo.cpu - currentTierInfo.cpu})
+                            </span>
+                          )}
+                          {selectedInfo.cpu < currentTierInfo.cpu && (
+                            <span className="text-yellow-400 ml-1">
+                              ({selectedInfo.cpu - currentTierInfo.cpu})
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <MemoryStick className="h-3.5 w-3.5" />
+                        <span>
+                          {formatMemory(selectedInfo.memory_mb)} RAM
+                          {selectedInfo.memory_mb > currentTierInfo.memory_mb && (
+                            <span className="text-green-400 ml-1">
+                              (+
+                              {formatMemory(selectedInfo.memory_mb - currentTierInfo.memory_mb)})
+                            </span>
+                          )}
+                          {selectedInfo.memory_mb < currentTierInfo.memory_mb && (
+                            <span className="text-yellow-400 ml-1">
+                              (-
+                              {formatMemory(currentTierInfo.memory_mb - selectedInfo.memory_mb)})
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <HardDrive className="h-3.5 w-3.5" />
+                        <span>{selectedInfo.storage_gb}GB storage</span>
+                      </div>
+                      {selectedInfo.is_gpu && selectedInfo.gpu_type && (
+                        <div className="flex items-center gap-2">
+                          <Zap className="h-3.5 w-3.5 text-purple-400" />
+                          <span className="text-purple-400">{selectedInfo.gpu_type} GPU</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="mt-2 text-sm font-medium text-blue-400">
+                      {formatPrice(selectedInfo.hourly_rate_cents)}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Tier Selection */}
               <div className="space-y-3">
-                <label className="text-sm font-medium text-text-primary">Select new tier:</label>
+                <label className="text-sm font-medium text-text-primary">Select compute tier</label>
 
-                <div className="grid grid-cols-1 gap-3 max-h-64 overflow-y-auto">
-                  {availableTiers.map((tier) => {
-                    const spec = getSpecByTier(tier);
-                    if (!spec) return null;
-
-                    const isSelected = selectedTier === tier;
-                    const isCurrent = currentTier === tier;
+                <div className="grid grid-cols-1 gap-2 max-h-72 overflow-y-auto pr-1">
+                  {scaleOptions.map((tier) => {
+                    const isSelected = selectedTier === tier.tier;
+                    const isCurrent = currentTier === tier.tier;
+                    const isDisabled = !tier.can_scale && !isCurrent;
 
                     return (
                       <div
-                        key={tier}
-                        onClick={() => setSelectedTier(tier)}
+                        key={tier.tier}
+                        onClick={() => {
+                          if (!isDisabled) {
+                            setSelectedTier(tier.tier as WorkspaceTier);
+                          }
+                        }}
                         className={`
-                          relative p-4 rounded-lg border cursor-pointer transition-all
+                          relative p-4 rounded-lg border transition-all
                           ${
-                            isSelected
-                              ? 'border-blue-400 bg-blue-500/5'
-                              : 'border-border-subtle hover:border-border-default bg-surface hover:bg-overlay'
+                            isDisabled
+                              ? 'border-border-subtle bg-surface/50 opacity-60 cursor-not-allowed'
+                              : isSelected
+                                ? 'border-blue-400 bg-blue-500/5 cursor-pointer'
+                                : 'border-border-subtle hover:border-border-default bg-surface hover:bg-overlay cursor-pointer'
                           }
                         `}
                       >
-                        <div className="flex items-start justify-between">
+                        <div className="flex items-center justify-between">
                           <div className="flex items-center gap-3">
                             {getTierIcon(tier)}
                             <div>
                               <div className="flex items-center gap-2">
-                                <span className="font-medium text-text-primary">
-                                  {spec.display_name}
+                                <span
+                                  className={`font-medium ${isDisabled ? 'text-text-muted' : 'text-text-primary'}`}
+                                >
+                                  {tier.display_name}
                                 </span>
                                 {isCurrent && (
                                   <span className="text-xs px-2 py-0.5 rounded bg-green-500/10 text-green-400">
                                     Current
                                   </span>
                                 )}
+                                {tier.is_gpu && (
+                                  <span className="text-xs px-2 py-0.5 rounded bg-purple-500/10 text-purple-400">
+                                    GPU
+                                  </span>
+                                )}
                               </div>
-                              <p className="text-sm text-text-secondary mt-1">
-                                {getTierDescription(tier)}
-                              </p>
-                              <p className="text-xs text-text-muted mt-1">
-                                ${getTierPrice(tier).toFixed(3)}/hour
-                              </p>
+                              <div className="flex items-center gap-3 mt-1 text-sm text-text-secondary">
+                                <span>{tier.cpu} vCPU</span>
+                                <span className="text-text-muted">|</span>
+                                <span>{formatMemory(tier.memory_mb)} RAM</span>
+                                <span className="text-text-muted">|</span>
+                                <span>{tier.storage_gb}GB</span>
+                              </div>
+                              {isDisabled && tier.reason && (
+                                <p className="text-xs text-yellow-400 mt-1">{tier.reason}</p>
+                              )}
                             </div>
                           </div>
 
-                          {isSelected && <CheckCircle className="h-5 w-5 text-blue-400" />}
+                          <div className="flex items-center gap-3">
+                            <span
+                              className={`text-sm font-medium ${isDisabled ? 'text-text-muted' : 'text-text-secondary'}`}
+                            >
+                              {formatPrice(tier.hourly_rate_cents)}
+                            </span>
+                            {isSelected && !isDisabled && (
+                              <CheckCircle className="h-5 w-5 text-blue-400" />
+                            )}
+                          </div>
                         </div>
                       </div>
                     );
@@ -213,7 +377,7 @@ export function WorkspaceScalingModal({
                 </div>
               </div>
 
-              {/* Warning for scaling down */}
+              {/* Warning for scaling */}
               {selectedTier !== currentTier && (
                 <div className="flex items-start gap-3 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20">
                   <AlertTriangle className="h-4 w-4 text-yellow-400 mt-0.5 shrink-0" />
@@ -262,7 +426,7 @@ export function WorkspaceScalingModal({
             ) : selectedTier === currentTier ? (
               'No changes'
             ) : (
-              <>Scale to {getTierDisplayName(selectedTier)}</>
+              <>Scale to {getSelectedTierInfo()?.display_name || selectedTier}</>
             )}
           </button>
         </div>

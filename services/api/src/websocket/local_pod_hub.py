@@ -2,35 +2,121 @@
 
 This module handles WebSocket connections from self-hosted local pod agents.
 Pods connect via outbound WebSocket and receive RPC commands for workspace management.
+
+Multi-Worker Architecture:
+- Pod connection state is stored in Redis for cross-worker visibility
+- Each worker tracks its own socket connections locally (_sid_to_pod)
+- RPC requests are routed via Redis pub/sub to the worker owning the pod connection
+- RPC responses are routed back via Redis pub/sub to the requesting worker
 """
 
 import asyncio
 import contextlib
 import hashlib
+import json
+import os
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+import redis.asyncio as aioredis
 import socketio
 import structlog
 from sqlalchemy import select, update
 
+from src.config import settings
 from src.database.connection import async_session_factory
 from src.database.models import LocalPod
 
 logger = structlog.get_logger()
 
-# Track connected pods: pod_id -> {sid, user_id, name, connected_at}
-_connected_pods: dict[str, dict[str, Any]] = {}
+# Redis keys for pod state
+POD_CONNECTION_KEY = "podex:pod:connection:{pod_id}"
+POD_CONNECTION_TTL = 300  # 5 minutes, refreshed on heartbeat
+POD_RPC_REQUEST_CHANNEL = "podex:pod:rpc:request"
+POD_RPC_RESPONSE_CHANNEL = "podex:pod:rpc:response:{worker_id}"
 
-# Reverse mapping: sid -> pod_id
+# Worker ID for this process (used for RPC response routing)
+WORKER_ID = f"worker-{os.getpid()}-{uuid4().hex[:8]}"
+
+# Local tracking (worker-local, not shared)
+# sid -> pod_id (for this worker's socket connections only)
 _sid_to_pod: dict[str, str] = {}
 
-# Pending RPC calls: call_id -> {future, timeout_task}
+# Pending RPC calls on this worker: call_id -> {future, timeout_task, pod_id}
 _pending_calls: dict[str, dict[str, Any]] = {}
+
+# Background tasks that should be kept alive (to avoid RUF006 warning)
+_background_tasks: set[asyncio.Task[None]] = set()
+
+# Redis client and pubsub for RPC routing
+_redis: aioredis.Redis | None = None  # type: ignore[type-arg]
+_rpc_pubsub: aioredis.client.PubSub | None = None
+_rpc_listener_task: asyncio.Task[None] | None = None
 
 # RPC timeout in seconds
 DEFAULT_RPC_TIMEOUT = 30.0
+
+
+async def _get_redis() -> aioredis.Redis:  # type: ignore[type-arg]
+    """Get or create Redis client."""
+    global _redis
+    if _redis is None:
+        _redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    return _redis
+
+
+async def _store_pod_connection(pod_id: str, user_id: str, name: str, sid: str) -> None:
+    """Store pod connection info in Redis."""
+    try:
+        redis = await _get_redis()
+        key = POD_CONNECTION_KEY.format(pod_id=pod_id)
+        data = json.dumps(
+            {
+                "worker_id": WORKER_ID,
+                "user_id": user_id,
+                "name": name,
+                "sid": sid,
+                "connected_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        await redis.setex(key, POD_CONNECTION_TTL, data)
+    except Exception as e:
+        logger.warning("Failed to store pod connection in Redis", error=str(e))
+
+
+async def _remove_pod_connection(pod_id: str) -> None:
+    """Remove pod connection info from Redis."""
+    try:
+        redis = await _get_redis()
+        key = POD_CONNECTION_KEY.format(pod_id=pod_id)
+        await redis.delete(key)
+    except Exception as e:
+        logger.warning("Failed to remove pod connection from Redis", error=str(e))
+
+
+async def _refresh_pod_connection(pod_id: str) -> None:
+    """Refresh TTL on pod connection in Redis (called on heartbeat)."""
+    try:
+        redis = await _get_redis()
+        key = POD_CONNECTION_KEY.format(pod_id=pod_id)
+        await redis.expire(key, POD_CONNECTION_TTL)
+    except Exception as e:
+        logger.warning("Failed to refresh pod connection TTL", error=str(e))
+
+
+async def _get_pod_connection(pod_id: str) -> dict[str, Any] | None:
+    """Get pod connection info from Redis."""
+    try:
+        redis = await _get_redis()
+        key = POD_CONNECTION_KEY.format(pod_id=pod_id)
+        data = await redis.get(key)
+        if data:
+            result: dict[str, Any] = json.loads(data)
+            return result
+    except Exception as e:
+        logger.warning("Failed to get pod connection from Redis", error=str(e))
+    return None
 
 
 async def _verify_pod_token(token: str) -> LocalPod | None:
@@ -224,26 +310,29 @@ class LocalPodNamespace(socketio.AsyncNamespace):
             logger.warning("Invalid local pod token", sid=sid)
             return False
 
-        # Check if pod is already connected (prevent duplicate connections)
-        if pod.id in _connected_pods:
-            old_sid = _connected_pods[pod.id]["sid"]
+        # Check if pod is already connected on this worker (prevent duplicate connections)
+        existing_conn = await _get_pod_connection(pod.id)
+        if existing_conn and existing_conn.get("worker_id") == WORKER_ID:
+            old_sid = existing_conn.get("sid")
+            if old_sid:
+                logger.info(
+                    "Local pod reconnecting on same worker, disconnecting old session",
+                    pod_id=pod.id,
+                    old_sid=old_sid,
+                )
+                _sid_to_pod.pop(old_sid, None)
+                with contextlib.suppress(Exception):
+                    await self.disconnect(old_sid)
+        elif existing_conn:
+            # Pod is connected on another worker - that's ok, it will disconnect
             logger.info(
-                "Local pod reconnecting, disconnecting old session",
+                "Local pod reconnecting from different worker",
                 pod_id=pod.id,
-                old_sid=old_sid,
+                old_worker=existing_conn.get("worker_id"),
             )
-            # Clean up old connection
-            _sid_to_pod.pop(old_sid, None)
-            with contextlib.suppress(Exception):
-                await self.disconnect(old_sid)
 
-        # Register pod connection
-        _connected_pods[pod.id] = {
-            "sid": sid,
-            "user_id": pod.user_id,
-            "name": pod.name,
-            "connected_at": datetime.now(UTC),
-        }
+        # Register pod connection in Redis
+        await _store_pod_connection(pod.id, pod.user_id, pod.name, sid)
         _sid_to_pod[sid] = pod.id
 
         # Update pod status in database
@@ -263,30 +352,37 @@ class LocalPodNamespace(socketio.AsyncNamespace):
         """Handle pod disconnection."""
         pod_id = _sid_to_pod.pop(sid, None)
 
-        if pod_id and pod_id in _connected_pods:
-            pod_info = _connected_pods.pop(pod_id)
+        if pod_id:
+            # Get pod info from Redis before removing
+            pod_info = await _get_pod_connection(pod_id)
 
-            # Update pod status in database
-            await _update_pod_status(pod_id, "offline")
+            # Only clean up if this worker owns the connection
+            if pod_info and pod_info.get("worker_id") == WORKER_ID:
+                # Remove from Redis
+                await _remove_pod_connection(pod_id)
 
-            # Update all workspaces on this pod to 'offline' status
-            await _update_local_pod_workspaces_status(pod_id, "offline")
+                # Update pod status in database
+                await _update_pod_status(pod_id, "offline")
 
-            # Cancel any pending RPC calls to this pod
-            for call_id, pending in list(_pending_calls.items()):
-                if pending.get("pod_id") == pod_id:
-                    pending["timeout_task"].cancel()
-                    pending["future"].set_exception(
-                        ConnectionError(f"Pod {pod_id} disconnected"),
-                    )
-                    _pending_calls.pop(call_id, None)
+                # Update all workspaces on this pod to 'offline' status
+                await _update_local_pod_workspaces_status(pod_id, "offline")
 
-            logger.info(
-                "Local pod disconnected",
-                pod_id=pod_id,
-                name=pod_info.get("name"),
-                sid=sid,
-            )
+                # Cancel any pending RPC calls to this pod on this worker
+                for call_id, pending in list(_pending_calls.items()):
+                    if pending.get("pod_id") == pod_id:
+                        pending["timeout_task"].cancel()
+                        pending["future"].set_exception(
+                            ConnectionError(f"Pod {pod_id} disconnected"),
+                        )
+                        _pending_calls.pop(call_id, None)
+
+                logger.info(
+                    "Local pod disconnected",
+                    pod_id=pod_id,
+                    name=pod_info.get("name") if pod_info else "unknown",
+                    sid=sid,
+                    worker_id=WORKER_ID,
+                )
 
     async def on_capabilities(self, sid: str, data: dict[str, Any]) -> None:
         """Handle pod capabilities report (sent on connect).
@@ -318,10 +414,8 @@ class LocalPodNamespace(socketio.AsyncNamespace):
         current_workspaces = data.get("active_workspaces", 0)
         await _update_pod_heartbeat(pod_id, current_workspaces)
 
-        # Update in-memory tracking
-        if pod_id in _connected_pods:
-            _connected_pods[pod_id]["last_heartbeat"] = datetime.now(UTC)
-            _connected_pods[pod_id]["active_workspaces"] = current_workspaces
+        # Refresh Redis TTL to keep connection alive
+        await _refresh_pod_connection(pod_id)
 
     async def on_rpc_response(self, _sid: str, data: dict[str, Any]) -> None:
         """Handle RPC response from pod.
@@ -487,13 +581,47 @@ local_pod_namespace = LocalPodNamespace()
 
 
 def is_pod_online(pod_id: str) -> bool:
-    """Check if a pod is currently connected."""
-    return pod_id in _connected_pods
+    """Check if a pod is currently connected (sync version).
+
+    Note: This uses a sync check that may be slightly stale.
+    For accurate results, use is_pod_online_async.
+    """
+    # Check if this worker has the pod connected locally
+    return pod_id in _sid_to_pod.values()
 
 
-def get_online_pods_for_user(user_id: str) -> list[str]:
-    """Get list of connected pod IDs for a user."""
-    return [pid for pid, info in _connected_pods.items() if info.get("user_id") == user_id]
+async def is_pod_online_async(pod_id: str) -> bool:
+    """Check if a pod is currently connected (async, checks Redis)."""
+    conn = await _get_pod_connection(pod_id)
+    return conn is not None
+
+
+async def get_online_pods_for_user(user_id: str) -> list[str]:
+    """Get list of connected pod IDs for a user.
+
+    Multi-Worker: Queries Redis for pods connected across all workers.
+    """
+    try:
+        redis = await _get_redis()
+        # Scan for all pod connection keys
+        online_pods = []
+        cursor = 0
+        while True:
+            cursor, keys = await redis.scan(cursor, match="podex:pod:connection:*", count=100)
+            for key in keys:
+                data = await redis.get(key)
+                if data:
+                    conn = json.loads(data)
+                    if conn.get("user_id") == user_id:
+                        # Extract pod_id from key
+                        pod_id = key.replace("podex:pod:connection:", "")
+                        online_pods.append(pod_id)
+            if cursor == 0:
+                break
+        return online_pods  # noqa: TRY300
+    except Exception as e:
+        logger.warning("Failed to get online pods from Redis", error=str(e))
+        return []
 
 
 class PodNotConnectedError(ValueError):
@@ -512,6 +640,9 @@ async def call_pod(
 ) -> object:
     """Make an RPC call to a pod and wait for response.
 
+    Multi-Worker: If pod is connected to this worker, sends directly.
+    Otherwise, routes via Redis pub/sub to the worker owning the connection.
+
     Args:
         pod_id: ID of the pod to call
         method: RPC method name (e.g., "workspace.create")
@@ -526,10 +657,11 @@ async def call_pod(
         TimeoutError: If call times out
         Exception: If pod returns an error
     """
-    if pod_id not in _connected_pods:
+    # Check Redis for pod connection
+    conn = await _get_pod_connection(pod_id)
+    if not conn:
         raise PodNotConnectedError(pod_id)
 
-    sid = _connected_pods[pod_id]["sid"]
     call_id = f"{pod_id}:{method}:{uuid4().hex[:8]}"
 
     # Create future for response
@@ -552,14 +684,47 @@ async def call_pod(
         "timeout_task": rpc_timeout_task,
     }
 
-    # Send RPC request to pod
-    await local_pod_namespace.emit(
-        "rpc_request",
-        {"call_id": call_id, "method": method, "params": params},
-        to=sid,
-    )
+    # Check if pod is connected to this worker
+    target_worker = conn.get("worker_id")
+    if target_worker == WORKER_ID:
+        # Pod is on this worker - send directly
+        sid = conn.get("sid")
+        if not sid:
+            _pending_calls.pop(call_id, None)
+            rpc_timeout_task.cancel()
+            raise PodNotConnectedError(pod_id)
 
-    logger.debug("RPC call sent to pod", pod_id=pod_id, method=method, call_id=call_id)
+        await local_pod_namespace.emit(
+            "rpc_request",
+            {"call_id": call_id, "method": method, "params": params},
+            to=sid,
+        )
+        logger.debug(
+            "RPC call sent directly to pod",
+            pod_id=pod_id,
+            method=method,
+            call_id=call_id,
+        )
+    else:
+        # Pod is on another worker - route via Redis pub/sub
+        redis = await _get_redis()
+        rpc_request = json.dumps(
+            {
+                "call_id": call_id,
+                "pod_id": pod_id,
+                "method": method,
+                "params": params,
+                "requesting_worker": WORKER_ID,
+            }
+        )
+        await redis.publish(POD_RPC_REQUEST_CHANNEL, rpc_request)
+        logger.debug(
+            "RPC call routed via Redis",
+            pod_id=pod_id,
+            method=method,
+            call_id=call_id,
+            target_worker=target_worker,
+        )
 
     return await future
 
@@ -567,16 +732,254 @@ async def call_pod(
 async def broadcast_to_pod(pod_id: str, event: str, data: dict[str, Any]) -> None:
     """Send an event to a pod without waiting for response.
 
+    Multi-Worker: If pod is on this worker, sends directly.
+    Otherwise, routes via Redis pub/sub to the worker owning the connection.
+
     Args:
         pod_id: ID of the pod
         event: Event name
         data: Event data
     """
-    if pod_id not in _connected_pods:
+    conn = await _get_pod_connection(pod_id)
+    if not conn:
         return
 
-    sid = _connected_pods[pod_id]["sid"]
-    await local_pod_namespace.emit(event, data, to=sid)
+    target_worker = conn.get("worker_id")
+    if target_worker == WORKER_ID:
+        # Pod is on this worker - send directly
+        sid = conn.get("sid")
+        if sid:
+            await local_pod_namespace.emit(event, data, to=sid)
+    else:
+        # Pod is on another worker - route via Redis pub/sub
+        redis = await _get_redis()
+        broadcast_msg = json.dumps(
+            {
+                "type": "broadcast",
+                "pod_id": pod_id,
+                "event": event,
+                "data": data,
+            }
+        )
+        await redis.publish(POD_RPC_REQUEST_CHANNEL, broadcast_msg)
+
+
+# ============== Cross-Worker RPC Listener ==============
+
+
+async def _handle_rpc_request(message: dict[str, Any]) -> None:
+    """Handle an RPC request routed from another worker.
+
+    If this worker owns the pod connection, forwards the request and
+    routes the response back to the requesting worker.
+    """
+    pod_id = message.get("pod_id")
+    call_id = message.get("call_id")
+    method = message.get("method")
+    params = message.get("params", {})
+    requesting_worker = message.get("requesting_worker")
+
+    if (
+        not isinstance(pod_id, str)
+        or not isinstance(call_id, str)
+        or not method
+        or not isinstance(requesting_worker, str)
+    ):
+        logger.warning("Invalid RPC request message", message=message)
+        return
+
+    # Check if this worker owns the pod connection
+    conn = await _get_pod_connection(pod_id)
+    if not conn or conn.get("worker_id") != WORKER_ID:
+        # Not our pod, ignore
+        return
+
+    sid = conn.get("sid")
+    if not sid:
+        # Send error response back
+        await _send_rpc_response(requesting_worker, call_id, error="Pod not connected")
+        return
+
+    # Forward the request to the pod
+    # Create a local future to capture the response
+    loop = asyncio.get_event_loop()
+    future: asyncio.Future[object] = loop.create_future()
+
+    async def handle_timeout() -> None:
+        await asyncio.sleep(DEFAULT_RPC_TIMEOUT)
+        if call_id in _pending_calls:
+            _pending_calls.pop(call_id)
+            if not future.done():
+                future.set_exception(TimeoutError(f"RPC call {method} timed out"))
+
+    timeout_task = asyncio.create_task(handle_timeout())
+
+    _pending_calls[call_id] = {
+        "future": future,
+        "pod_id": pod_id,
+        "timeout_task": timeout_task,
+        "requesting_worker": requesting_worker,  # Track where to send response
+    }
+
+    await local_pod_namespace.emit(
+        "rpc_request",
+        {"call_id": call_id, "method": method, "params": params},
+        to=sid,
+    )
+
+    logger.debug(
+        "Forwarded RPC request to pod",
+        pod_id=pod_id,
+        method=method,
+        call_id=call_id,
+        requesting_worker=requesting_worker,
+    )
+
+    # Wait for response and route it back
+    try:
+        result = await future
+        await _send_rpc_response(requesting_worker, call_id, result=result)
+    except Exception as e:
+        await _send_rpc_response(requesting_worker, call_id, error=str(e))
+
+
+async def _handle_broadcast(message: dict[str, Any]) -> None:
+    """Handle a broadcast request routed from another worker."""
+    pod_id = message.get("pod_id")
+    event = message.get("event")
+    data = message.get("data", {})
+
+    if not isinstance(pod_id, str) or not event:
+        return
+
+    # Check if this worker owns the pod connection
+    conn = await _get_pod_connection(pod_id)
+    if not conn or conn.get("worker_id") != WORKER_ID:
+        return
+
+    sid = conn.get("sid")
+    if sid:
+        await local_pod_namespace.emit(event, data, to=sid)
+
+
+async def _send_rpc_response(
+    target_worker: str,
+    call_id: str,
+    result: object = None,
+    error: str | None = None,
+) -> None:
+    """Send an RPC response to a specific worker via Redis pub/sub."""
+    redis = await _get_redis()
+    channel = POD_RPC_RESPONSE_CHANNEL.format(worker_id=target_worker)
+    response = json.dumps(
+        {
+            "call_id": call_id,
+            "result": result,
+            "error": error,
+        }
+    )
+    await redis.publish(channel, response)
+
+
+async def _handle_rpc_response(message: dict[str, Any]) -> None:
+    """Handle an RPC response routed from another worker."""
+    call_id = message.get("call_id")
+    if not call_id or call_id not in _pending_calls:
+        return
+
+    pending = _pending_calls.pop(call_id)
+    pending["timeout_task"].cancel()
+
+    if message.get("error"):
+        pending["future"].set_exception(Exception(message["error"]))
+    else:
+        pending["future"].set_result(message.get("result"))
+
+
+async def _rpc_listener() -> None:
+    """Listen for RPC requests and responses via Redis pub/sub.
+
+    This task runs on each worker to:
+    1. Receive RPC requests from other workers (for pods we own)
+    2. Receive RPC responses from other workers (for calls we initiated)
+    """
+    global _rpc_pubsub
+
+    try:
+        redis = await _get_redis()
+        _rpc_pubsub = redis.pubsub()
+
+        # Subscribe to RPC request channel and our worker's response channel
+        await _rpc_pubsub.subscribe(POD_RPC_REQUEST_CHANNEL)
+        await _rpc_pubsub.subscribe(POD_RPC_RESPONSE_CHANNEL.format(worker_id=WORKER_ID))
+
+        logger.info(
+            "RPC listener started",
+            worker_id=WORKER_ID,
+            request_channel=POD_RPC_REQUEST_CHANNEL,
+            response_channel=POD_RPC_RESPONSE_CHANNEL.format(worker_id=WORKER_ID),
+        )
+
+        while True:
+            message = await _rpc_pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            if message is None:
+                continue
+
+            if message["type"] != "message":
+                continue
+
+            try:
+                data = json.loads(message["data"])
+                channel = message["channel"]
+
+                if channel == POD_RPC_REQUEST_CHANNEL:
+                    # Handle broadcast vs RPC request
+                    if data.get("type") == "broadcast":
+                        task = asyncio.create_task(_handle_broadcast(data))
+                    else:
+                        task = asyncio.create_task(_handle_rpc_request(data))
+                    _background_tasks.add(task)
+                    task.add_done_callback(_background_tasks.discard)
+                elif channel == POD_RPC_RESPONSE_CHANNEL.format(worker_id=WORKER_ID):
+                    await _handle_rpc_response(data)
+            except json.JSONDecodeError:
+                logger.warning("Invalid JSON in RPC message", data=message["data"])
+            except Exception as e:
+                logger.warning("Error handling RPC message", error=str(e))
+
+    except asyncio.CancelledError:
+        logger.info("RPC listener cancelled", worker_id=WORKER_ID)
+        raise
+    except Exception as e:
+        logger.exception("RPC listener error", worker_id=WORKER_ID, error=str(e))
+    finally:
+        if _rpc_pubsub:
+            await _rpc_pubsub.unsubscribe()
+            await _rpc_pubsub.close()
+            _rpc_pubsub = None
+
+
+async def start_rpc_listener() -> None:
+    """Start the RPC listener task for this worker."""
+    global _rpc_listener_task
+
+    if _rpc_listener_task is not None:
+        return
+
+    _rpc_listener_task = asyncio.create_task(_rpc_listener())
+    logger.info("RPC listener task started", worker_id=WORKER_ID)
+
+
+async def stop_rpc_listener() -> None:
+    """Stop the RPC listener task."""
+    global _rpc_listener_task
+
+    if _rpc_listener_task is not None:
+        _rpc_listener_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _rpc_listener_task
+        _rpc_listener_task = None
+        logger.info("RPC listener task stopped", worker_id=WORKER_ID)
 
 
 # ============== RPC Method Names ==============

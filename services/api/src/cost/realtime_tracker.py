@@ -1,7 +1,15 @@
-"""Real-time cost tracking for LLM usage."""
+"""Real-time cost tracking for LLM usage.
+
+Multi-Worker Architecture:
+- All session cost data is stored in Redis for cross-worker visibility
+- Usage records are stored as Redis lists with TTL-based expiration
+- Cleanup is coordinated via distributed lock to prevent duplicate work
+"""
 
 import asyncio
 import contextlib
+import json
+import os
 import uuid
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
@@ -11,9 +19,15 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any
 
+import redis.asyncio as aioredis
 import structlog
 
-from src.services.pricing import get_all_pricing_from_cache, get_pricing_from_cache
+from src.config import settings
+from src.services.pricing import (
+    UnknownModelError,
+    get_all_pricing_from_cache,
+    get_pricing_from_cache,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -21,6 +35,28 @@ logger = structlog.get_logger(__name__)
 MAX_USAGE_RECORDS_PER_SESSION = 1000  # Maximum usage records to keep per session
 SESSION_RETENTION_DAYS = 7  # Days to keep session data before cleanup
 CLEANUP_INTERVAL_SECONDS = 3600  # Run cleanup every hour
+
+# Redis keys for cost tracking
+COST_SESSION_USAGE_KEY = "podex:cost:session:{session_id}:usage"  # List of usage records
+COST_SESSION_ACTIVITY_KEY = "podex:cost:session:{session_id}:activity"  # Last activity timestamp
+COST_USER_SESSIONS_KEY = "podex:cost:user:{user_id}:sessions"  # Set of session IDs
+COST_CLEANUP_LOCK_KEY = "podex:cost:cleanup_lock"
+COST_SESSION_TTL = SESSION_RETENTION_DAYS * 24 * 3600  # 7 days in seconds
+
+# Worker ID for distributed lock
+WORKER_ID = f"worker-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+# Redis client singleton
+_redis: aioredis.Redis | None = None  # type: ignore[type-arg]
+
+
+async def _get_redis() -> aioredis.Redis:  # type: ignore[type-arg]
+    """Get or create Redis client."""
+    global _redis
+    if _redis is None:
+        _redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    return _redis
+
 
 # Token divisor for cost calculation (cost per million tokens)
 TOKENS_PER_MILLION = 1000000
@@ -43,13 +79,6 @@ class ModelPricingRT:
     cached_input_per_million: Decimal | None = None  # For models with caching
 
 
-# Fallback pricing for unknown models
-DEFAULT_PRICING = ModelPricingRT(
-    input_per_million=Decimal("5.00"),
-    output_per_million=Decimal("15.00"),
-)
-
-
 @dataclass
 class TokenUsage:
     """Token usage for a single LLM call."""
@@ -61,6 +90,31 @@ class TokenUsage:
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     agent_id: str | None = None
     call_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to JSON-serializable dict."""
+        return {
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cached_input_tokens": self.cached_input_tokens,
+            "model": self.model,
+            "timestamp": self.timestamp.isoformat(),
+            "agent_id": self.agent_id,
+            "call_id": self.call_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TokenUsage":
+        """Create from dict."""
+        return cls(
+            input_tokens=data["input_tokens"],
+            output_tokens=data["output_tokens"],
+            cached_input_tokens=data.get("cached_input_tokens", 0),
+            model=data.get("model", ""),
+            timestamp=datetime.fromisoformat(data["timestamp"]),
+            agent_id=data.get("agent_id"),
+            call_id=data.get("call_id", str(uuid.uuid4())),
+        )
 
 
 @dataclass
@@ -112,6 +166,8 @@ class RealtimeCostTracker:
     """
     Track costs in real-time for sessions and agents.
 
+    Multi-Worker: All state is stored in Redis for cross-worker consistency.
+
     Features:
     - Real-time cost calculation per LLM call
     - Session and agent-level aggregation
@@ -120,18 +176,8 @@ class RealtimeCostTracker:
     """
 
     def __init__(self) -> None:
-        # Session ID -> list of TokenUsage
-        self._session_usage: dict[str, list[TokenUsage]] = defaultdict(list)
-        # Session ID -> CostBreakdown (cached)
-        self._session_costs: dict[str, CostBreakdown] = {}
-        # User ID -> list of session IDs
-        self._user_sessions: dict[str, list[str]] = defaultdict(list)
-        # Session ID -> last activity timestamp (for cleanup)
-        self._session_last_activity: dict[str, datetime] = {}
         # Callback for cost updates
         self._update_callback: Callable[[str, CostBreakdown], Awaitable[None]] | None = None
-        # Lock for thread safety
-        self._lock = asyncio.Lock()
         # Background cleanup task
         self._cleanup_task: asyncio.Task[None] | None = None
 
@@ -142,7 +188,7 @@ class RealtimeCostTracker:
         """
         if self._cleanup_task is None or self._cleanup_task.done():
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
-            logger.info("Cost tracker cleanup task started")
+            logger.info("Cost tracker cleanup task started", worker_id=WORKER_ID)
 
     async def stop_cleanup_task(self) -> None:
         """Stop the background cleanup task.
@@ -153,10 +199,13 @@ class RealtimeCostTracker:
             self._cleanup_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._cleanup_task
-            logger.info("Cost tracker cleanup task stopped")
+            logger.info("Cost tracker cleanup task stopped", worker_id=WORKER_ID)
 
     async def _cleanup_loop(self) -> None:
-        """Background loop that periodically cleans up old data."""
+        """Background loop that periodically cleans up old data.
+
+        Uses distributed lock to ensure only one worker runs cleanup at a time.
+        """
         while True:
             try:
                 await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
@@ -166,67 +215,151 @@ class RealtimeCostTracker:
             except Exception:
                 logger.exception("Error in cost tracker cleanup loop")
 
+    async def _acquire_cleanup_lock(self) -> bool:
+        """Try to acquire distributed lock for cleanup."""
+        try:
+            redis = await _get_redis()
+            acquired = await redis.set(
+                COST_CLEANUP_LOCK_KEY,
+                WORKER_ID,
+                nx=True,
+                ex=CLEANUP_INTERVAL_SECONDS * 2,  # Lock expires after 2x cleanup interval
+            )
+            return bool(acquired)
+        except Exception as e:
+            logger.warning("Failed to acquire cleanup lock", error=str(e))
+            return False
+
+    async def _release_cleanup_lock(self) -> None:
+        """Release the cleanup lock if we own it."""
+        try:
+            redis = await _get_redis()
+            # Only delete if we own the lock
+            current = await redis.get(COST_CLEANUP_LOCK_KEY)
+            if current == WORKER_ID:
+                await redis.delete(COST_CLEANUP_LOCK_KEY)
+        except Exception as e:
+            logger.warning("Failed to release cleanup lock", error=str(e))
+
     async def _cleanup_old_sessions(self) -> None:
         """Clean up sessions that haven't had activity in a while.
 
-        PERFORMANCE: Prevents memory leaks from accumulated session data.
+        Multi-Worker: Uses distributed lock to prevent duplicate cleanup.
+        Note: Redis TTL handles most cleanup automatically. This is for
+        cleaning up user->session mappings.
         """
-        async with self._lock:
+        if not await self._acquire_cleanup_lock():
+            logger.debug("Cleanup lock held by another worker, skipping")
+            return
+
+        try:
+            redis = await _get_redis()
             now = datetime.now(UTC)
             cutoff = now - timedelta(days=SESSION_RETENTION_DAYS)
-            sessions_to_remove: list[str] = []
+            cleaned_count = 0
 
-            # Find old sessions
-            for session_id, last_activity in self._session_last_activity.items():
-                if last_activity < cutoff:
-                    sessions_to_remove.append(session_id)
-
-            # Remove old sessions
-            for session_id in sessions_to_remove:
-                if session_id in self._session_usage:
-                    del self._session_usage[session_id]
-                if session_id in self._session_costs:
-                    del self._session_costs[session_id]
-                if session_id in self._session_last_activity:
-                    del self._session_last_activity[session_id]
-
-            # Clean up user session mappings
-            for user_id in list(self._user_sessions.keys()):
-                self._user_sessions[user_id] = [
-                    s for s in self._user_sessions[user_id] if s not in sessions_to_remove
-                ]
-                # Remove empty user entries
-                if not self._user_sessions[user_id]:
-                    del self._user_sessions[user_id]
-
-            if sessions_to_remove:
-                logger.info(
-                    "Cost tracker cleanup completed",
-                    extra={
-                        "removed_sessions": len(sessions_to_remove),
-                        "remaining_sessions": len(self._session_usage),
-                    },
+            # Scan for user session keys to clean up stale references
+            cursor = 0
+            while True:
+                cursor, keys = await redis.scan(
+                    cursor, match="podex:cost:user:*:sessions", count=100
                 )
 
-    def _trim_usage_history(self, session_id: str) -> None:
-        """Trim usage history to prevent unbounded memory growth.
+                for user_key in keys:
+                    # Get all sessions for this user
+                    session_ids = await redis.smembers(user_key)
+                    stale_sessions = []
 
-        Called while holding the lock.
-        """
-        usage_list = self._session_usage[session_id]
-        if len(usage_list) > MAX_USAGE_RECORDS_PER_SESSION:
-            # Keep only the most recent records
-            # Note: This means we lose exact totals for old calls, but
-            # the cached cost breakdown still has the totals
-            excess = len(usage_list) - MAX_USAGE_RECORDS_PER_SESSION
-            self._session_usage[session_id] = usage_list[excess:]
-            logger.debug(
-                "Trimmed usage history",
-                extra={
-                    "session_id": session_id,
-                    "removed_records": excess,
-                },
-            )
+                    for session_id in session_ids:
+                        # Check if session still has activity data
+                        activity_key = COST_SESSION_ACTIVITY_KEY.format(session_id=session_id)
+                        activity_ts = await redis.get(activity_key)
+
+                        if not activity_ts:
+                            # No activity key = session expired via TTL
+                            stale_sessions.append(session_id)
+                        else:
+                            try:
+                                last_activity = datetime.fromisoformat(activity_ts)
+                                if last_activity < cutoff:
+                                    stale_sessions.append(session_id)
+                            except (ValueError, TypeError):
+                                stale_sessions.append(session_id)
+
+                    # Remove stale sessions from user set
+                    if stale_sessions:
+                        await redis.srem(user_key, *stale_sessions)
+                        cleaned_count += len(stale_sessions)
+
+                    # Remove empty user sets
+                    if await redis.scard(user_key) == 0:
+                        await redis.delete(user_key)
+
+                if cursor == 0:
+                    break
+
+            if cleaned_count > 0:
+                logger.info(
+                    "Cost tracker cleanup completed",
+                    removed_sessions=cleaned_count,
+                    worker_id=WORKER_ID,
+                )
+        finally:
+            await self._release_cleanup_lock()
+
+    async def _add_usage_to_redis(self, session_id: str, usage: TokenUsage) -> None:
+        """Add a usage record to Redis list for session."""
+        try:
+            redis = await _get_redis()
+            usage_key = COST_SESSION_USAGE_KEY.format(session_id=session_id)
+            activity_key = COST_SESSION_ACTIVITY_KEY.format(session_id=session_id)
+
+            # Add usage record to list
+            await redis.rpush(usage_key, json.dumps(usage.to_dict()))
+
+            # Trim to max records
+            await redis.ltrim(usage_key, -MAX_USAGE_RECORDS_PER_SESSION, -1)
+
+            # Update activity timestamp
+            await redis.set(activity_key, datetime.now(UTC).isoformat())
+
+            # Set/refresh TTL on both keys
+            await redis.expire(usage_key, COST_SESSION_TTL)
+            await redis.expire(activity_key, COST_SESSION_TTL)
+        except Exception as e:
+            logger.warning("Failed to add usage to Redis", session_id=session_id, error=str(e))
+
+    async def _get_usage_from_redis(self, session_id: str) -> list[TokenUsage]:
+        """Get all usage records for a session from Redis."""
+        try:
+            redis = await _get_redis()
+            usage_key = COST_SESSION_USAGE_KEY.format(session_id=session_id)
+            records = await redis.lrange(usage_key, 0, -1)
+            return [TokenUsage.from_dict(json.loads(r)) for r in records]
+        except Exception as e:
+            logger.warning("Failed to get usage from Redis", session_id=session_id, error=str(e))
+            return []
+
+    async def _add_user_session(self, user_id: str, session_id: str) -> None:
+        """Track user -> session mapping in Redis."""
+        try:
+            redis = await _get_redis()
+            user_key = COST_USER_SESSIONS_KEY.format(user_id=user_id)
+            await redis.sadd(user_key, session_id)
+            # Set long TTL for user session sets
+            await redis.expire(user_key, COST_SESSION_TTL * 2)
+        except Exception as e:
+            logger.warning("Failed to add user session", user_id=user_id, error=str(e))
+
+    async def _get_user_sessions(self, user_id: str) -> list[str]:
+        """Get all session IDs for a user from Redis."""
+        try:
+            redis = await _get_redis()
+            user_key = COST_USER_SESSIONS_KEY.format(user_id=user_id)
+            return list(await redis.smembers(user_key))
+        except Exception as e:
+            logger.warning("Failed to get user sessions", user_id=user_id, error=str(e))
+            return []
 
     def set_update_callback(
         self, callback: Callable[[str, CostBreakdown], Awaitable[None]]
@@ -235,9 +368,10 @@ class RealtimeCostTracker:
         self._update_callback = callback
 
     def get_pricing(self, model: str) -> ModelPricingRT:
-        """Get pricing for a model, with fallback to default.
+        """Get pricing for a model from the database.
 
         Uses pricing from the database via the pricing service cache.
+        Raises ValueError if no pricing is configured for the model.
         """
         # Try exact match from pricing service cache
         cached_pricing = get_pricing_from_cache(model)
@@ -259,8 +393,7 @@ class RealtimeCostTracker:
                     cached_input_per_million=pricing.cached_input_price_per_million,
                 )
 
-        logger.warning("Unknown model '%s', using default pricing", model)
-        return DEFAULT_PRICING
+        raise UnknownModelError(model)
 
     def calculate_cost(self, usage: TokenUsage) -> CostBreakdown:
         """Calculate cost for a single usage record."""
@@ -302,49 +435,38 @@ class RealtimeCostTracker:
         """
         Track token usage for a session.
 
+        Multi-Worker: Stores usage in Redis for cross-worker visibility.
+
         Returns the cost breakdown for this usage.
         """
-        async with self._lock:
-            # Store usage
-            self._session_usage[session_id].append(usage)
+        # Store usage in Redis
+        await self._add_usage_to_redis(session_id, usage)
 
-            # Update last activity timestamp for cleanup
-            self._session_last_activity[session_id] = datetime.now(UTC)
+        # Track user -> session mapping
+        if user_id:
+            await self._add_user_session(user_id, session_id)
 
-            # Track user -> session mapping
-            if user_id and session_id not in self._user_sessions[user_id]:
-                self._user_sessions[user_id].append(session_id)
+        # Calculate cost for this usage
+        cost = self.calculate_cost(usage)
 
-            # Trim usage history to prevent memory leak
-            self._trim_usage_history(session_id)
+        # Get updated session cost
+        session_cost = await self._calculate_session_cost(session_id)
 
-            # Invalidate cached cost
-            if session_id in self._session_costs:
-                del self._session_costs[session_id]
+        # Notify via callback
+        if self._update_callback:
+            try:
+                await self._update_callback(session_id, session_cost)
+            except Exception:
+                logger.exception("Cost update callback failed")
 
-            # Calculate cost for this usage
-            cost = self.calculate_cost(usage)
+        return cost
 
-            # Get updated session cost
-            session_cost = self._calculate_session_cost(session_id)
-
-            # Notify via callback
-            if self._update_callback:
-                try:
-                    await self._update_callback(session_id, session_cost)
-                except Exception:
-                    logger.exception("Cost update callback failed")
-
-            return cost
-
-    def _calculate_session_cost(self, session_id: str) -> CostBreakdown:
-        """Calculate total cost for a session."""
-        if session_id in self._session_costs:
-            return self._session_costs[session_id]
-
+    async def _calculate_session_cost(self, session_id: str) -> CostBreakdown:
+        """Calculate total cost for a session from Redis data."""
         breakdown = CostBreakdown()
 
-        for usage in self._session_usage[session_id]:
+        usages = await self._get_usage_from_redis(session_id)
+        for usage in usages:
             cost = self.calculate_cost(usage)
             breakdown.add(cost)
 
@@ -359,19 +481,16 @@ class RealtimeCostTracker:
                     breakdown.by_agent[usage.agent_id] = CostBreakdown()
                 breakdown.by_agent[usage.agent_id].add(cost)
 
-        self._session_costs[session_id] = breakdown
         return breakdown
 
     async def get_session_cost(self, session_id: str) -> CostBreakdown:
         """Get current cost for a session."""
-        async with self._lock:
-            return self._calculate_session_cost(session_id)
+        return await self._calculate_session_cost(session_id)
 
     async def get_agent_cost(self, session_id: str, agent_id: str) -> CostBreakdown:
         """Get cost for a specific agent in a session."""
-        async with self._lock:
-            session_cost = self._calculate_session_cost(session_id)
-            return session_cost.by_agent.get(agent_id, CostBreakdown())
+        session_cost = await self._calculate_session_cost(session_id)
+        return session_cost.by_agent.get(agent_id, CostBreakdown())
 
     async def get_user_cost(
         self,
@@ -379,21 +498,22 @@ class RealtimeCostTracker:
         since: datetime | None = None,
     ) -> CostBreakdown:
         """Get total cost for a user across all sessions."""
-        async with self._lock:
-            breakdown = CostBreakdown()
+        breakdown = CostBreakdown()
 
-            for session_id in self._user_sessions.get(user_id, []):
-                for usage in self._session_usage[session_id]:
-                    if since and usage.timestamp < since:
-                        continue
-                    cost = self.calculate_cost(usage)
-                    breakdown.add(cost)
+        session_ids = await self._get_user_sessions(user_id)
+        for session_id in session_ids:
+            usages = await self._get_usage_from_redis(session_id)
+            for usage in usages:
+                if since and usage.timestamp < since:
+                    continue
+                cost = self.calculate_cost(usage)
+                breakdown.add(cost)
 
-                    if usage.model not in breakdown.by_model:
-                        breakdown.by_model[usage.model] = CostBreakdown()
-                    breakdown.by_model[usage.model].add(cost)
+                if usage.model not in breakdown.by_model:
+                    breakdown.by_model[usage.model] = CostBreakdown()
+                breakdown.by_model[usage.model].add(cost)
 
-            return breakdown
+        return breakdown
 
     async def get_usage_history(
         self,
@@ -401,21 +521,21 @@ class RealtimeCostTracker:
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Get recent usage history for a session."""
-        async with self._lock:
-            usages = self._session_usage[session_id][-limit:]
-            return [
-                {
-                    "call_id": u.call_id,
-                    "model": u.model,
-                    "input_tokens": u.input_tokens,
-                    "output_tokens": u.output_tokens,
-                    "cached_input_tokens": u.cached_input_tokens,
-                    "cost": float(self.calculate_cost(u).total_cost),
-                    "timestamp": u.timestamp.isoformat(),
-                    "agent_id": u.agent_id,
-                }
-                for u in usages
-            ]
+        usages = await self._get_usage_from_redis(session_id)
+        usages = usages[-limit:]  # Get last N records
+        return [
+            {
+                "call_id": u.call_id,
+                "model": u.model,
+                "input_tokens": u.input_tokens,
+                "output_tokens": u.output_tokens,
+                "cached_input_tokens": u.cached_input_tokens,
+                "cost": float(self.calculate_cost(u).total_cost),
+                "timestamp": u.timestamp.isoformat(),
+                "agent_id": u.agent_id,
+            }
+            for u in usages
+        ]
 
     async def get_daily_usage(
         self,
@@ -423,32 +543,36 @@ class RealtimeCostTracker:
         days: int = 30,
     ) -> list[dict[str, Any]]:
         """Get daily usage aggregates for a user."""
-        async with self._lock:
-            cutoff = datetime.now(UTC) - timedelta(days=days)
-            daily: dict[str, CostBreakdown] = defaultdict(CostBreakdown)
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        daily: dict[str, CostBreakdown] = defaultdict(CostBreakdown)
 
-            for session_id in self._user_sessions.get(user_id, []):
-                for usage in self._session_usage[session_id]:
-                    if usage.timestamp < cutoff:
-                        continue
-                    day = usage.timestamp.strftime("%Y-%m-%d")
-                    cost = self.calculate_cost(usage)
-                    daily[day].add(cost)
+        session_ids = await self._get_user_sessions(user_id)
+        for session_id in session_ids:
+            usages = await self._get_usage_from_redis(session_id)
+            for usage in usages:
+                if usage.timestamp < cutoff:
+                    continue
+                day = usage.timestamp.strftime("%Y-%m-%d")
+                cost = self.calculate_cost(usage)
+                daily[day].add(cost)
 
-            return [
-                {
-                    "date": date,
-                    **breakdown.to_dict(),
-                }
-                for date, breakdown in sorted(daily.items())
-            ]
+        return [
+            {
+                "date": date,
+                **breakdown.to_dict(),
+            }
+            for date, breakdown in sorted(daily.items())
+        ]
 
     async def reset_session(self, session_id: str) -> None:
         """Reset tracking for a session."""
-        async with self._lock:
-            self._session_usage[session_id] = []
-            if session_id in self._session_costs:
-                del self._session_costs[session_id]
+        try:
+            redis = await _get_redis()
+            usage_key = COST_SESSION_USAGE_KEY.format(session_id=session_id)
+            activity_key = COST_SESSION_ACTIVITY_KEY.format(session_id=session_id)
+            await redis.delete(usage_key, activity_key)
+        except Exception as e:
+            logger.warning("Failed to reset session in Redis", session_id=session_id, error=str(e))
 
     def estimate_cost(
         self,

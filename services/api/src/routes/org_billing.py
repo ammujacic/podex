@@ -434,17 +434,15 @@ async def create_org_portal_session(
     user = await get_user_from_request(request, db)
     org, _ = await get_org_and_verify_owner(db, org_id, str(user.id))
 
-    if not org.stripe_customer_id:
-        raise HTTPException(
-            status_code=400,
-            detail="No billing account found. Please make a purchase first.",
-        )
+    # Create Stripe customer if org doesn't have one yet
+    # (allows adding payment method before subscribing)
+    customer_id = await get_or_create_org_stripe_customer(db, org, user)
 
     return_url = data.return_url or f"{settings.FRONTEND_URL}/settings/organization/billing"
 
     try:
         portal_session = stripe.billing_portal.Session.create(
-            customer=org.stripe_customer_id,
+            customer=customer_id,
             return_url=return_url,
         )
     except stripe.error.StripeError as e:

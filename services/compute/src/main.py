@@ -1,4 +1,21 @@
-"""Podex Compute Service - Workspace Management."""
+"""Podex Compute Service - Workspace Management.
+
+Horizontal Scaling:
+-------------------
+This service supports horizontal scaling with multiple instances/workers.
+All state is stored in Redis, so instances are stateless and interchangeable.
+
+Load Balancer Configuration:
+- Sticky sessions are NOT required (recommended for reduced connection churn)
+- Use GET /health for health checks
+- Use GET /ready for readiness probes
+
+The service uses Redis distributed locking for:
+- Background task coordination (cleanup, billing, heartbeat)
+- Workspace creation (XFS quota file protection)
+- Startup discovery synchronization
+- Terminal session tracking
+"""
 
 import asyncio
 import contextlib
@@ -36,6 +53,7 @@ from src.routes import (
     websocket_router,
     workspaces_router,
 )
+from src.utils.task_lock import release_task_lock, try_acquire_task_lock
 
 # Initialize Sentry
 _sentry_config = SentryConfig(
@@ -55,37 +73,51 @@ logger = configure_logging("podex-compute")
 
 
 async def cleanup_task() -> None:
-    """Background task to cleanup idle workspaces and track compute usage."""
+    """Background task to cleanup idle workspaces and track compute usage.
+
+    Uses distributed locking to ensure only one instance runs cleanup per cycle.
+    """
     while True:
         try:
             await asyncio.sleep(60)  # Check every minute
-            manager = get_compute_manager()
 
-            # Track compute usage for running workspaces (billing every minute)
+            # Distributed lock for cleanup operations - only one instance should run
+            if not await try_acquire_task_lock("cleanup_task", ttl_seconds=120):
+                logger.debug("Another instance is handling cleanup, skipping this cycle")
+                continue
+
             try:
-                await manager.track_running_workspaces_usage()
-            except Exception:
-                logger.exception("Error tracking workspace usage")
+                manager = get_compute_manager()
 
-            # Cleanup workspaces marked for deletion
-            cleaned = await manager.cleanup_deleted_workspaces()
-            if cleaned:
-                logger.info("Cleaned up deleted workspaces", count=len(cleaned))
-
-            # Cleanup stale workspaces from Redis (defensive cleanup)
-            workspace_store = OrchestratorSingleton._workspace_store
-            if workspace_store:
+                # Track compute usage for running workspaces (billing every minute)
+                # Note: This also has its own distributed lock for extra safety
                 try:
-                    # Clean up workspaces older than 48 hours (2x TTL)
-                    stale_removed = await workspace_store.cleanup_stale(
-                        max_age_seconds=48 * 60 * 60
-                    )
-                    if stale_removed:
-                        logger.info(
-                            "Cleaned up stale workspaces from Redis", count=len(stale_removed)
-                        )
+                    await manager.track_running_workspaces_usage()
                 except Exception:
-                    logger.exception("Error cleaning up stale workspaces from Redis")
+                    logger.exception("Error tracking workspace usage")
+
+                # Cleanup workspaces marked for deletion
+                cleaned = await manager.cleanup_deleted_workspaces()
+                if cleaned:
+                    logger.info("Cleaned up deleted workspaces", count=len(cleaned))
+
+                # Cleanup stale workspaces from Redis (defensive cleanup)
+                workspace_store = OrchestratorSingleton._workspace_store
+                if workspace_store:
+                    try:
+                        # Clean up workspaces older than 48 hours (2x TTL)
+                        stale_removed = await workspace_store.cleanup_stale(
+                            max_age_seconds=48 * 60 * 60
+                        )
+                        if stale_removed:
+                            logger.info(
+                                "Cleaned up stale workspaces from Redis", count=len(stale_removed)
+                            )
+                    except Exception:
+                        logger.exception("Error cleaning up stale workspaces from Redis")
+            finally:
+                await release_task_lock("cleanup_task")
+
         except asyncio.CancelledError:
             break
         except Exception:
@@ -107,8 +139,15 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     await init_compute_manager()
 
     # Discover existing workspace containers (for recovery after restart)
+    # Use distributed lock to prevent race conditions when multiple instances start
     manager = get_compute_manager()
-    await manager.discover_existing_workspaces()
+    if await try_acquire_task_lock("workspace_discovery", ttl_seconds=120):
+        try:
+            await manager.discover_existing_workspaces()
+        finally:
+            await release_task_lock("workspace_discovery")
+    else:
+        logger.info("Another instance is handling workspace discovery, skipping")
 
     # Initialize usage tracker for billing
     await init_usage_tracker(

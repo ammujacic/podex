@@ -202,9 +202,8 @@ MAX_YJS_TOTAL_BYTES = MAX_YJS_BYTES_PER_SESSION * MAX_YJS_SESSIONS  # ~10GB theo
 # Practical limit - 1GB total
 MAX_YJS_TOTAL_BYTES_LIMIT = 1024 * 1024 * 1024  # 1GB
 
-# In-memory Yjs state (used for fast access, Redis is source of truth)
-_yjs_updates: dict[str, dict[str, list[bytes]]] = {}
-_yjs_docs: dict[str, dict[str, bytes]] = {}
+# Yjs state is stored exclusively in Redis via yjs_storage
+# This ensures consistency across multiple API workers
 
 # Yjs Redis key prefixes
 YJS_DOC_KEY = "yjs:doc:{session_id}:{doc_name}"
@@ -349,23 +348,95 @@ yjs_storage = YjsStorage()
 # Grace period for cleanup (seconds) to avoid race conditions
 CLEANUP_GRACE_PERIOD = 5.0
 
-# Pending cleanup tasks - cancelled if someone rejoins during grace period
+# Redis keys for cleanup coordination across workers
+CLEANUP_PENDING_SESSION_KEY = "podex:cleanup:session:{session_id}"
+CLEANUP_PENDING_TERMINAL_KEY = "podex:cleanup:terminal:{workspace_id}"
+
+# Local pending cleanup tasks (for cancellation within this worker)
 _pending_session_cleanup: dict[str, asyncio.Task[None]] = {}
 _pending_terminal_cleanup: dict[str, asyncio.Task[None]] = {}
 
 
+async def _cancel_session_cleanup(session_id: str) -> None:
+    """Cancel any pending cleanup for a session (called when client joins).
+
+    Multi-Worker: Clears Redis flag so other workers know to skip cleanup.
+    """
+    import redis.asyncio as aioredis
+
+    # Cancel local task if exists
+    task = _pending_session_cleanup.pop(session_id, None)
+    if task and not task.done():
+        task.cancel()
+
+    # Clear Redis flag for cross-worker coordination
+    try:
+        redis: aioredis.Redis = aioredis.from_url(  # type: ignore[type-arg]
+            settings.REDIS_URL, decode_responses=True
+        )
+        key = CLEANUP_PENDING_SESSION_KEY.format(session_id=session_id)
+        await redis.delete(key)
+        await redis.close()
+    except Exception as e:
+        logger.warning("Failed to clear session cleanup flag", error=str(e))
+
+
+async def _cancel_terminal_cleanup(workspace_id: str) -> None:
+    """Cancel any pending cleanup for a terminal (called when client attaches).
+
+    Multi-Worker: Clears Redis flag so other workers know to skip cleanup.
+    """
+    import redis.asyncio as aioredis
+
+    # Cancel local task if exists
+    task = _pending_terminal_cleanup.pop(workspace_id, None)
+    if task and not task.done():
+        task.cancel()
+
+    # Clear Redis flag for cross-worker coordination
+    try:
+        redis: aioredis.Redis = aioredis.from_url(  # type: ignore[type-arg]
+            settings.REDIS_URL, decode_responses=True
+        )
+        key = CLEANUP_PENDING_TERMINAL_KEY.format(workspace_id=workspace_id)
+        await redis.delete(key)
+        await redis.close()
+    except Exception as e:
+        logger.warning("Failed to clear terminal cleanup flag", error=str(e))
+
+
 async def _deferred_session_cleanup(session_id: str) -> None:
-    """Clean up Yjs data after a grace period if session is still empty."""
+    """Clean up Yjs data after a grace period if session is still empty.
+
+    Multi-Worker: Uses Redis flag to coordinate with other workers.
+    """
+    import redis.asyncio as aioredis
+
     try:
         await asyncio.sleep(CLEANUP_GRACE_PERIOD)
 
-        # Double-check room is still empty after grace period
+        # Check if cleanup was cancelled via Redis (client joined on another worker)
+        redis: aioredis.Redis = aioredis.from_url(  # type: ignore[type-arg]
+            settings.REDIS_URL, decode_responses=True
+        )
+        key = CLEANUP_PENDING_SESSION_KEY.format(session_id=session_id)
+        if not await redis.exists(key):
+            # Cleanup was cancelled by another worker
+            logger.debug("Session cleanup cancelled via Redis flag", session_id=session_id)
+            await redis.close()
+            return
+
+        # Double-check room is still empty after grace period (local check)
         room = sio.manager.rooms.get("/", {}).get(f"session:{session_id}", set())
         if not room:
-            if session_id in _yjs_updates:
-                logger.info("Cleaning up Yjs data for empty session", session_id=session_id)
-                del _yjs_updates[session_id]
-            _yjs_docs.pop(session_id, None)
+            logger.info("Cleaning up Yjs data for empty session", session_id=session_id)
+            # Clean up Yjs data from Redis
+            await yjs_storage.cleanup_session(session_id)
+
+        # Clean up the flag
+        await redis.delete(key)
+        await redis.close()
+
     except asyncio.CancelledError:
         # Cleanup was cancelled because someone joined
         logger.debug("Session cleanup cancelled - client rejoined", session_id=session_id)
@@ -374,21 +445,88 @@ async def _deferred_session_cleanup(session_id: str) -> None:
 
 
 async def _deferred_terminal_cleanup(workspace_id: str) -> None:
-    """Clean up terminal session after a grace period if still empty."""
+    """Clean up terminal session after a grace period if still empty.
+
+    Multi-Worker: Uses Redis flag to coordinate with other workers.
+    """
+    import redis.asyncio as aioredis
+
     try:
         await asyncio.sleep(CLEANUP_GRACE_PERIOD)
 
-        # Double-check room is still empty after grace period
+        # Check if cleanup was cancelled via Redis (client attached on another worker)
+        redis: aioredis.Redis = aioredis.from_url(  # type: ignore[type-arg]
+            settings.REDIS_URL, decode_responses=True
+        )
+        key = CLEANUP_PENDING_TERMINAL_KEY.format(workspace_id=workspace_id)
+        if not await redis.exists(key):
+            # Cleanup was cancelled by another worker
+            logger.debug("Terminal cleanup cancelled via Redis flag", workspace_id=workspace_id)
+            await redis.close()
+            return
+
+        # Double-check room is still empty after grace period (local check)
         room = sio.manager.rooms.get("/", {}).get(f"terminal:{workspace_id}", set())
         if not room:
             # kill_tmux=True ensures local pod tmux sessions are properly cleaned up
             await terminal_manager.close_session(workspace_id, kill_tmux=True)
             logger.info("Terminal session closed (no clients)", workspace_id=workspace_id)
+
+        # Clean up the flag
+        await redis.delete(key)
+        await redis.close()
+
     except asyncio.CancelledError:
         # Cleanup was cancelled because someone attached
         logger.debug("Terminal cleanup cancelled - client attached", workspace_id=workspace_id)
     finally:
         _pending_terminal_cleanup.pop(workspace_id, None)
+
+
+async def _schedule_session_cleanup(session_id: str) -> None:
+    """Schedule session cleanup with Redis coordination."""
+    import redis.asyncio as aioredis
+
+    if session_id in _pending_session_cleanup:
+        return
+
+    # Set Redis flag to indicate cleanup is pending
+    try:
+        redis: aioredis.Redis = aioredis.from_url(  # type: ignore[type-arg]
+            settings.REDIS_URL, decode_responses=True
+        )
+        key = CLEANUP_PENDING_SESSION_KEY.format(session_id=session_id)
+        await redis.setex(key, int(CLEANUP_GRACE_PERIOD + 5), "pending")
+        await redis.close()
+    except Exception as e:
+        logger.warning("Failed to set session cleanup flag", error=str(e))
+
+    # Schedule local cleanup task
+    cleanup_task = asyncio.create_task(_deferred_session_cleanup(session_id))
+    _pending_session_cleanup[session_id] = cleanup_task
+
+
+async def _schedule_terminal_cleanup(workspace_id: str) -> None:
+    """Schedule terminal cleanup with Redis coordination."""
+    import redis.asyncio as aioredis
+
+    if workspace_id in _pending_terminal_cleanup:
+        return
+
+    # Set Redis flag to indicate cleanup is pending
+    try:
+        redis: aioredis.Redis = aioredis.from_url(  # type: ignore[type-arg]
+            settings.REDIS_URL, decode_responses=True
+        )
+        key = CLEANUP_PENDING_TERMINAL_KEY.format(workspace_id=workspace_id)
+        await redis.setex(key, int(CLEANUP_GRACE_PERIOD + 5), "pending")
+        await redis.close()
+    except Exception as e:
+        logger.warning("Failed to set terminal cleanup flag", error=str(e))
+
+    # Schedule local cleanup task
+    cleanup_task = asyncio.create_task(_deferred_terminal_cleanup(workspace_id))
+    _pending_terminal_cleanup[workspace_id] = cleanup_task
 
 
 # Create Socket.IO server with Redis adapter for horizontal scaling
@@ -450,26 +588,6 @@ async def _cleanup_stale_clients() -> None:
         logger.warning("Failed to cleanup stale clients", error=str(e))
 
 
-async def _cleanup_yjs_memory() -> None:
-    """MEDIUM FIX: Enforce global Yjs memory limit to prevent exhaustion."""
-    total_bytes = 0
-    for docs in _yjs_updates.values():
-        for updates in docs.values():
-            total_bytes += sum(len(u) for u in updates)
-
-    if total_bytes > MAX_YJS_TOTAL_BYTES_LIMIT:
-        # Evict oldest sessions until under limit
-        sessions_to_evict = list(_yjs_updates.keys())[: len(_yjs_updates) // 2]
-        for session_id in sessions_to_evict:
-            del _yjs_updates[session_id]
-            _yjs_docs.pop(session_id, None)
-        logger.warning(
-            "Evicted Yjs sessions due to memory pressure",
-            evicted_count=len(sessions_to_evict),
-            total_bytes_before=total_bytes,
-        )
-
-
 @sio.event
 async def disconnect(sid: str) -> None:
     """Handle client disconnection."""
@@ -512,10 +630,8 @@ async def session_join(sid: str, data: dict[str, str]) -> None:
         await sio.emit("error", {"error": "Access denied to session"}, to=sid)
         return
 
-    # Cancel any pending cleanup for this session
-    pending_cleanup = _pending_session_cleanup.pop(session_id, None)
-    if pending_cleanup:
-        pending_cleanup.cancel()
+    # Cancel any pending cleanup for this session (Redis-coordinated)
+    await _cancel_session_cleanup(session_id)
 
     # Store client info for disconnect handling
     # SECURITY: Check bounds to prevent memory exhaustion
@@ -532,7 +648,14 @@ async def session_join(sid: str, data: dict[str, str]) -> None:
         "session_join_time": datetime.now(UTC),  # For productivity tracking
     }
 
-    # Join the session room
+    # Subscribe to agent streaming events BEFORE joining room
+    # This prevents race condition where tokens are published before subscription is active
+    from src.streaming import get_stream_subscriber
+
+    stream_subscriber = get_stream_subscriber()
+    await stream_subscriber.subscribe_session(session_id)
+
+    # Now join the session room (client can start receiving events)
     await sio.enter_room(sid, f"session:{session_id}")
     logger.info("User joined session", sid=sid, session_id=session_id, user_id=user_id)
 
@@ -549,13 +672,6 @@ async def session_join(sid: str, data: dict[str, str]) -> None:
     full_sync = await session_sync_manager.get_full_sync(session_id)
     if full_sync:
         await sio.emit("session_sync", full_sync, to=sid)
-
-    # Subscribe to agent streaming events for this session
-    # Import here to avoid circular import with streaming.subscriber
-    from src.streaming import get_stream_subscriber
-
-    stream_subscriber = get_stream_subscriber()
-    await stream_subscriber.subscribe_session(session_id)
 
 
 @sio.event
@@ -605,19 +721,19 @@ async def session_leave(sid: str, data: dict[str, str]) -> None:
         device_id=device_id,
     )
 
-    # Schedule deferred cleanup to handle race conditions
+    # Decrement streaming subscription count (Redis-based tracking across all workers)
+    # This is safe to call on every leave - it only unsubscribes when count reaches 0
+    from src.streaming import get_stream_subscriber
+
+    stream_subscriber = get_stream_subscriber()
+    await stream_subscriber.unsubscribe_session(session_id)
+
+    # Schedule deferred cleanup for Yjs data to handle race conditions
     # The cleanup will be cancelled if someone joins during the grace period
+    # Multi-Worker: Uses Redis coordination to cancel cleanup across workers
     room = sio.manager.rooms.get("/", {}).get(f"session:{session_id}", set())
-    if not room and session_id not in _pending_session_cleanup:
-        cleanup_task = asyncio.create_task(_deferred_session_cleanup(session_id))
-        _pending_session_cleanup[session_id] = cleanup_task
-
-        # Unsubscribe from agent streaming events when room is empty
-        # Import here to avoid circular import with streaming.subscriber
-        from src.streaming import get_stream_subscriber
-
-        stream_subscriber = get_stream_subscriber()
-        await stream_subscriber.unsubscribe_session(session_id)
+    if not room:
+        await _schedule_session_cleanup(session_id)
 
 
 @sio.event
@@ -711,10 +827,8 @@ async def terminal_attach(sid: str, data: dict[str, str]) -> None:
         await sio.emit("terminal_error", {"error": "Access denied to workspace"}, to=sid)
         return
 
-    # Cancel any pending cleanup for this terminal
-    pending_cleanup = _pending_terminal_cleanup.pop(workspace_id, None)
-    if pending_cleanup:
-        pending_cleanup.cancel()
+    # Cancel any pending cleanup for this terminal (Redis-coordinated)
+    await _cancel_terminal_cleanup(workspace_id)
 
     # Ensure workspace is provisioned before connecting to terminal
     try:
@@ -797,10 +911,10 @@ async def terminal_detach(sid: str, data: dict[str, str]) -> None:
 
     # Schedule deferred cleanup to handle race conditions
     # The cleanup will be cancelled if someone attaches during the grace period
+    # Multi-Worker: Uses Redis coordination to cancel cleanup across workers
     room = sio.manager.rooms.get("/", {}).get(f"terminal:{workspace_id}", set())
-    if not room and workspace_id not in _pending_terminal_cleanup:
-        cleanup_task = asyncio.create_task(_deferred_terminal_cleanup(workspace_id))
-        _pending_terminal_cleanup[workspace_id] = cleanup_task
+    if not room:
+        await _schedule_terminal_cleanup(workspace_id)
 
 
 @sio.event
@@ -898,6 +1012,15 @@ async def emit_agent_token(
 
     This allows real-time display of agent responses as they are generated.
     """
+    # Note: room check shows LOCAL workers only, actual delivery uses Redis adapter
+    room_name = f"session:{session_id}"
+    room = sio.manager.rooms.get("/", {}).get(room_name, set())
+    logger.debug(
+        "emit_agent_token",
+        session_id=session_id[-8:] if session_id else "None",
+        token_len=len(token),
+        local_room_clients=len(room),
+    )
     await sio.emit(
         "agent_token",
         {
@@ -940,6 +1063,14 @@ async def emit_agent_stream_start(
     message_id: str,
 ) -> None:
     """Emit event when agent starts streaming a response."""
+    room_name = f"session:{session_id}"
+    room = sio.manager.rooms.get("/", {}).get(room_name, set())
+    logger.info(
+        "emit_agent_stream_start",
+        session_id=session_id[-8:] if session_id else "None",
+        agent_id=agent_id[-8:] if agent_id else "None",
+        room_client_count=len(room),
+    )
     await sio.emit(
         "agent_stream_start",
         {
@@ -960,6 +1091,15 @@ async def emit_agent_stream_end(
     tool_calls: list[dict[str, Any]] | None = None,
 ) -> None:
     """Emit event when agent finishes streaming a response."""
+    room_name = f"session:{session_id}"
+    room = sio.manager.rooms.get("/", {}).get(room_name, set())
+    logger.info(
+        "emit_agent_stream_end",
+        session_id=session_id[-8:] if session_id else "None",
+        agent_id=agent_id[-8:] if agent_id else "None",
+        room_client_count=len(room),
+        content_length=len(full_content) if full_content else 0,
+    )
     # Format tool calls for frontend
     formatted_tool_calls = None
     if tool_calls:
@@ -1065,40 +1205,43 @@ async def emit_tool_call_progress(
 
 
 # ============== Terminal History ==============
+# Multi-Worker Architecture: Terminal history stored in Redis for consistency
 
-# Terminal output history per workspace (limited buffer)
-_terminal_history: dict[str, list[dict[str, Any]]] = {}
+# Redis key patterns for terminal history
+TERMINAL_HISTORY_KEY = "podex:terminal:history:{workspace_id}"
+TERMINAL_HISTORY_TTL = 3600  # 1 hour TTL
 MAX_TERMINAL_HISTORY_LINES = 1000
-# SECURITY: Maximum workspaces to track history for to prevent memory exhaustion
-MAX_TERMINAL_HISTORY_WORKSPACES = 5000
 
 
-def _add_to_terminal_history(workspace_id: str, output: str) -> None:
-    """Add terminal output to history buffer."""
-    if workspace_id not in _terminal_history:
-        # SECURITY: Evict oldest workspace if at capacity
-        if len(_terminal_history) >= MAX_TERMINAL_HISTORY_WORKSPACES:
-            # Remove the oldest entry (first key in dict preserves insertion order in Python 3.7+)
-            oldest_key = next(iter(_terminal_history))
-            del _terminal_history[oldest_key]
-            logger.info("Evicted oldest terminal history", evicted_workspace=oldest_key)
-        _terminal_history[workspace_id] = []
+async def _add_to_terminal_history(workspace_id: str, output: str) -> None:
+    """Add terminal output to history buffer in Redis."""
+    import json
 
-    history = _terminal_history[workspace_id]
-    history.append(
-        {
-            "output": output,
-            "timestamp": datetime.now(UTC).isoformat(),
-        }
-    )
+    import redis.asyncio as aioredis
 
-    # Trim history if it exceeds max size
-    if len(history) > MAX_TERMINAL_HISTORY_LINES:
-        _terminal_history[workspace_id] = history[-MAX_TERMINAL_HISTORY_LINES:]
+    try:
+        redis: aioredis.Redis = aioredis.from_url(  # type: ignore[type-arg]
+            settings.REDIS_URL, decode_responses=True
+        )
+        key = TERMINAL_HISTORY_KEY.format(workspace_id=workspace_id)
+
+        # Add entry to list
+        entry = json.dumps({"output": output, "timestamp": datetime.now(UTC).isoformat()})
+        await redis.rpush(key, entry)
+
+        # Trim to max size
+        await redis.ltrim(key, -MAX_TERMINAL_HISTORY_LINES, -1)
+
+        # Refresh TTL
+        await redis.expire(key, TERMINAL_HISTORY_TTL)
+
+        await redis.close()
+    except Exception as e:
+        logger.warning("Failed to add terminal history to Redis", error=str(e))
 
 
-def get_terminal_history(workspace_id: str, limit: int = 100) -> list[dict[str, Any]]:
-    """Get terminal output history for a workspace.
+async def get_terminal_history(workspace_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    """Get terminal output history for a workspace from Redis.
 
     Args:
         workspace_id: The workspace ID
@@ -1107,19 +1250,45 @@ def get_terminal_history(workspace_id: str, limit: int = 100) -> list[dict[str, 
     Returns:
         List of terminal history entries with output and timestamps
     """
-    history = _terminal_history.get(workspace_id, [])
-    return history[-limit:] if limit < len(history) else history
+    import json
+
+    import redis.asyncio as aioredis
+
+    try:
+        redis: aioredis.Redis = aioredis.from_url(  # type: ignore[type-arg]
+            settings.REDIS_URL, decode_responses=True
+        )
+        key = TERMINAL_HISTORY_KEY.format(workspace_id=workspace_id)
+
+        # Get last 'limit' entries
+        entries = await redis.lrange(key, -limit, -1)
+        await redis.close()
+
+        return [json.loads(e) for e in entries]
+    except Exception as e:
+        logger.warning("Failed to get terminal history from Redis", error=str(e))
+        return []
 
 
-def clear_terminal_history(workspace_id: str) -> None:
-    """Clear terminal history for a workspace."""
-    _terminal_history.pop(workspace_id, None)
+async def clear_terminal_history(workspace_id: str) -> None:
+    """Clear terminal history for a workspace from Redis."""
+    import redis.asyncio as aioredis
+
+    try:
+        redis: aioredis.Redis = aioredis.from_url(  # type: ignore[type-arg]
+            settings.REDIS_URL, decode_responses=True
+        )
+        key = TERMINAL_HISTORY_KEY.format(workspace_id=workspace_id)
+        await redis.delete(key)
+        await redis.close()
+    except Exception as e:
+        logger.warning("Failed to clear terminal history from Redis", error=str(e))
 
 
 async def emit_to_terminal(workspace_id: str, data: str) -> None:
     """Emit terminal data to attached clients and store in history."""
-    # Store in history buffer
-    _add_to_terminal_history(workspace_id, data)
+    # Store in history buffer (Redis)
+    await _add_to_terminal_history(workspace_id, data)
 
     await sio.emit(
         "terminal_data",
@@ -1144,19 +1313,22 @@ async def yjs_subscribe(sid: str, data: dict[str, str]) -> None:
     await sio.enter_room(sid, room_name)
     logger.info("Client subscribed to Yjs doc", sid=sid, session_id=session_id, doc_name=doc_name)
 
-    # Send existing state if available
-    if session_id in _yjs_docs and doc_name in _yjs_docs[session_id]:
-        state = _yjs_docs[session_id][doc_name]
-        await sio.emit(
-            "yjs_sync",
-            {
-                "session_id": session_id,
-                "doc_name": doc_name,
-                "state": base64.b64encode(state).decode("utf-8"),
-                "type": "state",
-            },
-            to=sid,
-        )
+    # Send existing state from Redis if available
+    try:
+        state = await yjs_storage.get_doc(session_id, doc_name)
+        if state:
+            await sio.emit(
+                "yjs_sync",
+                {
+                    "session_id": session_id,
+                    "doc_name": doc_name,
+                    "state": base64.b64encode(state).decode("utf-8"),
+                    "type": "state",
+                },
+                to=sid,
+            )
+    except YjsStorageError as e:
+        logger.warning("Failed to get Yjs doc from Redis", error=str(e))
 
 
 @sio.event
@@ -1180,7 +1352,11 @@ async def yjs_unsubscribe(sid: str, data: dict[str, str]) -> None:
 
 @sio.event
 async def yjs_update(sid: str, data: dict[str, Any]) -> None:
-    """Handle Yjs update from a client and broadcast to others."""
+    """Handle Yjs update from a client and broadcast to others.
+
+    Multi-Worker Architecture: Updates are stored in Redis and broadcasted
+    via Socket.IO Redis adapter to ensure consistency across workers.
+    """
     session_id = data.get("session_id")
     doc_name = data.get("doc_name")
     update_b64 = data.get("update")  # Base64 encoded Yjs update
@@ -1201,65 +1377,26 @@ async def yjs_update(sid: str, data: dict[str, Any]) -> None:
             )
             return
 
-        # SECURITY: Check session count limit before adding new sessions
-        if session_id not in _yjs_updates:
-            if len(_yjs_updates) >= MAX_YJS_SESSIONS:
-                # Evict oldest session (simple LRU approximation)
-                oldest_session = next(iter(_yjs_updates))
-                logger.warning(
-                    "Evicting oldest Yjs session due to limit",
-                    evicted_session=oldest_session,
-                    limit=MAX_YJS_SESSIONS,
-                )
-                del _yjs_updates[oldest_session]
-                _yjs_docs.pop(oldest_session, None)
-            _yjs_updates[session_id] = {}
+        # Store update in Redis
+        try:
+            update_count = await yjs_storage.add_update(session_id, doc_name, update)
 
-        # SECURITY: Check document count limit per session
-        if doc_name not in _yjs_updates[session_id]:
-            if len(_yjs_updates[session_id]) >= MAX_YJS_DOCS_PER_SESSION:
-                logger.warning(
-                    "Yjs document limit exceeded for session",
+            # Trim updates if too many (Redis handles this with TTL but we also limit count)
+            if update_count > MAX_YJS_UPDATES_PER_DOC:
+                # Clear and keep only the merged state
+                logger.info(
+                    "Compacting Yjs updates in Redis",
                     session_id=session_id,
-                    limit=MAX_YJS_DOCS_PER_SESSION,
+                    doc_name=doc_name,
+                    update_count=update_count,
                 )
-                return
-            _yjs_updates[session_id][doc_name] = []
+                # Get current doc state, clear updates
+                await yjs_storage.clear_updates(session_id, doc_name)
+        except YjsStorageError as e:
+            logger.warning("Failed to store Yjs update in Redis", error=str(e))
+            # Continue to broadcast even if storage fails
 
-        _yjs_updates[session_id][doc_name].append(update)
-
-        # Merge updates periodically to avoid memory bloat
-        # In production, use y-py to properly merge Yjs updates
-        if len(_yjs_updates[session_id][doc_name]) > MAX_YJS_UPDATES_PER_DOC:
-            # Keep recent updates and log the compaction
-            logger.info(
-                "Compacting Yjs updates",
-                session_id=session_id,
-                doc_name=doc_name,
-                old_count=len(_yjs_updates[session_id][doc_name]),
-            )
-            _yjs_updates[session_id][doc_name] = _yjs_updates[session_id][doc_name][-50:]
-
-        # Check total memory usage for this session and enforce hard limit
-        total_bytes = sum(
-            sum(len(u) for u in updates) for updates in _yjs_updates.get(session_id, {}).values()
-        )
-        if total_bytes > MAX_YJS_BYTES_PER_SESSION:
-            logger.warning(
-                "Session Yjs data exceeds memory limit, forcing cleanup",
-                session_id=session_id,
-                bytes=total_bytes,
-                limit=MAX_YJS_BYTES_PER_SESSION,
-            )
-            # Force cleanup to prevent memory exhaustion
-            # Keep only the most recent updates for each document
-            for doc in _yjs_updates.get(session_id, {}):
-                _yjs_updates[session_id][doc] = _yjs_updates[session_id][doc][-10:]
-
-        # MEDIUM FIX: Check global memory limit periodically
-        await _cleanup_yjs_memory()
-
-        # Broadcast to other subscribers
+        # Broadcast to other subscribers via Socket.IO Redis adapter
         room_name = f"yjs:{session_id}:{doc_name}"
         await sio.emit(
             "yjs_update",

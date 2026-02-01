@@ -6,7 +6,6 @@ interface expected by routes, while using the multi-server Docker backend.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -25,6 +24,7 @@ from src.models.workspace import (
     WorkspaceScaleResponse,
     WorkspaceStatus,
 )
+from src.utils.task_lock import release_task_lock, try_acquire_task_lock
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -60,7 +60,6 @@ class MultiServerComputeManager(ComputeManager):
         self._orchestrator = orchestrator
         self._docker = docker_manager
         self._workspace_store = workspace_store
-        self._billing_lock = asyncio.Lock()
         self._http_client: httpx.AsyncClient | None = None
 
         logger.info(
@@ -323,8 +322,16 @@ class MultiServerComputeManager(ComputeManager):
             raise ValueError("Request timed out") from e
 
     async def track_running_workspaces_usage(self) -> None:
-        """Track compute usage for all running workspaces."""
-        async with self._billing_lock:
+        """Track compute usage for all running workspaces.
+
+        Uses distributed locking to prevent duplicate billing across instances.
+        """
+        # Distributed lock to prevent duplicate billing from multiple instances
+        if not await try_acquire_task_lock("billing_usage_tracking", ttl_seconds=120):
+            logger.debug("Another instance is handling usage tracking, skipping")
+            return
+
+        try:
             now = datetime.now(UTC)
 
             workspaces: list[WorkspaceInfo] = []
@@ -374,6 +381,8 @@ class MultiServerComputeManager(ComputeManager):
                         "Failed to track periodic usage for workspace",
                         workspace_id=workspace.id,
                     )
+        finally:
+            await release_task_lock("billing_usage_tracking")
 
     async def _track_compute_usage(
         self,

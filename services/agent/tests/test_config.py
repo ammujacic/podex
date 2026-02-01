@@ -57,19 +57,6 @@ class TestDefaultModels:
     The agent service fetches capabilities from the API and caches them in Redis.
     """
 
-    def test_default_thinking_budget_constants(self):
-        """Test default thinking budget constants are defined."""
-        from src.config import (
-            DEFAULT_THINKING_BUDGET,
-            MAX_THINKING_BUDGET,
-            MIN_THINKING_BUDGET,
-        )
-
-        assert DEFAULT_THINKING_BUDGET > 0
-        assert MIN_THINKING_BUDGET > 0
-        assert MAX_THINKING_BUDGET > MIN_THINKING_BUDGET
-        assert MIN_THINKING_BUDGET <= DEFAULT_THINKING_BUDGET <= MAX_THINKING_BUDGET
-
     def test_async_capability_functions_exist(self):
         """Test async capability functions are available."""
         from src.config import supports_thinking_async, supports_vision_async

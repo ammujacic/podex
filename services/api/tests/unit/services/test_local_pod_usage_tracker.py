@@ -20,13 +20,13 @@ from src.services.local_pod_usage_tracker import (
 
 
 @pytest.fixture(autouse=True)
-def clear_tracking_state():
-    """Clear tracking state before and after each test."""
+def clear_redis_client():
+    """Clear Redis client singleton before and after each test."""
     import src.services.local_pod_usage_tracker as tracker_module
 
-    tracker_module._last_tracked = {}
+    tracker_module._redis = None
     yield
-    tracker_module._last_tracked = {}
+    tracker_module._redis = None
 
 
 @pytest.mark.unit
@@ -217,8 +217,6 @@ async def test_track_local_pod_workspaces_success():
 @pytest.mark.asyncio
 async def test_track_local_pod_workspaces_calculates_duration():
     """Test tracking calculates correct duration between calls."""
-    import src.services.local_pod_usage_tracker as tracker_module
-
     mock_session = MagicMock()
     mock_session.id = "session123"
     mock_session.owner_id = "user123"
@@ -229,9 +227,9 @@ async def test_track_local_pod_workspaces_calculates_duration():
     mock_workspace.status = "running"
     mock_workspace.session = mock_session
 
-    # Set last tracked time to 120 seconds ago
+    # Mock last tracked time from Redis to 120 seconds ago
     now = datetime.now(UTC)
-    tracker_module._last_tracked["ws123"] = now - timedelta(seconds=120)
+    last_tracked_time = now - timedelta(seconds=120)
 
     mock_result = MagicMock()
     mock_result.scalars().all.return_value = [mock_workspace]
@@ -251,21 +249,24 @@ async def test_track_local_pod_workspaces_calculates_duration():
 
             with patch("src.services.local_pod_usage_tracker.is_pod_online", return_value=True):
                 with patch(
-                    "src.services.local_pod_usage_tracker._record_local_pod_usage"
-                ) as mock_record:
-                    await track_local_pod_workspaces()
+                    "src.services.local_pod_usage_tracker._get_last_tracked",
+                    return_value=last_tracked_time,
+                ):
+                    with patch("src.services.local_pod_usage_tracker._set_last_tracked"):
+                        with patch(
+                            "src.services.local_pod_usage_tracker._record_local_pod_usage"
+                        ) as mock_record:
+                            await track_local_pod_workspaces()
 
-                    # Should calculate duration around 120 seconds
-                    duration = mock_record.call_args.kwargs["duration_seconds"]
-                    assert 115 <= duration <= 125  # Allow some tolerance
+                            # Should calculate duration around 120 seconds
+                            duration = mock_record.call_args.kwargs["duration_seconds"]
+                            assert 115 <= duration <= 125  # Allow some tolerance
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_track_local_pod_workspaces_skips_short_duration():
     """Test tracking skips if duration is too short (< 30s)."""
-    import src.services.local_pod_usage_tracker as tracker_module
-
     mock_session = MagicMock()
     mock_session.id = "session123"
     mock_session.owner_id = "user123"
@@ -276,8 +277,8 @@ async def test_track_local_pod_workspaces_skips_short_duration():
     mock_workspace.status = "running"
     mock_workspace.session = mock_session
 
-    # Set last tracked time to 10 seconds ago (too short)
-    tracker_module._last_tracked["ws123"] = datetime.now(UTC) - timedelta(seconds=10)
+    # Mock last tracked time from Redis to 10 seconds ago (too short)
+    last_tracked_time = datetime.now(UTC) - timedelta(seconds=10)
 
     mock_result = MagicMock()
     mock_result.scalars().all.return_value = [mock_workspace]
@@ -297,12 +298,16 @@ async def test_track_local_pod_workspaces_skips_short_duration():
 
             with patch("src.services.local_pod_usage_tracker.is_pod_online", return_value=True):
                 with patch(
-                    "src.services.local_pod_usage_tracker._record_local_pod_usage"
-                ) as mock_record:
-                    await track_local_pod_workspaces()
+                    "src.services.local_pod_usage_tracker._get_last_tracked",
+                    return_value=last_tracked_time,
+                ):
+                    with patch(
+                        "src.services.local_pod_usage_tracker._record_local_pod_usage"
+                    ) as mock_record:
+                        await track_local_pod_workspaces()
 
-                    # Should not record usage
-                    mock_record.assert_not_called()
+                        # Should not record usage
+                        mock_record.assert_not_called()
 
 
 @pytest.mark.unit
@@ -415,14 +420,13 @@ async def test_track_local_pod_workspaces_handles_db_error():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_cleanup_tracking_state():
-    """Test cleanup removes workspace from tracking state."""
-    import src.services.local_pod_usage_tracker as tracker_module
+    """Test cleanup removes workspace from tracking state in Redis."""
+    with patch(
+        "src.services.local_pod_usage_tracker._delete_last_tracked"
+    ) as mock_delete:
+        await cleanup_tracking_state("ws123")
 
-    tracker_module._last_tracked["ws123"] = datetime.now(UTC)
-
-    await cleanup_tracking_state("ws123")
-
-    assert "ws123" not in tracker_module._last_tracked
+        mock_delete.assert_called_once_with("ws123")
 
 
 @pytest.mark.unit
@@ -479,17 +483,16 @@ async def test_local_pod_usage_tracker_stop():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_local_pod_usage_tracker_stop_clears_state():
-    """Test stopping tracker clears tracking state."""
-    import src.services.local_pod_usage_tracker as tracker_module
-
-    tracker_module._last_tracked["ws123"] = datetime.now(UTC)
-
+async def test_local_pod_usage_tracker_stop():
+    """Test stopping tracker properly cleans up."""
     tracker = LocalPodUsageTracker()
-    await tracker.start()
-    await tracker.stop()
 
-    assert len(tracker_module._last_tracked) == 0
+    await tracker.start()
+    assert tracker._running is True
+
+    await tracker.stop()
+    assert tracker._running is False
+    assert tracker._task is None
 
 
 @pytest.mark.unit

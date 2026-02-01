@@ -16,6 +16,7 @@ import structlog
 from docker.tls import TLSConfig
 
 from src.config import settings
+from src.utils.task_lock import release_task_lock, try_acquire_task_lock
 
 if TYPE_CHECKING:
     from docker import DockerClient
@@ -1422,6 +1423,9 @@ class MultiServerDockerManager:
         In production, creates directory and sets XFS project quota.
         In development, only creates directory (no quota enforcement).
 
+        Uses per-server distributed locking to prevent XFS quota file corruption
+        when multiple instances create workspaces on the same server concurrently.
+
         Args:
             server_id: Server identifier
             workspace_id: Workspace ID
@@ -1489,72 +1493,94 @@ class MultiServerDockerManager:
                 )
                 return True  # Continue anyway in dev
 
-        # Production: SSH to server
-        loop = asyncio.get_event_loop()
-
-        def _ssh_setup() -> bool:
-            # Create directory
-            mkdir_cmd = [
-                "ssh",
-                "-o",
-                "StrictHostKeyChecking=no",
-                "-o",
-                "BatchMode=yes",
-                f"root@{conn.ip_address}",
-                f"mkdir -p {workspace_path}/home && chown -R 1000:1000 {workspace_path}",
-            ]
-            result = subprocess.run(mkdir_cmd, capture_output=True, timeout=30, check=False)  # noqa: S603
-            if result.returncode != 0:
-                logger.error("Failed to create directory", stderr=result.stderr.decode())
+        # Production: SSH to server with per-server locking for XFS quota safety
+        # Lock prevents concurrent appends to /etc/projects and /etc/projid
+        lock_name = f"workspace_setup:{server_id}"
+        if not await try_acquire_task_lock(lock_name, ttl_seconds=60):
+            logger.warning(
+                "Failed to acquire workspace setup lock, retrying...",
+                server_id=server_id,
+                workspace_id=workspace_id[:12],
+            )
+            # Wait briefly and retry once
+            await asyncio.sleep(2)
+            if not await try_acquire_task_lock(lock_name, ttl_seconds=60):
+                logger.error(
+                    "Failed to acquire workspace setup lock after retry",
+                    server_id=server_id,
+                    workspace_id=workspace_id[:12],
+                )
                 return False
 
-            # Set XFS quota if enabled
-            if settings.xfs_quotas_enabled:
-                project_id = abs(hash(workspace_id)) % 65536
-                quota_cmds = [
-                    f'echo "{project_id}:{workspace_path}" >> /etc/projects',
-                    f'echo "ws_{workspace_id}:{project_id}" >> /etc/projid',
-                    f'xfs_quota -x -c "project -s ws_{workspace_id}" {data_path}',
-                    f'xfs_quota -x -c "limit -p bhard={storage_gb}g ws_{workspace_id}" {data_path}',
-                ]
-                quota_cmd = " && ".join(quota_cmds)
-                ssh_cmd = [
+        try:
+            loop = asyncio.get_event_loop()
+
+            def _ssh_setup() -> bool:
+                # Create directory
+                mkdir_cmd = [
                     "ssh",
                     "-o",
                     "StrictHostKeyChecking=no",
                     "-o",
                     "BatchMode=yes",
                     f"root@{conn.ip_address}",
-                    quota_cmd,
+                    f"mkdir -p {workspace_path}/home && chown -R 1000:1000 {workspace_path}",
                 ]
-                result = subprocess.run(ssh_cmd, capture_output=True, timeout=30, check=False)  # noqa: S603
+                result = subprocess.run(mkdir_cmd, capture_output=True, timeout=30, check=False)  # noqa: S603
                 if result.returncode != 0:
-                    logger.warning(
-                        "Failed to set XFS quota",
-                        stderr=result.stderr.decode(),
+                    logger.error("Failed to create directory", stderr=result.stderr.decode())
+                    return False
+
+                # Set XFS quota if enabled
+                if settings.xfs_quotas_enabled:
+                    project_id = abs(hash(workspace_id)) % 65536
+                    quota_cmds = [
+                        f'echo "{project_id}:{workspace_path}" >> /etc/projects',
+                        f'echo "ws_{workspace_id}:{project_id}" >> /etc/projid',
+                        f'xfs_quota -x -c "project -s ws_{workspace_id}" {data_path}',
+                        f'xfs_quota -x -c "limit -p bhard={storage_gb}g ws_{workspace_id}" '
+                        f"{data_path}",
+                    ]
+                    quota_cmd = " && ".join(quota_cmds)
+                    ssh_cmd = [
+                        "ssh",
+                        "-o",
+                        "StrictHostKeyChecking=no",
+                        "-o",
+                        "BatchMode=yes",
+                        f"root@{conn.ip_address}",
+                        quota_cmd,
+                    ]
+                    result = subprocess.run(ssh_cmd, capture_output=True, timeout=30, check=False)  # noqa: S603
+                    if result.returncode != 0:
+                        logger.warning(
+                            "Failed to set XFS quota",
+                            stderr=result.stderr.decode(),
+                        )
+                        # Continue anyway - directory exists
+
+                return True
+
+            try:
+                success = await loop.run_in_executor(None, _ssh_setup)
+                if success:
+                    logger.info(
+                        "Created workspace directory",
+                        server_id=server_id,
+                        workspace_id=workspace_id[:12],
+                        storage_gb=storage_gb,
                     )
-                    # Continue anyway - directory exists
-
-            return True
-
-        try:
-            success = await loop.run_in_executor(None, _ssh_setup)
-            if success:
-                logger.info(
-                    "Created workspace directory",
+                return success
+            except Exception as e:
+                logger.exception(
+                    "Failed to setup workspace directory",
                     server_id=server_id,
-                    workspace_id=workspace_id[:12],
-                    storage_gb=storage_gb,
+                    workspace_id=workspace_id,
+                    error=str(e),
                 )
-            return success
-        except Exception as e:
-            logger.exception(
-                "Failed to setup workspace directory",
-                server_id=server_id,
-                workspace_id=workspace_id,
-                error=str(e),
-            )
-            return False
+                return False
+        finally:
+            await release_task_lock(lock_name)
 
     async def ensure_workspace_directory(
         self,

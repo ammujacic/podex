@@ -3,6 +3,10 @@
 Tracks compute usage for workspaces running on local pods.
 Unlike cloud compute (tracked by the compute service), local pod usage
 is tracked here in the API service since local pods connect directly to API.
+
+Multi-Worker Architecture:
+- Last tracked time is stored in Redis to ensure consistency across workers
+- Only one worker should run the tracking loop (coordinated via Redis lock)
 """
 
 import asyncio
@@ -10,10 +14,12 @@ import contextlib
 from datetime import UTC, datetime
 from typing import Any
 
+import redis.asyncio as aioredis
 import structlog
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
+from src.config import settings
 from src.database.connection import async_session_factory
 from src.database.models import PlatformSetting, Workspace
 from src.websocket.local_pod_hub import is_pod_online
@@ -23,8 +29,54 @@ logger = structlog.get_logger()
 # Tracking interval in seconds (same as cloud compute)
 TRACKING_INTERVAL_SECONDS = 60
 
-# Store last tracked time per workspace to calculate duration
-_last_tracked: dict[str, datetime] = {}
+# Redis key patterns
+LAST_TRACKED_KEY = "podex:local_pod:last_tracked:{workspace_id}"
+TRACKER_LOCK_KEY = "podex:local_pod:tracker_lock"
+LAST_TRACKED_TTL = 3600  # 1 hour TTL
+
+# Redis client
+_redis: aioredis.Redis | None = None  # type: ignore[type-arg]
+
+
+async def _get_redis() -> aioredis.Redis:  # type: ignore[type-arg]
+    """Get or create Redis client."""
+    global _redis
+    if _redis is None:
+        _redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    return _redis
+
+
+async def _get_last_tracked(workspace_id: str) -> datetime | None:
+    """Get last tracked time from Redis."""
+    try:
+        redis = await _get_redis()
+        key = LAST_TRACKED_KEY.format(workspace_id=workspace_id)
+        value = await redis.get(key)
+        if value:
+            return datetime.fromisoformat(value)
+    except Exception as e:
+        logger.warning("Failed to get last tracked time from Redis", error=str(e))
+    return None
+
+
+async def _set_last_tracked(workspace_id: str, timestamp: datetime) -> None:
+    """Set last tracked time in Redis."""
+    try:
+        redis = await _get_redis()
+        key = LAST_TRACKED_KEY.format(workspace_id=workspace_id)
+        await redis.setex(key, LAST_TRACKED_TTL, timestamp.isoformat())
+    except Exception as e:
+        logger.warning("Failed to set last tracked time in Redis", error=str(e))
+
+
+async def _delete_last_tracked(workspace_id: str) -> None:
+    """Delete last tracked time from Redis."""
+    try:
+        redis = await _get_redis()
+        key = LAST_TRACKED_KEY.format(workspace_id=workspace_id)
+        await redis.delete(key)
+    except Exception as e:
+        logger.warning("Failed to delete last tracked time from Redis", error=str(e))
 
 
 async def get_local_pod_pricing() -> dict[str, Any]:
@@ -86,16 +138,16 @@ async def track_local_pod_workspaces() -> None:
                         )
                         continue
 
-                    # Calculate duration since last track
-                    last_time = _last_tracked.get(workspace.id)
+                    # Calculate duration since last track (from Redis)
+                    last_time = await _get_last_tracked(workspace.id)
                     if last_time is None:
                         # First time tracking this workspace, use 1 interval
                         duration_seconds = TRACKING_INTERVAL_SECONDS
                     else:
                         duration_seconds = int((now - last_time).total_seconds())
 
-                    # Update last tracked time
-                    _last_tracked[workspace.id] = now
+                    # Update last tracked time in Redis
+                    await _set_last_tracked(workspace.id, now)
 
                     # Skip if duration is too small (likely duplicate tracking)
                     if duration_seconds < 30:
@@ -196,11 +248,17 @@ async def _record_local_pod_usage(
 
 async def cleanup_tracking_state(workspace_id: str) -> None:
     """Clean up tracking state when a workspace is stopped/deleted."""
-    _last_tracked.pop(workspace_id, None)
+    await _delete_last_tracked(workspace_id)
 
 
 class LocalPodUsageTracker:
-    """Background task manager for local pod usage tracking."""
+    """Background task manager for local pod usage tracking.
+
+    Multi-Worker Architecture:
+    - Uses Redis distributed lock to ensure only one worker runs tracking at a time
+    - Other workers will skip if lock is held
+    - Lock auto-expires to handle worker crashes
+    """
 
     def __init__(self) -> None:
         self._running = False
@@ -225,17 +283,61 @@ class LocalPodUsageTracker:
                 await self._task
             self._task = None
 
-        # Clear tracking state
-        _last_tracked.clear()
-
         logger.info("Local pod usage tracker stopped")
 
+    async def _acquire_tracking_lock(self) -> bool:
+        """Try to acquire distributed lock for tracking.
+
+        Returns True if lock acquired, False if another worker has it.
+        """
+        try:
+            redis = await _get_redis()
+            # Try to set lock with NX (only if not exists) and EX (expiry)
+            # Lock expires after 2x tracking interval to handle crashes
+            acquired = await redis.set(
+                TRACKER_LOCK_KEY,
+                "locked",
+                nx=True,
+                ex=TRACKING_INTERVAL_SECONDS * 2,
+            )
+            return bool(acquired)
+        except Exception as e:
+            logger.warning("Failed to acquire tracking lock", error=str(e))
+            return False
+
+    async def _extend_tracking_lock(self) -> None:
+        """Extend the tracking lock TTL."""
+        try:
+            redis = await _get_redis()
+            await redis.expire(TRACKER_LOCK_KEY, TRACKING_INTERVAL_SECONDS * 2)
+        except Exception as e:
+            logger.warning("Failed to extend tracking lock", error=str(e))
+
+    async def _release_tracking_lock(self) -> None:
+        """Release the tracking lock."""
+        try:
+            redis = await _get_redis()
+            await redis.delete(TRACKER_LOCK_KEY)
+        except Exception as e:
+            logger.warning("Failed to release tracking lock", error=str(e))
+
     async def _run_tracking_loop(self) -> None:
-        """Run the tracking loop."""
+        """Run the tracking loop with distributed locking."""
         while self._running:
             try:
                 await asyncio.sleep(TRACKING_INTERVAL_SECONDS)
-                await track_local_pod_workspaces()
+
+                # Try to acquire lock - only one worker will succeed
+                if await self._acquire_tracking_lock():
+                    try:
+                        await track_local_pod_workspaces()
+                        # Extend lock while we hold it
+                        await self._extend_tracking_lock()
+                    finally:
+                        await self._release_tracking_lock()
+                else:
+                    logger.debug("Skipping tracking - another worker has the lock")
+
             except asyncio.CancelledError:
                 break
             except Exception:

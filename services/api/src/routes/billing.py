@@ -2034,15 +2034,12 @@ async def create_customer_portal_session(
     user_id = get_current_user_id(request)
     user = await get_user_by_id(db, user_id)
 
-    if not user.stripe_customer_id:
-        raise HTTPException(
-            status_code=400,
-            detail="No billing account found. Please make a purchase first.",
-        )
+    # Create Stripe customer if they don't have one yet (allows adding payment method before subscribing)
+    customer_id = await get_or_create_stripe_customer(db, user)
 
     try:
         portal_session = stripe.billing_portal.Session.create(
-            customer=user.stripe_customer_id,
+            customer=customer_id,
             return_url=f"{settings.FRONTEND_URL}/settings/billing",
         )
     except stripe.error.StripeError as e:
@@ -4583,7 +4580,7 @@ async def acknowledge_alert(
     user_id = get_current_user_id(request)
 
     manager = get_alert_manager()
-    success = await manager.acknowledge_alert(alert_id)
+    success = await manager.acknowledge_alert(alert_id, user_id)
 
     if not success:
         raise HTTPException(status_code=404, detail="Alert not found")

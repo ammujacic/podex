@@ -1891,6 +1891,12 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     await local_pod_usage_tracker.start()
     logger.info("Local pod usage tracker started")
 
+    # Start local pod RPC listener (handles cross-worker pod RPC routing)
+    from src.websocket.local_pod_hub import start_rpc_listener
+
+    await start_rpc_listener()
+    logger.info("Local pod RPC listener started")
+
     yield
 
     # Cleanup
@@ -1963,6 +1969,12 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     # Stop local pod usage tracker
     await local_pod_usage_tracker.stop()
     logger.info("Local pod usage tracker stopped")
+
+    # Stop local pod RPC listener
+    from src.websocket.local_pod_hub import stop_rpc_listener
+
+    await stop_rpc_listener()
+    logger.info("Local pod RPC listener stopped")
 
     await cleanup_session_sync()
     await close_database()

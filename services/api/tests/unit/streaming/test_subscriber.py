@@ -88,26 +88,35 @@ class TestStreamSubscriber:
 
     @pytest.mark.asyncio
     async def test_subscribe_session_already_subscribed(self):
-        """Test subscribing to already subscribed session does nothing."""
+        """Test subscribing to already subscribed session increments counts but doesn't re-subscribe."""
         subscriber = StreamSubscriber()
         subscriber._subscribed_sessions = {"test-session-123"}
+        subscriber._local_session_counts = {"test-session-123": 1}
+        subscriber._redis = AsyncMock()
+        subscriber._pubsub = AsyncMock()
 
-        with patch.object(subscriber, "connect", new_callable=AsyncMock) as mock_connect:
-            await subscriber.subscribe_session("test-session-123")
-            # Should not call connect since already subscribed
-            mock_connect.assert_not_called()
+        await subscriber.subscribe_session("test-session-123")
+
+        # Should increment local count
+        assert subscriber._local_session_counts["test-session-123"] == 2
+        # Should NOT call psubscribe again since already subscribed on this worker
+        subscriber._pubsub.psubscribe.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_unsubscribe_session(self):
         """Test unsubscribing from a session stream."""
         subscriber = StreamSubscriber()
         subscriber._subscribed_sessions = {"test-session-123"}
+        subscriber._local_session_counts = {"test-session-123": 1}  # Need to set local count
         subscriber._pubsub = AsyncMock()
+        subscriber._redis = AsyncMock()
+        subscriber._redis.decr = AsyncMock(return_value=0)  # Return an integer
 
         await subscriber.unsubscribe_session("test-session-123")
 
         subscriber._pubsub.punsubscribe.assert_called_once_with("agent_stream:test-session-123:*")
         assert "test-session-123" not in subscriber._subscribed_sessions
+        assert "test-session-123" not in subscriber._local_session_counts
 
     @pytest.mark.asyncio
     async def test_unsubscribe_session_not_subscribed(self):

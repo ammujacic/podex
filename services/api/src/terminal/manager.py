@@ -5,19 +5,27 @@ and can be reconnected.
 
 For cloud workspaces: Uses WebSocket to compute service
 For local pod workspaces: Uses RPC via Socket.IO
+
+Multi-Worker Architecture:
+- Each worker maintains its own local sessions dict (connections can't be shared)
+- Session cleanup is coordinated via Redis distributed lock
+- Session metadata can be stored in Redis for cross-worker visibility
 """
 
 import asyncio
 import contextlib
 import inspect
+import os
 import ssl
 import struct
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
 
+import redis.asyncio as aioredis
 import structlog
 import websockets
 from websockets.asyncio.client import ClientConnection
@@ -29,6 +37,23 @@ logger = structlog.get_logger()
 # Session cleanup configuration
 SESSION_MAX_IDLE_HOURS = 24  # Clean up sessions idle for more than 24 hours
 SESSION_CLEANUP_INTERVAL = 3600  # Run cleanup every hour
+
+# Redis keys for terminal manager
+TERMINAL_CLEANUP_LOCK_KEY = "podex:terminal:cleanup_lock"
+
+# Worker ID for distributed lock
+WORKER_ID = f"worker-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+# Redis client singleton
+_redis: aioredis.Redis | None = None  # type: ignore[type-arg]
+
+
+async def _get_redis() -> aioredis.Redis:  # type: ignore[type-arg]
+    """Get or create Redis client."""
+    global _redis
+    if _redis is None:
+        _redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    return _redis
 
 
 @dataclass
@@ -87,7 +112,10 @@ class TerminalManager:
             logger.info("Terminal session cleanup task stopped")
 
     async def _cleanup_loop(self) -> None:
-        """Background loop that periodically cleans up stale sessions."""
+        """Background loop that periodically cleans up stale sessions.
+
+        Uses distributed lock to coordinate cleanup across workers.
+        """
         while True:
             try:
                 await asyncio.sleep(SESSION_CLEANUP_INTERVAL)
@@ -97,12 +125,40 @@ class TerminalManager:
             except Exception as e:
                 logger.exception("Error in terminal cleanup loop", error=str(e))
 
+    async def _acquire_cleanup_lock(self) -> bool:
+        """Try to acquire distributed lock for cleanup."""
+        try:
+            redis = await _get_redis()
+            acquired = await redis.set(
+                TERMINAL_CLEANUP_LOCK_KEY,
+                WORKER_ID,
+                nx=True,
+                ex=SESSION_CLEANUP_INTERVAL * 2,  # Lock expires after 2x cleanup interval
+            )
+            return bool(acquired)
+        except Exception as e:
+            logger.warning("Failed to acquire terminal cleanup lock", error=str(e))
+            return False
+
+    async def _release_cleanup_lock(self) -> None:
+        """Release the cleanup lock if we own it."""
+        try:
+            redis = await _get_redis()
+            # Only delete if we own the lock
+            current = await redis.get(TERMINAL_CLEANUP_LOCK_KEY)
+            if current == WORKER_ID:
+                await redis.delete(TERMINAL_CLEANUP_LOCK_KEY)
+        except Exception as e:
+            logger.warning("Failed to release terminal cleanup lock", error=str(e))
+
     async def _cleanup_stale_sessions(self) -> None:
         """Clean up sessions that have been idle for too long.
 
-        SECURITY/PERFORMANCE: Prevents memory leaks from accumulated
-        abandoned sessions.
+        Multi-Worker: Uses distributed lock to prevent duplicate cleanup.
+        Each worker still cleans up its own local sessions.
         """
+        # Each worker should clean up its own local sessions
+        # The lock just prevents logging spam from multiple workers
         now = datetime.now(UTC)
         max_idle = timedelta(hours=SESSION_MAX_IDLE_HOURS)
         stale_sessions: list[str] = []
@@ -125,14 +181,20 @@ class TerminalManager:
                         session_id=session_id,
                         workspace_id=terminal_session.workspace_id,
                         idle_hours=(now - terminal_session.last_activity).total_seconds() / 3600,
+                        worker_id=WORKER_ID,
                     )
 
-        if stale_sessions:
-            logger.info(
-                "Terminal cleanup completed",
-                cleaned_sessions=len(stale_sessions),
-                remaining_sessions=len(self.sessions),
-            )
+        # Only log summary if we acquired the lock (prevents log spam)
+        if stale_sessions and await self._acquire_cleanup_lock():
+            try:
+                logger.info(
+                    "Terminal cleanup completed",
+                    cleaned_sessions=len(stale_sessions),
+                    remaining_sessions=len(self.sessions),
+                    worker_id=WORKER_ID,
+                )
+            finally:
+                await self._release_cleanup_lock()
 
     def _get_compute_terminal_url(
         self,

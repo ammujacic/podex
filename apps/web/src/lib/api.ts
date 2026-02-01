@@ -1967,6 +1967,45 @@ export async function scaleWorkspace(
   });
 }
 
+// Scale options - returns available tiers filtered by server capacity
+export interface ScaleOptionTier {
+  tier: string;
+  display_name: string;
+  can_scale: boolean;
+  reason: string | null;
+  cpu: number;
+  memory_mb: number;
+  storage_gb: number;
+  bandwidth_mbps: number;
+  hourly_rate_cents: number;
+  is_gpu: boolean;
+  gpu_type: string | null;
+}
+
+export interface CurrentTierInfo {
+  tier: string;
+  display_name: string;
+  cpu: number;
+  memory_mb: number;
+  storage_gb: number;
+  bandwidth_mbps: number;
+  hourly_rate_cents: number;
+  is_gpu: boolean;
+  gpu_type: string | null;
+}
+
+export interface ScaleOptionsResponse {
+  current_tier: string;
+  current_tier_info: CurrentTierInfo | null;
+  server_id: string | null;
+  available_tiers: ScaleOptionTier[];
+  error?: string;
+}
+
+export async function getScaleOptions(sessionId: string): Promise<ScaleOptionsResponse> {
+  return api.get<ScaleOptionsResponse>(`/api/sessions/${sessionId}/scale-options`);
+}
+
 // ==================== Workspace Resource Metrics ====================
 
 export interface WorkspaceResourceMetrics {

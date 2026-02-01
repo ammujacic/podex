@@ -82,14 +82,20 @@ class SessionSyncManager:
     """Manages session state synchronization across instances.
 
     Uses Redis Pub/Sub for real-time broadcasting across server instances.
-    Uses Redis hashes for session state caching.
+    Uses Redis for all session state storage - no local caching.
+    This ensures proper synchronization in multi-worker deployments.
     DynamoDB is used for durable storage (accessed via API routes).
+
+    Multi-Worker Architecture:
+    - Each Gunicorn worker has its own SessionSyncManager instance
+    - All state is stored in Redis, not in local memory
+    - This ensures consistency across workers
     """
 
-    # PERFORMANCE: Maximum sessions to keep in local cache
-    # Prevents unbounded memory growth
-    MAX_LOCAL_SESSIONS = 1000
-    MAX_SEQUENCES = 5000
+    # Redis key patterns
+    SESSION_STATE_KEY = "podex:session:{session_id}"
+    SESSION_SEQ_KEY = "podex:session:seq:{session_id}"
+    SESSION_TTL = 3600  # 1 hour TTL for session data
 
     def __init__(self) -> None:
         """Initialize the session sync manager."""
@@ -98,43 +104,6 @@ class SessionSyncManager:
         self._broadcast_callback: BroadcastCallback | None = None
         self._running = False
         self._listen_task: asyncio.Task[None] | None = None
-
-        # Local cache of session states (bounded)
-        self._sessions: dict[str, SessionState] = {}
-        # Sequence numbers per session (bounded)
-        self._sequences: dict[str, int] = {}
-
-    def _maybe_evict_cache(self) -> None:
-        """Evict oldest entries from cache if at capacity.
-
-        PERFORMANCE: Prevents unbounded memory growth by removing
-        least recently accessed sessions when cache is full.
-        """
-        # Evict sessions if over limit
-        if len(self._sessions) > self.MAX_LOCAL_SESSIONS:
-            # Sort by last_activity and keep most recent
-            sorted_sessions = sorted(
-                self._sessions.items(),
-                key=lambda x: x[1].last_activity,
-                reverse=True,
-            )
-            # Keep only MAX_LOCAL_SESSIONS entries
-            self._sessions = dict(sorted_sessions[: self.MAX_LOCAL_SESSIONS])
-            logger.info(
-                "Evicted old sessions from local cache",
-                remaining=len(self._sessions),
-                max=self.MAX_LOCAL_SESSIONS,
-            )
-
-        # Evict sequences if over limit
-        if len(self._sequences) > self.MAX_SEQUENCES:
-            # Keep sequences only for sessions still in cache
-            self._sequences = {k: v for k, v in self._sequences.items() if k in self._sessions}
-            # If still over limit, just clear old ones
-            if len(self._sequences) > self.MAX_SEQUENCES:
-                # Keep first MAX_SEQUENCES items (arbitrary but consistent)
-                items = list(self._sequences.items())[: self.MAX_SEQUENCES]
-                self._sequences = dict(items)
 
     async def start(self, broadcast_callback: BroadcastCallback) -> None:
         """Start the session sync manager.
@@ -222,9 +191,10 @@ class SessionSyncManager:
         if not self._redis:
             return
 
-        # Increment server sequence
-        seq = self._sequences.get(action.session_id, 0) + 1
-        self._sequences[action.session_id] = seq
+        # Increment server sequence atomically in Redis
+        seq_key = self.SESSION_SEQ_KEY.format(session_id=action.session_id)
+        seq = await self._redis.incr(seq_key)
+        await self._redis.expire(seq_key, self.SESSION_TTL)
         action.server_seq = seq
 
         # Publish to Redis
@@ -244,12 +214,12 @@ class SessionSyncManager:
 
         await self._redis.publish("podex:session:sync", json.dumps(message))
 
-        # Also update local cache if it's a state-modifying action
-        await self._apply_action_to_cache(action)
+        # Also update Redis state if it's a state-modifying action
+        await self._apply_action_to_state(action)
 
-    async def _apply_action_to_cache(self, action: SyncAction) -> None:
-        """Apply a sync action to the local session cache."""
-        session = self._sessions.get(action.session_id)
+    async def _apply_action_to_state(self, action: SyncAction) -> None:
+        """Apply a sync action to the session state in Redis."""
+        session = await self._load_session_from_redis(action.session_id)
         if not session:
             return
 
@@ -264,45 +234,34 @@ class SessionSyncManager:
         if handler:
             handler(session, action.payload)
 
-        # Save to Redis cache
-        await self._save_session_to_cache(session)
+        # Save back to Redis
+        await self._save_session_to_redis(session)
 
-    async def _save_session_to_cache(self, session: SessionState) -> None:
-        """Save session state to Redis cache."""
+    async def _save_session_to_redis(self, session: SessionState) -> None:
+        """Save session state to Redis."""
         if not self._redis:
             return
 
-        key = f"podex:session:{session.session_id}"
-        await self._redis.set(key, session.model_dump_json(), ex=3600)  # 1 hour TTL
+        key = self.SESSION_STATE_KEY.format(session_id=session.session_id)
+        await self._redis.set(key, session.model_dump_json(), ex=self.SESSION_TTL)
 
-    async def _load_session_from_cache(self, session_id: str) -> SessionState | None:
-        """Load session state from Redis cache."""
+    async def _load_session_from_redis(self, session_id: str) -> SessionState | None:
+        """Load session state from Redis."""
         if not self._redis:
             return None
 
-        key = f"podex:session:{session_id}"
+        key = self.SESSION_STATE_KEY.format(session_id=session_id)
         data = await self._redis.get(key)
         if data:
             return SessionState.model_validate_json(data)
         return None
 
     async def get_session_state(self, session_id: str) -> SessionState | None:
-        """Get the current session state.
+        """Get the current session state from Redis.
 
-        First checks local cache, then Redis cache.
+        All state is stored in Redis to ensure consistency across workers.
         """
-        # Check local cache
-        if session_id in self._sessions:
-            return self._sessions[session_id]
-
-        # Check Redis cache
-        session = await self._load_session_from_cache(session_id)
-        if session:
-            self._maybe_evict_cache()  # Evict before adding to prevent unbounded growth
-            self._sessions[session_id] = session
-            return session
-
-        return None
+        return await self._load_session_from_redis(session_id)
 
     async def create_session_state(
         self,
@@ -310,7 +269,7 @@ class SessionSyncManager:
         user_id: str,
         name: str,
     ) -> SessionState:
-        """Create a new session state."""
+        """Create a new session state in Redis."""
         now = datetime.now(UTC)
         session = SessionState(
             session_id=session_id,
@@ -321,9 +280,7 @@ class SessionSyncManager:
             last_activity=now,
         )
 
-        self._maybe_evict_cache()  # Evict before adding to prevent unbounded growth
-        self._sessions[session_id] = session
-        await self._save_session_to_cache(session)
+        await self._save_session_to_redis(session)
 
         return session
 
@@ -355,7 +312,7 @@ class SessionSyncManager:
         session.viewers.append(viewer)
         session.last_activity = now
 
-        await self._save_session_to_cache(session)
+        await self._save_session_to_redis(session)
 
         # Broadcast viewer joined
         await self.publish_action(
@@ -391,7 +348,7 @@ class SessionSyncManager:
         ]
         session.last_activity = datetime.now(UTC)
 
-        await self._save_session_to_cache(session)
+        await self._save_session_to_redis(session)
 
         # Broadcast viewer left
         await self.publish_action(
@@ -458,7 +415,7 @@ class SessionSyncManager:
         session.workspaces.append(workspace)
         session.last_activity = datetime.now(UTC)
 
-        await self._save_session_to_cache(session)
+        await self._save_session_to_redis(session)
 
     async def add_agent(
         self,
@@ -483,7 +440,7 @@ class SessionSyncManager:
         session.agents.append(agent)
         session.last_activity = datetime.now(UTC)
 
-        await self._save_session_to_cache(session)
+        await self._save_session_to_redis(session)
 
     async def update_agent_status(
         self,
@@ -535,10 +492,18 @@ class SessionSyncManager:
         if not session:
             return None
 
+        # Get sequence from Redis
+        server_seq = 0
+        if self._redis:
+            seq_key = self.SESSION_SEQ_KEY.format(session_id=session_id)
+            seq_value = await self._redis.get(seq_key)
+            if seq_value:
+                server_seq = int(seq_value)
+
         return {
             "type": "full_sync",
             "state": session.model_dump(mode="json"),
-            "server_seq": self._sequences.get(session_id, 0),
+            "server_seq": server_seq,
         }
 
 

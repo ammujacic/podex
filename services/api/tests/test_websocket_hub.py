@@ -15,8 +15,6 @@ from src.websocket.hub import (
     _pending_session_cleanup,
     _pending_terminal_cleanup,
     _verify_auth_token,
-    _yjs_docs,
-    _yjs_updates,
 )
 
 
@@ -180,14 +178,6 @@ class TestGlobalState:
     def test_client_info_is_dict(self) -> None:
         """Test _client_info is a dictionary."""
         assert isinstance(_client_info, dict)
-
-    def test_yjs_docs_is_dict(self) -> None:
-        """Test _yjs_docs is a dictionary."""
-        assert isinstance(_yjs_docs, dict)
-
-    def test_yjs_updates_is_dict(self) -> None:
-        """Test _yjs_updates is a dictionary."""
-        assert isinstance(_yjs_updates, dict)
 
     def test_pending_session_cleanup_is_dict(self) -> None:
         """Test _pending_session_cleanup is a dictionary."""

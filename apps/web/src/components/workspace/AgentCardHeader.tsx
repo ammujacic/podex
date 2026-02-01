@@ -16,7 +16,6 @@ import {
   Undo2,
   Volume2,
 } from 'lucide-react';
-import { PodexIcon } from '@/components/icons';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -150,11 +149,6 @@ export const AgentCardHeader = React.memo<AgentCardHeaderProps>(function AgentCa
         <div>
           {/* Dynamic title: Role: Session Name */}
           <div className="flex items-center gap-2 mb-1">
-            {agent.role !== 'custom' && (
-              <span className="flex items-center justify-center w-5 h-5" title="Podex Agent">
-                <PodexIcon size={20} />
-              </span>
-            )}
             <span className="font-medium text-text-primary">{displayTitle}</span>
 
             {/* Status indicator */}
