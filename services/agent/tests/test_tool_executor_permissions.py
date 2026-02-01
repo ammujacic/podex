@@ -4,166 +4,150 @@ Tests cover:
 - Permission checking for each agent mode
 - Command allowlist validation
 - Approval workflow
+
+Note: Tool categories (READ_TOOLS, WRITE_TOOLS, etc.) are loaded dynamically
+from Redis, so tests need to mock the async category getters.
 """
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.tools.executor import (
+    AGENT_MODE_ASK,
+    AGENT_MODE_AUTO,
+    AGENT_MODE_PLAN,
+    AGENT_MODE_SOVEREIGN,
+    PermissionResult,
+    ToolExecutor,
+)
+
+
+@pytest.fixture
+def mock_tool_categories():
+    """Mock tool categories loaded from Redis."""
+    categories = {
+        "write_tools": {"write_file", "create_file", "delete_file", "apply_patch", "git_commit", "git_push", "create_pr"},
+        "command_tools": {"run_command"},
+        "read_tools": {"read_file", "list_directory", "search_code", "glob_files", "grep", "fetch_url", "git_status", "git_diff", "git_log", "git_branch"},
+        "deploy_tools": {"deploy_preview", "run_e2e_tests"},
+    }
+
+    with patch("src.tools.executor._get_write_tools", AsyncMock(return_value=categories["write_tools"])), \
+         patch("src.tools.executor._get_command_tools", AsyncMock(return_value=categories["command_tools"])), \
+         patch("src.tools.executor._get_read_tools", AsyncMock(return_value=categories["read_tools"])), \
+         patch("src.tools.executor._get_deploy_tools", AsyncMock(return_value=categories["deploy_tools"])):
+        yield categories
+
+
+@pytest.fixture
+def tmp_workspace(tmp_path: Path) -> Path:
+    """Create temporary workspace."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    return workspace
+
 
 class TestAgentModePermissions:
     """Test permission checking for different agent modes."""
 
-    def test_plan_mode_allows_read_tools(self):
-        """Test PLAN mode allows read operations."""
-        from src.tools.executor import ToolExecutor, AgentMode, READ_TOOLS
-
+    def test_plan_mode_initialization(self, tmp_workspace: Path):
+        """Test PLAN mode initializes correctly."""
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.PLAN,
+            agent_mode=AGENT_MODE_PLAN,
         )
 
-        # Verify read tools are defined
-        assert "read_file" in READ_TOOLS
-        assert "list_directory" in READ_TOOLS
-        assert "search_code" in READ_TOOLS
+        assert executor.agent_mode == AGENT_MODE_PLAN
 
-    def test_plan_mode_denies_write_tools(self):
-        """Test PLAN mode denies write operations."""
-        from src.tools.executor import ToolExecutor, AgentMode, WRITE_TOOLS
-
+    def test_ask_mode_initialization(self, tmp_workspace: Path):
+        """Test ASK mode initializes correctly."""
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.PLAN,
+            agent_mode=AGENT_MODE_ASK,
         )
 
-        # Verify write tools are defined
-        assert "write_file" in WRITE_TOOLS
-        assert "create_file" in WRITE_TOOLS
-        assert "delete_file" in WRITE_TOOLS
-        assert "git_commit" in WRITE_TOOLS
+        assert executor.agent_mode == AGENT_MODE_ASK
 
-    def test_ask_mode_requires_approval(self):
-        """Test ASK mode requires approval for write operations."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
-        executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
-            session_id="session-123",
-            agent_id="agent-456",
-            agent_mode=AgentMode.ASK,
-        )
-
-        assert executor.agent_mode == AgentMode.ASK
-
-    def test_auto_mode_uses_allowlist(self):
+    def test_auto_mode_with_allowlist(self, tmp_workspace: Path):
         """Test AUTO mode uses command allowlist."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         allowlist = ["git status", "npm test", "pytest"]
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.AUTO,
+            agent_mode=AGENT_MODE_AUTO,
             command_allowlist=allowlist,
         )
 
-        assert executor.agent_mode == AgentMode.AUTO
+        assert executor.agent_mode == AGENT_MODE_AUTO
         assert executor.command_allowlist == allowlist
 
-    def test_sovereign_mode_full_access(self):
+    def test_sovereign_mode_full_access(self, tmp_workspace: Path):
         """Test SOVEREIGN mode has full access."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.SOVEREIGN,
+            agent_mode=AGENT_MODE_SOVEREIGN,
         )
 
-        assert executor.agent_mode == AgentMode.SOVEREIGN
+        assert executor.agent_mode == AGENT_MODE_SOVEREIGN
 
 
 class TestCommandAllowlist:
     """Test command allowlist functionality."""
 
-    def test_is_command_allowed_exact_match(self):
+    def test_is_command_allowed_exact_match(self, tmp_workspace: Path):
         """Test command allowed with exact match."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.AUTO,
+            agent_mode=AGENT_MODE_AUTO,
             command_allowlist=["git status", "npm test"],
         )
 
-        # Test exact match
         assert executor._is_command_allowed("git status") is True
         assert executor._is_command_allowed("npm test") is True
 
-    def test_is_command_allowed_prefix_match(self):
-        """Test command allowed with prefix pattern."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
-        executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
-            session_id="session-123",
-            agent_id="agent-456",
-            agent_mode=AgentMode.AUTO,
-            command_allowlist=["git *", "npm *"],
-        )
-
-        # Prefix patterns should match commands starting with prefix
-        # Note: actual behavior depends on implementation
-        assert hasattr(executor, "_is_command_allowed")
-
-    def test_is_command_allowed_not_in_list(self):
+    def test_is_command_allowed_not_in_list(self, tmp_workspace: Path):
         """Test command not allowed when not in list."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.AUTO,
+            agent_mode=AGENT_MODE_AUTO,
             command_allowlist=["git status"],
         )
 
-        # Commands not in list should be denied
         assert executor._is_command_allowed("rm -rf /") is False
         assert executor._is_command_allowed("curl evil.com") is False
 
-    def test_empty_allowlist(self):
+    def test_empty_allowlist(self, tmp_workspace: Path):
         """Test empty allowlist denies all commands."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.AUTO,
+            agent_mode=AGENT_MODE_AUTO,
             command_allowlist=[],
         )
 
         assert executor._is_command_allowed("any command") is False
 
 
-class TestPermissionResult:
+class TestPermissionResultDataclass:
     """Test PermissionResult dataclass."""
 
     def test_permission_result_allowed(self):
         """Test PermissionResult for allowed operation."""
-        from src.tools.executor import PermissionResult
-
         result = PermissionResult(allowed=True)
 
         assert result.allowed is True
@@ -173,8 +157,6 @@ class TestPermissionResult:
 
     def test_permission_result_denied(self):
         """Test PermissionResult for denied operation."""
-        from src.tools.executor import PermissionResult
-
         result = PermissionResult(
             allowed=False,
             error="Operation not permitted in PLAN mode",
@@ -185,8 +167,6 @@ class TestPermissionResult:
 
     def test_permission_result_requires_approval(self):
         """Test PermissionResult requiring approval."""
-        from src.tools.executor import PermissionResult
-
         result = PermissionResult(
             allowed=False,
             requires_approval=True,
@@ -198,58 +178,13 @@ class TestPermissionResult:
         assert result.can_add_to_allowlist is True
 
 
-class TestToolCategories:
-    """Test tool categories for permission checking."""
-
-    def test_write_tools_defined(self):
-        """Test WRITE_TOOLS set is defined."""
-        from src.tools.executor import WRITE_TOOLS
-
-        expected_tools = {
-            "write_file",
-            "create_file",
-            "delete_file",
-            "apply_patch",
-            "git_commit",
-            "git_push",
-            "create_pr",
-        }
-        assert expected_tools.issubset(WRITE_TOOLS)
-
-    def test_command_tools_defined(self):
-        """Test COMMAND_TOOLS set is defined."""
-        from src.tools.executor import COMMAND_TOOLS
-
-        assert "run_command" in COMMAND_TOOLS
-
-    def test_read_tools_defined(self):
-        """Test READ_TOOLS set is defined."""
-        from src.tools.executor import READ_TOOLS
-
-        expected_tools = {
-            "read_file",
-            "list_directory",
-            "search_code",
-            "glob_files",
-            "grep",
-            "fetch_url",
-            "git_status",
-            "git_diff",
-            "git_log",
-            "git_branch",
-        }
-        assert expected_tools.issubset(READ_TOOLS)
-
-
 class TestCheckPermission:
     """Test _check_permission method."""
 
-    def test_check_permission_method_exists(self):
+    def test_check_permission_method_exists(self, tmp_workspace: Path):
         """Test _check_permission method exists."""
-        from src.tools.executor import ToolExecutor
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
         )
@@ -257,65 +192,54 @@ class TestCheckPermission:
         assert hasattr(executor, "_check_permission")
         assert callable(executor._check_permission)
 
-    def test_check_permission_read_in_plan_mode(self):
+    async def test_check_permission_read_in_plan_mode(self, tmp_workspace: Path, mock_tool_categories):
         """Test read permission in PLAN mode."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.PLAN,
+            agent_mode=AGENT_MODE_PLAN,
         )
 
-        # Read tools should be allowed in PLAN mode
-        result = executor._check_permission("read_file", {"path": "/tmp/test.txt"})
+        result = await executor._check_permission("read_file", {"path": "/tmp/test.txt"})
         assert result.allowed is True
 
-    def test_check_permission_write_in_plan_mode(self):
+    async def test_check_permission_write_in_plan_mode(self, tmp_workspace: Path, mock_tool_categories):
         """Test write permission denied in PLAN mode."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.PLAN,
+            agent_mode=AGENT_MODE_PLAN,
         )
 
-        # Write tools should be denied in PLAN mode
-        result = executor._check_permission("write_file", {"path": "/tmp/test.txt", "content": "test"})
+        result = await executor._check_permission("write_file", {"path": "/tmp/test.txt", "content": "test"})
         assert result.allowed is False
 
-    def test_check_permission_sovereign_mode(self):
+    async def test_check_permission_sovereign_mode(self, tmp_workspace: Path, mock_tool_categories):
         """Test all permissions allowed in SOVEREIGN mode."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.SOVEREIGN,
+            agent_mode=AGENT_MODE_SOVEREIGN,
         )
 
-        # All tools should be allowed in SOVEREIGN mode
-        result = executor._check_permission("write_file", {"path": "/tmp/test.txt", "content": "test"})
+        result = await executor._check_permission("write_file", {"path": "/tmp/test.txt", "content": "test"})
         assert result.allowed is True
 
-        result = executor._check_permission("run_command", {"command": "rm -rf /"})
+        result = await executor._check_permission("run_command", {"command": "rm -rf /"})
         assert result.allowed is True
 
 
 class TestExecutorWithMCPRegistry:
     """Test executor with MCP registry."""
 
-    def test_executor_with_mcp_registry(self):
+    def test_executor_with_mcp_registry(self, tmp_workspace: Path):
         """Test executor initialization with MCP registry."""
-        from src.tools.executor import ToolExecutor
-
         mock_registry = MagicMock()
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
             mcp_registry=mock_registry,
@@ -323,12 +247,10 @@ class TestExecutorWithMCPRegistry:
 
         assert executor._mcp_registry == mock_registry
 
-    def test_executor_without_mcp_registry(self):
+    def test_executor_without_mcp_registry(self, tmp_workspace: Path):
         """Test executor initialization without MCP registry."""
-        from src.tools.executor import ToolExecutor
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
         )
@@ -339,12 +261,10 @@ class TestExecutorWithMCPRegistry:
 class TestExecutorWorkspaceConfig:
     """Test executor workspace configuration."""
 
-    def test_executor_local_workspace(self):
+    def test_executor_local_workspace(self, tmp_workspace: Path):
         """Test executor with local workspace."""
-        from src.tools.executor import ToolExecutor
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
         )
@@ -352,13 +272,10 @@ class TestExecutorWorkspaceConfig:
         assert executor.workspace_id is None
         assert executor._compute_client is None
 
-    def test_executor_with_workspace_id_no_user(self):
+    def test_executor_with_workspace_id_no_user(self, tmp_workspace: Path):
         """Test executor with workspace_id but no user_id."""
-        from src.tools.executor import ToolExecutor
-
-        # Without user_id, compute client should not be created
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
             workspace_id="ws-123",
@@ -367,13 +284,11 @@ class TestExecutorWorkspaceConfig:
         assert executor.workspace_id == "ws-123"
         assert executor._compute_client is None
 
-    def test_executor_approval_callback(self):
+    def test_executor_approval_callback(self, tmp_workspace: Path):
         """Test executor with approval callback."""
-        from src.tools.executor import ToolExecutor
-
         callback = AsyncMock()
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
             approval_callback=callback,
@@ -385,12 +300,10 @@ class TestExecutorWorkspaceConfig:
 class TestResolveApproval:
     """Test resolve_approval method."""
 
-    def test_resolve_approval_method_exists(self):
+    def test_resolve_approval_method_exists(self, tmp_workspace: Path):
         """Test resolve_approval method exists."""
-        from src.tools.executor import ToolExecutor
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
         )
@@ -402,16 +315,13 @@ class TestResolveApproval:
 class TestCommandAllowlistSecurity:
     """Test command allowlist security features."""
 
-    def test_glob_patterns_rejected(self):
+    def test_glob_patterns_rejected(self, tmp_workspace: Path):
         """Test glob patterns in allowlist are rejected."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
-        # Patterns with glob chars should not match
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.AUTO,
+            agent_mode=AGENT_MODE_AUTO,
             command_allowlist=["npm*", "git*"],
         )
 
@@ -419,15 +329,13 @@ class TestCommandAllowlistSecurity:
         assert executor._is_command_allowed("npm install") is False
         assert executor._is_command_allowed("git status") is False
 
-    def test_shell_metacharacters_blocked(self):
+    def test_shell_metacharacters_blocked(self, tmp_workspace: Path):
         """Test shell metacharacters block commands."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.AUTO,
+            agent_mode=AGENT_MODE_AUTO,
             command_allowlist=["npm"],
         )
 
@@ -439,15 +347,13 @@ class TestCommandAllowlistSecurity:
         assert executor._is_command_allowed("npm `echo malicious`") is False
         assert executor._is_command_allowed("npm $(malicious)") is False
 
-    def test_base_command_match(self):
+    def test_base_command_match(self, tmp_workspace: Path):
         """Test base command matching."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.AUTO,
+            agent_mode=AGENT_MODE_AUTO,
             command_allowlist=["npm"],
         )
 
@@ -455,15 +361,13 @@ class TestCommandAllowlistSecurity:
         assert executor._is_command_allowed("npm install lodash") is True
         assert executor._is_command_allowed("npm test") is True
 
-    def test_prefix_pattern_match(self):
+    def test_prefix_pattern_match(self, tmp_workspace: Path):
         """Test prefix pattern matching."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.AUTO,
+            agent_mode=AGENT_MODE_AUTO,
             command_allowlist=["npm install"],
         )
 
@@ -472,30 +376,26 @@ class TestCommandAllowlistSecurity:
         # Different command with same prefix should fail
         assert executor._is_command_allowed("npm test") is False
 
-    def test_empty_command(self):
+    def test_empty_command(self, tmp_workspace: Path):
         """Test empty command is rejected."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.AUTO,
+            agent_mode=AGENT_MODE_AUTO,
             command_allowlist=["npm"],
         )
 
         assert executor._is_command_allowed("") is False
         assert executor._is_command_allowed("   ") is False
 
-    def test_whitespace_handling(self):
+    def test_whitespace_handling(self, tmp_workspace: Path):
         """Test whitespace is handled correctly."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.AUTO,
+            agent_mode=AGENT_MODE_AUTO,
             command_allowlist=["git status"],
         )
 
@@ -506,165 +406,144 @@ class TestCommandAllowlistSecurity:
 class TestCheckPermissionModes:
     """Test _check_permission across all modes."""
 
-    def test_plan_mode_blocks_command_tools(self):
+    async def test_plan_mode_blocks_command_tools(self, tmp_workspace: Path, mock_tool_categories):
         """Test PLAN mode blocks command tools."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.PLAN,
+            agent_mode=AGENT_MODE_PLAN,
         )
 
-        result = executor._check_permission("run_command", {"command": "ls"})
+        result = await executor._check_permission("run_command", {"command": "ls"})
         assert result.allowed is False
         assert "Plan mode" in result.error
 
-    def test_plan_mode_blocks_deploy_tools(self):
+    async def test_plan_mode_blocks_deploy_tools(self, tmp_workspace: Path, mock_tool_categories):
         """Test PLAN mode blocks deploy tools."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.PLAN,
+            agent_mode=AGENT_MODE_PLAN,
         )
 
-        result = executor._check_permission("deploy_preview", {"config": {}})
+        result = await executor._check_permission("deploy_preview", {"config": {}})
         assert result.allowed is False
 
-    def test_ask_mode_requires_approval_for_writes(self):
+    async def test_ask_mode_requires_approval_for_writes(self, tmp_workspace: Path, mock_tool_categories):
         """Test ASK mode requires approval for writes."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.ASK,
+            agent_mode=AGENT_MODE_ASK,
         )
 
-        result = executor._check_permission("write_file", {"path": "test.txt", "content": "x"})
+        result = await executor._check_permission("write_file", {"path": "test.txt", "content": "x"})
         assert result.allowed is True
         assert result.requires_approval is True
 
-    def test_ask_mode_requires_approval_for_commands(self):
+    async def test_ask_mode_requires_approval_for_commands(self, tmp_workspace: Path, mock_tool_categories):
         """Test ASK mode requires approval for commands."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.ASK,
+            agent_mode=AGENT_MODE_ASK,
         )
 
-        result = executor._check_permission("run_command", {"command": "ls"})
+        result = await executor._check_permission("run_command", {"command": "ls"})
         assert result.allowed is True
         assert result.requires_approval is True
         assert result.can_add_to_allowlist is True
 
-    def test_ask_mode_allows_reads_without_approval(self):
+    async def test_ask_mode_allows_reads_without_approval(self, tmp_workspace: Path, mock_tool_categories):
         """Test ASK mode allows reads without approval."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.ASK,
+            agent_mode=AGENT_MODE_ASK,
         )
 
-        result = executor._check_permission("read_file", {"path": "test.txt"})
+        result = await executor._check_permission("read_file", {"path": "test.txt"})
         assert result.allowed is True
         assert result.requires_approval is False
 
-    def test_auto_mode_allows_writes_without_approval(self):
+    async def test_auto_mode_allows_writes_without_approval(self, tmp_workspace: Path, mock_tool_categories):
         """Test AUTO mode allows writes without approval."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.AUTO,
+            agent_mode=AGENT_MODE_AUTO,
         )
 
-        result = executor._check_permission("write_file", {"path": "test.txt", "content": "x"})
+        result = await executor._check_permission("write_file", {"path": "test.txt", "content": "x"})
         assert result.allowed is True
         assert result.requires_approval is False
 
-    def test_auto_mode_command_in_allowlist(self):
+    async def test_auto_mode_command_in_allowlist(self, tmp_workspace: Path, mock_tool_categories):
         """Test AUTO mode allows commands in allowlist."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.AUTO,
+            agent_mode=AGENT_MODE_AUTO,
             command_allowlist=["git status"],
         )
 
-        result = executor._check_permission("run_command", {"command": "git status"})
+        result = await executor._check_permission("run_command", {"command": "git status"})
         assert result.allowed is True
         assert result.requires_approval is False
 
-    def test_auto_mode_command_not_in_allowlist(self):
+    async def test_auto_mode_command_not_in_allowlist(self, tmp_workspace: Path, mock_tool_categories):
         """Test AUTO mode requires approval for commands not in allowlist."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.AUTO,
+            agent_mode=AGENT_MODE_AUTO,
             command_allowlist=["git status"],
         )
 
-        result = executor._check_permission("run_command", {"command": "rm -rf /"})
+        result = await executor._check_permission("run_command", {"command": "rm -rf /"})
         assert result.allowed is True
         assert result.requires_approval is True
         assert result.can_add_to_allowlist is True
 
-    def test_auto_mode_deploy_requires_approval(self):
+    async def test_auto_mode_deploy_requires_approval(self, tmp_workspace: Path, mock_tool_categories):
         """Test AUTO mode requires approval for deploy tools."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.AUTO,
+            agent_mode=AGENT_MODE_AUTO,
         )
 
-        result = executor._check_permission("deploy_preview", {"config": {}})
+        result = await executor._check_permission("deploy_preview", {"config": {}})
         assert result.allowed is True
         assert result.requires_approval is True
 
-    def test_sovereign_mode_allows_all(self):
+    async def test_sovereign_mode_allows_all(self, tmp_workspace: Path, mock_tool_categories):
         """Test SOVEREIGN mode allows all operations."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.SOVEREIGN,
+            agent_mode=AGENT_MODE_SOVEREIGN,
         )
 
-        # Test various tools
-        result = executor._check_permission("write_file", {"path": "test.txt", "content": "x"})
+        result = await executor._check_permission("write_file", {"path": "test.txt", "content": "x"})
         assert result.allowed is True
         assert result.requires_approval is False
 
-        result = executor._check_permission("run_command", {"command": "rm -rf /"})
+        result = await executor._check_permission("run_command", {"command": "rm -rf /"})
         assert result.allowed is True
         assert result.requires_approval is False
 
-        result = executor._check_permission("deploy_preview", {"config": {}})
+        result = await executor._check_permission("deploy_preview", {"config": {}})
         assert result.allowed is True
         assert result.requires_approval is False
 
@@ -672,41 +551,35 @@ class TestCheckPermissionModes:
 class TestModeFromString:
     """Test agent mode initialization from string."""
 
-    def test_mode_from_lowercase_string(self):
+    def test_mode_from_lowercase_string(self, tmp_workspace: Path):
         """Test mode from lowercase string."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
             agent_mode="plan",
         )
 
-        assert executor.agent_mode == AgentMode.PLAN
+        assert executor.agent_mode == AGENT_MODE_PLAN
 
-    def test_mode_from_uppercase_string(self):
+    def test_mode_from_uppercase_string(self, tmp_workspace: Path):
         """Test mode from uppercase string is converted."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
             agent_mode="AUTO",
         )
 
-        assert executor.agent_mode == AgentMode.AUTO
+        assert executor.agent_mode == AGENT_MODE_AUTO
 
-    def test_mode_from_mixed_case_string(self):
+    def test_mode_from_mixed_case_string(self, tmp_workspace: Path):
         """Test mode from mixed case string."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
-            workspace_path="/tmp/workspace",
+            workspace_path=tmp_workspace,
             session_id="session-123",
             agent_id="agent-456",
             agent_mode="Sovereign",
         )
 
-        assert executor.agent_mode == AgentMode.SOVEREIGN
+        assert executor.agent_mode == AGENT_MODE_SOVEREIGN

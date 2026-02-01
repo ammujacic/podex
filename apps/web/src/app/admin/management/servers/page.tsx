@@ -390,6 +390,15 @@ function ServerCard({ server, onDrain, onActivate, onDelete, onEdit }: ServerCar
                 <span className="text-text-muted">Port:</span>
                 <span className="ml-2 text-text-secondary font-mono">{server.docker_port}</span>
               </div>
+              <div className="col-span-2">
+                <span className="text-text-muted">Compute URL:</span>
+                <span
+                  className="ml-2 text-text-secondary font-mono text-[10px] break-all"
+                  title={server.compute_service_url}
+                >
+                  {server.compute_service_url}
+                </span>
+              </div>
               <div className="flex items-center gap-1">
                 <span className="text-text-muted">TLS:</span>
                 {server.tls_enabled ? (
@@ -504,6 +513,7 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
     tls_cert_path: '',
     tls_key_path: '',
     tls_ca_path: '',
+    compute_service_url: 'http://compute:3003',
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
@@ -561,6 +571,7 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
         tls_cert_path: '',
         tls_key_path: '',
         tls_ca_path: '',
+        compute_service_url: 'http://compute:3003',
       });
       setTestResult(null);
     } finally {
@@ -727,6 +738,21 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
                 placeholder="eu / us"
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm text-text-secondary mb-1">Compute Service URL</label>
+            <input
+              type="url"
+              value={formData.compute_service_url || 'http://compute:3003'}
+              onChange={(e) => setFormData({ ...formData, compute_service_url: e.target.value })}
+              className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary font-mono text-sm"
+              placeholder="http://compute:3003"
+              required
+            />
+            <p className="text-xs text-text-muted mt-1">
+              URL of the regional compute service that manages this server
+            </p>
           </div>
 
           {/* TLS Configuration */}
@@ -936,6 +962,7 @@ function EditServerModal({ server, onClose, onSubmit }: EditServerModalProps) {
     tls_cert_path: '',
     tls_key_path: '',
     tls_ca_path: '',
+    compute_service_url: 'http://compute:3003',
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
@@ -955,6 +982,7 @@ function EditServerModal({ server, onClose, onSubmit }: EditServerModalProps) {
         tls_cert_path: server.tls_cert_path || '',
         tls_key_path: server.tls_key_path || '',
         tls_ca_path: server.tls_ca_path || '',
+        compute_service_url: server.compute_service_url || 'http://compute:3003',
       });
       setTestResult(null);
     }
@@ -976,6 +1004,7 @@ function EditServerModal({ server, onClose, onSubmit }: EditServerModalProps) {
         tls_cert_path: formData.tls_cert_path || null,
         tls_key_path: formData.tls_key_path || null,
         tls_ca_path: formData.tls_ca_path || null,
+        compute_service_url: formData.compute_service_url,
       });
       onClose();
     } finally {
@@ -1120,6 +1149,21 @@ function EditServerModal({ server, onClose, onSubmit }: EditServerModalProps) {
                 placeholder="eu / us"
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm text-text-secondary mb-1">Compute Service URL</label>
+            <input
+              type="url"
+              value={formData.compute_service_url}
+              onChange={(e) => setFormData({ ...formData, compute_service_url: e.target.value })}
+              className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary font-mono text-sm"
+              placeholder="http://compute:3003"
+              required
+            />
+            <p className="text-xs text-text-muted mt-1">
+              URL of the regional compute service that manages this server
+            </p>
           </div>
 
           {/* TLS Configuration */}
@@ -1337,7 +1381,7 @@ export default function ServersManagement() {
     : workspaceServers;
 
   return (
-    <div className="p-8">
+    <div className="max-w-4xl mx-auto px-8 py-8">
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-semibold text-text-primary">Workspace Servers</h1>

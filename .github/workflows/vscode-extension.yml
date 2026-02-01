@@ -1,0 +1,212 @@
+name: Publish VSCode Extension
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 0.1.0)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run (package only, no publish)'
+        required: false
+        type: boolean
+        default: false
+      marketplace:
+        description: 'Marketplace to publish to'
+        required: false
+        type: choice
+        options:
+          - both
+          - vscode
+          - openvsx
+        default: 'both'
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # ==========================================
+  # Build and Test Extension
+  # ==========================================
+  build:
+    name: Build Extension
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run type checks
+        run: pnpm typecheck
+        working-directory: apps/vscode
+
+      - name: Run unit tests
+        run: pnpm test
+        working-directory: apps/vscode
+
+      - name: Build extension
+        run: pnpm build
+        working-directory: apps/vscode
+
+      - name: Update version
+        working-directory: apps/vscode
+        run: |
+          npm version ${{ inputs.version }} --no-git-tag-version --allow-same-version
+
+      - name: Package extension
+        run: pnpm package
+        working-directory: apps/vscode
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix-package
+          path: apps/vscode/*.vsix
+          retention-days: 7
+
+  # ==========================================
+  # Publish to VS Marketplace
+  # ==========================================
+  publish-vscode:
+    name: Publish to VS Marketplace
+    runs-on: ubuntu-latest
+    needs: build
+    if: ${{ !inputs.dry_run && (inputs.marketplace == 'both' || inputs.marketplace == 'vscode') }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vsix-package
+          path: apps/vscode
+
+      - name: Publish to VS Marketplace
+        working-directory: apps/vscode
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          VSIX_FILE=$(ls *.vsix | head -1)
+          echo "Publishing $VSIX_FILE to VS Marketplace..."
+          npx @vscode/vsce publish --packagePath "$VSIX_FILE"
+
+  # ==========================================
+  # Publish to Open VSX (for Cursor, VSCodium)
+  # ==========================================
+  publish-openvsx:
+    name: Publish to Open VSX
+    runs-on: ubuntu-latest
+    needs: build
+    if: ${{ !inputs.dry_run && (inputs.marketplace == 'both' || inputs.marketplace == 'openvsx') }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vsix-package
+          path: apps/vscode
+
+      - name: Publish to Open VSX
+        working-directory: apps/vscode
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          VSIX_FILE=$(ls *.vsix | head -1)
+          echo "Publishing $VSIX_FILE to Open VSX..."
+          npx ovsx publish "$VSIX_FILE" -p "$OVSX_PAT"
+
+  # ==========================================
+  # Dry Run Summary
+  # ==========================================
+  dry-run-summary:
+    name: Dry Run Summary
+    runs-on: ubuntu-latest
+    needs: build
+    if: ${{ inputs.dry_run }}
+    steps:
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vsix-package
+          path: .
+
+      - name: Show package info
+        run: |
+          VSIX_FILE=$(ls *.vsix | head -1)
+          echo "## VSCode Extension Package" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| File | \`$VSIX_FILE\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | \`${{ inputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Size | $(du -h "$VSIX_FILE" | cut -f1) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Dry run complete.** The package was built but not published." >> $GITHUB_STEP_SUMMARY
+
+  # ==========================================
+  # Publish Summary
+  # ==========================================
+  summary:
+    name: Publish Summary
+    runs-on: ubuntu-latest
+    needs: [build, publish-vscode, publish-openvsx]
+    if: always() && !inputs.dry_run
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## VSCode Extension Publication Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | \`${{ inputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| VS Marketplace | ${{ needs.publish-vscode.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Open VSX | ${{ needs.publish-openvsx.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Installation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**VS Marketplace:**" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "code --install-extension podex.podex-vscode" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Cursor (via Open VSX):**" >> $GITHUB_STEP_SUMMARY
+          echo "Search for 'Podex' in Cursor's extension marketplace" >> $GITHUB_STEP_SUMMARY

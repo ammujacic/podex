@@ -283,6 +283,8 @@ export interface AdminWorkspaceServer {
   tls_cert_path: string | null;
   tls_key_path: string | null;
   tls_ca_path: string | null;
+  // Compute service URL for multi-region routing
+  compute_service_url: string;
   created_at: string;
   last_heartbeat: string | null;
   is_healthy: boolean;
@@ -333,6 +335,8 @@ export interface CreateServerRequest {
   tls_cert_path?: string;
   tls_key_path?: string;
   tls_ca_path?: string;
+  // Compute service URL for multi-region routing
+  compute_service_url?: string;
 }
 
 export interface TestServerConnectionRequest {

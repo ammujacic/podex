@@ -88,12 +88,17 @@ class Settings(BaseSettings):
     # Server sync interval (seconds between syncing server list from API)
     server_sync_interval: int = 30
 
+    # Region this compute service manages (None = manages all regions)
+    # Set via COMPUTE_REGION env var in production to filter servers by region
+    compute_region: str | None = None
+
     # Workspace settings
     max_workspaces: int = 10  # Max workspaces per server (soft limit)
     workspace_timeout: int = 3600  # 1 hour idle timeout
     shutdown_timeout: int = 60  # Max seconds for graceful shutdown before forcing exit
-    # Base workspace image (used as fallback)
-    workspace_image: str = "podex/workspace:latest"
+    # Fallback workspace image (used only when server has no image configured)
+    # In production, images are configured per-server in the database via admin UI
+    workspace_image: str = "ghcr.io/mujacic/workspace:latest"
 
     # Container runtime for workspace isolation (runsc for gVisor, runc for standard)
     docker_runtime: str | None = "runsc"  # Set to None to use server default
@@ -105,17 +110,6 @@ class Settings(BaseSettings):
     workspace_data_path: str = "/data/workspaces"
     # Enable XFS project quotas for disk limits (requires XFS with pquota mount option)
     xfs_quotas_enabled: bool = False  # Set to True in production
-
-    # Workspace container images for different architectures
-    # For production, set via environment variables:
-    #   COMPUTE_WORKSPACE_IMAGE_ARM64=ghcr.io/yourorg/workspace:latest
-    #   COMPUTE_WORKSPACE_IMAGE_AMD64=ghcr.io/yourorg/workspace:latest
-    # The multi-arch manifest will auto-select the correct architecture
-    workspace_image_arm64: str = "podex/workspace:latest-arm64"
-    workspace_image_amd64: str = "podex/workspace:latest-amd64"
-    workspace_image_gpu: str = (
-        "podex/workspace:latest-cuda"  # CUDA-enabled image for GPU workspaces
-    )
 
     # Workspace communication security
     # When enabled, workspace containers are accessed via HTTPS with token auth

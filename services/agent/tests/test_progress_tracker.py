@@ -8,7 +8,7 @@ Tests cover:
 - ProgressTracker class
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -76,8 +76,8 @@ class TestProgressStep:
         """Test duration_ms property."""
         from src.progress.tracker import ProgressStep, StepStatus
 
-        now = datetime.utcnow()
-        later = datetime.utcnow()
+        now = datetime.now(UTC)
+        later = datetime.now(UTC)
 
         step = ProgressStep(
             id="step-1",
@@ -100,7 +100,7 @@ class TestProgressStep:
             id="step-1",
             index=0,
             description="Test",
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(UTC),
         )
 
         assert step.duration_ms is None

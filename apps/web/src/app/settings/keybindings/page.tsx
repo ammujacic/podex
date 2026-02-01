@@ -1,9 +1,20 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Keyboard, Search, RotateCcw, Edit3, AlertCircle, Check, X } from 'lucide-react';
+import {
+  Keyboard,
+  Search,
+  RotateCcw,
+  Edit3,
+  AlertCircle,
+  Check,
+  X,
+  Monitor,
+  Code,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useKeybindingsStore, type Keybinding } from '@/stores/keybindings';
+import { getKeybindingInfo } from '@/hooks/useKeybindingsSync';
 
 // ============================================================================
 // Key Recording
@@ -118,6 +129,21 @@ function KeybindingRow({
               Modified
             </span>
           )}
+          {/* Command type badge */}
+          {(() => {
+            const info = getKeybindingInfo(keybinding);
+            return info.isEditorCommand ? (
+              <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">
+                <Code className="w-3 h-3" />
+                Editor
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400">
+                <Monitor className="w-3 h-3" />
+                App
+              </span>
+            );
+          })()}
         </div>
         <div className="text-xs text-text-muted">{keybinding.command}</div>
       </div>
@@ -235,9 +261,9 @@ export default function KeybindingsPage() {
   }, {});
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="max-w-4xl mx-auto px-8 py-8">
       {/* Header */}
-      <div className="px-8 py-6 border-b border-border-subtle">
+      <div className="pb-6 border-b border-border-subtle">
         <div className="flex items-center justify-between mb-4">
           <div>
             <h1 className="text-xl font-semibold text-text-primary flex items-center gap-2">
@@ -300,7 +326,7 @@ export default function KeybindingsPage() {
       </div>
 
       {/* Keybindings list */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="mt-6">
         {Object.entries(groupedKeybindings).map(([category, bindings]) => (
           <div key={category}>
             <div className="px-4 py-2 bg-elevated text-xs font-medium text-text-muted uppercase tracking-wider">
@@ -325,7 +351,7 @@ export default function KeybindingsPage() {
       </div>
 
       {/* Help */}
-      <div className="px-4 py-3 border-t border-border-subtle bg-elevated text-xs text-text-muted flex items-center gap-2">
+      <div className="mt-6 py-3 border-t border-border-subtle text-xs text-text-muted flex items-center gap-2">
         <AlertCircle className="h-4 w-4" />
         Click the edit button and press keys to record a new shortcut. Press Escape to cancel.
       </div>

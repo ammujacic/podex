@@ -121,6 +121,36 @@ jobs:
       - name: Run tests with coverage
         run: pnpm --filter podex test:coverage
 
+  # VSCode extension tests
+  vscode-extension-test:
+    name: VSCode Extension Tests
+    runs-on: ubuntu-latest
+    needs: [frontend-lint, frontend-typecheck, frontend-format]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm typecheck
+        working-directory: apps/vscode
+
+      - name: Run unit tests
+        run: pnpm test
+        working-directory: apps/vscode
+
+      - name: Build extension
+        run: pnpm build
+        working-directory: apps/vscode
+
   # CLI E2E Tests
   cli-e2e-test:
     name: CLI E2E Tests
@@ -629,6 +659,7 @@ jobs:
     needs:
       - frontend-packages-test
       - cli-test
+      - vscode-extension-test
       - frontend-test
       - cli-e2e-test
       - backend-api-test

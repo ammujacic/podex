@@ -4,9 +4,11 @@ Pytest fixtures for Agent service tests.
 This module provides test fixtures for:
 - Test client for FastAPI
 - Test data fixtures
+- Integration test fixtures for Redis/PostgreSQL
 """
 
 import asyncio
+import os
 from collections.abc import AsyncGenerator, Generator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -17,6 +19,28 @@ from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
 from src.config import settings
+
+
+# ============================================
+# Integration Test Configuration
+# ============================================
+
+def is_redis_available() -> bool:
+    """Check if Redis is available for integration tests.
+
+    Uses RUN_INTEGRATION_TESTS or checks REDIS_URL environment variable.
+    """
+    if os.getenv("RUN_INTEGRATION_TESTS", "").lower() == "true":
+        return True
+    # In CI, REDIS_URL is set when Redis is available
+    return bool(os.getenv("REDIS_URL"))
+
+
+# Skip decorator for Redis-dependent tests
+requires_redis = pytest.mark.skipif(
+    not is_redis_available(),
+    reason="Redis not available. Set RUN_INTEGRATION_TESTS=true or REDIS_URL to run."
+)
 
 
 def create_test_app() -> FastAPI:

@@ -89,22 +89,6 @@ DEFAULT_MCP_SERVERS: list[dict[str, Any]] = [
         "is_builtin": False,
         "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
     },
-    # ============== Skills (Podex) ==============
-    # NOTE: This is for NON-NATIVE agents (external MCP clients) only.
-    # Native Podex agents use the built-in execute_skill tool instead.
-    {
-        "slug": "podex-skills",
-        "name": "Podex Skills",
-        "description": "Execute Podex skills as MCP tools (for external MCP clients)",
-        "category": MCPCategory.PRODUCTIVITY,
-        "transport": "http",
-        "url": "http://agent:3002/mcp/skills",
-        "env_vars": {},
-        "required_env": [],
-        "icon": "sparkles",
-        "is_builtin": False,  # Not auto-enabled; native agents use execute_skill tool
-        "docs_url": "https://docs.podex.ai/skills",
-    },
     # ============== Monitoring ==============
     {
         "slug": "sentry",

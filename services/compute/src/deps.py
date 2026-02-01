@@ -202,10 +202,16 @@ async def fetch_servers_from_api() -> list[dict[str, Any]]:
         return []
 
     try:
+        # Build query params with optional region filter
+        params: dict[str, str] = {}
+        if settings.compute_region:
+            params["region"] = settings.compute_region
+
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{settings.api_base_url}/api/servers/internal/list",
                 headers={"X-Internal-Service-Token": settings.internal_service_token},
+                params=params,
                 timeout=10.0,
             )
             response.raise_for_status()
@@ -257,6 +263,10 @@ async def sync_servers() -> int:
             tls_cert_path=server.get("tls_cert_path"),
             tls_key_path=server.get("tls_key_path"),
             tls_ca_path=server.get("tls_ca_path"),
+            workspace_image=server.get("workspace_image", "ghcr.io/mujacic/workspace:latest"),
+            workspace_image_arm64=server.get("workspace_image_arm64"),
+            workspace_image_amd64=server.get("workspace_image_amd64"),
+            workspace_image_gpu=server.get("workspace_image_gpu"),
         )
         if success:
             logger.info(

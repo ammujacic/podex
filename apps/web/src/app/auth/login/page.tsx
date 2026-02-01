@@ -5,10 +5,10 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button, Input } from '@podex/ui';
-import { login, getOAuthURL } from '@/lib/api';
+import { login, loginWithMFA, getOAuthURL } from '@/lib/api';
 import { useAuthError, useAuthLoading } from '@/stores/auth';
 import { toast } from 'sonner';
-import { Loader2, Github } from 'lucide-react';
+import { Loader2, Github, Shield } from 'lucide-react';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 
 // Google icon component
@@ -44,17 +44,52 @@ export default function LoginPage() {
   const isLoading = useAuthLoading();
   const error = useAuthError();
 
+  // MFA state
+  const [mfaRequired, setMfaRequired] = useState(false);
+  const [mfaCode, setMfaCode] = useState('');
+  const [mfaLoading, setMfaLoading] = useState(false);
+  const [mfaError, setMfaError] = useState<string | null>(null);
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
 
     try {
-      await login(email, password);
-      toast.success('Welcome back!');
-      router.push('/dashboard');
+      const result = await login(email, password);
+      if ('mfa_required' in result && result.mfa_required) {
+        setMfaRequired(true);
+        setMfaError(null);
+      } else {
+        toast.success('Welcome back!');
+        router.push('/dashboard');
+      }
     } catch (err) {
       // Error is already set in the store by the login function
       console.error('Login failed:', err);
     }
+  };
+
+  const handleMFASubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setMfaLoading(true);
+    setMfaError(null);
+
+    try {
+      await loginWithMFA(email, password, mfaCode);
+      toast.success('Welcome back!');
+      router.push('/dashboard');
+    } catch (err) {
+      setMfaError('Invalid authentication code. Please try again.');
+      setMfaCode('');
+      console.error('MFA verification failed:', err);
+    } finally {
+      setMfaLoading(false);
+    }
+  };
+
+  const handleBackToLogin = () => {
+    setMfaRequired(false);
+    setMfaCode('');
+    setMfaError(null);
   };
 
   const handleOAuth = async (provider: 'github' | 'google') => {
@@ -69,6 +104,78 @@ export default function LoginPage() {
   };
 
   const isDisabled = isLoading || oauthLoading !== null;
+
+  // MFA Verification UI
+  if (mfaRequired) {
+    return (
+      <div className="w-full max-w-md">
+        <div className="bg-surface rounded-lg border border-border-default p-8">
+          {/* Header */}
+          <div className="text-center mb-8">
+            <div className="w-12 h-12 bg-accent-primary/10 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Shield className="w-6 h-6 text-accent-primary" />
+            </div>
+            <h1 className="text-2xl font-bold text-text-primary mb-2">Two-Factor Authentication</h1>
+            <p className="text-text-secondary">
+              Enter the 6-digit code from your authenticator app
+            </p>
+          </div>
+
+          {/* Error message */}
+          {mfaError && (
+            <div className="mb-6 p-3 rounded-md bg-accent-error/10 border border-accent-error/20 text-accent-error text-sm">
+              {mfaError}
+            </div>
+          )}
+
+          <form onSubmit={handleMFASubmit} className="space-y-4">
+            <div className="space-y-2">
+              <label htmlFor="mfaCode" className="block text-sm font-medium text-text-secondary">
+                Authentication Code
+              </label>
+              <Input
+                id="mfaCode"
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={6}
+                placeholder="000000"
+                value={mfaCode}
+                onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ''))}
+                required
+                autoComplete="one-time-code"
+                autoFocus
+                disabled={mfaLoading}
+                className="text-center text-2xl tracking-widest"
+              />
+              <p className="text-xs text-text-muted">
+                You can also use a backup code if you don&apos;t have access to your authenticator
+              </p>
+            </div>
+
+            <Button type="submit" className="w-full" disabled={mfaLoading || mfaCode.length < 6}>
+              {mfaLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Verifying...
+                </>
+              ) : (
+                'Verify'
+              )}
+            </Button>
+          </form>
+
+          <button
+            type="button"
+            onClick={handleBackToLogin}
+            className="mt-6 w-full text-center text-sm text-text-muted hover:text-text-secondary"
+          >
+            ← Back to login
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full max-w-md">

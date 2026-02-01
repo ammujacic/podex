@@ -77,8 +77,73 @@ class AdminOrganizationListResponse(BaseModel):
 
 
 # ============================================================================
+# Request/Response Models for Pricing Defaults
+# ============================================================================
+
+
+class PricingDefaultsResponse(BaseModel):
+    """Default pricing settings for new organizations."""
+
+    default_credit_model: str = "pooled"
+    default_credit_pool_cents: int = 0
+    default_spending_limit_cents: int = 0
+
+
+class PricingDefaultsUpdateRequest(BaseModel):
+    """Request to update pricing defaults."""
+
+    default_credit_model: str | None = Field(None, pattern=r"^(pooled|allocated|usage_based)$")
+    default_credit_pool_cents: int | None = Field(None, ge=0)
+    default_spending_limit_cents: int | None = Field(None, ge=0)
+
+
+# In-memory storage for pricing defaults (in production, use a config table)
+_pricing_defaults = PricingDefaultsResponse()
+
+
+# ============================================================================
 # Routes
 # ============================================================================
+
+
+# IMPORTANT: Static routes must be defined BEFORE dynamic /{org_id} routes
+# to prevent FastAPI from matching 'pricing-defaults' as an org_id
+
+
+@router.get("/pricing-defaults", response_model=PricingDefaultsResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
+async def get_pricing_defaults(
+    request: Request,
+    response: Response,
+) -> PricingDefaultsResponse:
+    """Get default pricing settings for new organizations."""
+    return _pricing_defaults
+
+
+@router.patch("/pricing-defaults", response_model=PricingDefaultsResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
+async def update_pricing_defaults(
+    request: Request,
+    response: Response,
+    data: PricingDefaultsUpdateRequest,
+) -> PricingDefaultsResponse:
+    """Update default pricing settings for new organizations."""
+    if data.default_credit_model is not None:
+        _pricing_defaults.default_credit_model = data.default_credit_model
+    if data.default_credit_pool_cents is not None:
+        _pricing_defaults.default_credit_pool_cents = data.default_credit_pool_cents
+    if data.default_spending_limit_cents is not None:
+        _pricing_defaults.default_spending_limit_cents = data.default_spending_limit_cents
+
+    logger.info(
+        "Pricing defaults updated by admin",
+        admin_id=getattr(request.state, "user_id", None),
+        defaults=_pricing_defaults.model_dump(),
+    )
+
+    return _pricing_defaults
 
 
 @router.get("/", response_model=AdminOrganizationListResponse)

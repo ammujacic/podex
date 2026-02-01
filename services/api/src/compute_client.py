@@ -7,7 +7,7 @@ import time
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from http import HTTPStatus
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import structlog
@@ -24,6 +24,9 @@ from src.exceptions import (
     ComputeServiceHTTPError,
 )
 
+if TYPE_CHECKING:
+    from src.database.models.server import WorkspaceServer
+
 # Constants for parsing git output
 MIN_COMMIT_INFO_PARTS = 2
 MIN_GIT_STATUS_LINE_LENGTH = 3
@@ -33,75 +36,181 @@ MIN_DIFF_PARTS = 3
 
 logger = structlog.get_logger()
 
-# Service auth client for compute service (singleton)
-_service_auth: ServiceAuthClient | None = None
+# Service auth clients keyed by target URL
+_service_auth_pool: dict[str, ServiceAuthClient] = {}
+_service_auth_lock = asyncio.Lock()
 
 
-def _get_service_auth() -> ServiceAuthClient:
-    """Get or create the service auth client for compute service."""
-    global _service_auth
-    if _service_auth is None:
-        _service_auth = ServiceAuthClient(
-            target_url=settings.COMPUTE_SERVICE_URL,
+def _get_service_auth(target_url: str) -> ServiceAuthClient:
+    """Get or create a service auth client for the given target URL."""
+    if target_url not in _service_auth_pool:
+        _service_auth_pool[target_url] = ServiceAuthClient(
+            target_url=target_url,
             api_key=settings.INTERNAL_SERVICE_TOKEN,
             environment=settings.ENVIRONMENT,
         )
-    return _service_auth
+    return _service_auth_pool[target_url]
 
 
-class _HttpClientManager:
-    """Manager for shared HTTP client with lazy initialization."""
+class ComputeClientPool:
+    """Pool of HTTP clients keyed by compute service URL.
 
-    _instance: httpx.AsyncClient | None = None
+    Manages multiple httpx.AsyncClient instances, one per unique base URL.
+    This allows routing requests to different regional compute services.
+    """
 
-    @classmethod
-    def get(cls) -> httpx.AsyncClient:
-        """Get or create the shared HTTP client.
-
-        Note: Auth headers are added per-request via _get_auth_headers()
-        to support both API key (development) and GCP ID token (production).
-        """
-        if cls._instance is None:
-            cls._instance = httpx.AsyncClient(
-                base_url=settings.COMPUTE_SERVICE_URL,
-                timeout=httpx.Timeout(settings.HTTP_TIMEOUT_DEFAULT, connect=10.0),
-            )
-        return cls._instance
+    _clients: dict[str, httpx.AsyncClient] = {}
+    _lock: asyncio.Lock = asyncio.Lock()
 
     @classmethod
-    async def close(cls) -> None:
-        """Close the HTTP client on shutdown."""
-        if cls._instance is not None:
-            await cls._instance.aclose()
-            cls._instance = None
+    async def get(cls, base_url: str) -> httpx.AsyncClient:
+        """Get or create an HTTP client for the given base URL."""
+        if base_url in cls._clients:
+            return cls._clients[base_url]
 
+        async with cls._lock:
+            # Double-check after acquiring lock
+            if base_url not in cls._clients:
+                cls._clients[base_url] = httpx.AsyncClient(
+                    base_url=base_url,
+                    timeout=httpx.Timeout(settings.HTTP_TIMEOUT_DEFAULT, connect=10.0),
+                )
+            return cls._clients[base_url]
 
-def get_http_client() -> httpx.AsyncClient:
-    """Get or create the shared HTTP client."""
-    return _HttpClientManager.get()
+    @classmethod
+    async def close_all(cls) -> None:
+        """Close all HTTP clients on shutdown."""
+        async with cls._lock:
+            for client in cls._clients.values():
+                await client.aclose()
+            cls._clients.clear()
 
 
 async def close_http_client() -> None:
-    """Close the HTTP client on shutdown."""
-    await _HttpClientManager.close()
+    """Close all HTTP clients on shutdown."""
+    await ComputeClientPool.close_all()
 
 
-async def _get_auth_headers() -> dict[str, str]:
+async def get_compute_client_for_workspace(workspace_id: str) -> "ComputeClient":
+    """Get a compute client for a workspace based on its server's compute_service_url.
+
+    This is a convenience function for code that only has the workspace_id.
+    If you already have the workspace loaded with its server, use:
+        ComputeClient(workspace.server.compute_service_url)
+
+    Args:
+        workspace_id: The workspace ID.
+
+    Returns:
+        A ComputeClient configured for the workspace's compute service.
+
+    Raises:
+        ValueError: If the workspace has no server assigned or no compute_service_url.
+    """
+    from sqlalchemy.orm import selectinload  # noqa: PLC0415
+
+    async with get_db_context() as db:
+        result = await db.execute(
+            select(Workspace)
+            .options(selectinload(Workspace.server))
+            .where(Workspace.id == workspace_id)
+        )
+        workspace = result.scalar_one_or_none()
+
+        if not workspace:
+            raise ValueError(f"Workspace {workspace_id} not found")
+
+        if not workspace.server:
+            raise ValueError(f"Workspace {workspace_id} has no server assigned")
+
+        if not workspace.server.compute_service_url:
+            raise ValueError(f"Server {workspace.server.id} has no compute_service_url configured")
+
+        return ComputeClient(workspace.server.compute_service_url)
+
+
+async def get_compute_client_for_placement(
+    region: str | None = None,
+) -> tuple["ComputeClient", "WorkspaceServer"]:
+    """Get a compute client by selecting an available server using placement logic.
+
+    This is used when creating new workspaces where no server is assigned yet.
+    Uses simple placement logic: selects an active, healthy server with capacity,
+    optionally filtered by region.
+
+    Args:
+        region: Optional region filter (e.g., "eu", "us").
+
+    Returns:
+        Tuple of (ComputeClient, WorkspaceServer) for the selected server.
+
+    Raises:
+        ValueError: If no suitable server is available.
+    """
+    from src.database.models import WorkspaceServer  # noqa: PLC0415
+    from src.database.models.server import ServerStatus  # noqa: PLC0415
+
+    async with get_db_context() as db:
+        # Build query for active servers with capacity
+        query = select(WorkspaceServer).where(
+            WorkspaceServer.status == ServerStatus.ACTIVE,
+            WorkspaceServer.active_workspaces < WorkspaceServer.max_workspaces,
+        )
+
+        if region:
+            query = query.where(WorkspaceServer.region == region)
+
+        # Order by utilization (prefer less loaded servers)
+        query = query.order_by((WorkspaceServer.used_cpu / WorkspaceServer.total_cpu).asc())
+
+        result = await db.execute(query)
+        servers = result.scalars().all()
+
+        if not servers:
+            region_msg = f" in region '{region}'" if region else ""
+            raise ValueError(f"No available servers{region_msg}")
+
+        # Select first (least loaded) server
+        server = servers[0]
+
+        if not server.compute_service_url:
+            raise ValueError(f"Server {server.id} has no compute_service_url configured")
+
+        return ComputeClient(server.compute_service_url), server
+
+
+async def _get_auth_headers(target_url: str) -> dict[str, str]:
     """Get authentication headers for compute service requests.
 
     In production (GCP): Uses ID token from metadata server
     In development (Docker): Uses API key header
+
+    Args:
+        target_url: The compute service URL to authenticate against.
     """
     # Cast needed because podex_shared types are not visible to mypy
-    result: dict[str, str] = await _get_service_auth().get_auth_headers()
+    result: dict[str, str] = await _get_service_auth(target_url).get_auth_headers()
     return result
 
 
 class ComputeClient:
-    """Client for interacting with the compute service."""
+    """Client for interacting with the compute service.
 
-    def __init__(self) -> None:
-        self.client = get_http_client()
+    Each instance is bound to a specific compute service URL.
+    Use ComputeClientPool for HTTP connection management.
+    """
+
+    def __init__(self, compute_service_url: str) -> None:
+        """Initialize a compute client for a specific compute service.
+
+        Args:
+            compute_service_url: The base URL of the compute service (e.g., "http://compute:3003").
+        """
+        self._base_url = compute_service_url
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Get the HTTP client for this compute service URL."""
+        return await ComputeClientPool.get(self._base_url)
 
     async def _request(
         self,
@@ -130,7 +239,7 @@ class ComputeClient:
 
         # Get auth headers (GCP ID token in production, API key in development)
         headers = kwargs.get("headers", {})
-        auth_headers = await _get_auth_headers()
+        auth_headers = await _get_auth_headers(self._base_url)
         headers.update(auth_headers)
 
         # Add user ID header if provided
@@ -141,9 +250,10 @@ class ComputeClient:
         last_error: Exception | None = None
         retry_delay = settings.HTTP_RETRY_INITIAL_DELAY
 
+        client = await self._get_client()
         for attempt in range(max_retries + 1):
             try:
-                response = await self.client.request(method, path, **kwargs)
+                response = await client.request(method, path, **kwargs)
                 response.raise_for_status()
 
                 # Return None for 204 No Content
@@ -244,11 +354,11 @@ class ComputeClient:
 
         try:
             # Get auth headers (GCP ID token in production, API key in development)
-            auth_headers = await _get_auth_headers()
+            auth_headers = await _get_auth_headers(self._base_url)
 
             # Create a custom client with appropriate timeout for workspace creation
             async with httpx.AsyncClient(
-                base_url=settings.COMPUTE_SERVICE_URL,
+                base_url=self._base_url,
                 timeout=httpx.Timeout(float(settings.WORKSPACE_CREATION_TIMEOUT), connect=10.0),
             ) as client:
                 headers = {**auth_headers, "X-User-ID": user_id}
@@ -611,11 +721,11 @@ class ComputeClient:
 
         try:
             # Get auth headers (GCP ID token in production, API key in development)
-            auth_headers = await _get_auth_headers()
+            auth_headers = await _get_auth_headers(self._base_url)
 
             # Create a custom client with appropriate timeout for this request
             async with httpx.AsyncClient(
-                base_url=settings.COMPUTE_SERVICE_URL,
+                base_url=self._base_url,
                 timeout=httpx.Timeout(float(http_timeout), connect=10.0),
             ) as client:
                 headers = {**auth_headers, "X-User-ID": user_id}
@@ -706,10 +816,10 @@ class ComputeClient:
 
         try:
             # Get auth headers (GCP ID token in production, API key in development)
-            auth_headers = await _get_auth_headers()
+            auth_headers = await _get_auth_headers(self._base_url)
 
             async with httpx.AsyncClient(
-                base_url=settings.COMPUTE_SERVICE_URL,
+                base_url=self._base_url,
                 timeout=httpx.Timeout(float(http_timeout), connect=10.0),
             ) as client:
                 headers = {**auth_headers, "X-User-ID": user_id}
@@ -1408,7 +1518,8 @@ class ComputeClient:
 
     # ==================== Shell Escaping Helpers ====================
 
-    def _escape_shell_arg(self, arg: str) -> str:
+    @staticmethod
+    def _escape_shell_arg(arg: str) -> str:
         """Safely escape a string for use as a shell argument.
 
         Uses single quotes which prevent all shell interpretation.
@@ -1428,7 +1539,8 @@ class ComputeClient:
 
     # ==================== Git Parsing Helpers ====================
 
-    def _parse_git_status(self, output: str) -> dict[str, Any]:
+    @staticmethod
+    def _parse_git_status(output: str) -> dict[str, Any]:
         """Parse git status --porcelain -b output."""
         lines = output.strip().split("\n") if output.strip() else []
 
@@ -1465,14 +1577,14 @@ class ComputeClient:
                         staged.append(
                             {
                                 "path": filepath,
-                                "status": self._git_status_char_to_name(index_status),
+                                "status": ComputeClient._git_status_char_to_name(index_status),
                             },
                         )
                     if worktree_status != " ":
                         unstaged.append(
                             {
                                 "path": filepath,
-                                "status": self._git_status_char_to_name(worktree_status),
+                                "status": ComputeClient._git_status_char_to_name(worktree_status),
                             },
                         )
 
@@ -1486,7 +1598,8 @@ class ComputeClient:
             "untracked": untracked,
         }
 
-    def _git_status_char_to_name(self, char: str) -> str:
+    @staticmethod
+    def _git_status_char_to_name(char: str) -> str:
         """Convert git status character to name."""
         mapping = {
             "M": "modified",
@@ -1498,7 +1611,8 @@ class ComputeClient:
         }
         return mapping.get(char, "unknown")
 
-    def _parse_git_branches(self, output: str) -> list[dict[str, Any]]:
+    @staticmethod
+    def _parse_git_branches(output: str) -> list[dict[str, Any]]:
         """Parse git branch output."""
         branches = []
         for line in output.strip().split("\n"):
@@ -1518,7 +1632,8 @@ class ComputeClient:
                 )
         return branches
 
-    def _parse_git_log(self, output: str) -> list[dict[str, str]]:
+    @staticmethod
+    def _parse_git_log(output: str) -> list[dict[str, str]]:
         """Parse git log output."""
         commits = []
         for line in output.strip().split("\n"):
@@ -1537,7 +1652,8 @@ class ComputeClient:
                 )
         return commits
 
-    def _parse_git_diff(self, output: str) -> list[dict[str, Any]]:
+    @staticmethod
+    def _parse_git_diff(output: str) -> list[dict[str, Any]]:
         """Parse git diff --numstat output."""
         files = []
         for line in output.strip().split("\n"):
@@ -1557,7 +1673,3 @@ class ComputeClient:
                     },
                 )
         return files
-
-
-# Singleton instance
-compute_client = ComputeClient()

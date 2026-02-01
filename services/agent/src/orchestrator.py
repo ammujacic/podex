@@ -15,6 +15,7 @@ from src.agents.agent_builder import AgentBuilderAgent, AgentBuilderConfig
 from src.agents.base import BaseAgent
 from src.agents.database_agent import create_database_agent
 from src.config import settings
+from src.config_reader import get_config_reader
 from src.mcp.integration import UserMCPConfig, UserMCPServerConfig
 from src.mcp.lifecycle import (
     MCPLifecycleManager,
@@ -506,8 +507,8 @@ class AgentOrchestrator:
     ) -> BaseAgent:
         """Get or create an agent instance.
 
-        Uses DatabaseAgent to load configuration from the database when available.
-        Falls back to hardcoded agent classes if database config is not found.
+        Uses DatabaseAgent to load configuration from Redis (synced from database).
+        Raises RuntimeError if role configuration is not found.
 
         Args:
             params: Parameters for creating the agent.
@@ -539,6 +540,11 @@ class AgentOrchestrator:
             workspace_path = WORKSPACE_BASE_PATH / params.session_id
             workspace_path.mkdir(parents=True, exist_ok=True)
 
+            # Load special agent roles from platform settings
+            config_reader = get_config_reader()
+            special_roles = await config_reader.get_special_agent_roles()
+            agent_builder_role = special_roles.get("agent_builder_role", "agent_builder")
+
             if params.template_config:
                 # Custom agent from template (late import to avoid circular dependency)
                 from src.agents.custom import (
@@ -546,6 +552,9 @@ class AgentOrchestrator:
                     CustomAgentContext,
                     CustomAgentInitConfig,
                 )
+
+                # Ensure tools cache is loaded from Redis before creating custom agent
+                await CustomAgent.load_tools_cache()
 
                 context = CustomAgentContext(
                     workspace_path=workspace_path,
@@ -571,7 +580,7 @@ class AgentOrchestrator:
                     workspace=str(workspace_path),
                     mcp_tools=mcp_lifecycle.get_tool_count() if mcp_lifecycle else 0,
                 )
-            elif params.role == "agent_builder":
+            elif params.role == agent_builder_role:
                 # Special Agent Builder agent
                 builder_config = AgentBuilderConfig(
                     agent_id=params.agent_id,
@@ -778,7 +787,12 @@ class AgentOrchestrator:
 
         try:
             # Get agent configuration from context
-            role = task.context.get("role", "coder")
+            role = task.context.get("role")
+            if not role:
+                raise RuntimeError(
+                    "Role is required in task context. "
+                    "API must provide an agent role before calling agent service."
+                )
             model = task.context.get("model")
             if not model:
                 raise RuntimeError(
@@ -1014,7 +1028,7 @@ class AgentOrchestrator:
                 agent_id=agent_config["id"],
                 message=task_description,
                 context={
-                    "role": agent_config.get("role", "coder"),
+                    "role": agent_config["role"],  # Role is required, no default fallback
                     "model": agent_config["model"],
                 },
             )
@@ -1097,9 +1111,11 @@ class AgentOrchestrator:
         approved: bool,
         add_to_allowlist: bool = False,
     ) -> dict[str, Any]:
-        """Resolve a pending approval request for an agent.
+        """Resolve a pending approval request for an agent (fallback/testing only).
 
-        This is called when a user approves or rejects an action in the frontend.
+        NOTE: In production, approvals are resolved via Redis pub/sub through
+        the ApprovalListener. This method is kept for backward compatibility
+        and testing scenarios where the listener isn't available.
 
         Args:
             agent_id: The agent ID.
@@ -1160,3 +1176,88 @@ class AgentOrchestrator:
                 "success": False,
                 "error": "Approval not found or already resolved",
             }
+
+    async def abort_agent(self, agent_id: str) -> dict[str, Any]:
+        """Abort all running tasks for an agent.
+
+        This immediately cancels all tasks and signals the agent to stop.
+
+        Args:
+            agent_id: The agent ID to abort.
+
+        Returns:
+            Dict with success status and cancelled count.
+        """
+        logger.info("Aborting agent", agent_id=agent_id)
+
+        # Cancel all tasks for this agent
+        result = await self.cancel_agent_tasks(agent_id)
+
+        # Get the agent and signal abort if it has an abort flag
+        agent = self.agents.get(agent_id)
+        if agent and hasattr(agent, "_abort_requested"):
+            agent._abort_requested = True
+
+        return result
+
+    async def pause_agent(self, agent_id: str) -> dict[str, Any]:
+        """Pause a running agent.
+
+        Unlike abort, this preserves the agent's state for later resumption.
+        The agent will complete its current tool call but won't start new ones.
+
+        Args:
+            agent_id: The agent ID to pause.
+
+        Returns:
+            Dict with success status.
+        """
+        logger.info("Pausing agent", agent_id=agent_id)
+
+        agent = self.agents.get(agent_id)
+        if not agent:
+            return {"success": False, "error": f"Agent {agent_id} not found"}
+
+        # Set pause flag if the agent supports it
+        if hasattr(agent, "_paused"):
+            agent._paused = True
+
+        return {"success": True, "message": f"Agent {agent_id} paused"}
+
+    async def resume_agent(self, agent_id: str) -> dict[str, Any]:
+        """Resume a paused agent.
+
+        The agent will continue from where it was paused.
+
+        Args:
+            agent_id: The agent ID to resume.
+
+        Returns:
+            Dict with success status.
+        """
+        logger.info("Resuming agent", agent_id=agent_id)
+
+        agent = self.agents.get(agent_id)
+        if not agent:
+            return {"success": False, "error": f"Agent {agent_id} not found"}
+
+        # Clear pause flag if the agent supports it
+        if hasattr(agent, "_paused"):
+            agent._paused = False
+
+        return {"success": True, "message": f"Agent {agent_id} resumed"}
+
+
+# ============================================================================
+# Global singleton
+# ============================================================================
+
+_orchestrator: AgentOrchestrator | None = None
+
+
+def get_orchestrator() -> AgentOrchestrator:
+    """Get the global AgentOrchestrator instance."""
+    global _orchestrator
+    if _orchestrator is None:
+        _orchestrator = AgentOrchestrator()
+    return _orchestrator

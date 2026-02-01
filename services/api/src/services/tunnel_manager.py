@@ -79,7 +79,7 @@ async def create_tunnel_for_workspace(
 
     Supports both local-pod and compute workspaces.
     """
-    from src.compute_client import compute_client  # noqa: PLC0415
+    from src.compute_client import get_compute_client_for_workspace  # noqa: PLC0415
     from src.database.models import Session as SessionModel  # noqa: PLC0415
 
     local_pod_id, server_id = await _get_workspace_type(db, workspace_id)
@@ -155,7 +155,8 @@ async def create_tunnel_for_workspace(
             )
         else:
             # Compute workspace: use HTTP API
-            await compute_client.start_tunnel(
+            compute = await get_compute_client_for_workspace(workspace_id)
+            await compute.start_tunnel(
                 workspace_id=workspace_id,
                 user_id=owner_id,  # type: ignore[arg-type]  # validated above
                 token=token,
@@ -180,7 +181,7 @@ async def delete_tunnel_for_workspace(
     port: int,
 ) -> None:
     """Stop daemon, delete DNS, delete Cloudflare tunnel, remove DB record."""
-    from src.compute_client import compute_client  # noqa: PLC0415
+    from src.compute_client import get_compute_client_for_workspace  # noqa: PLC0415
     from src.database.models import Session as SessionModel  # noqa: PLC0415
 
     tunnel_result = await db.execute(
@@ -213,7 +214,8 @@ async def delete_tunnel_for_workspace(
             )
             session_owner_id = session_result.scalar_one_or_none()
             if session_owner_id:
-                await compute_client.stop_tunnel(
+                compute = await get_compute_client_for_workspace(workspace_id)
+                await compute.stop_tunnel(
                     workspace_id=workspace_id,
                     user_id=session_owner_id,
                     port=port,
@@ -247,7 +249,7 @@ async def list_tunnels(db: AsyncSession, workspace_id: str) -> list[WorkspaceTun
 
 async def get_tunnel_status(workspace_id: str) -> dict[str, Any]:
     """Query daemon health via RPC or compute service."""
-    from src.compute_client import compute_client  # noqa: PLC0415
+    from src.compute_client import get_compute_client_for_workspace  # noqa: PLC0415
     from src.database.models import Session as SessionModel  # noqa: PLC0415
 
     async with get_db_context() as db:
@@ -279,7 +281,8 @@ async def get_tunnel_status(workspace_id: str) -> dict[str, Any]:
                 if not owner_id:
                     return {"status": "error", "connected": False, "error": "No owner_id"}
 
-                return await compute_client.get_tunnel_status(
+                compute = await get_compute_client_for_workspace(workspace_id)
+                return await compute.get_tunnel_status(
                     workspace_id=workspace_id,
                     user_id=owner_id,
                 )
@@ -309,7 +312,7 @@ async def create_ssh_tunnel_for_workspace(
 
     Supports both local-pod and compute workspaces.
     """
-    from src.compute_client import compute_client  # noqa: PLC0415
+    from src.compute_client import get_compute_client_for_workspace  # noqa: PLC0415
     from src.database.models import Session as SessionModel  # noqa: PLC0415
 
     local_pod_id, server_id = await _get_workspace_type(db, workspace_id)
@@ -391,7 +394,8 @@ async def create_ssh_tunnel_for_workspace(
             )
         else:
             # Compute workspace: use HTTP API
-            await compute_client.start_tunnel(
+            compute = await get_compute_client_for_workspace(workspace_id)
+            await compute.start_tunnel(
                 workspace_id=workspace_id,
                 user_id=ssh_owner_id,  # type: ignore[arg-type]  # validated above
                 token=token,

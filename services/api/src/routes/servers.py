@@ -26,8 +26,9 @@ from src.database.models import (
     Workspace,
     WorkspaceServer,
 )
+from src.middleware.admin import require_admin
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
-from src.routes.dependencies import DbSession, get_current_user_id
+from src.routes.dependencies import DbSession  # noqa: TC001 - Required at runtime for FastAPI DI
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -58,6 +59,11 @@ class ServerRegisterRequest(BaseModel):
     tls_cert_path: str | None = None
     tls_key_path: str | None = None
     tls_ca_path: str | None = None
+    # Workspace container images
+    workspace_image: str = "ghcr.io/mujacic/workspace:latest"
+    workspace_image_arm64: str | None = None
+    workspace_image_amd64: str | None = None
+    workspace_image_gpu: str | None = None
 
     @model_validator(mode="after")
     def validate_tls_paths(self) -> Self:
@@ -75,6 +81,11 @@ class ServerUpdateRequest(BaseModel):
     status: str | None = Field(None, pattern=r"^(active|draining|maintenance|offline)$")
     labels: dict[str, str] | None = None
     max_workspaces: int | None = Field(None, ge=1)
+    # Workspace container images
+    workspace_image: str | None = None
+    workspace_image_arm64: str | None = None
+    workspace_image_amd64: str | None = None
+    workspace_image_gpu: str | None = None
 
 
 class ServerResponse(BaseModel):
@@ -110,6 +121,10 @@ class ServerResponse(BaseModel):
     tls_cert_path: str | None
     tls_key_path: str | None
     tls_ca_path: str | None
+    workspace_image: str
+    workspace_image_arm64: str | None
+    workspace_image_amd64: str | None
+    workspace_image_gpu: str | None
     created_at: str
     last_heartbeat: str | None
     is_healthy: bool
@@ -214,6 +229,10 @@ def _server_to_response(server: WorkspaceServer) -> ServerResponse:
         tls_cert_path=server.tls_cert_path,
         tls_key_path=server.tls_key_path,
         tls_ca_path=server.tls_ca_path,
+        workspace_image=server.workspace_image,
+        workspace_image_arm64=server.workspace_image_arm64,
+        workspace_image_amd64=server.workspace_image_amd64,
+        workspace_image_gpu=server.workspace_image_gpu,
         created_at=server.created_at.isoformat(),
         last_heartbeat=server.last_heartbeat.isoformat() if server.last_heartbeat else None,
         is_healthy=server.is_healthy,
@@ -221,28 +240,14 @@ def _server_to_response(server: WorkspaceServer) -> ServerResponse:
     )
 
 
-def _require_admin(request: Request) -> str:
-    """Require admin access for server management.
-
-    In production, this should check for admin role.
-    For now, we just verify the user is authenticated.
-    """
-    user_id = get_current_user_id(request)
-    # TODO: Add proper admin role check
-    # For now, allow any authenticated user in development
-    if settings.ENVIRONMENT != "development":
-        # TODO: In production, check admin role
-        pass
-    return user_id
-
-
 # ============== Server Endpoints ==============
 
 
 @router.get("", response_model=list[ServerResponse])
 @limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
 async def list_servers(
-    request: Request,
+    request: Request,  # noqa: ARG001 - Required for rate limiter
     response: Response,  # noqa: ARG001
     db: DbSession,
     status: str | None = None,
@@ -252,7 +257,6 @@ async def list_servers(
 
     Optionally filter by status or region.
     """
-    _require_admin(request)
 
     query = select(WorkspaceServer)
 
@@ -271,14 +275,14 @@ async def list_servers(
 
 @router.post("", response_model=ServerResponse, status_code=201)
 @limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
 async def register_server(
-    request: Request,
+    request: Request,  # noqa: ARG001 - Required for rate limiter
     response: Response,  # noqa: ARG001
     data: ServerRegisterRequest,
     db: DbSession,
 ) -> ServerResponse:
     """Register a new workspace server."""
-    _require_admin(request)
 
     # Check for duplicate hostname
     existing = await db.execute(
@@ -317,6 +321,10 @@ async def register_server(
         tls_cert_path=data.tls_cert_path,
         tls_key_path=data.tls_key_path,
         tls_ca_path=data.tls_ca_path,
+        workspace_image=data.workspace_image,
+        workspace_image_arm64=data.workspace_image_arm64,
+        workspace_image_amd64=data.workspace_image_amd64,
+        workspace_image_gpu=data.workspace_image_gpu,
         created_at=datetime.now(UTC),
         last_heartbeat=datetime.now(UTC),
     )
@@ -337,14 +345,14 @@ async def register_server(
 
 @router.get("/{server_id}", response_model=ServerResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
 async def get_server(
     server_id: str,
-    request: Request,
+    request: Request,  # noqa: ARG001 - Required for rate limiter
     response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> ServerResponse:
     """Get a specific workspace server."""
-    _require_admin(request)
 
     result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
     server = result.scalar_one_or_none()
@@ -357,15 +365,15 @@ async def get_server(
 
 @router.patch("/{server_id}", response_model=ServerResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
 async def update_server(
     server_id: str,
-    request: Request,
+    request: Request,  # noqa: ARG001 - Required for rate limiter
     response: Response,  # noqa: ARG001
     data: ServerUpdateRequest,
     db: DbSession,
 ) -> ServerResponse:
     """Update a workspace server."""
-    _require_admin(request)
 
     result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
     server = result.scalar_one_or_none()
@@ -382,6 +390,15 @@ async def update_server(
         server.labels = data.labels
     if data.max_workspaces is not None:
         server.max_workspaces = data.max_workspaces
+    # Workspace image updates
+    if data.workspace_image is not None:
+        server.workspace_image = data.workspace_image
+    if data.workspace_image_arm64 is not None:
+        server.workspace_image_arm64 = data.workspace_image_arm64
+    if data.workspace_image_amd64 is not None:
+        server.workspace_image_amd64 = data.workspace_image_amd64
+    if data.workspace_image_gpu is not None:
+        server.workspace_image_gpu = data.workspace_image_gpu
 
     await db.commit()
     await db.refresh(server)
@@ -397,9 +414,10 @@ async def update_server(
 
 @router.delete("/{server_id}", status_code=204)
 @limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
 async def delete_server(
     server_id: str,
-    request: Request,
+    request: Request,  # noqa: ARG001 - Required for rate limiter
     response: Response,  # noqa: ARG001
     db: DbSession,
     *,
@@ -410,7 +428,6 @@ async def delete_server(
     By default, prevents deletion if server has active workspaces.
     Use force=true to delete anyway (workspaces will be orphaned).
     """
-    _require_admin(request)
 
     result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
     server = result.scalar_one_or_none()
@@ -521,14 +538,14 @@ async def server_heartbeat(
 
 @router.get("/{server_id}/health", response_model=ServerHealthResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
 async def get_server_health(
     server_id: str,
-    request: Request,
+    request: Request,  # noqa: ARG001 - Required for rate limiter
     response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> ServerHealthResponse:
     """Get health status for a specific server."""
-    _require_admin(request)
 
     result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
     server = result.scalar_one_or_none()
@@ -563,9 +580,10 @@ async def get_server_health(
 
 @router.post("/{server_id}/drain", response_model=ServerResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
 async def drain_server(
     server_id: str,
-    request: Request,
+    request: Request,  # noqa: ARG001 - Required for rate limiter
     response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> ServerResponse:
@@ -574,7 +592,6 @@ async def drain_server(
     In draining mode, no new workspaces will be placed on this server,
     but existing workspaces continue to run.
     """
-    _require_admin(request)
 
     result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
     server = result.scalar_one_or_none()
@@ -598,14 +615,14 @@ async def drain_server(
 
 @router.post("/{server_id}/activate", response_model=ServerResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
 async def activate_server(
     server_id: str,
-    request: Request,
+    request: Request,  # noqa: ARG001 - Required for rate limiter
     response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> ServerResponse:
     """Activate a server for workspace placement."""
-    _require_admin(request)
 
     result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
     server = result.scalar_one_or_none()
@@ -631,13 +648,13 @@ async def activate_server(
 
 @router.get("/cluster/status", response_model=ClusterStatusResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
 async def get_cluster_status(
-    request: Request,
+    request: Request,  # noqa: ARG001 - Required for rate limiter
     response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> ClusterStatusResponse:
     """Get cluster-wide status and resource utilization."""
-    _require_admin(request)
 
     result = await db.execute(select(WorkspaceServer))
     servers = list(result.scalars().all())
@@ -809,9 +826,10 @@ class ServerWorkspacesResponse(BaseModel):
 
 @router.get("/{server_id}/workspaces", response_model=ServerWorkspacesResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
 async def get_server_workspaces(
     server_id: str,
-    request: Request,
+    request: Request,  # noqa: ARG001 - Required for rate limiter
     response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> ServerWorkspacesResponse:
@@ -819,7 +837,6 @@ async def get_server_workspaces(
 
     Admin endpoint for viewing which users/workspaces are on a server.
     """
-    _require_admin(request)
 
     # Get server
     server_result = await db.execute(select(WorkspaceServer).where(WorkspaceServer.id == server_id))
@@ -886,21 +903,31 @@ class InternalServerResponse(BaseModel):
     docker_port: int
     architecture: str
     region: str | None
+    compute_service_url: str
     tls_enabled: bool
     tls_cert_path: str | None
     tls_key_path: str | None
     tls_ca_path: str | None
+    # Workspace container images
+    workspace_image: str
+    workspace_image_arm64: str | None
+    workspace_image_amd64: str | None
+    workspace_image_gpu: str | None
 
 
 @router.get("/internal/list", response_model=list[InternalServerResponse], tags=["internal"])
 async def list_servers_for_compute(
     request: Request,
     db: DbSession,
+    region: str | None = None,
 ) -> list[InternalServerResponse]:
     """Internal endpoint for compute service to fetch server configs.
 
     Authenticated via X-Internal-Service-Token header.
     Returns all active servers with TLS configuration.
+
+    Args:
+        region: Optional filter by region (e.g., "eu", "us").
     """
     # Verify internal service token
     token = request.headers.get("X-Internal-Service-Token")
@@ -909,10 +936,14 @@ async def list_servers_for_compute(
     if not token or not secrets.compare_digest(token, settings.INTERNAL_SERVICE_TOKEN):
         raise HTTPException(status_code=401, detail="Invalid or missing service token")
 
-    # Get all active servers
-    result = await db.execute(
-        select(WorkspaceServer).where(WorkspaceServer.status == ServerStatus.ACTIVE)
-    )
+    # Build query for active servers
+    query = select(WorkspaceServer).where(WorkspaceServer.status == ServerStatus.ACTIVE)
+
+    # Filter by region if provided
+    if region:
+        query = query.where(WorkspaceServer.region == region)
+
+    result = await db.execute(query)
     servers = result.scalars().all()
 
     return [
@@ -923,10 +954,15 @@ async def list_servers_for_compute(
             docker_port=s.docker_port,
             architecture=s.architecture,
             region=s.region,
+            compute_service_url=s.compute_service_url,
             tls_enabled=s.tls_enabled,
             tls_cert_path=s.tls_cert_path,
             tls_key_path=s.tls_key_path,
             tls_ca_path=s.tls_ca_path,
+            workspace_image=s.workspace_image,
+            workspace_image_arm64=s.workspace_image_arm64,
+            workspace_image_amd64=s.workspace_image_amd64,
+            workspace_image_gpu=s.workspace_image_gpu,
         )
         for s in servers
     ]
@@ -937,8 +973,9 @@ async def list_servers_for_compute(
 
 @router.post("/test-connection", response_model=TestConnectionResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
+@require_admin
 async def test_server_connection(
-    request: Request,
+    request: Request,  # noqa: ARG001 - Required for rate limiter
     response: Response,  # noqa: ARG001
     data: TestConnectionRequest,
 ) -> TestConnectionResponse:
@@ -950,7 +987,6 @@ async def test_server_connection(
 
     Requires admin access.
     """
-    _require_admin(request)
 
     try:
         # Proxy request to compute service

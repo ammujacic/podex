@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.compute_client import compute_client
+from src.compute_client import get_compute_client_for_workspace
 from src.database.connection import get_db
 from src.database.models import Session
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
@@ -129,7 +129,8 @@ async def detect_project_info(
     """
     # Get file listing from workspace
     try:
-        files_response = await compute_client.list_files(workspace_id, ".", user_id)
+        compute = await get_compute_client_for_workspace(workspace_id)
+        files_response = await compute.list_files(workspace_id, ".", user_id)
         entries: list[dict[str, str]] = (
             files_response.get("entries", []) if isinstance(files_response, dict) else []
         )
@@ -186,7 +187,7 @@ async def detect_project_info(
     project_name = "project"
     try:
         if "package.json" in root_files:
-            pkg_response = await compute_client.read_file(workspace_id, "package.json", user_id)
+            pkg_response = await compute.read_file(workspace_id, "package.json", user_id)
             if pkg_response.get("success"):
                 import json
 
@@ -196,7 +197,7 @@ async def detect_project_info(
             # Simple extraction for Python projects
             project_name = "python-project"
         elif "go.mod" in root_files:
-            mod_response = await compute_client.read_file(workspace_id, "go.mod", user_id)
+            mod_response = await compute.read_file(workspace_id, "go.mod", user_id)
             if mod_response.get("success"):
                 content = mod_response.get("content", "")
                 for line in content.splitlines():
@@ -427,8 +428,9 @@ async def init_project(
     workspace_id = session.workspace_id
 
     # Check if AGENTS.md already exists
+    compute = await get_compute_client_for_workspace(workspace_id)
     try:
-        existing = await compute_client.read_file(workspace_id, "AGENTS.md", user_id)
+        existing = await compute.read_file(workspace_id, "AGENTS.md", user_id)
         if existing.get("success"):
             return ProjectInitResponse(
                 success=True,
@@ -449,7 +451,7 @@ async def init_project(
 
     # Write the file
     try:
-        await compute_client.write_file(workspace_id, user_id, "AGENTS.md", agents_md_content)
+        await compute.write_file(workspace_id, user_id, "AGENTS.md", agents_md_content)
     except Exception as e:
         # SECURITY: Log full error internally but don't expose to client
         logger.warning("Failed to write AGENTS.md", error=str(e))

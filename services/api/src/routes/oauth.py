@@ -6,6 +6,7 @@ Handles OAuth flows for personal plan providers:
 - GitHub (Copilot)
 """
 
+import json
 import time
 from typing import Annotated, Any
 
@@ -19,7 +20,12 @@ from src.config import settings
 from src.database.connection import get_db
 from src.database.models import UserOAuthToken
 from src.middleware.auth import get_current_user_id
-from src.middleware.rate_limit import RATE_LIMIT_OAUTH, RATE_LIMIT_STANDARD, limiter
+from src.middleware.rate_limit import (
+    RATE_LIMIT_OAUTH,
+    RATE_LIMIT_STANDARD,
+    get_redis_client,
+    limiter,
+)
 from src.services.oauth import (
     OAUTH_PROVIDERS,
     OAuthCredentials,
@@ -35,9 +41,40 @@ router = APIRouter(tags=["llm-oauth"])
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 CurrentUserId = Annotated[str, Depends(get_current_user_id)]
 
-# In-memory state storage (for production, use Redis or database)
-# Maps state -> OAuthState
-_oauth_states: dict[str, dict[str, Any]] = {}
+# Redis key prefix for OAuth state storage
+OAUTH_STATE_PREFIX = "podex:oauth:state:"
+OAUTH_STATE_TTL = 600  # 10 minutes
+
+
+async def _store_oauth_state(state: str, data: dict[str, Any]) -> None:
+    """Store OAuth state in Redis."""
+    try:
+        redis = await get_redis_client()
+        await redis.set(
+            f"{OAUTH_STATE_PREFIX}{state}",
+            json.dumps(data),
+            ex=OAUTH_STATE_TTL,
+        )
+    except Exception:
+        logger.exception("Failed to store OAuth state in Redis")
+        raise HTTPException(status_code=500, detail="Failed to initiate OAuth flow")
+
+
+async def _get_and_delete_oauth_state(state: str) -> dict[str, Any] | None:
+    """Get and delete OAuth state from Redis (atomic pop)."""
+    try:
+        redis = await get_redis_client()
+        key = f"{OAUTH_STATE_PREFIX}{state}"
+        data = await redis.get(key)
+        if data:
+            await redis.delete(key)
+            result: dict[str, Any] = json.loads(data)
+            return result
+    except Exception:
+        logger.exception("Failed to retrieve OAuth state from Redis")
+        return None
+    else:
+        return None
 
 
 class OAuthStartResponse(BaseModel):
@@ -155,17 +192,17 @@ async def start_oauth_flow(
         redirect_uri=redirect_uri,
     )
 
-    # Store state for callback verification
-    _oauth_states[state] = {
-        "user_id": user_id,
-        "provider": provider,
-        "code_verifier": code_verifier,
-        "redirect_uri": redirect_uri,
-        "created_at": time.time(),
-    }
-
-    # Clean up old states (older than 10 minutes)
-    _cleanup_old_states()
+    # Store state in Redis for callback verification (10 min TTL handles cleanup)
+    await _store_oauth_state(
+        state,
+        {
+            "user_id": user_id,
+            "provider": provider,
+            "code_verifier": code_verifier,
+            "redirect_uri": redirect_uri,
+            "created_at": time.time(),
+        },
+    )
 
     logger.info("Started OAuth flow", provider=provider, user_id=user_id)
 
@@ -186,11 +223,10 @@ async def oauth_callback(
 
     This endpoint is called by the OAuth provider after user authorization.
     """
-    # Verify state
-    if state not in _oauth_states:
+    # Verify state (atomic get-and-delete from Redis)
+    state_data = await _get_and_delete_oauth_state(state)
+    if not state_data:
         raise HTTPException(status_code=400, detail="Invalid or expired state")
-
-    state_data = _oauth_states.pop(state)
 
     if state_data["provider"] != provider:
         raise HTTPException(status_code=400, detail="Provider mismatch")
@@ -250,11 +286,10 @@ async def oauth_callback_post(
 
     Used when frontend handles the callback and sends code/state to backend.
     """
-    # Verify state
-    if body.state not in _oauth_states:
+    # Verify state (atomic get-and-delete from Redis)
+    state_data = await _get_and_delete_oauth_state(body.state)
+    if not state_data:
         raise HTTPException(status_code=400, detail="Invalid or expired state")
-
-    state_data = _oauth_states.pop(body.state)
 
     if state_data["provider"] != provider:
         raise HTTPException(status_code=400, detail="Provider mismatch")
@@ -428,14 +463,6 @@ def _is_provider_configured(provider: str) -> bool:
             and os.environ.get("GITHUB_OAUTH_CLIENT_SECRET")
         )
     return False
-
-
-def _cleanup_old_states() -> None:
-    """Remove OAuth states older than 10 minutes."""
-    cutoff = time.time() - 600
-    expired = [s for s, d in _oauth_states.items() if d["created_at"] < cutoff]
-    for state in expired:
-        del _oauth_states[state]
 
 
 async def _save_oauth_token(

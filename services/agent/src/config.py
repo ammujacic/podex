@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     TASK_TTL: int = 86400  # 24 hours
     TASK_MAX_RETRIES: int = 3
 
+    # Worker pool settings - controls concurrent task processing per instance
+    # These are I/O-bound (waiting on LLM APIs), so can handle more concurrency
+    # than CPU-bound tasks. Main constraints are memory (~100MB/task) and
+    # LLM API rate limits. Recommended: 4-16 depending on memory/API limits.
+    # Set to 1 for sequential processing (debugging/testing).
+    AGENT_WORKER_POOL_SIZE: int = 8  # Main agent tasks
+    SUBAGENT_WORKER_POOL_SIZE: int = 4  # Subagent tasks (spawned by agents)
+    COMPACTION_WORKER_POOL_SIZE: int = 2  # Compaction is less frequent
+
     # Streaming settings
     STREAMING_ENABLED: bool = True
     STREAMING_BUFFER_SIZE: int = 1  # Tokens to buffer before emit (1 = immediate)
@@ -73,10 +82,7 @@ class Settings(BaseSettings):
     API_BASE_URL: str = "http://localhost:3001"
     INTERNAL_SERVICE_TOKEN: str | None = None
 
-    # Compute Service (for terminal access)
-    COMPUTE_SERVICE_URL: str = "http://localhost:3003"
-
-    # Internal Agent URL (for MCP self-referencing endpoints like /mcp/skills)
+    # Internal Agent URL (for service-to-service communication)
     # Docker Compose: http://agent:3002, GCP Cloud Run: https://agent-xxx.run.app
     AGENT_INTERNAL_URL: str = "http://agent:3002"
 

@@ -7,7 +7,7 @@ All models are organized into domain-specific modules:
  - agent_config.py: AgentTemplate, Subagent, AgentWorktree, AgentRoleConfig, AgentTool
  - billing.py: SubscriptionPlan, UserSubscription, UsageRecord, Invoice, etc.
  - checkpoints.py: FileCheckpoint, CheckpointFile, PendingChangeSet, ChangeSetFile
- - user_preferences.py: UserConfig, UserHook, CustomCommand
+ - user_preferences.py: UserConfig, CustomCommand
  - context.py: ConversationSummary, Memory, ContextCompactionSettings, CompactionLog
  - infrastructure.py: PodTemplate, LocalPod, MCPServer
  - notifications.py: Notification, PushSubscription, AgentAttention
@@ -170,7 +170,6 @@ from .skill_sync import (
 from .user_preferences import (
     CustomCommand,
     UserConfig,
-    UserHook,
     UserOAuthToken,
 )
 
@@ -262,7 +261,6 @@ __all__ = [
     "UserConfig",
     "UserCorrection",
     "UserExtension",
-    "UserHook",
     "UserOAuthToken",
     "UserSkill",
     "UserSubscription",

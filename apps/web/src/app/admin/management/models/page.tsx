@@ -31,6 +31,7 @@ import {
 import { toast } from 'sonner';
 import { useUser } from '@/stores/auth';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
+import { useConfigStore } from '@/stores/config';
 
 // Cost tier badge colors
 const costTierColors: Record<string, string> = {
@@ -500,18 +501,9 @@ function AgentDefaultsModal({ defaults, models, onClose, onSave }: AgentDefaults
   });
   const [saving, setSaving] = useState<string | null>(null);
 
-  const agentTypes = [
-    'architect',
-    'coder',
-    'reviewer',
-    'tester',
-    'chat',
-    'security',
-    'devops',
-    'documentator',
-    'agent_builder',
-    'orchestrator',
-  ];
+  // Get agent roles from config store (database-driven)
+  const agentRoles = useConfigStore((state) => state.agentRoles);
+  const agentTypes = agentRoles.map((role) => role.role);
 
   const handleSave = async (agentType: string, modelId: string) => {
     // Skip if value hasn't actually changed
@@ -545,34 +537,43 @@ function AgentDefaultsModal({ defaults, models, onClose, onSave }: AgentDefaults
         </p>
 
         <div className="space-y-3">
-          {agentTypes.map((agentType) => (
-            <div
-              key={agentType}
-              className="flex items-center justify-between py-2 px-3 rounded-lg bg-elevated"
-            >
-              <span className="text-sm text-text-secondary capitalize">
-                {agentType.replace('_', ' ')}
-              </span>
-              <div className="flex items-center gap-2">
-                {saving === agentType && (
-                  <Loader2 className="h-3 w-3 animate-spin text-accent-primary" />
-                )}
-                <select
-                  value={localDefaults[agentType] || ''}
-                  onChange={(e) => handleSave(agentType, e.target.value)}
-                  disabled={saving === agentType}
-                  className="px-2 py-1 rounded bg-overlay border border-border-subtle text-text-primary text-xs focus:outline-none focus:ring-1 focus:ring-accent-primary disabled:opacity-50"
+          {agentTypes.length === 0 ? (
+            <p className="text-sm text-text-muted">
+              No agent roles found. Ensure the API service has synced roles from the database.
+            </p>
+          ) : (
+            agentTypes.map((agentType) => {
+              const roleConfig = agentRoles.find((r) => r.role === agentType);
+              return (
+                <div
+                  key={agentType}
+                  className="flex items-center justify-between py-2 px-3 rounded-lg bg-elevated"
                 >
-                  <option value="">Use system default</option>
-                  {enabledModels.map((model) => (
-                    <option key={model.id} value={model.model_id}>
-                      {model.display_name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          ))}
+                  <span className="text-sm text-text-secondary">
+                    {roleConfig?.name || agentType.replace('_', ' ')}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    {saving === agentType && (
+                      <Loader2 className="h-3 w-3 animate-spin text-accent-primary" />
+                    )}
+                    <select
+                      value={localDefaults[agentType] || ''}
+                      onChange={(e) => handleSave(agentType, e.target.value)}
+                      disabled={saving === agentType}
+                      className="px-2 py-1 rounded bg-overlay border border-border-subtle text-text-primary text-xs focus:outline-none focus:ring-1 focus:ring-accent-primary disabled:opacity-50"
+                    >
+                      <option value="">Use system default</option>
+                      {enabledModels.map((model) => (
+                        <option key={model.id} value={model.model_id}>
+                          {model.display_name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              );
+            })
+          )}
         </div>
 
         <div className="flex justify-end mt-6 pt-4 border-t border-border-subtle">

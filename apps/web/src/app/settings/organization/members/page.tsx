@@ -13,6 +13,11 @@ import {
   Trash2,
   Edit2,
   ChevronLeft,
+  X,
+  DollarSign,
+  Cpu,
+  Sparkles,
+  HardDrive,
 } from 'lucide-react';
 import { Button } from '@podex/ui';
 import { api } from '@/lib/api';
@@ -26,6 +31,287 @@ import {
 } from '@/stores/organization';
 import Link from 'next/link';
 
+// Available models and instance types (could be fetched from API)
+const AVAILABLE_MODELS = [
+  'gpt-4o',
+  'gpt-4o-mini',
+  'gpt-4-turbo',
+  'gpt-3.5-turbo',
+  'claude-3-5-sonnet',
+  'claude-3-opus',
+  'claude-3-haiku',
+];
+
+const AVAILABLE_INSTANCE_TYPES = ['small', 'medium', 'large', 'xlarge', 'gpu-small', 'gpu-large'];
+
+interface EditMemberForm {
+  role: 'admin' | 'member';
+  spendingLimitEnabled: boolean;
+  spendingLimitCents: number;
+  allocatedCreditsCents: number;
+  allowedModels: string[];
+  allowedInstanceTypes: string[];
+  storageLimitGb: number;
+}
+
+interface EditMemberModalProps {
+  member: OrganizationMember;
+  creditModel: string;
+  onClose: () => void;
+  onSave: (updates: Partial<EditMemberForm>) => Promise<void>;
+  saving: boolean;
+}
+
+function EditMemberModal({ member, creditModel, onClose, onSave, saving }: EditMemberModalProps) {
+  const [form, setForm] = useState<EditMemberForm>({
+    role: member.role === 'owner' ? 'admin' : member.role,
+    spendingLimitEnabled: member.spendingLimitCents !== null,
+    spendingLimitCents: member.spendingLimitCents || 0,
+    allocatedCreditsCents: member.allocatedCreditsCents || 0,
+    allowedModels: [], // Would need to fetch from member data
+    allowedInstanceTypes: [], // Would need to fetch from member data
+    storageLimitGb: 10, // Default
+  });
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await onSave({
+      role: form.role,
+      spendingLimitCents: form.spendingLimitEnabled ? form.spendingLimitCents : undefined,
+      allocatedCreditsCents: creditModel === 'allocated' ? form.allocatedCreditsCents : undefined,
+      allowedModels: form.allowedModels.length > 0 ? form.allowedModels : undefined,
+      allowedInstanceTypes:
+        form.allowedInstanceTypes.length > 0 ? form.allowedInstanceTypes : undefined,
+      storageLimitGb: form.storageLimitGb,
+    });
+  };
+
+  const toggleModel = (model: string) => {
+    setForm((prev) => ({
+      ...prev,
+      allowedModels: prev.allowedModels.includes(model)
+        ? prev.allowedModels.filter((m) => m !== model)
+        : [...prev.allowedModels, model],
+    }));
+  };
+
+  const toggleInstanceType = (type: string) => {
+    setForm((prev) => ({
+      ...prev,
+      allowedInstanceTypes: prev.allowedInstanceTypes.includes(type)
+        ? prev.allowedInstanceTypes.filter((t) => t !== type)
+        : [...prev.allowedInstanceTypes, type],
+    }));
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-surface border border-border-default rounded-xl max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between p-4 border-b border-border-default">
+          <h2 className="text-lg font-semibold text-text-primary">Edit Member Limits</h2>
+          <button onClick={onClose} className="p-1 hover:bg-elevated rounded">
+            <X className="w-5 h-5 text-text-muted" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-4 space-y-5">
+          {/* Member Info */}
+          <div className="flex items-center gap-3 p-3 bg-elevated rounded-lg">
+            {member.avatarUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={member.avatarUrl}
+                alt={member.name || member.email}
+                className="w-10 h-10 rounded-full"
+              />
+            ) : (
+              <div className="w-10 h-10 bg-surface rounded-full flex items-center justify-center">
+                <User className="w-5 h-5 text-text-muted" />
+              </div>
+            )}
+            <div>
+              <p className="font-medium text-text-primary">{member.name || 'No name'}</p>
+              <p className="text-sm text-text-muted">{member.email}</p>
+            </div>
+          </div>
+
+          {/* Role */}
+          {member.role !== 'owner' && (
+            <div>
+              <label className="block text-sm font-medium text-text-primary mb-2">
+                <Shield className="w-4 h-4 inline mr-1" />
+                Role
+              </label>
+              <select
+                value={form.role}
+                onChange={(e) => setForm({ ...form, role: e.target.value as 'admin' | 'member' })}
+                className="w-full px-3 py-2 bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
+              >
+                <option value="member">Member</option>
+                <option value="admin">Admin</option>
+              </select>
+              <p className="text-xs text-text-muted mt-1">
+                Admins can manage members and invitations.
+              </p>
+            </div>
+          )}
+
+          {/* Spending Limit */}
+          <div>
+            <label className="flex items-center gap-2 mb-2">
+              <input
+                type="checkbox"
+                checked={form.spendingLimitEnabled}
+                onChange={(e) => setForm({ ...form, spendingLimitEnabled: e.target.checked })}
+                className="rounded border-border-default"
+              />
+              <span className="text-sm font-medium text-text-primary">
+                <DollarSign className="w-4 h-4 inline mr-1" />
+                Enable Spending Limit
+              </span>
+            </label>
+            {form.spendingLimitEnabled && (
+              <div className="ml-6">
+                <div className="flex items-center gap-2">
+                  <span className="text-text-muted">$</span>
+                  <input
+                    type="number"
+                    value={form.spendingLimitCents / 100}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        spendingLimitCents: Math.round(parseFloat(e.target.value) * 100) || 0,
+                      })
+                    }
+                    min="0"
+                    step="1"
+                    className="w-32 px-3 py-2 bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
+                  />
+                  <span className="text-text-muted text-sm">per month</span>
+                </div>
+                <p className="text-xs text-text-muted mt-1">
+                  Current spending: ${(member.currentSpendingCents / 100).toFixed(2)}
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Allocated Credits (only for allocated model) */}
+          {creditModel === 'allocated' && (
+            <div>
+              <label className="block text-sm font-medium text-text-primary mb-2">
+                <DollarSign className="w-4 h-4 inline mr-1" />
+                Allocated Credits
+              </label>
+              <div className="flex items-center gap-2">
+                <span className="text-text-muted">$</span>
+                <input
+                  type="number"
+                  value={form.allocatedCreditsCents / 100}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      allocatedCreditsCents: Math.round(parseFloat(e.target.value) * 100) || 0,
+                    })
+                  }
+                  min="0"
+                  step="1"
+                  className="w-32 px-3 py-2 bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
+                />
+              </div>
+              <p className="text-xs text-text-muted mt-1">
+                Used: ${(member.usedCreditsCents / 100).toFixed(2)} of $
+                {(form.allocatedCreditsCents / 100).toFixed(2)}
+              </p>
+            </div>
+          )}
+
+          {/* Allowed Models */}
+          <div>
+            <label className="block text-sm font-medium text-text-primary mb-2">
+              <Sparkles className="w-4 h-4 inline mr-1" />
+              Allowed Models
+            </label>
+            <p className="text-xs text-text-muted mb-2">Leave empty to allow all models.</p>
+            <div className="flex flex-wrap gap-2">
+              {AVAILABLE_MODELS.map((model) => (
+                <button
+                  key={model}
+                  type="button"
+                  onClick={() => toggleModel(model)}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                    form.allowedModels.includes(model)
+                      ? 'bg-accent-primary text-white'
+                      : 'bg-elevated text-text-secondary hover:bg-elevated/80'
+                  }`}
+                >
+                  {model}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Allowed Instance Types */}
+          <div>
+            <label className="block text-sm font-medium text-text-primary mb-2">
+              <Cpu className="w-4 h-4 inline mr-1" />
+              Allowed Instance Types
+            </label>
+            <p className="text-xs text-text-muted mb-2">Leave empty to allow all instance types.</p>
+            <div className="flex flex-wrap gap-2">
+              {AVAILABLE_INSTANCE_TYPES.map((type) => (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => toggleInstanceType(type)}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                    form.allowedInstanceTypes.includes(type)
+                      ? 'bg-accent-primary text-white'
+                      : 'bg-elevated text-text-secondary hover:bg-elevated/80'
+                  }`}
+                >
+                  {type}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Storage Limit */}
+          <div>
+            <label className="block text-sm font-medium text-text-primary mb-2">
+              <HardDrive className="w-4 h-4 inline mr-1" />
+              Storage Limit
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                value={form.storageLimitGb}
+                onChange={(e) =>
+                  setForm({ ...form, storageLimitGb: parseInt(e.target.value) || 0 })
+                }
+                min="0"
+                step="1"
+                className="w-32 px-3 py-2 bg-elevated border border-border-default rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50"
+              />
+              <span className="text-text-muted text-sm">GB</span>
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="flex justify-end gap-3 pt-4 border-t border-border-default">
+            <Button type="button" variant="outline" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={saving}>
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save Changes'}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 export default function OrganizationMembersPage() {
   useDocumentTitle('Organization Members');
   const router = useRouter();
@@ -36,7 +322,7 @@ export default function OrganizationMembersPage() {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedMember, setSelectedMember] = useState<OrganizationMember | null>(null);
-  const [_showEditModal, setShowEditModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
   const [showRemoveModal, setShowRemoveModal] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
@@ -133,6 +419,44 @@ export default function OrganizationMembersPage() {
       );
       removeMember(selectedMember.userId);
       setShowRemoveModal(false);
+      setSelectedMember(null);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleUpdateMember = async (updates: Record<string, unknown>) => {
+    if (!selectedMember || !orgContext) return;
+    setActionLoading(true);
+    try {
+      // Convert to snake_case for API
+      const apiPayload: Record<string, unknown> = {};
+      if (updates.role !== undefined) apiPayload.role = updates.role;
+      if (updates.spendingLimitCents !== undefined)
+        apiPayload.spending_limit_cents = updates.spendingLimitCents;
+      if (updates.allocatedCreditsCents !== undefined)
+        apiPayload.allocated_credits_cents = updates.allocatedCreditsCents;
+      if (updates.allowedModels !== undefined) apiPayload.allowed_models = updates.allowedModels;
+      if (updates.allowedInstanceTypes !== undefined)
+        apiPayload.allowed_instance_types = updates.allowedInstanceTypes;
+      if (updates.storageLimitGb !== undefined)
+        apiPayload.storage_limit_gb = updates.storageLimitGb;
+
+      await api.patch(
+        `/api/organizations/${orgContext.organization.id}/members/${selectedMember.userId}`,
+        apiPayload
+      );
+
+      // Update local state
+      updateMember(selectedMember.userId, {
+        role: (updates.role as OrgRole) || selectedMember.role,
+        spendingLimitCents:
+          (updates.spendingLimitCents as number | null) ?? selectedMember.spendingLimitCents,
+        allocatedCreditsCents:
+          (updates.allocatedCreditsCents as number) ?? selectedMember.allocatedCreditsCents,
+      });
+
+      setShowEditModal(false);
       setSelectedMember(null);
     } finally {
       setActionLoading(false);
@@ -349,6 +673,20 @@ export default function OrganizationMembersPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Edit Member Modal */}
+      {showEditModal && selectedMember && orgContext && (
+        <EditMemberModal
+          member={selectedMember}
+          creditModel={orgContext.organization.creditModel}
+          onClose={() => {
+            setShowEditModal(false);
+            setSelectedMember(null);
+          }}
+          onSave={handleUpdateMember}
+          saving={actionLoading}
+        />
       )}
     </div>
   );

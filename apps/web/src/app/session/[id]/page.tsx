@@ -84,6 +84,7 @@ export default function SessionPage() {
   const { startTour, hasCompleted } = useOnboardingTour();
   const hasTriggeredTourRef = useRef(false);
   const isMobile = useIsMobile();
+  const workspaceStatus = useSessionStore((s) => s.sessions[sessionId]?.workspaceStatus);
 
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
@@ -539,10 +540,12 @@ export default function SessionPage() {
   useEffect(() => {
     // Only trigger tour when workspace is fully loaded and visible
     // Check loading progress to ensure startup simulation is complete
+    // Also check workspaceStatus to ensure WorkspaceStatusOverlay is not showing
     if (
       podStatus === 'running' &&
       !loading &&
       loadingProgress === 100 &&
+      workspaceStatus === 'running' &&
       !hasTriggeredTourRef.current
     ) {
       hasTriggeredTourRef.current = true;
@@ -559,7 +562,7 @@ export default function SessionPage() {
       return () => clearTimeout(timer);
     }
     return undefined;
-  }, [podStatus, loading, loadingProgress, hasCompleted, startTour, isMobile]);
+  }, [podStatus, loading, loadingProgress, workspaceStatus, hasCompleted, startTour, isMobile]);
 
   const handleRestart = async () => {
     setRestarting(true);

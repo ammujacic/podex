@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -41,7 +41,7 @@ class GitWorktree:
     status: WorktreeStatus = WorktreeStatus.CREATING
     files_modified: list[str] = field(default_factory=list)
     commits: list[str] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     merged_at: datetime | None = None
     error: str | None = None
 
@@ -345,7 +345,7 @@ class GitWorktreeManager:
                 )
 
             worktree.status = WorktreeStatus.MERGED
-            worktree.merged_at = datetime.utcnow()
+            worktree.merged_at = datetime.now(UTC)
 
             logger.info(
                 "worktree_merged",

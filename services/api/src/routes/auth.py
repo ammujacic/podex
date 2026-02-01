@@ -12,6 +12,7 @@ from passlib.hash import bcrypt
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import and_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from user_agents import parse as parse_user_agent  # type: ignore[import-not-found]
 
 from src.audit_logger import AuditAction, AuditLogger, AuditStatus
 from src.auth_constants import COOKIE_ACCESS_TOKEN, COOKIE_REFRESH_TOKEN
@@ -27,6 +28,7 @@ from src.database.models import (
 )
 from src.middleware.rate_limit import RATE_LIMIT_AUTH, RATE_LIMIT_SENSITIVE, limiter
 from src.routes.billing import sync_quotas_from_plan
+from src.services.geolocation import lookup_ip_location
 from src.services.mfa import get_mfa_service
 from src.services.token_blacklist import (
     is_token_revoked,
@@ -205,6 +207,84 @@ def _get_token_ttls(return_tokens: bool) -> tuple[int, int]:
     return access_ttl, refresh_ttl
 
 
+def _parse_device_info(request: Request) -> dict[str, str | None]:
+    """Extract device information from request headers for session tracking."""
+    user_agent_str = request.headers.get("user-agent", "")
+    ua = parse_user_agent(user_agent_str) if user_agent_str else None
+
+    # Determine device type from header or user agent
+    x_device_type = request.headers.get("x-device-type", "").lower()
+    if x_device_type:
+        device_type = x_device_type
+    elif ua:
+        if ua.is_mobile:
+            device_type = "mobile"
+        elif ua.is_tablet:
+            device_type = "tablet"
+        elif ua.is_pc:
+            device_type = "browser"
+        else:
+            device_type = "unknown"
+    else:
+        device_type = "unknown"
+
+    # Build device name
+    device_name = request.headers.get("x-device-name")
+    if not device_name and ua:
+        if ua.browser.family and ua.os.family:
+            device_name = f"{ua.browser.family} on {ua.os.family}"
+        elif ua.device.family:
+            device_name = ua.device.family
+
+    # Get IP address (handle proxies)
+    ip_address: str | None = (
+        request.headers.get("x-forwarded-for", "").split(",")[0].strip() or None
+    )
+    if not ip_address:
+        ip_address = request.client.host if request.client else None
+
+    return {
+        "device_type": device_type,
+        "device_name": device_name,
+        "user_agent": user_agent_str,
+        "ip_address": ip_address,
+        "os_name": ua.os.family if ua else None,
+        "browser_name": ua.browser.family if ua else None,
+    }
+
+
+async def _create_device_session(
+    db: AsyncSession,
+    user_id: str,
+    refresh_token_jti: str,
+    refresh_ttl: int,
+    request: Request,
+) -> DeviceSession:
+    """Create a device session record for tracking active sessions."""
+    device_info = _parse_device_info(request)
+
+    # Look up geolocation from IP
+    city, country, country_code = lookup_ip_location(device_info["ip_address"])
+
+    device_session = DeviceSession(
+        user_id=user_id,
+        device_type=device_info["device_type"],
+        device_name=device_info["device_name"],
+        refresh_token_jti=refresh_token_jti,
+        ip_address=device_info["ip_address"],
+        user_agent=device_info["user_agent"],
+        os_name=device_info["os_name"],
+        browser_name=device_info["browser_name"],
+        city=city,
+        country=country,
+        country_code=country_code,
+        expires_at=datetime.now(UTC) + timedelta(seconds=refresh_ttl),
+    )
+    db.add(device_session)
+
+    return device_session
+
+
 def create_access_token(
     user_id: str,
     role: str = "member",
@@ -347,6 +427,10 @@ async def login(
     await register_user_token(
         user.id, refresh_token_info.jti, refresh_token_info.expires_in_seconds
     )
+
+    # Create device session for tracking
+    await _create_device_session(db, user.id, refresh_token_info.jti, refresh_ttl, request)
+    await db.commit()
 
     # Set httpOnly cookies for secure token storage (XSS protection)
     set_auth_cookies(
@@ -584,6 +668,10 @@ async def register(
     await register_user_token(
         user.id, refresh_token_info.jti, refresh_token_info.expires_in_seconds
     )
+
+    # Create device session for tracking
+    await _create_device_session(db, user.id, refresh_token_info.jti, refresh_ttl, request)
+    await db.commit()
 
     # Set httpOnly cookies for secure token storage (XSS protection)
     set_auth_cookies(
@@ -1158,3 +1246,143 @@ async def reset_password(
     logger.info("Password reset completed", user_id=user.id[:8])
 
     return ResetPasswordResponse()
+
+
+# ============== Account Deletion ==============
+
+
+class DeleteAccountRequest(BaseModel):
+    """Delete account request."""
+
+    password: str
+    mfa_code: str | None = None  # Required if MFA is enabled
+    confirmation: str  # Must match user's email
+
+
+class DeleteAccountResponse(BaseModel):
+    """Delete account response."""
+
+    message: str = "Account deleted successfully"
+
+
+@router.delete("/account", response_model=DeleteAccountResponse)
+@limiter.limit(RATE_LIMIT_SENSITIVE)
+async def delete_account(
+    body: DeleteAccountRequest,
+    request: Request,
+    response: Response,
+    db: DbSession,
+) -> DeleteAccountResponse:
+    """Permanently delete the current user's account.
+
+    This action:
+    - Cancels any active subscriptions
+    - Deactivates the account (soft delete)
+    - Revokes all authentication tokens
+    - Cannot be undone
+    """
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Verify confirmation matches email
+    if body.confirmation.lower() != user.email.lower():
+        raise HTTPException(
+            status_code=400,
+            detail="Email confirmation does not match",
+        )
+
+    # Verify password (if user has password - not OAuth-only)
+    if user.password_hash:
+        if not verify_password(body.password, user.password_hash):
+            raise HTTPException(status_code=401, detail="Password is incorrect")
+    else:
+        # OAuth-only users can delete without password verification
+        # but still need email confirmation
+        pass
+
+    # Check MFA if enabled
+    if user.mfa_enabled:
+        if not body.mfa_code:
+            raise HTTPException(
+                status_code=400,
+                detail="MFA code required for account deletion",
+            )
+
+        mfa_service = get_mfa_service()
+        verification, updated_backup_codes = mfa_service.verify_mfa(
+            body.mfa_code,
+            user.mfa_secret,
+            user.mfa_backup_codes,
+        )
+        if not verification.success:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid MFA code",
+            )
+        # Update backup codes if a backup code was used
+        if updated_backup_codes is not None:
+            user.mfa_backup_codes = updated_backup_codes
+
+    # Cancel active subscriptions via Stripe
+    subscription_result = await db.execute(
+        select(UserSubscription).where(
+            UserSubscription.user_id == user_id,
+            UserSubscription.status.in_(["active", "trialing"]),
+        )
+    )
+    active_subscriptions = subscription_result.scalars().all()
+
+    for sub in active_subscriptions:
+        if sub.stripe_subscription_id:
+            try:
+                import stripe  # noqa: PLC0415
+
+                stripe.api_key = settings.STRIPE_SECRET_KEY
+                stripe.Subscription.cancel(sub.stripe_subscription_id)
+                logger.info(
+                    "Cancelled subscription during account deletion",
+                    user_id=user_id[:8],
+                    subscription_id=sub.stripe_subscription_id[:8],
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to cancel Stripe subscription",
+                    user_id=user_id[:8],
+                )
+        sub.status = "canceled"
+
+    # Soft delete: deactivate user account
+    user.is_active = False
+    user.deleted_at = datetime.now(UTC)
+
+    # Clear sensitive data but keep record for audit purposes
+    user.mfa_enabled = False
+    user.mfa_secret = None
+    user.mfa_backup_codes = None
+
+    await db.commit()
+
+    # Log account deletion
+    audit = AuditLogger(db).set_context(request=request, user_id=user.id, user_email=user.email)
+    await audit.log_auth(
+        AuditAction.AUTH_ACCOUNT_DELETED,
+        status=AuditStatus.SUCCESS,
+        resource_id=user.id,
+    )
+
+    # Revoke all tokens
+    await revoke_all_user_tokens(user_id)
+
+    # Clear auth cookies
+    clear_auth_cookies(response)
+
+    logger.info("Account deleted", user_id=user_id[:8])
+
+    return DeleteAccountResponse()

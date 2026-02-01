@@ -22,6 +22,11 @@ class AgentToolData(TypedDict, total=False):
     sort_order: int
     is_enabled: bool
     is_system: bool
+    # Permission flags for mode-based access control
+    is_read_operation: bool  # Read-only (allowed in Plan mode) - defaults to True
+    is_write_operation: bool  # Modifies files (blocked in Plan, needs approval in Ask)
+    is_command_operation: bool  # Executes shell commands (needs allowlist in Auto)
+    is_deploy_operation: bool  # Deployment ops (always needs approval except Sovereign)
 
 
 # Default agent tools - the complete registry
@@ -45,6 +50,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 10,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     {
         "name": "write_file",
@@ -64,6 +70,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 20,
         "is_enabled": True,
         "is_system": True,
+        "is_write_operation": True,
     },
     {
         "name": "list_directory",
@@ -82,6 +89,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 30,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     {
         "name": "glob_files",
@@ -110,6 +118,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 40,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     {
         "name": "apply_patch",
@@ -137,6 +146,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 50,
         "is_enabled": True,
         "is_system": True,
+        "is_write_operation": True,
     },
     # ==================== Search Operations ====================
     {
@@ -157,6 +167,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 60,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     {
         "name": "grep",
@@ -194,6 +205,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 70,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     # ==================== Command Execution ====================
     {
@@ -211,6 +223,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 80,
         "is_enabled": True,
         "is_system": True,
+        "is_command_operation": True,
     },
     # ==================== Git Operations ====================
     {
@@ -225,6 +238,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 100,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     {
         "name": "git_diff",
@@ -250,6 +264,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 110,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     {
         "name": "git_commit",
@@ -278,6 +293,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 120,
         "is_enabled": True,
         "is_system": True,
+        "is_write_operation": True,
     },
     {
         "name": "git_push",
@@ -306,6 +322,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 130,
         "is_enabled": True,
         "is_system": True,
+        "is_write_operation": True,
     },
     {
         "name": "git_branch",
@@ -330,6 +347,8 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 140,
         "is_enabled": True,
         "is_system": True,
+        # Can both read (list) and write (create/delete/checkout) - mark as write for safety
+        "is_write_operation": True,
     },
     {
         "name": "git_log",
@@ -354,8 +373,10 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 150,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     # ==================== Delegation Tools ====================
+    # Delegation tools are internal orchestration - no file/command restrictions
     {
         "name": "create_task",
         "description": "Create a task for another agent to handle",
@@ -382,6 +403,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 200,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,  # No file/command restrictions
     },
     {
         "name": "delegate_task",
@@ -422,6 +444,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 210,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     {
         "name": "get_task_status",
@@ -440,6 +463,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 220,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     {
         "name": "wait_for_tasks",
@@ -464,6 +488,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 230,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     {
         "name": "get_all_pending_tasks",
@@ -477,8 +502,10 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 240,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     # ==================== Orchestration Tools ====================
+    # Orchestration tools are internal coordination - no file/command restrictions
     {
         "name": "create_execution_plan",
         "description": "Create a detailed execution plan for a complex task.",
@@ -500,6 +527,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 300,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     {
         "name": "create_custom_agent",
@@ -532,6 +560,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 310,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     {
         "name": "delegate_to_custom_agent",
@@ -554,6 +583,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 320,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     {
         "name": "synthesize_results",
@@ -577,6 +607,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 330,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     # ==================== Agent Builder Tools ====================
     {
@@ -628,6 +659,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 400,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,  # Creates DB record, not file operation
     },
     {
         "name": "list_available_tools",
@@ -641,6 +673,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 410,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     {
         "name": "preview_agent_template",
@@ -684,6 +717,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 420,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     # ==================== Review Tools ====================
     {
@@ -709,6 +743,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 500,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,  # Adds metadata, doesn't modify file content
     },
     {
         "name": "get_coverage",
@@ -728,6 +763,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 510,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     # ==================== Web/Network Tools ====================
     {
@@ -757,8 +793,10 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 600,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     # ==================== Memory Tools ====================
+    # Memory tools modify DB records, not workspace files - no file/command restrictions
     {
         "name": "store_memory",
         "description": (
@@ -797,6 +835,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 700,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     {
         "name": "recall_memory",
@@ -835,6 +874,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 710,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     {
         "name": "update_memory",
@@ -868,6 +908,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 720,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     {
         "name": "delete_memory",
@@ -886,6 +927,7 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 730,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
     {
         "name": "get_session_memories",
@@ -907,5 +949,6 @@ DEFAULT_AGENT_TOOLS: list[AgentToolData] = [
         "sort_order": 740,
         "is_enabled": True,
         "is_system": True,
+        "is_read_operation": True,
     },
 ]

@@ -23,7 +23,8 @@ class TestSettingsDefaults:
         settings = Settings()
         assert settings.max_workspaces == 10
         assert settings.workspace_timeout == 3600
-        assert settings.workspace_image == "podex/workspace:latest"
+        # Fallback image - production images are configured per-server in database
+        assert settings.workspace_image == "ghcr.io/mujacic/workspace:latest"
         # Workspace servers are now fetched from API database (admin UI)
         # Compute service syncs server list from API at startup and periodically
         assert settings.server_sync_interval == 30

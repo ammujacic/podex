@@ -24,9 +24,6 @@ DEFAULT_PLANS = [
         "features": {
             "private_projects": False,
             "git_integration": True,
-            "agent_memory": False,
-            "planning_mode": False,
-            "vision_analysis": False,
             "team_collaboration": False,
             "gpu_access": False,
             "community_support": True,
@@ -72,9 +69,6 @@ DEFAULT_PLANS = [
         "features": {
             "private_projects": True,
             "git_integration": True,
-            "agent_memory": True,
-            "planning_mode": True,
-            "vision_analysis": True,
             "team_collaboration": True,
             "gpu_access": False,
             "advanced_analytics": True,
@@ -88,7 +82,7 @@ DEFAULT_PLANS = [
         "highlight_features": [
             "1M tokens/month",
             "5 AI agents",
-            "Agent memory & context",
+            "Private projects",
             "Custom agent templates",
             "Email support",
         ],
@@ -123,15 +117,12 @@ DEFAULT_PLANS = [
         "features": {
             "private_projects": True,
             "git_integration": True,
-            "agent_memory": True,
-            "planning_mode": True,
-            "vision_analysis": True,
             "team_collaboration": True,
             "gpu_access": True,
             "advanced_analytics": True,
             "audit_logs": True,
             "custom_agents": True,
-            "priority_support": False,
+            "priority_support": True,
         },
         # New UI/display fields
         "color": "#f59e0b",  # amber-500
@@ -142,7 +133,7 @@ DEFAULT_PLANS = [
             "20 AI agents",
             "GPU access",
             "Audit logs",
-            "200 GB storage",
+            "Priority support",
         ],
         # Session/workspace configuration
         "session_timeout_options": [15, 30, 60, 120, None],  # All options including never

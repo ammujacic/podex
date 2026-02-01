@@ -7,7 +7,6 @@ import json
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -22,38 +21,70 @@ if TYPE_CHECKING:
     from src.mcp.registry import MCPToolRegistry
 
 
-class AgentMode(str, Enum):
-    """Agent operation modes with different permission levels."""
+# Agent mode string constants - used for permission checking logic.
+# The valid modes are defined in the database and synced to Redis.
+# API service validates mode before sending to agent service.
+# These constants are for the permission logic implementation, not configuration.
+AGENT_MODE_PLAN = "plan"  # Read-only: no file edits, no commands
+AGENT_MODE_ASK = "ask"  # Requires approval for file edits and commands
+AGENT_MODE_AUTO = "auto"  # Auto file edits, commands require allowlist or approval
+AGENT_MODE_SOVEREIGN = "sovereign"  # Full access: all operations allowed
 
-    PLAN = "plan"  # Read-only: no file edits, no commands
-    ASK = "ask"  # Requires approval for file edits and commands
-    AUTO = "auto"  # Auto file edits, commands require allowlist or approval
-    SOVEREIGN = "sovereign"  # Full access: all operations allowed
+
+# Tool categories are loaded dynamically from Redis via config_reader
+# These module-level caches avoid repeated Redis lookups during tool execution
+_tool_categories_cache: dict[str, set[str]] | None = None
+_tool_categories_lock = asyncio.Lock()
 
 
-# Tool categories for permission checking
-WRITE_TOOLS = {
-    "write_file",
-    "create_file",
-    "delete_file",
-    "apply_patch",
-    "git_commit",
-    "git_push",
-    "create_pr",
-}
-COMMAND_TOOLS = {"run_command"}
-READ_TOOLS = {
-    "read_file",
-    "list_directory",
-    "search_code",
-    "glob_files",
-    "grep",
-    "fetch_url",
-    "git_status",
-    "git_diff",
-    "git_log",
-    "git_branch",
-}
+async def _load_tool_categories() -> dict[str, set[str]]:
+    """Load tool categories from Redis configuration.
+
+    Returns:
+        Dict mapping category names to sets of tool names.
+    """
+    global _tool_categories_cache
+    async with _tool_categories_lock:
+        if _tool_categories_cache is not None:
+            return _tool_categories_cache
+
+        from src.config_reader import get_config_reader
+
+        config_reader = get_config_reader()
+        categories = await config_reader.get_tool_categories()
+
+        # Convert lists to sets for efficient lookup
+        _tool_categories_cache = {category: set(tools) for category, tools in categories.items()}
+
+        logger.info(
+            "Tool categories loaded from Redis",
+            categories={k: len(v) for k, v in _tool_categories_cache.items()},
+        )
+        return _tool_categories_cache
+
+
+async def _get_write_tools() -> set[str]:
+    """Get write tools from cached categories."""
+    categories = await _load_tool_categories()
+    return categories.get("write_tools", set())
+
+
+async def _get_command_tools() -> set[str]:
+    """Get command tools from cached categories."""
+    categories = await _load_tool_categories()
+    return categories.get("command_tools", set())
+
+
+async def _get_read_tools() -> set[str]:
+    """Get read tools from cached categories."""
+    categories = await _load_tool_categories()
+    return categories.get("read_tools", set())
+
+
+async def _get_deploy_tools() -> set[str]:
+    """Get deploy tools from cached categories."""
+    categories = await _load_tool_categories()
+    return categories.get("deploy_tools", set())
 
 
 @dataclass
@@ -113,10 +144,10 @@ from src.tools.orchestrator_tools import (  # noqa: E402
     create_execution_plan,
     delegate_task,
     delegate_to_custom_agent,
-    get_all_pending_tasks,
-    get_task_status,
+    get_active_subagents,
+    get_subagent_status,
     synthesize_results,
-    wait_for_tasks,
+    wait_for_subagents,
 )
 from src.tools.skill_tools import (  # noqa: E402
     CreateSkillConfig,
@@ -129,7 +160,6 @@ from src.tools.skill_tools import (  # noqa: E402
     match_skills,
     recommend_skills,
 )
-from src.tools.task_tools import TaskConfig, create_task  # noqa: E402
 from src.tools.vision_tools import analyze_screenshot, design_to_code  # noqa: E402
 from src.tools.web_tools import (  # noqa: E402
     extract_page_data,
@@ -160,7 +190,7 @@ class ToolExecutor:
         user_id: str | None = None,
         mcp_registry: MCPToolRegistry | None = None,
         agent_id: str | None = None,
-        agent_mode: AgentMode | str = AgentMode.ASK,
+        agent_mode: str = AGENT_MODE_ASK,
         command_allowlist: list[str] | None = None,
         approval_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         workspace_id: str | None = None,
@@ -191,38 +221,67 @@ class ToolExecutor:
         self.workspace_id = workspace_id
         self.agent_model = agent_model
 
-        # Mode-based permissions
-        if isinstance(agent_mode, str):
-            self.agent_mode = AgentMode(agent_mode.lower())
-        else:
-            self.agent_mode = agent_mode
+        # Mode-based permissions - normalize to lowercase string
+        # Mode is validated by the API service against the database before reaching here.
+        # If an invalid mode somehow slips through, permission checks will fail safely.
+        self.agent_mode = agent_mode.lower() if isinstance(agent_mode, str) else str(agent_mode)
         self.command_allowlist = command_allowlist or []
         self.approval_callback = approval_callback
 
         # Pending approvals tracking
         self._pending_approvals: dict[str, asyncio.Future[tuple[bool, bool]]] = {}
 
-        # Create compute client for remote operations if workspace_id is provided
+        # Compute client is lazily initialized on first use
+        # This allows async database lookup of the compute service URL
         self._compute_client: ComputeClient | None = None
-        if workspace_id and user_id:
-            from src.compute_client import get_compute_client
+        self._compute_client_initialized = False
 
-            self._compute_client = get_compute_client(
-                workspace_id=workspace_id,
-                user_id=user_id,
-            )
-            logger.info(
-                "ToolExecutor using remote workspace",
-                workspace_id=workspace_id,
-                user_id=user_id,
-            )
-        else:
+        if not workspace_id or not user_id:
             # Local mode - ensure workspace exists
             self.workspace_path.mkdir(parents=True, exist_ok=True)
             logger.info(
                 "ToolExecutor using local workspace",
                 workspace_path=str(self.workspace_path),
             )
+
+    async def _get_compute_client(self) -> ComputeClient | None:
+        """Get the compute client, initializing it lazily if needed.
+
+        The compute service URL is looked up from the database based on the
+        workspace's assigned server, enabling multi-region deployments.
+
+        Returns:
+            ComputeClient instance if workspace_id and user_id are set, None otherwise.
+
+        Raises:
+            ComputeServiceURLNotFoundError: If compute URL cannot be resolved from database.
+        """
+        if self._compute_client_initialized:
+            return self._compute_client
+
+        if self.workspace_id and self.user_id:
+            from src.compute_client import ComputeServiceURLNotFoundError, get_compute_client
+
+            try:
+                self._compute_client = await get_compute_client(
+                    workspace_id=self.workspace_id,
+                    user_id=self.user_id,
+                )
+                logger.info(
+                    "ToolExecutor initialized remote workspace client",
+                    workspace_id=self.workspace_id,
+                    user_id=self.user_id,
+                )
+            except ComputeServiceURLNotFoundError as e:
+                logger.error(
+                    "Failed to resolve compute service URL",
+                    workspace_id=self.workspace_id,
+                    error=str(e),
+                )
+                raise
+
+        self._compute_client_initialized = True
+        return self._compute_client
 
     async def execute(
         self,
@@ -242,16 +301,16 @@ class ToolExecutor:
             "Executing tool",
             tool=tool_name,
             workspace=str(self.workspace_path),
-            mode=self.agent_mode.value,
+            mode=self.agent_mode,
         )
 
         # Check permissions based on agent mode
-        permission = self._check_permission(tool_name, arguments)
+        permission = await self._check_permission(tool_name, arguments)
         if not permission.allowed:
             logger.warning(
                 "Tool blocked by mode permissions",
                 tool=tool_name,
-                mode=self.agent_mode.value,
+                mode=self.agent_mode,
                 error=permission.error,
             )
             return json.dumps(
@@ -278,7 +337,8 @@ class ToolExecutor:
                     indent=2,
                 )
             # If user chose to add to allowlist, update it
-            if add_to_allowlist and tool_name in COMMAND_TOOLS:
+            command_tools = await _get_command_tools()
+            if add_to_allowlist and tool_name in command_tools:
                 command = arguments.get("command", "")
                 if command and command not in self.command_allowlist:
                     self.command_allowlist.append(command)
@@ -296,7 +356,7 @@ class ToolExecutor:
 
         return json.dumps(result, indent=2)
 
-    def _check_permission(
+    async def _check_permission(
         self,
         tool_name: str,
         arguments: dict[str, Any],
@@ -310,13 +370,14 @@ class ToolExecutor:
         Returns:
             PermissionResult indicating if action is allowed.
         """
-        # SECURITY: Deploy tools should also be subject to mode restrictions
-        # as they can execute arbitrary shell commands
-        DEPLOY_TOOLS = {"deploy_preview", "run_e2e_tests"}
+        # Load tool categories from Redis
+        write_tools = await _get_write_tools()
+        command_tools = await _get_command_tools()
+        deploy_tools = await _get_deploy_tools()
 
         # Plan mode: only read tools allowed
-        if self.agent_mode == AgentMode.PLAN:
-            if tool_name in WRITE_TOOLS or tool_name in COMMAND_TOOLS or tool_name in DEPLOY_TOOLS:
+        if self.agent_mode == AGENT_MODE_PLAN:
+            if tool_name in write_tools or tool_name in command_tools or tool_name in deploy_tools:
                 return PermissionResult(
                     allowed=False,
                     error=f"Tool '{tool_name}' not allowed in Plan mode (read-only)",
@@ -324,18 +385,18 @@ class ToolExecutor:
             return PermissionResult(allowed=True)
 
         # Ask mode: everything needs approval for writes/commands/deploys
-        if self.agent_mode == AgentMode.ASK:
-            if tool_name in WRITE_TOOLS or tool_name in COMMAND_TOOLS or tool_name in DEPLOY_TOOLS:
+        if self.agent_mode == AGENT_MODE_ASK:
+            if tool_name in write_tools or tool_name in command_tools or tool_name in deploy_tools:
                 return PermissionResult(
                     allowed=True,
                     requires_approval=True,
-                    can_add_to_allowlist=tool_name in COMMAND_TOOLS,
+                    can_add_to_allowlist=tool_name in command_tools,
                 )
             return PermissionResult(allowed=True)
 
         # Auto mode: writes allowed, commands need allowlist or approval, deploys need approval
-        if self.agent_mode == AgentMode.AUTO:
-            if tool_name in COMMAND_TOOLS:
+        if self.agent_mode == AGENT_MODE_AUTO:
+            if tool_name in command_tools:
                 command = arguments.get("command", "")
                 if self._is_command_allowed(command):
                     return PermissionResult(allowed=True)
@@ -346,7 +407,7 @@ class ToolExecutor:
                     can_add_to_allowlist=True,
                 )
             # Deploy tools always need approval in Auto mode (they execute shell commands)
-            if tool_name in DEPLOY_TOOLS:
+            if tool_name in deploy_tools:
                 return PermissionResult(
                     allowed=True,
                     requires_approval=True,
@@ -355,7 +416,7 @@ class ToolExecutor:
             return PermissionResult(allowed=True)
 
         # Sovereign mode: everything allowed
-        if self.agent_mode == AgentMode.SOVEREIGN:
+        if self.agent_mode == AGENT_MODE_SOVEREIGN:
             return PermissionResult(allowed=True)
 
         # Default: allow (ERA001 false positive)
@@ -446,6 +507,10 @@ class ToolExecutor:
     ) -> tuple[bool, bool]:
         """Request user approval for an action.
 
+        Uses Redis pub/sub via ApprovalListener for distributed approval resolution.
+        This enables horizontal scaling of agent services - any instance can receive
+        the approval response, not just the one that requested it.
+
         Args:
             tool_name: Name of the tool requesting approval.
             arguments: Tool arguments.
@@ -460,20 +525,38 @@ class ToolExecutor:
 
         import uuid
 
-        approval_id = str(uuid.uuid4())
-        future: asyncio.Future[tuple[bool, bool]] = asyncio.Future()
-        self._pending_approvals[approval_id] = future
+        from src.queue.approval_listener import get_approval_listener
 
-        # Determine action type
-        if tool_name in WRITE_TOOLS:
+        approval_id = str(uuid.uuid4())
+
+        # Determine action type (load tool categories from config)
+        write_tools = await _get_write_tools()
+        command_tools = await _get_command_tools()
+        if tool_name in write_tools:
             action_type = "file_write"
-        elif tool_name in COMMAND_TOOLS:
+        elif tool_name in command_tools:
             action_type = "command_execute"
         else:
             action_type = "other"
 
+        # Get the approval listener for distributed approval handling
+        approval_listener = get_approval_listener()
+
         try:
-            # Send approval request via callback
+            # Register approval with listener (for Redis pub/sub resolution)
+            # or fall back to local Future if listener not available (e.g., in tests)
+            if approval_listener:
+                future = await approval_listener.register_approval(approval_id)
+            else:
+                # Fallback for testing or when listener isn't initialized
+                future = asyncio.Future()
+                self._pending_approvals[approval_id] = future
+                logger.debug(
+                    "Approval listener not available, using local Future",
+                    approval_id=approval_id,
+                )
+
+            # Send approval request via callback (notifies API → frontend via WebSocket)
             await self.approval_callback(
                 {
                     "approval_id": approval_id,
@@ -487,6 +570,9 @@ class ToolExecutor:
             )
 
             # Wait for approval with timeout (5 minutes)
+            # The Future will be resolved by:
+            # - ApprovalListener receiving Redis pub/sub message, OR
+            # - Local resolve_approval() call (fallback/testing)
             result = await asyncio.wait_for(future, timeout=300)
             return result
         except TimeoutError:
@@ -496,7 +582,11 @@ class ToolExecutor:
             logger.error("Approval request failed", error=str(e))
             return (False, False)
         finally:
-            self._pending_approvals.pop(approval_id, None)
+            # Cleanup: unregister from listener or remove from local dict
+            if approval_listener:
+                await approval_listener.unregister_approval(approval_id)
+            else:
+                self._pending_approvals.pop(approval_id, None)
 
     def resolve_approval(
         self,
@@ -504,7 +594,11 @@ class ToolExecutor:
         approved: bool,
         add_to_allowlist: bool = False,
     ) -> bool:
-        """Resolve a pending approval request.
+        """Resolve a pending approval request (fallback/testing only).
+
+        NOTE: In production, approvals are resolved via Redis pub/sub through
+        the ApprovalListener. This method is kept for backward compatibility
+        and testing scenarios where the listener isn't available.
 
         Args:
             approval_id: The approval request ID.
@@ -550,19 +644,18 @@ class ToolExecutor:
             "grep": self._handle_file_tools,
             "apply_patch": self._handle_file_tools,
             "file_fetch_url": self._handle_file_tools,
-            # Task and agent builder tools
-            "create_task": self._handle_task_tools,
+            # Agent builder tools
             "create_agent_template": self._handle_agent_builder_tools,
             "list_available_tools": self._handle_agent_builder_tools,
             "preview_agent_template": self._handle_agent_builder_tools,
-            # Orchestrator tools
+            # Orchestrator and subagent delegation tools
             "create_execution_plan": self._handle_orchestrator_tools,
             "delegate_task": self._handle_orchestrator_tools,
             "create_custom_agent": self._handle_orchestrator_tools,
             "delegate_to_custom_agent": self._handle_orchestrator_tools,
-            "get_task_status": self._handle_orchestrator_tools,
-            "wait_for_tasks": self._handle_orchestrator_tools,
-            "get_all_pending_tasks": self._handle_orchestrator_tools,
+            "get_subagent_status": self._handle_orchestrator_tools,
+            "wait_for_subagents": self._handle_orchestrator_tools,
+            "get_active_subagents": self._handle_orchestrator_tools,
             "synthesize_results": self._handle_orchestrator_tools,
             # Git tools
             "git_status": self._handle_git_tools,
@@ -629,7 +722,8 @@ class ToolExecutor:
         All file operations execute on the workspace container via the compute service.
         Requires workspace_id to be configured.
         """
-        if not self._compute_client:
+        compute_client = await self._get_compute_client()
+        if not compute_client:
             return {
                 "success": False,
                 "error": "Workspace not configured. File operations require a workspace container. "
@@ -639,7 +733,7 @@ class ToolExecutor:
         if tool_name == "read_file":
             start_time = time.perf_counter()
             result = await remote_tools.read_file(
-                client=self._compute_client,
+                client=compute_client,
                 path=arguments.get("path", ""),
             )
             duration_ms = (time.perf_counter() - start_time) * 1000
@@ -650,7 +744,7 @@ class ToolExecutor:
             content = arguments.get("content", "")
             start_time = time.perf_counter()
             result = await remote_tools.write_file(
-                client=self._compute_client,
+                client=compute_client,
                 path=arguments.get("path", ""),
                 content=content,
             )
@@ -659,32 +753,32 @@ class ToolExecutor:
             return result
         if tool_name == "list_directory":
             return await remote_tools.list_directory(
-                client=self._compute_client,
+                client=compute_client,
                 path=arguments.get("path", "."),
             )
         if tool_name == "search_code":
             return await remote_tools.search_code(
-                client=self._compute_client,
+                client=compute_client,
                 query=arguments.get("query", ""),
                 file_pattern=arguments.get("file_pattern"),
             )
         if tool_name == "run_command":
             return await remote_tools.run_command(
-                client=self._compute_client,
+                client=compute_client,
                 command=arguments.get("command", ""),
                 cwd=arguments.get("cwd"),
                 timeout=arguments.get("timeout", 60),
             )
         if tool_name == "glob_files":
             return await remote_tools.glob_files(
-                client=self._compute_client,
+                client=compute_client,
                 pattern=arguments.get("pattern", ""),
                 path=arguments.get("path", "."),
                 include_hidden=arguments.get("include_hidden", False),
             )
         if tool_name == "grep":
             return await remote_tools.grep(
-                client=self._compute_client,
+                client=compute_client,
                 pattern=arguments.get("pattern", ""),
                 path=arguments.get("path", "."),
                 file_pattern=arguments.get("file_pattern"),
@@ -695,7 +789,7 @@ class ToolExecutor:
             patch = arguments.get("patch", "")
             start_time = time.perf_counter()
             result = await remote_tools.apply_patch(
-                client=self._compute_client,
+                client=compute_client,
                 path=arguments.get("path", ""),
                 patch=patch,
                 reverse=arguments.get("reverse", False),
@@ -711,22 +805,6 @@ class ToolExecutor:
                 max_length=arguments.get("max_length", 50000),
             )
         return {"success": False, "error": f"Unknown file tool: {tool_name}"}
-
-    async def _handle_task_tools(
-        self,
-        tool_name: str,
-        arguments: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Handle task tools."""
-        if tool_name == "create_task":
-            config = TaskConfig(
-                session_id=self.session_id,
-                agent_role=arguments.get("agent_role", "coder"),
-                description=arguments.get("description", ""),
-                priority=arguments.get("priority", "medium"),
-            )
-            return await create_task(config)
-        return {"success": False, "error": f"Unknown task tool: {tool_name}"}
 
     async def _handle_agent_builder_tools(
         self,
@@ -785,21 +863,22 @@ class ToolExecutor:
         tool_name: str,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
-        """Handle orchestrator tools using dispatch table."""
+        """Handle orchestrator and subagent delegation tools using dispatch table."""
         handlers: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {
             "create_execution_plan": lambda: create_execution_plan(
                 session_id=self.session_id,
                 agent_id=arguments.get("agent_id", "orchestrator"),
                 task_description=arguments.get("task_description", ""),
                 context=arguments.get("context", ""),
-                agent_mode=self.agent_mode.value,
+                agent_mode=self.agent_mode,
             ),
             "delegate_task": lambda: delegate_task(
                 session_id=self.session_id,
+                parent_agent_id=self.agent_id or "unknown",
                 agent_role=arguments.get("agent_role", "coder"),
                 description=arguments.get("description", ""),
-                priority=arguments.get("priority", "medium"),
-                context=arguments.get("context"),
+                background=arguments.get("background", False),
+                system_prompt=arguments.get("system_prompt"),
             ),
             "create_custom_agent": lambda: create_custom_agent(
                 session_id=self.session_id,
@@ -813,16 +892,18 @@ class ToolExecutor:
                 agent_id=arguments.get("agent_id", ""),
                 message=arguments.get("message", ""),
             ),
-            "get_task_status": lambda: get_task_status(task_id=arguments.get("task_id", "")),
-            "wait_for_tasks": lambda: wait_for_tasks(
-                session_id=self.session_id,
-                task_ids=arguments.get("task_ids", []),
+            "get_subagent_status": lambda: get_subagent_status(
+                subagent_id=arguments.get("subagent_id", ""),
+            ),
+            "wait_for_subagents": lambda: wait_for_subagents(
+                subagent_ids=arguments.get("subagent_ids", []),
                 timeout_seconds=arguments.get("timeout_seconds", 300),
             ),
-            "get_all_pending_tasks": lambda: get_all_pending_tasks(session_id=self.session_id),
+            "get_active_subagents": lambda: get_active_subagents(
+                parent_agent_id=self.agent_id or "unknown",
+            ),
             "synthesize_results": lambda: synthesize_results(
-                session_id=self.session_id,
-                task_ids=arguments.get("task_ids", []),
+                subagent_ids=arguments.get("subagent_ids", []),
                 synthesis_instructions=arguments.get("synthesis_instructions", ""),
             ),
         }
@@ -842,7 +923,8 @@ class ToolExecutor:
         All git operations execute on the workspace container via the compute service.
         Requires workspace_id to be configured.
         """
-        if not self._compute_client:
+        compute_client = await self._get_compute_client()
+        if not compute_client:
             return {
                 "success": False,
                 "error": "Workspace not configured. Git operations require a workspace container. "
@@ -850,17 +932,17 @@ class ToolExecutor:
             }
 
         if tool_name == "git_status":
-            return await remote_tools.git_status(client=self._compute_client)
+            return await remote_tools.git_status(client=compute_client)
         if tool_name == "git_commit":
             return await remote_tools.git_commit(
-                client=self._compute_client,
+                client=compute_client,
                 message=arguments.get("message", ""),
                 files=arguments.get("files"),
                 all_changes=arguments.get("all_changes", False),
             )
         if tool_name == "git_push":
             return await remote_tools.git_push(
-                client=self._compute_client,
+                client=compute_client,
                 remote=arguments.get("remote", "origin"),
                 branch=arguments.get("branch"),
                 force=arguments.get("force", False),
@@ -868,25 +950,25 @@ class ToolExecutor:
             )
         if tool_name == "git_branch":
             return await remote_tools.git_branch(
-                client=self._compute_client,
+                client=compute_client,
                 action=arguments.get("action", "list"),
                 name=arguments.get("name"),
             )
         if tool_name == "git_diff":
             return await remote_tools.git_diff(
-                client=self._compute_client,
+                client=compute_client,
                 staged=arguments.get("staged", False),
                 file=arguments.get("file"),
             )
         if tool_name == "git_log":
             return await remote_tools.git_log(
-                client=self._compute_client,
+                client=compute_client,
                 limit=arguments.get("limit", 10),
                 oneline=arguments.get("oneline", True),
             )
         if tool_name == "create_pr":
             return await remote_tools.create_pr(
-                client=self._compute_client,
+                client=compute_client,
                 title=arguments.get("title", ""),
                 body=arguments.get("body", ""),
                 base=arguments.get("base", "main"),

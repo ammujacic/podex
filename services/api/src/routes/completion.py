@@ -11,19 +11,128 @@ from anthropic import AsyncAnthropic
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.database import get_db
-from src.database.models import UsageRecord
+from src.database.models import Organization, OrganizationMember, UsageRecord
 from src.middleware.auth import get_current_user
 from src.middleware.rate_limit import RATE_LIMIT_AGENT, limiter
+from src.services.org_limits import (
+    LimitExceededError,
+    ModelAccessDeniedError,
+    OrgLimitsService,
+)
 
 logger = structlog.get_logger()
 router = APIRouter()
 
 # Minimum number of lines needed to strip markdown code block (opening, content, closing)
 MIN_CODE_BLOCK_LINES = 2
+
+# Estimated cost per 1000 tokens (in cents) - used for limit checking
+# These are rough estimates; actual costs vary by model
+ESTIMATED_COST_PER_1K_INPUT_TOKENS_CENTS = 1
+ESTIMATED_COST_PER_1K_OUTPUT_TOKENS_CENTS = 3
+
+
+async def _get_org_context(
+    db: AsyncSession,
+    user_id: str,
+) -> tuple[Organization | None, OrganizationMember | None]:
+    """Get user's organization context if they are an org member.
+
+    Returns (org, member) tuple, or (None, None) if user is not in an org.
+    """
+    result = await db.execute(
+        select(OrganizationMember, Organization)
+        .join(Organization, OrganizationMember.organization_id == Organization.id)
+        .where(OrganizationMember.user_id == user_id)
+    )
+    row = result.one_or_none()
+    if row:
+        return row[1], row[0]  # (org, member)
+    return None, None
+
+
+async def _check_org_limits_before_completion(
+    db: AsyncSession,
+    user_id: str,
+    model: str | None,
+    estimated_tokens: int = 500,
+) -> tuple[Organization | None, OrganizationMember | None]:
+    """Check org limits before making an LLM completion.
+
+    Args:
+        db: Database session
+        user_id: User ID
+        model: Model identifier to check access
+        estimated_tokens: Estimated total tokens for cost calculation
+
+    Returns:
+        (org, member) tuple if user is in org, (None, None) otherwise
+
+    Raises:
+        HTTPException: If limits are exceeded or model access denied
+    """
+    org, member = await _get_org_context(db, user_id)
+
+    if not org or not member:
+        # Not in an org, personal billing applies
+        return None, None
+
+    limits_service = OrgLimitsService(db)
+
+    # Estimate cost for limit check
+    estimated_cost_cents = (estimated_tokens * ESTIMATED_COST_PER_1K_OUTPUT_TOKENS_CENTS) // 1000
+
+    try:
+        # Check spending limit
+        await limits_service.check_spending_limit(member, org, estimated_cost_cents)
+
+        # Check model access if model specified
+        if model:
+            # Extract model name without provider prefix for access check
+            model_name = model.split(":", 1)[-1] if ":" in model else model
+            await limits_service.check_model_access(member, org, model_name)
+
+    except LimitExceededError as e:
+        logger.warning(
+            "Org limit exceeded for completion",
+            user_id=user_id,
+            org_id=org.id,
+            error=str(e),
+        )
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error_code": "limit_exceeded",
+                "message": e.message,
+                "limit_type": e.limit_type,
+                "current": e.current,
+                "limit": e.limit,
+            },
+        ) from e
+    except ModelAccessDeniedError as e:
+        logger.warning(
+            "Model access denied",
+            user_id=user_id,
+            org_id=org.id,
+            model=e.model,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error_code": "model_access_denied",
+                "message": str(e),
+                "model": e.model,
+                "allowed_models": e.allowed_models,
+            },
+        ) from e
+
+    return org, member
+
 
 # Providers with implementation in this module (client code exists for these).
 # Note: This is a code-level constraint, not configuration. Adding support for
@@ -38,68 +147,119 @@ async def _record_editor_usage(
     user_id: str,
     result: "CompletionResult",
     usage_type: str = "editor_completion",
+    org: Organization | None = None,
+    member: OrganizationMember | None = None,
 ) -> None:
     """Record token usage from editor AI completions.
+
+    Routes usage to organization billing if user is an org member,
+    otherwise records to personal usage.
 
     Args:
         db: Database session
         user_id: User ID
         result: CompletionResult with usage data
         usage_type: Type of usage (editor_completion, editor_explain, editor_bugs)
+        org: Organization if user is org member
+        member: OrganizationMember if user is org member
     """
     if result.input_tokens == 0 and result.output_tokens == 0:
         return  # No usage to record
 
     try:
-        # Create usage records for input and output tokens
-        # Cost is 0 for non-vertex providers (external/local)
+        # Calculate actual cost for billable usage
         is_billable = result.usage_source == "included"
-
-        if result.input_tokens > 0:
-            input_record = UsageRecord(
-                id=str(uuid4()),
-                idempotency_key=f"editor:{user_id}:{uuid4()}:input",
-                user_id=user_id,
-                usage_type=f"{usage_type}_input",
-                quantity=result.input_tokens,
-                unit="tokens",
-                unit_price_cents=0,
-                base_cost_cents=0 if not is_billable else 1,  # Minimal cost for tracking
-                total_cost_cents=0 if not is_billable else 1,
-                model=result.model,
-                usage_source=result.usage_source,
-                is_overage=False,
-            )
-            db.add(input_record)
-
-        if result.output_tokens > 0:
-            output_record = UsageRecord(
-                id=str(uuid4()),
-                idempotency_key=f"editor:{user_id}:{uuid4()}:output",
-                user_id=user_id,
-                usage_type=f"{usage_type}_output",
-                quantity=result.output_tokens,
-                unit="tokens",
-                unit_price_cents=0,
-                base_cost_cents=0 if not is_billable else 1,
-                total_cost_cents=0 if not is_billable else 1,
-                model=result.model,
-                usage_source=result.usage_source,
-                is_overage=False,
-            )
-            db.add(output_record)
-
-        await db.commit()
-
-        logger.debug(
-            "Recorded editor AI usage",
-            user_id=user_id,
-            usage_type=usage_type,
-            input_tokens=result.input_tokens,
-            output_tokens=result.output_tokens,
-            model=result.model,
-            usage_source=result.usage_source,
+        input_cost_cents = (
+            (result.input_tokens * ESTIMATED_COST_PER_1K_INPUT_TOKENS_CENTS) // 1000
+            if is_billable
+            else 0
         )
+        output_cost_cents = (
+            (result.output_tokens * ESTIMATED_COST_PER_1K_OUTPUT_TOKENS_CENTS) // 1000
+            if is_billable
+            else 0
+        )
+        total_cost_cents = input_cost_cents + output_cost_cents
+
+        # If user is in an org, record to org billing
+        if org and member:
+            limits_service = OrgLimitsService(db)
+
+            # Record combined usage (input + output tokens)
+            total_tokens = result.input_tokens + result.output_tokens
+            await limits_service.record_usage_and_deduct(
+                member=member,
+                org=org,
+                cost_cents=total_cost_cents,
+                usage_type=f"{usage_type}_tokens",
+                quantity=total_tokens,
+                unit="tokens",
+                model=result.model,
+                metadata={
+                    "input_tokens": result.input_tokens,
+                    "output_tokens": result.output_tokens,
+                    "provider": result.provider,
+                    "usage_source": result.usage_source,
+                },
+            )
+
+            logger.debug(
+                "Recorded editor AI usage to organization",
+                user_id=user_id,
+                org_id=org.id,
+                usage_type=usage_type,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                cost_cents=total_cost_cents,
+                model=result.model,
+            )
+        else:
+            # Personal billing - record to UsageRecord table
+            if result.input_tokens > 0:
+                input_record = UsageRecord(
+                    id=str(uuid4()),
+                    idempotency_key=f"editor:{user_id}:{uuid4()}:input",
+                    user_id=user_id,
+                    usage_type=f"{usage_type}_input",
+                    quantity=result.input_tokens,
+                    unit="tokens",
+                    unit_price_cents=0,
+                    base_cost_cents=input_cost_cents,
+                    total_cost_cents=input_cost_cents,
+                    model=result.model,
+                    usage_source=result.usage_source,
+                    is_overage=False,
+                )
+                db.add(input_record)
+
+            if result.output_tokens > 0:
+                output_record = UsageRecord(
+                    id=str(uuid4()),
+                    idempotency_key=f"editor:{user_id}:{uuid4()}:output",
+                    user_id=user_id,
+                    usage_type=f"{usage_type}_output",
+                    quantity=result.output_tokens,
+                    unit="tokens",
+                    unit_price_cents=0,
+                    base_cost_cents=output_cost_cents,
+                    total_cost_cents=output_cost_cents,
+                    model=result.model,
+                    usage_source=result.usage_source,
+                    is_overage=False,
+                )
+                db.add(output_record)
+
+            await db.commit()
+
+            logger.debug(
+                "Recorded editor AI usage to personal billing",
+                user_id=user_id,
+                usage_type=usage_type,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                model=result.model,
+                usage_source=result.usage_source,
+            )
     except Exception:
         logger.exception("Failed to record editor AI usage")
         await db.rollback()
@@ -562,6 +722,13 @@ async def get_inline_completion(
         user_id=user_id,
     )
 
+    # Check org limits before making LLM call
+    org, member = None, None
+    if user_id:
+        org, member = await _check_org_limits_before_completion(
+            db, user_id, body.model, estimated_tokens=body.max_tokens
+        )
+
     # Build the prompt
     prompt = f"""Complete the following {body.language} code. Return ONLY the completion.
 
@@ -587,9 +754,11 @@ async def get_inline_completion(
             model_id=body.model,
         )
 
-        # Track usage (async, non-blocking)
+        # Track usage - routes to org or personal based on membership
         if user_id:
-            await _record_editor_usage(db, user_id, result, "editor_completion")
+            await _record_editor_usage(
+                db, user_id, result, "editor_completion", org=org, member=member
+            )
 
         # Clean up the completion
         completion = result.text
@@ -605,6 +774,7 @@ async def get_inline_completion(
             provider=result.provider,
             model=result.model,
             usage_source=result.usage_source,
+            org_id=org.id if org else None,
         )
 
         return InlineCompletionResponse(
@@ -613,6 +783,8 @@ async def get_inline_completion(
             cached=False,
         )
 
+    except HTTPException:
+        raise  # Re-raise limit/access errors as-is
     except Exception as e:
         logger.exception("Completion error", error=str(e))
         raise HTTPException(status_code=500, detail="Failed to generate completion") from e
@@ -642,6 +814,13 @@ async def explain_code(
         user_id=user_id,
     )
 
+    # Check org limits before making LLM call
+    org, member = None, None
+    if user_id:
+        org, member = await _check_org_limits_before_completion(
+            db, user_id, body.model, estimated_tokens=1024
+        )
+
     detail_instruction = {
         "brief": "Keep the explanation short, 2-3 sentences maximum.",
         "detailed": "Provide a thorough explanation with examples where helpful.",
@@ -670,9 +849,11 @@ CONCEPTS: [Comma-separated list of key concepts]"""
             model_id=body.model,
         )
 
-        # Track usage
+        # Track usage - routes to org or personal based on membership
         if user_id:
-            await _record_editor_usage(db, user_id, result, "editor_explain")
+            await _record_editor_usage(
+                db, user_id, result, "editor_explain", org=org, member=member
+            )
 
         # Parse the response
         text = result.text
@@ -705,6 +886,8 @@ CONCEPTS: [Comma-separated list of key concepts]"""
             concepts=concepts,
         )
 
+    except HTTPException:
+        raise  # Re-raise limit/access errors as-is
     except Exception as e:
         logger.exception("Explanation error", error=str(e))
         raise HTTPException(status_code=500, detail="Failed to explain code") from e
@@ -734,6 +917,13 @@ async def detect_bugs(
         code_length=len(body.code),
         user_id=user_id,
     )
+
+    # Check org limits before making LLM call
+    org, member = None, None
+    if user_id:
+        org, member = await _check_org_limits_before_completion(
+            db, user_id, body.model, estimated_tokens=1024
+        )
 
     # Add line numbers to help the model reference specific lines
     numbered_code = "\n".join(f"{i + 1}: {line}" for i, line in enumerate(body.code.split("\n")))
@@ -765,9 +955,9 @@ Return ONLY valid JSON, no other text. If no issues found, return: []"""
             model_id=body.model,
         )
 
-        # Track usage
+        # Track usage - routes to org or personal based on membership
         if user_id:
-            await _record_editor_usage(db, user_id, result, "editor_bugs")
+            await _record_editor_usage(db, user_id, result, "editor_bugs", org=org, member=member)
 
         text = result.text
 
@@ -808,6 +998,8 @@ Return ONLY valid JSON, no other text. If no issues found, return: []"""
             analysis_time_ms=analysis_time_ms,
         )
 
+    except HTTPException:
+        raise  # Re-raise limit/access errors as-is
     except Exception as e:
         logger.exception("Bug detection error", error=str(e))
         raise HTTPException(status_code=500, detail="Failed to analyze code") from e

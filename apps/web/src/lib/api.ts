@@ -136,15 +136,42 @@ export const api = new PodexApiClient({
 export const requestCache = api.getCache();
 
 // Auth actions that update the store
-export async function login(email: string, password: string): Promise<User> {
+// Returns either the User or an MFA required response
+export type LoginResult = User | { mfa_required: true; email: string; password: string };
+
+export async function login(email: string, password: string): Promise<LoginResult> {
   const store = useAuthStore.getState();
   store.setLoading(true);
   store.clearError();
 
   try {
-    const { user, tokens } = await api.login({ email, password });
+    // Use raw API call to handle MFA response
+    const response = await api.post<
+      | { user: User; access_token?: string; refresh_token?: string; expires_in: number }
+      | MFARequiredResponse
+    >('/api/auth/login', { email, password }, false);
+
+    // Check if MFA is required
+    if ('mfa_required' in response && response.mfa_required) {
+      return { mfa_required: true, email, password };
+    }
+
+    // At this point, response is the login success type
+    const loginResponse = response as {
+      user: User;
+      access_token?: string;
+      refresh_token?: string;
+      expires_in: number;
+    };
+    const { user, access_token, refresh_token, expires_in } = loginResponse;
     store.setUser(user);
-    store.setTokens(tokens);
+    if (access_token && refresh_token) {
+      store.setTokens({
+        accessToken: access_token,
+        refreshToken: refresh_token,
+        expiresAt: calculateExpiry(expires_in),
+      });
+    }
     return user;
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Login failed';
@@ -207,6 +234,107 @@ export async function resetPassword(
     { token, new_password: newPassword },
     false
   );
+}
+
+// ==================== MFA (Two-Factor Authentication) API ====================
+
+export interface MFAStatusResponse {
+  enabled: boolean;
+  backup_codes_remaining: number;
+}
+
+export interface MFASetupResponse {
+  secret: string;
+  qr_code_base64: string;
+  provisioning_uri: string;
+  backup_codes: string[];
+}
+
+export interface MFABackupCodesResponse {
+  backup_codes: string[];
+}
+
+export interface MFARequiredResponse {
+  mfa_required: true;
+  message: string;
+}
+
+/**
+ * Get MFA status for the current user.
+ */
+export async function getMFAStatus(): Promise<MFAStatusResponse> {
+  return api.get<MFAStatusResponse>('/api/mfa/status');
+}
+
+/**
+ * Initialize MFA setup. Returns QR code and backup codes.
+ * The user must verify with a TOTP code to complete setup.
+ */
+export async function setupMFA(): Promise<MFASetupResponse> {
+  return api.post<MFASetupResponse>('/api/mfa/setup', {});
+}
+
+/**
+ * Verify MFA setup with a TOTP code to complete enrollment.
+ */
+export async function verifyMFASetup(code: string): Promise<{ message: string }> {
+  return api.post<{ message: string }>('/api/mfa/verify-setup', { code });
+}
+
+/**
+ * Disable MFA. Requires both MFA code and password.
+ */
+export async function disableMFA(code: string, password: string): Promise<{ message: string }> {
+  return api.post<{ message: string }>('/api/mfa/disable', { code, password });
+}
+
+/**
+ * Regenerate backup codes. Requires a valid TOTP code.
+ * This invalidates all existing backup codes.
+ */
+export async function regenerateBackupCodes(code: string): Promise<MFABackupCodesResponse> {
+  return api.post<MFABackupCodesResponse>('/api/mfa/regenerate-backup-codes', { code });
+}
+
+/**
+ * Login with MFA code. Used when initial login returns mfa_required.
+ */
+export async function loginWithMFA(
+  email: string,
+  password: string,
+  mfaCode: string
+): Promise<User> {
+  const store = useAuthStore.getState();
+  store.setLoading(true);
+  store.clearError();
+
+  try {
+    const response = await api.post<
+      | { user: User; access_token?: string; refresh_token?: string; expires_in: number }
+      | MFARequiredResponse
+    >('/api/auth/login', { email, password, mfa_code: mfaCode }, false);
+
+    if ('mfa_required' in response) {
+      throw new Error('Invalid MFA code');
+    }
+
+    const { user, access_token, refresh_token, expires_in } = response;
+    store.setUser(user);
+    if (access_token && refresh_token) {
+      store.setTokens({
+        accessToken: access_token,
+        refreshToken: refresh_token,
+        expiresAt: calculateExpiry(expires_in),
+      });
+    }
+    return user;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Login failed';
+    store.setError(message);
+    throw error;
+  } finally {
+    store.setLoading(false);
+  }
 }
 
 // ==================== Invitation API ====================
@@ -928,18 +1056,7 @@ export async function getLLMProviders(): Promise<LLMProviderResponse[]> {
 // Agent types
 export interface AgentCreateRequest {
   name: string;
-  role:
-    | 'architect'
-    | 'coder'
-    | 'reviewer'
-    | 'tester'
-    | 'agent_builder'
-    | 'orchestrator'
-    | 'chat'
-    | 'security'
-    | 'devops'
-    | 'documentator'
-    | 'custom';
+  role: string; // Dynamic roles from backend - validated server-side
   model?: string; // Optional - uses role default from platform settings if not provided
   config?: Record<string, unknown>;
   template_id?: string; // Reference to custom agent template
@@ -2476,8 +2593,20 @@ export interface UpdateAgentTemplateRequest {
   config?: Record<string, unknown>;
 }
 
+export interface ToolInfo {
+  name: string;
+  description: string;
+  category: string;
+  // Permission flags for mode-based access control
+  is_read_operation?: boolean;
+  is_write_operation?: boolean;
+  is_command_operation?: boolean;
+  is_deploy_operation?: boolean;
+}
+
 export interface AvailableToolsResponse {
   tools: Record<string, string>;
+  tools_by_category: Record<string, ToolInfo[]>;
 }
 
 export async function listAgentTemplates(): Promise<AgentTemplate[]> {

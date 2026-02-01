@@ -644,4 +644,62 @@ DEFAULT_SETTINGS = [
         "category": "oauth",
         "is_public": False,
     },
+    # ===================
+    # SESSION DEFAULTS
+    # ===================
+    {
+        "key": "session_defaults",
+        "value": {
+            "default_role": "chat",
+            "default_mode": "auto",
+            "model_fallback_role": "coder",
+        },
+        "description": "Default settings for new sessions (role, mode, fallback role)",
+        "category": "agents",
+        "is_public": False,
+    },
+    # ===================
+    # SECURITY CONFIG
+    # ===================
+    {
+        "key": "forbidden_command_patterns",
+        "value": [
+            "*",  # Allow everything
+            "/*",  # Allow all absolute paths
+            "sudo *",  # Allow all sudo commands
+            "rm -rf *",  # Allow destructive deletions
+            "rm -rf /",  # Extremely dangerous
+            "rm -rf /*",  # Extremely dangerous
+            "> /dev/*",  # Writing to device files
+            "curl * | *",  # Arbitrary command execution
+            "wget * | *",  # Arbitrary command execution
+            "eval *",  # Arbitrary code execution
+            "exec *",  # Arbitrary code execution
+            "$(*))",  # Command substitution
+            "`*`",  # Command substitution
+        ],
+        "description": (
+            "Dangerous command patterns that should never be allowed in agent command_allowlist. "
+            "These patterns could compromise system security if added to an allowlist."
+        ),
+        "category": "security",
+        "is_public": False,
+    },
+    # ===================
+    # SPECIAL AGENT ROLES
+    # ===================
+    {
+        "key": "special_agent_roles",
+        "value": {
+            "agent_builder_role": "agent_builder",
+            "orchestrator_role": "orchestrator",
+            "non_delegatable_roles": ["orchestrator", "agent_builder", "chat"],
+        },
+        "description": (
+            "Special agent role identifiers used for system behavior. "
+            "agent_builder_role creates custom agents, orchestrator manages delegation."
+        ),
+        "category": "agents",
+        "is_public": False,
+    },
 ]

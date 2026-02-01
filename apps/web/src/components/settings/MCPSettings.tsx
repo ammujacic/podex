@@ -60,7 +60,6 @@ const SERVER_ICONS: Record<string, React.ReactNode> = {
   docker: <Container className="h-5 w-5" />,
   kubernetes: <Container className="h-5 w-5" />,
   sentry: <Bug className="h-5 w-5" />,
-  'podex-skills': <Zap className="h-5 w-5" />,
 };
 
 // Environment variable hints for better UX

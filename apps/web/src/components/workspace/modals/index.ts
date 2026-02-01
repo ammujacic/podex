@@ -6,7 +6,7 @@ export { WorkspaceScalingModal } from './WorkspaceScalingModal';
 export { ExtensionMarketplaceModal } from './ExtensionMarketplaceModal';
 export { NewPathModal } from './NewPathModal';
 
-// Constants and types
+// Constants and types - re-export from central location
 export {
   createCustomAgentOption,
   createAgentOptionFromRole,
@@ -15,4 +15,4 @@ export {
   type AgentOption,
   type AgentRole,
   type AgentStatus,
-} from './agentConstants';
+} from '@/lib/agentConstants';

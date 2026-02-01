@@ -102,40 +102,28 @@ class TestSubagentManager:
         assert manager is not None
 
 
-class TestQueueTaskQueue:
-    """Test task queue module."""
+class TestQueueModule:
+    """Test queue module has correct workers."""
 
-    def test_task_queue_module_exists(self):
-        """Test task queue module can be imported."""
-        from src.queue import task_queue
-        assert task_queue is not None
+    def test_agent_worker_module_exists(self):
+        """Test agent worker module can be imported."""
+        from src.queue import AgentTaskWorker
+        assert AgentTaskWorker is not None
 
-    def test_task_status_enum(self):
-        """Test TaskStatus enum."""
-        from src.queue.task_queue import TaskStatus
+    def test_subagent_worker_module_exists(self):
+        """Test subagent worker module can be imported."""
+        from src.queue import SubagentTaskWorker
+        assert SubagentTaskWorker is not None
 
-        assert TaskStatus.PENDING.value == "pending"
-        assert TaskStatus.RUNNING.value == "running"
-        assert TaskStatus.COMPLETED.value == "completed"
-        assert TaskStatus.FAILED.value == "failed"
-        assert TaskStatus.CANCELLED.value == "cancelled"
+    def test_compaction_worker_module_exists(self):
+        """Test compaction worker module can be imported."""
+        from src.queue import CompactionTaskWorker
+        assert CompactionTaskWorker is not None
 
-    def test_task_priority_enum(self):
-        """Test TaskPriority enum."""
-        from src.queue.task_queue import TaskPriority
-
-        assert TaskPriority.LOW.value == "low"
-        assert TaskPriority.MEDIUM.value == "medium"
-        assert TaskPriority.HIGH.value == "high"
-
-
-class TestQueueWorker:
-    """Test queue worker module."""
-
-    def test_worker_module_exists(self):
-        """Test worker module can be imported."""
-        from src.queue import worker
-        assert worker is not None
+    def test_approval_listener_module_exists(self):
+        """Test approval listener module can be imported."""
+        from src.queue import ApprovalListener
+        assert ApprovalListener is not None
 
 
 class TestProgressTracker:

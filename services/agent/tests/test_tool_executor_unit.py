@@ -12,6 +12,35 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.tools.executor import (
+    AGENT_MODE_PLAN,
+    AGENT_MODE_ASK,
+    AGENT_MODE_AUTO,
+    AGENT_MODE_SOVEREIGN,
+    ToolExecutor,
+    PermissionResult,
+)
+
+
+@pytest.fixture
+def mock_tool_categories():
+    """Mock tool categories for permission testing.
+
+    Tool categories are now loaded dynamically from Redis,
+    so we need to mock the async getter functions.
+    """
+    categories = {
+        "write_tools": {"write_file", "create_file", "delete_file", "apply_patch", "git_commit", "git_push", "create_pr"},
+        "command_tools": {"run_command"},
+        "read_tools": {"read_file", "list_directory", "search_code", "glob_files", "grep", "fetch_url", "git_status", "git_diff", "git_log", "git_branch"},
+        "deploy_tools": {"deploy_preview", "run_e2e_tests"},
+    }
+    with patch("src.tools.executor._get_write_tools", AsyncMock(return_value=categories["write_tools"])), \
+         patch("src.tools.executor._get_command_tools", AsyncMock(return_value=categories["command_tools"])), \
+         patch("src.tools.executor._get_read_tools", AsyncMock(return_value=categories["read_tools"])), \
+         patch("src.tools.executor._get_deploy_tools", AsyncMock(return_value=categories["deploy_tools"])):
+        yield categories
+
 
 class TestToolExecutorModule:
     """Test tool executor module."""
@@ -23,7 +52,6 @@ class TestToolExecutorModule:
 
     def test_tool_executor_class_exists(self):
         """Test ToolExecutor class exists."""
-        from src.tools.executor import ToolExecutor
         assert ToolExecutor is not None
 
 
@@ -32,8 +60,6 @@ class TestToolExecutorInit:
 
     def test_tool_executor_initialization(self):
         """Test ToolExecutor initialization."""
-        from src.tools.executor import ToolExecutor
-
         executor = ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
@@ -45,8 +71,6 @@ class TestToolExecutorInit:
 
     def test_tool_executor_with_workspace_id(self):
         """Test ToolExecutor with workspace ID."""
-        from src.tools.executor import ToolExecutor
-
         executor = ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
@@ -62,8 +86,6 @@ class TestToolExecutorMethods:
 
     def test_executor_has_mode_attribute(self):
         """Test ToolExecutor has agent_mode attribute."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
@@ -71,25 +93,21 @@ class TestToolExecutorMethods:
         )
 
         # Default mode should be ASK
-        assert executor.agent_mode == AgentMode.ASK
+        assert executor.agent_mode == AGENT_MODE_ASK
 
     def test_executor_with_custom_mode(self):
         """Test ToolExecutor with custom agent_mode."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
             agent_id="agent-456",
-            agent_mode=AgentMode.AUTO,
+            agent_mode=AGENT_MODE_AUTO,
         )
 
-        assert executor.agent_mode == AgentMode.AUTO
+        assert executor.agent_mode == AGENT_MODE_AUTO
 
     def test_is_command_allowed_method(self):
         """Test _is_command_allowed method exists."""
-        from src.tools.executor import ToolExecutor
-
         executor = ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
@@ -101,22 +119,29 @@ class TestToolExecutorMethods:
         assert callable(executor._is_command_allowed)
 
 
-class TestAgentModeModule:
-    """Test agent mode module."""
+class TestAgentModeConstants:
+    """Test agent mode constants."""
 
-    def test_agent_mode_exists(self):
-        """Test AgentMode enum exists."""
-        from src.tools.executor import AgentMode
-        assert AgentMode is not None
+    def test_agent_mode_constants_exist(self):
+        """Test agent mode constants exist."""
+        assert AGENT_MODE_PLAN is not None
+        assert AGENT_MODE_ASK is not None
+        assert AGENT_MODE_AUTO is not None
+        assert AGENT_MODE_SOVEREIGN is not None
 
     def test_agent_mode_values(self):
-        """Test AgentMode enum values."""
-        from src.tools.executor import AgentMode
+        """Test agent mode constant values."""
+        assert AGENT_MODE_ASK == "ask"
+        assert AGENT_MODE_AUTO == "auto"
+        assert AGENT_MODE_PLAN == "plan"
+        assert AGENT_MODE_SOVEREIGN == "sovereign"
 
-        assert AgentMode.ASK.value == "ask"
-        assert AgentMode.AUTO.value == "auto"
-        assert AgentMode.PLAN.value == "plan"
-        assert AgentMode.SOVEREIGN.value == "sovereign"
+    def test_all_agent_modes_are_strings(self):
+        """Test all agent modes are lowercase strings."""
+        modes = [AGENT_MODE_PLAN, AGENT_MODE_ASK, AGENT_MODE_AUTO, AGENT_MODE_SOVEREIGN]
+        for mode in modes:
+            assert isinstance(mode, str)
+            assert mode.islower()
 
 
 class TestIntentDetectorModule:
@@ -133,19 +158,6 @@ class TestIntentDetectorModule:
 
         detector = IntentDetector()
         assert detector is not None
-
-    def test_intended_mode_enum_exists(self):
-        """Test IntendedMode enum exists."""
-        from src.mode_detection.intent_detector import IntendedMode
-        assert IntendedMode is not None
-
-    def test_intended_mode_values(self):
-        """Test IntendedMode enum values."""
-        from src.mode_detection.intent_detector import IntendedMode
-
-        assert IntendedMode.ASK.value == "ask"
-        assert IntendedMode.AUTO.value == "auto"
-        assert IntendedMode.PLAN.value == "plan"
 
 
 class TestMCPToolRegistry:
@@ -226,8 +238,6 @@ class TestPermissionResult:
 
     def test_permission_result_allowed(self):
         """Test PermissionResult for allowed action."""
-        from src.tools.executor import PermissionResult
-
         result = PermissionResult(allowed=True)
         assert result.allowed is True
         assert result.error is None
@@ -236,16 +246,12 @@ class TestPermissionResult:
 
     def test_permission_result_denied(self):
         """Test PermissionResult for denied action."""
-        from src.tools.executor import PermissionResult
-
         result = PermissionResult(allowed=False, error="Action blocked")
         assert result.allowed is False
         assert result.error == "Action blocked"
 
     def test_permission_result_requires_approval(self):
         """Test PermissionResult requiring approval."""
-        from src.tools.executor import PermissionResult
-
         result = PermissionResult(
             allowed=True,
             requires_approval=True,
@@ -256,36 +262,36 @@ class TestPermissionResult:
         assert result.can_add_to_allowlist is True
 
 
-class TestToolCategories:
-    """Test tool category sets."""
+class TestToolCategoriesDynamic:
+    """Test tool categories are loaded dynamically from Redis."""
 
-    def test_write_tools_defined(self):
-        """Test WRITE_TOOLS is defined."""
-        from src.tools.executor import WRITE_TOOLS
+    @pytest.mark.asyncio
+    async def test_write_tools_loaded_dynamically(self, mock_tool_categories):
+        """Test WRITE_TOOLS are loaded via async getter."""
+        from src.tools.executor import _get_write_tools
 
-        assert "write_file" in WRITE_TOOLS
-        assert "create_file" in WRITE_TOOLS
-        assert "delete_file" in WRITE_TOOLS
-        assert "apply_patch" in WRITE_TOOLS
-        assert "git_commit" in WRITE_TOOLS
-        assert "git_push" in WRITE_TOOLS
+        write_tools = await _get_write_tools()
+        assert "write_file" in write_tools
+        assert "create_file" in write_tools
+        assert "delete_file" in write_tools
 
-    def test_command_tools_defined(self):
-        """Test COMMAND_TOOLS is defined."""
-        from src.tools.executor import COMMAND_TOOLS
+    @pytest.mark.asyncio
+    async def test_command_tools_loaded_dynamically(self, mock_tool_categories):
+        """Test COMMAND_TOOLS are loaded via async getter."""
+        from src.tools.executor import _get_command_tools
 
-        assert "run_command" in COMMAND_TOOLS
+        command_tools = await _get_command_tools()
+        assert "run_command" in command_tools
 
-    def test_read_tools_defined(self):
-        """Test READ_TOOLS is defined."""
-        from src.tools.executor import READ_TOOLS
+    @pytest.mark.asyncio
+    async def test_read_tools_loaded_dynamically(self, mock_tool_categories):
+        """Test READ_TOOLS are loaded via async getter."""
+        from src.tools.executor import _get_read_tools
 
-        assert "read_file" in READ_TOOLS
-        assert "list_directory" in READ_TOOLS
-        assert "search_code" in READ_TOOLS
-        assert "glob_files" in READ_TOOLS
-        assert "grep" in READ_TOOLS
-        assert "fetch_url" in READ_TOOLS
+        read_tools = await _get_read_tools()
+        assert "read_file" in read_tools
+        assert "list_directory" in read_tools
+        assert "search_code" in read_tools
 
 
 class TestCheckPermissionPlanMode:
@@ -294,35 +300,37 @@ class TestCheckPermissionPlanMode:
     @pytest.fixture
     def plan_executor(self):
         """Create executor in Plan mode."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         return ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
-            agent_mode=AgentMode.PLAN,
+            agent_mode=AGENT_MODE_PLAN,
         )
 
-    def test_plan_mode_allows_read_tools(self, plan_executor):
+    @pytest.mark.asyncio
+    async def test_plan_mode_allows_read_tools(self, plan_executor, mock_tool_categories):
         """Test Plan mode allows read tools."""
-        result = plan_executor._check_permission("read_file", {"path": "test.py"})
+        result = await plan_executor._check_permission("read_file", {"path": "test.py"})
         assert result.allowed is True
         assert result.requires_approval is False
 
-    def test_plan_mode_blocks_write_tools(self, plan_executor):
+    @pytest.mark.asyncio
+    async def test_plan_mode_blocks_write_tools(self, plan_executor, mock_tool_categories):
         """Test Plan mode blocks write tools."""
-        result = plan_executor._check_permission("write_file", {"path": "test.py"})
+        result = await plan_executor._check_permission("write_file", {"path": "test.py"})
         assert result.allowed is False
         assert "Plan mode" in result.error
 
-    def test_plan_mode_blocks_command_tools(self, plan_executor):
+    @pytest.mark.asyncio
+    async def test_plan_mode_blocks_command_tools(self, plan_executor, mock_tool_categories):
         """Test Plan mode blocks command tools."""
-        result = plan_executor._check_permission("run_command", {"command": "ls"})
+        result = await plan_executor._check_permission("run_command", {"command": "ls"})
         assert result.allowed is False
         assert "Plan mode" in result.error
 
-    def test_plan_mode_blocks_deploy_tools(self, plan_executor):
+    @pytest.mark.asyncio
+    async def test_plan_mode_blocks_deploy_tools(self, plan_executor, mock_tool_categories):
         """Test Plan mode blocks deploy tools."""
-        result = plan_executor._check_permission("deploy_preview", {})
+        result = await plan_executor._check_permission("deploy_preview", {})
         assert result.allowed is False
         assert "Plan mode" in result.error
 
@@ -333,36 +341,38 @@ class TestCheckPermissionAskMode:
     @pytest.fixture
     def ask_executor(self):
         """Create executor in Ask mode."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         return ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
-            agent_mode=AgentMode.ASK,
+            agent_mode=AGENT_MODE_ASK,
         )
 
-    def test_ask_mode_allows_read_tools(self, ask_executor):
+    @pytest.mark.asyncio
+    async def test_ask_mode_allows_read_tools(self, ask_executor, mock_tool_categories):
         """Test Ask mode allows read tools without approval."""
-        result = ask_executor._check_permission("read_file", {"path": "test.py"})
+        result = await ask_executor._check_permission("read_file", {"path": "test.py"})
         assert result.allowed is True
         assert result.requires_approval is False
 
-    def test_ask_mode_requires_approval_for_writes(self, ask_executor):
+    @pytest.mark.asyncio
+    async def test_ask_mode_requires_approval_for_writes(self, ask_executor, mock_tool_categories):
         """Test Ask mode requires approval for write tools."""
-        result = ask_executor._check_permission("write_file", {"path": "test.py"})
+        result = await ask_executor._check_permission("write_file", {"path": "test.py"})
         assert result.allowed is True
         assert result.requires_approval is True
 
-    def test_ask_mode_requires_approval_for_commands(self, ask_executor):
+    @pytest.mark.asyncio
+    async def test_ask_mode_requires_approval_for_commands(self, ask_executor, mock_tool_categories):
         """Test Ask mode requires approval for commands."""
-        result = ask_executor._check_permission("run_command", {"command": "ls"})
+        result = await ask_executor._check_permission("run_command", {"command": "ls"})
         assert result.allowed is True
         assert result.requires_approval is True
         assert result.can_add_to_allowlist is True
 
-    def test_ask_mode_requires_approval_for_deploy(self, ask_executor):
+    @pytest.mark.asyncio
+    async def test_ask_mode_requires_approval_for_deploy(self, ask_executor, mock_tool_categories):
         """Test Ask mode requires approval for deploy tools."""
-        result = ask_executor._check_permission("deploy_preview", {})
+        result = await ask_executor._check_permission("deploy_preview", {})
         assert result.allowed is True
         assert result.requires_approval is True
 
@@ -373,37 +383,39 @@ class TestCheckPermissionAutoMode:
     @pytest.fixture
     def auto_executor(self):
         """Create executor in Auto mode."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         return ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
-            agent_mode=AgentMode.AUTO,
+            agent_mode=AGENT_MODE_AUTO,
             command_allowlist=["ls", "npm install"],
         )
 
-    def test_auto_mode_allows_write_tools(self, auto_executor):
+    @pytest.mark.asyncio
+    async def test_auto_mode_allows_write_tools(self, auto_executor, mock_tool_categories):
         """Test Auto mode allows write tools without approval."""
-        result = auto_executor._check_permission("write_file", {"path": "test.py"})
+        result = await auto_executor._check_permission("write_file", {"path": "test.py"})
         assert result.allowed is True
         assert result.requires_approval is False
 
-    def test_auto_mode_allows_allowlisted_commands(self, auto_executor):
+    @pytest.mark.asyncio
+    async def test_auto_mode_allows_allowlisted_commands(self, auto_executor, mock_tool_categories):
         """Test Auto mode allows allowlisted commands."""
-        result = auto_executor._check_permission("run_command", {"command": "ls -la"})
+        result = await auto_executor._check_permission("run_command", {"command": "ls -la"})
         assert result.allowed is True
         assert result.requires_approval is False
 
-    def test_auto_mode_requires_approval_for_non_allowlisted(self, auto_executor):
+    @pytest.mark.asyncio
+    async def test_auto_mode_requires_approval_for_non_allowlisted(self, auto_executor, mock_tool_categories):
         """Test Auto mode requires approval for non-allowlisted commands."""
-        result = auto_executor._check_permission("run_command", {"command": "rm -rf /"})
+        result = await auto_executor._check_permission("run_command", {"command": "rm -rf /"})
         assert result.allowed is True
         assert result.requires_approval is True
         assert result.can_add_to_allowlist is True
 
-    def test_auto_mode_requires_approval_for_deploy(self, auto_executor):
+    @pytest.mark.asyncio
+    async def test_auto_mode_requires_approval_for_deploy(self, auto_executor, mock_tool_categories):
         """Test Auto mode requires approval for deploy tools."""
-        result = auto_executor._check_permission("deploy_preview", {})
+        result = await auto_executor._check_permission("deploy_preview", {})
         assert result.allowed is True
         assert result.requires_approval is True
 
@@ -414,33 +426,32 @@ class TestCheckPermissionSovereignMode:
     @pytest.fixture
     def sovereign_executor(self):
         """Create executor in Sovereign mode."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         return ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
-            agent_mode=AgentMode.SOVEREIGN,
+            agent_mode=AGENT_MODE_SOVEREIGN,
         )
 
-    def test_sovereign_mode_allows_everything(self, sovereign_executor):
+    @pytest.mark.asyncio
+    async def test_sovereign_mode_allows_everything(self, sovereign_executor, mock_tool_categories):
         """Test Sovereign mode allows all tools."""
         # Read tools
-        result = sovereign_executor._check_permission("read_file", {})
+        result = await sovereign_executor._check_permission("read_file", {})
         assert result.allowed is True
         assert result.requires_approval is False
 
         # Write tools
-        result = sovereign_executor._check_permission("write_file", {})
+        result = await sovereign_executor._check_permission("write_file", {})
         assert result.allowed is True
         assert result.requires_approval is False
 
         # Command tools
-        result = sovereign_executor._check_permission("run_command", {"command": "rm -rf /"})
+        result = await sovereign_executor._check_permission("run_command", {"command": "rm -rf /"})
         assert result.allowed is True
         assert result.requires_approval is False
 
         # Deploy tools
-        result = sovereign_executor._check_permission("deploy_preview", {})
+        result = await sovereign_executor._check_permission("deploy_preview", {})
         assert result.allowed is True
         assert result.requires_approval is False
 
@@ -451,8 +462,6 @@ class TestCommandAllowlist:
     @pytest.fixture
     def executor(self):
         """Create executor with command allowlist."""
-        from src.tools.executor import ToolExecutor
-
         return ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
@@ -497,8 +506,6 @@ class TestCommandAllowlist:
 
     def test_empty_allowlist(self):
         """Test empty allowlist rejects all."""
-        from src.tools.executor import ToolExecutor
-
         executor = ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
@@ -508,8 +515,6 @@ class TestCommandAllowlist:
 
     def test_rejects_glob_patterns_in_allowlist(self):
         """Test that glob patterns are rejected for security."""
-        from src.tools.executor import ToolExecutor
-
         executor = ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
@@ -524,8 +529,6 @@ class TestResolveApproval:
 
     def test_resolve_approval_not_found(self):
         """Test resolve_approval with non-existent ID."""
-        from src.tools.executor import ToolExecutor
-
         executor = ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
@@ -533,10 +536,10 @@ class TestResolveApproval:
         result = executor.resolve_approval("non-existent", True)
         assert result is False
 
+    @pytest.mark.asyncio
     async def test_resolve_approval_success(self):
         """Test resolve_approval with valid ID."""
         import asyncio
-        from src.tools.executor import ToolExecutor
 
         executor = ToolExecutor(
             workspace_path="/tmp/workspace",
@@ -559,36 +562,32 @@ class TestToolExecutorWithModeString:
 
     def test_mode_from_string(self):
         """Test creating executor with mode as string."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
             agent_mode="auto",
         )
-        assert executor.agent_mode == AgentMode.AUTO
+        assert executor.agent_mode == AGENT_MODE_AUTO
 
     def test_mode_from_string_uppercase(self):
         """Test creating executor with uppercase mode string."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
             agent_mode="AUTO",
         )
-        assert executor.agent_mode == AgentMode.AUTO
+        # Executor converts to lowercase
+        assert executor.agent_mode == AGENT_MODE_AUTO
 
     def test_mode_from_string_mixed_case(self):
         """Test creating executor with mixed case mode string."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         executor = ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
             agent_mode="Sovereign",
         )
-        assert executor.agent_mode == AgentMode.SOVEREIGN
+        # Executor converts to lowercase
+        assert executor.agent_mode == AGENT_MODE_SOVEREIGN
 
 
 class TestToolDispatch:
@@ -597,64 +596,32 @@ class TestToolDispatch:
     @pytest.fixture
     def executor(self):
         """Create basic executor."""
-        from src.tools.executor import ToolExecutor
-
         return ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
             user_id="user-456",
         )
 
+    @pytest.mark.asyncio
     async def test_unknown_tool_returns_error(self, executor):
         """Test unknown tool returns error."""
         result = await executor._dispatch_tool("unknown_tool", {})
         assert result["success"] is False
         assert "Unknown tool" in result["error"]
 
+    @pytest.mark.asyncio
     async def test_file_tool_without_workspace_returns_error(self, executor):
         """Test file tools without workspace return error."""
         result = await executor._dispatch_tool("read_file", {"path": "test.py"})
         assert result["success"] is False
         assert "Workspace not configured" in result["error"]
 
+    @pytest.mark.asyncio
     async def test_git_tool_without_workspace_returns_error(self, executor):
         """Test git tools without workspace return error."""
         result = await executor._dispatch_tool("git_status", {})
         assert result["success"] is False
         assert "Workspace not configured" in result["error"]
-
-
-class TestTaskToolHandler:
-    """Test _handle_task_tools method."""
-
-    @pytest.fixture
-    def executor(self):
-        """Create basic executor."""
-        from src.tools.executor import ToolExecutor
-
-        return ToolExecutor(
-            workspace_path="/tmp/workspace",
-            session_id="session-123",
-        )
-
-    async def test_unknown_task_tool(self, executor):
-        """Test unknown task tool returns error."""
-        result = await executor._handle_task_tools("unknown_task_tool", {})
-        assert result["success"] is False
-        assert "Unknown task tool" in result["error"]
-
-    async def test_create_task_tool(self, executor):
-        """Test create_task tool."""
-        with patch("src.tools.executor.create_task", new_callable=AsyncMock) as mock_create:
-            mock_create.return_value = {"success": True, "task_id": "task-123"}
-
-            result = await executor._handle_task_tools("create_task", {
-                "agent_role": "coder",
-                "description": "Test task",
-            })
-
-            mock_create.assert_called_once()
-            assert result["success"] is True
 
 
 class TestAgentBuilderToolHandler:
@@ -663,8 +630,6 @@ class TestAgentBuilderToolHandler:
     @pytest.fixture
     def executor(self):
         """Create executor with user_id."""
-        from src.tools.executor import ToolExecutor
-
         return ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
@@ -674,19 +639,19 @@ class TestAgentBuilderToolHandler:
     @pytest.fixture
     def executor_no_user(self):
         """Create executor without user_id."""
-        from src.tools.executor import ToolExecutor
-
         return ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
         )
 
+    @pytest.mark.asyncio
     async def test_create_agent_template_without_user(self, executor_no_user):
         """Test create_agent_template without user_id returns error."""
         result = await executor_no_user._handle_agent_builder_tools("create_agent_template", {})
         assert result["success"] is False
         assert "User ID" in result["error"]
 
+    @pytest.mark.asyncio
     async def test_list_available_tools(self, executor):
         """Test list_available_tools tool."""
         with patch("src.tools.executor.list_available_tools", new_callable=AsyncMock) as mock_list:
@@ -697,6 +662,7 @@ class TestAgentBuilderToolHandler:
             mock_list.assert_called_once()
             assert result["success"] is True
 
+    @pytest.mark.asyncio
     async def test_unknown_agent_builder_tool(self, executor):
         """Test unknown agent builder tool."""
         result = await executor._handle_agent_builder_tools("unknown_tool", {})
@@ -710,26 +676,26 @@ class TestOrchestratorToolHandler:
     @pytest.fixture
     def executor(self):
         """Create executor."""
-        from src.tools.executor import ToolExecutor
-
         return ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
         )
 
+    @pytest.mark.asyncio
     async def test_unknown_orchestrator_tool(self, executor):
         """Test unknown orchestrator tool."""
         result = await executor._handle_orchestrator_tools("unknown_tool", {})
         assert result["success"] is False
         assert "Unknown orchestrator tool" in result["error"]
 
-    async def test_get_task_status_tool(self, executor):
-        """Test get_task_status tool."""
-        with patch("src.tools.executor.get_task_status", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = {"success": True, "status": "completed"}
+    @pytest.mark.asyncio
+    async def test_get_subagent_status_tool(self, executor):
+        """Test get_subagent_status tool."""
+        with patch("src.tools.executor.get_subagent_status", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = {"success": True, "status": "running"}
 
-            result = await executor._handle_orchestrator_tools("get_task_status", {
-                "task_id": "task-123",
+            result = await executor._handle_orchestrator_tools("get_subagent_status", {
+                "subagent_id": "sub-123",
             })
 
             mock_get.assert_called_once()
@@ -742,8 +708,6 @@ class TestMemoryToolHandler:
     @pytest.fixture
     def executor(self):
         """Create executor with user_id."""
-        from src.tools.executor import ToolExecutor
-
         return ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
@@ -753,31 +717,33 @@ class TestMemoryToolHandler:
     @pytest.fixture
     def executor_no_user(self):
         """Create executor without user_id."""
-        from src.tools.executor import ToolExecutor
-
         return ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
         )
 
+    @pytest.mark.asyncio
     async def test_store_memory_without_user(self, executor_no_user):
         """Test store_memory without user_id returns error."""
         result = await executor_no_user._handle_memory_tools("store_memory", {})
         assert result["success"] is False
         assert "User ID required" in result["error"]
 
+    @pytest.mark.asyncio
     async def test_recall_memory_without_user(self, executor_no_user):
         """Test recall_memory without user_id returns error."""
         result = await executor_no_user._handle_memory_tools("recall_memory", {})
         assert result["success"] is False
         assert "User ID required" in result["error"]
 
+    @pytest.mark.asyncio
     async def test_unknown_memory_tool(self, executor):
         """Test unknown memory tool."""
         result = await executor._handle_memory_tools("unknown_tool", {})
         assert result["success"] is False
         assert "Unknown memory tool" in result["error"]
 
+    @pytest.mark.asyncio
     async def test_get_session_memories(self, executor):
         """Test get_session_memories doesn't require user_id."""
         with patch("src.tools.executor.get_session_memories", new_callable=AsyncMock) as mock_get:
@@ -795,8 +761,6 @@ class TestHealthToolHandler:
     @pytest.fixture
     def executor(self):
         """Create executor with user_id."""
-        from src.tools.executor import ToolExecutor
-
         return ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
@@ -806,19 +770,19 @@ class TestHealthToolHandler:
     @pytest.fixture
     def executor_no_user(self):
         """Create executor without user_id."""
-        from src.tools.executor import ToolExecutor
-
         return ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
         )
 
+    @pytest.mark.asyncio
     async def test_health_tools_require_user(self, executor_no_user):
         """Test health tools require user_id."""
         result = await executor_no_user._handle_health_tools("analyze_project_health", {})
         assert result["success"] is False
         assert "User ID required" in result["error"]
 
+    @pytest.mark.asyncio
     async def test_unknown_health_tool(self, executor):
         """Test unknown health tool."""
         result = await executor._handle_health_tools("unknown_tool", {})
@@ -832,8 +796,6 @@ class TestMCPToolHandler:
     @pytest.fixture
     def executor_with_mcp(self):
         """Create executor with MCP registry."""
-        from src.tools.executor import ToolExecutor
-
         mock_registry = MagicMock()
         return ToolExecutor(
             workspace_path="/tmp/workspace",
@@ -844,13 +806,12 @@ class TestMCPToolHandler:
     @pytest.fixture
     def executor_no_mcp(self):
         """Create executor without MCP registry."""
-        from src.tools.executor import ToolExecutor
-
         return ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
         )
 
+    @pytest.mark.asyncio
     async def test_mcp_tool_without_registry(self, executor_no_mcp):
         """Test MCP tool without registry returns error."""
         result = await executor_no_mcp._validate_mcp_prerequisites("mcp:server:tool")
@@ -871,15 +832,14 @@ class TestToolExecutorExecute:
     @pytest.fixture
     def executor(self):
         """Create executor in Plan mode."""
-        from src.tools.executor import ToolExecutor, AgentMode
-
         return ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
-            agent_mode=AgentMode.PLAN,
+            agent_mode=AGENT_MODE_PLAN,
         )
 
-    async def test_execute_blocked_tool(self, executor):
+    @pytest.mark.asyncio
+    async def test_execute_blocked_tool(self, executor, mock_tool_categories):
         """Test execute returns blocked message for denied tools."""
         import json
         result = await executor.execute("write_file", {"path": "test.py"})
@@ -887,15 +847,15 @@ class TestToolExecutorExecute:
         assert parsed["success"] is False
         assert parsed["blocked_by_mode"] is True
 
-    async def test_execute_calls_dispatch(self):
+    @pytest.mark.asyncio
+    async def test_execute_calls_dispatch(self, mock_tool_categories):
         """Test execute calls _dispatch_tool for allowed tools."""
-        from src.tools.executor import ToolExecutor, AgentMode
         import json
 
         executor = ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
-            agent_mode=AgentMode.SOVEREIGN,
+            agent_mode=AGENT_MODE_SOVEREIGN,
         )
 
         with patch.object(executor, "_dispatch_tool", new_callable=AsyncMock) as mock_dispatch:
@@ -914,8 +874,6 @@ class TestRequestApproval:
     @pytest.fixture
     def executor_with_callback(self):
         """Create executor with approval callback."""
-        from src.tools.executor import ToolExecutor
-
         callback = AsyncMock()
         return ToolExecutor(
             workspace_path="/tmp/workspace",
@@ -927,19 +885,19 @@ class TestRequestApproval:
     @pytest.fixture
     def executor_no_callback(self):
         """Create executor without approval callback."""
-        from src.tools.executor import ToolExecutor
-
         return ToolExecutor(
             workspace_path="/tmp/workspace",
             session_id="session-123",
         )
 
-    async def test_request_approval_no_callback(self, executor_no_callback):
+    @pytest.mark.asyncio
+    async def test_request_approval_no_callback(self, executor_no_callback, mock_tool_categories):
         """Test _request_approval without callback returns denied."""
         result = await executor_no_callback._request_approval("write_file", {}, False)
         assert result == (False, False)
 
-    async def test_request_approval_action_type_file_write(self, executor_with_callback):
+    @pytest.mark.asyncio
+    async def test_request_approval_action_type_file_write(self, executor_with_callback, mock_tool_categories):
         """Test _request_approval sets correct action_type for write tools."""
         # Set up a resolved future
         async def resolve_approval():
@@ -959,7 +917,8 @@ class TestRequestApproval:
         call_args = executor_with_callback.approval_callback.call_args[0][0]
         assert call_args["action_type"] == "file_write"
 
-    async def test_request_approval_action_type_command(self, executor_with_callback):
+    @pytest.mark.asyncio
+    async def test_request_approval_action_type_command(self, executor_with_callback, mock_tool_categories):
         """Test _request_approval sets correct action_type for command tools."""
         async def resolve_approval():
             import asyncio

@@ -220,7 +220,7 @@ export default function SettingsPage() {
     <div className="min-h-screen bg-void">
       {/* Desktop Header - hidden on mobile (layout handles mobile header) */}
       <header className="hidden md:block bg-elevated border-b border-border-default">
-        <div className="max-w-6xl mx-auto px-6 py-4">
+        <div className="max-w-4xl mx-auto px-8 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
               <button
@@ -269,14 +269,14 @@ export default function SettingsPage() {
 
       {/* Messages */}
       {error && (
-        <div className="max-w-6xl mx-auto px-4 md:px-6 py-2">
+        <div className="max-w-4xl mx-auto px-8 py-2">
           <div className="bg-accent-error/10 border border-accent-error/20 rounded-md px-4 py-2 text-accent-error text-sm">
             {error}
           </div>
         </div>
       )}
       {successMessage && (
-        <div className="max-w-6xl mx-auto px-4 md:px-6 py-2">
+        <div className="max-w-4xl mx-auto px-8 py-2">
           <div className="bg-accent-success/10 border border-accent-success/20 rounded-md px-4 py-2 text-accent-success text-sm flex items-center gap-2">
             <Check className="w-4 h-4" />
             {successMessage}
@@ -309,7 +309,7 @@ export default function SettingsPage() {
       {/* Content */}
       <div
         className={cn(
-          'max-w-6xl mx-auto px-4 md:px-6 py-4 md:py-8',
+          'max-w-4xl mx-auto px-8 py-8',
           // On mobile, hide content area when showing tab list
           activeTab === null && 'hidden md:block'
         )}

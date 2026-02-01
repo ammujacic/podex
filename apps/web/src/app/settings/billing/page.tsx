@@ -8,13 +8,22 @@ import {
   cancelSubscription,
   listInvoices,
   getInvoice,
+  api,
   type SubscriptionResponse,
   type CreditBalanceResponse,
   type InvoiceResponse,
 } from '@/lib/api';
-import { CreditCard, Download } from 'lucide-react';
+import { openStripePortal } from '@/lib/billing-utils';
+import { CreditCard, Download, Loader2, Building2, ArrowRight } from 'lucide-react';
 import CostInsights from '@/components/billing/CostInsights';
+import { AddCreditsModal } from '@/components/billing/AddCreditsModal';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
+import {
+  useOrgContext,
+  useIsInOrganization,
+  useOrganizationStore,
+  type UserOrgContext,
+} from '@/stores/organization';
 
 const formatCurrency = (amount: number, currency = 'USD') => {
   return new Intl.NumberFormat('en-US', {
@@ -60,7 +69,31 @@ export default function BillingPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
+  const [showCreditsModal, setShowCreditsModal] = useState(false);
+  const [portalLoading, setPortalLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Organization context
+  const isInOrg = useIsInOrganization();
+  const orgContext = useOrgContext();
+  const { contextLoading, setContextLoading, setContext } = useOrganizationStore();
+
+  // Fetch org context on mount
+  useEffect(() => {
+    const fetchContext = async () => {
+      setContextLoading(true);
+      try {
+        const response = (await api.get('/api/organizations/me')) as UserOrgContext;
+        if (response) setContext(response);
+      } catch {
+        // User is not in an org, that's fine
+        setContext(null);
+      } finally {
+        setContextLoading(false);
+      }
+    };
+    fetchContext();
+  }, [setContextLoading, setContext]);
 
   useEffect(() => {
     async function loadData() {
@@ -114,14 +147,114 @@ export default function BillingPage() {
     }
   };
 
-  if (loading) {
+  const handleOpenPortal = async () => {
+    try {
+      setPortalLoading(true);
+      setError(null);
+      await openStripePortal();
+    } catch (err) {
+      setError('Failed to open billing portal');
+      console.error(err);
+      setPortalLoading(false);
+    }
+  };
+
+  if (loading || contextLoading) {
     return (
-      <div className="max-w-6xl mx-auto px-8 py-8">
+      <div className="max-w-4xl mx-auto px-8 py-8">
         <div className="animate-pulse space-y-6">
           <div className="h-8 bg-surface rounded w-1/4" />
           <div className="h-40 bg-surface rounded" />
           <div className="h-64 bg-surface rounded" />
         </div>
+      </div>
+    );
+  }
+
+  // User is in an organization - redirect to org billing
+  if (isInOrg && orgContext) {
+    const org = orgContext.organization;
+    const formatCents = (cents: number) =>
+      new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100);
+
+    return (
+      <div className="max-w-4xl mx-auto px-8 py-8">
+        {/* Header */}
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold text-text-primary mb-2">Billing</h1>
+          <p className="text-text-muted">Your billing is managed by your organization</p>
+        </div>
+
+        {/* Organization Card */}
+        <div className="bg-surface border border-border-default rounded-xl p-6 mb-6">
+          <div className="flex items-start gap-4">
+            <div className="p-3 bg-accent-primary/10 rounded-lg">
+              <Building2 className="w-6 h-6 text-accent-primary" />
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center gap-3 mb-2">
+                <h2 className="text-xl font-semibold text-text-primary">{org.name}</h2>
+                <span className="px-3 py-1 bg-accent-primary/20 text-accent-primary text-xs font-medium rounded-full capitalize">
+                  {orgContext.role}
+                </span>
+              </div>
+              <p className="text-text-muted text-sm mb-4">
+                As a member of {org.name}, your usage is billed to your organization. Your personal
+                subscription has been suspended while you&apos;re part of this organization.
+              </p>
+
+              {/* Credit Model Info */}
+              <div className="bg-elevated rounded-lg p-4 mb-4">
+                <p className="text-sm text-text-muted mb-1">Credit Model</p>
+                <p className="text-text-primary font-medium capitalize">
+                  {org.creditModel.replace('_', ' ')}
+                </p>
+                {org.creditModel === 'pooled' && (
+                  <p className="text-xs text-text-muted mt-1">
+                    Your usage draws from the organization&apos;s shared credit pool (
+                    {formatCents(org.creditPoolCents)} available)
+                  </p>
+                )}
+                {org.creditModel === 'allocated' && (
+                  <p className="text-xs text-text-muted mt-1">
+                    You have {formatCents(orgContext.limits.allocatedCreditsCents)} allocated to you
+                  </p>
+                )}
+              </div>
+
+              <Link
+                href="/settings/organization/billing"
+                className="inline-flex items-center gap-2 px-4 py-2 bg-accent-primary hover:bg-accent-primary/90 text-white rounded-lg transition-colors font-medium"
+              >
+                <CreditCard className="w-4 h-4" />
+                View Organization Billing
+                <ArrowRight className="w-4 h-4" />
+              </Link>
+            </div>
+          </div>
+        </div>
+
+        {/* Personal Subscription Status */}
+        {subscription?.plan && (
+          <div className="bg-surface border border-border-default rounded-xl p-6">
+            <h3 className="text-lg font-medium text-text-primary mb-2">
+              Personal Subscription (Suspended)
+            </h3>
+            <p className="text-sm text-text-muted mb-4">
+              Your personal {subscription.plan.name} subscription is suspended while you&apos;re in
+              an organization. It will automatically resume if you leave the organization.
+            </p>
+            <div className="flex items-center gap-2 text-sm">
+              <span className="px-2 py-1 bg-amber-500/20 text-amber-400 rounded text-xs font-medium">
+                Suspended
+              </span>
+              <span className="text-text-muted">
+                {subscription.plan.name} •{' '}
+                {subscription.billing_cycle === 'yearly' ? 'Annual' : 'Monthly'}
+              </span>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -274,12 +407,12 @@ export default function BillingPage() {
                 Used for pay-as-you-go when you exceed plan limits
               </p>
             </div>
-            <Link
-              href="/settings/billing/credits"
+            <button
+              onClick={() => setShowCreditsModal(true)}
               className="px-4 py-2 bg-accent-primary hover:bg-accent-primary/90 text-white rounded-lg transition-colors font-medium"
             >
               Add Credits
-            </Link>
+            </button>
           </div>
         </div>
       )}
@@ -298,8 +431,13 @@ export default function BillingPage() {
         <p className="text-sm text-text-muted mb-4">
           Manage your payment methods and billing details.
         </p>
-        <button className="px-4 py-2 bg-elevated hover:bg-overlay text-text-primary rounded-lg transition-colors font-medium">
-          Add Payment Method
+        <button
+          onClick={handleOpenPortal}
+          disabled={portalLoading}
+          className="px-4 py-2 bg-elevated hover:bg-overlay text-text-primary rounded-lg transition-colors font-medium disabled:opacity-50 flex items-center gap-2"
+        >
+          {portalLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+          {portalLoading ? 'Opening...' : 'Manage Payment Methods'}
         </button>
       </div>
 
@@ -582,6 +720,9 @@ export default function BillingPage() {
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-accent-primary" />
         </div>
       )}
+
+      {/* Add Credits Modal */}
+      <AddCreditsModal isOpen={showCreditsModal} onClose={() => setShowCreditsModal(false)} />
     </div>
   );
 }

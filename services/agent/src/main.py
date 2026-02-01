@@ -15,9 +15,11 @@ from podex_shared import (
 )
 from podex_shared.redis_client import get_redis_client
 from src.config import refresh_model_capabilities, settings
-from src.queue.task_queue import TaskQueue
-from src.queue.worker import TaskWorker, set_task_worker
-from src.routes import agents, health, mcp_skills
+from src.queue.agent_worker import AgentTaskWorker, set_agent_task_worker
+from src.queue.approval_listener import ApprovalListener, set_approval_listener
+from src.queue.compaction_worker import CompactionTaskWorker, set_compaction_task_worker
+from src.queue.subagent_worker import SubagentTaskWorker, set_subagent_task_worker
+from src.routes import agents, health
 from src.skills.loader import Skill
 from src.skills.registry import SkillRegistry
 from src.tools.skill_tools import SkillRegistryHolder
@@ -49,7 +51,11 @@ class ServiceManager:
     """Manages global service instances for the application."""
 
     _redis_client = None
-    _task_worker = None
+    _subagent_worker = None
+    _agent_worker = None
+    _compaction_worker = None
+    _approval_listener = None
+    _orchestrator = None
     _context_manager = None
     _usage_tracker = None
 
@@ -70,16 +76,54 @@ class ServiceManager:
         )
         logger.info("Usage tracker initialized", api_url=settings.API_BASE_URL)
 
-        # Initialize task queue and worker
-        task_queue = TaskQueue(cls._redis_client)
-        cls._task_worker = TaskWorker(
-            task_queue=task_queue,
+        # Initialize subagent task worker (processes subagent tasks from Redis queue)
+        cls._subagent_worker = SubagentTaskWorker(
             redis_client=cls._redis_client,
             poll_interval=settings.TASK_QUEUE_POLL_INTERVAL,
+            pool_size=settings.SUBAGENT_WORKER_POOL_SIZE,
         )
-        set_task_worker(cls._task_worker)
-        await cls._task_worker.start()
-        logger.info("Task worker started")
+        set_subagent_task_worker(cls._subagent_worker)
+        await cls._subagent_worker.start()
+        logger.info(
+            "Subagent task worker started",
+            pool_size=settings.SUBAGENT_WORKER_POOL_SIZE,
+        )
+
+        # Initialize agent task worker (processes main agent tasks from Redis queue)
+        from src.orchestrator import get_orchestrator
+
+        cls._orchestrator = get_orchestrator()
+        cls._agent_worker = AgentTaskWorker(
+            redis_client=cls._redis_client,
+            poll_interval=settings.TASK_QUEUE_POLL_INTERVAL,
+            pool_size=settings.AGENT_WORKER_POOL_SIZE,
+        )
+        cls._agent_worker.set_orchestrator(cls._orchestrator)
+        set_agent_task_worker(cls._agent_worker)
+        await cls._agent_worker.start()
+        logger.info(
+            "Agent task worker started",
+            pool_size=settings.AGENT_WORKER_POOL_SIZE,
+        )
+
+        # Initialize compaction task worker (processes context compaction from Redis queue)
+        cls._compaction_worker = CompactionTaskWorker(
+            redis_client=cls._redis_client,
+            poll_interval=settings.TASK_QUEUE_POLL_INTERVAL,
+            pool_size=settings.COMPACTION_WORKER_POOL_SIZE,
+        )
+        set_compaction_task_worker(cls._compaction_worker)
+        await cls._compaction_worker.start()
+        logger.info(
+            "Compaction task worker started",
+            pool_size=settings.COMPACTION_WORKER_POOL_SIZE,
+        )
+
+        # Initialize approval listener (for distributed approval resolution via Redis pub/sub)
+        cls._approval_listener = ApprovalListener(redis_client=cls._redis_client)
+        set_approval_listener(cls._approval_listener)
+        await cls._approval_listener.start()
+        logger.info("Approval listener started")
 
         # Note: Context manager is created per-request with the model specified
         # for each agent run. A global context manager is not used because
@@ -141,9 +185,21 @@ class ServiceManager:
             await shutdown_usage_tracker()
             logger.info("Usage tracker stopped")
 
-        if cls._task_worker:
-            await cls._task_worker.stop()
-            logger.info("Task worker stopped")
+        if cls._approval_listener:
+            await cls._approval_listener.stop()
+            logger.info("Approval listener stopped")
+
+        if cls._compaction_worker:
+            await cls._compaction_worker.stop()
+            logger.info("Compaction task worker stopped")
+
+        if cls._agent_worker:
+            await cls._agent_worker.stop()
+            logger.info("Agent task worker stopped")
+
+        if cls._subagent_worker:
+            await cls._subagent_worker.stop()
+            logger.info("Subagent task worker stopped")
 
         if cls._redis_client:
             await cls._redis_client.disconnect()
@@ -218,7 +274,6 @@ Instrumentator().instrument(app).expose(app)
 
 app.include_router(health.router, tags=["health"])
 app.include_router(agents.router, prefix="/agents", tags=["agents"])
-app.include_router(mcp_skills.router)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -38,7 +38,7 @@ class BackgroundPlanTask:
     models: list[str]
     status: BackgroundPlanStatus = BackgroundPlanStatus.QUEUED
     plan_ids: list[str] = field(default_factory=list)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     started_at: datetime | None = None
     completed_at: datetime | None = None
     error: str | None = None
@@ -223,7 +223,7 @@ class BackgroundPlanner:
 
                 # Execute the task
                 task.status = BackgroundPlanStatus.RUNNING
-                task.started_at = datetime.utcnow()
+                task.started_at = datetime.now(UTC)
 
                 try:
                     plans = await generator.generate_parallel_plans(
@@ -241,7 +241,7 @@ class BackgroundPlanner:
 
                     task.plan_ids = [p.id for p in plans]
                     task.status = BackgroundPlanStatus.COMPLETED
-                    task.completed_at = datetime.utcnow()
+                    task.completed_at = datetime.now(UTC)
 
                     # Notify callbacks
                     for callback in self._notification_callbacks:
@@ -263,7 +263,7 @@ class BackgroundPlanner:
                 except Exception as e:
                     task.status = BackgroundPlanStatus.FAILED
                     task.error = str(e)
-                    task.completed_at = datetime.utcnow()
+                    task.completed_at = datetime.now(UTC)
                     logger.error(
                         "planning_task_failed",
                         task_id=task_id,

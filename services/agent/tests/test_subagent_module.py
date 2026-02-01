@@ -47,7 +47,18 @@ class TestSubagentManager:
         from src.subagent.manager import SubagentStatus
         assert SubagentStatus is not None
 
-    def test_subagent_type_enum_exists(self):
-        """Test SubagentType enum exists."""
-        from src.subagent.manager import SubagentType
-        assert SubagentType is not None
+    def test_subagent_uses_role_string(self):
+        """Test Subagent uses role as a string field."""
+        from src.subagent.manager import Subagent, SubagentContext
+
+        subagent = Subagent(
+            id="sub-1",
+            parent_agent_id="agent-1",
+            session_id="session-1",
+            name="Test",
+            role="researcher",
+            task="Do something",
+            context=SubagentContext(),
+        )
+        assert subagent.role == "researcher"
+        assert isinstance(subagent.role, str)

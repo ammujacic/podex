@@ -534,7 +534,7 @@ async def auto_fix_recommendation(
 
     Executes the fix command in the workspace container.
     """
-    from src.compute_client import compute_client
+    from src.compute_client import get_compute_client_for_workspace
     from src.database.models import HealthCheck
 
     user_id_raw = user["id"]
@@ -612,7 +612,8 @@ async def auto_fix_recommendation(
 
     # Execute the fix command
     try:
-        exec_result = await compute_client.exec_command(
+        compute = await get_compute_client_for_workspace(session.workspace_id)
+        exec_result = await compute.exec_command(
             workspace_id=session.workspace_id,
             user_id=user_id,
             command=fix_command,

@@ -31,6 +31,8 @@ class PlaywrightOptions:
 class TestStatus(str, Enum):
     """Status of a test."""
 
+    __test__ = False  # Prevent pytest collection
+
     PENDING = "pending"
     RUNNING = "running"
     PASSED = "passed"
@@ -42,6 +44,8 @@ class TestStatus(str, Enum):
 @dataclass
 class TestResult:
     """Result of a single test."""
+
+    __test__ = False  # Prevent pytest collection
 
     name: str
     status: TestStatus
@@ -65,6 +69,8 @@ class TestResult:
 @dataclass
 class TestSuite:
     """A collection of test results."""
+
+    __test__ = False  # Prevent pytest collection
 
     name: str
     tests: list[TestResult] = field(default_factory=list)

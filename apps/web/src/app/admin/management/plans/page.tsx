@@ -36,11 +36,6 @@ function PlanCard({ plan, onEdit, onToggleActive }: PlanCardProps) {
                 Popular
               </span>
             )}
-            {plan.is_enterprise && (
-              <span className="px-2 py-0.5 bg-purple-500/20 text-purple-500 text-xs rounded-full">
-                Enterprise
-              </span>
-            )}
           </div>
           <p className="text-text-muted text-sm mt-1">{plan.slug}</p>
         </div>
@@ -144,6 +139,7 @@ interface EditPlanModalProps {
 function EditPlanModal({ plan, onClose, onSave }: EditPlanModalProps) {
   const [formData, setFormData] = useState({
     name: plan?.name || '',
+    slug: plan?.slug || '',
     description: plan?.description || '',
     price_monthly_cents: plan?.price_monthly_cents || 0,
     price_yearly_cents: plan?.price_yearly_cents || 0,
@@ -156,7 +152,9 @@ function EditPlanModal({ plan, onClose, onSave }: EditPlanModalProps) {
     llm_margin_percent: plan?.llm_margin_percent || 0,
     compute_margin_percent: plan?.compute_margin_percent || 0,
     is_popular: plan?.is_popular || false,
-    is_enterprise: plan?.is_enterprise || false,
+    stripe_product_id: plan?.stripe_product_id || '',
+    stripe_price_id_monthly: plan?.stripe_price_id_monthly || '',
+    stripe_price_id_yearly: plan?.stripe_price_id_yearly || '',
   });
   const [saving, setSaving] = useState(false);
 
@@ -192,14 +190,31 @@ function EditPlanModal({ plan, onClose, onSave }: EditPlanModalProps) {
               />
             </div>
             <div>
-              <label className="block text-sm text-text-muted mb-1">Description</label>
+              <label className="block text-sm text-text-muted mb-1">Slug</label>
               <input
                 type="text"
-                value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                value={formData.slug}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    slug: e.target.value.toLowerCase().replace(/\s+/g, '-'),
+                  })
+                }
+                placeholder={formData.name.toLowerCase().replace(/\s+/g, '-') || 'plan-slug'}
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+                required={!plan}
+                disabled={!!plan}
               />
             </div>
+          </div>
+          <div>
+            <label className="block text-sm text-text-muted mb-1">Description</label>
+            <input
+              type="text"
+              value={formData.description}
+              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+              className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+            />
           </div>
 
           {/* Pricing */}
@@ -227,6 +242,47 @@ function EditPlanModal({ plan, onClose, onSave }: EditPlanModalProps) {
                 className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
                 min={0}
               />
+            </div>
+          </div>
+
+          {/* Stripe Integration */}
+          <div className="space-y-4 pt-4 border-t border-border-subtle">
+            <h3 className="text-sm font-medium text-text-secondary">Stripe Integration</h3>
+            <div>
+              <label className="block text-sm text-text-muted mb-1">Stripe Product ID</label>
+              <input
+                type="text"
+                value={formData.stripe_product_id}
+                onChange={(e) => setFormData({ ...formData, stripe_product_id: e.target.value })}
+                placeholder="prod_..."
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-text-muted mb-1">Monthly Price ID</label>
+                <input
+                  type="text"
+                  value={formData.stripe_price_id_monthly}
+                  onChange={(e) =>
+                    setFormData({ ...formData, stripe_price_id_monthly: e.target.value })
+                  }
+                  placeholder="price_..."
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-muted mb-1">Yearly Price ID</label>
+                <input
+                  type="text"
+                  value={formData.stripe_price_id_yearly}
+                  onChange={(e) =>
+                    setFormData({ ...formData, stripe_price_id_yearly: e.target.value })
+                  }
+                  placeholder="price_..."
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+                />
+              </div>
             </div>
           </div>
 
@@ -357,15 +413,6 @@ function EditPlanModal({ plan, onClose, onSave }: EditPlanModalProps) {
               />
               <span className="text-sm text-text-secondary">Popular</span>
             </label>
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={formData.is_enterprise}
-                onChange={(e) => setFormData({ ...formData, is_enterprise: e.target.checked })}
-                className="rounded border-border-subtle"
-              />
-              <span className="text-sm text-text-secondary">Enterprise</span>
-            </label>
           </div>
 
           {/* Actions */}
@@ -393,7 +440,7 @@ function EditPlanModal({ plan, onClose, onSave }: EditPlanModalProps) {
 
 export default function PlansManagement() {
   useDocumentTitle('Subscription Plans');
-  const { plans, plansLoading, fetchPlans, updatePlan, error } = useAdminStore();
+  const { plans, plansLoading, fetchPlans, updatePlan, createPlan, error } = useAdminStore();
   const [editingPlan, setEditingPlan] = useState<AdminPlan | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);
 
@@ -405,9 +452,24 @@ export default function PlansManagement() {
     await updatePlan(planId, { is_active: isActive });
   };
 
-  const handleSavePlan = async (data: Partial<AdminPlan>) => {
+  const handleSavePlan = async (data: Partial<AdminPlan> & { slug?: string }) => {
     if (editingPlan) {
       await updatePlan(editingPlan.id, data);
+    } else {
+      // Create new plan with required defaults
+      await createPlan({
+        ...data,
+        slug: data.slug || data.name?.toLowerCase().replace(/\s+/g, '-') || 'new-plan',
+        currency: 'USD',
+        overage_token_rate_cents: null,
+        overage_compute_rate_cents: null,
+        overage_storage_rate_cents: null,
+        overage_allowed: false,
+        features: {},
+        is_active: true,
+        is_enterprise: false,
+        sort_order: plans.length,
+      } as Parameters<typeof createPlan>[0]);
     }
   };
 
@@ -418,7 +480,13 @@ export default function PlansManagement() {
           <h1 className="text-2xl font-semibold text-text-primary">Subscription Plans</h1>
           <p className="text-text-muted mt-1">Manage pricing tiers and features</p>
         </div>
-        <button className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-primary text-white hover:bg-accent-primary/90 transition-colors">
+        <button
+          onClick={() => {
+            setEditingPlan(null);
+            setShowEditModal(true);
+          }}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-primary text-white hover:bg-accent-primary/90 transition-colors"
+        >
           <Plus className="h-4 w-4" />
           Add Plan
         </button>

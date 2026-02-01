@@ -409,11 +409,9 @@ class BaseAgent(ABC):
         # Refresh tools based on new mode
         self.tools = self._get_all_tools()
 
-        # Update tool executor mode (convert string to AgentMode enum)
+        # Update tool executor mode (string-based, validated in executor)
         if self.tool_executor:
-            from src.tools.executor import AgentMode
-
-            self.tool_executor.agent_mode = AgentMode(self.mode.lower())
+            self.tool_executor.agent_mode = self.mode.lower()
 
     def _generate_mode_switch_announcement(
         self,

@@ -26,10 +26,10 @@ import {
   Store,
   Cloud,
   Plug,
-  BookOpen,
   ExternalLink,
   Mail,
   Clock,
+  Wrench,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUser, useAuthLoading } from '@/stores/auth';
@@ -63,6 +63,7 @@ const adminNavItems = [
       { href: '/admin/management/templates', label: 'Pod Templates', icon: Box },
       { href: '/admin/management/servers', label: 'Workspace Servers', icon: Gauge },
       { href: '/admin/management/agent-roles', label: 'Agent Roles', icon: Bot },
+      { href: '/admin/management/tools', label: 'Agent Tools', icon: Wrench },
       { href: '/admin/management/skills', label: 'System Skills', icon: Zap },
       { href: '/admin/management/marketplace', label: 'Skill Marketplace', icon: Store },
       { href: '/admin/management/settings', label: 'Platform Settings', icon: Settings },
@@ -73,13 +74,6 @@ const adminNavItems = [
     items: [
       { href: '/admin/audit', label: 'Audit Logs', icon: FileSearch },
       { href: '/admin/compliance', label: 'Compliance', icon: ShieldCheck },
-    ],
-  },
-  {
-    section: 'Developer',
-    items: [
-      { href: '/admin/api/docs', label: 'API Documentation', icon: BookOpen, external: true },
-      { href: '/admin/api/redoc', label: 'API Reference', icon: ExternalLink, external: true },
     ],
   },
 ];

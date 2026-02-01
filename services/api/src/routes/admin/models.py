@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import settings
 from src.database import get_db
 from src.database.models import (
+    AgentRoleConfig,
     LLMModel,
     PlatformSetting,
     SubscriptionPlan,
@@ -276,27 +277,20 @@ async def update_agent_default(
     """Update default model settings for a specific agent type."""
     admin_id = get_admin_user_id(request)
 
-    valid_agent_types = {
-        "architect",
-        "coder",
-        "reviewer",
-        "tester",
-        "chat",
-        "security",
-        "devops",
-        "documentator",
-        "agent_builder",
-        "orchestrator",
-        "custom",
-        "claude-code",
-        "gemini-cli",
-        "openai-codex",
-    }
+    # Get valid agent types from database (agent roles + terminal agent types)
+    roles_result = await db.execute(
+        select(AgentRoleConfig.role).where(AgentRoleConfig.is_enabled == True)
+    )
+    db_roles = {r.lower() for r in roles_result.scalars().all()}
+
+    # Terminal agent types are external integrations, not database-configured
+    terminal_agent_types = {"claude-code", "gemini-cli", "openai-codex"}
+    valid_agent_types = db_roles | terminal_agent_types
 
     if agent_type not in valid_agent_types:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid agent type. Must be one of: {', '.join(valid_agent_types)}",
+            detail=f"Invalid agent type. Must be one of: {', '.join(sorted(valid_agent_types))}",
         )
 
     # Verify model exists

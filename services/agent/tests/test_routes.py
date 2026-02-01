@@ -45,17 +45,3 @@ class TestAgentEndpoints:
         """Test agents router exists."""
         from src.routes.agents import router
         assert router is not None
-
-
-class TestMCPSkillsEndpoints:
-    """Test MCP skills endpoints."""
-
-    def test_mcp_skills_module_exists(self):
-        """Test MCP skills route module can be imported."""
-        from src.routes import mcp_skills
-        assert mcp_skills is not None
-
-    def test_mcp_skills_router_exists(self):
-        """Test MCP skills router exists."""
-        from src.routes.mcp_skills import router
-        assert router is not None

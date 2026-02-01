@@ -66,13 +66,21 @@ export async function initiateSubscriptionCheckout(
  * Open the Stripe customer portal for managing subscriptions.
  */
 export async function openStripePortal(): Promise<void> {
-  return redirectToStripeUrl({
-    endpoint: '/api/billing/portal',
-    payload: {
+  try {
+    const response = await api.post<{ portal_url: string }>('/api/billing/portal', {
       return_url: `${window.location.origin}/settings/billing`,
-    },
-    errorContext: 'open billing portal',
-  });
+    });
+
+    if (response.portal_url) {
+      window.location.href = response.portal_url;
+    } else {
+      throw new Error('No URL returned from Stripe');
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to open billing portal';
+    console.error('Error: open billing portal:', err);
+    throw new Error(message);
+  }
 }
 
 /**

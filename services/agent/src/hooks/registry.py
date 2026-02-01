@@ -1,7 +1,7 @@
 """Hook registry for managing user-defined hooks."""
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -109,7 +109,7 @@ class HookRegistry:
             if key in allowed_fields and hasattr(hook, key):
                 setattr(hook, key, value)
 
-        hook.updated_at = datetime.utcnow()
+        hook.updated_at = datetime.now(UTC)
 
         logger.info("hook_updated", hook_id=hook_id)
         return hook
@@ -135,7 +135,7 @@ class HookRegistry:
         hook = self._hooks_by_id.get(hook_id)
         if hook:
             hook.enabled = True
-            hook.updated_at = datetime.utcnow()
+            hook.updated_at = datetime.now(UTC)
             return True
         return False
 
@@ -144,7 +144,7 @@ class HookRegistry:
         hook = self._hooks_by_id.get(hook_id)
         if hook:
             hook.enabled = False
-            hook.updated_at = datetime.utcnow()
+            hook.updated_at = datetime.now(UTC)
             return True
         return False
 

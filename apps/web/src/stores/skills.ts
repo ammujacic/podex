@@ -279,6 +279,6 @@ export const useSkillsStore = create<SkillsState>()(
         return executions.find((e) => e.id === executionId);
       },
     }),
-    { name: 'podex-skills' }
+    { name: 'skills-store' }
   )
 );

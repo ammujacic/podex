@@ -117,11 +117,6 @@ def resolve_env_vars_for_server(
         conn_string = getattr(settings, "MCP_POSTGRES_CONNECTION_STRING", None)
         if conn_string:
             resolved["POSTGRES_CONNECTION_STRING"] = conn_string
-    elif source_slug == "podex-skills":
-        token = getattr(settings, "INTERNAL_SERVICE_TOKEN", None)
-        if token:
-            resolved["X-Internal-Service-Token"] = token
-
     return resolved
 
 

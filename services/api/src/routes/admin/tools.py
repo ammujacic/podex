@@ -35,6 +35,11 @@ class AgentToolResponse(BaseModel):
     sort_order: int
     is_enabled: bool
     is_system: bool
+    # Permission flags for mode-based access control
+    is_read_operation: bool
+    is_write_operation: bool
+    is_command_operation: bool
+    is_deploy_operation: bool
     created_at: datetime
     updated_at: datetime
 
@@ -49,6 +54,11 @@ class UpdateAgentToolRequest(BaseModel):
     category: str | None = Field(None, max_length=50)
     sort_order: int | None = Field(None, ge=0)
     is_enabled: bool | None = None
+    # Permission flags for mode-based access control
+    is_read_operation: bool | None = None
+    is_write_operation: bool | None = None
+    is_command_operation: bool | None = None
+    is_deploy_operation: bool | None = None
 
 
 class CreateAgentToolRequest(BaseModel):
@@ -59,6 +69,11 @@ class CreateAgentToolRequest(BaseModel):
     parameters: dict[str, Any] = Field(...)
     category: str = Field(default="custom", max_length=50)
     sort_order: int = Field(default=500, ge=0)
+    # Permission flags - defaults to read-only (safest option)
+    is_read_operation: bool = Field(default=True)
+    is_write_operation: bool = Field(default=False)
+    is_command_operation: bool = Field(default=False)
+    is_deploy_operation: bool = Field(default=False)
 
 
 class AgentToolListResponse(BaseModel):
@@ -238,6 +253,11 @@ async def create_tool(
         sort_order=data.sort_order,
         is_enabled=True,
         is_system=False,  # Custom tools can be deleted
+        # Permission flags for mode-based access control
+        is_read_operation=data.is_read_operation,
+        is_write_operation=data.is_write_operation,
+        is_command_operation=data.is_command_operation,
+        is_deploy_operation=data.is_deploy_operation,
     )
 
     db.add(tool)

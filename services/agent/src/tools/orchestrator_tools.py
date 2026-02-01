@@ -1,13 +1,17 @@
 """Orchestrator-specific tool implementations.
 
 These tools enable the OrchestratorAgent to create execution plans,
-delegate tasks to other agents, create custom agents, and synthesize results.
+delegate tasks to specialized subagents, create custom agents, and synthesize results.
+
+Task delegation uses the subagent system which provides:
+- Context isolation (subagents don't pollute parent context)
+- Role-based specialization (coder, reviewer, tester, planner, researcher)
+- Background execution support
+- Distributed processing via Redis queues
 """
 
 from __future__ import annotations
 
-import asyncio
-import time
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -15,9 +19,9 @@ import structlog
 
 from podex_shared.redis_client import get_redis_client
 from src.config import settings
+from src.config_reader import get_config_reader
 from src.providers.llm import LLMProvider
-from src.queue.task_queue import EnqueueParams, TaskStatus
-from src.tools.task_tools import get_session_task_stats, get_task_queue
+from src.subagent import SubagentStatus, get_subagent_manager
 
 if TYPE_CHECKING:
     from src.orchestrator import AgentOrchestrator
@@ -116,63 +120,90 @@ async def create_execution_plan(
 
 async def delegate_task(
     session_id: str,
+    parent_agent_id: str,
     agent_role: str,
     description: str,
-    priority: str = "medium",
-    context: dict[str, Any] | None = None,
+    background: bool = False,
+    system_prompt: str | None = None,
 ) -> dict[str, Any]:
-    """Delegate a task to an agent via the task queue.
+    """Delegate a task to a specialized subagent.
+
+    Uses the subagent system to spawn an isolated agent that executes
+    the task without polluting the parent agent's context. The result
+    is returned as a summary.
 
     Args:
         session_id: The session this task belongs to.
-        agent_role: Target agent role (coder, reviewer, tester, architect).
+        parent_agent_id: The parent agent spawning this subagent.
+        agent_role: Target agent role (must exist in database and be delegatable).
         description: Task description with requirements.
-        priority: Task priority (high, medium, low).
-        context: Optional context data for the task.
+        background: If True, run asynchronously and return immediately.
+        system_prompt: Optional custom system prompt (uses role default if not provided).
 
     Returns:
-        Dictionary with task info or error.
+        Dictionary with subagent info and result (or task_id if background).
     """
     try:
-        # Validate agent role
-        valid_roles = {"coder", "reviewer", "tester", "architect", "agent_builder", "orchestrator"}
-        if agent_role not in valid_roles:
+        # Validate role via ConfigReader (roles are in Redis, synced from database)
+        config = get_config_reader()
+        role_name = agent_role.lower()
+
+        if not await config.is_delegatable_role(role_name):
+            delegatable = await config.get_delegatable_roles()
+            valid_roles = [r["role"] for r in delegatable]
             return {
                 "success": False,
                 "error": f"Invalid agent role: {agent_role}. Must be one of: {valid_roles}",
             }
 
-        # Validate priority
-        valid_priorities = {"high", "medium", "low"}
-        if priority not in valid_priorities:
-            priority = "medium"
+        # Get the subagent manager
+        manager = get_subagent_manager()
 
-        # Enqueue task
-        queue = get_task_queue()
-        enqueue_params = EnqueueParams(
+        # Spawn the subagent (manager validates role and gets system_prompt from Redis)
+        subagent = await manager.spawn_subagent(
+            parent_agent_id=parent_agent_id,
             session_id=session_id,
-            agent_role=agent_role,
-            description=description,
-            priority=priority,
-            context=context,
+            role=role_name,
+            task=description,
+            background=background,
+            system_prompt=system_prompt,
         )
-        task_id = await queue.enqueue(enqueue_params)
 
         logger.info(
-            "Task delegated",
-            task_id=task_id,
-            agent_role=agent_role,
-            priority=priority,
+            "Task delegated to subagent",
+            subagent_id=subagent.id,
+            role=role_name,
             session_id=session_id,
+            background=background,
         )
 
-        return {
-            "success": True,
-            "task_id": task_id,
-            "agent_role": agent_role,
-            "priority": priority,
-            "message": f"Task delegated to {agent_role} agent",
-        }
+        if background:
+            # Return immediately with task ID for later retrieval
+            return {
+                "success": True,
+                "subagent_id": subagent.id,
+                "role": role_name,
+                "status": subagent.status.value,
+                "message": (
+                    f"Background task delegated to {role_name} subagent. "
+                    "Use get_subagent_status to check progress."
+                ),
+            }
+        else:
+            # Task completed synchronously
+            return {
+                "success": subagent.status == SubagentStatus.COMPLETED,
+                "subagent_id": subagent.id,
+                "role": role_name,
+                "status": subagent.status.value,
+                "result": subagent.result_summary,
+                "error": subagent.error,
+                "tokens_used": subagent.context.tokens_used,
+            }
+    except ValueError as e:
+        # Max concurrent subagents exceeded or invalid role
+        logger.warning("Failed to delegate task", error=str(e))
+        return {"success": False, "error": str(e)}
     except Exception as e:
         logger.error("Failed to delegate task", error=str(e))
         return {"success": False, "error": str(e)}
@@ -207,28 +238,15 @@ async def create_custom_agent(
             "Pass an explicit model or configure role defaults in the platform settings.",
         }
     try:
-        # Validate tools - includes orchestration tools for creating powerful sub-agents
-        valid_tools = {
-            # Basic file tools
-            "read_file",
-            "write_file",
-            "search_code",
-            "run_command",
-            "list_directory",
-            # Task delegation tools - allows custom agents to delegate work
-            "create_task",
-            "delegate_task",
-            "get_task_status",
-            "wait_for_tasks",
-            "get_all_pending_tasks",
-            # Git tools
-            "git_status",
-            "git_diff",
-            "git_commit",
-            "git_push",
-            "git_branch",
-            "git_log",
-        }
+        # Validate tools against database (via Redis)
+        config = get_config_reader()
+        valid_tools = await config.get_tool_names()
+        if not valid_tools:
+            return {
+                "success": False,
+                "error": "Failed to load tools from configuration. "
+                "Ensure the API service is running and has synced tools to Redis.",
+            }
         invalid_tools = set(tools) - valid_tools
         if invalid_tools:
             return {
@@ -248,7 +266,7 @@ async def create_custom_agent(
             return {"success": False, "error": f"Redis connection failed: {conn_err}"}
 
         config_key = CUSTOM_AGENT_KEY.format(session_id=session_id, agent_id=agent_id)
-        config = {
+        agent_config = {
             "agent_id": agent_id,
             "name": name,
             "system_prompt": system_prompt,
@@ -256,7 +274,7 @@ async def create_custom_agent(
             "model": model,
         }
 
-        await redis_client.set_json(config_key, config, ex=CUSTOM_AGENT_TTL)
+        await redis_client.set_json(config_key, agent_config, ex=CUSTOM_AGENT_TTL)
 
         logger.info(
             "Custom agent created",
@@ -358,178 +376,189 @@ async def delegate_to_custom_agent(
         return {"success": False, "error": str(e)}
 
 
-async def get_task_status(task_id: str) -> dict[str, Any]:
-    """Get the status of a delegated task.
+async def get_subagent_status(subagent_id: str) -> dict[str, Any]:
+    """Get the status of a delegated subagent task.
 
     Args:
-        task_id: Task ID to check.
+        subagent_id: Subagent ID to check.
 
     Returns:
-        Dictionary with task status and result.
+        Dictionary with subagent status and result.
     """
     try:
-        queue = get_task_queue()
-        task = await queue.get_task(task_id)
+        manager = get_subagent_manager()
+        subagent = manager.get_subagent(subagent_id)
 
-        if not task:
-            return {"success": False, "error": f"Task {task_id} not found"}
+        if not subagent:
+            return {"success": False, "error": f"Subagent {subagent_id} not found"}
 
         return {
             "success": True,
-            "task_id": task.id,
-            "status": task.status.value,
-            "agent_role": task.agent_role,
-            "description": task.description[:500],  # Truncate for readability
-            "result": task.result,
-            "error": task.error,
-            "assigned_agent_id": task.assigned_agent_id,
+            "subagent_id": subagent.id,
+            "status": subagent.status.value,
+            "role": subagent.role,
+            "task": subagent.task[:500],  # Truncate for readability
+            "result": subagent.result_summary,
+            "error": subagent.error,
+            "tokens_used": subagent.context.tokens_used,
+            "background": subagent.background,
         }
     except Exception as e:
-        logger.error("Failed to get task status", error=str(e))
+        logger.error("Failed to get subagent status", error=str(e))
         return {"success": False, "error": str(e)}
 
 
-async def wait_for_tasks(
-    session_id: str,  # noqa: ARG001 - Required by tool interface for future use
-    task_ids: list[str],
+async def wait_for_subagents(
+    subagent_ids: list[str],
     timeout_seconds: int = 300,
 ) -> dict[str, Any]:
-    """Wait for multiple tasks to complete.
+    """Wait for multiple subagent tasks to complete.
 
     Args:
-        session_id: The session ID (reserved for future session-scoped filtering).
-        task_ids: List of task IDs to wait for.
+        subagent_ids: List of subagent IDs to wait for.
         timeout_seconds: Maximum seconds to wait.
 
     Returns:
         Dictionary with completion status and results.
     """
     try:
-        queue = get_task_queue()
+        manager = get_subagent_manager()
         results: dict[str, dict[str, Any]] = {}
-        start_time = time.monotonic()
-        poll_interval = 0.5  # Check every 500ms for faster response
+        pending = set(subagent_ids)
 
-        pending = set(task_ids)
-
-        while pending:
-            # Check timeout before doing work
-            elapsed = time.monotonic() - start_time
-            if elapsed >= timeout_seconds:
-                break
-
-            for task_id in list(pending):
-                task = await queue.get_task(task_id)
-                if task and task.status in (
-                    TaskStatus.COMPLETED,
-                    TaskStatus.FAILED,
-                    TaskStatus.CANCELLED,
-                ):
-                    results[task_id] = {
-                        "status": task.status.value,
-                        "result": task.result,
-                        "error": task.error,
-                        "agent_role": task.agent_role,
+        # Wait for each subagent
+        for subagent_id in subagent_ids:
+            try:
+                subagent = await manager.wait_for_subagent(
+                    subagent_id,
+                    timeout=float(timeout_seconds),
+                )
+                if subagent:
+                    results[subagent_id] = {
+                        "status": subagent.status.value,
+                        "result": subagent.result_summary,
+                        "error": subagent.error,
+                        "role": subagent.role,
+                        "tokens_used": subagent.context.tokens_used,
                     }
-                    pending.discard(task_id)
-
-            if pending:
-                # Calculate remaining time and don't sleep longer than needed
-                remaining = timeout_seconds - (time.monotonic() - start_time)
-                if remaining > 0:
-                    await asyncio.sleep(min(poll_interval, remaining))
-
-        # Handle timeout for remaining tasks
-        for task_id in pending:
-            results[task_id] = {
-                "status": "timeout",
-                "error": "Task did not complete within timeout",
-            }
+                    if subagent.status in (
+                        SubagentStatus.COMPLETED,
+                        SubagentStatus.FAILED,
+                        SubagentStatus.CANCELLED,
+                    ):
+                        pending.discard(subagent_id)
+                else:
+                    results[subagent_id] = {
+                        "status": "not_found",
+                        "error": f"Subagent {subagent_id} not found",
+                    }
+                    pending.discard(subagent_id)
+            except TimeoutError:
+                results[subagent_id] = {
+                    "status": "timeout",
+                    "error": "Subagent did not complete within timeout",
+                }
 
         return {
             "success": len(pending) == 0,
-            "completed": len(task_ids) - len(pending),
-            "total": len(task_ids),
+            "completed": len(subagent_ids) - len(pending),
+            "total": len(subagent_ids),
             "results": results,
             "timed_out": list(pending),
         }
     except Exception as e:
-        logger.error("Failed to wait for tasks", error=str(e))
+        logger.error("Failed to wait for subagents", error=str(e))
         return {"success": False, "error": str(e)}
 
 
-async def get_all_pending_tasks(session_id: str) -> dict[str, Any]:
-    """Get all pending and active tasks in the session.
+async def get_active_subagents(parent_agent_id: str) -> dict[str, Any]:
+    """Get all active subagents for a parent agent.
 
     Args:
-        session_id: The session ID.
+        parent_agent_id: The parent agent ID.
 
     Returns:
-        Dictionary with task lists and stats.
+        Dictionary with subagent lists and stats.
     """
     try:
-        queue = get_task_queue()
+        manager = get_subagent_manager()
 
-        pending = await queue.get_pending_tasks(session_id)
-        stats = await get_session_task_stats(session_id)
+        all_subagents = manager.get_subagents(parent_agent_id)
+        active = manager.get_active_subagents(parent_agent_id)
+
+        # Calculate stats
+        stats = {
+            "total": len(all_subagents),
+            "active": len(active),
+            "completed": len([s for s in all_subagents if s.status == SubagentStatus.COMPLETED]),
+            "failed": len([s for s in all_subagents if s.status == SubagentStatus.FAILED]),
+        }
 
         return {
             "success": True,
             "stats": stats,
-            "pending_tasks": [
+            "active_subagents": [
                 {
-                    "task_id": t.id,
-                    "agent_role": t.agent_role,
-                    "description": t.description[:100],
-                    "priority": t.priority.value if hasattr(t.priority, "value") else t.priority,
-                    "status": t.status.value if hasattr(t.status, "value") else t.status,
+                    "subagent_id": s.id,
+                    "role": s.role,
+                    "task": s.task[:100],
+                    "status": s.status.value,
+                    "background": s.background,
+                    "tokens_used": s.context.tokens_used,
                 }
-                for t in pending
+                for s in active
+            ],
+            "all_subagents": [
+                {
+                    "subagent_id": s.id,
+                    "role": s.role,
+                    "task": s.task[:100],
+                    "status": s.status.value,
+                    "result": s.result_summary[:200] if s.result_summary else None,
+                }
+                for s in all_subagents
             ],
         }
     except Exception as e:
-        logger.error("Failed to get pending tasks", error=str(e))
+        logger.error("Failed to get active subagents", error=str(e))
         return {"success": False, "error": str(e)}
 
 
 async def synthesize_results(
-    session_id: str,  # noqa: ARG001 - Required by tool interface for future use
-    task_ids: list[str],
+    subagent_ids: list[str],
     synthesis_instructions: str = "",
 ) -> dict[str, Any]:
-    """Gather results from completed tasks for synthesis.
+    """Gather results from completed subagent tasks for synthesis.
 
     Args:
-        session_id: The session ID (reserved for future session-scoped filtering).
-        task_ids: Task IDs to gather results from.
+        subagent_ids: Subagent IDs to gather results from.
         synthesis_instructions: How to combine/summarize results.
 
     Returns:
         Dictionary with gathered results.
     """
     try:
-        queue = get_task_queue()
+        manager = get_subagent_manager()
         results = []
 
-        for task_id in task_ids:
-            task = await queue.get_task(task_id)
-            if task:
+        for subagent_id in subagent_ids:
+            subagent = manager.get_subagent(subagent_id)
+            if subagent:
                 results.append(
                     {
-                        "task_id": task.id,
-                        "agent_role": task.agent_role,
-                        "description": task.description,
-                        "status": task.status.value
-                        if hasattr(task.status, "value")
-                        else task.status,
-                        "result": task.result,
-                        "error": task.error,
+                        "subagent_id": subagent.id,
+                        "role": subagent.role,
+                        "task": subagent.task,
+                        "status": subagent.status.value,
+                        "result": subagent.result_summary,
+                        "error": subagent.error,
+                        "tokens_used": subagent.context.tokens_used,
                     },
                 )
 
         return {
             "success": True,
-            "task_count": len(results),
+            "subagent_count": len(results),
             "results": results,
             "synthesis_instructions": synthesis_instructions,
         }

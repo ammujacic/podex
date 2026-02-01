@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.database import AgentTemplate, User, get_db
+from src.database import AgentTemplate, AgentTool, User, get_db
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
 router = APIRouter()
@@ -27,72 +27,15 @@ def generate_share_token() -> str:
     return secrets.token_urlsafe(16)[:24]  # 24-char URL-safe token
 
 
-# Valid tool names that can be assigned to custom agents
-# Must match the VALID_TOOLS in agent_builder_tools.py
-VALID_TOOLS = {
-    # File tools
-    "read_file",
-    "write_file",
-    "list_directory",
-    "search_code",
-    "glob_files",
-    "grep",
-    "apply_patch",
-    # Command tools
-    "run_command",
-    # Git tools
-    "git_status",
-    "git_commit",
-    "git_push",
-    "git_branch",
-    "git_diff",
-    "git_log",
-    "create_pr",
-    # Memory tools
-    "store_memory",
-    "recall_memory",
-    "update_memory",
-    "delete_memory",
-    "get_session_memories",
-    # Task/orchestration tools
-    "create_task",
-    "create_execution_plan",
-    "delegate_task",
-    "create_custom_agent",
-    "delegate_to_custom_agent",
-    "get_task_status",
-    "wait_for_tasks",
-    "get_all_pending_tasks",
-    "synthesize_results",
-    # Web tools
-    "fetch_url",
-    "search_web",
-    "screenshot_page",
-    "interact_with_page",
-    "extract_page_data",
-    # Vision tools
-    "analyze_screenshot",
-    "design_to_code",
-    # Skill tools
-    "list_skills",
-    "get_skill",
-    "match_skills",
-    "execute_skill",
-    "create_skill",
-    "delete_skill",
-    "get_skill_stats",
-    "recommend_skills",
-    # Deploy tools
-    "deploy_preview",
-    "get_preview_status",
-    "stop_preview",
-    "run_e2e_tests",
-    "rollback_deploy",
-    "check_deployment_health",
-    "wait_for_deployment",
-    "list_previews",
-    "get_preview_logs",
-}
+async def get_valid_tool_names(db: AsyncSession) -> set[str]:
+    """Get all valid tool names from the database.
+
+    This queries the AgentTool table which is the single source of truth
+    for available tools.
+    """
+    query = select(AgentTool.name).where(AgentTool.is_enabled == True)
+    result = await db.execute(query)
+    return {row[0] for row in result.fetchall()}
 
 
 def get_current_user_id(request: Request) -> str:
@@ -195,81 +138,68 @@ class ShareLinkResponse(BaseModel):
     share_url: str
 
 
+class ToolInfo(BaseModel):
+    """Tool information response."""
+
+    name: str
+    description: str
+    category: str
+    # Permission flags for mode-based access control
+    is_read_operation: bool = True
+    is_write_operation: bool = False
+    is_command_operation: bool = False
+    is_deploy_operation: bool = False
+
+
 class AvailableToolsResponse(BaseModel):
     """Available tools response."""
 
-    tools: dict[str, str]
+    tools: dict[str, str]  # name -> description (for backwards compatibility)
+    tools_by_category: dict[str, list[ToolInfo]]  # category -> tools
 
 
 @router.get("/tools", response_model=AvailableToolsResponse)
 @limiter.limit(RATE_LIMIT_STANDARD)
-async def list_available_tools(request: Request, response: Response) -> AvailableToolsResponse:
-    """List all available tools that can be assigned to custom agents."""
-    tools = {
-        # File tools
-        "read_file": "Read files from the workspace - useful for code analysis",
-        "write_file": "Create or modify files - essential for coding agents",
-        "list_directory": "Browse directory contents - for exploring project structure",
-        "search_code": "Search for code patterns across the workspace",
-        "glob_files": "Find files matching a glob pattern (e.g., **/*.py)",
-        "grep": "Search file contents with regex patterns",
-        "apply_patch": "Apply a unified diff patch to a file",
-        # Command tools
-        "run_command": "Execute shell commands - for running tests, builds, etc.",
-        # Git tools
-        "git_status": "Check git status - see modified, staged, and untracked files",
-        "git_commit": "Create a git commit with staged changes",
-        "git_push": "Push commits to a remote repository",
-        "git_branch": "List, create, or switch git branches",
-        "git_diff": "Show changes between commits, branches, or working directory",
-        "git_log": "View commit history",
-        "create_pr": "Create a pull request on GitHub",
-        # Memory tools
-        "store_memory": "Store facts or insights for later recall",
-        "recall_memory": "Search and retrieve stored memories",
-        "update_memory": "Update existing memories",
-        "delete_memory": "Delete memories",
-        "get_session_memories": "Get all memories from the current session",
-        # Task/orchestration tools
-        "create_task": "Create a task for another agent to handle",
-        "create_execution_plan": "Create a multi-step execution plan",
-        "delegate_task": "Delegate a task to a specific agent role",
-        "create_custom_agent": "Create a custom agent with specific capabilities",
-        "delegate_to_custom_agent": "Delegate a task to a custom agent",
-        "get_task_status": "Check the status of a delegated task",
-        "wait_for_tasks": "Wait for multiple tasks to complete",
-        "get_all_pending_tasks": "Get all pending tasks in the session",
-        "synthesize_results": "Combine results from multiple tasks",
-        # Web tools
-        "fetch_url": "Fetch content from a URL",
-        "search_web": "Search the web for information",
-        "screenshot_page": "Take a screenshot of a web page",
-        "interact_with_page": "Interact with web page elements",
-        "extract_page_data": "Extract structured data from a web page",
-        # Vision tools
-        "analyze_screenshot": "Analyze a screenshot using vision AI",
-        "design_to_code": "Convert a design image to code",
-        # Skill tools
-        "list_skills": "List available skills in the skill library",
-        "get_skill": "Get details about a specific skill",
-        "match_skills": "Find skills matching a query",
-        "execute_skill": "Execute a skill with given parameters",
-        "create_skill": "Create a new reusable skill",
-        "delete_skill": "Delete a skill from the library",
-        "get_skill_stats": "Get usage statistics for skills",
-        "recommend_skills": "Get skill recommendations for a task",
-        # Deploy tools
-        "deploy_preview": "Deploy a preview environment for testing",
-        "get_preview_status": "Get status of a preview deployment",
-        "stop_preview": "Stop a running preview environment",
-        "run_e2e_tests": "Run end-to-end tests against a deployment",
-        "rollback_deploy": "Rollback a deployment to a previous commit",
-        "check_deployment_health": "Check health of a deployed service",
-        "wait_for_deployment": "Wait for a deployment to become healthy",
-        "list_previews": "List all preview deployments for the session",
-        "get_preview_logs": "Get logs from a preview deployment",
-    }
-    return AvailableToolsResponse(tools=tools)
+async def list_available_tools(
+    request: Request,
+    response: Response,
+    db: DbSession,
+) -> AvailableToolsResponse:
+    """List all available tools that can be assigned to custom agents.
+
+    Fetches tools from the database (AgentTool table) which is the
+    single source of truth for available tools.
+    """
+    query = (
+        select(AgentTool)
+        .where(AgentTool.is_enabled == True)
+        .order_by(AgentTool.category, AgentTool.sort_order)
+    )
+    result = await db.execute(query)
+    db_tools = result.scalars().all()
+
+    # Build response in both formats for compatibility
+    tools: dict[str, str] = {}
+    tools_by_category: dict[str, list[ToolInfo]] = {}
+
+    for tool in db_tools:
+        tools[tool.name] = tool.description
+
+        if tool.category not in tools_by_category:
+            tools_by_category[tool.category] = []
+        tools_by_category[tool.category].append(
+            ToolInfo(
+                name=tool.name,
+                description=tool.description,
+                category=tool.category,
+                is_read_operation=tool.is_read_operation,
+                is_write_operation=tool.is_write_operation,
+                is_command_operation=tool.is_command_operation,
+                is_deploy_operation=tool.is_deploy_operation,
+            )
+        )
+
+    return AvailableToolsResponse(tools=tools, tools_by_category=tools_by_category)
 
 
 @router.get("", response_model=list[AgentTemplateResponse])
@@ -303,12 +233,13 @@ async def create_agent_template(
     """Create a new agent template."""
     user_id = get_current_user_id(request)
 
-    # Validate tools
-    invalid_tools = set(data.allowed_tools) - VALID_TOOLS
+    # Validate tools against database
+    valid_tools = await get_valid_tool_names(db)
+    invalid_tools = set(data.allowed_tools) - valid_tools
     if invalid_tools:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid tools: {invalid_tools}. Valid tools: {VALID_TOOLS}",
+            detail=f"Invalid tools: {invalid_tools}",
         )
 
     # Check for duplicate slug
@@ -390,9 +321,10 @@ async def update_agent_template(
     if not template:
         raise HTTPException(status_code=404, detail="Agent template not found")
 
-    # Validate tools if provided
+    # Validate tools if provided against database
     if data.allowed_tools:
-        invalid_tools = set(data.allowed_tools) - VALID_TOOLS
+        valid_tools = await get_valid_tool_names(db)
+        invalid_tools = set(data.allowed_tools) - valid_tools
         if invalid_tools:
             raise HTTPException(
                 status_code=400,

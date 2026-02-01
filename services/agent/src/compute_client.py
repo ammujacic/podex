@@ -4,6 +4,9 @@ This client provides a bridge between the agent service and workspace containers
 via the compute service HTTP API. All file operations, command execution, and
 git operations should go through this client to execute on the actual workspace
 container rather than the agent's local filesystem.
+
+The compute service URL is looked up from the database based on the workspace's
+assigned server, allowing multi-region deployments with different compute services.
 """
 
 from __future__ import annotations
@@ -13,6 +16,8 @@ from typing import Any
 
 import httpx
 import structlog
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from podex_shared.auth import ServiceAuthClient
 from src.config import settings
@@ -23,20 +28,85 @@ logger = structlog.get_logger()
 DEFAULT_TIMEOUT = 30.0
 EXEC_TIMEOUT = 120.0  # Longer timeout for command execution
 
-# Service auth client for compute service (module-level singleton)
-_service_auth: ServiceAuthClient | None = None
+# Service auth clients per compute URL (module-level cache)
+_service_auth_cache: dict[str, ServiceAuthClient] = {}
 
 
-def _get_service_auth() -> ServiceAuthClient:
-    """Get or create the service auth client for compute service."""
-    global _service_auth
-    if _service_auth is None:
-        _service_auth = ServiceAuthClient(
-            target_url=settings.COMPUTE_SERVICE_URL,
+def _get_service_auth(compute_url: str) -> ServiceAuthClient:
+    """Get or create the service auth client for a compute service URL."""
+    if compute_url not in _service_auth_cache:
+        _service_auth_cache[compute_url] = ServiceAuthClient(
+            target_url=compute_url,
             api_key=settings.INTERNAL_SERVICE_TOKEN,
             environment=settings.ENVIRONMENT,
         )
-    return _service_auth
+    return _service_auth_cache[compute_url]
+
+
+class ComputeServiceURLNotFoundError(Exception):
+    """Raised when compute service URL cannot be resolved for a workspace."""
+
+    pass
+
+
+async def get_compute_service_url(workspace_id: str) -> str:
+    """Look up the compute service URL for a workspace from the database.
+
+    Queries the workspace's assigned server to get the compute_service_url.
+
+    Args:
+        workspace_id: The workspace ID to look up.
+
+    Returns:
+        The compute service URL for this workspace.
+
+    Raises:
+        ComputeServiceURLNotFoundError: If the URL cannot be resolved.
+    """
+    from src.database.connection import get_db_context
+    from src.database.models import Workspace
+
+    try:
+        async with get_db_context() as db:
+            result = await db.execute(
+                select(Workspace)
+                .options(selectinload(Workspace.server))
+                .where(Workspace.id == workspace_id)
+            )
+            workspace = result.scalar_one_or_none()
+
+            if not workspace:
+                raise ComputeServiceURLNotFoundError(f"Workspace {workspace_id} not found")
+
+            if not workspace.server:
+                raise ComputeServiceURLNotFoundError(
+                    f"Workspace {workspace_id} has no server assigned"
+                )
+
+            if not workspace.server.compute_service_url:
+                raise ComputeServiceURLNotFoundError(
+                    f"Server {workspace.server.id} has no compute_service_url configured"
+                )
+
+            logger.debug(
+                "Resolved compute service URL from database",
+                workspace_id=workspace_id,
+                server_id=workspace.server.id,
+                compute_url=workspace.server.compute_service_url,
+            )
+            return workspace.server.compute_service_url
+
+    except ComputeServiceURLNotFoundError:
+        raise
+    except Exception as e:
+        logger.error(
+            "Failed to look up compute service URL",
+            workspace_id=workspace_id,
+            error=str(e),
+        )
+        raise ComputeServiceURLNotFoundError(
+            f"Database error looking up compute URL for workspace {workspace_id}: {e}"
+        ) from e
 
 
 class ComputeClientError(Exception):
@@ -55,13 +125,16 @@ class ComputeClient:
 
     All agent tools that need to access workspace files or run commands
     should use this client instead of local filesystem operations.
+
+    The compute service URL is looked up from the database based on the
+    workspace's assigned server, enabling multi-region deployments.
     """
 
     def __init__(
         self,
         workspace_id: str,
         user_id: str,
-        base_url: str | None = None,
+        base_url: str,
         auth_token: str | None = None,
     ) -> None:
         """Initialize compute client.
@@ -69,12 +142,12 @@ class ComputeClient:
         Args:
             workspace_id: The workspace container ID.
             user_id: The user ID for authorization.
-            base_url: Compute service URL (defaults to settings).
+            base_url: Compute service URL (required - looked up from database).
             auth_token: Authorization token (defaults to internal service token).
         """
         self.workspace_id = workspace_id
         self.user_id = user_id
-        self.base_url = (base_url or settings.COMPUTE_SERVICE_URL).rstrip("/")
+        self.base_url = base_url.rstrip("/")
         # Use INTERNAL_SERVICE_TOKEN for compute service authentication
         self.auth_token = auth_token or settings.INTERNAL_SERVICE_TOKEN
 
@@ -84,8 +157,8 @@ class ComputeClient:
         In production (GCP): Uses ID token from metadata server
         In development (Docker): Uses API key header
         """
-        # Get auth headers from service auth client
-        auth_headers = await _get_service_auth().get_auth_headers()
+        # Get auth headers from service auth client for this specific URL
+        auth_headers = await _get_service_auth(self.base_url).get_auth_headers()
 
         headers = {
             "Content-Type": "application/json",
@@ -518,11 +591,11 @@ class ComputeClient:
             return False
 
 
-# Singleton client cache per workspace
+# Singleton client cache per workspace (includes URL in cache key)
 _client_cache: dict[str, ComputeClient] = {}
 
 
-def get_compute_client(
+async def get_compute_client(
     workspace_id: str,
     user_id: str,
     base_url: str | None = None,
@@ -530,22 +603,38 @@ def get_compute_client(
 ) -> ComputeClient:
     """Get or create a compute client for a workspace.
 
+    Looks up the compute service URL from the database based on the workspace's
+    assigned server.
+
     Args:
         workspace_id: The workspace container ID.
         user_id: The user ID for authorization.
-        base_url: Compute service URL.
+        base_url: Override compute service URL (skips database lookup).
         auth_token: Authorization token.
 
     Returns:
         ComputeClient instance.
+
+    Raises:
+        ComputeServiceURLNotFoundError: If base_url not provided and lookup fails.
     """
-    cache_key = f"{workspace_id}:{user_id}"
+    # Look up URL from database if not provided
+    if base_url is None:
+        base_url = await get_compute_service_url(workspace_id)
+
+    # Cache key includes URL since different workspaces may use different compute services
+    cache_key = f"{workspace_id}:{user_id}:{base_url}"
     if cache_key not in _client_cache:
         _client_cache[cache_key] = ComputeClient(
             workspace_id=workspace_id,
             user_id=user_id,
             base_url=base_url,
             auth_token=auth_token,
+        )
+        logger.info(
+            "Created compute client with database-resolved URL",
+            workspace_id=workspace_id,
+            compute_url=base_url,
         )
     return _client_cache[cache_key]
 

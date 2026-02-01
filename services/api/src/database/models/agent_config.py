@@ -143,6 +143,25 @@ class AgentTool(Base):
         String(50), default="general", nullable=False
     )  # file, git, delegation, etc.
 
+    # Permission type flags - used for mode-based access control
+    # These determine how each tool behaves in different agent modes:
+    # - Plan mode: only is_read_operation=True allowed
+    # - Ask mode: requires approval for write/command/deploy operations
+    # - Auto mode: writes allowed, commands need allowlist, deploys need approval
+    # - Sovereign mode: everything allowed
+    is_read_operation: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )  # Read-only operations (allowed in Plan mode)
+    is_write_operation: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )  # Modifies files (write_file, apply_patch)
+    is_command_operation: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )  # Executes shell commands (run_command)
+    is_deploy_operation: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )  # Deployment operations (deploy_preview, etc.)
+
     # Ordering and visibility
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

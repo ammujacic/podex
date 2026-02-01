@@ -198,7 +198,7 @@ class Settings(BaseSettings):
     STRIPE_PUBLISHABLE_KEY: str | None = None
 
     # Email configuration
-    EMAIL_BACKEND: str = "console"  # console, smtp, sendgrid
+    EMAIL_BACKEND: str = "console"  # console, smtp, resend
     EMAIL_FROM_ADDRESS: str = "podex@podex.dev"
     EMAIL_FROM_NAME: str = "Podex"
     EMAIL_REPLY_TO: str = "podex@podex.dev"
@@ -210,8 +210,8 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str | None = None
     SMTP_USE_TLS: bool = True
 
-    # SendGrid settings (when EMAIL_BACKEND=sendgrid) - RECOMMENDED FOR PRODUCTION
-    SENDGRID_API_KEY: str | None = None
+    # Resend settings (when EMAIL_BACKEND=resend) - RECOMMENDED FOR PRODUCTION
+    RESEND_API_KEY: str | None = None
 
     # Push Notifications (Web Push / VAPID)
     VAPID_PUBLIC_KEY: str | None = None
@@ -301,13 +301,13 @@ class Settings(BaseSettings):
     # These can be overridden for testing or self-hosted instances
     GITHUB_API_URL: str = "https://api.github.com"
     GITHUB_API_VERSION: str = "2022-11-28"
-    SENDGRID_API_URL: str = "https://api.sendgrid.com/v3/mail/send"
+    RESEND_API_URL: str = "https://api.resend.com/emails"
     OPENVSX_API_URL: str = "https://open-vsx.org/api"
 
     # ============== HTTP Client Timeouts ==============
     HTTP_TIMEOUT_DEFAULT: float = 30.0  # Default HTTP request timeout in seconds
     HTTP_TIMEOUT_GITHUB: float = 30.0  # GitHub API timeout
-    HTTP_TIMEOUT_SENDGRID: float = 30.0  # SendGrid API timeout
+    HTTP_TIMEOUT_RESEND: float = 30.0  # Resend API timeout
 
     # ============== Workspace Operation Timeouts ==============
     WORKSPACE_CREATION_TIMEOUT: int = 600  # 10 minutes for workspace creation

@@ -120,7 +120,7 @@ function getProviderInfo(providerId: string, providers: LLMProvider[]): Provider
 // Colors come from agentRoles in config store
 // ============================================================================
 
-import { getRoleIcon } from '@/components/workspace/modals/agentConstants';
+import { getRoleIcon } from '@/lib/agentConstants';
 
 // ============================================================================
 // Default Provider Configuration (models come from API)

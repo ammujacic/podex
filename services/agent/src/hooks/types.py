@@ -1,7 +1,7 @@
 """Hook type definitions for the agent hooks system."""
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -54,8 +54,8 @@ class HookDefinition:
     enabled: bool = True
     timeout_ms: int = 30000  # 30 second default
     run_async: bool = False
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API responses."""

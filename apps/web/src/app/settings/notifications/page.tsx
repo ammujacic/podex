@@ -1,16 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import {
-  Bell,
-  Mail,
-  MessageSquare,
-  Volume2,
-  Monitor,
-  Save,
-  Loader2,
-  Smartphone,
-} from 'lucide-react';
+import { Bell, Mail, MessageSquare, Volume2, Save, Loader2, Smartphone, Send } from 'lucide-react';
 import { Button } from '@podex/ui';
 import { cn } from '@/lib/utils';
 import { PushNotificationSettings } from '@/components/settings/PushNotificationSettings';
@@ -98,7 +89,6 @@ export default function NotificationsPage() {
   const [settings, setSettings] = useState<NotificationSetting[]>(defaultSettings);
   const [saving, setSaving] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
-  const [desktopEnabled, setDesktopEnabled] = useState(true);
   const [loading, setLoading] = useState(true);
 
   // Load saved preferences on mount
@@ -118,7 +108,6 @@ export default function NotificationsPage() {
           const prefs = config.ui_preferences.notifications;
           if (prefs.settings) setSettings(prefs.settings);
           if (prefs.soundEnabled !== undefined) setSoundEnabled(prefs.soundEnabled);
-          if (prefs.desktopEnabled !== undefined) setDesktopEnabled(prefs.desktopEnabled);
         }
       } catch (error) {
         console.error('Failed to load notification preferences:', error);
@@ -141,7 +130,6 @@ export default function NotificationsPage() {
           notifications: {
             settings,
             soundEnabled,
-            desktopEnabled,
           },
         },
       });
@@ -161,7 +149,7 @@ export default function NotificationsPage() {
   }
 
   return (
-    <div className="max-w-3xl mx-auto px-8 py-8">
+    <div className="max-w-4xl mx-auto px-8 py-8">
       <div className="mb-8">
         <h1 className="text-2xl font-semibold text-text-primary">Notification Preferences</h1>
         <p className="text-text-muted mt-1">Choose how and when you want to be notified</p>
@@ -182,22 +170,13 @@ export default function NotificationsPage() {
           <Volume2 className="w-5 h-5" />
           Global Settings
         </h2>
-        <div className="bg-surface border border-border-default rounded-xl p-5 space-y-4">
+        <div className="bg-surface border border-border-default rounded-xl p-5">
           <div className="flex items-center justify-between">
             <div>
               <p className="font-medium text-text-primary">Sound Notifications</p>
               <p className="text-sm text-text-muted">Play a sound for important notifications</p>
             </div>
             <ToggleSwitch enabled={soundEnabled} onChange={setSoundEnabled} />
-          </div>
-          <div className="border-t border-border-subtle pt-4 flex items-center justify-between">
-            <div>
-              <p className="font-medium text-text-primary">Desktop Notifications</p>
-              <p className="text-sm text-text-muted">
-                Show browser notifications when tab is inactive
-              </p>
-            </div>
-            <ToggleSwitch enabled={desktopEnabled} onChange={setDesktopEnabled} />
           </div>
         </div>
       </section>
@@ -216,7 +195,7 @@ export default function NotificationsPage() {
               <Mail className="w-3.5 h-3.5" /> Email
             </div>
             <div className="text-center flex items-center justify-center gap-1">
-              <Monitor className="w-3.5 h-3.5" /> Push
+              <Send className="w-3.5 h-3.5" /> Push
             </div>
             <div className="text-center flex items-center justify-center gap-1">
               <MessageSquare className="w-3.5 h-3.5" /> In-App

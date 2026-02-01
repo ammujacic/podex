@@ -512,7 +512,14 @@ async def handle_customer_subscription_deleted(
     db: AsyncSession,
     event: stripe.Event,
 ) -> None:
-    """Handle subscription cancellation/deletion."""
+    """Handle subscription cancellation/deletion.
+
+    When a paid subscription ends (period expires after cancel_at_period_end),
+    Stripe fires this event. We need to:
+    1. Mark the old subscription as canceled
+    2. Downgrade user to the free plan
+    3. Update quotas to free plan limits
+    """
     stripe_subscription = event.data.object
     subscription_id = stripe_subscription.id
 
@@ -523,12 +530,13 @@ async def handle_customer_subscription_deleted(
     subscription = result.scalar_one_or_none()
 
     if subscription:
+        user_id = subscription.user_id
         subscription.status = "canceled"
         subscription.canceled_at = datetime.now(UTC)
 
         await _log_billing_event(
             db,
-            user_id=subscription.user_id,
+            user_id=user_id,
             event_type="subscription_canceled",
             event_data={
                 "reason": "Stripe subscription deleted",
@@ -537,10 +545,56 @@ async def handle_customer_subscription_deleted(
             subscription_id=subscription.id,
         )
 
-        # Send subscription canceled email
-        user_result = await db.execute(select(User).where(User.id == subscription.user_id))
+        # Get user and free plan to downgrade
+        user_result = await db.execute(select(User).where(User.id == user_id))
         user = user_result.scalar_one_or_none()
 
+        free_plan_result = await db.execute(
+            select(SubscriptionPlan).where(SubscriptionPlan.slug == "free")
+        )
+        free_plan = free_plan_result.scalar_one_or_none()
+
+        # Create a new free plan subscription
+        if user and free_plan:
+            now = datetime.now(UTC)
+            # Free plans have 30-day periods that auto-renew
+            period_end = now + timedelta(days=30)
+
+            free_subscription = UserSubscription(
+                user_id=user_id,
+                plan_id=free_plan.id,
+                status="active",
+                billing_cycle="monthly",
+                current_period_start=now,
+                current_period_end=period_end,
+                cancel_at_period_end=False,
+                last_credit_grant=now,
+            )
+            db.add(free_subscription)
+            await db.flush()
+
+            # Update quotas to free plan limits
+            await sync_quotas_from_plan(db, user_id, free_plan, free_subscription)
+
+            await _log_billing_event(
+                db,
+                user_id=user_id,
+                event_type="downgraded_to_free",
+                event_data={
+                    "previous_subscription_id": subscription.id,
+                    "new_subscription_id": free_subscription.id,
+                },
+                stripe_event_id=event.id,
+                subscription_id=free_subscription.id,
+            )
+
+            logger.info(
+                "Downgraded user to free plan",
+                user_id=user_id,
+                previous_plan_id=subscription.plan_id,
+            )
+
+        # Send subscription canceled email
         if user and user.email:
             try:
                 email_service = get_email_service()

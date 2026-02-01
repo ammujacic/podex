@@ -28,7 +28,10 @@ from src.cache import (
     invalidate_user_sessions,
     session_key,
 )
-from src.compute_client import compute_client
+from src.compute_client import (
+    get_compute_client_for_placement,
+    get_compute_client_for_workspace,
+)
 from src.config import settings
 from src.database import Agent as AgentModel
 from src.database import (
@@ -41,7 +44,7 @@ from src.database import (
 )
 from src.database import Session as SessionModel
 from src.database import Workspace as WorkspaceModel
-from src.database.models import GitHubIntegration
+from src.database.models import GitHubIntegration, Organization, OrganizationMember
 from src.database.models.platform import LLMModel
 from src.exceptions import ComputeClientError, ComputeServiceHTTPError
 from src.middleware.rate_limit import (
@@ -50,6 +53,11 @@ from src.middleware.rate_limit import (
     limiter,
 )
 from src.routes.dependencies import DbSession, get_current_user_id
+from src.services.org_limits import (
+    InstanceTypeAccessDeniedError,
+    LimitExceededError,
+    OrgLimitsService,
+)
 from src.services.workspace_router import workspace_router
 
 logger = structlog.get_logger()
@@ -157,6 +165,32 @@ async def _get_default_model_for_role(db: AsyncSession, role: str, user_id: str)
             "Check agent_model_defaults in platform settings."
         ),
     )
+
+
+async def _get_session_defaults(db: AsyncSession) -> dict[str, str]:
+    """Get session default settings from platform settings.
+
+    Returns:
+        Dict with default_role, default_mode, model_fallback_role.
+
+    Raises:
+        HTTPException: If session defaults are not configured.
+    """
+    result = await db.execute(
+        select(PlatformSetting).where(PlatformSetting.key == "session_defaults")
+    )
+    setting = result.scalar_one_or_none()
+
+    if not setting or not isinstance(setting.value, dict):
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Session defaults not configured in platform settings. "
+                "Check session_defaults setting."
+            ),
+        )
+
+    return setting.value
 
 
 @dataclass
@@ -556,6 +590,42 @@ async def create_session(
             ),
         )
 
+    # Check organization limits if user is in an org
+    result = await db.execute(
+        select(OrganizationMember, Organization)
+        .join(Organization, OrganizationMember.organization_id == Organization.id)
+        .where(OrganizationMember.user_id == user_id)
+    )
+    org_row = result.one_or_none()
+    if org_row:
+        member, org = org_row[0], org_row[1]
+        try:
+            # Check spending limits
+            limits_service = OrgLimitsService(db)
+            await limits_service.check_spending_limit(member, org, additional_cents=0)
+            # Check instance type access if tier specified
+            if data.tier:
+                await limits_service.check_instance_type_access(member, org, data.tier)
+        except LimitExceededError:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "org_limit_exceeded",
+                    "message": (
+                        "You have reached your organization spending limit. "
+                        "Please contact your organization admin."
+                    ),
+                },
+            )
+        except InstanceTypeAccessDeniedError as e:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "instance_type_denied",
+                    "message": f"You don't have access to instance type '{data.tier}'. {e!s}",
+                },
+            )
+
     # Validate local_pod_id if provided
     local_pod = None
     if data.local_pod_id:
@@ -688,16 +758,20 @@ async def create_session(
     else:
         # Use cloud compute service
         try:
-            workspace_info = await compute_client.create_workspace(
+            # Select a server and get the appropriate compute client
+            compute, selected_server = await get_compute_client_for_placement()
+            # Pre-assign server to workspace before calling compute service
+            workspace.server_id = selected_server.id
+            await db.commit()
+
+            workspace_info = await compute.create_workspace(
                 session_id=str(session.id),
                 user_id=user_id,
                 workspace_id=str(workspace.id),
                 config=workspace_config,
             )
-            # Update workspace status and server_id from compute service response
+            # Update workspace status from compute service response
             workspace.status = workspace_info.get("status", "running")
-            if workspace_info.get("server_id"):
-                workspace.server_id = workspace_info.get("server_id")
             if workspace_info.get("container_id"):
                 workspace.container_id = workspace_info.get("container_id")
             await db.commit()
@@ -721,28 +795,37 @@ async def create_session(
         details={"name": session.name, "git_url": session.git_url, "branch": session.branch},
     )
 
-    # Create default Chat agent for the session
+    # Create default agent for the session (role and mode from platform settings)
     try:
-        default_model = await _get_default_model_for_role(db, "chat", user_id)
+        session_defaults = await _get_session_defaults(db)
+        default_role = session_defaults.get("default_role")
+        default_mode = session_defaults.get("default_mode")
+
+        if not default_role or not default_mode:
+            raise ValueError("session_defaults missing required fields")  # noqa: TRY301
+
+        default_model = await _get_default_model_for_role(db, default_role, user_id)
         default_agent = AgentModel(
             session_id=session.id,
-            name="Chat",
-            role="chat",
+            name=default_role.capitalize(),
+            role=default_role,
             model=default_model,
             status="idle",
-            mode="auto",
+            mode=default_mode,
             config={"color": DEFAULT_AGENT_COLOR},
         )
         db.add(default_agent)
         await db.commit()
         logger.info(
-            "Created default Chat agent for session",
+            "Created default agent for session",
             session_id=str(session.id),
             agent_id=str(default_agent.id),
+            role=default_role,
+            mode=default_mode,
         )
     except Exception as e:
         logger.warning(
-            "Failed to create default Chat agent",
+            "Failed to create default agent",
             session_id=str(session.id),
             error=str(e),
         )
@@ -1008,7 +1091,8 @@ async def get_session_scale_options(
         raise HTTPException(status_code=400, detail="Session does not have a workspace")
 
     try:
-        return await compute_client.get_scale_options(
+        compute = await get_compute_client_for_workspace(session.workspace_id)
+        return await compute.get_scale_options(
             workspace_id=session.workspace_id,
             user_id=user_id,
         )
@@ -1069,7 +1153,8 @@ async def scale_session_workspace(
 
     try:
         # Call the compute service to scale the workspace
-        scale_response = await compute_client.scale_workspace(
+        compute = await get_compute_client_for_workspace(session.workspace_id)
+        scale_response = await compute.scale_workspace(
             workspace_id=session.workspace_id,
             user_id=user_id,
             new_tier=scale_request.new_tier,
@@ -1747,15 +1832,19 @@ async def ensure_workspace_provisioned(
                     ) from None
         return
 
-    # Cloud workspace - use existing compute_client flow
-    # Check if workspace exists in compute service (fast path, no lock needed)
-    try:
-        existing = await compute_client.get_workspace(workspace_id, user_id)
-        if existing:
-            return  # Workspace exists, nothing to do
-    except ComputeServiceHTTPError as e:
-        if e.status_code != 404:
-            raise  # Re-raise non-404 errors
+    # Cloud workspace - use compute service
+    # If workspace has a server_id, use its compute service URL
+    # Otherwise, we'll need to select a server during provisioning
+    if workspace_record and workspace_record.server_id:
+        try:
+            compute = await get_compute_client_for_workspace(workspace_id)
+            existing = await compute.get_workspace(workspace_id, user_id)
+            if existing:
+                return  # Workspace exists, nothing to do
+        except ComputeServiceHTTPError as e:
+            if e.status_code != 404:
+                raise  # Re-raise non-404 errors
+    # If no server_id yet, we'll select one during provisioning below
 
     # Build workspace config from template if db session is available
     if db and session.template_id:
@@ -1791,17 +1880,19 @@ async def ensure_workspace_provisioned(
 
         async with client.lock(lock_key, timeout=60, retry_interval=0.2, max_retries=150):
             # Double-check after acquiring lock (another request may have created it)
-            try:
-                existing = await compute_client.get_workspace(workspace_id, user_id)
-                if existing:
-                    logger.debug(
-                        "Workspace already provisioned by another request",
-                        workspace_id=workspace_id,
-                    )
-                    return  # Workspace was created while we waited for lock
-            except ComputeServiceHTTPError as e:
-                if e.status_code != 404:
-                    raise
+            if workspace_record and workspace_record.server_id:
+                try:
+                    compute = await get_compute_client_for_workspace(workspace_id)
+                    existing = await compute.get_workspace(workspace_id, user_id)
+                    if existing:
+                        logger.debug(
+                            "Workspace already provisioned by another request",
+                            workspace_id=workspace_id,
+                        )
+                        return  # Workspace was created while we waited for lock
+                except ComputeServiceHTTPError as e:
+                    if e.status_code != 404:
+                        raise
 
             # Workspace still doesn't exist, provision it
             logger.info(
@@ -1812,22 +1903,30 @@ async def ensure_workspace_provisioned(
                 has_template=bool(session.template_id),
             )
 
-            workspace_info = await compute_client.create_workspace(
+            # Select a server if not already assigned
+            if workspace_record and workspace_record.server_id:
+                compute = await get_compute_client_for_workspace(workspace_id)
+            else:
+                compute, selected_server = await get_compute_client_for_placement()
+                # Pre-assign server to workspace
+                if db and workspace_record:
+                    workspace_record.server_id = selected_server.id
+                    await db.commit()
+
+            workspace_info = await compute.create_workspace(
                 session_id=str(session.id),
                 user_id=user_id,
                 workspace_id=workspace_id,
                 config=workspace_config,
             )
 
-            # Update workspace record with server_id if db is available
+            # Update workspace record with container_id and status if db is available
             if db and workspace_info:
                 ws_result = await db.execute(
                     select(WorkspaceModel).where(WorkspaceModel.id == workspace_id)
                 )
                 ws = ws_result.scalar_one_or_none()
                 if ws:
-                    if workspace_info.get("server_id"):
-                        ws.server_id = workspace_info.get("server_id")
                     if workspace_info.get("container_id"):
                         ws.container_id = workspace_info.get("container_id")
                     ws.status = workspace_info.get("status", "running")
@@ -2980,8 +3079,15 @@ async def perform_editor_ai_action(
     if data.model:
         model_id = data.model
     else:
-        # Fall back to per-role defaults (coder role) using the shared helper
-        model_id = await _get_default_model_for_role(db, "coder", user_id)
+        # Fall back to per-role defaults using the model_fallback_role from platform settings
+        session_defaults = await _get_session_defaults(db)
+        fallback_role = session_defaults.get("model_fallback_role")
+        if not fallback_role:
+            raise HTTPException(
+                status_code=500,
+                detail="session_defaults missing model_fallback_role. Check platform settings.",
+            )
+        model_id = await _get_default_model_for_role(db, fallback_role, user_id)
 
     # Build the prompt for the AI action
     system_prompt = """You are an expert software engineer assisting with code tasks.

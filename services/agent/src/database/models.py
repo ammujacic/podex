@@ -282,6 +282,27 @@ class ConversationMessage(Base):
     )
 
 
+class WorkspaceServer(Base):
+    """Workspace server model for multi-server orchestration.
+
+    Minimal model - only fields needed for compute service URL lookup.
+    Full model is defined in API service.
+    """
+
+    __tablename__ = "workspace_servers"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    compute_service_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+
+    # Relationship to workspaces
+    workspaces: Mapped[list["Workspace"]] = relationship(
+        "Workspace",
+        back_populates="server",
+    )
+
+
 class Workspace(Base):
     """Workspace model for compute environments."""
 
@@ -296,6 +317,14 @@ class Workspace(Base):
     s3_bucket: Mapped[str | None] = mapped_column(String(255))
     s3_prefix: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(50), default="pending")
+
+    # Multi-server orchestration: Which server hosts this workspace
+    server_id: Mapped[str | None] = mapped_column(
+        String(255),
+        ForeignKey("workspace_servers.id", ondelete="SET NULL"),
+        index=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -309,6 +338,10 @@ class Workspace(Base):
     )
 
     session: Mapped["Session | None"] = relationship("Session", back_populates="workspace")
+    server: Mapped["WorkspaceServer | None"] = relationship(
+        "WorkspaceServer",
+        back_populates="workspaces",
+    )
 
 
 class AgentTemplate(Base):

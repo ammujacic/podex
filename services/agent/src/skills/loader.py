@@ -1,7 +1,8 @@
 """Dynamic skill loader for agents.
 
-Loads skills from the API (database-backed). YAML loading is removed.
-All platform skills are now managed via the admin panel and stored in the database.
+Loads skills from Redis (synced from database by API service).
+All platform skills are managed via the admin panel and stored in the database,
+then synced to Redis on startup and when changes are made.
 """
 
 from dataclasses import dataclass, field
@@ -12,6 +13,7 @@ import httpx
 import structlog
 
 from src.config import settings
+from src.config_reader import get_config_reader
 
 logger = structlog.get_logger()
 
@@ -119,10 +121,10 @@ class Skill:
 
 
 class SkillLoader:
-    """Loads skill definitions from the API (database-backed).
+    """Loads skill definitions from Redis (synced from database by API).
 
-    All skills are loaded from the API which reads from the database.
-    System skills are managed by admins, user skills are personal.
+    System skills are loaded directly from Redis via ConfigReader.
+    User-specific skills are loaded via API (not synced to Redis).
     """
 
     def __init__(self, api_url: str | None = None) -> None:
@@ -130,15 +132,83 @@ class SkillLoader:
 
         Args:
             api_url: API base URL (defaults to settings.API_BASE_URL)
+                    Used for user-specific skills and recording executions.
         """
         self._api_url = api_url or settings.API_BASE_URL
         self._skills: dict[str, Skill] = {}
         self._loaded = False
 
+    async def load_from_redis(self) -> list[Skill]:
+        """Load all system skills from Redis (synced from database).
+
+        Returns:
+            List of loaded skills
+        """
+        try:
+            config = get_config_reader()
+            skill_defs = await config.get_all_skills()
+
+            if not skill_defs:
+                logger.warning("No skills found in Redis - config may not be synced")
+                return []
+
+            skills = []
+            for skill_def in skill_defs:
+                skill = self._parse_skill_from_redis(skill_def)
+                skills.append(skill)
+                self._skills[skill.slug] = skill
+
+            self._loaded = True
+            logger.info("Skills loaded from Redis", total=len(skills))
+            return skills
+
+        except Exception as e:
+            logger.error("Failed to load skills from Redis", error=str(e))
+            return []
+
+    def _parse_skill_from_redis(self, skill_def: Any) -> Skill:
+        """Parse a SkillDefinition from Redis into a Skill object."""
+        steps = []
+        for step_data in skill_def.steps or []:
+            steps.append(
+                SkillStep(
+                    name=step_data.get("name", "unnamed"),
+                    description=step_data.get("description", ""),
+                    tool=step_data.get("tool"),
+                    skill=step_data.get("skill"),
+                    parameters=step_data.get("parameters", {}),
+                    condition=step_data.get("condition"),
+                    on_success=step_data.get("on_success"),
+                    on_failure=step_data.get("on_failure"),
+                    parallel_with=step_data.get("parallel_with"),
+                    required=step_data.get("required", True),
+                ),
+            )
+
+        return Skill(
+            name=skill_def.name,
+            slug=skill_def.slug,
+            description=skill_def.description,
+            version="1.0.0",
+            author="system",
+            skill_type="system",
+            tags=skill_def.tags or [],
+            triggers=skill_def.triggers or [],
+            required_tools=skill_def.required_tools or [],
+            required_context=[],
+            steps=steps,
+            system_prompt=skill_def.system_prompt,
+            examples=[],
+            metadata={"id": skill_def.id},
+        )
+
     async def load_from_api(
         self, user_id: str | None = None, auth_token: str | None = None
     ) -> list[Skill]:
-        """Load all available skills from the API.
+        """Load all available skills.
+
+        System skills are loaded from Redis (faster, no HTTP).
+        User-specific skills are loaded from API if user_id is provided.
 
         Args:
             user_id: User ID for loading user-specific skills
@@ -146,6 +216,23 @@ class SkillLoader:
 
         Returns:
             List of loaded skills
+        """
+        # Load system skills from Redis
+        skills = await self.load_from_redis()
+
+        # Load user-specific skills from API if user_id provided
+        if user_id:
+            user_skills = await self._load_user_skills_from_api(user_id, auth_token)
+            skills.extend(user_skills)
+
+        return skills
+
+    async def _load_user_skills_from_api(
+        self, user_id: str, auth_token: str | None = None
+    ) -> list[Skill]:
+        """Load user-specific skills from API.
+
+        User skills are not synced to Redis (personal), so we fetch via HTTP.
         """
         try:
             headers = {}
@@ -158,14 +245,14 @@ class SkillLoader:
                 response = await client.get(
                     f"{self._api_url}/api/v1/skills/available",
                     headers=headers,
-                    params={"include_system": True, "include_user": bool(user_id)},
+                    params={"include_system": False, "include_user": True},
                 )
 
                 if response.status_code != 200:
                     logger.warning(
-                        "Failed to load skills from API",
+                        "Failed to load user skills from API",
                         status=response.status_code,
-                        detail=response.text,
+                        user_id=user_id,
                     )
                     return []
 
@@ -178,20 +265,18 @@ class SkillLoader:
                     skills.append(skill)
                     self._skills[skill.slug] = skill
 
-                self._loaded = True
                 logger.info(
-                    "Skills loaded from API",
-                    total=len(skills),
-                    system=data.get("total_system", 0),
-                    user=data.get("total_user", 0),
+                    "User skills loaded from API",
+                    user_id=user_id,
+                    count=len(skills),
                 )
                 return skills
 
         except httpx.TimeoutException:
-            logger.error("Timeout loading skills from API")
+            logger.error("Timeout loading user skills from API", user_id=user_id)
             return []
         except Exception as e:
-            logger.error("Failed to load skills from API", error=str(e))
+            logger.error("Failed to load user skills from API", error=str(e), user_id=user_id)
             return []
 
     def _parse_skill(self, data: dict[str, Any]) -> Skill:
@@ -239,7 +324,7 @@ class SkillLoader:
         )
 
     def get_skill(self, slug: str) -> Skill | None:
-        """Get a skill by slug.
+        """Get a skill by slug from in-memory cache.
 
         Args:
             slug: Skill slug
@@ -248,6 +333,25 @@ class SkillLoader:
             Skill or None
         """
         return self._skills.get(slug)
+
+    async def get_skill_from_redis(self, slug: str) -> Skill | None:
+        """Get a skill directly from Redis (bypasses in-memory cache).
+
+        Args:
+            slug: Skill slug
+
+        Returns:
+            Skill or None
+        """
+        try:
+            config = get_config_reader()
+            skill_def = await config.get_skill(slug)
+            if skill_def:
+                return self._parse_skill_from_redis(skill_def)
+            return None
+        except Exception as e:
+            logger.error("Failed to get skill from Redis", slug=slug, error=str(e))
+            return None
 
     def get_skill_by_name(self, name: str) -> Skill | None:
         """Get a skill by name (case-insensitive).
@@ -271,7 +375,7 @@ class SkillLoader:
     async def reload_all(
         self, user_id: str | None = None, auth_token: str | None = None
     ) -> list[Skill]:
-        """Reload all skills from API."""
+        """Reload all skills from Redis (and API for user skills)."""
         self._skills.clear()
         self._loaded = False
         return await self.load_from_api(user_id, auth_token)
