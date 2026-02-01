@@ -8,8 +8,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const publicDir = join(__dirname, '..', 'public');
 const iconsDir = join(publicDir, 'icons');
 
-// Base SVG icon (512x512 with rounded corners, dark bg, white P{x} logo)
-const baseSvg = `
+// Small icon SVG (just P - for small sizes where {x} would be hard to read)
+const smallSvg = `
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="96" fill="#07070a"/>
+  <!-- Large P - centered -->
+  <path d="M128 96H288C354.274 96 408 149.726 408 216C408 282.274 354.274 336 288 336H208V416H128V96Z" fill="white"/>
+  <path d="M208 160H280C310.928 160 336 185.072 336 216C336 246.928 310.928 272 280 272H208V160Z" fill="#07070a"/>
+</svg>
+`;
+
+// Large icon SVG (P{x} - for larger sizes where braces are readable)
+const largeSvg = `
 <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
   <rect width="512" height="512" rx="96" fill="#07070a"/>
   <!-- Large P -->
@@ -22,8 +32,21 @@ const baseSvg = `
 </svg>
 `;
 
-// Maskable icon needs safe-area padding (icon occupies ~80% of canvas)
-const maskableSvg = `
+// Maskable small icon (just P)
+const maskableSmallSvg = `
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" fill="#07070a"/>
+  <g transform="translate(51.2, 51.2) scale(0.8)">
+    <rect width="512" height="512" rx="96" fill="#07070a"/>
+    <!-- Large P - centered -->
+    <path d="M128 96H288C354.274 96 408 149.726 408 216C408 282.274 354.274 336 288 336H208V416H128V96Z" fill="white"/>
+    <path d="M208 160H280C310.928 160 336 185.072 336 216C336 246.928 310.928 272 280 272H208V160Z" fill="#07070a"/>
+  </g>
+</svg>
+`;
+
+// Maskable large icon (P{x})
+const maskableLargeSvg = `
 <svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
   <rect width="512" height="512" fill="#07070a"/>
   <g transform="translate(51.2, 51.2) scale(0.8)">
@@ -40,11 +63,11 @@ const maskableSvg = `
 `;
 
 const sizes = [
-  { name: 'icon-192.png', size: 192, svg: baseSvg },
-  { name: 'icon-512.png', size: 512, svg: baseSvg },
-  { name: 'icon-maskable-192.png', size: 192, svg: maskableSvg },
-  { name: 'icon-maskable-512.png', size: 512, svg: maskableSvg },
-  { name: 'apple-touch-icon.png', size: 180, svg: baseSvg },
+  { name: 'icon-192.png', size: 192, svg: smallSvg },
+  { name: 'icon-512.png', size: 512, svg: largeSvg },
+  { name: 'icon-maskable-192.png', size: 192, svg: maskableSmallSvg },
+  { name: 'icon-maskable-512.png', size: 512, svg: maskableLargeSvg },
+  { name: 'apple-touch-icon.png', size: 180, svg: largeSvg },
 ];
 
 async function generateIcons() {
