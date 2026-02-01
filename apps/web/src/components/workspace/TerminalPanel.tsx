@@ -100,6 +100,29 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
     reconnectTerminal(activeTerminalId);
   }, [activeTerminalId, reconnectTerminal]);
 
+  // Auto-create terminal when panel is opened with no terminals
+  useEffect(() => {
+    if (workspaceId && terminalWindows.length === 0) {
+      // Small delay to avoid race conditions with store updates
+      const timer = setTimeout(() => {
+        addTerminalWindow(sessionId, 'panel', undefined, defaultShell);
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+    return undefined;
+  }, [workspaceId, terminalWindows.length, sessionId, addTerminalWindow, defaultShell]);
+
+  // Close all terminals and hide the panel
+  const handleClosePanel = useCallback(() => {
+    // Destroy and remove all panel terminals
+    terminalWindows.forEach((terminal) => {
+      destroyTerminal(terminal.id);
+      removeTerminalWindow(sessionId, terminal.id);
+    });
+    // Hide the panel
+    setTerminalVisible(false);
+  }, [terminalWindows, destroyTerminal, removeTerminalWindow, sessionId, setTerminalVisible]);
+
   // Wait for valid workspaceId before rendering
   if (!workspaceId) {
     return (
@@ -109,7 +132,7 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
     );
   }
 
-  // If no terminals exist, show prompt to create one
+  // If no terminals exist, show loading state (auto-create will kick in)
   if (terminalWindows.length === 0) {
     return (
       <div className="flex h-full flex-col bg-surface">
@@ -124,13 +147,7 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
           title="Drag to resize terminal"
         />
         <div className="flex-1 flex items-center justify-center">
-          <button
-            onClick={handleAddTerminal}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-elevated hover:bg-overlay transition-colors text-text-secondary hover:text-text-primary"
-          >
-            <Plus className="h-4 w-4" />
-            <span>New Terminal</span>
-          </button>
+          <div className="animate-spin h-6 w-6 border-2 border-accent-primary border-t-transparent rounded-full" />
         </div>
       </div>
     );
@@ -210,7 +227,7 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
             )}
           </button>
           <button
-            onClick={() => setTerminalVisible(false)}
+            onClick={handleClosePanel}
             className="rounded p-1 text-text-muted hover:bg-overlay hover:text-accent-error"
             title="Close Terminal Panel"
           >

@@ -226,12 +226,17 @@ export function TerminalManagerProvider({ children }: TerminalManagerProviderPro
         }
       });
 
-      // IMPORTANT: Only handle data for THIS terminal
+      // Handle terminal output - each socket is dedicated to one terminal
+      // so we just need to verify workspace matches
       socket.on(
         'terminal_data',
         (data: { workspace_id: string; terminal_id?: string; data: string }) => {
-          // Strict filtering - only accept data for this exact terminal
-          if (data.workspace_id === workspaceId && data.terminal_id === terminalId) {
+          // Each terminal has its own dedicated socket, so if workspace matches
+          // and either no terminal_id is sent or it matches, accept the data
+          if (
+            data.workspace_id === workspaceId &&
+            (!data.terminal_id || data.terminal_id === terminalId)
+          ) {
             term.write(data.data);
           }
         }

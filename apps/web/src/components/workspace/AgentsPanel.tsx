@@ -14,7 +14,9 @@ export function AgentsPanel({ sessionId }: AgentsPanelProps) {
   const { sessions, setActiveWindow, getConversationForAgent } = useSessionStore();
   const session = sessions[sessionId];
   const agents = session?.agents || [];
-  const terminalWindows = session?.terminalWindows || [];
+  // Only show grid terminals in the sidebar, not panel terminals
+  const allTerminalWindows = session?.terminalWindows || [];
+  const terminalWindows = allTerminalWindows.filter((t) => t.location === 'grid');
   const activeWindowId = session?.activeWindowId;
 
   const hasContent = agents.length > 0 || terminalWindows.length > 0;

@@ -834,10 +834,15 @@ async def agent_message(sid: str, data: dict[str, Any]) -> None:
 async def terminal_attach(sid: str, data: dict[str, str]) -> None:
     """Attach to terminal session with authentication and authorization."""
     workspace_id = data.get("workspace_id")
+    terminal_id = data.get("terminal_id")  # Unique ID for this terminal instance
     shell = data.get("shell", "bash")  # Default to bash if not specified
 
     if not workspace_id:
         await sio.emit("terminal_error", {"error": "workspace_id required"}, to=sid)
+        return
+
+    if not terminal_id:
+        await sio.emit("terminal_error", {"error": "terminal_id required"}, to=sid)
         return
 
     # Validate shell option
@@ -861,7 +866,9 @@ async def terminal_attach(sid: str, data: dict[str, str]) -> None:
         return
 
     # Cancel any pending cleanup for this terminal (Redis-coordinated)
-    await _cancel_terminal_cleanup(workspace_id)
+    # Use terminal_id as the session key for per-terminal isolation
+    session_key = f"{workspace_id}:{terminal_id}"
+    await _cancel_terminal_cleanup(session_key)
 
     # Ensure workspace is provisioned before connecting to terminal
     try:
@@ -893,24 +900,29 @@ async def terminal_attach(sid: str, data: dict[str, str]) -> None:
         )
         return
 
-    # Join terminal room
-    await sio.enter_room(sid, f"terminal:{workspace_id}")
+    # Join terminal room - per-terminal room for isolation
+    terminal_room = f"terminal:{workspace_id}:{terminal_id}"
+    await sio.enter_room(sid, terminal_room)
 
-    # Create or get terminal session
-    async def on_output(ws_id: str, output: str) -> None:
-        """Send terminal output to all attached clients."""
+    # Create or get terminal session - each terminal gets its own tmux session
+    async def on_output(_session_id: str, output: str) -> None:
+        """Send terminal output to the specific terminal's room."""
         await sio.emit(
             "terminal_data",
-            {"workspace_id": ws_id, "data": output},
-            room=f"terminal:{ws_id}",
+            {"workspace_id": workspace_id, "terminal_id": terminal_id, "data": output},
+            room=terminal_room,
         )
 
     try:
-        _session = await terminal_manager.create_session(workspace_id, on_output, shell=shell)
+        # Pass terminal_id as session_id for per-terminal tmux sessions
+        _session = await terminal_manager.create_session(
+            workspace_id, on_output, session_id=terminal_id, shell=shell
+        )
         logger.info(
             "Client attached to terminal",
             sid=sid,
             workspace_id=workspace_id,
+            terminal_id=terminal_id,
             shell=shell,
             is_local_pod=_session.is_local_pod if _session else False,
         )
@@ -923,7 +935,7 @@ async def terminal_attach(sid: str, data: dict[str, str]) -> None:
         # Send welcome message
         await sio.emit(
             "terminal_ready",
-            {"workspace_id": workspace_id, "cwd": cwd, "shell": shell},
+            {"workspace_id": workspace_id, "terminal_id": terminal_id, "cwd": cwd, "shell": shell},
             to=sid,
         )
     except Exception as e:
@@ -936,36 +948,47 @@ async def terminal_attach(sid: str, data: dict[str, str]) -> None:
 async def terminal_detach(sid: str, data: dict[str, str]) -> None:
     """Detach from terminal session."""
     workspace_id = data.get("workspace_id")
-    if not workspace_id:
+    terminal_id = data.get("terminal_id")
+    if not workspace_id or not terminal_id:
         return
 
-    await sio.leave_room(sid, f"terminal:{workspace_id}")
-    logger.info("Client detached from terminal", sid=sid, workspace_id=workspace_id)
+    terminal_room = f"terminal:{workspace_id}:{terminal_id}"
+    await sio.leave_room(sid, terminal_room)
+    logger.info(
+        "Client detached from terminal",
+        sid=sid,
+        workspace_id=workspace_id,
+        terminal_id=terminal_id,
+    )
 
     # Schedule deferred cleanup to handle race conditions
     # The cleanup will be cancelled if someone attaches during the grace period
     # Multi-Worker: Uses Redis coordination to cancel cleanup across workers
-    room = sio.manager.rooms.get("/", {}).get(f"terminal:{workspace_id}", set())
+    session_key = f"{workspace_id}:{terminal_id}"
+    room = sio.manager.rooms.get("/", {}).get(terminal_room, set())
     if not room:
-        await _schedule_terminal_cleanup(workspace_id)
+        await _schedule_terminal_cleanup(session_key)
 
 
 @sio.event
 async def terminal_input(sid: str, data: dict[str, str]) -> None:
     """Handle terminal input with authorization check."""
     workspace_id = data.get("workspace_id")
+    terminal_id = data.get("terminal_id")
     input_data = data.get("data")
 
-    if not workspace_id or input_data is None:
+    if not workspace_id or not terminal_id or input_data is None:
         return
 
     # Verify client is in the terminal room (must have successfully attached)
-    room = sio.manager.rooms.get("/", {}).get(f"terminal:{workspace_id}", set())
+    terminal_room = f"terminal:{workspace_id}:{terminal_id}"
+    room = sio.manager.rooms.get("/", {}).get(terminal_room, set())
     if sid not in room:
         logger.warning(
             "Terminal input from unauthenticated client",
             sid=sid,
             workspace_id=workspace_id,
+            terminal_id=terminal_id,
         )
         return
 
@@ -974,33 +997,41 @@ async def terminal_input(sid: str, data: dict[str, str]) -> None:
         logger.warning(
             "Terminal input too large",
             workspace_id=workspace_id,
+            terminal_id=terminal_id,
             size=len(input_data),
         )
         return
 
-    # Write input to terminal
-    success = await terminal_manager.write_input(workspace_id, input_data)
+    # Write input to terminal - use terminal_id as session_id
+    success = await terminal_manager.write_input(terminal_id, input_data)
     if not success:
-        logger.warning("Failed to write terminal input", workspace_id=workspace_id)
+        logger.warning(
+            "Failed to write terminal input",
+            workspace_id=workspace_id,
+            terminal_id=terminal_id,
+        )
 
 
 @sio.event
 async def terminal_resize(sid: str, data: dict[str, Any]) -> None:
     """Handle terminal resize with authorization check."""
     workspace_id = data.get("workspace_id")
+    terminal_id = data.get("terminal_id")
     rows = data.get("rows", 24)
     cols = data.get("cols", 80)
 
-    if not workspace_id:
+    if not workspace_id or not terminal_id:
         return
 
     # Verify client is in the terminal room (must have successfully attached)
-    room = sio.manager.rooms.get("/", {}).get(f"terminal:{workspace_id}", set())
+    terminal_room = f"terminal:{workspace_id}:{terminal_id}"
+    room = sio.manager.rooms.get("/", {}).get(terminal_room, set())
     if sid not in room:
         logger.warning(
             "Terminal resize from unauthenticated client",
             sid=sid,
             workspace_id=workspace_id,
+            terminal_id=terminal_id,
         )
         return
 
@@ -1012,8 +1043,15 @@ async def terminal_resize(sid: str, data: dict[str, Any]) -> None:
     except (ValueError, TypeError):
         rows, cols = 24, 80  # Use defaults for invalid values
 
-    await terminal_manager.resize(workspace_id, rows, cols)
-    logger.debug("Terminal resized", workspace_id=workspace_id, rows=rows, cols=cols)
+    # Use terminal_id as session_id
+    await terminal_manager.resize(terminal_id, rows, cols)
+    logger.debug(
+        "Terminal resized",
+        workspace_id=workspace_id,
+        terminal_id=terminal_id,
+        rows=rows,
+        cols=cols,
+    )
 
 
 async def emit_to_session(session_id: str, event: str, data: dict[str, Any]) -> None:
