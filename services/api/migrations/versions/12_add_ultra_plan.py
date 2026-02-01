@@ -34,7 +34,7 @@ def upgrade() -> None:
         text(
             """
             INSERT INTO subscription_plans (
-                name, slug, description,
+                id, name, slug, description,
                 price_monthly_cents, price_yearly_cents, currency,
                 tokens_included, compute_credits_cents_included, storage_gb_included,
                 max_agents, max_sessions, max_team_members,
@@ -45,7 +45,7 @@ def upgrade() -> None:
                 max_session_duration_minutes,
                 is_active, is_popular, is_enterprise, sort_order
             ) VALUES (
-                'Ultra', 'ultra', 'For power users and larger teams',
+                gen_random_uuid(), 'Ultra', 'ultra', 'For power users and larger teams',
                 19900, 199000, 'USD',
                 15000000, 15000, 500,
                 50, 150, 50,
