@@ -5,13 +5,6 @@
 import { vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import * as path from 'path';
 import * as os from 'os';
-import * as fs from 'fs';
-
-// Ensure coverage temp directory exists to avoid race conditions with v8 coverage
-const coverageTmpDir = path.join(__dirname, '..', 'coverage', '.tmp');
-if (!fs.existsSync(coverageTmpDir)) {
-  fs.mkdirSync(coverageTmpDir, { recursive: true });
-}
 
 // Mock home directory to use temp dir for tests
 const TEST_HOME = path.join(os.tmpdir(), 'podex-cli-test-home');

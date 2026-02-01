@@ -7,12 +7,9 @@ export default defineConfig({
     environment: 'node',
     include: ['src/**/*.{test,spec}.{ts,tsx}', '__tests__/**/*.{test,spec}.{ts,tsx}'],
     exclude: ['node_modules/**', 'dist/**', 'e2e/**'],
-    globalSetup: ['./__tests__/globalSetup.ts'],
     setupFiles: ['./__tests__/setup.ts'],
-    fileParallelism: false, // Prevent race condition with v8 coverage temp files
     coverage: {
       provider: 'v8',
-      clean: false, // Don't delete coverage dir - CI pre-creates .tmp
       reporter: ['text', 'json', 'html', 'lcov'],
       include: ['src/**/*.{ts,tsx}'],
       exclude: [
