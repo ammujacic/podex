@@ -13,11 +13,12 @@ import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
 from src.database.connection import get_db
+from src.database.models import WorkspaceServer
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 
 logger = structlog.get_logger()
@@ -141,8 +142,10 @@ async def check_redis() -> ServiceHealth:
         )
 
 
-async def check_compute_service() -> ServiceHealth:
-    """Check compute service connectivity."""
+async def check_compute_service_for_server(
+    server_name: str, compute_service_url: str
+) -> ServiceHealth:
+    """Check compute service connectivity for a specific server."""
     start = datetime.now(UTC)
     try:
         headers = {}
@@ -150,7 +153,7 @@ async def check_compute_service() -> ServiceHealth:
             headers["X-Internal-Service-Token"] = settings.INTERNAL_SERVICE_TOKEN
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(
-                f"{settings.COMPUTE_SERVICE_URL}/health",
+                f"{compute_service_url}/health",
                 headers=headers,
             )
             latency = (datetime.now(UTC) - start).total_seconds() * 1000
@@ -158,14 +161,14 @@ async def check_compute_service() -> ServiceHealth:
             if response.status_code == 200:
                 data = response.json()
                 return ServiceHealth(
-                    name="Compute Service",
+                    name=f"Compute Service ({server_name})",
                     status="healthy",
                     latency_ms=round(latency, 2),
                     message="Connected and responsive",
-                    details={"version": data.get("version", "unknown")},
+                    details={"version": data.get("version", "unknown"), "url": compute_service_url},
                 )
             return ServiceHealth(
-                name="Compute Service",
+                name=f"Compute Service ({server_name})",
                 status="degraded",
                 latency_ms=round(latency, 2),
                 message=f"Returned status {response.status_code}",
@@ -173,11 +176,51 @@ async def check_compute_service() -> ServiceHealth:
     except Exception as e:
         latency = (datetime.now(UTC) - start).total_seconds() * 1000
         return ServiceHealth(
-            name="Compute Service",
+            name=f"Compute Service ({server_name})",
             status="unhealthy",
             latency_ms=round(latency, 2),
             message=f"Connection failed: {str(e)[:100]}",
         )
+
+
+async def check_all_compute_services(db: AsyncSession) -> list[ServiceHealth]:
+    """Check compute service connectivity for all servers."""
+    result = await db.execute(
+        select(WorkspaceServer).where(WorkspaceServer.compute_service_url.isnot(None))
+    )
+    servers = result.scalars().all()
+
+    if not servers:
+        return [
+            ServiceHealth(
+                name="Compute Services",
+                status="unknown",
+                message="No servers with compute_service_url configured",
+            )
+        ]
+
+    checks = await asyncio.gather(
+        *[
+            check_compute_service_for_server(server.name, server.compute_service_url)
+            for server in servers
+        ],
+        return_exceptions=True,
+    )
+
+    results = []
+    for server, check in zip(servers, checks, strict=False):
+        if isinstance(check, BaseException):
+            results.append(
+                ServiceHealth(
+                    name=f"Compute Service ({server.name})",
+                    status="unknown",
+                    message=f"Check failed: {str(check)[:100]}",
+                )
+            )
+        else:
+            results.append(check)
+
+    return results
 
 
 async def check_agent_service() -> ServiceHealth:
@@ -323,10 +366,10 @@ def generate_recommendations(
                 recommendations.append(
                     "Redis connection failed. Check REDIS_URL and ensure Redis is running."
                 )
-            elif service.name == "Compute Service":
+            elif service.name.startswith("Compute Service"):
                 recommendations.append(
-                    "Compute service is not reachable. Start it with "
-                    "'cd services/compute && uv run python -m src.main'"
+                    f"{service.name} is not reachable. Check the compute_service_url "
+                    "in server settings and ensure the compute service is running."
                 )
             elif service.name == "Agent Service":
                 recommendations.append(
@@ -378,10 +421,10 @@ async def run_doctor(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     # Run all checks in parallel
-    db_check, redis_check, compute_check, agent_check, docker_check = await asyncio.gather(
+    db_check, redis_check, compute_checks, agent_check, docker_check = await asyncio.gather(
         check_database(db),
         check_redis(),
-        check_compute_service(),
+        check_all_compute_services(db),
         check_agent_service(),
         check_docker(),
         return_exceptions=True,
@@ -392,7 +435,6 @@ async def run_doctor(
     for name, check in [
         ("PostgreSQL Database", db_check),
         ("Redis", redis_check),
-        ("Compute Service", compute_check),
         ("Agent Service", agent_check),
         ("Docker", docker_check),
     ]:
@@ -406,6 +448,18 @@ async def run_doctor(
             )
         else:
             services.append(check)
+
+    # Add compute service checks (which is a list)
+    if isinstance(compute_checks, BaseException):
+        services.append(
+            ServiceHealth(
+                name="Compute Services",
+                status="unknown",
+                message=f"Check failed: {str(compute_checks)[:100]}",
+            )
+        )
+    else:
+        services.extend(compute_checks)
 
     # Check LLM providers
     providers = check_llm_providers()

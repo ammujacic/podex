@@ -13,7 +13,6 @@ import {
   ChevronRight,
   Zap,
 } from 'lucide-react';
-import { PodexIcon } from '@/components/icons';
 import { cn } from '@/lib/utils';
 import { useSessionStore, type Agent } from '@/stores/session';
 import { useStreamingStore } from '@/stores/streaming';
@@ -202,15 +201,6 @@ export function MobileSessionOverview({
                     {/* Agent info */}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        {/* Podex native agent badge */}
-                        {!['custom'].includes(agent.role) && (
-                          <span
-                            className="flex items-center justify-center w-5 h-5 flex-shrink-0"
-                            title="Podex Agent"
-                          >
-                            <PodexIcon size={20} />
-                          </span>
-                        )}
                         <h3 className="font-semibold text-text-primary truncate">{agent.name}</h3>
                         {isProcessing && (
                           <span

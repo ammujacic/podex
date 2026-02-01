@@ -153,17 +153,6 @@ class TestServiceURLs:
         assert settings.API_BASE_URL is not None
         assert "http" in settings.API_BASE_URL
 
-    def test_compute_service_url_removed(self) -> None:
-        """Test compute service URL is no longer a static setting.
-
-        The compute service URL is now looked up per-workspace from the database
-        based on the workspace's assigned server. This enables multi-region
-        deployments where different workspaces use different compute services.
-        """
-        from src.config import settings
-        # Verify the setting no longer exists as a static config
-        assert not hasattr(settings, "COMPUTE_SERVICE_URL")
-
 
 class TestLLMProviderSettings:
     """Test LLM provider settings."""

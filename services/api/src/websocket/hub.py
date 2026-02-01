@@ -538,6 +538,7 @@ sio = socketio.AsyncServer(
     async_mode="asgi",
     client_manager=_redis_manager,
     cors_allowed_origins=settings.CORS_ORIGINS if settings.CORS_ORIGINS else "*",
+    cors_credentials=True,  # Required to send cookies cross-origin
     logger=False,
     engineio_logger=False,
     max_http_buffer_size=50 * 1024 * 1024,  # 50MB for large session data

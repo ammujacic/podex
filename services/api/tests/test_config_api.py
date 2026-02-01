@@ -121,11 +121,6 @@ class TestPasswordSettings:
 class TestServiceSettings:
     """Tests for service connection settings."""
 
-    def test_compute_service_url_default(self) -> None:
-        """Test default compute service URL."""
-        settings = Settings()
-        assert settings.COMPUTE_SERVICE_URL == "http://compute:3003"
-
     def test_agent_service_url_default(self) -> None:
         """Test default agent service URL."""
         settings = Settings()

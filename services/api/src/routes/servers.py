@@ -192,6 +192,7 @@ class TestConnectionRequest(BaseModel):
     tls_cert_path: str | None = None
     tls_key_path: str | None = None
     tls_ca_path: str | None = None
+    compute_service_url: str
 
 
 class DockerInfo(BaseModel):
@@ -1051,7 +1052,7 @@ async def test_server_connection(
     try:
         # Proxy request to compute service
         async with httpx.AsyncClient(
-            base_url=settings.COMPUTE_SERVICE_URL,
+            base_url=data.compute_service_url,
             timeout=httpx.Timeout(30.0, connect=10.0),
         ) as client:
             compute_response = await client.post(

@@ -590,7 +590,6 @@ run:
 	@HOST_IP=$$(ipconfig getifaddr en0 2>/dev/null || hostname -I 2>/dev/null | awk '{print $$1}' || echo "localhost"); \
 	echo "$(CYAN)Detected host IP: $$HOST_IP$(NC)"; \
 	NEXT_PUBLIC_API_URL=http://$$HOST_IP:3001 \
-	NEXT_PUBLIC_WS_URL=ws://$$HOST_IP:3001 \
 	CORS_ORIGINS='["http://localhost:3000","http://'$$HOST_IP':3000"]' \
 	docker-compose up -d
 	@echo ""

@@ -154,9 +154,6 @@ class Settings(BaseSettings):
     CSP_ENABLED: bool = True  # Enable Content-Security-Policy header
     CSRF_ENABLED_IN_DEV: bool = True  # Enable CSRF checks in development (recommended)
 
-    # Compute service
-    COMPUTE_SERVICE_URL: str = "http://compute:3003"
-
     # Agent service
     AGENT_SERVICE_URL: str = "http://agent:3002"
     AGENT_TASK_POLL_INTERVAL: float = 0.5  # seconds
