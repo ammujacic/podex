@@ -159,7 +159,8 @@ class TmuxSessionManager:
                     # Close the Docker socket to unblock read operations
                     if session.socket:
                         with contextlib.suppress(Exception):
-                            session.socket._sock.close()
+                            sock = getattr(session.socket, "_sock", session.socket)
+                            sock.close()
                     # Close the WebSocket to unblock websocket.receive()
                     if session.websocket:
                         with contextlib.suppress(Exception):
@@ -478,7 +479,8 @@ class TmuxTerminalSession:
         if not self.socket or not self._running:
             return False
         try:
-            sock = self.socket._sock
+            # Get the underlying socket - handle both regular and SSL sockets
+            sock = getattr(self.socket, "_sock", self.socket)
             await asyncio.to_thread(sock.sendall, data)
             return True
         except Exception as e:
@@ -494,7 +496,9 @@ class TmuxTerminalSession:
         if not self.socket or not self._running:
             return None
         try:
-            sock = self.socket._sock
+            # Get the underlying socket - handle both regular and SSL sockets
+            # Docker's socket wrapper may have _sock (non-TLS) or be an SSLSocket (TLS)
+            sock = getattr(self.socket, "_sock", self.socket)
             # Set a short timeout for non-blocking behavior
             sock.settimeout(0.1)
             try:
@@ -585,7 +589,8 @@ class TmuxTerminalSession:
 
         if self.socket:
             with contextlib.suppress(Exception):
-                self.socket._sock.close()
+                sock = getattr(self.socket, "_sock", self.socket)
+                sock.close()
 
         # Note: We do NOT kill the tmux session - it keeps running
         logger.info(
