@@ -53,7 +53,7 @@ def upgrade() -> None:
                 '{"private_projects": true, "git_integration": true, "team_collaboration": true, "gpu_access": true, "advanced_analytics": true, "audit_logs": true, "custom_agents": true, "priority_support": true, "dedicated_support": true, "sla_guarantee": true, "custom_integrations": true}'::jsonb,
                 '#ec4899', 'Gem', 'Go Ultra',
                 '["15M tokens/month", "50 AI agents", "150 concurrent sessions", "Dedicated support", "99.9% SLA"]'::jsonb,
-                ARRAY[15, 30, 60, 120, NULL]::integer[],
+                '[15, 30, 60, 120, null]'::jsonb,
                 64000,
                 8000, 16384, 200,
                 NULL,
