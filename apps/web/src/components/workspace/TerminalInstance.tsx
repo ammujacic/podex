@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 import { io, type Socket } from 'socket.io-client';
-import { useAuthStore } from '@/stores/auth';
 import { useUIStore } from '@/stores/ui';
+import { getWebSocketToken } from '@/lib/api';
 
 export interface TerminalInstanceProps {
   workspaceId: string;
@@ -51,8 +51,7 @@ export function TerminalInstance({
   const socketRef = useRef<Socket | null>(null);
   const terminalReadyRef = useRef(false);
   const initializedRef = useRef(false);
-
-  const tokens = useAuthStore((state) => state.tokens);
+  const wsTokenRef = useRef<string | null>(null);
 
   const resizeTerminal = useCallback(() => {
     if (!fitAddonRef.current || !termRef.current || !isActive) return;
@@ -103,6 +102,10 @@ export function TerminalInstance({
     termRef.current = term;
     fitAddonRef.current = fitAddon;
 
+    // Fetch WebSocket token for authentication (required for cross-origin)
+    const wsToken = await getWebSocketToken();
+    wsTokenRef.current = wsToken;
+
     // Connect to Socket.IO
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
     const socket = io(apiUrl, {
@@ -116,7 +119,7 @@ export function TerminalInstance({
     socketRef.current = socket;
 
     // Socket.IO event handlers
-    socket.on('connect', () => {
+    socket.on('connect', async () => {
       term.writeln('\x1b[36m╭─────────────────────────────────────────╮\x1b[0m');
       term.writeln(
         '\x1b[36m│\x1b[0m  \x1b[1mPodex Terminal\x1b[0m                         \x1b[36m│\x1b[0m'
@@ -125,10 +128,14 @@ export function TerminalInstance({
       term.writeln('\x1b[36m╰─────────────────────────────────────────╯\x1b[0m');
       term.writeln('');
 
+      // Fetch fresh token on reconnect (tokens are one-time use)
+      const token = await getWebSocketToken();
+      wsTokenRef.current = token;
+
       socket.emit('terminal_attach', {
         workspace_id: workspaceId,
         terminal_id: tabId,
-        auth_token: tokens?.accessToken,
+        auth_token: token,
         shell: shell,
       });
     });
@@ -178,7 +185,7 @@ export function TerminalInstance({
         data: data,
       });
     });
-  }, [workspaceId, tabId, shell, tokens, onReady]);
+  }, [workspaceId, tabId, shell, onReady]);
 
   // Initialize terminal
   useEffect(() => {
@@ -263,7 +270,7 @@ export function TerminalInstance({
   }, [pendingCommand, workspaceId, tabId, isActive, clearPendingCommand]);
 
   // Expose methods for external control
-  const reconnect = useCallback(() => {
+  const reconnect = useCallback(async () => {
     const socket = socketRef.current;
     const term = termRef.current;
 
@@ -271,13 +278,17 @@ export function TerminalInstance({
       term.writeln('\r\n\x1b[33m[Reconnecting...]\x1b[0m\r\n');
     }
 
+    // Fetch fresh WebSocket token for reconnection
+    const token = await getWebSocketToken();
+    wsTokenRef.current = token;
+
     if (socket?.connected) {
       socket.emit('terminal_detach', { workspace_id: workspaceId, terminal_id: tabId });
       setTimeout(() => {
         socket.emit('terminal_attach', {
           workspace_id: workspaceId,
           terminal_id: tabId,
-          auth_token: tokens?.accessToken,
+          auth_token: token,
           shell: shell,
         });
       }, 100);
@@ -285,11 +296,11 @@ export function TerminalInstance({
       socket?.emit('terminal_attach', {
         workspace_id: workspaceId,
         terminal_id: tabId,
-        auth_token: tokens?.accessToken,
+        auth_token: token,
         shell: shell,
       });
     }
-  }, [workspaceId, tabId, tokens, shell]);
+  }, [workspaceId, tabId, shell]);
 
   const fit = useCallback(() => {
     resizeTerminal();
